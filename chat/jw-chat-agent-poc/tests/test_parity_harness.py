@@ -147,6 +147,11 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
 
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
         calls.append((out_dir, external_mode, base_url, questions, conversation_id))
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
         return 0
 
     monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
@@ -172,9 +177,35 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
 
 def test_p0g_suite_fails_when_any_scenario_fails(monkeypatch, tmp_path: Path) -> None:
     statuses = iter((0, 1, 0))
-    monkeypatch.setattr("scripts.parity_harness.capture", lambda *args: next(statuses))
+
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return next(statuses)
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
 
     assert capture_p0g_suite(tmp_path, "live", None) == 1
+
+
+def test_p0g_suite_fails_when_general_golden_exceeds_fast_path_budget(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
+        out_dir.mkdir(parents=True)
+        rows = [
+            {"qid": qid, "elapsed_ms": 10_001.0 if qid == "H02" else 100.0}
+            for qid, _ in questions
+        ]
+        (out_dir / "summary.json").write_text(json.dumps(rows), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+
+    assert capture_p0g_suite(tmp_path, "live", None, max_general_elapsed_ms=10_000.0) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary[1]["latency_failures"] == ["H02"]
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:

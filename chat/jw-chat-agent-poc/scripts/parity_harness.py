@@ -57,6 +57,7 @@ MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M02", "2025년 2분기 매출 얼마야"),
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
+P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "H02", "H03", "M02", "M03"})
 
 VOLATILE_KEYS = {
     "answer_cleanup",
@@ -156,6 +157,7 @@ def capture_p0g_suite(
     base_url: str | None,
     *,
     history_conversation_id: str | None = None,
+    max_general_elapsed_ms: float = 10_000.0,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenarios = (
@@ -171,16 +173,29 @@ def capture_p0g_suite(
             f"parity-mode-transition-{uuid4().hex}",
         ),
     )
-    summary: list[dict[str, str | int]] = []
+    summary: list[dict[str, Any]] = []
     for name, questions, conversation_id in scenarios:
         status = capture(out_dir / name, external_mode, base_url, questions, conversation_id)
-        summary.append({"scenario": name, "status": status})
+        rows = json.loads((out_dir / name / "summary.json").read_text(encoding="utf-8"))
+        latency_failures = [
+            str(row["qid"])
+            for row in rows
+            if row.get("qid") in P0G_GENERAL_GOLDEN_QIDS
+            and float(row.get("elapsed_ms", float("inf"))) > max_general_elapsed_ms
+        ]
+        summary.append(
+            {
+                "scenario": name,
+                "status": status,
+                "latency_failures": latency_failures,
+            }
+        )
     (out_dir / "p0g_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     print(json.dumps({"p0g": summary}, ensure_ascii=False), flush=True)
-    return 0 if all(item["status"] == 0 for item in summary) else 1
+    return 0 if all(item["status"] == 0 and not item["latency_failures"] for item in summary) else 1
 
 
 def diff_captures(
@@ -592,6 +607,12 @@ def main() -> int:
         "--history-conversation-id",
         help="Existing session containing an uploaded file and unrelated prior turns.",
     )
+    p0g_parser.add_argument(
+        "--max-general-elapsed-ms",
+        type=float,
+        default=10_000.0,
+        help="Fast-path budget for the six general golden turns (default: 10000).",
+    )
     diff_parser = sub.add_parser("diff")
     diff_parser.add_argument("--before", type=Path, required=True)
     diff_parser.add_argument("--after", type=Path, required=True)
@@ -622,6 +643,7 @@ def main() -> int:
             args.external_mode,
             args.base_url,
             history_conversation_id=args.history_conversation_id,
+            max_general_elapsed_ms=args.max_general_elapsed_ms,
         )
     if args.command == "diff":
         return diff_captures(
