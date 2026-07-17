@@ -105,6 +105,7 @@ def build_general_analysis_level_sections(
             for row in rows
         ],
         period_range,
+        materialize_predecoded_fields=False,
     )
     channels = list(cause_builder._channels_for_source(source_api))
     ubist_channel_context: dict[str, Any] | None = None

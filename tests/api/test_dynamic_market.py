@@ -1579,6 +1579,37 @@ def test_general_dimension_aliases_defer_series_encoding_until_window_projection
     assert actual == expected
 
 
+def test_general_analysis_levels_leave_predecoded_dimension_json_unmaterialized(monkeypatch) -> None:
+    class ProjectionObserved(Exception):
+        pass
+
+    monkeypatch.setattr(
+        general_analysis_levels,
+        "build_analysis_rows",
+        lambda **_kwargs: [{"brand_key": "brand"}],
+    )
+
+    def observe_projection(
+        _rows: object,
+        _period_range: PeriodRange,
+        *,
+        materialize_predecoded_fields: bool = True,
+    ) -> list[dict[str, object]]:
+        assert materialize_predecoded_fields is False
+        raise ProjectionObserved
+
+    monkeypatch.setattr(general_analysis_levels, "trim_period_rows", observe_projection)
+
+    with pytest.raises(ProjectionObserved):
+        general_analysis_levels.build_general_analysis_level_sections(
+            definition=SimpleNamespace(),
+            metrics=SimpleNamespace(source="iqvia_nsa", measure="sales"),
+            focus=None,
+            mart_db="mart",
+            period_range=PeriodRange("2025-01", "2025-12"),
+        )
+
+
 @pytest.mark.parametrize(
     "row",
     [
