@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
+from pipeline.scripts.analysis.brand_activity.alias.normalize import configured_variants_for, normalize_iqvia_en
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, resolve_brand_set
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
@@ -150,7 +150,16 @@ def _scored_csd_markets(
     selected_product_codes: set[str],
     candidate_product_codes: set[str],
 ) -> tuple[list[CsdCrosswalk], set[str]]:
-    rows = db.fetch_all(_sql_csd_products())
+    product_codes = tuple(
+        sorted(
+            {
+                variant
+                for code in selected_product_codes | candidate_product_codes
+                for variant in configured_variants_for(normalize_iqvia_en(code))
+            }
+        )
+    )
+    rows = db.fetch_all(_sql_csd_products(product_codes), product_codes) if product_codes else []
     by_market: dict[str, set[str]] = {}
     for row in rows:
         by_market.setdefault(str(row["market"]), set()).add(str(row["master_product"]))
@@ -478,8 +487,9 @@ def _sql_csd_months() -> str:
     return f"SELECT DISTINCT period_ym FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` ORDER BY period_ym"
 
 
-def _sql_csd_products() -> str:
-    return f"SELECT market, master_product FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE jw_channel = 'TOTAL' GROUP BY market, master_product"
+def _sql_csd_products(product_codes: tuple[str, ...]) -> str:
+    placeholders = ", ".join("%s" for _code in product_codes)
+    return f"SELECT market, master_product FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE jw_channel = 'TOTAL' AND master_product IN ({placeholders}) GROUP BY market, master_product"
 
 
 def _sql_csd_activity() -> str:

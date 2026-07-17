@@ -63,7 +63,7 @@ def test_csd_market_resolution_requires_selected_brand_membership(monkeypatch) -
     monkeypatch.setattr(
         service.db,
         "fetch_all",
-        lambda _sql: [
+        lambda _sql, _params=None: [
             {"market": "Selected Market", "master_product": "SELECTED"},
             {"market": "Selected Market", "master_product": "RIVAL_A"},
             {"market": "Competitor Market", "master_product": "RIVAL_A"},
@@ -79,6 +79,33 @@ def test_csd_market_resolution_requires_selected_brand_membership(monkeypatch) -
 
     assert resolved.market == "Selected Market"
     assert resolved.overlap == ("RIVAL_A", "SELECTED")
+
+
+def test_csd_market_resolution_limits_scan_to_configured_product_variants(monkeypatch) -> None:
+    # Given
+    captured: dict[str, str | tuple[str, ...] | None] = {}
+
+    def fetch_all(sql: str, params: tuple[str, ...] | None = None) -> list[dict[str, str]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            {"market": "Selected Market", "master_product": "A-PITO"},
+            {"market": "Selected Market", "master_product": "LOWOSMOPERI"},
+        ]
+
+    monkeypatch.setattr(service.db, "fetch_all", fetch_all)
+
+    # When
+    resolved = service.resolve_csd_market(
+        selected_product_codes={"APITO"},
+        candidate_product_codes={"APITO", "LOW OSMO PERI"},
+    )
+
+    # Then
+    assert "master_product IN (%s, %s, %s, %s)" in str(captured["sql"])
+    assert captured["params"] == ("A-PITO", "APITO", "LOW OSMO PERI", "LOWOSMOPERI")
+    assert resolved.market == "Selected Market"
+    assert resolved.overlap == ("APITO", "LOW OSMO PERI")
 
 
 def test_csd_product_codes_are_reloaded_from_iqvia_for_ubist_brand_meta(monkeypatch) -> None:
@@ -158,7 +185,7 @@ def test_resolve_csd_markets_excludes_competitor_only_markets(monkeypatch) -> No
     monkeypatch.setattr(
         service.db,
         "fetch_all",
-        lambda _sql: [
+        lambda _sql, _params=None: [
             {"market": "LIVALO Market", "master_product": "LIVALO"},
             {"market": "LIVALO Market", "master_product": "RIVAL"},
             {"market": "LIVALO FENO Market", "master_product": "LIVALO FENO"},
@@ -177,7 +204,7 @@ def test_resolve_csd_markets_keeps_legacy_selected_market_as_primary(monkeypatch
     monkeypatch.setattr(
         service.db,
         "fetch_all",
-        lambda _sql: [
+        lambda _sql, _params=None: [
             {"market": "Selected Market", "master_product": "SELECTED"},
             {"market": "Selected Market", "master_product": "RIVAL_A"},
             {"market": "Competitor Market", "master_product": "RIVAL_A"},
@@ -224,7 +251,7 @@ def test_csd_market_resolution_rejects_competitor_only_overlap(monkeypatch) -> N
     monkeypatch.setattr(
         service.db,
         "fetch_all",
-        lambda _sql: [{"market": "Competitor Market", "master_product": "RIVAL"}],
+        lambda _sql, _params=None: [{"market": "Competitor Market", "master_product": "RIVAL"}],
     )
 
     try:
@@ -243,7 +270,7 @@ def test_csd_market_resolution_exposes_true_tie_candidates(monkeypatch) -> None:
     monkeypatch.setattr(
         service.db,
         "fetch_all",
-        lambda _sql: [
+        lambda _sql, _params=None: [
             {"market": "Alpha Market", "master_product": "SELECTED"},
             {"market": "Beta Market", "master_product": "SELECTED"},
         ],

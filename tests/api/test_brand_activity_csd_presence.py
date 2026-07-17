@@ -54,7 +54,7 @@ def test_presence_uses_the_same_product_overlap_as_csd_market_resolution(
     monkeypatch.setattr(
         timeseries.db,
         "fetch_all",
-        lambda _sql: [{"market": "Livalo Market", "master_product": "LIVALO"}],
+        lambda _sql, _params=None: [{"market": "Livalo Market", "master_product": "LIVALO"}],
     )
     assert timeseries.resolve_csd_market(
         selected_product_codes={"LIVALO"},
@@ -87,7 +87,7 @@ def test_presence_maps_no_mapping_without_diverging(
     monkeypatch.setattr(
         timeseries.db,
         "fetch_all",
-        lambda _sql: [{"market": "Livalo Market", "master_product": "LIVALO"}],
+        lambda _sql, _params=None: [{"market": "Livalo Market", "master_product": "LIVALO"}],
     )
     with pytest.raises(CsdTimeseriesNoMappingError):
         timeseries.resolve_csd_market(
