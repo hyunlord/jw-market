@@ -54,12 +54,12 @@ spec:
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: jw-data-portal-secrets
+                  name: jw-ingest-hook-minio   # read-only user; portal creds are write-only
                   key: MINIO_ACCESS_KEY
             - name: MINIO_SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: jw-data-portal-secrets
+                  name: jw-ingest-hook-minio
                   key: MINIO_SECRET_KEY
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local

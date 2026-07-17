@@ -28,7 +28,8 @@ _PASSTHROUGH_VALUES = (
     "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
 )
 _MART_SECRET = "jw-mart-d2-writer"
-_PORTAL_SECRET = "jw-data-portal-secrets"
+_PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
+_MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
 
 
 def _job_env() -> list[dict]:
@@ -47,8 +48,10 @@ def _job_env() -> list[dict]:
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
     if os.environ.get("INGEST_S3_BUCKET"):
         secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")
-        secret_ref("MINIO_ACCESS_KEY", _PORTAL_SECRET, "MINIO_ACCESS_KEY")
-        secret_ref("MINIO_SECRET_KEY", _PORTAL_SECRET, "MINIO_SECRET_KEY")
+        # The portal account is write/list-only by policy; the hook reads with
+        # its own read-only MinIO user (GetObject+ListBucket on the bucket).
+        secret_ref("MINIO_ACCESS_KEY", _MINIO_READ_SECRET, "MINIO_ACCESS_KEY")
+        secret_ref("MINIO_SECRET_KEY", _MINIO_READ_SECRET, "MINIO_SECRET_KEY")
     return env
 
 Transport = Callable[[str, dict], dict]
