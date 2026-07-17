@@ -138,6 +138,50 @@ def test_filter_options_keeps_general_market_unscoped_for_brand(monkeypatch) -> 
     assert resolved is None
 
 
+def test_general_brand_atc4_uses_indexed_exact_lookup_before_compact_fallback(monkeypatch) -> None:
+    calls: list[tuple[str, list[object]]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        return [{"atc4_code": "C10A1"}]
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    result = filter_options._general_atc4_codes_for_brand(
+        mart_db="jw_mart",
+        source="ubist",
+        brand="리바로",
+    )
+
+    assert result == ("C10A1",)
+    assert len(calls) == 1
+    assert "LOWER(REPLACE" not in calls[0][0]
+    assert calls[0][1] == ["ubist", "리바로", "ubist", "리바로"]
+
+
+def test_general_brand_atc4_falls_back_to_compact_lookup_only_after_exact_miss(monkeypatch) -> None:
+    calls: list[tuple[str, list[object]]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append((sql, params))
+        if len(calls) == 1:
+            return []
+        return [{"atc4_code": "C10A1"}, {"atc4_code": "C10C0"}]
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    result = filter_options._general_atc4_codes_for_brand(
+        mart_db="jw_mart",
+        source="ubist",
+        brand="리 바 로",
+    )
+
+    assert result == ("C10A1", "C10C0")
+    assert len(calls) == 2
+    assert "LOWER(REPLACE" not in calls[0][0]
+    assert "LOWER(REPLACE" in calls[1][0]
+
+
 def test_general_filter_options_keeps_full_atc_universe_and_flags_all_brand_markets(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     all_atc4 = ("J01G1", "J01G2", "S01A0", "S02A0")
@@ -146,7 +190,7 @@ def test_general_filter_options_keeps_full_atc_universe_and_flags_all_brand_mark
 
     def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
         assert "mart_general_brand_metric" in sql
-        assert params == ["iqvia_nsa", "에펙신", "에펙신", "에펙신", "에펙신"]
+        assert params == ["iqvia_nsa", "에펙신", "iqvia_nsa", "에펙신"]
         return [{"atc4_code": code} for code in brand_atc4]
 
     def fake_uncached(**kwargs: object) -> dict[str, object]:

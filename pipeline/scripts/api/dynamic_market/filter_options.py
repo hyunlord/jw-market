@@ -1334,19 +1334,34 @@ def _atc_values_by_level(atc4_codes: Sequence[str]) -> dict[str, set[str]]:
 def _general_atc4_codes_for_brand(*, mart_db: str, source: str, brand: str) -> tuple[str, ...]:
     rows = db.fetch_all(
         f"""
-        SELECT DISTINCT atc4_code
-        FROM {quote_identifier(mart_db)}.mart_general_brand_metric
-        WHERE source = %s
-          AND (
-              brand_name = %s
-              OR brand_key = %s
-              OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
-              OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
-          )
+        SELECT atc4_code
+        FROM (
+            SELECT atc4_code
+            FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+            WHERE source = %s AND brand_key = %s
+            UNION
+            SELECT atc4_code
+            FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+            WHERE source = %s AND brand_name = %s
+        ) AS exact_brand_markets
         ORDER BY atc4_code
         """,
-        [source, brand, brand, brand, brand],
+        [source, brand, source, brand],
     )
+    if not rows:
+        rows = db.fetch_all(
+            f"""
+            SELECT DISTINCT atc4_code
+            FROM {quote_identifier(mart_db)}.mart_general_brand_metric
+            WHERE source = %s
+              AND (
+                  LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
+                  OR LOWER(REPLACE(brand_key, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))
+              )
+            ORDER BY atc4_code
+            """,
+            [source, brand, brand],
+        )
     return tuple(
         dict.fromkeys(
             atc4_code
