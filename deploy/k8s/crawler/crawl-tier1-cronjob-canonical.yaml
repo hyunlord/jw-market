@@ -1,3 +1,7 @@
+# DELETION CANDIDATE (2026-07-17 cutover verdict): the redesigned original-name
+# manifests (crawl-tier1/2-cronjob.yaml, contract-pinned) are the canonical
+# crawl track. This copy must NOT be resumed - doing so would double-run the
+# schedule and revert the wf337-era redesign. Deletion is a PL decision.
 # CANONICAL REBUILD of jw-news-crawl-tier1-daily — registered suspended.
 #
 # Same job body as deploy/k8s/crawler/crawl-tier1-cronjob.yaml, but:

@@ -110,10 +110,10 @@ python -m pipeline.orchestrator run --stages strength
   - `jw-pipeline-orchestrator-poll-daily` + state PVC (`deploy/k8s/orchestrator/`)
   - `jw-news-crawl-tier1-daily-canonical` / `jw-news-crawl-tier2-daily-slice-canonical` (`deploy/k8s/crawler/*-canonical.yaml`)
 - **cutover는 PL 판단**: 기존 라이브 CronJob(agent3-refresh, 구 crawl tier1/2)의 digest 교체·삭제는 이 런북 범위 밖.
-- **★ tier2 cutover 체크리스트(2026-07-17 판정 반영)**:
-  1. canonical tier2 CronJob(`jw-news-crawl-tier2-daily-slice-canonical`)의 **ConfigMap `tier2-llm-runner-rev5671` 마운트 제거 필수** — 현재 라이브 body 복제 부산물로 CM이 이미지 내 runner(`/opt/tier2`)를 가린다. 제거하지 않으면 canonical 이미지로 전환해도 CM(구판)이 계속 실행됨.
-  2. CM은 crawl-2tier HEAD(1d6497c2) 시점과 byte-identical, repo 정본은 +`update_live_tier2_categories()`(2,693B 잔차) — 즉 CM 실행 지속 = **category refresh 미반영 상태 지속**.
-  3. 전환 분리안: 동작 동일성 우선이면 1d6497c2 시점 파일로 선전환(CM 마운트만 제거) 후 category refresh 기능을 별도 커밋·검증으로 도입.
+- **★ crawl cutover 실행 완료(2026-07-17, PL (b)·jw market 위임 — 재설계 트랙 기준)**:
+  1. **실측 인과 정정**: tier2 category 결손의 근인은 "CM이 이미지를 가림"이 아니라 **`refresh-live-categories` 호출 부재**(append-live가 호출하지 않는 독립 서브커맨드 — audit dd41f8aa). 해소 = tier2 body에 refresh 스텝 추가(append-live 후속, set -euo pipefail로 스킵 불가) + `apply-tier2-llm-schedule.sh`로 CM을 repo 정본 runner(49,549B)에 동기화.
+  2. **정본 트랙 = 재설계판 원명칭 manifest**(`crawl-tier1/2-cronjob.yaml`, `test_crawl_cutover_manifests.py`가 계약 pin) — CM 마운트는 apply 스크립트 동기화 패턴으로 유지가 정본.
+  3. **`-canonical` crawl CronJob 2종(jw-news-crawl-*-canonical)은 삭제 후보** — resume 금지(재설계 트랙과 이중 기동·역행 위험). 훅/재설계 안정화 후 삭제는 PL 판단.
 
 ## 6. 비용표 (전량 기준)
 
