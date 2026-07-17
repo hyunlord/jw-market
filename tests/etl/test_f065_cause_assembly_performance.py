@@ -97,6 +97,26 @@ def test_series_values_with_observed_preserves_zero_and_missing() -> None:
     assert observed == (True, False)
 
 
+def test_accumulate_observed_values_updates_targets_and_total_once() -> None:
+    first = [1.0, 1.0, 1.0]
+    second = [2.0, 2.0, 2.0]
+    totals = [3.0, 3.0, 3.0]
+    observed_periods = [False, False, False]
+
+    cause._accumulate_observed_values(
+        [first, second],
+        totals,
+        observed_periods,
+        [0.0, 4.0, 5.0],
+        [True, False, True],
+    )
+
+    assert first == [1.0, 5.0, 6.0]
+    assert second == [2.0, 6.0, 7.0]
+    assert totals == [3.0, 7.0, 8.0]
+    assert observed_periods == [True, False, True]
+
+
 def test_segment_rows_uses_channel_map_without_rechecking_field_presence(monkeypatch) -> None:
     row = {
         "brand_key": "A",
