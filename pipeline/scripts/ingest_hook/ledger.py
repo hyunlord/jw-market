@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS ingest_ledger (
   category      TEXT NOT NULL,
   manifest_sha  TEXT NOT NULL,
   manifest_path TEXT NOT NULL,
+  uploaded_by   TEXT,
   status        TEXT NOT NULL,
   reason        TEXT,
   job_name      TEXT,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS ingest_ledger (
   category      VARCHAR(32)  NOT NULL,
   manifest_sha  CHAR(64)     NOT NULL,
   manifest_path VARCHAR(512) NOT NULL,
+  uploaded_by   VARCHAR(128) NULL,
   status        VARCHAR(16)  NOT NULL,
   reason        TEXT         NULL,
   job_name      VARCHAR(128) NULL,
@@ -75,6 +77,7 @@ class LedgerEntry:
     category: str
     manifest_sha: str
     manifest_path: str
+    uploaded_by: str | None
     status: str
     reason: str | None
     job_name: str | None
@@ -117,7 +120,7 @@ class Ledger:
 
     def _fetch_row(self, epoch: str, category: str, manifest_sha: str):
         cursor = self._execute(
-            "SELECT epoch, category, manifest_sha, manifest_path, status, reason, job_name,"
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
             " run_id, row_counts, received_at, started_at, finished_at"
             " FROM ingest_ledger WHERE epoch=? AND category=? AND manifest_sha=?",
             (epoch, category, manifest_sha),
@@ -127,18 +130,26 @@ class Ledger:
     @staticmethod
     def _entry(row) -> LedgerEntry:
         values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
-        row_counts = json.loads(values[8]) if values[8] else None
+        row_counts = json.loads(values[9]) if values[9] else None
         return LedgerEntry(
             epoch=values[0], category=values[1], manifest_sha=values[2], manifest_path=values[3],
-            status=values[4], reason=values[5], job_name=values[6], run_id=values[7],
+            uploaded_by=values[4], status=values[5], reason=values[6], job_name=values[7],
+            run_id=values[8],
             row_counts=row_counts,
-            received_at=str(values[9]),
-            started_at=str(values[10]) if values[10] else None,
-            finished_at=str(values[11]) if values[11] else None,
+            received_at=str(values[10]),
+            started_at=str(values[11]) if values[11] else None,
+            finished_at=str(values[12]) if values[12] else None,
         )
 
     # -- webhook receipt (idempotent) ---------------------------------------
-    def receive(self, epoch: str, category: str, manifest_sha: str, manifest_path: str) -> ReceiveDecision:
+    def receive(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        manifest_path: str,
+        uploaded_by: str | None = None,
+    ) -> ReceiveDecision:
         existing = self._fetch_row(epoch, category, manifest_sha)
         if existing is not None:
             status = self._entry(existing).status
@@ -146,15 +157,16 @@ class Ledger:
                 return ReceiveDecision("noop", status, f"identity already {status}; webhook ignored")
             # failed -> allow retry
             self._execute(
-                "UPDATE ingest_ledger SET status=?, reason=?, received_at=?"
+                "UPDATE ingest_ledger SET status=?, reason=?, received_at=?, uploaded_by=?"
                 " WHERE epoch=? AND category=? AND manifest_sha=?",
-                (STATUS_QUEUED, "re-queued after failure", _now(), epoch, category, manifest_sha),
+                (STATUS_QUEUED, "re-queued after failure", _now(), uploaded_by, epoch, category, manifest_sha),
             )
             return ReceiveDecision("queued", STATUS_QUEUED, "previous attempt failed; re-queued")
         self._execute(
-            "INSERT INTO ingest_ledger (epoch, category, manifest_sha, manifest_path, status, received_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (epoch, category, manifest_sha, manifest_path, STATUS_QUEUED, _now()),
+            "INSERT INTO ingest_ledger"
+            " (epoch, category, manifest_sha, manifest_path, uploaded_by, status, received_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (epoch, category, manifest_sha, manifest_path, uploaded_by, STATUS_QUEUED, _now()),
         )
         return ReceiveDecision("queued", STATUS_QUEUED, "new submission queued")
 
@@ -169,7 +181,7 @@ class Ledger:
 
     def next_queued(self, category: str) -> LedgerEntry | None:
         cursor = self._execute(
-            "SELECT epoch, category, manifest_sha, manifest_path, status, reason, job_name,"
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
             " run_id, row_counts, received_at, started_at, finished_at"
             " FROM ingest_ledger WHERE category=? AND status=? ORDER BY received_at, id LIMIT 1",
             (category, STATUS_QUEUED),

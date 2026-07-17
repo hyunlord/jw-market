@@ -175,3 +175,13 @@ def test_g4_sweep_is_noop_when_ledger_is_current(sqlite_ledger, bucket, tmp_path
     second = sweep(sqlite_ledger, bucket, rehearsal_root=tmp_path / "staging")
     assert first["kicked"] == 1
     assert second["kicked"] == 0, "normal day = no-op watchdog"
+
+
+def test_uploaded_by_flows_webhook_to_status_api(client, bucket):
+    manifest_path = write_submission(bucket, uploaded_by="pl@jw.example")
+    payload = _webhook(client, manifest_path, bucket).json()
+    status = client.get(
+        "/ingest/status",
+        params={"epoch": payload["epoch"], "category": "ubist", "manifest_sha": payload["manifest_sha"]},
+    ).json()
+    assert status["uploaded_by"] == "pl@jw.example"

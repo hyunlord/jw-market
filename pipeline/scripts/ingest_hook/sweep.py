@@ -51,7 +51,13 @@ def sweep(
             continue
 
         # Unrecorded (lost webhook) or failed: same idempotent path as the webhook.
-        ledger.receive(manifest.epoch, manifest.category, manifest.manifest_sha, manifest_path=str(manifest_path))
+        ledger.receive(
+            manifest.epoch,
+            manifest.category,
+            manifest.manifest_sha,
+            manifest_path=str(manifest_path),
+            uploaded_by=manifest.uploaded_by,
+        )
         if rehearsal_root is not None:
             rc = job_runner.run(
                 manifest_path, input_root=input_root, ledger=ledger, rehearsal_root=rehearsal_root

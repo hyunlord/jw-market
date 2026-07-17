@@ -1,11 +1,15 @@
-"""Manifest schema for JW_Input_Detection_Contract_v2 (code canonical copy).
+"""Manifest schema for JW_Input_Detection_Contract v2.1 (code canonical copy).
 
-The contract document itself was not found in the repo, so this module encodes
-the operative requirements quoted in the commissioning brief: the webhook
-payload carries a manifest path (§3) and the manifest identifies one confirmed
-submission (epoch + category + file list with sha256). If the canonical
-document uses different field names, fix them HERE only — every other module
-consumes the parsed ``Manifest`` object, never raw JSON.
+★ This module IS the canonical manifest contract (PL 확정, 2026-07-17): when
+the contract document and this code disagree, the code wins — but whoever
+changes this module MUST update the document (v2.1) in the same round. Every
+other module consumes the parsed ``Manifest`` object, never raw JSON, so a
+field rename lands here exactly once.
+
+v2.1 deltas over the reconstructed v2: weekly epochs (``2026-W27``) and the
+optional ``uploaded_by`` audit field (site session email; absence must never
+fail a submission). ``size``/``original_name`` were dropped from the contract;
+unknown fields survive in ``Manifest.raw``.
 """
 from __future__ import annotations
 
@@ -17,8 +21,9 @@ from pathlib import Path
 
 CONTRACT_VERSION = "v2"
 
-# Submission epochs are period identifiers, not mart content hashes.
-_EPOCH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2]|Q[1-4])$")
+# Submission epochs are period identifiers, not mart content hashes:
+# monthly 2026-07, quarterly 2026-Q2, weekly 2026-W27 (ISO weeks 01..53).
+_EPOCH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2]|Q[1-4]|W(0[1-9]|[1-4][0-9]|5[0-3]))$")
 
 
 class ContractError(ValueError):
@@ -42,6 +47,9 @@ class Manifest:
     complete: bool
     files: tuple[ManifestFile, ...]
     submitted_at: str | None = None
+    # Audit trail (v2.1): site session email. Optional by contract — absence
+    # or an odd type must NEVER fail a submission.
+    uploaded_by: str | None = None
     manifest_path: str = ""
     manifest_sha: str = ""
     raw: dict = field(default_factory=dict, compare=False)
@@ -103,6 +111,9 @@ def parse_manifest_bytes(payload: bytes, *, manifest_path: str = "") -> Manifest
             )
         )
 
+    raw_uploaded_by = data.get("uploaded_by")
+    uploaded_by = str(raw_uploaded_by).strip() or None if raw_uploaded_by is not None else None
+
     return Manifest(
         contract_version=version,
         epoch=epoch,
@@ -110,6 +121,7 @@ def parse_manifest_bytes(payload: bytes, *, manifest_path: str = "") -> Manifest
         complete=complete,
         files=tuple(files),
         submitted_at=data.get("submitted_at"),
+        uploaded_by=uploaded_by,
         manifest_path=manifest_path,
         manifest_sha=hashlib.sha256(payload).hexdigest(),
         raw=data,

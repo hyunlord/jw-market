@@ -90,7 +90,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
     entry = ledger.status(*identity)
     if entry is None:
         # Standalone/sweep execution: register the identity before running.
-        ledger.receive(*identity, manifest_path=str(manifest_path))
+        ledger.receive(*identity, manifest_path=str(manifest_path), uploaded_by=manifest.uploaded_by)
         entry = ledger.status(*identity)
     if entry.status == STATUS_COMPLETE:
         # Defence in depth: a re-delivered Job for a completed identity is a no-op.

@@ -30,6 +30,8 @@ def write_submission(
     sha_override: str | None = None,
     complete: bool = True,
     header: tuple[str, ...] = ("period", "level", "brand", "value"),
+    uploaded_by: str | None = None,
+    period_start: str = "2026-06",
 ) -> Path:
     """Write a fake submission set + manifest; return the manifest path."""
     rows = GOOD_ROWS if rows is None else rows
@@ -44,6 +46,7 @@ def write_submission(
     sha = sha_override or hashlib.sha256(data_path.read_bytes()).hexdigest()
     manifest = {
         "contract_version": "v2",
+        **({"uploaded_by": uploaded_by} if uploaded_by is not None else {}),
         "epoch": epoch,
         "category": category,
         "complete": complete,
@@ -53,7 +56,7 @@ def write_submission(
                 "path": data_path.relative_to(root).as_posix(),
                 "sha256": sha,
                 "rows": len(rows) if declared_rows is None else declared_rows,
-                "period_start": "2026-06",
+                "period_start": period_start,
                 "period_end": epoch,
             }
         ],

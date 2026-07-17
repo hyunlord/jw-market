@@ -83,3 +83,29 @@ def test_path_escape_fails(bucket):
     manifest_path.write_text(text, encoding="utf-8")
     with pytest.raises(G3Error, match="escapes input root"):
         _validate(bucket, manifest_path)
+
+
+WEEKLY_ROWS = [
+    ("2026-W26", "Class", "리바로", 5.0),
+    ("2026-W26", "전체", "-", 5.0),
+    ("2026-W27", "Class", "리바로", 7.0),
+    ("2026-W27", "전체", "-", 7.0),
+]
+
+
+def test_weekly_epoch_period_consistency_passes(bucket):
+    manifest_path = write_submission(
+        bucket, epoch="2026-W27", rows=WEEKLY_ROWS, period_start="2026-W26"
+    )
+    report = _validate(bucket, manifest_path)
+    assert report.epoch == "2026-W27"
+    assert report.total_rows == len(WEEKLY_ROWS)
+
+
+def test_weekly_epoch_future_week_fails(bucket):
+    rows = WEEKLY_ROWS + [("2026-W28", "Class", "미래", 1.0)]
+    manifest_path = write_submission(
+        bucket, epoch="2026-W27", rows=rows, period_start="2026-W26"
+    )
+    with pytest.raises(G3Error, match="beyond epoch"):
+        _validate(bucket, manifest_path)

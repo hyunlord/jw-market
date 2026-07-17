@@ -63,6 +63,24 @@ def test_quarterly_epoch_accepted():
     assert manifest.epoch == "2026-Q2"
 
 
+@pytest.mark.parametrize("epoch", ["2026-W01", "2026-W27", "2026-W53"])
+def test_weekly_epoch_accepted(epoch):
+    assert _parse({**_valid(), "epoch": epoch}).epoch == epoch
+
+
+@pytest.mark.parametrize("epoch", ["2026-W00", "2026-W54", "2026-W7"])
+def test_weekly_epoch_out_of_range_fails(epoch):
+    with pytest.raises(ContractError, match="epoch"):
+        _parse({**_valid(), "epoch": epoch})
+
+
+def test_uploaded_by_parsed_and_optional():
+    assert _parse({**_valid(), "uploaded_by": "user@jw.example"}).uploaded_by == "user@jw.example"
+    # v2.1: absence or emptiness must NEVER fail a submission
+    assert _parse(_valid()).uploaded_by is None
+    assert _parse({**_valid(), "uploaded_by": "  "}).uploaded_by is None
+
+
 def test_not_json_fails():
     with pytest.raises(ContractError):
         parse_manifest_bytes(b"\x00\x01 not json")

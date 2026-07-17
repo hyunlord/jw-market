@@ -65,7 +65,11 @@ class IngestService:
             raise HTTPException(status_code=409, detail="manifest is not marked complete; webhook is submit-confirm only")
 
         decision = self.ledger.receive(
-            manifest.epoch, manifest.category, manifest.manifest_sha, manifest_path=str(path)
+            manifest.epoch,
+            manifest.category,
+            manifest.manifest_sha,
+            manifest_path=str(path),
+            uploaded_by=manifest.uploaded_by,
         )
         launched = self.promote(manifest.category) if decision.action == "queued" else None
         return {
@@ -102,6 +106,7 @@ def create_app(service: IngestService) -> FastAPI:
             "status": entry.status,
             "reason": entry.reason,
             "job_name": entry.job_name,
+            "uploaded_by": entry.uploaded_by,
             "received_at": entry.received_at,
             "finished_at": entry.finished_at,
         }

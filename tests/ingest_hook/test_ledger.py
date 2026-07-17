@@ -50,3 +50,11 @@ def test_previous_complete_total_baseline(sqlite_ledger):
     assert sqlite_ledger.previous_complete_total("ubist", before_epoch="2026-07") == 6
     assert sqlite_ledger.previous_complete_total("ubist", before_epoch="2026-06") is None
     assert sqlite_ledger.previous_complete_total("iqvia", before_epoch="2026-07") is None
+
+
+def test_uploaded_by_recorded_and_refreshed_on_requeue(sqlite_ledger):
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json", uploaded_by="a@jw.example")
+    assert sqlite_ledger.status(*IDENTITY).uploaded_by == "a@jw.example"
+    sqlite_ledger.mark_failed(*IDENTITY, reason="boom")
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json", uploaded_by="b@jw.example")
+    assert sqlite_ledger.status(*IDENTITY).uploaded_by == "b@jw.example"
