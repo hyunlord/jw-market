@@ -127,6 +127,14 @@ class FileSqlQueryRequest(FileSqlSchemaRequest):
 class DeleteDocumentRequest(SessionRequest):
     document_id: int | None = Field(default=None, description="/documents에서 확인한 정식 GenOS document ID입니다.")
     temp_document_id: int | None = Field(default=None, description="/upload 응답 또는 /documents 목록에 있는 임시 문서 ID입니다.")
+    file_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "공개 응답이 내부 문서 ID를 숨기는 경우 같은 세션의 정확한 파일명으로 삭제합니다. "
+            "서버가 세션 소유권을 다시 검증합니다."
+        ),
+    )
 
 
 class PlannedDocumentRow(BaseModel):

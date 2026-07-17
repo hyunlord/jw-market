@@ -61,6 +61,7 @@ def find_delete_target(
     session_id: str,
     document_id: int | None,
     temp_document_id: int | None,
+    file_name: str | None,
 ) -> DeleteTarget | None:
     if document_id is not None:
         return _find_by_document_id(
@@ -75,6 +76,13 @@ def find_delete_target(
             workflow_id=workflow_id,
             session_id=session_id,
             temp_document_id=temp_document_id,
+        )
+    if file_name is not None:
+        return _find_by_file_name(
+            conn,
+            workflow_id=workflow_id,
+            session_id=session_id,
+            file_name=file_name,
         )
     return None
 
@@ -126,6 +134,36 @@ def _find_by_temp_document_id(
         description = ledger._parse_description(row.get("description"))
         if description.get("temp_document_id") == temp_document_id:
             return _target_from_row(row, workflow_id=workflow_id, session_id=session_id)
+    return None
+
+
+def _find_by_file_name(
+    conn: pymysql.connections.Connection,
+    *,
+    workflow_id: int,
+    session_id: str,
+    file_name: str,
+) -> DeleteTarget | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id AS document_id, file_name, description, is_active
+            FROM document
+            WHERE vdb_id=%s
+              AND file_name=%s
+            ORDER BY id DESC
+            """,
+            (settings.TARGET_VDB_ID, file_name),
+        )
+        rows = cur.fetchall()
+    for row in rows:
+        target = _target_from_row(
+            row,
+            workflow_id=workflow_id,
+            session_id=session_id,
+        )
+        if target.authorized:
+            return target
     return None
 
 
@@ -195,6 +233,7 @@ def delete_session_document(
             session_id=session_id,
             document_id=req.document_id,
             temp_document_id=req.temp_document_id,
+            file_name=req.file_name,
         )
         if target is None:
             return error_response(

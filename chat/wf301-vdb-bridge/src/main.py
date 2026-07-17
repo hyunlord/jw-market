@@ -1739,8 +1739,12 @@ def documents(
 def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
     errors = _session_guard(req)
     session_id = _session_id(req)
-    if req.document_id is None and req.temp_document_id is None:
-        errors.append("document_id or temp_document_id is required")
+    if (
+        req.document_id is None
+        and req.temp_document_id is None
+        and req.file_name is None
+    ):
+        errors.append("document_id, temp_document_id, or file_name is required")
     if errors:
         return delete_ops.error_response(
             req,
