@@ -332,6 +332,34 @@ def test_p0g_suite_fails_when_general_golden_exceeds_fast_path_budget(monkeypatc
     assert summary["scenarios"][1]["latency_failures"] == ["H02"]
 
 
+def test_p0g_suite_fails_when_general_golden_runs_contaminated_routes(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id):
+        out_dir.mkdir(parents=True)
+        rows = []
+        for qid, _ in questions:
+            steps = (
+                [{"name": "질문 접수"}, {"name": "첨부 파일 확인"}, {"name": "시장 데이터 조회"}]
+                if qid != "H02"
+                else [
+                    {"name": "질문 접수"},
+                    {"name": "첨부 파일 확인"},
+                    {"name": "첨부 문서 조회"},
+                    {"name": "임상 데이터 조회"},
+                ]
+            )
+            rows.append({"qid": qid, "elapsed_ms": 100.0, "steps": steps})
+        (out_dir / "summary.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+
+    assert capture_p0g_suite(tmp_path, "live", None) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["scenarios"][1]["route_contamination_failures"] == {
+        "H02": ["첨부 문서 조회", "임상 데이터 조회"],
+    }
+
+
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:
     before = tmp_path / "before"
     after = tmp_path / "after"
@@ -397,6 +425,28 @@ def test_sse_parser_appends_markdown_block_events(tmp_path: Path) -> None:
 
     assert "| 의원 | 41.93억원 |" in parsed.answer_markdown
     assert parsed.render_issues == ()
+
+
+def test_sse_parser_preserves_public_step_events(tmp_path: Path) -> None:
+    path = tmp_path / "steps.sse"
+    path.write_text(
+        "event: step\n"
+        'data: {"index":1,"name":"질문 접수","detail":"요청 처리 시작","status":"started"}\n\n'
+        "event: step\n"
+        'data: {"index":2,"name":"임상 데이터 조회","detail":"성분 기준 임상시험 확인","status":"done"}\n\n'
+        "event: step\n"
+        "data: not-json\n\n"
+        "event: done\n"
+        "data: ok\n\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_sse_file(path)
+
+    assert parsed.steps == (
+        {"index": 1, "name": "질문 접수", "detail": "요청 처리 시작", "status": "started"},
+        {"index": 2, "name": "임상 데이터 조회", "detail": "성분 기준 임상시험 확인", "status": "done"},
+    )
 
 
 def test_sse_parser_flags_naive_table_join_breakage(tmp_path: Path) -> None:

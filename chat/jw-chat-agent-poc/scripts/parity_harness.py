@@ -58,6 +58,17 @@ MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
 P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "H02", "H03", "M02", "M03"})
+P0G_FORBIDDEN_GENERAL_STAGE_NAMES = frozenset(
+    {
+        "첨부 문서 조회",
+        "임상 데이터 조회",
+        "국내 임상 정보 확인",
+        "식약처 허가 정보 확인",
+        "건강보험 환자 정보 확인",
+        "FDA 안전성 정보 확인",
+        "최신 웹 자료 검색",
+    }
+)
 
 VOLATILE_KEYS = {
     "answer_cleanup",
@@ -135,6 +146,7 @@ def capture(
             "done_count": parsed.done_count,
             "error_count": parsed.error_count,
             "answer_chars": parsed.answer_chars,
+            "steps": list(parsed.steps),
             "acceptance_pass": acceptance_pass,
             "acceptance_error": acceptance_error,
         }
@@ -186,11 +198,13 @@ def capture_p0g_suite(
             if row.get("qid") in P0G_GENERAL_GOLDEN_QIDS
             and float(row.get("elapsed_ms", float("inf"))) > max_general_elapsed_ms
         ]
+        route_contamination_failures = _p0g_route_contamination_failures(rows)
         summary.append(
             {
                 "scenario": name,
                 "status": status,
                 "latency_failures": latency_failures,
+                "route_contamination_failures": route_contamination_failures,
             }
         )
     qualification_failures: list[str] = []
@@ -240,8 +254,34 @@ def capture_p0g_suite(
     print(json.dumps({"p0g": report}, ensure_ascii=False), flush=True)
     return 0 if (
         not qualification_failures
-        and all(item["status"] == 0 and not item["latency_failures"] for item in summary)
+        and all(
+            item["status"] == 0
+            and not item["latency_failures"]
+            and not item["route_contamination_failures"]
+            for item in summary
+        )
     ) else 1
+
+
+def _p0g_route_contamination_failures(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    failures: dict[str, list[str]] = {}
+    for row in rows:
+        qid = str(row.get("qid", ""))
+        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+            continue
+        forbidden: list[str] = []
+        for step in row.get("steps", ()):
+            if not isinstance(step, dict):
+                continue
+            name = str(step.get("name", ""))
+            if (
+                name in P0G_FORBIDDEN_GENERAL_STAGE_NAMES
+                or name.startswith("딥리서치 ")
+            ) and name not in forbidden:
+                forbidden.append(name)
+        if forbidden:
+            failures[qid] = forbidden
+    return failures
 
 
 def diff_captures(
