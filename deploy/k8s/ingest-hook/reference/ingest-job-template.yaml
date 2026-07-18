@@ -26,7 +26,7 @@ spec:
       containers:
         - name: ingest
           # Same digest pin as the orchestrator poll CronJob — one code identity.
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:e79aa0986a4e2163849d97d4b3aafacd05fe4db7fc3db48dc36a96164b4c46d8
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:a362ceb8a60f04688917d8c73dddf63c29e22b295c6e45f1c4036424240d703a
           imagePullPolicy: IfNotPresent
           command:
             - python
