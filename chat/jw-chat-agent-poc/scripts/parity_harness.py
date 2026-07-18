@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import requests
@@ -364,6 +365,15 @@ def capture_p0g_suite(
         qualification_failures.append("portal-equivalent evidence requires portal-market-sse entry")
     if portal_equivalent and not base_url:
         qualification_failures.append("portal-equivalent evidence requires a deployed base URL")
+    if (
+        portal_equivalent
+        and entry_kind == "portal-market-sse"
+        and base_url
+        and not _is_portal_market_base_url(base_url)
+    ):
+        qualification_failures.append(
+            "portal-market-sse evidence requires a /stream-lab-api base path"
+        )
     if not history_conversation_id:
         qualification_failures.append("uploaded-file history conversation ID was not supplied")
     file_probe = {
@@ -825,6 +835,15 @@ def _http_sse(
     response = requests.get(url, params=params, headers=headers, timeout=180)
     response.raise_for_status()
     return response.text
+
+
+def _is_portal_market_base_url(base_url: str) -> bool:
+    parsed = urlparse(base_url)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and parsed.path.rstrip("/").endswith("/stream-lab-api")
+    )
 
 
 def _probe_uploaded_file_session(

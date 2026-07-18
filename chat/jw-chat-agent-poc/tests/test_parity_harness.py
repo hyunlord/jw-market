@@ -451,7 +451,7 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
     status = capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -490,7 +490,7 @@ def test_p0g_suite_requires_nonempty_file_bridge_documents(monkeypatch, tmp_path
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -604,6 +604,39 @@ def test_p0g_suite_rejects_direct_chat_even_when_declared_portal_equivalent(
     ]
 
 
+def test_p0g_suite_rejects_portal_adapter_on_a_non_portal_base_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 1, ""),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "https://portal.example/not-stream-lab",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
+    ) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["qualification_failures"] == [
+        "portal-market-sse evidence requires a /stream-lab-api base path",
+    ]
+
+
 def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypatch, tmp_path: Path) -> None:
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
@@ -655,7 +688,7 @@ def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeyp
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         file_base_url="http://code-serving-235",
@@ -795,7 +828,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -877,7 +910,7 @@ def test_p0g_suite_rejects_history_response_from_a_different_session(monkeypatch
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -919,7 +952,7 @@ def test_p0g_suite_requires_history_and_deep_seed_execution(monkeypatch, tmp_pat
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -963,7 +996,7 @@ def test_p0g_suite_requires_completed_fast_path_stage_for_general_goldens(monkey
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -1018,7 +1051,7 @@ def test_p0g_suite_requires_completed_market_tool_stage_for_general_goldens(monk
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -1116,7 +1149,7 @@ def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatc
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
@@ -1177,7 +1210,7 @@ def test_p0g_suite_rejects_ubist_event_when_rendered_source_section_is_empty(mon
     assert capture_p0g_suite(
         tmp_path,
         "live",
-        "http://portal-equivalent",
+        "https://portal.example/stream-lab-api",
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
