@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.answer_contract import (
     CONTRACT_REQUIRED_TOOLS,
@@ -174,6 +176,19 @@ POSITIONING_FACT_MD = """## 확정 fact set
 | 출처 | 상세 |
 | --- | --- |
 | 데이터 상세 | UBIST — 기간 2026-04, 시장 ml_006, view market_landscape |
+"""
+
+
+POSITIONING_COMPLETE_FACT_MD = POSITIONING_FACT_MD + """
+
+### 상위 Brand 점유율 추이 fact
+| 최신 순위 | Brand | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 로수젯 | 2025-07 9.10% | 2026-04 9.13% | +0.03%p | 206.00억원 | +1.00억원 |
+| 2 | 리피토 | 2025-07 6.95% | 2026-04 6.13% | -0.82%p | 138.00억원 | -15.00억원 |
+| 3 | 리바로젯 | 2025-07 4.79% | 2026-04 5.12% | +0.33%p | 115.00억원 | +12.00억원 |
+| 4 | 아토젯 | 2025-07 5.01% | 2026-04 4.95% | -0.06%p | 112.00억원 | +3.00억원 |
+| 5 | 로수바미브 | 2025-07 4.30% | 2026-04 4.20% | -0.10%p | 94.00억원 | -2.00억원 |
 """
 
 
@@ -1052,6 +1067,47 @@ def test_positioning_contract_adds_axis_table_and_dedupes_substantive_lines() ->
     assert "자사 위치:" in revised
     assert "84.93억원" in revised
     assert "3.76%" in revised
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        "경쟁사 대비 리바로 위치",
+    ),
+)
+def test_positioning_contract_requires_competitors_own_position_and_superior_gap(question: str) -> None:
+    answer = (
+        "상위 브랜드는 로수젯 9.13%, 리피토 6.13%, 리바로젯 5.12%, "
+        "아토젯 4.95%, 로수바미브 4.20%입니다.\n\n"
+        "## 출처\n- 데이터: UBIST"
+    )
+
+    revised = enforce_answer_contract(question, answer, {"fact_md": POSITIONING_COMPLETE_FACT_MD})
+    status = evaluate_answer_contract(question, revised, {"fact_md": POSITIONING_COMPLETE_FACT_MD})
+
+    assert "## 포지셔닝 축" in revised
+    for competitor in ("로수젯", "리피토", "리바로젯", "아토젯", "로수바미브"):
+        assert competitor in revised
+    assert "리바로 6위" in revised
+    assert "시장점유율 3.76%" in revised
+    assert "직상위 5위 로수바미브" in revised
+    assert "격차 0.44%p" in revised
+    assert status["structural_contract"] == "positioning"
+    assert status["status"] == "pass"
+
+
+def test_positioning_contract_names_missing_superior_gap_without_inventing_it() -> None:
+    revised = enforce_answer_contract(
+        "경쟁사 대비 리바로 위치",
+        "상위 경쟁 브랜드를 확인했습니다.\n\n## 출처\n- 데이터: UBIST",
+        {"fact_md": POSITIONING_FACT_MD},
+    )
+
+    assert "리바로 6위" in revised
+    assert "시장점유율 3.76%" in revised
+    assert "직상위 브랜드와 격차는 상위 브랜드 fact가 없어 확인하지 못했습니다." in revised
+    assert "0.44%p" not in revised
 
 
 def test_threat_detection_contract_adds_factor_direction_basis_table() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Final, Mapping
 
@@ -198,10 +199,14 @@ def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapp
     intent = _intent(question, fact_md)
     structural = _structural_contract_type(question)
     if intent is None:
+        positioning_applicable = structural == "positioning" and _ranking_fact(fact_md) is not None
+        structural_pass = _positioning_surface_ok(answer, fact_md) if positioning_applicable else bool(
+            structural and structural != "positioning" and _structural_contract_present(answer, structural)
+        )
         return {
             "intent": None,
             "structural_contract": structural,
-            "status": "pass" if structural and _structural_contract_present(answer, structural) else "not_applicable",
+            "status": "pass" if structural_pass else ("surface_missing" if positioning_applicable else "not_applicable"),
         }
     rule = ANSWER_CONTRACT[intent]
     if not fact_md:
@@ -790,7 +795,7 @@ def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> st
     elif contract_type == "change_drivers":
         block = _change_drivers_contract_block(question, fact_md)
     elif contract_type == "positioning":
-        block = _positioning_contract_block(fact_md)
+        block = _positioning_contract_block(fact_md, answer)
     elif contract_type == "threat_detection":
         block = _threat_detection_contract_block(fact_md)
     elif contract_type == "news_ei":
@@ -910,7 +915,20 @@ def _is_clinical_evidence_question(question: str) -> bool:
 
 
 def _is_positioning_question(question: str) -> bool:
-    return any(token in question for token in ("포지셔닝", "차별점", "차별", "경쟁 대비 위치", "시장 내 위치", "positioning"))
+    compact = re.sub(r"\s+", "", question.lower())
+    return any(
+        token in compact
+        for token in (
+            "포지셔닝",
+            "차별점",
+            "차별",
+            "경쟁대비위치",
+            "경쟁사대비",
+            "시장내위치",
+            "우리위치",
+            "positioning",
+        )
+    )
 
 
 def _is_threat_detection_question(question: str) -> bool:
@@ -1365,19 +1383,35 @@ def _specialty_rows_from_fact_tables(fact_md: str) -> list[tuple[str, str]]:
     return rows
 
 
-def _positioning_contract_block(fact_md: str) -> str:
+@dataclass(frozen=True, slots=True)
+class PositioningCompetitor:
+    rank: int
+    brand: str
+    share: str
+
+
+def _positioning_contract_block(fact_md: str, answer: str = "") -> str:
     rows = _positioning_rows(fact_md)
     if not rows:
         return ""
-    direct = _positioning_direct_answer(rows)
+    ranking = _ranking_fact(fact_md)
+    competitors = _positioning_competitors(fact_md)
+    direct = _positioning_direct_answer(rows, ranking, competitors)
     lines = [
         "## 포지셔닝 축",
         "| 축 | 자사/관찰 값 | 시장 상위 대비 위치 |",
         "| --- | --- | --- |",
-        *(f"| {_contract_cell(axis)} | {_contract_cell(value)} | {_contract_cell(position)} |" for axis, value, position in rows),
-        "",
-        f"자사 위치: {direct}",
     ]
+    if competitors and not _positioning_competitor_surface_ok(answer, competitors):
+        competitor_summary = ", ".join(f"{row.rank}위 {row.brand} {row.share}" for row in competitors)
+        lines.append(
+            f"| 경쟁 상위 {len(competitors)}개 | {_contract_cell(competitor_summary)} | 확인된 상위 브랜드 fact입니다. |"
+        )
+    lines.extend(
+        f"| {_contract_cell(axis)} | {_contract_cell(value)} | {_contract_cell(position)} |"
+        for axis, value, position in rows
+    )
+    lines.extend(("", f"자사 위치: {direct}"))
     implication = _mi_implication_block(_positioning_mi_rows(rows))
     if implication:
         lines.extend(("", implication))
@@ -1409,7 +1443,19 @@ def _first_payload_containing(items: tuple[tuple[str, str], ...], tokens: tuple[
     return ""
 
 
-def _positioning_direct_answer(rows: tuple[tuple[str, str, str], ...]) -> str:
+def _positioning_direct_answer(
+    rows: tuple[tuple[str, str, str], ...],
+    ranking_fact: RankingFact | None = None,
+    competitors: tuple[PositioningCompetitor, ...] = (),
+) -> str:
+    if ranking_fact is not None:
+        rank = _positioning_rank(ranking_fact.rank)
+        own = f"{ranking_fact.brand} {rank}위, 시장점유율 {ranking_fact.share}."
+        superior = next((row for row in competitors if row.rank == rank - 1), None)
+        gap = _share_gap(superior.share, ranking_fact.share) if superior is not None else ""
+        if superior is not None and gap:
+            return f"{own} 직상위 {superior.rank}위 {superior.brand}({superior.share})와 격차 {gap}%p입니다."
+        return f"{own} 직상위 브랜드와 격차는 상위 브랜드 fact가 없어 확인하지 못했습니다."
     ranking = next((value for axis, value, _ in rows if axis == "시장 순위/MS"), "")
     growth = next((value for axis, value, _ in rows if axis == "성장성"), "")
     pressure = next((value for axis, value, _ in rows if axis == "경쟁 압력"), "")
@@ -1417,6 +1463,88 @@ def _positioning_direct_answer(rows: tuple[tuple[str, str, str], ...]) -> str:
     if not parts:
         return "수집된 포지셔닝 fact가 없어 자사 위치를 단정하지 않습니다."
     return " / ".join(parts[:3]) + " 기준으로만 해석합니다."
+
+
+def _positioning_competitors(fact_md: str) -> tuple[PositioningCompetitor, ...]:
+    lines = fact_md.splitlines()
+    for index, line in enumerate(lines):
+        heading = line.strip().lower()
+        if not (heading.startswith("### ") and "상위" in heading and "점유율 추이 fact" in heading):
+            continue
+        header: list[str] = []
+        rows: list[PositioningCompetitor] = []
+        for raw in lines[index + 1 :]:
+            current = raw.strip()
+            if current.startswith("### "):
+                break
+            if not current.startswith("|") or "---" in current:
+                continue
+            cells = _table_cells(current)
+            if not header:
+                header = cells
+                continue
+            try:
+                rank_index = next(i for i, name in enumerate(header) if "순위" in name)
+                brand_index = next(i for i, name in enumerate(header) if "브랜드" in name or "brand" in name.lower())
+                share_index = next(i for i, name in enumerate(header) if "최신" in name and "MS" in name.upper())
+                rank_match = re.search(r"\d+", cells[rank_index])
+                share_matches = re.findall(r"-?\d+(?:\.\d+)?%", cells[share_index])
+            except (IndexError, StopIteration):
+                continue
+            if rank_match is None or not share_matches or not cells[brand_index]:
+                continue
+            rows.append(
+                PositioningCompetitor(
+                    rank=int(rank_match.group(0)),
+                    brand=cells[brand_index],
+                    share=share_matches[-1],
+                )
+            )
+        return tuple(sorted(rows, key=lambda row: row.rank))
+    return ()
+
+
+def _positioning_rank(value: str) -> int:
+    match = re.search(r"\d+", value)
+    return int(match.group(0)) if match else 0
+
+
+def _share_gap(superior_share: str, own_share: str) -> str:
+    try:
+        superior = Decimal(superior_share.removesuffix("%"))
+        own = Decimal(own_share.removesuffix("%"))
+    except (InvalidOperation, ValueError):
+        return ""
+    gap = superior - own
+    if gap < 0:
+        return ""
+    return f"{gap.quantize(Decimal('0.01')):.2f}"
+
+
+def _positioning_competitor_surface_ok(answer: str, competitors: tuple[PositioningCompetitor, ...]) -> bool:
+    return bool(competitors) and all(row.brand in answer and row.share in answer for row in competitors)
+
+
+def _positioning_surface_ok(answer: str, fact_md: str) -> bool:
+    if not _structural_contract_present(answer, "positioning"):
+        return False
+    ranking = _ranking_fact(fact_md)
+    if ranking is None:
+        return False
+    rank = _positioning_rank(ranking.rank)
+    if not all(value in answer for value in (ranking.brand, f"{rank}위", ranking.share)):
+        return False
+    competitors = _positioning_competitors(fact_md)
+    missing_gap = "직상위 브랜드와 격차는 상위 브랜드 fact가 없어 확인하지 못했습니다."
+    if not competitors:
+        return missing_gap in answer
+    superior = next((row for row in competitors if row.rank == rank - 1), None)
+    if superior is None:
+        return missing_gap in answer
+    gap = _share_gap(superior.share, ranking.share)
+    return bool(gap) and _positioning_competitor_surface_ok(answer, competitors) and all(
+        value in answer for value in (superior.brand, f"격차 {gap}%p")
+    )
 
 
 def _threat_detection_contract_block(fact_md: str) -> str:
