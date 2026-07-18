@@ -28,7 +28,17 @@ WORKDIR /app
 
 COPY pipeline/scripts/api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
-    && pip install --no-cache-dir "openpyxl>=3.1" "typer>=0.12" "requests>=2.31"
+    && pip install --no-cache-dir "openpyxl>=3.1" "typer>=0.12" "requests>=2.31" \
+    && pip install --no-cache-dir "pyarrow==24.0.0" "duckdb==1.5.4"
+# pyarrow/duckdb belong to the ETL load path (`python -m pipeline.etl.run`), not
+# the api backend, so they live here and NOT in the shared requirements.txt:
+#   pyarrow  <- s1_load -> io/iqvia_loader.py (parquet source + catalog R/W)
+#   duckdb   <- s3_enrich -> io/enrich/iqvia_nsa_bridge.py
+# Both are import-time (module-level) on `pipeline.etl.run`; without them the
+# real incremental load aborts before arg-parse. Versions pinned for
+# reproducibility and chosen for pandas 3.0 / numpy 2.4 compatibility (cp311
+# wheels, no build step). prophet is deliberately absent (contract environment;
+# forecast runs on statsmodels — adding prophet would change the computation).
 
 # kubectl for the event-driven wake-ups (ETL kick / CSD sensor create Jobs
 # via the jw-pipeline-kicker ServiceAccount). Fetched with python urllib
