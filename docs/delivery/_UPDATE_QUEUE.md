@@ -35,5 +35,6 @@
 | B6 | 동시성 계약(target_db run_id 접미·work_dir 분리·승격 직렬화) | jw market 구현 | DOC-2b · DOC-5 |
 | B7 | S3 직독화(로더 개선) — 성사 시 A3·B1 무효화 | R-1/D-3 착지 후 별도 라운드 | DOC-1b §3.6 전면 |
 | B8 | [확인 필요] 해소분(화면 배선·top-N·CSD 지표·km_keyword 적재·BA grant·컬럼 타입) — 상당수 jw market OPEN_QUESTIONS/openq_resolution으로 해소됨(DOC-2b·4c 반영). 잔여는 그쪽 회신 | jw market 회신 | DOC-2b · DOC-4c |
+| B9 | `v0.2.5-51e2c687` 이미지 빌드 주체·인가 확정 (2026-07-19 이미지 정합 라운드 — 계보·deps·코드 델타·digest `a362ceb8`는 실측 완료·DOC-1b §4·footnote·[확인 필요]5 반영; **잔여** = 빌드/push actor·jw market "base=v0.2.4 고정" 진술 유효성·재빌드 통지 프로토콜) | jw market 회신 | DOC-1b §4·footnote |
 
 > B8 주의: 2026-07-18 이후 jw market이 openq_resolution으로 화면 배선·top-N·CSD 지표·km_keyword 적재 경로를 해소해 DOC-2b·DOC-4c 본문에 반영됨. BA grant·컬럼 타입 원문은 [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md) 잔여.

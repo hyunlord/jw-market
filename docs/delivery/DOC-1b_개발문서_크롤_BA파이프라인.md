@@ -2,13 +2,18 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 코드(develop) SHA | `f2eca6a1` (초판 DOC-1 기준 `7ca98403`에서 전진; 아래 각주. 2026-07-19 갱신: §3.5·§3.6 ETL 적재 동작 범위 추가) |
-| 운영 리소스 | 크롤 `jw-market-crawl@sha256:64bb2b9f…`(tier1/2 라이브), 오케스트레이터 `jw-pipeline-orchestrator@sha256:6bffbc53…`(poll, suspend), agent3 `jw-market-backend-api@sha256:dec3ec3c…` |
+| 기준 코드(develop) SHA | `f2eca6a1` (초판 DOC-1 기준 `7ca98403`에서 전진; 아래 각주. 2026-07-19 갱신: §3.5·§3.6 ETL 적재 동작 범위 추가; 2026-07-19(2차): §4 인입 훅 이미지 `v0.2.4-e984a057`→`v0.2.5-51e2c687` 정합 — 라이브 실측, 이미지 매니페스트 기준 develop HEAD `f4c51075`) |
+| 운영 리소스 | 크롤 `jw-market-crawl@sha256:64bb2b9f…`(tier1/2 라이브), 오케스트레이터 인입 훅 `v0.2.5-51e2c687`(`@sha256:a362ceb8…`, 라이브 `jw-ingest-hook`)·poll `@sha256:6bffbc53…`(suspend), agent3 `jw-market-backend-api@sha256:dec3ec3c…` |
 | 생성일 / 갱신일 | 2026-07-18 / 2026-07-19 |
 | 문서 버전 | v1.0 |
 | 근거 디렉토리 | `docs/delivery/evidence/` (본 문서 실측: `doc1b_capture.md`) + 초판 공유 evidence(`k8s_cron_svc.txt` 등) |
 
 > **기준 SHA 갱신 각주.** 초판(DOC-1 등)은 `7ca98403` 기준이다. 본 문서 작성 시점 develop HEAD는 **`9c34a7d5`**이며 전진분 3커밋은 ① `e984a057` 오케스트레이터 이미지에 pyarrow+duckdb 추가(ETL load 경로 의존성) ② `e3bafccb` 인입 훅이 그 이미지(`v0.2.4-e984a057`) 참조 ③ `9c34a7d5` 납품 문서(README·스켈레톤·DOC-5 §8 자리) — 세 커밋 모두 본 문서 소관(크롤·BA·orchestrator 코드)을 변경하지 않으며 §4 이미지 절에서 digest 차이만 반영한다. 크롤 cutover(§1.4)의 근거 커밋 `ec4f6e04`는 `9c34a7d5`의 조상으로 확인된다.
+> **이미지 버전 변천 각주(2026-07-19 §4 정합).** 인입 훅 이미지는 위 ②(`e3bafccb`, `v0.2.4-e984a057`) 이후 `e812dd35`에서 **`v0.2.5-51e2c687`**(digest `@sha256:a362ceb8…`)로 재pin됐다(§3.6·§4 반영). 계보와 각 담는 것:
+> ① `6bffbc53…`(v0.2.0) — poll manifest pin, ETL load deps 이전(현 poll/BA/csd CronJob·전부 suspend).
+> ② `v0.2.4-e984a057`(digest `e79aa098…`) — 오케스트레이터 이미지에 **pyarrow+duckdb 추가**(ETL load 경로 deps).
+> ③ `v0.2.5-51e2c687`(digest `a362ceb8…`, 현행 인입 훅) — **deps는 ②와 동일**(라이브 실측 `pyarrow 24.0.0`·`duckdb 1.5.4`·`openpyxl 3.1.5` PRESENT·`boto3 ABSENT`, R-0 유지) + **ingest_hook load/verify 배선**(`job_runner`·신규 `load_verify.py`; git `e984a057..51e2c687`은 Dockerfile 무변경·훅 스크립트만 델타). 근거: `evidence/image_digest_check_20260719.md`.
+> **v0.2.5 빌드 주체·인가는 미확인**(계보·deps·코드 델타는 실측 확정) → `_UPDATE_QUEUE.md` B9·[확인 필요] 5.
 > **경계.** 본 문서는 **크롤·brand_activity 생성·오케스트레이터 내부**를 다룬다. 서빙 API·backend·mart 스키마·사이트·전체 구성도는 **DOC-1**(아키텍처)이 이미 다루므로 재서술하지 않고 참조한다(DOC-1 §2.1 서빙, §2.3 오케스트레이터 개요, §2.5 크롤 개요, §2.8 인입 훅). 테이블 스키마(컬럼·인덱스)는 **DOC-2b**로 분리한다 — 본 문서는 "무엇을 하는지·행수"만 다룬다.
 > 모든 서술은 실코드 `파일:줄`·실 리소스명·실측 캡처(`evidence/doc1b_capture.md`)에 근거한다. 확인 불가는 `[확인 필요]`로 말미에 모은다.
 
@@ -215,11 +220,12 @@ brand_activity는 별도 DB(`jw_brand_activity_stage`·`jw_brand_activity_raw_st
 | 이미지 | 빌드 소스 | 라이브 digest | 근거 |
 |---|---|---|---|
 | jw-market-crawl | `crawl/crawler`←`scripts/crawler`, `crawl/agent1`←`scripts/agent_2`, `/opt/tier2`←`scripts/crawler/tier2_*` 재조립 | `@sha256:64bb2b9f…`(tier1/2 라이브) | `deploy/docker/crawl.Dockerfile`, evidence §B |
-| jw-pipeline-orchestrator | pipeline 패키지 전체+docs/crawl, AGENT3 rev baked 없음(fail-closed) | poll manifest pin `@sha256:6bffbc53…`(v0.2.0); 인입 훅은 최신 `v0.2.4-e984a057`(pyarrow+duckdb) | `deploy/docker/pipeline-orchestrator.Dockerfile`, evidence §B,D |
+| jw-pipeline-orchestrator | pipeline 패키지 전체+docs/crawl, AGENT3 rev baked 없음(fail-closed) | poll manifest pin `@sha256:6bffbc53…`(v0.2.0, suspend); 인입 훅(`jw-ingest-hook`)은 `v0.2.5-51e2c687`(`@sha256:a362ceb8…`; pyarrow+duckdb+openpyxl 유지, +ingest_hook load/verify 배선) | `deploy/docker/pipeline-orchestrator.Dockerfile`, evidence §B,D·`image_digest_check_20260719.md` |
 | jw-market-backend-api | (DOC-1 §5, 보호 blob) agent3 Job이 재사용 | agent3 `@sha256:dec3ec3c…` | evidence §B |
 
 - **오케스트레이터 이미지 계약**: `AGENT3_WORKFLOW_REV`가 이미지에 baked되지 않아, Job/CronJob manifest env로만 rev를 주입한다(부재 시 즉사 = 정상). manifest는 `MARIADB_DATABASE`·`AGENT3_DB_NAME`·`AGENT3_WORKFLOW_REV`/`AGENT3_EXPECTED_WORKFLOW_REV`(=5692) fail-closed 이중기입 pin(DOC-1 §2.3).
-- **digest 차이 주의**: poll CronJob(suspend·과도기 예비)은 구 pin `6bffbc53`(v0.2.0)를 유지하나, 실 인입 훅은 `v0.2.4-e984a057`(ETL load용 pyarrow+duckdb 추가)를 쓴다. poll이 훅으로 대체되면 이 pin은 소멸 대상이다.
+- **digest 차이 주의**: poll CronJob(suspend·과도기 예비)은 구 pin `6bffbc53`(v0.2.0)를 유지하나, 실 인입 훅(Deployment `jw-ingest-hook`)은 `v0.2.5-51e2c687`(digest `a362ceb8…`; ETL load용 pyarrow+duckdb 유지 + ingest_hook load/verify 배선)를 쓴다. poll이 훅으로 대체되면 이 pin은 소멸 대상이다.
+- **참조처 어긋남(2026-07-19 라이브 실측)**: ① git manifest는 훅 이미지를 불변 digest `@sha256:a362ceb8`로 핀하나 **라이브 Deployment는 가변 태그 `:v0.2.5-51e2c687`**를 쓴다(현재 동일 digest로 해소되나 태그 재push 시 드리프트 가능 — 실제 `:v0.2.4-e984a057` 태그가 레지스트리 `e79aa098…` vs 구동 sweep pod `fea29685…`로 드리프트 관측). ② suspend CronJob `jw-ingest-sweep-daily`는 **라이브 `v0.2.4-e984a057`**로 git manifest(a362ceb8)와 어긋난다(과도기 예비·정렬은 별건). 상세: `evidence/image_digest_check_20260719.md` §C.
 - **빌드/배포 절차**: DOC-1 §5(공통 원칙·ops VM amd64 빌드·AR push) 참조. 크롤 이미지 빌드 커밋 기록 원칙은 DOC-1 §5.1.
 
 ---
@@ -230,6 +236,7 @@ brand_activity는 별도 DB(`jw_brand_activity_stage`·`jw_brand_activity_raw_st
 2. **Meeting 원천 적재 경로**: MinIO `Meetings/*.xlsx`가 병존하나 현 토픽 stage 적재 대상은 CSD·Keyword다. Meeting 적재 스크립트/사용처 확인 필요(§2.4).
 3. **brand_activity 접근 권한**: 서빙 backend는 `jw_brand_activity_stage`를 config 기본으로 읽으나(DOC-1 §2.1), 본 문서 실측은 `jw_mart_d2_writer` 권한 부재로 root 계정 사용. 서빙 계정의 BA 스키마 grant 경로 확인 필요(§2.1).
 4. **short-long 실전 비용**: RUNBOOK §6 비용표 기입란 미기입(첫 staging 실행 시 wf217 호출량 기록 예정) — DOC-1 [확인 필요] 5와 동일.
+5. **v0.2.5-51e2c687 이미지 빌드 주체·인가**: 태그 계보상 커밋 `51e2c687`(docs 커밋, `e984a057` 자손)에서 빌드된 것으로 정합하고 deps·코드 델타(ingest_hook load/verify)·digest(`a362ceb8`)는 실측 확인되나, **빌드/push 실행 주체와 인가**(jw market "base=v0.2.4 고정" 진술과의 관계·향후 재빌드 통지 프로토콜)는 미확인 → `_UPDATE_QUEUE.md` B9(§4·footnote).
 
 ## 스크린샷/다이어그램 캡처 리스트
 
@@ -255,7 +262,7 @@ brand_activity는 별도 DB(`jw_brand_activity_stage`·`jw_brand_activity_raw_st
 | forecast 결정론 6항 | `forecast_runner.py:65,106,30,59`·`ops:33` | §2.2 ✓ |
 | 오케스트레이터 6단계·deps | `stages.py:159-228` | §3.2 ✓ |
 | CLI 옵션 | `--help` 실측 | §3.1 ✓ |
-| 이미지 3종 digest | evidence §B | §4 ✓ |
+| 이미지 3종 digest(+인입 훅 v0.2.5 `a362ceb8`) | evidence §B·`image_digest_check_20260719.md` | §4 ✓ |
 | ETL s0~s7 스코프 8행 | `s1_load.py:57,133`·`general_compute.py:41-42,58-59`·`s4~s7` | §3.5 ✓ |
 | s0 4그룹 요구 | `s0_verify.py:39-49,64-65,69-72` | §3.5 ✓ |
 | MinIO 로컬스캔·boto3 부재 | `ubist_loader.py:289`·`storage.py:3-4,117`·v0.2.5 실측 | §3.6 ✓ |
