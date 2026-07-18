@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 import json
+import threading
+import time
 from typing import Any
 
 from pydantic import BaseModel
@@ -192,6 +194,60 @@ def test_agent_executor_runs_all_forced_tools_before_accepting_complete_evidence
     assert provider.calls == 0
 
 
+def test_agent_executor_runs_preplanned_independent_tools_in_parallel() -> None:
+    provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))
+    barrier = threading.Barrier(3)
+    intervals: dict[str, tuple[float, float]] = {}
+
+    def spec(name: str) -> ToolSpec:
+        def execute(_payload: BaseModel) -> ToolEnvelope:
+            started = time.perf_counter()
+            barrier.wait(timeout=0.5)
+            time.sleep(0.05)
+            intervals[name] = (started, time.perf_counter())
+            return ToolEnvelope(
+                ok=True,
+                preview=name,
+                evidence=(_fact(),),
+                raw=None,
+                error_code=None,
+                error_message=None,
+            )
+
+        return ToolSpec(
+            name=name,
+            description=name,
+            input_model=_NoInput,
+            execute=execute,
+            timeout_s=1.0,
+            tags=("external",),
+        )
+
+    names = (
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "web_search",
+    )
+    result = AgentExecutor(
+        provider=provider,
+        best_effort=True,
+        forced_choices=tuple(
+            ToolChoice(name, {}, f"required {name}", call_id=f"forced-{index}")
+            for index, name in enumerate(names, start=1)
+        ),
+        parallel_forced_choices=True,
+    ).run(user_text="뇌경색 임상·허가 경쟁약물", tools=tuple(spec(name) for name in names))
+
+    assert result.status == "ok"
+    assert [call["tool"] for call in result.tool_calls] == list(names)
+    assert provider.calls == 0
+    assert all(
+        left[0] < right[1] and right[0] < left[1]
+        for index, left in enumerate(intervals.values())
+        for right in list(intervals.values())[index + 1 :]
+    )
+
+
 def test_agent_executor_records_the_external_tool_stage_and_evidence_count() -> None:
     timing = new_timing()
     events: list[dict[str, object]] = []
@@ -250,6 +306,27 @@ def test_exact_clinical_permission_competitor_question_forces_valid_contract_too
     ]
 
 
+def test_unbranded_stroke_clinical_review_preplans_independent_tools() -> None:
+    question = "뇌경색 임상·허가 경쟁약물"
+
+    choices = _deterministic_tool_choices(question, BrandResolver())
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        (
+            "clinicaltrials_v2_search",
+            {"query": "cerebral infarction", "query_type": "condition"},
+        ),
+        (
+            "mfds_clinical_trial_kr",
+            {"query": "뇌경색", "query_type": "condition"},
+        ),
+        (
+            "web_search",
+            {"query": question, "brand": None, "topic": "general"},
+        ),
+    ]
+
+
 def test_disease_identity_question_uses_hira_mapping_instead_of_molecule_lookup() -> None:
     choices = _deterministic_tool_choices("리바로 질환", BrandResolver())
 
@@ -297,6 +374,82 @@ def test_force_contract_flag_prevents_empty_tool_calls_for_exact_live_question(m
         "web_search",
     ]
     assert payload["tool_calls"]
+
+
+def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> None:
+    question = "뇌경색 임상·허가 경쟁약물"
+    provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))
+    external = ExternalApiClient(mode="fixture")
+    barrier = threading.Barrier(3)
+    intervals: dict[str, tuple[float, float]] = {}
+    events: list[dict[str, object]] = []
+    original_clinical = external.clinicaltrials_v2_search
+    original_domestic = external.mfds_clinical_trial_kr
+    original_web = external.web_search
+
+    def concurrent_call(name: str, call):
+        def wrapped(*args, **kwargs):
+            started = time.perf_counter()
+            barrier.wait(timeout=0.5)
+            time.sleep(0.05)
+            result = call(*args, **kwargs)
+            intervals[name] = (started, time.perf_counter())
+            return result
+
+        return wrapped
+
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setattr(
+        integration_module.GenosToolChoiceProvider,
+        "from_env",
+        classmethod(lambda cls: provider),
+    )
+    monkeypatch.setattr(
+        external,
+        "clinicaltrials_v2_search",
+        concurrent_call("clinicaltrials_v2_search", original_clinical),
+    )
+    monkeypatch.setattr(
+        external,
+        "mfds_clinical_trial_kr",
+        concurrent_call("mfds_clinical_trial_kr", original_domestic),
+    )
+    monkeypatch.setattr(
+        external,
+        "web_search",
+        concurrent_call("web_search", original_web),
+    )
+
+    with stage_event_sink(events.append):
+        payload = run_external_tool_agent(
+            question,
+            resolver=BrandResolver(),
+            external=external,
+        )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "web_search",
+    ]
+    assert provider.calls == 1
+    assert all(
+        left[0] < right[1] and right[0] < left[1]
+        for index, left in enumerate(intervals.values())
+        for right in list(intervals.values())[index + 1 :]
+    )
+    tool_events = [
+        event
+        for event in events
+        if event.get("name")
+        in {"임상 데이터 조회", "국내 임상 정보 확인", "최신 웹 자료 검색"}
+    ]
+    assert [event["status"] for event in tool_events[:3]] == ["started"] * 3
+    assert {event["name"] for event in tool_events[:3]} == {
+        "임상 데이터 조회",
+        "국내 임상 정보 확인",
+        "최신 웹 자료 검색",
+    }
 
 
 def test_agent_executor_continues_when_completion_policy_requires_final_tool() -> None:

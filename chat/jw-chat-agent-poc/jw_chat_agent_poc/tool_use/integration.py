@@ -25,6 +25,7 @@ FEATURE_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_AGENT_ENABLED"
 FORCE_CONTRACT_CALLS_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS"
 _CLINICAL_DISEASE_ALIASES: Final[dict[str, str]] = {
     "고지혈증": "hyperlipidemia",
+    "뇌경색": "cerebral infarction",
 }
 
 
@@ -53,6 +54,7 @@ def run_external_tool_agent(
         completion_policy=_external_evidence_complete,
         best_effort=True,
         forced_choices=forced_choices,
+        parallel_forced_choices=bool(forced_choices),
         timing=timing,
     ).run(user_text=question, tools=registry.list_for_query(question))
     if result.fallback_code is not None:
@@ -166,7 +168,15 @@ def _disease_query(question: str) -> str | None:
 
     tokens = re.findall(r"[가-힣A-Za-z0-9]+", question)
     suffixes = ("증", "병", "암", "염", "장애")
-    return next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)
+    suffixed = next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)
+    if suffixed is not None:
+        return suffixed
+    clinical_subject = re.search(
+        r"(?P<subject>[가-힣A-Za-z0-9]{2,40})\s+(?:질환\s*)?(?:임상|clinical)\b",
+        question,
+        flags=re.IGNORECASE,
+    )
+    return clinical_subject.group("subject") if clinical_subject is not None else None
 
 
 def _explicit_brand_query(question: str) -> str | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextvars import copy_context
 from dataclasses import dataclass
 import json
 import logging
@@ -38,6 +39,7 @@ class AgentExecutor:
     completion_policy: CompletionPolicy | None = None
     best_effort: bool = False
     forced_choices: tuple[ToolChoice, ...] = ()
+    parallel_forced_choices: bool = False
     timing: Timing | None = None
 
     def run(self, *, user_text: str, tools: tuple[ToolSpec, ...]) -> AgentResult:
@@ -63,6 +65,139 @@ class AgentExecutor:
         by_name = {tool.name: tool for tool in tools}
         answer_complete = False
         forced_choices = list(self.forced_choices)
+        if self.parallel_forced_choices and len(forced_choices) > 1:
+            prepared: list[tuple[ToolChoice, ToolSpec, BaseModel]] = []
+            for step, choice in enumerate(forced_choices, start=1):
+                spec = by_name.get(choice.name)
+                if spec is None:
+                    traces.append(
+                        ToolTrace(
+                            step=step,
+                            tool=choice.name,
+                            status="unsupported",
+                            fallback_code=FallbackCode.UNSUPPORTED_QUERY,
+                            message="unknown tool",
+                        )
+                    )
+                    return _terminal(
+                        "이 질문에 맞는 도구가 없습니다.",
+                        FallbackCode.UNSUPPORTED_QUERY,
+                        traces,
+                        tool_calls,
+                    )
+                try:
+                    payload = spec.input_model.model_validate(choice.arguments)
+                except ValidationError as exc:
+                    LOGGER.warning("tool-use arguments rejected tool=%s error=%s", choice.name, exc)
+                    traces.append(
+                        ToolTrace(
+                            step=step,
+                            tool=choice.name,
+                            status="schema_invalid",
+                            fallback_code=FallbackCode.SCHEMA_INVALID,
+                            message="tool arguments rejected",
+                        )
+                    )
+                    return _terminal(
+                        "tool argument schema invalid",
+                        FallbackCode.SCHEMA_INVALID,
+                        traces,
+                        tool_calls,
+                    )
+                prepared.append((choice, spec, payload))
+
+            with ThreadPoolExecutor(
+                max_workers=min(len(prepared), 8),
+                thread_name_prefix="tool-use-batch",
+            ) as pool:
+                futures = [
+                    pool.submit(
+                        copy_context().run,
+                        _execute_with_progress,
+                        self.timing,
+                        spec,
+                        payload,
+                        user_text,
+                    )
+                    for _choice, spec, payload in prepared
+                ]
+                for step, ((choice, spec, _payload), future) in enumerate(
+                    zip(prepared, futures, strict=True),
+                    start=1,
+                ):
+                    try:
+                        envelope = future.result()
+                    except (FutureTimeoutError, requests.Timeout):
+                        if not self.best_effort:
+                            traces.append(
+                                ToolTrace(
+                                    step=step,
+                                    tool=choice.name,
+                                    status="timeout",
+                                    fallback_code=FallbackCode.TOOL_TIMEOUT,
+                                    message="tool timeout",
+                                )
+                            )
+                            return _terminal("tool timeout", FallbackCode.TOOL_TIMEOUT, traces, tool_calls)
+                        envelope = ToolEnvelope(
+                            ok=False,
+                            preview="tool timeout",
+                            evidence=(),
+                            raw=None,
+                            error_code=FallbackCode.TOOL_TIMEOUT.value,
+                            error_message="도구 조회 시간이 초과되었습니다.",
+                        )
+                    except (requests.RequestException, ValidationError, KeyError, TypeError, ValueError) as exc:
+                        LOGGER.warning("tool-use execution failed tool=%s error=%s", choice.name, exc)
+                        traces.append(
+                            ToolTrace(
+                                step=step,
+                                tool=choice.name,
+                                status="schema_invalid",
+                                fallback_code=FallbackCode.SCHEMA_INVALID,
+                                message=type(exc).__name__,
+                            )
+                        )
+                        return _terminal(
+                            "tool response schema invalid",
+                            FallbackCode.SCHEMA_INVALID,
+                            traces,
+                            tool_calls,
+                        )
+                    ledger.add(envelope)
+                    public_preview = _public_preview(envelope)
+                    safe_envelope = envelope.model_dump(exclude={"raw"}, mode="json")
+                    safe_envelope["preview"] = public_preview
+                    tool_calls.append(
+                        {
+                            "tool": spec.name,
+                            "source": spec.tags[0] if spec.tags else "tool_use",
+                            "status": "ok" if envelope.ok else "error",
+                            "summary_text": public_preview,
+                            "render_data": safe_envelope,
+                        }
+                    )
+                    traces.append(
+                        ToolTrace(
+                            step=step,
+                            tool=spec.name,
+                            status="ok" if envelope.ok else "no_evidence",
+                            fallback_code=None if envelope.ok else FallbackCode.VERIFICATION_FAIL,
+                            message=public_preview,
+                        )
+                    )
+                    call_id = choice.call_id or f"tool-call-{step}"
+                    messages.extend(_tool_exchange(choice, spec, safe_envelope, call_id))
+            forced_choices.clear()
+            answer_complete = _is_complete(
+                self.completion_policy,
+                user_text=user_text,
+                ledger=ledger,
+                spec=prepared[-1][1],
+                tool_calls=tuple(tool_calls),
+            )
+            if answer_complete:
+                return _verified_result(ledger, traces, tool_calls, status="ok")
         total_steps = max(self.max_steps, len(forced_choices) + 1)
         for step in range(1, total_steps + 1):
             if forced_choices:
@@ -247,3 +382,19 @@ def _execute_with_timeout(spec: ToolSpec, payload: BaseModel) -> ToolEnvelope:
         return future.result(timeout=spec.timeout_s)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _execute_with_progress(
+    timing: Timing | None,
+    spec: ToolSpec,
+    payload: BaseModel,
+    user_text: str,
+) -> ToolEnvelope:
+    with stage(timing, f"tool:{spec.name}", user_text) as progress:
+        envelope = _execute_with_timeout(spec, payload)
+        progress.summary = (
+            f"근거 {len(envelope.evidence)}건 확인"
+            if envelope.ok and envelope.evidence
+            else "확인된 근거 없음"
+        )
+        return envelope
