@@ -13,7 +13,7 @@ from jw_chat_agent_poc.service.conversation import (
 )
 
 
-_FIRST_RANK_RE = re.compile(r"그중\s*1위(?:\s*브랜드)?")
+_FIRST_RANK_RE = re.compile(r"그\s*중\s*1위(?:\s*브랜드)?")
 _ANCHOR_RE = re.compile(r"그\s*브랜드")
 _PERIOD_RE = re.compile(r"같은\s*기간")
 _MARKET_RE = re.compile(r"(?:방금|이|해당|그)\s*시장")

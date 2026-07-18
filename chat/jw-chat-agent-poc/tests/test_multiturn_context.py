@@ -8,7 +8,12 @@ from jw_chat_agent_poc.service.conversation import (
     conversation_slots_from_dict,
     conversation_slots_to_dict,
 )
-from jw_chat_agent_poc.service.conversation_context import extract_conversation_slots, resolve_anaphora, reused_context_result
+from jw_chat_agent_poc.service.conversation_context import (
+    extract_conversation_slots,
+    requires_previous_turn,
+    resolve_anaphora,
+    reused_context_result,
+)
 from jw_chat_agent_poc.service.app import SessionStore, _answer_question, compute_final_answer
 
 from test_service import _fake_agent_factory, _market_scope_resolver
@@ -86,6 +91,23 @@ def test_resolve_anaphora_maps_first_rank_only_from_previous_turn() -> None:
     resolved = resolve_anaphora("그중 1위 브랜드 점유율 추이는?", previous)
 
     assert resolved.resolved_question == "로수젯 점유율 추이는?"
+    assert resolved.brand == "로수젯"
+    assert resolved.reusable_ranked == _ranked_slot()
+    assert resolved.unresolved_reference is False
+
+
+def test_resolve_anaphora_accepts_spaced_first_rank_reference_from_portal() -> None:
+    previous = ConversationTurn(
+        question="고지혈증 상위 5개",
+        answer="1위 로수젯",
+        slots=ConversationSlots(anchor_brand="리바로", ranked=(_ranked_slot(),), ranked_brands=("로수젯",)),
+    )
+
+    assert requires_previous_turn("그 중 1위 브랜드 추이는?") is True
+
+    resolved = resolve_anaphora("그 중 1위 브랜드 추이는?", previous)
+
+    assert resolved.resolved_question == "로수젯 추이는?"
     assert resolved.brand == "로수젯"
     assert resolved.reusable_ranked == _ranked_slot()
     assert resolved.unresolved_reference is False
@@ -249,6 +271,36 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
 
     assert captured == ["가드렛 매출 추이는?"]
     assert item["result"]["conversation_interpretation"] == "가드렛의 매출 추이로 이해했어요."
+
+
+def test_spaced_first_rank_followup_hydrates_verified_cross_pod_series() -> None:
+    class SharedHistory:
+        def latest_turn(self, conversation_id: str):
+            assert conversation_id == "cross-pod-ranked-conversation"
+            return ConversationTurn(
+                question="고지혈증 상위 5개",
+                answer="1위 로수젯",
+                slots=ConversationSlots(
+                    anchor_brand="리바로",
+                    ranked=(_ranked_slot(),),
+                    ranked_brands=("로수젯",),
+                ),
+            )
+
+    item = _answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "그 중 1위 브랜드 추이는?",
+        "live",
+        "cross-pod-ranked-conversation",
+        use_direct_agent_loop=True,
+        conversation_history=SharedHistory(),
+    )
+
+    assert item["result"]["context_fact_reused"] is True
+    assert item["result"]["resolution"]["canonical_brand"] == "로수젯"
+    assert "2026-04" in item["result"]["answer"]
 
 
 def test_complete_question_does_not_read_shared_history(monkeypatch) -> None:
