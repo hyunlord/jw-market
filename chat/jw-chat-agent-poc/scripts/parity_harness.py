@@ -359,6 +359,8 @@ def capture_p0g_suite(
             }
         )
     qualification_failures: list[str] = []
+    if external_mode != "live":
+        qualification_failures.append("P-0G release evidence requires external_mode=live")
     if not portal_equivalent:
         qualification_failures.append("portal-equivalent entry path was not declared")
     if portal_equivalent and entry_kind != "portal-market-sse":
@@ -401,6 +403,7 @@ def capture_p0g_suite(
             qualification_failures.append(f"uploaded-file history session probe failed: {error}")
     report = {
         "evidence_context": {
+            "external_mode": external_mode,
             "transport": (
                 "portal-market-sse"
                 if base_url and entry_kind == "portal-market-sse"
@@ -843,6 +846,8 @@ def _is_portal_market_base_url(base_url: str) -> bool:
         parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
         and parsed.path.rstrip("/").endswith("/stream-lab-api")
+        and not parsed.query
+        and not parsed.fragment
     )
 
 

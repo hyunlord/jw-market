@@ -551,6 +551,7 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
     assert capture_p0g_suite(tmp_path, "live", "http://direct-chat") == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["evidence_context"] == {
+        "external_mode": "live",
         "transport": "direct-chat-sse",
         "entry_kind": "direct-chat",
         "portal_equivalent_declared": False,
@@ -634,6 +635,36 @@ def test_p0g_suite_rejects_portal_adapter_on_a_non_portal_base_path(
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["qualification_failures"] == [
         "portal-market-sse evidence requires a /stream-lab-api base path",
+    ]
+
+
+def test_p0g_suite_rejects_non_live_release_evidence(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 1, ""),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "fallback",
+        "https://portal.example/stream-lab-api",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
+    ) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["qualification_failures"] == [
+        "P-0G release evidence requires external_mode=live",
     ]
 
 
