@@ -139,6 +139,7 @@ def test_execute_runs_full_then_incremental_then_sigma_then_comparison(
 ) -> None:
     config = _write_config(tmp_path)
     events: list[str] = []
+    comparison_contract: dict[str, str] = {}
 
     monkeypatch.setattr(
         "pipeline.orchestrator.incremental_rehearsal.execute_full_rehearsal",
@@ -157,15 +158,24 @@ def test_execute_runs_full_then_incremental_then_sigma_then_comparison(
         "pipeline.orchestrator.incremental_rehearsal._check_market_sigma",
         lambda *_args: events.append("sigma"),
     )
+    def compare(*_args, **kwargs) -> int:
+        events.append("compare")
+        comparison_contract.update(kwargs)
+        return 0
+
     monkeypatch.setattr(
         "pipeline.orchestrator.incremental_rehearsal.run_comparison",
-        lambda *_args: events.append("compare") or 0,
+        compare,
     )
 
     rc = execute_incremental_rehearsal(config, dry_run=False)
 
     assert rc == 0
     assert events == ["full-minus", "g3-load", "refresh", "sigma", "compare"]
+    assert comparison_contract == {
+        "gate": "R-2",
+        "environment": "isolated-full-then-incremental",
+    }
 
 
 def test_execute_stops_before_sigma_and_comparison_when_refresh_fails(

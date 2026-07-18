@@ -101,9 +101,14 @@ class ComparisonReport:
     def exit_code(self) -> int:
         return int(self.failures > 0)
 
-    def as_dict(self) -> dict[str, str | int | list[dict[str, object]]]:
+    def as_dict(
+        self,
+        *,
+        gate: str = "R-1",
+        environment: str = "isolated-full-rehearsal",
+    ) -> dict[str, str | int | list[dict[str, object]]]:
         return {
-            "gate": "R-1",
+            "gate": gate,
             "classification": "census",
             "checked": len(self.tables),
             "population": len(MART_TABLES) + len(CACHE_TABLES),
@@ -111,7 +116,7 @@ class ComparisonReport:
             "tolerance": "exact-canonical-sha256",
             "failures": self.failures,
             "exit_code": self.exit_code,
-            "environment": "isolated-full-rehearsal",
+            "environment": environment,
             "tables": [asdict(row) for row in self.tables],
         }
 
@@ -138,7 +143,13 @@ def compare_full_rehearsal(
     return ComparisonReport(tuple(rows))
 
 
-def run_comparison(config: ComparisonConfig, output: Path) -> int:
+def run_comparison(
+    config: ComparisonConfig,
+    output: Path,
+    *,
+    gate: str = "R-1",
+    environment: str = "isolated-full-rehearsal",
+) -> int:
     conn = connect_admin()
     try:
         report = compare_full_rehearsal(conn, config)
@@ -146,7 +157,12 @@ def run_comparison(config: ComparisonConfig, output: Path) -> int:
         conn.close()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        json.dumps(report.as_dict(), ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(
+            report.as_dict(gate=gate, environment=environment),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
     return report.exit_code

@@ -323,4 +323,6 @@ def execute_incremental_rehearsal(
             target_cache_db=config.cache_db,
         ),
         config.comparison_output,
+        gate="R-2",
+        environment="isolated-full-then-incremental",
     )
