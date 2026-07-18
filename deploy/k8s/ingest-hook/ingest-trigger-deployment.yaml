@@ -1,8 +1,9 @@
 # Ingest trigger service (D-1 option (a)) — webhook receiver + ledger status API.
 #
-# Registered INERT: replicas 0. Activation (scale to 1) is a PL decision after
-# the jw-data-input confirm flow lands and the isolation gates (G-1..G-5) are
-# accepted. Serving (jw-market-backend-api) is untouched by design.
+# Armed for the D-3a isolated-load pilot: the trigger is live at one replica,
+# while INGEST_LOAD_STAGING_ROOT keeps loader output away from the serving
+# parquet root and mart refresh. The loss sweep remains suspended separately.
+# Serving (jw-market-backend-api) is untouched by design.
 #
 # Reuses the digest-pinned pipeline-orchestrator image (fastapi/uvicorn/PyMySQL
 # already inside) — no new build pipeline.
@@ -14,7 +15,7 @@ metadata:
   labels:
     app: jw-ingest-hook
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app: jw-ingest-hook

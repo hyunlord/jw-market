@@ -42,13 +42,25 @@ def test_ingest_manifests_pin_the_default_job_image():
         assert config.DEFAULT_JOB_IMAGE in (base / ("reference/" + name) if name == "ingest-job-template.yaml" else base / name).read_text(encoding="utf-8"), name
 
 
-def test_tracked_manifests_stay_inert():
-    """Repo canon ships un-activated: replicas 0 / suspend true (STOP ②)."""
+def test_tracked_manifests_preserve_isolated_load_arming():
+    """Repo canon preserves D-3a arming without enabling production load."""
     base = REPO_ROOT / "deploy" / "k8s" / "ingest-hook"
     deployment = list(yaml.safe_load_all((base / "ingest-trigger-deployment.yaml").read_text(encoding="utf-8")))
-    assert deployment[0]["spec"]["replicas"] == 0
+    assert deployment[0]["spec"]["replicas"] == 1
+    trigger = deployment[0]["spec"]["template"]["spec"]["containers"][0]
+    trigger_env = {item["name"]: item for item in trigger["env"]}
+    assert trigger_env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
+    assert "INGEST_REHEARSAL_ROOT" not in trigger_env
+    assert "INGEST_LOAD_TARGET_ROOT" not in trigger_env
+
     sweep = yaml.safe_load((base / "ingest-sweep-cronjob.yaml").read_text(encoding="utf-8"))
     assert sweep["spec"]["suspend"] is True
+    sweep_container = sweep["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    sweep_env = {item["name"]: item for item in sweep_container["env"]}
+    assert sweep_env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
+    assert "INGEST_REHEARSAL_ROOT" not in sweep_env
+    assert "INGEST_LOAD_TARGET_ROOT" not in sweep_env
+
     rbac = list(yaml.safe_load_all((base / "ingest-hook-rbac.yaml").read_text(encoding="utf-8")))
     role = next(doc for doc in rbac if doc["kind"] == "Role")
     assert role["rules"] == [{"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create", "get", "list"]}]
