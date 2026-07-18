@@ -659,7 +659,8 @@ def _answer_question(
             result = {
                 **result,
                 "research_mode": "deep",
-                "effective_question": effective_question,
+                "effective_question": routing_question or effective_question,
+                "requested_question": effective_question,
                 "router_diagnostics": diagnostics,
             }
             if routing_resolution.interpretation_notice:

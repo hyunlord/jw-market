@@ -71,6 +71,7 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     metric = ""
     view = ""
     result_ref: ResultReference | None = None
+    result_ref_score = -1
     denominator = ""
     ranked: tuple[RankedBrandSlot, ...] = ()
     ranked_names: tuple[str, ...] = ()
@@ -113,27 +114,37 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         if not isinstance(data, dict):
             continue
         anchor = anchor or _text(data.get("anchor_brand") or data.get("brand"))
-        metric = metric or _text(data.get("metric"))
         view = view or _text(data.get("view_source_id") or data.get("view"))
         market = market or _text(data.get("market_id") or data.get("market_name") or data.get("view_source_id"))
         market_definition = market_definition or _text(
             data.get("market_definition_full") or data.get("market_definition_label") or data.get("market_name")
         )
-        period = period or _text(data.get("period"))
         denominator = denominator or _denominator(data)
         if not ranked:
             ranked = _ranked_slots(data.get("level_top5_trend_series"))
         if not ranked_names:
             ranked_names = tuple(item.brand for item in ranked) or _segment_names(data.get("level_segments"))
-        if result_ref is None:
-            tool = _text(call.get("tool"))
-            if tool:
+        tool = _text(call.get("tool"))
+        call_metric = _text(data.get("metric"))
+        is_query_plan = tool == "query_spec" or call_metric == "query_spec"
+        if tool and not is_query_plan:
+            call_brand = _text(data.get("anchor_brand") or data.get("brand")) or anchor
+            call_market = _text(
+                data.get("market_id") or data.get("market_name") or data.get("view_source_id")
+            ) or market
+            call_period = _text(data.get("period"))
+            source = _text(call.get("source"))
+            score = sum(bool(value) for value in (call_brand, call_market, call_period, call_metric, source))
+            if score > result_ref_score:
+                result_ref_score = score
+                metric = call_metric or metric
+                period = call_period or period
                 result_ref = ResultReference(
                     tool=tool,
-                    source=_text(call.get("source")) or None,
-                    brand=anchor or None,
-                    market=market or None,
-                    period=period or None,
+                    source=source or None,
+                    brand=call_brand or None,
+                    market=call_market or None,
+                    period=call_period or None,
                 )
 
     if not period and ranked:

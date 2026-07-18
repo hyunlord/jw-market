@@ -102,6 +102,46 @@ def test_extract_slots_keeps_anchor_market_period_denominator_and_ranked_series(
     assert slots.ranked[0].series[-1].ms_pct == 9.1659
 
 
+def test_extract_slots_prefers_metric_result_over_query_plan_metadata() -> None:
+    result = {
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "metric": "query_spec",
+                    "period": "2024",
+                    "query_spec": {"filters": {"brand": "리바로", "period": "2024"}},
+                },
+            },
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "리바로",
+                    "market_id": "ml_006",
+                    "metric": "매출",
+                    "view_source_id": "strategic_ml",
+                    "period": "2025-Q2",
+                },
+            },
+        ]
+    }
+
+    slots = extract_conversation_slots(result)
+
+    assert slots.anchor_brand == "리바로"
+    assert slots.market == "ml_006"
+    assert slots.metric == "매출"
+    assert slots.period == "2025-Q2"
+    assert slots.result_ref == ResultReference(
+        tool="get_brand_metric",
+        source="UBIST",
+        brand="리바로",
+        market="ml_006",
+        period="2025-Q2",
+    )
+
+
 def test_resolve_anaphora_maps_first_rank_only_from_previous_turn() -> None:
     previous = ConversationTurn(
         question="리바로 시장 상위 3개 브랜드 점유율",
@@ -348,6 +388,7 @@ def test_deep_mode_followup_uses_resolved_state_and_discloses_interpretation(mon
     )
 
     assert captured == ["리바로 매출 추이는?"]
+    assert item["result"]["effective_question"] == "리바로 매출 추이는?"
     assert item["result"]["conversation_interpretation"] == "리바로의 매출 추이로 이해했어요."
 
 
