@@ -110,6 +110,18 @@ P0G_FORBIDDEN_GENERAL_ANSWER_TEXT = (
     "첨부 문서",
     "딥리서치",
 )
+P0G_FORBIDDEN_GENERAL_SOURCE_TOKENS = (
+    "ClinicalTrials",
+    "MFDS",
+    "NeDrug",
+    "OpenFDA",
+    "HIRA",
+    "Tavily",
+    "웹 검색",
+    "업로드",
+    "deep_analysis",
+    "딥리서치",
+)
 P0G_FAIL_CLOSED_ANSWER_SENTINELS = (
     "데이터 존재 여부를 확인하지 못했습니다",
     "지원되지 않는 시장",
@@ -223,6 +235,9 @@ def capture(
                 )
                 if qid in P0G_SOURCE_PERIOD_BY_QID
                 else False
+            ),
+            "source_section_forbidden_labels": _source_section_forbidden_labels(
+                parsed.answer_markdown
             ),
             "answer_forbidden_tokens": [
                 token
@@ -479,6 +494,19 @@ def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[
                 "answer_source_section_has_ubist": source_section_has_ubist,
             }
             continue
+        forbidden_event_sources = _matching_forbidden_source_tokens(raw_sources)
+        forbidden_answer_sources = [
+            str(item)
+            for item in row.get("source_section_forbidden_labels", ())
+            if str(item).strip()
+        ]
+        if forbidden_event_sources or forbidden_answer_sources:
+            failures[qid] = {
+                "event_sources": raw_sources,
+                "forbidden_event_sources": forbidden_event_sources,
+                "forbidden_answer_sources": forbidden_answer_sources,
+            }
+            continue
         expected_period = P0G_SOURCE_PERIOD_BY_QID[qid]
         source_section_has_period = row.get("source_section_has_period") is True
         if not source_section_has_period:
@@ -518,6 +546,20 @@ def _source_section_has_labels_in_row(answer: str, labels: tuple[str, ...]) -> b
         line.lstrip().startswith("|") and all(pattern.search(line) for pattern in patterns)
         for line in source_section.splitlines()
     )
+
+
+def _matching_forbidden_source_tokens(text: str) -> list[str]:
+    normalized = text.casefold()
+    return [
+        token
+        for token in P0G_FORBIDDEN_GENERAL_SOURCE_TOKENS
+        if token.casefold() in normalized
+    ]
+
+
+def _source_section_forbidden_labels(answer: str) -> list[str]:
+    _body, marker, source_section = answer.rpartition("## 출처")
+    return _matching_forbidden_source_tokens(source_section) if marker else []
 
 
 def _p0g_seed_execution_failures(scenario: str, rows: list[dict[str, Any]]) -> list[str]:

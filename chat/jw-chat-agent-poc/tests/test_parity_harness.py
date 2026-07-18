@@ -13,6 +13,7 @@ from scripts.parity_harness import (
     _capture_questions,
     _http_sse,
     _p0g_source_evidence_failures,
+    _source_section_forbidden_labels,
     _source_section_has_labels_in_row,
     capture,
     capture_p0g_suite,
@@ -1045,6 +1046,39 @@ def test_p0g_source_evidence_requires_ubist_and_period_in_the_same_row() -> None
             "answer_source_section_has_ubist_period_row": False,
         }
     }
+
+
+def test_p0g_source_evidence_rejects_stale_external_and_file_sources() -> None:
+    assert _p0g_source_evidence_failures(
+        [
+            {
+                "qid": "H02",
+                "sources": "UBIST, ClinicalTrials.gov, 업로드 파일",
+                "source_section_has_ubist": True,
+                "source_section_has_period": True,
+                "source_section_has_ubist_period_row": True,
+                "source_section_forbidden_labels": ["ClinicalTrials", "업로드"],
+            }
+        ]
+    ) == {
+        "H02": {
+            "event_sources": "UBIST, ClinicalTrials.gov, 업로드 파일",
+            "forbidden_event_sources": ["ClinicalTrials", "업로드"],
+            "forbidden_answer_sources": ["ClinicalTrials", "업로드"],
+        }
+    }
+
+
+def test_source_section_forbidden_labels_reads_rendered_provenance() -> None:
+    answer = (
+        "정상 답변\n\n## 출처\n"
+        "| 출처 | 기준기간 |\n| --- | --- |\n"
+        "| UBIST | 2025-Q2 |\n"
+        "| ClinicalTrials.gov | — |\n"
+        "| 업로드 문서 | — |"
+    )
+
+    assert _source_section_forbidden_labels(answer) == ["ClinicalTrials", "업로드"]
 
 
 def test_source_section_row_match_does_not_combine_different_rows() -> None:
