@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -6,6 +7,42 @@ from pipeline.orchestrator import cli
 from pipeline.orchestrator.stages import AGENT3_EXPECTED_REV_ENV, STAGE_BY_KEY, STAGE_ORDER
 
 from fakes import FakeProbe
+
+
+def test_materialize_full_inputs_forwards_pinned_sidecar(
+    tmp_path, monkeypatch, capsys
+):
+    captured = {}
+
+    def fake_materialize_full_inputs(**kwargs):
+        captured.update(kwargs)
+        manifest = tmp_path / "input_manifest.json"
+        manifest.write_text("{}", encoding="utf-8")
+        return manifest
+
+    monkeypatch.setattr(
+        "pipeline.orchestrator.full_rehearsal_inputs.materialize_full_inputs",
+        fake_materialize_full_inputs,
+    )
+    source = tmp_path / "may.parquet"
+
+    assert cli.main(
+        [
+            "materialize-full-inputs",
+            "--output-root",
+            str(tmp_path / "inputs"),
+            "--ubist-parquet-sidecar",
+            str(source),
+            "year=2026/month=05/data.parquet",
+            "a" * 64,
+        ]
+    ) == 0
+
+    sidecar = captured["ubist_parquet_sidecars"][0]
+    assert sidecar.source == source
+    assert sidecar.relative_path == Path("year=2026/month=05/data.parquet")
+    assert sidecar.sha256 == "a" * 64
+    assert capsys.readouterr().out.strip().endswith("input_manifest.json")
 
 
 def test_stages_subcommand_prints_incremental_table(capsys):

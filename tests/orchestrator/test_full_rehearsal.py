@@ -14,7 +14,7 @@ from pipeline.orchestrator.full_rehearsal import (
 )
 
 
-def _write_sources(tmp_path: Path) -> Path:
+def _write_sources(tmp_path: Path, *, with_sidecar: bool = False) -> Path:
     ubist = tmp_path / "ubist"
     iqvia = tmp_path / "iqvia"
     ubist.mkdir()
@@ -24,15 +24,25 @@ def _write_sources(tmp_path: Path) -> Path:
     master = tmp_path / "mi-master.xlsx"
     master.write_bytes(b"xlsx")
     manifest = tmp_path / "inputs.json"
-    manifest.write_text(
-        json.dumps(
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "ubist_source_dir": str(ubist),
+        "iqvia_source_dir": str(iqvia),
+        "mi_master": str(master),
+    }
+    if with_sidecar:
+        sidecar = tmp_path / "sidecar.parquet"
+        sidecar.write_bytes(b"parquet")
+        payload["schema_version"] = 2
+        payload["ubist_parquet_sidecars"] = [
             {
-                "schema_version": 1,
-                "ubist_source_dir": str(ubist),
-                "iqvia_source_dir": str(iqvia),
-                "mi_master": str(master),
+                "path": str(sidecar),
+                "relative_path": "year=2026/month=05/data.parquet",
+                "sha256": "37a0fe5ae24a60682faa103d3808c86efe98a83dd414af81d9b01eef26a3be87",
             }
-        ),
+        ]
+    manifest.write_text(
+        json.dumps(payload),
         encoding="utf-8",
     )
     return manifest
@@ -62,6 +72,25 @@ def test_input_manifest_rejects_empty_source_directories(tmp_path: Path) -> None
         path.unlink()
 
     with pytest.raises(RehearsalContractError, match="UBIST source files"):
+        load_input_manifest(manifest)
+
+
+def test_input_manifest_rejects_tampered_sidecar(tmp_path: Path) -> None:
+    manifest = _write_sources(tmp_path, with_sidecar=True)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    Path(payload["ubist_parquet_sidecars"][0]["path"]).write_bytes(b"tampered")
+
+    with pytest.raises(RehearsalContractError, match="sidecar SHA256 mismatch"):
+        load_input_manifest(manifest)
+
+
+def test_input_manifest_rejects_duplicate_sidecar_destination(tmp_path: Path) -> None:
+    manifest = _write_sources(tmp_path, with_sidecar=True)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["ubist_parquet_sidecars"].append(payload["ubist_parquet_sidecars"][0])
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RehearsalContractError, match="duplicate UBIST sidecar"):
         load_input_manifest(manifest)
 
 
@@ -133,6 +162,23 @@ def test_plan_builds_raw_to_mart_then_separate_cache_chain(tmp_path: Path) -> No
     assert "pipeline.scripts.etl.build_cache_deep_analysis_general" in plan[12].argv
     assert dict(plan[13].env)["MARIADB_DATABASE"] == "jw_mart_s6_rehearsal_r1_20260718"
     assert plan[13].argv[-1] == "jw_mart_d2_stage_20260630_r2"
+
+
+def test_plan_installs_pinned_ubist_sidecar_before_downstream_stages(tmp_path: Path) -> None:
+    manifest = _write_sources(tmp_path, with_sidecar=True)
+    plan = build_full_rehearsal_plan(_config(tmp_path, manifest))
+
+    assert [step.key for step in plan[:4]] == [
+        "load_ubist",
+        "install_ubist_sidecars",
+        "load_iqvia",
+        "catalog",
+    ]
+    install = plan[1]
+    assert "pipeline.orchestrator.full_rehearsal_ubist_sidecars" in install.argv
+    assert str(manifest) in install.argv
+    assert str((tmp_path / "work" / "ubist").resolve()) in install.argv
+    assert all(not step.writes_operating for step in plan)
 
 
 def test_rehearse_full_dry_run_prints_plan_without_writes(

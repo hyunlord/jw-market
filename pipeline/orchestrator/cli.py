@@ -54,6 +54,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="repository-pinned MI Master directory (defaults to the canonical data path)",
     )
+    inputs.add_argument(
+        "--ubist-parquet-sidecar",
+        action="append",
+        nargs=3,
+        default=[],
+        metavar=("SOURCE", "RELATIVE_PATH", "SHA256"),
+        help="repeatable SHA-pinned UBIST parquet sidecar",
+    )
 
     rehearsal = sub.add_parser(
         "rehearse-full",
@@ -121,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "materialize-full-inputs":
         from pipeline.orchestrator.full_rehearsal_inputs import (
             InputMaterializationError,
+            UbistParquetSidecarSource,
             materialize_full_inputs,
         )
 
@@ -130,6 +139,10 @@ def main(argv: list[str] | None = None) -> int:
                 ubist_bucket=args.ubist_bucket,
                 iqvia_bucket=args.iqvia_bucket,
                 mi_master_source_dir=args.mi_master_source_dir,
+                ubist_parquet_sidecars=tuple(
+                    UbistParquetSidecarSource(Path(source), Path(relative), sha256)
+                    for source, relative, sha256 in args.ubist_parquet_sidecar
+                ),
             )
         except InputMaterializationError as exc:
             print(f"error: {exc}", file=sys.stderr)
