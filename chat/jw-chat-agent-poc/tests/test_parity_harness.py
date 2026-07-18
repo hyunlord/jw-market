@@ -172,6 +172,33 @@ def test_http_sse_replays_portal_market_bff_contract(monkeypatch) -> None:
     }
 
 
+def test_http_sse_decodes_portal_events_as_utf8_without_charset(monkeypatch) -> None:
+    expected = 'event: progress\ndata: {"label":"시장 데이터 집계 중"}\n\n'
+
+    class Response:
+        content = expected.encode("utf-8")
+        text = content.decode("latin-1")
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    monkeypatch.setattr(
+        "scripts.parity_harness.requests.post",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    payload = _http_sse(
+        "https://portal.example/stream-lab-api",
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        conversation_id="utf8-session",
+        entry_kind="portal-market-sse",
+    )
+
+    assert payload == expected
+
+
 def test_capture_rejects_render_integrity_failures(monkeypatch, tmp_path: Path) -> None:
     raw_sse = (
         "event: markdown_block\n"

@@ -881,7 +881,7 @@ def _http_sse(
         }
         response = requests.post(url, json=body, headers=headers, timeout=180)
         response.raise_for_status()
-        return response.text
+        return _decode_sse_response(response)
     if entry_kind != "direct-chat":
         raise ValueError(f"unsupported HTTP entry kind: {entry_kind}")
     url = base_url.rstrip("/") + "/chat/stream"
@@ -891,6 +891,13 @@ def _http_sse(
     headers = {"X-Portal-User-Id": portal_user_id} if portal_user_id else {}
     response = requests.get(url, params=params, headers=headers, timeout=180)
     response.raise_for_status()
+    return _decode_sse_response(response)
+
+
+def _decode_sse_response(response: requests.Response) -> str:
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes):
+        return content.decode("utf-8")
     return response.text
 
 
