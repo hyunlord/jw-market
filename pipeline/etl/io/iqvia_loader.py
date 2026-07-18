@@ -161,9 +161,7 @@ def load_env(path: Path) -> dict[str, str]:
 @retry((pymysql.err.OperationalError, pymysql.err.InterfaceError), logger=LOGGER)
 def connect(database: str | None = None) -> pymysql.connections.Connection:
     env_path = first_existing(REPO_ROOT / "pipeline" / "docker" / ".env", REPO_ROOT / "docker" / ".env")
-    if not env_path.exists():
-        raise FileNotFoundError(f"Missing MariaDB env file: {env_path}")
-    env = load_env(env_path)
+    env = load_env(env_path) if env_path.exists() else {}
     user = os.getenv("MARIADB_USER", env.get("MARIADB_USER", "jwapp"))
     password = os.getenv("MARIADB_PASSWORD") or (
         os.getenv("MARIADB_ROOT_PASSWORD") if user == "root" else env.get("MARIADB_PASSWORD")
@@ -172,7 +170,12 @@ def connect(database: str | None = None) -> pymysql.connections.Connection:
         raise RuntimeError("MariaDB password is not configured")
     return pymysql.connect(
         host=os.getenv("MARIADB_HOST", "127.0.0.1"),
-        port=int(os.getenv("HOST_PORT", env.get("HOST_PORT", "3307"))),
+        port=int(
+            os.getenv("MARIADB_PORT")
+            or os.getenv("HOST_PORT")
+            or env.get("MARIADB_PORT")
+            or env.get("HOST_PORT", "3307")
+        ),
         user=user,
         password=password,
         database=database or os.getenv("MARIADB_DATABASE", env.get("MARIADB_DATABASE", "jw_mart")),
