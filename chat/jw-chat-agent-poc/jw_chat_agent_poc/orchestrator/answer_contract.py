@@ -78,6 +78,14 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
     """Return deterministic tool calls needed before final answer generation."""
 
     structural = _structural_contract_type(question)
+    if structural == "positioning" and not _has_positioning_fact(calls, brand):
+        return (
+            ToolCallPlan(
+                name="get_metric",
+                arguments={"brand": brand, "measure": "market_share", "period": "latest"},
+                reason="AnswerContract positioning fact backfill",
+            ),
+        )
     if structural == "sales_activity_link":
         plans: list[ToolCallPlan] = []
         if not _has_tool_attempt(calls, "get_brand_metric"):
@@ -372,6 +380,23 @@ def _has_brand_metric_fact(calls: list[dict[str, Any]], brand: str) -> bool:
         if data.get("sales_krw") is not None or data.get("sales_억원") is not None:
             return True
         if data.get("brand_value_series_10pt"):
+            return True
+    return False
+
+
+def _has_positioning_fact(calls: list[dict[str, Any]], brand: str) -> bool:
+    for call in calls:
+        if call.get("tool") != "get_brand_metric":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict) or data.get("brand") != brand:
+            continue
+        if data.get("status") in {"error", "query_failed", "mapping_failed", "missing", "incomplete_split"}:
+            continue
+        share = data.get("ms_recent_pct")
+        if share is None:
+            share = data.get("market_share")
+        if data.get("rank") is not None and share is not None:
             return True
     return False
 

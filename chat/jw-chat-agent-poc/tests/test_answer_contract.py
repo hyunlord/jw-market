@@ -310,6 +310,53 @@ def test_structural_contract_backfill_skips_existing_metric_proxy() -> None:
     assert plans == ()
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        "경쟁사 대비 리바로 위치",
+    ),
+)
+def test_positioning_backfill_requires_own_rank_and_share_not_only_top_brands(question: str) -> None:
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "render_data": {
+                "metric": "top_brands",
+                "level_top5_trend_series": [
+                    {"rank": 1, "brand": "로수젯", "ms_recent_pct": 9.13},
+                    {"rank": 5, "brand": "로수바미브", "ms_recent_pct": 4.20},
+                ],
+            },
+        }
+    ]
+
+    plans = answer_contract_backfill_tool_calls(question, "리바로", calls)
+
+    assert [(plan.name, plan.arguments) for plan in plans] == [
+        ("get_metric", {"brand": "리바로", "measure": "market_share", "period": "latest"}),
+    ]
+
+
+def test_positioning_backfill_skips_when_own_rank_and_share_are_present() -> None:
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "render_data": {
+                "brand": "리바로",
+                "metric": "market_share",
+                "rank": 6,
+                "ms_recent_pct": 3.76,
+                "sales_krw": 8_493_000_000,
+            },
+        }
+    ]
+
+    plans = answer_contract_backfill_tool_calls("경쟁사 대비 리바로 위치", "리바로", calls)
+
+    assert plans == ()
+
+
 def test_trend_support_contract_adds_axis_support_matrix() -> None:
     answer = "제형 축 변화는 확인됩니다.\n\n## 출처\n- 데이터: UBIST"
 
