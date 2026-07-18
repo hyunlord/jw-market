@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 from typing import Protocol
 import unicodedata
 
@@ -33,12 +35,20 @@ DEFAULT_MI_MASTER_SOURCE_DIR = PROJECT_ROOT / "data" / MI_MASTER_DIR_NAME
 SOURCE_PINS_FILE_NAME = "SOURCE_PINS.sha256"
 
 
+@dataclass(frozen=True)
+class UbistParquetSidecarSource:
+    source: Path
+    relative_path: Path
+    sha256: str
+
+
 def materialize_full_inputs(
     *,
     output_root: Path,
     ubist_bucket: str,
     iqvia_bucket: str,
     mi_master_source_dir: Path | None = None,
+    ubist_parquet_sidecars: tuple[UbistParquetSidecarSource, ...] = (),
     client_factory: ClientFactory | None = None,
 ) -> Path:
     """Materialize object-store raws plus the repository-pinned MI workbook."""
@@ -69,6 +79,11 @@ def materialize_full_inputs(
         client=factory(iqvia_bucket),
         inventory=inventory,
     )
+    sidecars = _materialize_ubist_parquet_sidecars(
+        sources=ubist_parquet_sidecars,
+        destination=root / "ubist-parquet-sidecars",
+        inventory=inventory,
+    )
     master = _materialize_repository_mi_master(
         source_dir=mi_master_source_dir or DEFAULT_MI_MASTER_SOURCE_DIR,
         destination=master_dir,
@@ -79,10 +94,11 @@ def materialize_full_inputs(
     manifest_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2 if sidecars else 1,
                 "ubist_source_dir": str(ubist_dir),
                 "iqvia_source_dir": str(iqvia_dir),
                 "mi_master": str(master),
+                **({"ubist_parquet_sidecars": sidecars} if sidecars else {}),
             },
             ensure_ascii=False,
             indent=2,
@@ -107,6 +123,72 @@ def materialize_full_inputs(
         encoding="utf-8",
     )
     return manifest_path
+
+
+def _materialize_ubist_parquet_sidecars(
+    *,
+    sources: tuple[UbistParquetSidecarSource, ...],
+    destination: Path,
+    inventory: list[dict[str, str | int]],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    destinations: set[Path] = set()
+    for source in sources:
+        expected_sha = source.sha256.strip().lower()
+        if len(expected_sha) != 64 or any(
+            char not in "0123456789abcdef" for char in expected_sha
+        ):
+            raise InputMaterializationError("UBIST sidecar requires a valid SHA256")
+        source_path = source.source.resolve()
+        if not source_path.is_file() or source_path.suffix.lower() != ".parquet":
+            raise InputMaterializationError(
+                f"UBIST sidecar is missing or not parquet: {source_path}"
+            )
+        relative_path = _safe_sidecar_relative_path(source.relative_path)
+        target = (destination / relative_path).resolve()
+        if destination.resolve() not in target.parents:
+            raise InputMaterializationError(
+                f"UBIST sidecar destination escapes output root: {source.relative_path}"
+            )
+        if target in destinations or target.exists():
+            raise InputMaterializationError(f"duplicate UBIST sidecar destination: {relative_path}")
+        destinations.add(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, target)
+        actual_sha = _sha256_file(target)
+        if actual_sha != expected_sha:
+            target.unlink(missing_ok=True)
+            raise InputMaterializationError(
+                f"UBIST sidecar SHA256 mismatch: expected {expected_sha}, got {actual_sha}"
+            )
+        size = target.stat().st_size
+        key = relative_path.as_posix()
+        rows.append({"path": str(target), "relative_path": key, "sha256": actual_sha})
+        inventory.append(
+            {
+                "bucket": "pvc-sidecar",
+                "key": key,
+                "sha256": actual_sha,
+                "size": size,
+            }
+        )
+    return rows
+
+
+def _safe_sidecar_relative_path(path: Path) -> Path:
+    if path.is_absolute() or path.suffix.lower() != ".parquet":
+        raise InputMaterializationError(f"UBIST sidecar destination escapes output root: {path}")
+    if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise InputMaterializationError(f"UBIST sidecar destination escapes output root: {path}")
+    return Path(*path.parts)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _download_population(
