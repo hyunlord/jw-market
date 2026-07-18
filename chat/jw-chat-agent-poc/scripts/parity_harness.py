@@ -67,6 +67,14 @@ P0G_TOP5_GOLDEN_ROWS = (
     (4, "아토젯", "4.95", "105.87"),
     (5, "로수바미브", "4.20", "89.76"),
 )
+P0G_SOURCE_PERIOD_BY_QID = {
+    "F01": "2025-Q2",
+    "F02": "2026-05",
+    "H02": "2025-Q2",
+    "H03": "2026-05",
+    "M02": "2025-Q2",
+    "M03": "2026-05",
+}
 P0G_FAST_PATH_STAGE_NAME = "조회 계획 확정"
 P0G_MARKET_TOOL_STAGE_BY_QID = {
     "F01": "브랜드 매출 조회",
@@ -203,6 +211,11 @@ def capture(
             "answer_chars": parsed.answer_chars,
             "sources": parsed.sources,
             "source_section_has_ubist": _source_section_has_label(parsed.answer_markdown, "UBIST"),
+            "source_section_has_period": (
+                _source_section_has_label(parsed.answer_markdown, P0G_SOURCE_PERIOD_BY_QID[qid])
+                if qid in P0G_SOURCE_PERIOD_BY_QID
+                else False
+            ),
             "answer_forbidden_tokens": [
                 token
                 for token in P0G_FORBIDDEN_GENERAL_ANSWER_TEXT
@@ -454,6 +467,16 @@ def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[
             failures[qid] = {
                 "event_sources": raw_sources,
                 "answer_source_section_has_ubist": source_section_has_ubist,
+            }
+            continue
+        expected_period = P0G_SOURCE_PERIOD_BY_QID[qid]
+        source_section_has_period = row.get("source_section_has_period") is True
+        if not source_section_has_period:
+            failures[qid] = {
+                "event_sources": raw_sources,
+                "answer_source_section_has_ubist": source_section_has_ubist,
+                "expected_period": expected_period,
+                "answer_source_section_has_period": source_section_has_period,
             }
     return failures
 

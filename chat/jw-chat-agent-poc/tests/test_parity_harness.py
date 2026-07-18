@@ -12,6 +12,7 @@ from scripts.parity_harness import (
     _history_golden_acceptance,
     _capture_questions,
     _http_sse,
+    _p0g_source_evidence_failures,
     capture_p0g_suite,
     diff_captures,
 )
@@ -215,6 +216,7 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                         "elapsed_ms": 100.0,
                         "sources": "UBIST" if qid in {"F01", "F02", "H02", "H03", "M02", "M03"} else "",
                         "source_section_has_ubist": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        "source_section_has_period": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "steps": (
                             [
                                 {"name": "질문 접수", "status": "done"},
@@ -913,6 +915,38 @@ def test_p0g_suite_rejects_ubist_event_when_rendered_source_section_is_empty(mon
     assert summary["scenarios"][0]["source_evidence_failures"] == {
         "F01": {"event_sources": "UBIST", "answer_source_section_has_ubist": False},
         "F02": {"event_sources": "UBIST", "answer_source_section_has_ubist": False},
+    }
+
+
+def test_p0g_source_evidence_requires_the_golden_period_in_rendered_sources() -> None:
+    assert _p0g_source_evidence_failures(
+        [
+            {
+                "qid": "F01",
+                "sources": "UBIST",
+                "source_section_has_ubist": True,
+                "source_section_has_period": False,
+            },
+            {
+                "qid": "F02",
+                "sources": "UBIST",
+                "source_section_has_ubist": True,
+                "source_section_has_period": False,
+            },
+        ]
+    ) == {
+        "F01": {
+            "event_sources": "UBIST",
+            "answer_source_section_has_ubist": True,
+            "expected_period": "2025-Q2",
+            "answer_source_section_has_period": False,
+        },
+        "F02": {
+            "event_sources": "UBIST",
+            "answer_source_section_has_ubist": True,
+            "expected_period": "2026-05",
+            "answer_source_section_has_period": False,
+        },
     }
 
 
