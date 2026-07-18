@@ -60,7 +60,7 @@ MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M02", "2025년 2분기 매출 얼마야"),
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
-P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "H02", "H03", "M02", "M03"})
+P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "F03", "H02", "H03", "M02", "M03"})
 P0G_SALES_GOLDEN_QIDS = frozenset({"F01", "H02", "M02"})
 P0G_TOP5_GOLDEN_QIDS = frozenset({"F02", "H03", "M03"})
 P0G_TOP5_GOLDEN_ROWS = (
@@ -73,6 +73,7 @@ P0G_TOP5_GOLDEN_ROWS = (
 P0G_SOURCE_PERIOD_BY_QID = {
     "F01": "2025-Q2",
     "F02": "2026-05",
+    "F03": "2026-05",
     "H02": "2025-Q2",
     "H03": "2026-05",
     "M02": "2025-Q2",
@@ -82,6 +83,7 @@ P0G_FAST_PATH_STAGE_NAME = "조회 계획 확정"
 P0G_MARKET_TOOL_STAGE_BY_QID = {
     "F01": "브랜드 매출 조회",
     "F02": "상위 브랜드 확인",
+    "F03": "브랜드 추이 확인",
     "H02": "브랜드 매출 조회",
     "H03": "상위 브랜드 확인",
     "M02": "브랜드 매출 조회",
@@ -1007,6 +1009,10 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     requirements = {
         "F01": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
         "F02": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
+        "F03": (
+            re.compile(r"(?m)^\|\s*2026-05\s*\|\s*80\.39\s*억원\s*\|"),
+            "missing 2026-05 리바로 sales trend",
+        ),
         "H02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
         "H03": (re.compile(r"29\.52\s*%"), "missing 29.52%"),
         "M02": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
@@ -1034,6 +1040,16 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         )
         if any(value.replace(",", "") != "242.72" for value in sales_claims):
             return False, "conflicting 2025-Q2 리바로 sales values"
+    if qid == "F03":
+        trend_periods = {
+            period
+            for period, _value in re.findall(
+                r"(?m)^\|\s*(20\d{2}-\d{2})\s*\|\s*([0-9][0-9,.]*)\s*억원\s*\|",
+                answer_body,
+            )
+        }
+        if len(trend_periods) < 2:
+            return False, "missing multi-period 리바로 sales trend"
     if qid in P0G_TOP5_GOLDEN_QIDS:
         ranked_rows = re.findall(r"(?m)^\|\s*([1-5])(?:위)?\s*\|", answer_body)
         if any(ranked_rows.count(str(rank)) > 1 for rank in range(1, 6)):

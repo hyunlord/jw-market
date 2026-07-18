@@ -220,6 +220,30 @@ def test_history_golden_acceptance_requires_live_values() -> None:
     assert _history_golden_acceptance("F02", top5_answer) == (True, "")
 
 
+def test_fresh_representative_acceptance_requires_a_real_recent_sales_trend() -> None:
+    answer = (
+        "리바로 매출은 최근 2개월 연속 감소했습니다.\n\n"
+        "| 기간 | 매출 |\n"
+        "| --- | --- |\n"
+        "| 2026-04 | 81.21억원 |\n"
+        "| 2026-05 | 80.39억원 |"
+    )
+
+    assert _history_golden_acceptance("F03", answer) == (True, "")
+    assert _history_golden_acceptance("F03", "") == (
+        False,
+        "missing 2026-05 리바로 sales trend",
+    )
+    assert _history_golden_acceptance(
+        "F03",
+        "| 기간 | 매출 |\n| --- | --- |\n| 2026-05 | 80.39억원 |",
+    ) == (False, "missing multi-period 리바로 sales trend")
+    assert _history_golden_acceptance(
+        "F03",
+        "| 기간 | 매출 |\n| --- | --- |\n| 2026-04 | 81.21억원 |\n| 2026-05 | 81.00억원 |",
+    ) == (False, "missing 2026-05 리바로 sales trend")
+
+
 def test_history_golden_acceptance_rejects_top5_aggregate_without_ranked_rows() -> None:
     assert _history_golden_acceptance(
         "F02",
@@ -352,14 +376,14 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                     {
                         "qid": qid,
                         "elapsed_ms": 100.0,
-                        "sources": "UBIST" if qid in {"F01", "F02", "H02", "H03", "M02", "M03"} else "",
-                        "source_section_has_ubist": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
-                        "source_section_has_period": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
-                        "source_section_has_ubist_period_row": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        "sources": "UBIST" if qid in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"} else "",
+                        "source_section_has_ubist": qid in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"},
+                        "source_section_has_period": qid in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"},
+                        "source_section_has_ubist_period_row": qid in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"},
                         "source_section_has_canonical_provenance_header": qid
-                        in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"},
                         "source_section_has_complete_provenance_row": qid
-                        in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"},
                         "steps": (
                             [
                                 {"name": "질문 접수", "status": "done"},
@@ -378,6 +402,8 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                                     "name": (
                                         "브랜드 매출 조회"
                                         if qid in {"F01", "H02", "M02"}
+                                        else "브랜드 추이 확인"
+                                        if qid == "F03"
                                         else "상위 브랜드 확인"
                                     ),
                                     "status": "done",
@@ -993,12 +1019,17 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
             "status": 0,
             "latency_failures": [],
             "route_contamination_failures": {},
-            "step_evidence_failures": ["F01", "F02"],
-            "fast_path_stage_failures": ["F01", "F02"],
-            "market_tool_stage_failures": {"F01": "브랜드 매출 조회", "F02": "상위 브랜드 확인"},
+            "step_evidence_failures": ["F01", "F02", "F03"],
+            "fast_path_stage_failures": ["F01", "F02", "F03"],
+            "market_tool_stage_failures": {
+                "F01": "브랜드 매출 조회",
+                "F02": "상위 브랜드 확인",
+                "F03": "브랜드 추이 확인",
+            },
             "source_evidence_failures": {
                 "F01": {"event_sources": "", "answer_source_section_has_ubist": False},
                 "F02": {"event_sources": "", "answer_source_section_has_ubist": False},
+                "F03": {"event_sources": "", "answer_source_section_has_ubist": False},
             },
             "session_continuity_failures": {},
             "seed_execution_failures": [],
@@ -1156,7 +1187,7 @@ def test_p0g_suite_requires_completed_fast_path_stage_for_general_goldens(monkey
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert [item["fast_path_stage_failures"] for item in summary["scenarios"]] == [
-        ["F01", "F02"],
+        ["F01", "F02", "F03"],
         ["H02", "H03"],
         ["M02", "M03"],
     ]
@@ -1181,6 +1212,8 @@ def test_p0g_suite_requires_completed_market_tool_stage_for_general_goldens(monk
                             "name": (
                                 "브랜드 매출 조회"
                                 if qid in {"F01", "H02", "M02"}
+                                else "브랜드 추이 확인"
+                                if qid == "F03"
                                 else "상위 브랜드 확인"
                             ),
                             "status": "started",
@@ -1211,7 +1244,11 @@ def test_p0g_suite_requires_completed_market_tool_stage_for_general_goldens(monk
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert [item["market_tool_stage_failures"] for item in summary["scenarios"]] == [
-        {"F01": "브랜드 매출 조회", "F02": "상위 브랜드 확인"},
+        {
+            "F01": "브랜드 매출 조회",
+            "F02": "상위 브랜드 확인",
+            "F03": "브랜드 추이 확인",
+        },
         {"H02": "브랜드 매출 조회", "H03": "상위 브랜드 확인"},
         {"M02": "브랜드 매출 조회", "M03": "상위 브랜드 확인"},
     ]
@@ -1266,7 +1303,7 @@ def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatc
             {
                 "qid": qid,
                 "elapsed_ms": 100.0,
-                "sources": "—" if qid in {"F01", "F02", "H02", "H03", "M02", "M03"} else "ClinicalTrials.gov",
+                "sources": "—" if qid in {"F01", "F02", "F03", "H02", "H03", "M02", "M03"} else "ClinicalTrials.gov",
                 "source_section_has_ubist": False,
                 "steps": (
                     [{"name": "임상 데이터 조회", "status": "done"}]
@@ -1279,6 +1316,8 @@ def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatc
                             "name": (
                                 "브랜드 매출 조회"
                                 if qid in {"F01", "H02", "M02"}
+                                else "브랜드 추이 확인"
+                                if qid == "F03"
                                 else "상위 브랜드 확인"
                             ),
                             "status": "done",
@@ -1312,6 +1351,7 @@ def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatc
         {
             "F01": {"event_sources": "—", "answer_source_section_has_ubist": False},
             "F02": {"event_sources": "—", "answer_source_section_has_ubist": False},
+            "F03": {"event_sources": "—", "answer_source_section_has_ubist": False},
         },
         {
             "H02": {"event_sources": "—", "answer_source_section_has_ubist": False},
@@ -1341,7 +1381,13 @@ def test_p0g_suite_rejects_ubist_event_when_rendered_source_section_is_empty(mon
                     else [
                         {"name": "조회 계획 확정", "status": "done"},
                         {
-                            "name": "브랜드 매출 조회" if qid in {"F01", "H02", "M02"} else "상위 브랜드 확인",
+                            "name": (
+                                "브랜드 매출 조회"
+                                if qid in {"F01", "H02", "M02"}
+                                else "브랜드 추이 확인"
+                                if qid == "F03"
+                                else "상위 브랜드 확인"
+                            ),
                             "status": "done",
                         },
                     ]
@@ -1372,6 +1418,7 @@ def test_p0g_suite_rejects_ubist_event_when_rendered_source_section_is_empty(mon
     assert summary["scenarios"][0]["source_evidence_failures"] == {
         "F01": {"event_sources": "UBIST", "answer_source_section_has_ubist": False},
         "F02": {"event_sources": "UBIST", "answer_source_section_has_ubist": False},
+        "F03": {"event_sources": "UBIST", "answer_source_section_has_ubist": False},
     }
 
 
