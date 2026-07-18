@@ -21,10 +21,7 @@ def period_filters(period: str | None) -> tuple[FilterEntry, ...]:
 
 
 def ground_news_query(raw_query: str, brand: str) -> str:
-    query = normalize_news_query(raw_query, brand=brand)
-    if raw_query.strip() and not query:
-        raise ValueError("news query contains no searchable keyword after normalization")
-    return query
+    return normalize_news_query(raw_query, brand=brand)
 
 
 def metric_measure(value: str) -> str:

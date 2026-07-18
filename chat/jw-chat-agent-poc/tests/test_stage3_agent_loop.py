@@ -10,6 +10,7 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _answer_contract_required_calls, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
+from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
@@ -455,6 +456,21 @@ def test_news_query_is_normalized_before_deep_analysis_filtering() -> None:
     assert news_call["render_data"]["items"][0]["match_excerpt"]
     trace_args = result["agent_trace"][0]["observations"][0]["arguments"]
     assert trace_args["query"] == "아토젯"
+
+
+def test_brand_only_news_question_uses_unfiltered_brand_corpus() -> None:
+    execution = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        news=_news_tool(),
+    ).execute(
+        "search_news",
+        {"brand": "리바로", "query": "리바로 관련 뉴스"},
+    )
+
+    assert execution.status == "ok"
+    assert execution.call["tool"] == "deep_analysis_related_news"
+    assert execution.call["render_data"]["filter_entries"] == ()
 
 
 def test_issue_question_backfills_brand_metric_context_for_quantitative_link() -> None:
