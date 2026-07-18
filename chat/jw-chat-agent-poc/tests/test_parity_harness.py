@@ -490,7 +490,8 @@ def test_p0g_suite_fails_when_general_golden_runs_contaminated_routes(monkeypatc
     assert capture_p0g_suite(tmp_path, "live", None) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["scenarios"][1]["route_contamination_failures"] == {
-        "H02": ["첨부 문서 조회", "임상 데이터 조회"],
+        "H02": ["첨부 파일 확인", "첨부 문서 조회", "임상 데이터 조회"],
+        "H03": ["첨부 파일 확인"],
     }
 
 

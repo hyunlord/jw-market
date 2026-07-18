@@ -78,6 +78,8 @@ P0G_MARKET_TOOL_STAGE_BY_QID = {
 }
 P0G_FORBIDDEN_GENERAL_STAGE_NAMES = frozenset(
     {
+        "첨부 파일 확인",
+        "첨부 파일 구조 분석",
         "첨부 문서 조회",
         "임상 데이터 조회",
         "국내 임상 정보 확인",
