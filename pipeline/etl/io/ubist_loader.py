@@ -15,6 +15,7 @@ import math
 import re
 import shutil
 import sys
+import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import duckdb
 import openpyxl
 import pandas as pd
 import pyarrow as pa
@@ -359,25 +361,28 @@ def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
     rows_seen = 0
     for xlsx_path in xlsx_paths:
         workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-        for sheet_name in workbook.sheetnames:
-            worksheet = workbook[sheet_name]
-            rows_iter = worksheet.iter_rows(values_only=True)
-            try:
-                header1 = next(rows_iter)
-                header2 = next(rows_iter)
-            except StopIteration:
-                continue
-            mapping = classify_sheet(sheet_name, header1, header2)
-            if not any(canonical == "Generic" for _, _, canonical in mapping.dim_cols):
-                continue
-            for row in rows_iter:
-                base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
-                generic = normalize_generic_value(base.get("Generic"))
-                if not generic or not row_has_identifier(base):
+        try:
+            for sheet_name in workbook.sheetnames:
+                worksheet = workbook[sheet_name]
+                rows_iter = worksheet.iter_rows(values_only=True)
+                try:
+                    header1 = next(rows_iter)
+                    header2 = next(rows_iter)
+                except StopIteration:
                     continue
-                rows_seen += 1
-                for key in generic_lookup_keys(base):
-                    counts[key][generic] += 1
+                mapping = classify_sheet(sheet_name, header1, header2)
+                if not any(canonical == "Generic" for _, _, canonical in mapping.dim_cols):
+                    continue
+                for row in rows_iter:
+                    base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
+                    generic = normalize_generic_value(base.get("Generic"))
+                    if not generic or not row_has_identifier(base):
+                        continue
+                    rows_seen += 1
+                    for key in generic_lookup_keys(base):
+                        counts[key][generic] += 1
+        finally:
+            workbook.close()
 
     lookup = {key: counter.most_common(1)[0][0] for key, counter in counts.items() if counter}
     LOGGER.info("generic lookup built rows=%s keys=%s", f"{rows_seen:,}", f"{len(lookup):,}")
@@ -398,42 +403,45 @@ def fill_generic_from_lookup(base: dict[str, object], generic_lookup: dict[str, 
 
 def iter_xlsx_rows(xlsx_path: Path, generic_lookup: dict[str, str] | None = None):
     workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-    for sheet_name in workbook.sheetnames:
-        worksheet = workbook[sheet_name]
-        rows_iter = worksheet.iter_rows(values_only=True)
-        try:
-            header1 = next(rows_iter)
-            header2 = next(rows_iter)
-        except StopIteration:
-            continue
-
-        mapping = classify_sheet(sheet_name, header1, header2)
-        loaded_at = now_kst()
-
-        for row_no, row in enumerate(rows_iter, start=3):
-            base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
-            if not row_has_identifier(base):
+    try:
+        for sheet_name in workbook.sheetnames:
+            worksheet = workbook[sheet_name]
+            rows_iter = worksheet.iter_rows(values_only=True)
+            try:
+                header1 = next(rows_iter)
+                header2 = next(rows_iter)
+            except StopIteration:
                 continue
-            fill_generic_from_lookup(base, generic_lookup)
-            base.update(
-                {
-                    "source_file": xlsx_path.name,
-                    "source_folder": source_folder_for(xlsx_path),
-                    "source_sheet": sheet_name,
-                    "source_row_no": row_no,
-                    "ingested_at": loaded_at,
-                }
-            )
 
-            period_metrics: dict[str, dict[str, float | None]] = defaultdict(dict)
-            for idx, _, metric, period in mapping.metric_cols:
-                period_metrics[period][metric] = to_number_or_none(row[idx] if idx < len(row) else None)
+            mapping = classify_sheet(sheet_name, header1, header2)
+            loaded_at = now_kst()
 
-            for period, metrics in period_metrics.items():
-                output = dict(base)
-                output.update(metrics)
-                output["period_yyyymm"] = period
-                yield period, output
+            for row_no, row in enumerate(rows_iter, start=3):
+                base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
+                if not row_has_identifier(base):
+                    continue
+                fill_generic_from_lookup(base, generic_lookup)
+                base.update(
+                    {
+                        "source_file": xlsx_path.name,
+                        "source_folder": source_folder_for(xlsx_path),
+                        "source_sheet": sheet_name,
+                        "source_row_no": row_no,
+                        "ingested_at": loaded_at,
+                    }
+                )
+
+                period_metrics: dict[str, dict[str, float | None]] = defaultdict(dict)
+                for idx, _, metric, period in mapping.metric_cols:
+                    period_metrics[period][metric] = to_number_or_none(row[idx] if idx < len(row) else None)
+
+                for period, metrics in period_metrics.items():
+                    output = dict(base)
+                    output.update(metrics)
+                    output["period_yyyymm"] = period
+                    yield period, output
+    finally:
+        workbook.close()
 
 
 def prepare_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -576,12 +584,123 @@ def deduplicate_business_grain(frame: pd.DataFrame, period: str) -> tuple[pd.Dat
 
 
 def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
-    table = pq.read_table(path).select(COLUMNS)
-    frame = table.to_pandas()
-    deduped, report = deduplicate_business_grain(frame, period)
     temp_path = path.with_suffix(".dedup.tmp")
-    pq.write_table(pa.Table.from_pandas(deduped, schema=SCHEMA, preserve_index=False), temp_path, compression="snappy")
+    quoted_columns = ", ".join(f'"{column}"' for column in COLUMNS)
+    grain_columns = ", ".join(f'"{column}"' for column in BUSINESS_GRAIN_COLUMNS)
+    metric_columns = ", ".join(f'"{column}"' for column in METRIC_COLUMNS)
+    business_metric_columns = ", ".join(f'"{column}"' for column in BUSINESS_METRIC_COLUMNS)
+    stable_order = ", ".join(f'"{column}" ASC NULLS LAST' for column in DEDUP_SORT_COLUMNS)
+    metadata_score = " + ".join(
+        f"CASE WHEN \"{column}\" IS NOT NULL AND trim(CAST(\"{column}\" AS VARCHAR)) <> '' THEN 1 ELSE 0 END"
+        for column in STATIC_METADATA_COLUMNS
+    ) or "0"
+
+    with tempfile.TemporaryDirectory(prefix="ubist-dedup-", dir=path.parent) as work_dir_name:
+        work_dir = Path(work_dir_name)
+        spill_dir = work_dir / "spill"
+        spill_dir.mkdir()
+        connection = duckdb.connect(str(work_dir / "dedup.duckdb"))
+        try:
+            connection.execute("SET memory_limit='4GB'")
+            connection.execute("SET threads=2")
+            connection.execute("SET preserve_insertion_order=false")
+            connection.execute("SET temp_directory=?", [str(spill_dir)])
+            connection.execute(
+                f"""
+                CREATE TABLE annotated AS
+                SELECT
+                  {quoted_columns},
+                  row_number() OVER () AS _source_ordinal,
+                  ({metadata_score}) AS _static_meta_score,
+                  count(DISTINCT row({metric_columns})) OVER (
+                    PARTITION BY {grain_columns}
+                  ) AS _metric_variants
+                FROM read_parquet(?)
+                """,
+                [str(path)],
+            )
+            connection.execute(
+                f"""
+                CREATE TABLE safe_ranked AS
+                SELECT
+                  *,
+                  count(*) OVER (
+                    PARTITION BY {business_metric_columns}
+                  ) AS _duplicate_size,
+                  row_number() OVER (
+                    PARTITION BY {business_metric_columns}
+                    ORDER BY _static_meta_score DESC, {stable_order}, _source_ordinal ASC
+                  ) AS _duplicate_rank
+                FROM annotated
+                WHERE _metric_variants = 1
+                """
+            )
+            (
+                rows_before,
+                conflict_groups,
+                conflict_rows,
+                duplicate_groups,
+                duplicate_rows_removed,
+                rows_after,
+            ) = connection.execute(
+                f"""
+                SELECT
+                  (SELECT count(*) FROM annotated),
+                  (SELECT count(DISTINCT row({grain_columns})) FROM annotated WHERE _metric_variants > 1),
+                  (SELECT count(*) FROM annotated WHERE _metric_variants > 1),
+                  (SELECT count(*) FROM safe_ranked WHERE _duplicate_rank = 1 AND _duplicate_size > 1),
+                  (SELECT coalesce(sum(_duplicate_size - 1), 0) FROM safe_ranked WHERE _duplicate_rank = 1),
+                  (SELECT count(*) FROM annotated WHERE _metric_variants > 1)
+                    + (SELECT count(*) FROM safe_ranked WHERE _duplicate_rank = 1)
+                """
+            ).fetchone()
+            temp_sql = str(temp_path).replace("'", "''")
+            connection.execute(
+                f"""
+                COPY (
+                  SELECT {quoted_columns}
+                  FROM (
+                    SELECT {quoted_columns}, _source_ordinal
+                    FROM annotated
+                    WHERE _metric_variants > 1
+                    UNION ALL
+                    SELECT {quoted_columns}, _source_ordinal
+                    FROM safe_ranked
+                    WHERE _duplicate_rank = 1
+                  ) AS retained
+                  ORDER BY {stable_order}, _source_ordinal ASC
+                ) TO '{temp_sql}' (FORMAT PARQUET, COMPRESSION SNAPPY)
+                """
+            )
+        finally:
+            connection.close()
+
+    report = DedupReport(
+        period=period,
+        rows_before=int(rows_before),
+        rows_after=int(rows_after),
+        duplicate_groups=int(duplicate_groups),
+        duplicate_rows_removed=int(duplicate_rows_removed),
+        conflict_groups=int(conflict_groups),
+        conflict_rows=int(conflict_rows),
+    )
     temp_path.replace(path)
+    if report.conflict_groups:
+        LOGGER.warning(
+            "UBIST metric conflicts preserved period=%s groups=%s rows=%s",
+            period,
+            report.conflict_groups,
+            report.conflict_rows,
+        )
+    if report.duplicate_rows_removed:
+        LOGGER.info(
+            "UBIST business-grain dedup period=%s duplicate_groups=%s removed=%s rows_before=%s rows_after=%s",
+            period,
+            report.duplicate_groups,
+            report.duplicate_rows_removed,
+            report.rows_before,
+            report.rows_after,
+        )
     return report
 
 
@@ -646,6 +765,7 @@ def deduplicate_written_partitions(target: Path, stats: dict[str, PartitionStats
         path = PartitionWriter(target)._path_for(period)
         if not path.exists():
             continue
+        LOGGER.info("UBIST partition dedup start period=%s path=%s", period, path)
         report = deduplicate_partition_file(path, period)
         reports.append(report)
         table = pq.read_table(path, columns=["source_file"])
@@ -701,6 +821,11 @@ def load_to_parquet(
     finally:
         writer.close()
 
+    LOGGER.info(
+        "UBIST stream load complete rows=%s partitions=%s; starting partition dedup",
+        f"{total_rows:,}",
+        len(writer.stats),
+    )
     deduplicate_written_partitions(tmp_target, writer.stats)
     write_manifest(tmp_target, writer.stats, xlsx_paths, previous_manifest=previous_manifest)
 
