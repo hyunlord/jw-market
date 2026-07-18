@@ -305,6 +305,11 @@ def capture_p0g_suite(
     portal_file_auth_url: str | None = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
+    history_upload_error = (
+        _p0g_history_upload_fixture_error(history_upload_file)
+        if history_upload_file
+        else ""
+    )
     resolved_portal_file_access_token = portal_file_access_token
     portal_file_auth = {
         "attempted": False,
@@ -316,6 +321,7 @@ def capture_p0g_suite(
         portal_equivalent
         and history_conversation_id
         and history_upload_file
+        and not history_upload_error
         and not resolved_portal_file_access_token
         and portal_file_auth_url
     ):
@@ -333,7 +339,7 @@ def capture_p0g_suite(
         "document_count": 0,
         "uploaded_document_ids": [],
         "passed": False,
-        "error": "",
+        "error": history_upload_error,
         "cleanup_errors": [],
     }
     if (
@@ -341,6 +347,7 @@ def capture_p0g_suite(
         and base_url
         and history_conversation_id
         and history_upload_file
+        and not history_upload_error
         and resolved_portal_file_access_token
     ):
         passed, document_count, document_ids, error = _seed_portal_uploaded_file_session(
@@ -479,7 +486,11 @@ def capture_p0g_suite(
         qualification_failures.append(
             f"portal BFF authentication failed: {portal_file_auth['error']}"
         )
-    if portal_equivalent and not qualification_failures:
+    if portal_equivalent and history_upload_error:
+        qualification_failures.append(
+            f"portal BFF history upload failed: {history_upload_error}"
+        )
+    elif portal_equivalent and not qualification_failures:
         if not portal_file_probe["attempted"]:
             qualification_failures.append("portal BFF history upload was not supplied")
         elif not portal_file_probe["passed"]:
@@ -944,6 +955,12 @@ def _is_portal_market_base_url(base_url: str) -> bool:
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def _p0g_history_upload_fixture_error(upload_path: Path) -> str:
+    if upload_path.suffix.lower() == ".xlsx":
+        return ""
+    return "P-0G portal history fixture must be an .xlsx workbook"
 
 
 def _probe_uploaded_file_session(

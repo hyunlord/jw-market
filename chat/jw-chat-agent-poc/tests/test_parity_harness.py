@@ -456,8 +456,8 @@ def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() ->
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
     calls: list[tuple[Path, str | None, str | None, tuple[tuple[str, str], ...], str | None]] = []
     upload_tokens: list[str] = []
-    upload_file = tmp_path / "history.txt"
-    upload_file.write_text("history", encoding="utf-8")
+    upload_file = tmp_path / "history.xlsx"
+    upload_file.write_bytes(b"xlsx fixture")
 
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         calls.append((out_dir, external_mode, base_url, questions, conversation_id))
@@ -646,8 +646,8 @@ def test_seed_portal_uploaded_file_session_uses_browser_bff_contract(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    upload_file = tmp_path / "history.txt"
-    upload_file.write_text("history", encoding="utf-8")
+    upload_file = tmp_path / "history.xlsx"
+    upload_file.write_bytes(b"xlsx fixture")
     captured: dict[str, object] = {}
 
     class Response:
@@ -667,7 +667,7 @@ def test_seed_portal_uploaded_file_session_uses_browser_bff_contract(
             Response(
                 {
                     "documents": [
-                        {"document_id": 101, "file_name": "history.txt"},
+                        {"document_id": 101, "file_name": "history.xlsx"},
                     ]
                 }
             ),
@@ -705,10 +705,62 @@ def test_seed_portal_uploaded_file_session_uses_browser_bff_contract(
         endpoint,
         {"sessionId": "conv-file"},
         {"Authorization-Access-Token": "secret-token"},
-        "history.txt",
-        b"history",
+        "history.xlsx",
+        b"xlsx fixture",
         180,
     )
+
+
+def test_p0g_history_upload_fixture_requires_xlsx() -> None:
+    from scripts.parity_harness import _p0g_history_upload_fixture_error
+
+    assert _p0g_history_upload_fixture_error(Path("history.xlsx")) == ""
+    assert _p0g_history_upload_fixture_error(Path("history.csv")) == (
+        "P-0G portal history fixture must be an .xlsx workbook"
+    )
+
+
+def test_p0g_suite_rejects_csv_before_portal_upload(monkeypatch, tmp_path: Path) -> None:
+    upload_file = tmp_path / "history.csv"
+    upload_file.write_text("metric,value\nrevenue,1\n", encoding="utf-8")
+
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **_kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (False, 0, "no documents"),
+    )
+
+    def unexpected_upload(*_args, **_kwargs):
+        raise AssertionError("unsupported CSV must not reach the portal upload API")
+
+    monkeypatch.setattr(
+        "scripts.parity_harness._seed_portal_uploaded_file_session",
+        unexpected_upload,
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "https://portal.example/stream-lab-api",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
+        history_upload_file=upload_file,
+        portal_file_access_token="test-token",
+    ) == 1
+    report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert "portal BFF history upload failed: P-0G portal history fixture must be an .xlsx workbook" in report[
+        "qualification_failures"
+    ]
 
 
 def test_fetch_portal_file_access_token_uses_official_login_without_exposing_value(
@@ -1031,8 +1083,8 @@ def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypat
 
 
 def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeypatch, tmp_path: Path) -> None:
-    upload_file = tmp_path / "history.txt"
-    upload_file.write_text("history", encoding="utf-8")
+    upload_file = tmp_path / "history.xlsx"
+    upload_file.write_bytes(b"xlsx fixture")
 
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
