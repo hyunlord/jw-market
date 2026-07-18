@@ -10,11 +10,19 @@ from typing import Any, Protocol
 import pymysql
 
 from jw_chat_agent_poc.service.history_projection import ProjectionRequestContext
+from jw_chat_agent_poc.service.conversation import (
+    ConversationSlots,
+    ConversationTurn,
+    conversation_slots_from_dict,
+    conversation_slots_to_dict,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 
 HISTORY_TABLE_NAME = "jw_chat_agent_conversation_log"
+_CONVERSATION_SLOTS_TRACE_KEY = "_conversation_slots"
+DEFAULT_CONTEXT_TTL_SECONDS = 600
 
 
 class ConversationHistoryStore(Protocol):
@@ -30,8 +38,12 @@ class ConversationHistoryStore(Protocol):
         sources: Sequence[str],
         charts: Sequence[Mapping[str, Any]],
         projection_context: ProjectionRequestContext | None,
+        conversation_slots: ConversationSlots = ConversationSlots(),
     ) -> None:
         """Persist a completed chat turn."""
+
+    def latest_turn(self, conversation_id: str) -> ConversationTurn | None:
+        """Return the latest completed turn for cross-process follow-ups."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,10 +66,12 @@ class MySQLConversationHistoryStore:
         *,
         table_name: str = HISTORY_TABLE_NAME,
         projection_outbox: ProjectionOutboxEnqueuer | None = None,
+        context_ttl_seconds: int = DEFAULT_CONTEXT_TTL_SECONDS,
     ) -> None:
         self._config = config or _db_config_from_env()
         self._table_name = table_name
         self._projection_outbox = projection_outbox
+        self._context_ttl_seconds = max(1, context_ttl_seconds)
 
     @classmethod
     def from_env(cls) -> "MySQLConversationHistoryStore":
@@ -75,6 +89,7 @@ class MySQLConversationHistoryStore:
         sources: Sequence[str],
         charts: Sequence[Mapping[str, Any]] = (),
         projection_context: ProjectionRequestContext | None = None,
+        conversation_slots: ConversationSlots = ConversationSlots(),
     ) -> None:
         if self._config is None:
             LOGGER.warning("chat history persistence skipped: DB config is incomplete")
@@ -86,6 +101,8 @@ class MySQLConversationHistoryStore:
         elapsed_ms = timing.get("total_elapsed_ms")
         elapsed_ms_value = int(round(float(elapsed_ms))) if isinstance(elapsed_ms, int | float) else None
         tools_called = trace.get("tools_called")
+        trace_payload = dict(trace)
+        trace_payload[_CONVERSATION_SLOTS_TRACE_KEY] = conversation_slots_to_dict(conversation_slots)
         with self._connect() as connection:
             turn_index = self._next_turn_index(connection, conversation_id, session_id)
             with connection.cursor() as cursor:
@@ -119,7 +136,7 @@ class MySQLConversationHistoryStore:
                         contract_status_value,
                         quality_label,
                         elapsed_ms_value,
-                        _json_dumps(dict(trace)),
+                        _json_dumps(trace_payload),
                     ),
                 )
                 source_log_id = int(cursor.lastrowid)
@@ -144,6 +161,32 @@ class MySQLConversationHistoryStore:
                     source_log_id,
                     type(exc).__name__,
                 )
+
+    def latest_turn(self, conversation_id: str) -> ConversationTurn | None:
+        if self._config is None or not conversation_id.strip():
+            return None
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT question_text, answer_text, trace_json
+                    FROM {self._table_name}
+                    WHERE conversation_id = %s
+                      AND created_at >= UTC_TIMESTAMP() - INTERVAL %s SECOND
+                    ORDER BY turn_index DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id, self._context_ttl_seconds),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        trace_payload = _json_object(row[2])
+        return ConversationTurn(
+            question=str(row[0] or ""),
+            answer=str(row[1] or ""),
+            slots=conversation_slots_from_dict(trace_payload.get(_CONVERSATION_SLOTS_TRACE_KEY)),
+        )
 
     def _connect(self):
         assert self._config is not None
@@ -193,6 +236,20 @@ def _db_config_from_env() -> _DbConfig | None:
 
 def _json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
 def _string_value(value: object) -> str | None:

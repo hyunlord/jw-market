@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from functools import lru_cache
 from hmac import compare_digest
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -70,9 +70,10 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
-from jw_chat_agent_poc.service.conversation import ConversationStore, ConversationTurn, PendingClarification
+from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationStore, ConversationTurn, PendingClarification
 from jw_chat_agent_poc.service.conversation_context import (
     extract_conversation_slots,
+    requires_previous_turn,
     resolve_anaphora,
     reused_context_result,
     unresolved_reference_result,
@@ -193,6 +194,7 @@ class FinalAnswer:
     sources: tuple[str, ...]
     conversation_id: str | None
     file_sources: tuple[dict[str, Any], ...] = ()
+    conversation_slots: ConversationSlots = ConversationSlots()
 
 
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
@@ -347,6 +349,7 @@ def create_app(
                     list(documents),
                     request.file_context,
                     use_direct_agent_loop=use_direct_agent_loop,
+                    conversation_history=history,
                 )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
@@ -382,6 +385,7 @@ def create_app(
                     list(documents),
                     request.file_context,
                     use_direct_agent_loop=use_direct_agent_loop,
+                    conversation_history=history,
                 )
                 final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
         except ChatBusyError as exc:
@@ -509,12 +513,16 @@ def _answer_question(
     *,
     use_direct_agent_loop: bool = False,
     timing_sink: StageEventSink | None = None,
+    conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         deep_request = parse_deep_research_request(question)
         effective_question = deep_request.question
         state = store.conversations.get_or_create(conversation_id)
+        if conversation_id and not state.turns and requires_previous_turn(effective_question):
+            _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id)
+            state = store.conversations.get_or_create(state.conversation_id)
         provided_file = _has_file_signal(documents, file_context)
         file_probe_started = time.perf_counter()
         has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
@@ -713,6 +721,30 @@ def _answer_question(
             slots=extract_conversation_slots(result),
         )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
+
+
+def _hydrate_latest_conversation_turn(
+    store: SessionStore,
+    history_store: ConversationHistoryStore | None,
+    conversation_id: str,
+) -> None:
+    latest_turn = getattr(history_store, "latest_turn", None)
+    if not callable(latest_turn):
+        return
+    try:
+        turn = latest_turn(conversation_id)
+    except Exception as exc:
+        LOGGER.warning("conversation history hydration failed error_type=%s", type(exc).__name__)
+        return
+    if not isinstance(turn, ConversationTurn):
+        return
+    store.conversations.record_exchange(
+        conversation_id,
+        turn.question,
+        turn.answer,
+        turn.applied_filters,
+        slots=turn.slots,
+    )
 
 
 def _answer_mixed_parallel(
@@ -1585,6 +1617,7 @@ def _stream_resolving_session_events(
                         conversation_id,
                         use_direct_agent_loop=use_direct_agent_loop,
                         timing_sink=emit_step,
+                        conversation_history=history_store,
                     )
                     streamed_prefix = _stream_ready_prefix(item["result"])
                     if streamed_prefix:
@@ -1912,6 +1945,7 @@ def _record_conversation_history(
             sources=final_answer.sources,
             charts=final_answer.charts,
             projection_context=projection_context,
+            conversation_slots=final_answer.conversation_slots,
         )
     except Exception:
         LOGGER.exception("failed to persist chat conversation history")
@@ -1945,7 +1979,10 @@ def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
-    final_answer = _compute_final_answer(question, result, conversation_id)
+    final_answer = replace(
+        _compute_final_answer(question, result, conversation_id),
+        conversation_slots=extract_conversation_slots(result),
+    )
     notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
     if not notice or final_answer.text.startswith(notice):
         return final_answer
@@ -1966,6 +2003,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         sources=final_answer.sources,
         conversation_id=final_answer.conversation_id,
         file_sources=final_answer.file_sources,
+        conversation_slots=final_answer.conversation_slots,
     )
 
 

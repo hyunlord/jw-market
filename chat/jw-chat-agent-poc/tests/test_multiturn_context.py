@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationTurn, RankedBrandSlot, SeriesPoint
+from jw_chat_agent_poc.service.conversation import (
+    ConversationSlots,
+    ConversationTurn,
+    RankedBrandSlot,
+    SeriesPoint,
+    conversation_slots_from_dict,
+    conversation_slots_to_dict,
+)
 from jw_chat_agent_poc.service.conversation_context import extract_conversation_slots, resolve_anaphora, reused_context_result
-from jw_chat_agent_poc.service.app import compute_final_answer
+from jw_chat_agent_poc.service.app import SessionStore, _answer_question, compute_final_answer
+
+from test_service import _fake_agent_factory, _market_scope_resolver
 
 
 def _ranked_slot() -> RankedBrandSlot:
@@ -14,6 +23,20 @@ def _ranked_slot() -> RankedBrandSlot:
             SeriesPoint(period="2026-04", value_krw=20_685_385_934.33, ms_pct=9.1659, rank=1),
         ),
     )
+
+
+def test_conversation_slots_json_round_trip_preserves_verified_context() -> None:
+    slots = ConversationSlots(
+        anchor_brand="리바로",
+        market="ml_006",
+        period="2026-05",
+        ranked_brands=("로수젯",),
+        ranked=(_ranked_slot(),),
+        file_name="sellout.xlsx",
+        file_measure="PRICE",
+    )
+
+    assert conversation_slots_from_dict(conversation_slots_to_dict(slots)) == slots
 
 
 def test_extract_slots_keeps_anchor_market_period_denominator_and_ranked_series() -> None:
@@ -163,6 +186,92 @@ def test_resolve_anaphora_never_treats_period_or_metric_as_contrast_brand() -> N
         assert resolved.brand is None
         assert resolved.interpretation_notice is None
         assert resolved.unresolved_reference is True
+
+
+def test_resolve_anaphora_inherits_grounded_brand_for_metric_only_followup() -> None:
+    previous = ConversationTurn(
+        question="리바로 매출",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로"),
+    )
+
+    resolved = resolve_anaphora("점유율은?", previous)
+
+    assert resolved.resolved_question == "리바로 점유율은?"
+    assert resolved.brand == "리바로"
+    assert resolved.interpretation_notice == "리바로의 점유율로 이해했어요."
+    assert resolved.unresolved_reference is False
+
+
+def test_resolve_anaphora_inherits_grounded_brand_and_metric_for_period_only_followup() -> None:
+    previous = ConversationTurn(
+        question="리바로 2025년 매출",
+        answer="리바로 2025년 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", period="2025"),
+    )
+
+    resolved = resolve_anaphora("2024년은?", previous)
+
+    assert resolved.resolved_question == "리바로 2024년 매출은?"
+    assert resolved.brand == "리바로"
+    assert resolved.interpretation_notice == "리바로의 2024년 매출로 이해했어요."
+    assert resolved.unresolved_reference is False
+
+
+def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(monkeypatch) -> None:
+    class SharedHistory:
+        def latest_turn(self, conversation_id: str):
+            assert conversation_id == "cross-pod-conversation"
+            return ConversationTurn(
+                question="리바로 매출 추이 알려줘",
+                answer="리바로 매출 추이를 확인했습니다.",
+                slots=ConversationSlots(anchor_brand="리바로"),
+            )
+
+    captured: list[str] = []
+
+    def capture_answer(_resolver, _factory, _conversation_id, question, *_args, **_kwargs):
+        captured.append(question)
+        return {"answer": "가드렛 매출 추이", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", capture_answer)
+
+    item = _answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "그럼 가드렛은?",
+        "live",
+        "cross-pod-conversation",
+        use_direct_agent_loop=True,
+        conversation_history=SharedHistory(),
+    )
+
+    assert captured == ["가드렛 매출 추이는?"]
+    assert item["result"]["conversation_interpretation"] == "가드렛의 매출 추이로 이해했어요."
+
+
+def test_complete_question_does_not_read_shared_history(monkeypatch) -> None:
+    class SharedHistory:
+        def latest_turn(self, _conversation_id: str):
+            raise AssertionError("complete questions must not read prior history")
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.app._answer_without_pending",
+        lambda *_args, **_kwargs: {"answer": "리바로 매출", "sources": ["UBIST"], "tool_calls": []},
+    )
+
+    item = _answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "리바로 매출 알려줘",
+        "live",
+        "complete-question",
+        conversation_history=SharedHistory(),
+    )
+
+    assert item["result"]["answer"] == "리바로 매출"
 
 
 def test_final_answer_discloses_inherited_contrast_interpretation_once() -> None:

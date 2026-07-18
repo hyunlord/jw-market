@@ -24,6 +24,7 @@ from jw_chat_agent_poc.service.history_projection import (
     _positive_int_env,
 )
 from jw_chat_agent_poc.service.app import create_app
+from jw_chat_agent_poc.service.conversation import ConversationSlots, conversation_slots_to_dict
 from jw_chat_agent_poc.service.conversation_history import MySQLConversationHistoryStore, _DbConfig
 from jw_chat_agent_poc.service.genos_client import GenosClient
 
@@ -264,6 +265,7 @@ def test_public_api_key_auth_carries_trusted_portal_user_to_history(monkeypatch)
 
     assert response.status_code == 200
     assert history.calls[0]["projection_context"].portal_user_id == 85
+    assert history.calls[0]["conversation_slots"] == ConversationSlots()
 
 
 def test_internal_request_ignores_portal_user_header(monkeypatch) -> None:
@@ -369,6 +371,33 @@ def test_source_log_commits_before_projection_outbox_enqueue(monkeypatch) -> Non
     assert connection.commits == 1
     assert outbox.calls[0]["source_log_id"] == 41
     assert outbox.calls[0]["turn_index"] == 1
+
+
+def test_latest_turn_restores_slots_from_trace_json(monkeypatch) -> None:
+    slots = ConversationSlots(anchor_brand="리바로", market="ml_006", period="2026-05")
+
+    class LatestCursor(_Cursor):
+        def fetchone(self):
+            return (
+                "리바로 매출 추이",
+                "확인했습니다.",
+                {"_conversation_slots": conversation_slots_to_dict(slots)},
+            )
+
+    connection = _Connection()
+    connection.cursor_instance = LatestCursor()
+    store = MySQLConversationHistoryStore(_DbConfig("db", 3306, "jw_mart", "user", "password"))
+    monkeypatch.setattr(store, "_connect", lambda: connection)
+
+    turn = store.latest_turn("conversation-1")
+
+    assert turn is not None
+    assert turn.question == "리바로 매출 추이"
+    assert turn.slots == slots
+    statement, params = connection.cursor_instance.statements[-1]
+    assert "created_at >= UTC_TIMESTAMP() - INTERVAL %s SECOND" in statement
+    assert "ORDER BY turn_index DESC, id DESC" in statement
+    assert params == ("conversation-1", 600)
 
 
 def test_projection_outbox_failure_does_not_rollback_source_log(monkeypatch) -> None:

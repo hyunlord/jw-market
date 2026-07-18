@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import time
 from collections.abc import Callable
+from typing import Any
 from uuid import uuid4
 
 
@@ -34,6 +35,104 @@ class ConversationSlots:
     file_measure: str | None = None
     file_manufacturer: str | None = None
     file_sheet: str | None = None
+
+
+def conversation_slots_to_dict(slots: ConversationSlots) -> dict[str, Any]:
+    return {
+        "anchor_brand": slots.anchor_brand,
+        "market": slots.market,
+        "market_definition": slots.market_definition,
+        "period": slots.period,
+        "denominator": slots.denominator,
+        "ranked_brands": list(slots.ranked_brands),
+        "ranked": [
+            {
+                "brand": item.brand,
+                "rank": item.rank,
+                "series": [
+                    {
+                        "period": point.period,
+                        "value_krw": point.value_krw,
+                        "ms_pct": point.ms_pct,
+                        "rank": point.rank,
+                    }
+                    for point in item.series
+                ],
+            }
+            for item in slots.ranked
+        ],
+        "file_name": slots.file_name,
+        "file_measure": slots.file_measure,
+        "file_manufacturer": slots.file_manufacturer,
+        "file_sheet": slots.file_sheet,
+    }
+
+
+def conversation_slots_from_dict(value: object) -> ConversationSlots:
+    if not isinstance(value, dict):
+        return ConversationSlots()
+    ranked: list[RankedBrandSlot] = []
+    for item in value.get("ranked", []):
+        if not isinstance(item, dict) or not _optional_text(item.get("brand")):
+            continue
+        series: list[SeriesPoint] = []
+        for point in item.get("series", []):
+            if not isinstance(point, dict) or not _optional_text(point.get("period")):
+                continue
+            series.append(
+                SeriesPoint(
+                    period=_optional_text(point.get("period")) or "",
+                    value_krw=_optional_float(point.get("value_krw")),
+                    ms_pct=_optional_float(point.get("ms_pct")),
+                    rank=_optional_int(point.get("rank")),
+                )
+            )
+        ranked.append(
+            RankedBrandSlot(
+                brand=_optional_text(item.get("brand")) or "",
+                rank=_optional_int(item.get("rank")),
+                series=tuple(series),
+            )
+        )
+    ranked_brands = value.get("ranked_brands")
+    return ConversationSlots(
+        anchor_brand=_optional_text(value.get("anchor_brand")),
+        market=_optional_text(value.get("market")),
+        market_definition=_optional_text(value.get("market_definition")),
+        period=_optional_text(value.get("period")),
+        denominator=_optional_text(value.get("denominator")),
+        ranked_brands=(
+            tuple(text for item in ranked_brands if (text := _optional_text(item)))
+            if isinstance(ranked_brands, list)
+            else ()
+        ),
+        ranked=tuple(ranked),
+        file_name=_optional_text(value.get("file_name")),
+        file_measure=_optional_text(value.get("file_measure")),
+        file_manufacturer=_optional_text(value.get("file_manufacturer")),
+        file_sheet=_optional_text(value.get("file_sheet")),
+    )
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: object) -> int | None:
+    number = _optional_float(value)
+    return int(number) if number is not None and number.is_integer() else None
 
 
 @dataclass(frozen=True, slots=True)

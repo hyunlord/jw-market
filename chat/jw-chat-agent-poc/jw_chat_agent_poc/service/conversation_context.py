@@ -26,6 +26,13 @@ _NON_BRAND_CONTRAST_TARGET_RE = re.compile(
     r"^(?:\d{1,2}(?:월|분기)|20\d{2}년|매출|점유율|순위|시장|성분|임상|허가|부작용|환자수|그건|이건|저건)$",
     re.IGNORECASE,
 )
+_METRIC_ONLY_FOLLOWUP_RE = re.compile(
+    r"^\s*(?P<intent>매출|점유율|순위)(?:은|는)?[?!.]?\s*$",
+    re.IGNORECASE,
+)
+_PERIOD_ONLY_FOLLOWUP_RE = re.compile(
+    r"^\s*(?P<period>20\d{2}년|\d{1,2}월|\d{1,2}분기)(?:은|는)?[?!.]?\s*$"
+)
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
     (re.compile(r"점유율\s*(?:경향성|추이|흐름|변화)"), "점유율 추이"),
@@ -127,6 +134,31 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
 
 
 def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> AnaphoraResolution:
+    metric_followup = _METRIC_ONLY_FOLLOWUP_RE.match(question)
+    if metric_followup is not None:
+        if previous_turn is None or not previous_turn.slots.anchor_brand:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        brand = previous_turn.slots.anchor_brand
+        intent = metric_followup.group("intent")
+        return AnaphoraResolution(
+            resolved_question=f"{brand} {intent}은?",
+            brand=brand,
+            interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
+        )
+    period_followup = _PERIOD_ONLY_FOLLOWUP_RE.match(question)
+    if period_followup is not None:
+        if previous_turn is None or not previous_turn.slots.anchor_brand:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        intent = _inheritable_intent(previous_turn.question)
+        if not intent:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        brand = previous_turn.slots.anchor_brand
+        period = period_followup.group("period")
+        return AnaphoraResolution(
+            resolved_question=f"{brand} {period} {intent}은?",
+            brand=brand,
+            interpretation_notice=f"{brand}의 {period} {intent}로 이해했어요.",
+        )
     contrast = _CONTRAST_FOLLOWUP_RE.match(question)
     if contrast is not None:
         brand = contrast.group("brand")
@@ -175,6 +207,15 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
         market_hint = f"{slots.anchor_brand} 시장" if slots.anchor_brand else slots.market
         resolved = _MARKET_RE.sub(market_hint, resolved)
     return AnaphoraResolution(resolved_question=resolved, brand=brand, reusable_ranked=reusable)
+
+
+def requires_previous_turn(question: str) -> bool:
+    return bool(
+        _CONTRAST_FOLLOWUP_RE.match(question)
+        or _METRIC_ONLY_FOLLOWUP_RE.match(question)
+        or _PERIOD_ONLY_FOLLOWUP_RE.match(question)
+        or any(pattern.search(question) for pattern in _REFERENCE_RES)
+    )
 
 
 def _inheritable_intent(question: str) -> str:
