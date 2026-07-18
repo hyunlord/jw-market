@@ -221,12 +221,12 @@ jw-data-input(사이트) "제출 확정"
 
 | CronJob | 소관 세션 | 동작 요약 | 상태 |
 |---|---|---|---|
-| `jw-news-crawl-tier1-daily` | jw agent | `[기고 필요]` | ⏳ |
-| `jw-news-crawl-tier2-daily-slice` | jw agent | `[기고 필요]` | ⏳ |
-| `brand-activity-topic-monthly` | jw agent | `[기고 필요]` | ⏳ |
-| `brand-activity-row-topic-monthly` | jw agent | `[기고 필요]` | ⏳ |
-| `jw-agent3-refresh-daily` | jw agent | `[기고 필요]` | ⏳ |
-| `jw-pipeline-orchestrator-poll-daily` | jw agent | `[기고 필요]` (현재 suspend=True/예비) | ⏳ |
+| `jw-news-crawl-tier1-daily` | jw agent | 광범위 뉴스 크롤(규칙 스코어). 입력: 뉴스 사이트 → `news_raw`/`events_raw`(processor `workflow_196_rev5674` 등). 스케줄 `10 18 * * *`, **suspend=false**. 후행: tier2·brand_activity가 소비. 실패 시 당일 뉴스 미수집(다음 날 증분 회복). 근거 `deploy/k8s/crawler/crawl-tier1-cronjob.yaml` | ✅ |
+| `jw-news-crawl-tier2-daily-slice` | jw agent | 브랜드 정밀 AI 스코어(wf337). 당일 요일 슬라이스(brand_key 해시 1/7)만. sync-events-raw→append-live(60콜/₩203.40 상한)→**refresh-live-categories**(`events.category` 갱신, 2026-07-18 cutover 추가). 산출 `event_brand_scores`(71,318). 스케줄 `40 18 * * *`, **suspend=false**. 선행: tier1. 실패 시 해당 슬라이스 브랜드 스코어·카테고리 미갱신. 근거 `crawl-tier2-cronjob.yaml`, DOC-1b §1.4 | ✅ |
+| `brand-activity-topic-monthly` | jw agent | 월간 토픽 생성(GenOS, `run_auto_topic.py --execute`, max 86콜). 입력: `csd_channel_dynamics_stage`·`km_keyword_event_stage` → 산출 `mart_brand_activity_topics`(11)+`_runs`. 스케줄 `0 19 4 * *`, **suspend=false**. 후행: row-topic. 실패 시 토픽 미갱신(전월분 유지). 근거 evidence §A, DOC-1b §2.4 | ✅ |
+| `brand-activity-row-topic-monthly` | jw agent | 월간 row 단위 토픽 배정. 입력: 토픽+stage row → `row_topic_assignment`(172,419)/`_status`/`_share_view`. 스케줄 `0 22 4 * *`, **suspend=false**. 선행: topic-monthly. 실패 시 점유(share_view) 미갱신. 근거 evidence §A | ✅ |
+| `jw-agent3-refresh-daily` | jw agent | 브랜드 강도(strength) 일일 갱신(wf316, rev env pin 5692·fail-closed). mart 프로파일 → `agent3_brand_strength`(25,153)/`_source`(35,521). input_hash+rev 매치 시 미호출(신규/변경만 과금). 스케줄 `0 21 * * *`, **suspend=false**. 실패 시 강도 미갱신. 근거 `deploy/k8s/agent3/agent3-refresh-cronjob.yaml`, DOC-1b §2.3 | ✅ |
+| `jw-pipeline-orchestrator-poll-daily` | jw agent | 월간 데이터 체인(cache→forecast→strength→shortlong→events→elements)의 **안전망 폴링**. mart epoch 변경 시만 실행, 같은 epoch면 no-op(멱등). 스케줄 `0 16 * * *`, **suspend=true**. **★ 증분 훅 시스템(DOC-5 §3) 착지 시 대체·삭제 전제 — resume 금지**(단순 미가동 아님). 근거 `deploy/k8s/orchestrator/pipeline-orchestrator-poll-cronjob.yaml`, DOC-1b §3.4 | ⏳(예비) |
 | `jw-cache-refresh-daily` | jw market | 서빙 캐시 재생성 (기존 §2 참조) | ✅ |
 | `dynamic-market-cache-warm` | jw market | 동적 캐시 워밍 (기존 §2 참조) | ✅ |
 | `iqvia-general-sidecar-quarterly` | jw market | 분기 IQVIA 사이드카 (기존 §2 참조) | ✅ |
