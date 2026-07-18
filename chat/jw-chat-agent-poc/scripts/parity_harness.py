@@ -1037,7 +1037,8 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         return False, "incorrect 2025-Q2 리바로 sales context"
     if qid in P0G_SALES_GOLDEN_QIDS:
         sales_claims = re.findall(
-            r"2025-Q2\s+리바로\s+매출은\s+([0-9][0-9,.]*)\s*억원",
+            r"(?:2025-Q2|2025년\s*2분기)\s+리바로(?:의)?\s+매출\s*"
+            r"(?:은|는|이|가|[:=])?\s*([0-9][0-9,.]*)\s*억원",
             answer_body,
         )
         if any(value.replace(",", "") != "242.72" for value in sales_claims):

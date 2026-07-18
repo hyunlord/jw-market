@@ -309,6 +309,21 @@ def test_history_golden_acceptance_rejects_conflicting_sales_claims() -> None:
     )
 
 
+def test_history_golden_acceptance_rejects_conflicting_sales_claims_with_alternate_wording() -> None:
+    conflicting_claims = (
+        "2025년 2분기 리바로 매출은 999억원입니다.",
+        "2025-Q2 리바로의 매출은 999억원입니다.",
+        "2025-Q2 리바로 매출: 999억원입니다.",
+    )
+
+    for claim in conflicting_claims:
+        answer = f"2025-Q2 리바로 매출은 242.72억원입니다.\n{claim}"
+        assert _history_golden_acceptance("F01", answer) == (
+            False,
+            "conflicting 2025-Q2 리바로 sales values",
+        )
+
+
 def test_history_golden_acceptance_rejects_duplicate_top5_ranks() -> None:
     answer = (
         "상위 5개 합계 시장점유율은 29.52%입니다.\n\n"
