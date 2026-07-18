@@ -34,7 +34,10 @@ from jw_chat_agent_poc.common.periods import (
 )
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
-from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import (
+    enforce_answer_contract,
+    evaluate_answer_contract,
+)
 from jw_chat_agent_poc.orchestrator.bq_mixed_analysis import build_file_market_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import (
     BQAnalysisValidationError,
@@ -2158,7 +2161,12 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         isinstance(router_diagnostics, dict)
         and router_diagnostics.get("mode") == "tool_use_agent"
     )
-    general_contracts_allowed = not deep_mode and not external_tool_agent_result
+    structural_contract = str(
+        evaluate_answer_contract(active_question, "", None).get("structural_contract") or ""
+    )
+    general_contracts_allowed = not deep_mode and (
+        not external_tool_agent_result or structural_contract == "positioning"
+    )
     if not file_context_fact and market_contract_allowed and general_contracts_allowed:
         safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
     safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
