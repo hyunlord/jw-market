@@ -35,6 +35,14 @@ class GenosToolPlanner:
         deterministic_external = _deterministic_external_decision(question, observations, allowed_brands, allowed_periods)
         if deterministic_external is not None:
             return deterministic_external
+        deterministic_metric = _deterministic_named_metric_decision(
+            question,
+            observations,
+            schemas,
+            allowed_brands,
+        )
+        if deterministic_metric is not None:
+            return deterministic_metric
         if not self.token:
             return self._fallback(question, observations, schemas, allowed_brands, allowed_periods)
         try:
@@ -181,6 +189,28 @@ def _deterministic_external_decision(
     if not external_calls:
         return None
     return AgentDecision(tool_calls=external_calls)
+
+
+def _deterministic_named_metric_decision(
+    question: str,
+    observations: tuple[AgentObservation, ...],
+    schemas: tuple[dict[str, Any], ...],
+    allowed_brands: tuple[str, ...],
+) -> AgentDecision | None:
+    if observations or not _has_tool(schemas, "get_metric"):
+        return None
+    measures = _named_metric_measures(question)
+    if len(measures) != 1:
+        return None
+    return AgentDecision(
+        tool_calls=(
+            ToolCallPlan(
+                "get_metric",
+                {"brand": _brand(question, allowed_brands), "measure": measures[0]},
+                "명시 파생 지표 조회",
+            ),
+        )
+    )
 
 
 def _messages(
@@ -467,6 +497,15 @@ def _asks_explicit_metric(question: str) -> bool:
             re.IGNORECASE,
         )
     )
+
+
+def _named_metric_measures(question: str) -> tuple[str, ...]:
+    patterns = (
+        ("hhi", r"(?<![A-Za-z])HHI(?![A-Za-z])"),
+        ("momentum", r"(?<![A-Za-z])momentum(?![A-Za-z])|모멘텀"),
+        ("ei", r"(?<![A-Za-z])EI(?![A-Za-z])"),
+    )
+    return tuple(measure for measure, pattern in patterns if re.search(pattern, question, re.IGNORECASE))
 
 
 def _top_n_limit(question: str) -> str | None:

@@ -1058,6 +1058,51 @@ def test_genos_planner_uses_deterministic_external_tools_before_llm() -> None:
     assert [call.name for call in procedure_decision.tool_calls] == ["get_procedure_stats"]
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_measure"),
+    (
+        ("리바로 HHI", "hhi"),
+        ("리바로 Momentum", "momentum"),
+        ("리바로 모멘텀", "momentum"),
+        ("리바로 EI", "ei"),
+    ),
+)
+def test_genos_planner_uses_single_named_metric_before_llm(
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    expected_measure: str,
+) -> None:
+    def request_bomb(*_args, **_kwargs):
+        raise AssertionError("single named metrics must not depend on the LLM planner")
+
+    monkeypatch.setattr(GenosToolPlanner, "_request_decision", request_bomb)
+    decision = GenosToolPlanner(fallback=HeuristicToolPlanner(), token="planner-token").decide(
+        question,
+        (),
+        ({"function": {"name": "get_metric"}},),
+        ("리바로",),
+        ("2026-05",),
+    )
+
+    assert [call.name for call in decision.tool_calls] == ["get_metric"]
+    assert decision.tool_calls[0].arguments == {"brand": "리바로", "measure": expected_measure}
+
+
+def test_genos_planner_leaves_multiple_named_metrics_to_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = AgentDecision(final_answer="planner handles the combined request")
+
+    monkeypatch.setattr(GenosToolPlanner, "_request_decision", lambda *_args, **_kwargs: expected)
+    decision = GenosToolPlanner(fallback=HeuristicToolPlanner(), token="planner-token").decide(
+        "리바로 HHI와 EI 비교",
+        (),
+        ({"function": {"name": "get_metric"}},),
+        ("리바로",),
+        ("2026-05",),
+    )
+
+    assert decision == expected
+
+
 def test_genos_planner_uses_deterministic_drug_info_before_llm() -> None:
     class FallbackBomb:
         def decide(self, *_args, **_kwargs):
