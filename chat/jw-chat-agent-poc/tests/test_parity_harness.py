@@ -12,6 +12,8 @@ from scripts.parity_harness import (
     _history_golden_acceptance,
     _capture_questions,
     _http_sse,
+    _p0g_market_tool_stage_failures,
+    _p0g_route_contamination_failures,
     _p0g_source_evidence_failures,
     _source_section_forbidden_labels,
     _source_section_has_canonical_provenance_header,
@@ -881,6 +883,48 @@ def test_p0g_suite_requires_completed_market_tool_stage_for_general_goldens(monk
         {"H02": "브랜드 매출 조회", "H03": "상위 브랜드 확인"},
         {"M02": "브랜드 매출 조회", "M03": "상위 브랜드 확인"},
     ]
+
+
+def test_p0g_general_steps_reject_stale_or_skipped_public_details() -> None:
+    assert _p0g_route_contamination_failures(
+        [
+            {
+                "qid": "H02",
+                "steps": [
+                    {
+                        "name": "조회 계획 확정",
+                        "status": "done",
+                        "detail": "이전 턴 계획을 사용해 새 분류는 건너뜀",
+                    },
+                    {
+                        "name": "브랜드 매출 조회",
+                        "status": "done",
+                        "summary": "도구가 실행되지 않음",
+                    },
+                ],
+            }
+        ]
+    ) == {
+        "H02": [
+            "조회 계획 확정:이전 턴",
+            "조회 계획 확정:건너뜀",
+            "브랜드 매출 조회:실행되지",
+        ]
+    }
+
+
+def test_p0g_market_tool_stage_requires_plan_before_tool_completion() -> None:
+    assert _p0g_market_tool_stage_failures(
+        [
+            {
+                "qid": "F01",
+                "steps": [
+                    {"name": "브랜드 매출 조회", "status": "done"},
+                    {"name": "조회 계획 확정", "status": "done"},
+                ],
+            }
+        ]
+    ) == {"F01": "브랜드 매출 조회"}
 
 
 def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatch, tmp_path: Path) -> None:

@@ -103,6 +103,9 @@ P0G_FORBIDDEN_GENERAL_STEP_TEXT = (
     "임상·허가",
     "mode=parallel",
     "mode=serial",
+    "이전 턴",
+    "건너뜀",
+    "실행되지",
 )
 P0G_FORBIDDEN_GENERAL_ANSWER_TEXT = (
     "뇌경색",
@@ -471,14 +474,20 @@ def _p0g_market_tool_stage_failures(rows: list[dict[str, Any]]) -> dict[str, str
         expected_stage = P0G_MARKET_TOOL_STAGE_BY_QID.get(qid)
         if expected_stage is None:
             continue
-        completed_names = {
-            str(step.get("name", "")).strip()
-            for step in row.get("steps", ())
+        completed_positions = {
+            str(step.get("name", "")).strip(): index
+            for index, step in enumerate(row.get("steps", ()))
             if isinstance(step, dict)
             and str(step.get("status", "")).strip() == "done"
             and str(step.get("name", "")).strip()
         }
-        if expected_stage not in completed_names:
+        plan_position = completed_positions.get(P0G_FAST_PATH_STAGE_NAME)
+        tool_position = completed_positions.get(expected_stage)
+        if (
+            plan_position is None
+            or tool_position is None
+            or plan_position >= tool_position
+        ):
             failures[qid] = expected_stage
     return failures
 
