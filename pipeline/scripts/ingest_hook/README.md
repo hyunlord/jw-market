@@ -60,15 +60,17 @@ G-4 sweep). 전체: `python -m pytest tests/ingest_hook -q`.
 
 ## R-2 full-then-incremental 격리 실증
 
-`rehearse-incremental`은 full 입력에서 제출 세트를 SHA256으로 정확히 holdout한 뒤
-격리 DB/cache를 full 재생성하고, 같은 세트를 G3와 실 UBIST incremental loader로
-append한다. 이후 canonical refresh, Σ게이트, R-1 full 산출물 exact digest census를
-순서대로 수행하며 운영 schema를 publish하지 않는다.
+`rehearse-incremental`은 full 입력에서 제출 epoch의 canonical UBIST parquet
+sidecar를 holdout한 뒤 격리 DB/cache를 full 재생성한다. 이어 별도 제출 원본
+디렉터리의 XLSX를 manifest SHA256/period로 검증하고 G3와 실 UBIST incremental
+loader로 append한다. 이후 canonical refresh, Σ게이트, R-1 full 산출물 exact
+digest census를 순서대로 수행하며 운영 schema를 publish하지 않는다.
 
 ```bash
 python -m pipeline.orchestrator rehearse-incremental \
   --full-input-manifest /work/inputs/input_manifest.json \
   --submission-manifest /config/ubist-2026-05.json \
+  --submission-source-dir /work/submissions/ubist-2026-05 \
   --target-db jw_mart_rehearsal_r2_example \
   --cache-db jw_mart_s6_rehearsal_r2_example \
   --source-db jw_mart_d2_stage_20260630_r2 \

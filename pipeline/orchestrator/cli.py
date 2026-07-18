@@ -80,6 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     incremental_rehearsal.add_argument("--full-input-manifest", required=True, type=Path)
     incremental_rehearsal.add_argument("--submission-manifest", required=True, type=Path)
+    incremental_rehearsal.add_argument("--submission-source-dir", required=True, type=Path)
     incremental_rehearsal.add_argument("--target-db", required=True)
     incremental_rehearsal.add_argument("--cache-db", required=True)
     incremental_rehearsal.add_argument("--source-db", required=True)
@@ -184,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 IncrementalRehearsalConfig(
                     full_input_manifest=args.full_input_manifest,
                     submission_manifest=args.submission_manifest,
+                    submission_source_dir=args.submission_source_dir,
                     target_db=args.target_db,
                     cache_db=args.cache_db,
                     source_db=args.source_db,

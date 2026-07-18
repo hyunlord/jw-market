@@ -1,10 +1,8 @@
 """Isolated full-then-incremental rehearsal inputs and refresh plan."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -19,13 +17,19 @@ from pipeline.orchestrator.full_rehearsal import (
     FullRehearsalConfig,
     RehearsalContractError,
     RehearsalStep,
+    UbistParquetSidecar,
     build_full_rehearsal_plan,
     execute_full_rehearsal,
     load_input_manifest,
 )
 from pipeline.orchestrator.full_rehearsal_compare import ComparisonConfig, run_comparison
+from pipeline.orchestrator.incremental_rehearsal_inputs import (
+    sidecar_epoch,
+    validate_submission_sources,
+    write_baseline_manifest,
+)
 from pipeline.scripts.ingest_hook.category_map import resolve_category
-from pipeline.scripts.ingest_hook.contract import Manifest, ManifestFile, load_manifest
+from pipeline.scripts.ingest_hook.contract import Manifest, load_manifest
 from pipeline.scripts.ingest_hook.job_runner import _check_market_sigma, _validate_and_load
 
 
@@ -33,6 +37,7 @@ from pipeline.scripts.ingest_hook.job_runner import _check_market_sigma, _valida
 class IncrementalRehearsalConfig:
     full_input_manifest: Path
     submission_manifest: Path
+    submission_source_dir: Path
     target_db: str
     cache_db: str
     source_db: str
@@ -60,143 +65,48 @@ class IncrementalRehearsalConfig:
         submission = load_manifest(self.submission_manifest)
         if submission.category != "ubist" or not submission.complete:
             raise RehearsalContractError("R-2 requires one complete UBIST submission")
-
-
-@dataclass(frozen=True)
-class HoldoutInput:
-    source_path: Path
-    relative_path: Path
-    manifest_file: ManifestFile
+        validate_submission_sources(self.submission_source_dir, submission)
 
 
 @dataclass(frozen=True)
 class PreparedIncrementalInputs:
     baseline_manifest: Path
     baseline_ubist_dir: Path
-    holdouts: tuple[HoldoutInput, ...]
+    held_out_sidecars: tuple[UbistParquetSidecar, ...]
     submission: Manifest
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _link_or_copy(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(source, target)
-    except OSError:
-        shutil.copy2(source, target)
-
-
-def _copy_tree(source: Path, target: Path, *, excluded: set[Path] | None = None) -> None:
-    excluded = excluded or set()
-    for path in sorted(source.rglob("*")):
-        if not path.is_file() or path in excluded:
-            continue
-        _link_or_copy(path, target / path.relative_to(source))
-
-
-def _match_holdouts(config: IncrementalRehearsalConfig) -> tuple[HoldoutInput, ...]:
-    inputs = load_input_manifest(config.full_input_manifest)
-    submission = load_manifest(config.submission_manifest)
-    by_sha: dict[str, list[Path]] = {}
-    for path in sorted(inputs.ubist_source_dir.rglob("*.xlsx")):
-        if path.is_file() and not path.name.startswith(("~$", "._")):
-            by_sha.setdefault(_sha256(path), []).append(path)
-
-    matches: list[HoldoutInput] = []
-    for entry in submission.files:
-        candidates = by_sha.get(entry.sha256, [])
-        if len(candidates) != 1:
-            raise RehearsalContractError(
-                f"submission file {entry.path!r} must match exactly one full input by sha256; "
-                f"matches={len(candidates)}"
-            )
-        source = candidates[0]
-        matches.append(
-            HoldoutInput(
-                source_path=source,
-                relative_path=source.relative_to(inputs.ubist_source_dir),
-                manifest_file=entry,
-            )
-        )
-    return tuple(matches)
-
-
 def prepare_incremental_inputs(config: IncrementalRehearsalConfig) -> PreparedIncrementalInputs:
-    """Create a hard-linked full input tree with the submitted set held out."""
+    """Create a hard-linked full input tree with the submitted epoch held out."""
     config.validate()
     config.work_dir.mkdir(parents=True, exist_ok=False)
     inputs = load_input_manifest(config.full_input_manifest)
     submission = load_manifest(config.submission_manifest)
-    holdouts = _match_holdouts(config)
-    baseline_root = config.work_dir / "inputs-minus-increment"
-    baseline_ubist = baseline_root / "ubist"
-    baseline_iqvia = baseline_root / "iqvia"
-    _copy_tree(
-        inputs.ubist_source_dir,
-        baseline_ubist,
-        excluded={holdout.source_path for holdout in holdouts},
+    held_out_sidecars = tuple(
+        sidecar
+        for sidecar in inputs.ubist_parquet_sidecars
+        if sidecar_epoch(sidecar) == submission.epoch
     )
-    _copy_tree(inputs.iqvia_source_dir, baseline_iqvia)
-    baseline_master = baseline_root / "mi-master.xlsx"
-    _link_or_copy(inputs.mi_master, baseline_master)
-    baseline_manifest = baseline_root / "inputs.json"
-    baseline_manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "ubist_source_dir": str(baseline_ubist),
-                "iqvia_source_dir": str(baseline_iqvia),
-                "mi_master": str(baseline_master),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    if not held_out_sidecars:
+        raise RehearsalContractError(
+            f"full input must contain a {submission.epoch} sidecar for R-2 holdout"
+        )
+    baseline_sidecars = tuple(
+        sidecar
+        for sidecar in inputs.ubist_parquet_sidecars
+        if sidecar_epoch(sidecar) != submission.epoch
+    )
+    baseline_root = config.work_dir / "inputs-minus-increment"
+    baseline_manifest, baseline_ubist = write_baseline_manifest(
+        inputs,
+        baseline_root,
+        baseline_sidecars,
     )
     return PreparedIncrementalInputs(
         baseline_manifest=baseline_manifest,
         baseline_ubist_dir=baseline_ubist,
-        holdouts=holdouts,
+        held_out_sidecars=held_out_sidecars,
         submission=submission,
-    )
-
-
-def install_holdout_inputs(prepared: PreparedIncrementalInputs) -> Manifest:
-    """Add the validated monthly set to the baseline tree using stable paths."""
-    adjusted: list[ManifestFile] = []
-    for holdout in prepared.holdouts:
-        _link_or_copy(
-            holdout.source_path,
-            prepared.baseline_ubist_dir / holdout.relative_path,
-        )
-        entry = holdout.manifest_file
-        adjusted.append(
-            ManifestFile(
-                path=holdout.relative_path.as_posix(),
-                sha256=entry.sha256,
-                rows=entry.rows,
-                period_start=entry.period_start,
-                period_end=entry.period_end,
-            )
-        )
-    return Manifest(
-        contract_version=prepared.submission.contract_version,
-        epoch=prepared.submission.epoch,
-        category=prepared.submission.category,
-        complete=prepared.submission.complete,
-        files=tuple(adjusted),
-        submitted_at=prepared.submission.submitted_at,
-        uploaded_by=prepared.submission.uploaded_by,
-        manifest_path=prepared.submission.manifest_path,
-        manifest_sha=prepared.submission.manifest_sha,
-        raw=prepared.submission.raw,
     )
 
 
@@ -214,7 +124,11 @@ def build_incremental_refresh_plan(
             work_dir=config.work_dir / "build",
         )
     )
-    return tuple(step for step in full_plan if step.key not in {"load_ubist", "load_iqvia"})
+    return tuple(
+        step
+        for step in full_plan
+        if step.key not in {"load_ubist", "load_iqvia", "install_ubist_sidecars"}
+    )
 
 
 def _execute_steps(steps: tuple[RehearsalStep, ...]) -> int:
@@ -258,13 +172,14 @@ def execute_incremental_rehearsal(
                     "gate": "R-2",
                     "classification": "isolated-full-then-incremental",
                     "submission_manifest": str(config.submission_manifest),
+                    "submission_source_dir": str(config.submission_source_dir),
                     "target_db": config.target_db,
                     "target_cache_db": config.cache_db,
                     "reference_db": config.reference_db,
                     "reference_cache_db": config.reference_cache_db,
                     "writes_operating": False,
                     "phases": [
-                        "full-minus-submission",
+                        "full-minus-sidecar",
                         "g3-exact-load",
                         "refresh",
                         "sigma",
@@ -289,7 +204,7 @@ def execute_incremental_rehearsal(
     if rc != 0:
         return rc
 
-    submission = install_holdout_inputs(prepared)
+    submission = prepared.submission
     spec = resolve_category(submission.category)
     refresh_plan = build_incremental_refresh_plan(config, prepared.baseline_manifest)
     environment = {
@@ -306,7 +221,7 @@ def execute_incremental_rehearsal(
         report = _validate_and_load(
             submission,
             spec,
-            prepared.baseline_ubist_dir,
+            config.submission_source_dir,
             previous_total_rows=None,
             rehearsal_root=None,
         )

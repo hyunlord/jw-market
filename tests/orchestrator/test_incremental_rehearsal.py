@@ -12,7 +12,6 @@ from pipeline.orchestrator.incremental_rehearsal import (
     IncrementalRehearsalConfig,
     build_incremental_refresh_plan,
     execute_incremental_rehearsal,
-    install_holdout_inputs,
     prepare_incremental_inputs,
 )
 from pipeline.orchestrator.full_rehearsal import RehearsalContractError
@@ -22,7 +21,8 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
     raw = tmp_path / "raw"
     ubist = raw / "ubist"
     iqvia = raw / "iqvia"
-    holdout = ubist / "monthly" / "may.xlsx"
+    submission_root = raw / "submission"
+    holdout = submission_root / "holdout" / "may.xlsx"
     baseline = ubist / "history" / "history.xlsx"
     holdout.parent.mkdir(parents=True)
     baseline.parent.mkdir(parents=True)
@@ -32,14 +32,24 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
     (iqvia / "nsa.csv").write_text("period,brand,value\n", encoding="utf-8")
     master = raw / "mi-master.xlsx"
     master.write_bytes(b"mi-master")
+    sidecar = raw / "sidecars" / "year=2026" / "month=05" / "data.parquet"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_bytes(b"canonical-may-parquet")
     full_manifest = raw / "full-inputs.json"
     full_manifest.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "ubist_source_dir": str(ubist),
                 "iqvia_source_dir": str(iqvia),
                 "mi_master": str(master),
+                "ubist_parquet_sidecars": [
+                    {
+                        "path": str(sidecar),
+                        "relative_path": "year=2026/month=05/data.parquet",
+                        "sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -55,7 +65,7 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
                 "submitted_at": "2026-07-18T09:00:00+09:00",
                 "files": [
                     {
-                        "path": "incoming/may.xlsx",
+                        "path": "holdout/may.xlsx",
                         "sha256": hashlib.sha256(holdout.read_bytes()).hexdigest(),
                         "period_start": "2026-05",
                         "period_end": "2026-05",
@@ -68,6 +78,7 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
     return IncrementalRehearsalConfig(
         full_input_manifest=full_manifest,
         submission_manifest=submission,
+        submission_source_dir=submission_root,
         target_db="jw_mart_rehearsal_r2_20260718",
         cache_db="jw_mart_s6_rehearsal_r2_20260718",
         source_db="jw_mart_d2_stage_20260630_r2",
@@ -78,7 +89,7 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
     )
 
 
-def test_prepare_matches_holdout_by_sha_and_builds_full_minus_increment(tmp_path):
+def test_prepare_holds_out_submission_epoch_sidecar_and_keeps_xlsx_separate(tmp_path):
     config = _write_config(tmp_path)
 
     prepared = prepare_incremental_inputs(config)
@@ -87,14 +98,37 @@ def test_prepare_matches_holdout_by_sha_and_builds_full_minus_increment(tmp_path
     assert [path.relative_to(baseline_ubist).as_posix() for path in baseline_ubist.rglob("*.xlsx")] == [
         "history/history.xlsx"
     ]
-    assert len(prepared.holdouts) == 1
-    assert prepared.holdouts[0].relative_path.as_posix() == "monthly/may.xlsx"
-    assert not (baseline_ubist / "monthly" / "may.xlsx").exists()
+    assert [item.relative_path.as_posix() for item in prepared.held_out_sidecars] == [
+        "year=2026/month=05/data.parquet"
+    ]
+    baseline_manifest = json.loads(prepared.baseline_manifest.read_text(encoding="utf-8"))
+    assert baseline_manifest["schema_version"] == 1
+    assert "ubist_parquet_sidecars" not in baseline_manifest
+    assert (config.submission_source_dir / "holdout" / "may.xlsx").read_bytes() == b"may-workbook"
 
-    adjusted = install_holdout_inputs(prepared)
 
-    assert (baseline_ubist / "monthly" / "may.xlsx").read_bytes() == b"may-workbook"
-    assert [entry.path for entry in adjusted.files] == ["monthly/may.xlsx"]
+def test_prepare_preserves_sidecars_outside_submission_epoch(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    full_manifest = json.loads(config.full_input_manifest.read_text(encoding="utf-8"))
+    april = config.full_input_manifest.parent / "sidecars" / "year=2026" / "month=04" / "data.parquet"
+    april.parent.mkdir(parents=True)
+    april.write_bytes(b"canonical-april-parquet")
+    full_manifest["ubist_parquet_sidecars"].append(
+        {
+            "path": str(april),
+            "relative_path": "year=2026/month=04/data.parquet",
+            "sha256": hashlib.sha256(april.read_bytes()).hexdigest(),
+        }
+    )
+    config.full_input_manifest.write_text(json.dumps(full_manifest), encoding="utf-8")
+
+    prepared = prepare_incremental_inputs(config)
+
+    baseline_manifest = json.loads(prepared.baseline_manifest.read_text(encoding="utf-8"))
+    assert baseline_manifest["schema_version"] == 2
+    assert [row["relative_path"] for row in baseline_manifest["ubist_parquet_sidecars"]] == [
+        "year=2026/month=04/data.parquet"
+    ]
 
 
 def test_incremental_refresh_reuses_isolated_full_outputs_from_catalog_onward(tmp_path):
@@ -119,6 +153,66 @@ def test_incremental_refresh_reuses_isolated_full_outputs_from_catalog_onward(tm
     ]
     assert all(not step.writes_operating for step in plan)
     assert all("jw_mart_d2_stage_20260630_r2" not in step.argv for step in plan[:7])
+    assert "install_ubist_sidecars" not in [step.key for step in plan]
+
+
+def test_prepare_rejects_submission_without_matching_full_sidecar(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    payload = json.loads(config.full_input_manifest.read_text(encoding="utf-8"))
+    payload["ubist_parquet_sidecars"] = []
+    payload["schema_version"] = 1
+    config.full_input_manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RehearsalContractError, match="2026-05 sidecar"):
+        prepare_incremental_inputs(config)
+
+
+def test_prepare_rejects_missing_submission_source_file(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    (config.submission_source_dir / "holdout" / "may.xlsx").unlink()
+
+    with pytest.raises(RehearsalContractError, match="submission source is missing"):
+        prepare_incremental_inputs(config)
+
+
+def test_prepare_rejects_submission_source_sha_mismatch(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    (config.submission_source_dir / "holdout" / "may.xlsx").write_bytes(b"changed")
+
+    with pytest.raises(RehearsalContractError, match="SHA256 mismatch"):
+        prepare_incremental_inputs(config)
+
+
+def test_prepare_rejects_submission_period_outside_epoch(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    payload = json.loads(config.submission_manifest.read_text(encoding="utf-8"))
+    payload["files"][0]["period_start"] = "2026-04"
+    config.submission_manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RehearsalContractError, match="cover epoch 2026-05 exactly"):
+        prepare_incremental_inputs(config)
+
+
+def test_prepare_rejects_submission_path_escape(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    payload = json.loads(config.submission_manifest.read_text(encoding="utf-8"))
+    payload["files"][0]["path"] = "../may.xlsx"
+    config.submission_manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RehearsalContractError, match="unsafe submission source path"):
+        prepare_incremental_inputs(config)
+
+
+def test_prepare_rejects_submission_symlink_escape(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    source = config.submission_source_dir / "holdout" / "may.xlsx"
+    outside = tmp_path / "outside.xlsx"
+    outside.write_bytes(source.read_bytes())
+    source.unlink()
+    source.symlink_to(outside)
+
+    with pytest.raises(RehearsalContractError, match="escapes submission source directory"):
+        prepare_incremental_inputs(config)
 
 
 def test_config_rejects_unsafe_reference_schema_before_execution(tmp_path: Path) -> None:
@@ -140,15 +234,20 @@ def test_execute_runs_full_then_incremental_then_sigma_then_comparison(
     config = _write_config(tmp_path)
     events: list[str] = []
     comparison_contract: dict[str, str] = {}
+    load_roots: list[Path] = []
 
     monkeypatch.setattr(
         "pipeline.orchestrator.incremental_rehearsal.execute_full_rehearsal",
         lambda *_args, **_kwargs: events.append("full-minus") or 0,
     )
+    def validate_and_load(*args, **_kwargs):
+        events.append("g3-load")
+        load_roots.append(args[2])
+        return SimpleNamespace(epoch="2026-05", observed_periods={"2026-05"})
+
     monkeypatch.setattr(
         "pipeline.orchestrator.incremental_rehearsal._validate_and_load",
-        lambda *_args, **_kwargs: events.append("g3-load")
-        or SimpleNamespace(epoch="2026-05", observed_periods={"2026-05"}),
+        validate_and_load,
     )
     monkeypatch.setattr(
         "pipeline.orchestrator.incremental_rehearsal._execute_steps",
@@ -172,6 +271,7 @@ def test_execute_runs_full_then_incremental_then_sigma_then_comparison(
 
     assert rc == 0
     assert events == ["full-minus", "g3-load", "refresh", "sigma", "compare"]
+    assert load_roots == [config.submission_source_dir]
     assert comparison_contract == {
         "gate": "R-2",
         "environment": "isolated-full-then-incremental",
@@ -224,6 +324,8 @@ def test_rehearse_incremental_cli_dry_run_is_write_free(
             str(config.full_input_manifest),
             "--submission-manifest",
             str(config.submission_manifest),
+            "--submission-source-dir",
+            str(config.submission_source_dir),
             "--target-db",
             config.target_db,
             "--cache-db",
