@@ -13,6 +13,7 @@ from scripts.parity_harness import (
     _capture_questions,
     _http_sse,
     _p0g_source_evidence_failures,
+    _source_section_has_labels_in_row,
     capture_p0g_suite,
     diff_captures,
 )
@@ -217,6 +218,7 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                         "sources": "UBIST" if qid in {"F01", "F02", "H02", "H03", "M02", "M03"} else "",
                         "source_section_has_ubist": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "source_section_has_period": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        "source_section_has_ubist_period_row": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "steps": (
                             [
                                 {"name": "질문 접수", "status": "done"},
@@ -948,6 +950,40 @@ def test_p0g_source_evidence_requires_the_golden_period_in_rendered_sources() ->
             "answer_source_section_has_period": False,
         },
     }
+
+
+def test_p0g_source_evidence_requires_ubist_and_period_in_the_same_row() -> None:
+    assert _p0g_source_evidence_failures(
+        [
+            {
+                "qid": "F01",
+                "sources": "UBIST",
+                "source_section_has_ubist": True,
+                "source_section_has_period": True,
+                "source_section_has_ubist_period_row": False,
+            }
+        ]
+    ) == {
+        "F01": {
+            "event_sources": "UBIST",
+            "expected_period": "2025-Q2",
+            "answer_source_section_has_ubist_period_row": False,
+        }
+    }
+
+
+def test_source_section_row_match_does_not_combine_different_rows() -> None:
+    same_row = (
+        "답변\n\n## 출처\n"
+        "| 출처 | 기준기간 |\n| --- | --- |\n| UBIST | 2025-Q2 |"
+    )
+    split_rows = (
+        "답변\n\n## 출처\n"
+        "| 출처 | 기준기간 |\n| --- | --- |\n| UBIST | — |\n| 외부 API | 2025-Q2 |"
+    )
+
+    assert _source_section_has_labels_in_row(same_row, ("UBIST", "2025-Q2")) is True
+    assert _source_section_has_labels_in_row(split_rows, ("UBIST", "2025-Q2")) is False
 
 
 def test_parity_harness_allows_text_variation_when_numbers_are_grounded(tmp_path: Path) -> None:

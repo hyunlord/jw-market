@@ -216,6 +216,14 @@ def capture(
                 if qid in P0G_SOURCE_PERIOD_BY_QID
                 else False
             ),
+            "source_section_has_ubist_period_row": (
+                _source_section_has_labels_in_row(
+                    parsed.answer_markdown,
+                    ("UBIST", P0G_SOURCE_PERIOD_BY_QID[qid]),
+                )
+                if qid in P0G_SOURCE_PERIOD_BY_QID
+                else False
+            ),
             "answer_forbidden_tokens": [
                 token
                 for token in P0G_FORBIDDEN_GENERAL_ANSWER_TEXT
@@ -478,6 +486,14 @@ def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[
                 "expected_period": expected_period,
                 "answer_source_section_has_period": source_section_has_period,
             }
+            continue
+        source_section_has_ubist_period_row = row.get("source_section_has_ubist_period_row") is True
+        if not source_section_has_ubist_period_row:
+            failures[qid] = {
+                "event_sources": raw_sources,
+                "expected_period": expected_period,
+                "answer_source_section_has_ubist_period_row": source_section_has_ubist_period_row,
+            }
     return failures
 
 
@@ -486,6 +502,20 @@ def _source_section_has_label(answer: str, label: str) -> bool:
     if not marker:
         return False
     return re.search(rf"(?<![A-Za-z0-9_]){re.escape(label)}(?![A-Za-z0-9_])", source_section) is not None
+
+
+def _source_section_has_labels_in_row(answer: str, labels: tuple[str, ...]) -> bool:
+    _body, marker, source_section = answer.rpartition("## 출처")
+    if not marker:
+        return False
+    patterns = tuple(
+        re.compile(rf"(?<![A-Za-z0-9_]){re.escape(label)}(?![A-Za-z0-9_])")
+        for label in labels
+    )
+    return any(
+        line.lstrip().startswith("|") and all(pattern.search(line) for pattern in patterns)
+        for line in source_section.splitlines()
+    )
 
 
 def _p0g_seed_execution_failures(scenario: str, rows: list[dict[str, Any]]) -> list[str]:
