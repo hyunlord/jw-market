@@ -178,6 +178,7 @@ class BrandResolver:
                 if not name:
                     continue
                 sidecar = self._sidecar_by_brand.get(name, {})
+                membership_source = str(membership.get("support_source") or "catalog_membership")
                 item = merged.setdefault(
                     name,
                     {
@@ -191,9 +192,14 @@ class BrandResolver:
                         "market_id": None,
                         "market_name": None,
                         "market_memberships": [],
-                        "support_source": "catalog_membership",
+                        "support_source": membership_source,
                     },
                 )
+                if membership_source == "strategic_mart" and item["support_source"] in {
+                    "catalog_alias",
+                    "catalog_membership",
+                }:
+                    item["support_source"] = membership_source
                 pair = (str(membership.get("market_id") or ""), str(membership.get("market_name") or ""))
                 if pair[0] and pair not in item["market_memberships"]:
                     item["market_memberships"].append(pair)

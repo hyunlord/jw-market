@@ -71,26 +71,54 @@ class MariaDbCatalogMembershipReader:
     @staticmethod
     def membership_sql() -> str:
         return """
-            SELECT DISTINCT
-                   COALESCE(
-                       NULLIF(brand.general_brand_key, ''),
-                       NULLIF(brand.canonical_name, ''),
-                       NULLIF(brand.merge_name, ''),
-                       brand.name
-                   ) AS brand,
-                   brand.ml_id AS market_id,
-                   market.name AS market_name
-            FROM catalog_strategic_brand AS brand
-            INNER JOIN catalog_ml_market AS market ON market.ml_id = brand.ml_id
-            WHERE brand.is_excluded = 0
-              AND brand.ml_id IS NOT NULL
-              AND COALESCE(
-                    NULLIF(brand.general_brand_key, ''),
-                    NULLIF(brand.canonical_name, ''),
-                    NULLIF(brand.merge_name, ''),
-                    brand.name
-                  ) IS NOT NULL
-            ORDER BY brand, market_id
+            SELECT membership.brand,
+                   membership.market_id,
+                   market.name AS market_name,
+                   CASE
+                       WHEN MAX(membership.is_direct_mart_brand) = 1 THEN 'strategic_mart'
+                       ELSE 'catalog_alias'
+                   END AS support_source
+            FROM (
+                SELECT DISTINCT
+                       mart.brand_name AS brand,
+                       mart.ml_id AS market_id,
+                       1 AS is_direct_mart_brand
+                FROM mart_strategic_ml_brand_metric AS mart
+                WHERE mart.brand_name IS NOT NULL
+                  AND mart.brand_name <> ''
+                  AND mart.ml_id IS NOT NULL
+
+                UNION ALL
+
+                SELECT DISTINCT
+                       COALESCE(
+                           NULLIF(brand.general_brand_key, ''),
+                           NULLIF(brand.canonical_name, ''),
+                           NULLIF(brand.merge_name, ''),
+                           brand.name
+                       ) AS brand,
+                       brand.ml_id AS market_id,
+                       0 AS is_direct_mart_brand
+                FROM catalog_strategic_brand AS brand
+                INNER JOIN (
+                    SELECT DISTINCT brand_id, ml_id
+                    FROM mart_strategic_ml_brand_metric
+                    WHERE brand_id IS NOT NULL
+                      AND ml_id IS NOT NULL
+                ) AS mart_brand
+                    ON brand.brand_id = mart_brand.brand_id
+                   AND brand.ml_id = mart_brand.ml_id
+                WHERE brand.is_excluded = 0
+                  AND COALESCE(
+                        NULLIF(brand.general_brand_key, ''),
+                        NULLIF(brand.canonical_name, ''),
+                        NULLIF(brand.merge_name, ''),
+                        brand.name
+                      ) IS NOT NULL
+            ) AS membership
+            LEFT JOIN catalog_ml_market AS market ON market.ml_id = membership.market_id
+            GROUP BY membership.brand, membership.market_id, market.name
+            ORDER BY membership.brand, membership.market_id
         """
 
     def load(self) -> tuple[dict[str, str], ...]:
@@ -117,6 +145,7 @@ class MariaDbCatalogMembershipReader:
                 "brand": str(row["brand"]),
                 "market_id": str(row["market_id"]),
                 "market_name": str(row.get("market_name") or row["market_id"]),
+                "support_source": str(row.get("support_source") or "strategic_mart"),
             }
             for row in rows
         )

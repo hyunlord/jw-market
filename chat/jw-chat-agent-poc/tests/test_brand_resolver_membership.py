@@ -65,6 +65,24 @@ def test_cache_brand_metadata_wins_over_catalog_membership() -> None:
     assert resolution.support_source.startswith("cache_brands")
 
 
+def test_membership_support_source_is_preserved_for_mart_backed_brand() -> None:
+    memberships = StaticMembershipReader(
+        (
+            {
+                "brand": "광동 아토르바스타틴",
+                "market_id": "ml_006",
+                "market_name": "스타틴 시장",
+                "support_source": "strategic_mart",
+            },
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    resolution = resolver.resolve("광동 아토르바스타틴", allow_default=False)
+
+    assert resolution.support_source == "strategic_mart"
+
+
 def test_cache_resolver_adds_mart_molecule_without_erasing_sidecar() -> None:
     molecule_reader = StaticMoleculeReader(
         (
@@ -113,7 +131,15 @@ def test_factory_wires_catalog_as_membership_reader(monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.parametrize(
     "support_source",
-    ("catalog_membership", "mart_membership", "cache_brands", "cache_brands+fixture_sidecar"),
+    (
+        "catalog_membership",
+        "catalog_alias",
+        "mart_membership",
+        "strategic_mart",
+        "strategic_mart+mart_brand_molecule",
+        "cache_brands",
+        "cache_brands+fixture_sidecar",
+    ),
 )
 def test_serving_resolver_sources_prefer_current_mart_metrics(support_source: str) -> None:
     assert _prefer_mart_metric(support_source) is True

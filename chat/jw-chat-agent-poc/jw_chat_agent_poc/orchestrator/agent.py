@@ -806,11 +806,13 @@ def _annotate_external_tool_fallback(payload: dict[str, Any], fallback_code: str
 
 
 def _prefer_mart_metric(support_source: str) -> bool:
-    return support_source in {
+    primary_source = support_source.split("+", 1)[0]
+    return primary_source in {
         "catalog_membership",
+        "catalog_alias",
         "mart_membership",
+        "strategic_mart",
         "cache_brands",
-        "cache_brands+fixture_sidecar",
     }
 
 
