@@ -87,9 +87,10 @@ def prepare_incremental_inputs(config: IncrementalRehearsalConfig) -> PreparedIn
         for sidecar in inputs.ubist_parquet_sidecars
         if sidecar_epoch(sidecar) == submission.epoch
     )
-    if not held_out_sidecars:
+    if len(held_out_sidecars) != 1:
         raise RehearsalContractError(
-            f"full input must contain a {submission.epoch} sidecar for R-2 holdout"
+            f"full input must contain exactly one {submission.epoch} sidecar for R-2 holdout; "
+            f"found {len(held_out_sidecars)}"
         )
     baseline_sidecars = tuple(
         sidecar

@@ -167,6 +167,30 @@ def test_prepare_rejects_submission_without_matching_full_sidecar(tmp_path: Path
         prepare_incremental_inputs(config)
 
 
+def test_prepare_rejects_multiple_sidecars_for_submission_epoch(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    payload = json.loads(config.full_input_manifest.read_text(encoding="utf-8"))
+    duplicate_epoch = (
+        config.full_input_manifest.parent
+        / "sidecars"
+        / "year=2026"
+        / "month=05"
+        / "second.parquet"
+    )
+    duplicate_epoch.write_bytes(b"second-canonical-may-parquet")
+    payload["ubist_parquet_sidecars"].append(
+        {
+            "path": str(duplicate_epoch),
+            "relative_path": "year=2026/month=05/second.parquet",
+            "sha256": hashlib.sha256(duplicate_epoch.read_bytes()).hexdigest(),
+        }
+    )
+    config.full_input_manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RehearsalContractError, match="exactly one 2026-05 sidecar"):
+        prepare_incremental_inputs(config)
+
+
 def test_prepare_rejects_missing_submission_source_file(tmp_path: Path) -> None:
     config = _write_config(tmp_path)
     (config.submission_source_dir / "holdout" / "may.xlsx").unlink()
