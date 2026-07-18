@@ -78,7 +78,7 @@ def terminal_streak(values: list[float]) -> tuple[str | None, int]:
     direction = "up" if values[-1] > values[-2] else "down" if values[-1] < values[-2] else None
     if direction is None:
         return None, 0
-    count = 1
+    count = 0
     for left, right in zip(reversed(values[:-1]), reversed(values[1:]), strict=True):
         if (direction == "up" and right > left) or (direction == "down" and right < left):
             count += 1

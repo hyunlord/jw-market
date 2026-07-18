@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -114,6 +115,14 @@ class _SingleBrandTrendFact:
     trough: _TrendPoint
     latest: _TrendPoint
     market_by_period: dict[str, _TrendPoint]
+
+
+@dataclass(frozen=True, slots=True)
+class _RelationalSeriesFact:
+    sales: tuple[_TrendPoint, ...]
+    shares: tuple[_TrendPoint, ...]
+    market: tuple[_TrendPoint, ...]
+    ranks: tuple[_TrendPoint, ...]
 
 
 def generation_attempts() -> int:
@@ -1910,6 +1919,217 @@ def remove_supported_series_contradictions(answer: str, fact_md: str) -> str:
             continue
         kept.append(line)
     return "\n".join(kept).strip()
+
+
+def enforce_relational_numeric_claims(
+    question: str,
+    answer: str,
+    calls: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+) -> str:
+    """Recompute trend relations from raw series before releasing prose."""
+
+    fact = _relational_series_fact(question, calls)
+    if fact is None or not answer.strip():
+        return answer
+    revised = _repair_streak_claims(question, answer, fact)
+    revised = _repair_turning_claims(question, revised, fact)
+    revised = _repair_endpoint_direction_claims(question, revised, fact)
+    revised = _repair_rank_claims(revised, fact)
+    return _repair_growth_relation_claims(revised, fact)
+
+
+def _relational_series_fact(
+    question: str,
+    calls: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+) -> _RelationalSeriesFact | None:
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for call in calls or ():
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        raw_series = data.get("brand_value_series_10pt")
+        if isinstance(raw_series, list) and len(raw_series) >= 2:
+            candidates.append((str(data.get("brand") or "").strip(), data))
+    if not candidates:
+        return None
+    matching = [(brand, data) for brand, data in candidates if brand and brand in question]
+    if matching:
+        _brand, selected = matching[0]
+    else:
+        candidate_brands = {brand for brand, _data in candidates if brand}
+        if len(candidate_brands) > 1:
+            return None
+        _brand, selected = candidates[0]
+    raw_series = selected.get("brand_value_series_10pt")
+    sales = _relation_points(raw_series, "sales")
+    shares = _relation_points(raw_series, "share")
+    ranks = _relation_points(raw_series, "rank")
+    market = _relation_points(selected.get("market_size_series"), "sales")
+    if len(sales) < 2 and len(shares) < 2:
+        return None
+    return _RelationalSeriesFact(sales=sales, shares=shares, market=market, ranks=ranks)
+
+
+def _relation_points(raw_series: Any, metric: str) -> tuple[_TrendPoint, ...]:
+    if not isinstance(raw_series, list):
+        return ()
+    points: list[_TrendPoint] = []
+    for item in raw_series:
+        if not isinstance(item, dict):
+            continue
+        period = str(item.get("period") or "").strip()
+        if not period:
+            continue
+        if metric == "share":
+            raw_value = item.get("ms_pct")
+            value_text = pct_value(raw_value)
+        elif metric == "rank":
+            raw_value = item.get("rank")
+            value_text = f"{raw_value}위" if isinstance(raw_value, int) else ""
+        else:
+            raw_value = item.get("value_억원")
+            if not isinstance(raw_value, int | float):
+                raw_krw = item.get("value_krw")
+                raw_value = float(raw_krw) / 100_000_000 if isinstance(raw_krw, int | float) else None
+            value_text = eok_value(raw_value, None)
+        if not isinstance(raw_value, int | float) or not math.isfinite(float(raw_value)):
+            continue
+        points.append(_TrendPoint(period=period, value=float(raw_value), value_text=value_text))
+    return tuple(sorted(points, key=lambda point: _period_sort_key(point.period)))
+
+
+def _repair_streak_claims(question: str, answer: str, fact: _RelationalSeriesFact) -> str:
+    pattern = re.compile(r"최근\s*\d+\s*(?:개월|분기|년)\s*연속\s*(?:상승|하락)")
+
+    def replace(match: re.Match[str]) -> str:
+        points = _relation_claim_points(question, answer, match.start(), fact)
+        direction, count = _terminal_relation_streak(points)
+        if direction is None or count <= 0:
+            return "최근 흐름은 보합"
+        label = "상승" if direction == "up" else "하락"
+        unit = _relation_period_unit(points)
+        if count >= 2:
+            return f"최근 {count}{unit} 연속 {label}"
+        comparison_unit = "월" if unit == "개월" else unit
+        return f"직전 {comparison_unit} 대비 {label}"
+
+    return pattern.sub(replace, answer)
+
+
+def _repair_turning_claims(question: str, answer: str, fact: _RelationalSeriesFact) -> str:
+    pattern = re.compile(
+        r"(?P<period>20\d{2}-(?:\d{2}|Q[1-4]))\s*"
+        r"(?P<kind>정점|최고점|저점|최저점)\s*후\s*(?P<move>하락|감소|반등|상승)"
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        points = _relation_claim_points(question, answer, match.start(), fact)
+        if len(points) < 2:
+            return match.group(0)
+        kind = match.group("kind")
+        extreme = max(points, key=lambda point: point.value) if kind in {"정점", "최고점"} else min(
+            points, key=lambda point: point.value
+        )
+        latest = points[-1]
+        move = match.group("move")
+        supported = latest.value < extreme.value if move in {"하락", "감소"} else latest.value > extreme.value
+        if not supported:
+            return f"{extreme.period} {kind}"
+        return f"{extreme.period} {kind} 후 {move}"
+
+    return pattern.sub(replace, answer)
+
+
+def _repair_endpoint_direction_claims(question: str, answer: str, fact: _RelationalSeriesFact) -> str:
+    pattern = re.compile(r"시작점\s*대비\s*최신\s*값이\s*(?:높아|낮아)\s*(?:상승|하락)\s*흐름")
+
+    def replace(match: re.Match[str]) -> str:
+        points = _relation_claim_points(question, answer, match.start(), fact)
+        if len(points) < 2 or points[-1].value == points[0].value:
+            return "시작점 대비 최신 값은 같은 수준"
+        rising = points[-1].value > points[0].value
+        return f"시작점 대비 최신 값이 {'높아 상승' if rising else '낮아 하락'} 흐름"
+
+    return pattern.sub(replace, answer)
+
+
+def _repair_rank_claims(answer: str, fact: _RelationalSeriesFact) -> str:
+    if len(fact.ranks) < 2:
+        return answer
+    start = int(fact.ranks[0].value)
+    end = int(fact.ranks[-1].value)
+    pattern = re.compile(r"순위는\s*\d+위\s*에서\s*\d+위\s*로\s*변했습니다")
+    return pattern.sub(f"순위는 {start}위에서 {end}위로 변했습니다", answer)
+
+
+def _repair_growth_relation_claims(answer: str, fact: _RelationalSeriesFact) -> str:
+    if len(fact.sales) < 2 or len(fact.market) < 2:
+        return answer
+    brand_growth = _relation_growth(fact.sales[0].value, fact.sales[-1].value)
+    market_growth = _relation_growth(fact.market[0].value, fact.market[-1].value)
+    if brand_growth is None or market_growth is None:
+        return answer
+    if brand_growth > market_growth:
+        replacement = "브랜드 성장률이 시장 성장률보다 높아 시장보다 빠르게 성장했습니다"
+    elif brand_growth < market_growth:
+        replacement = "브랜드 성장률이 시장 성장률보다 낮아 시장 성장 속도에는 못 미쳤습니다"
+    else:
+        replacement = "브랜드와 시장의 성장률은 같은 수준이었습니다"
+    pattern = re.compile(r"브랜드 성장률이 시장 성장률보다 (?:높아|낮아)[^.]*습니다")
+    return pattern.sub(replacement, answer)
+
+
+def _relation_growth(start: float, end: float) -> float | None:
+    if start == 0:
+        return None
+    return (end / start - 1) * 100
+
+
+def _relation_claim_points(
+    question: str,
+    answer: str,
+    claim_start: int,
+    fact: _RelationalSeriesFact,
+) -> tuple[_TrendPoint, ...]:
+    sentence_start = max(answer.rfind(".", 0, claim_start), answer.rfind("\n", 0, claim_start)) + 1
+    context = answer[sentence_start:claim_start]
+    if any(token in context for token in ("점유율", "MS")):
+        return fact.shares or fact.sales
+    if any(token in context for token in ("매출", "처방조제액")):
+        return fact.sales or fact.shares
+    if "점유율" in question:
+        return fact.shares or fact.sales
+    return fact.sales or fact.shares
+
+
+def _terminal_relation_streak(points: tuple[_TrendPoint, ...]) -> tuple[str | None, int]:
+    if len(points) < 2:
+        return None, 0
+    latest_direction = _relation_direction(points[-2].value, points[-1].value)
+    if latest_direction is None:
+        return None, 0
+    count = 0
+    for previous, current in zip(reversed(points[:-1]), reversed(points[1:]), strict=True):
+        if _relation_direction(previous.value, current.value) != latest_direction:
+            break
+        count += 1
+    return latest_direction, count
+
+
+def _relation_direction(previous: float, current: float) -> str | None:
+    if current > previous:
+        return "up"
+    if current < previous:
+        return "down"
+    return None
+
+
+def _relation_period_unit(points: tuple[_TrendPoint, ...]) -> str:
+    if points and all(re.fullmatch(r"20\d{2}-Q[1-4]", point.period) for point in points):
+        return "분기"
+    if points and all(re.fullmatch(r"20\d{2}", point.period) for point in points):
+        return "년"
+    return "개월"
 
 
 def mandatory_retry_messages(

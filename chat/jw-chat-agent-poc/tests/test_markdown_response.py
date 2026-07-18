@@ -31,6 +31,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     replace_internal_fact_dump,
     ensure_single_brand_trend_analysis,
     ensure_top_brand_trend_table,
+    enforce_relational_numeric_claims,
     mandatory_fact_lines,
     missing_mandatory_lines,
     normalize_source_line_position,
@@ -60,6 +61,137 @@ from jw_chat_agent_poc.service.genos_client import (
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
+
+
+def _relational_series_call(brand: str = "리바로") -> dict[str, object]:
+    return {
+        "tool": "get_brand_metric",
+        "render_data": {
+            "brand": brand,
+            "brand_value_series_10pt": [
+                {"period": "2026-01", "value_억원": 83.03, "ms_pct": 3.81, "rank": 7},
+                {"period": "2026-02", "value_억원": 75.08, "ms_pct": 3.79, "rank": 7},
+                {"period": "2026-03", "value_억원": 87.11, "ms_pct": 3.81, "rank": 6},
+                {"period": "2026-04", "value_억원": 84.93, "ms_pct": 3.75, "rank": 6},
+                {"period": "2026-05", "value_억원": 80.39, "ms_pct": 3.76, "rank": 6},
+            ],
+            "market_size_series": [
+                {"period": "2026-01", "value_억원": 2_000.0},
+                {"period": "2026-05", "value_억원": 2_200.0},
+            ],
+        },
+    }
+
+
+def test_relational_numeric_gate_corrects_recent_sales_direction_from_raw_series() -> None:
+    answer = "리바로 매출은 최근 2개월 연속 상승했습니다."
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 최근 월 매출",
+        answer,
+        [_relational_series_call()],
+    )
+
+    assert "최근 2개월 연속 하락했습니다" in revised
+    assert "최근 2개월 연속 상승" not in revised
+
+
+def test_relational_numeric_gate_does_not_invent_share_streak_across_a_reversal() -> None:
+    answer = "리바로 점유율은 최근 2개월 연속 상승했습니다."
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 점유율",
+        answer,
+        [_relational_series_call()],
+    )
+
+    assert "직전 월 대비 상승했습니다" in revised
+    assert "2개월 연속" not in revised
+
+
+def test_relational_numeric_gate_corrects_peak_period_from_raw_series() -> None:
+    call = _relational_series_call("리바로젯")
+    render_data = call["render_data"]
+    assert isinstance(render_data, dict)
+    render_data["brand_value_series_10pt"] = [
+        {"period": "2026-01", "value_억원": 108.00, "ms_pct": 5.02},
+        {"period": "2026-02", "value_억원": 104.00, "ms_pct": 4.98},
+        {"period": "2026-03", "value_억원": 112.00, "ms_pct": 5.10},
+        {"period": "2026-04", "value_억원": 120.09, "ms_pct": 5.31},
+        {"period": "2026-05", "value_억원": 109.46, "ms_pct": 5.12},
+    ]
+    answer = "리바로젯은 2026-01 정점 후 하락이 확인됩니다."
+
+    revised = enforce_relational_numeric_claims(
+        "리바로젯 최근 성장 배경",
+        answer,
+        [call],
+    )
+
+    assert "2026-04 정점 후 하락" in revised
+    assert "2026-01 정점" not in revised
+
+
+def test_relational_numeric_gate_preserves_supported_relations() -> None:
+    answer = "리바로 매출은 최근 2개월 연속 하락했습니다."
+
+    assert enforce_relational_numeric_claims(
+        "리바로 최근 월 매출",
+        answer,
+        [_relational_series_call()],
+    ) == answer
+
+
+def test_relational_numeric_gate_corrects_rank_endpoints_from_raw_series() -> None:
+    answer = "순위는 8위에서 9위로 변했습니다."
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 성장하고 있어?",
+        answer,
+        [_relational_series_call()],
+    )
+
+    assert "순위는 7위에서 6위로 변했습니다" in revised
+    assert "8위에서 9위" not in revised
+
+
+def test_relational_numeric_gate_corrects_brand_market_growth_relation() -> None:
+    answer = "브랜드 성장률이 시장 성장률보다 높아 시장보다 빠르게 성장했습니다."
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 성장하고 있어?",
+        answer,
+        [_relational_series_call()],
+    )
+
+    assert "브랜드 성장률이 시장 성장률보다 낮아" in revised
+    assert "시장보다 빠르게 성장" not in revised
+
+
+def test_relational_numeric_gate_replays_captured_relation_failures() -> None:
+    answer = (
+        "리바로 점유율은 최근 2개월 연속 상승했습니다.\n"
+        "리바로 매출은 최근 2개월 연속 상승했습니다."
+    )
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 점유율과 최근 월 매출",
+        answer,
+        [_relational_series_call()],
+    )
+
+    assert "리바로 점유율은 직전 월 대비 상승했습니다" in revised
+    assert "리바로 매출은 최근 2개월 연속 하락했습니다" in revised
+
+
+def test_relational_numeric_gate_fails_closed_for_ambiguous_brand_series() -> None:
+    answer = "최근 2개월 연속 상승했습니다."
+
+    assert enforce_relational_numeric_claims(
+        "시장 점유율 변화 설명해줘",
+        answer,
+        [_relational_series_call("리바로"), _relational_series_call("리바로젯")],
+    ) == answer
 
 
 def test_metric_answer_is_markdown_with_deterministic_table() -> None:

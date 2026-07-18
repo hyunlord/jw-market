@@ -190,6 +190,107 @@ def test_compute_final_answer_replaces_internal_csd_facts_for_general_view_ready
     assert "CSD 세부 미지원" not in final.text
 
 
+def test_compute_final_answer_checks_trend_relations_on_general_view_fast_path() -> None:
+    final = compute_final_answer(
+        "리바로 최근 월 매출",
+        {
+            "general_view_ready": True,
+            "answer": "리바로 매출은 최근 2개월 연속 상승했습니다.",
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "render_data": {
+                        "brand": "리바로",
+                        "brand_value_series_10pt": [
+                            {"period": "2026-03", "value_억원": 87.11, "ms_pct": 3.81},
+                            {"period": "2026-04", "value_억원": 84.93, "ms_pct": 3.75},
+                            {"period": "2026-05", "value_억원": 80.39, "ms_pct": 3.76},
+                        ],
+                    },
+                }
+            ],
+            "sources": ["UBIST"],
+        },
+        "relational-fast-path",
+    )
+
+    assert "최근 2개월 연속 하락했습니다" in final.text
+    assert "최근 2개월 연속 상승" not in final.text
+
+
+def test_compute_final_answer_checks_trend_relations_after_llm_synthesis(monkeypatch) -> None:
+    generated = "리바로 매출은 최근 2개월 연속 상승했습니다."
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))
+
+    final = compute_final_answer(
+        "리바로 최근 월 매출",
+        {
+            "answer": "",
+            "markdown_response": {
+                "fact_md": (
+                    "리바로 매출 시계열: 2026-03 87.11억원, "
+                    "2026-04 84.93억원, 2026-05 80.39억원"
+                )
+            },
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "render_data": {
+                        "brand": "리바로",
+                        "brand_value_series_10pt": [
+                            {"period": "2026-03", "value_억원": 87.11, "ms_pct": 3.81},
+                            {"period": "2026-04", "value_억원": 84.93, "ms_pct": 3.75},
+                            {"period": "2026-05", "value_억원": 80.39, "ms_pct": 3.76},
+                        ],
+                    },
+                }
+            ],
+            "sources": ["UBIST"],
+        },
+        "relational-agent-loop",
+    )
+
+    assert "최근 2개월 연속 하락했습니다" in final.text
+    assert "최근 2개월 연속 상승" not in final.text
+
+
+def test_compute_final_answer_checks_trend_relations_in_deep_mode(monkeypatch) -> None:
+    generated = "## 핵심 요약\n리바로 매출은 최근 2개월 연속 상승했습니다."
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))
+
+    final = compute_final_answer(
+        "/deep 리바로 경쟁구도 분석",
+        {
+            "answer": "",
+            "research_mode": "deep",
+            "markdown_response": {
+                "fact_md": (
+                    "리바로 매출 시계열: 2026-03 87.11억원, "
+                    "2026-04 84.93억원, 2026-05 80.39억원"
+                )
+            },
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "render_data": {
+                        "brand": "리바로",
+                        "brand_value_series_10pt": [
+                            {"period": "2026-03", "value_억원": 87.11},
+                            {"period": "2026-04", "value_억원": 84.93},
+                            {"period": "2026-05", "value_억원": 80.39},
+                        ],
+                    },
+                }
+            ],
+            "sources": ["UBIST"],
+        },
+        "relational-deep",
+    )
+
+    assert "최근 2개월 연속 하락했습니다" in final.text
+    assert "최근 2개월 연속 상승" not in final.text
+
+
 def test_compute_final_answer_replaces_internal_csd_facts_after_agent_loop(monkeypatch) -> None:
     fact_md = """### 필수 답변 fact
 | 구분 | 반드시 반영할 내용 |

@@ -68,6 +68,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_hira_patient_summary,
     ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
+    enforce_relational_numeric_claims,
     finalized_fallback_fact_answer,
     replace_internal_fact_dump,
 )
@@ -2063,6 +2064,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             answer,
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )
+        answer = enforce_relational_numeric_claims(
+            active_question,
+            answer,
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        )
         trace = trace_envelope(
             question=question,
             result=result,
@@ -2236,6 +2242,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if deep_mode:
         safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
         safe_answer = ensure_deep_research_structure(safe_answer)
+    safe_answer = enforce_relational_numeric_claims(
+        active_question,
+        safe_answer,
+        result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+    )
     safe_answer = scrub_internal_terminology(safe_answer)
     safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
     trace = trace_envelope(
