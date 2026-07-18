@@ -15,6 +15,8 @@ ENV_JOB_IMAGE = "INGEST_JOB_IMAGE"
 ENV_JOB_NAMESPACE = "INGEST_JOB_NAMESPACE"
 ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mode
 # INGEST_S3_BUCKET (s3_input.ENV_BUCKET): set => submissions read from MinIO/S3
+ENV_LOAD_STAGING_ROOT = "INGEST_LOAD_STAGING_ROOT"  # set => real load -> staging root, mart refresh SKIPPED (isolated verify)
+ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output root (live parquet root); refresh runs
 
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
@@ -94,3 +96,29 @@ def open_input_source():
     from pipeline.scripts.ingest_hook.s3_input import S3Input
 
     return S3Input.from_env()
+
+
+def load_output_root() -> tuple[Path, bool]:
+    """Return (target_root, staging_verify) for the real load's parquet output.
+
+    Precedence:
+      * INGEST_LOAD_STAGING_ROOT set -> (that root, staging_verify=True):
+        the load writes parquet under an isolated staging root and the
+        mart-writing downstream refresh is SKIPPED. This is the J5 isolated
+        verification mode (real loader, zero mart write).
+      * else INGEST_LOAD_TARGET_ROOT set -> (that root, staging_verify=False):
+        production output root (the live parquet root); refresh runs.
+      * neither set -> fail closed. There is no implicit default so a
+        mis-provisioned Job cannot silently write parquet to an image-local
+        path that the refresh never reads.
+    """
+    staging = os.environ.get(ENV_LOAD_STAGING_ROOT, "").strip()
+    if staging:
+        return Path(staging), True
+    target = os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip()
+    if target:
+        return Path(target), False
+    raise RuntimeError(
+        f"neither {ENV_LOAD_STAGING_ROOT} nor {ENV_LOAD_TARGET_ROOT} is set; "
+        "the real load has no output root (fail-closed to avoid a silently unread parquet path)"
+    )

@@ -36,6 +36,12 @@ spec:
             - "<manifest_path>"
           env:
             # Job step 1 is ALWAYS G3 (job_runner enforces the order in code).
+            # J5: the real load writes parquet under INGEST_LOAD_STAGING_ROOT and
+            # the M-2 gate confirms the uploaded epoch landed; the mart refresh is
+            # skipped in this staging-verify posture (D-3 swaps to
+            # INGEST_LOAD_TARGET_ROOT under PL gate). Injected by job_launcher.
+            - name: INGEST_LOAD_STAGING_ROOT
+              value: /tmp/ingest-load-staging
             # Submission set is fetched from the MinIO market bucket (S3 mode).
             - name: INGEST_S3_BUCKET
               valueFrom:

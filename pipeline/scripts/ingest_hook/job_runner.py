@@ -78,6 +78,61 @@ def _run_commands(label: str, argv: tuple[str, ...]) -> None:
         raise RuntimeError(f"{label} command failed rc={result.returncode}: {' '.join(argv)}")
 
 
+_EMPTY_UBIST_MANIFEST = '{"schema_version": "1.0", "partitions": []}'
+
+
+def _seed_empty_manifest(target_dir: Path, verify_kind: str | None) -> None:
+    """A fresh staging target needs a baseline manifest so the incremental loader
+    treats every uploaded period as new (the loader reads _manifest.json first)."""
+    if verify_kind == "ubist_parquet_manifest":
+        target_dir.mkdir(parents=True, exist_ok=True)
+        manifest = target_dir / "_manifest.json"
+        if not manifest.exists():
+            manifest.write_text(_EMPTY_UBIST_MANIFEST, encoding="utf-8")
+
+
+def _real_load(manifest, spec, input_root: Path) -> dict:
+    """Wire the materialized upload into the loader, run it, and prove the epoch
+    landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
+
+    Fail-closed rules:
+      * a category with a load_argv but no load_input_flag is UNWIRED — refuse
+        to run it in real mode (it would load unrelated defaults = silent failure).
+      * the epoch must appear in the loader's own output with rows > 0.
+    """
+    from pipeline.scripts.ingest_hook.load_verify import verify_epoch_loaded
+
+    if not spec.load_argv:
+        return {"target_dir": None, "epoch_rows": None, "staging_verify": None}  # e.g. skeleton
+
+    if not spec.load_input_flag:
+        raise RuntimeError(
+            f"category {manifest.category!r} has a load command but no upload wiring "
+            "(load_input_flag); refusing to load unrelated defaults (silent-failure guard)"
+        )
+
+    target_root, staging_verify = config.load_output_root()
+    target_dir = target_root / manifest.category / manifest.epoch
+    _seed_empty_manifest(target_dir, spec.load_verify)
+
+    read_files = [str((input_root / entry.path).resolve()) for entry in manifest.files]
+    for source in read_files:
+        argv = list(spec.load_argv)
+        argv.extend([spec.load_input_flag, source])
+        if spec.load_target_flag:
+            argv.extend([spec.load_target_flag, str(target_dir)])
+        print(f"phase=load reading={source} target={target_dir} staging_verify={staging_verify}")
+        _run_commands("load", tuple(argv))
+
+    # M-2: the uploaded epoch must be present in the loader's output.
+    epoch_rows = None
+    if spec.load_verify:
+        epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
+        print(f"gate=load_verify status=pass epoch={manifest.epoch} rows={epoch_rows} target={target_dir}")
+
+    return {"target_dir": target_dir, "epoch_rows": epoch_rows, "staging_verify": staging_verify}
+
+
 def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root: Path | None) -> int:
     run_id = _run_id()
     try:
@@ -113,20 +168,30 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
             print(f"gate=sigma status=pass table={table} (rehearsal staging)")
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
-            _run_commands("load", spec.load_argv)
-            if spec.sigma_source:
-                from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
+            # 2) real load — wire the materialized upload in, prove the epoch landed (M-2).
+            load_result = _real_load(manifest, spec, input_root)
+            staging_verify = load_result["staging_verify"]
+            if staging_verify:
+                # Isolated J5 verification: real loader exercised, zero mart write.
+                print("gate=sigma status=skipped reason=staging-verify (mart untouched)")
+                print("phase=refresh status=skipped reason=staging-verify (orchestrator untouched)")
+            else:
+                # 3) Σ gate + downstream refresh only when writing to the live mart.
+                if spec.sigma_source:
+                    from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
 
-                periods = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
-                sigma = check_market_sigma(
-                    config.open_mart_connection(), source=spec.sigma_source, periods=periods
-                )
-                print(
-                    f"gate=sigma status=pass source={spec.sigma_source} "
-                    f"markets={sigma.markets_checked} cells={sigma.cells_checked} "
-                    f"worst_rel={sigma.worst_rel:.6%}"
-                )
-            _run_commands("refresh", spec.refresh_argv)
+                    periods = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
+                    sigma = check_market_sigma(
+                        config.open_mart_connection(), source=spec.sigma_source, periods=periods
+                    )
+                    print(
+                        f"gate=sigma status=pass source={spec.sigma_source} "
+                        f"markets={sigma.markets_checked} cells={sigma.cells_checked} "
+                        f"worst_rel={sigma.worst_rel:.6%}"
+                    )
+                _run_commands("refresh", spec.refresh_argv)
+            if load_result["epoch_rows"] is not None:
+                report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
 
         ledger.mark_complete(*identity, row_counts=report.file_rows)
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
