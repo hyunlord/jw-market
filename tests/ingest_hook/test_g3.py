@@ -21,6 +21,14 @@ def test_good_submission_passes(bucket):
     assert any("dedup" in note for note in report.notes)
 
 
+def test_incomplete_manifest_fails(bucket):
+    # G7 defense-in-depth: a partial set (complete=false) is rejected at the gate,
+    # not only by the webhook/sweep upstream.
+    manifest_path = write_submission(bucket, complete=False)
+    with pytest.raises(G3Error, match="complete=false"):
+        _validate(bucket, manifest_path)
+
+
 def test_missing_file_fails(bucket):
     manifest_path = write_submission(bucket)
     (bucket / "ubist" / "2026-07" / "data.csv").unlink()

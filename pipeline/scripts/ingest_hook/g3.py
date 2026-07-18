@@ -93,6 +93,73 @@ def _check_declared_period(entry: ManifestFile, epoch: str, failures: list[str])
             )
 
 
+def _validate_workbook(
+    spec: CategorySpec,
+    path: Path,
+    entry: ManifestFile,
+    epoch: str,
+    failures: list[str],
+    report: G3Report,
+) -> None:
+    """G4 — validate a wide workbook with the loader's own parser (never a
+    G3-local copy) so G3 and the loader cannot disagree on what a valid workbook
+    is (STOP ③: one contract, not two). Only the two header rows per sheet are
+    read — no data rows are streamed — so an 80MB file is judged in seconds."""
+    if spec.workbook_reader == "ubist":
+        _validate_ubist_workbook(path, entry, epoch, failures, report)
+        return
+    # Unknown reader name = fail closed rather than silently skip validation.
+    failures.append(
+        f"{entry.path}: no workbook validator for reader {spec.workbook_reader!r} (fail-closed)"
+    )
+
+
+def _validate_ubist_workbook(
+    path: Path,
+    entry: ManifestFile,
+    epoch: str,
+    failures: list[str],
+    report: G3Report,
+) -> None:
+    # Heavy deps (openpyxl/pandas/pyarrow) — import only when a workbook is seen.
+    from pipeline.etl.io import ubist_loader
+
+    try:
+        summary = ubist_loader.summarize_source(path)
+    except Exception as exc:  # noqa: BLE001 - any parse failure is a structural reject
+        # classify_sheet raises RuntimeError("No metric columns ...") on a broken
+        # 2-row header; every parser failure is fail-closed with the reason.
+        failures.append(f"{entry.path}: UBIST workbook structure invalid ({exc})")
+        return
+
+    periods = set(summary.periods)
+    if not periods:
+        failures.append(f"{entry.path}: no UBIST periods parsed from workbook headers")
+        return
+
+    report.observed_periods.update(periods)
+    # Period consistency — mirror the CSV path exactly (epoch present, none future).
+    if epoch not in periods:
+        failures.append(
+            f"{entry.path}: epoch {epoch} absent from workbook periods {sorted(periods)[:6]}"
+        )
+    future = sorted(value for value in periods if value > epoch)
+    if future:
+        failures.append(f"{entry.path}: periods beyond epoch {epoch}: {future[:6]}")
+
+    _check_declared_period(entry, epoch, failures)
+
+    # Row sanity is manifest-declared for workbooks (streaming every row would
+    # blow the header-only budget); record the declared count so the crash floor
+    # still has a total, and note that G3 did not stream-verify it.
+    if entry.rows is not None:
+        report.file_rows[entry.path] = entry.rows
+    report.notes.append(
+        f"{entry.path}: UBIST workbook validated via loader parser "
+        f"(periods={sorted(periods)}; rows manifest-declared, verified on load)"
+    )
+
+
 def validate(
     manifest: Manifest,
     spec: CategorySpec,
@@ -103,6 +170,17 @@ def validate(
     """Run all G3 checks; raise :class:`G3Error` with every failure collected."""
     report = G3Report(manifest_sha=manifest.manifest_sha, epoch=manifest.epoch, category=manifest.category)
     failures: list[str] = []
+
+    # 0) set completeness — the manifest's own completeness assertion is enforced
+    # AT the gate, not only upstream (webhook 409 / sweep skip). A manifest that
+    # reaches the load path with complete=false is a partial set: fail closed
+    # rather than load an incomplete submission (contract ① — the set, not a
+    # folder scan, defines what is collected; the site guarantees the set).
+    if not manifest.complete:
+        raise G3Error([
+            f"manifest declares complete=false for epoch {manifest.epoch} "
+            f"category {manifest.category}: partial submission, refusing to load"
+        ])
 
     for entry in manifest.files:
         path = _resolve_confined(input_root, entry.path)
@@ -118,9 +196,18 @@ def validate(
 
         suffix = path.suffix.lower()
         if suffix in _WORKBOOK_SUFFIXES:
-            # Workbook sheet schemas belong to the s2 catalog gate; G3 pins identity only.
-            report.notes.append(f"{entry.path}: workbook content checks delegated to s2 catalog gate")
-            _check_declared_period(entry, manifest.epoch, failures)
+            if spec.workbook_reader:
+                # G4: validate the workbook structure with the loader's own parser
+                # so a valid-sha but structurally-broken workbook cannot pass.
+                _validate_workbook(spec, path, entry, manifest.epoch, failures, report)
+            else:
+                # Categories whose sheet schema is gated downstream (e.g. mimaster
+                # -> s2 catalog): G3 pins identity; the delegation is recorded,
+                # not a silent skip.
+                report.notes.append(
+                    f"{entry.path}: workbook sheet schema gated by s2 catalog gate (category {manifest.category})"
+                )
+                _check_declared_period(entry, manifest.epoch, failures)
             continue
         if suffix not in _CSV_SUFFIXES:
             failures.append(f"{entry.path}: unsupported suffix {suffix!r} (contract expects .csv/.xlsx)")

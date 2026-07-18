@@ -10,9 +10,11 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
   트리거 서비스는 별도 Deployment (같은 orchestrator 이미지, uvicorn factory).
 * **G3 우회 불가** — `job_runner.py` 가 G3 → 적재 → Σ게이트 → refresh 순서를
   코드로 강제한다. G3 실패 = 적재 0, ledger `failed`.
-* **미활성 배포** — `deploy/k8s/ingest-hook/` 의 리소스는 replicas 0 / suspend
-  상태로만 repo 에 존재한다. 활성화(적용·스케일업·resume + mysql `ingest_ledger`
-  DDL 적용)는 사이트 confirm 구현 + 격리 검증 완료 후 PL 게이트.
+* **D-3a 파일럿 무장** — `deploy/k8s/ingest-hook/` 의 trigger 는 replicas 1,
+  `INGEST_LOAD_STAGING_ROOT=/tmp/ingest-load-staging` 상태다. sweep 은
+  `suspend: true` 이며 별도 PL 결정 전 resume 하지 않는다.
+* **실적재 잠금** — `INGEST_LOAD_TARGET_ROOT` 는 manifest 에 두지 않는다.
+  설정하면 serving parquet refresh 가 활성화되므로 별도 PL 게이트가 필요하다.
 
 ## 구성
 
@@ -60,10 +62,12 @@ python -m pipeline.scripts.ingest_hook.job_runner \
 게이트 증적·실행 방법: `tests/ingest_hook/` (G-1 E2E, G-2 G3 거부, G-3 멱등,
 G-4 sweep). 전체: `python -m pytest tests/ingest_hook -q`.
 
-## 활성화 절차 (PL 게이트 — 이 repo 커밋만으로는 아무것도 돌지 않음)
+## 파일럿 이후 활성화 절차 (PL 게이트)
 
 1. 계약 정본과 `contract.py`/`category_map.py` 필드 대사 (D_design F-1)
 2. mart DB 에 `ingest_ledger` DDL 적용 (ledger.py `_DDL_MYSQL`)
-3. `kubectl apply -f deploy/k8s/ingest-hook/` 후 Deployment replicas 1,
-   sweep CronJob `suspend: false`
+3. D-3a 격리 검증 완료 후에만 production output root 와 sweep resume 여부 결정
 4. 사이트에 webhook URL(`/ingest/webhook`)·상태 URL(`/ingest/status`) 공유
+
+이미지 배포 및 source-to-digest 추적 규약은
+`docs/runbooks/immutable_image_references.md` 를 따른다.

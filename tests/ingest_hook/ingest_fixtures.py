@@ -66,6 +66,69 @@ def write_submission(
     return manifest_path
 
 
+def _kr_period(period: str) -> str:
+    year, month = period.split("-")
+    return f"{year}년 {int(month)}월"
+
+
+def write_ubist_workbook_submission(
+    root: Path,
+    *,
+    category: str = CATEGORY,
+    epoch: str = EPOCH,
+    periods: tuple[str, ...] = ("2026-07",),
+    metric_header: str = "처방조제액(원)",
+    include_metric: bool = True,
+    period_labels: list[str] | None = None,
+    declared_rows: int | None = 3,
+    complete: bool = True,
+    period_start: str = "2026-06",
+) -> Path:
+    """Write a wide UBIST .xlsx (2-row header: metrics row1, periods row2) + a
+    manifest declaring it. Mirrors the real workbook layout the loader parses so
+    G4 exercises the loader's own contract. Returns the manifest path."""
+    import openpyxl
+
+    data_dir = root / category / epoch
+    data_dir.mkdir(parents=True, exist_ok=True)
+    xlsx_path = data_dir / "ubist.xlsx"
+
+    labels = period_labels if period_labels is not None else [_kr_period(p) for p in periods]
+    metric_slot = metric_header if include_metric else "값"
+    header1 = ["브랜드"] + [metric_slot] * len(labels)
+    header2 = ["브랜드"] + list(labels)
+
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.append(header1)
+    worksheet.append(header2)
+    rows = declared_rows if declared_rows is not None else 3
+    for index in range(rows):
+        worksheet.append([f"브랜드{index}"] + [float(index + 1)] * len(labels))
+    workbook.save(xlsx_path)
+
+    sha = hashlib.sha256(xlsx_path.read_bytes()).hexdigest()
+    manifest = {
+        "contract_version": "v2",
+        "epoch": epoch,
+        "category": category,
+        "complete": complete,
+        "submitted_at": "2026-07-17T09:00:00+09:00",
+        "files": [
+            {
+                "path": xlsx_path.relative_to(root).as_posix(),
+                "sha256": sha,
+                "rows": declared_rows,
+                "period_start": period_start,
+                "period_end": epoch,
+            }
+        ],
+    }
+    manifest_path = data_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest_path
+
+
 class FakeTransport:
     """Records rendered Job bodies instead of calling a k8s API server."""
 

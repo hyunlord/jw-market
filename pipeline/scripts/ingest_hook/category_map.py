@@ -52,6 +52,13 @@ class CategorySpec:
     load_input_flag: str | None = None
     load_target_flag: str | None = None
     load_verify: str | None = None
+    # G4 — workbook (.xlsx) structural validation reader. None = the workbook's
+    # sheet schema is gated downstream (e.g. mimaster -> s2 catalog), so G3 pins
+    # identity only. A non-None value names a reader G3 uses to validate the
+    # workbook structure BEFORE load, reusing the loader's own parsing contract
+    # so G3 and the loader can never diverge (one contract, not two). "ubist"
+    # reuses ubist_loader.summarize_source (header-area only, fast on 80MB files).
+    workbook_reader: str | None = None
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -79,6 +86,10 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file",
         load_target_flag="--target-dir",
         load_verify="ubist_parquet_manifest",
+        # G4: the real UBIST submission is a wide .xlsx (2-row header, month
+        # columns) loaded via --stage s1 (s2 catalog never runs on this path),
+        # so G3 must validate the workbook itself using the loader's parser.
+        workbook_reader="ubist",
     ),
     CategorySpec(
         key="iqvia",
