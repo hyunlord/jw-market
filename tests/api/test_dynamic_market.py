@@ -3838,13 +3838,13 @@ def test_strategic_runtime_projects_only_builder_sibling_fields(
         "dimension_channel_data",
         "by_dimension",
         "raw_value_history",
+        "ubist_channel_by_display",
+        "ubist_channel_by_code",
         "overlay_data",
     ):
         assert field in projected_fields
     for unused_field in (
         "specialty_data",
-        "ubist_channel_by_display",
-        "ubist_channel_by_code",
         "payload",
         "computation_version",
         "computed_at",

@@ -231,6 +231,8 @@ def _fetch_sibling_rows(
           {specialty_projection},
           by_dimension,
           raw_value_history,
+          ubist_channel_by_display,
+          ubist_channel_by_code,
           overlay_data
         FROM {quote_identifier(mart_db)}.{table}
         WHERE {id_column} = %s
