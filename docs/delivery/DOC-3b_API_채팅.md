@@ -2,16 +2,16 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 코드(develop) SHA | `9c34a7d5` (README·스켈레톤 기준; 작성 시 worktree HEAD `1864e929`, chat 코드 정본 커밋 `0900ed5e` "Isolate jw-chat under a chat top-level folder" → 경로 `chat/jw-chat-agent-poc/`) |
+| 기준 코드(develop) SHA | `bbda45fc` (chat 코드 정본화 머지 `dd8a3919` 포함; `파일:줄` 인용은 develop서 검증 가능. 경로 `chat/jw-chat-agent-poc/`) |
 | 대상 서비스 | deployment `jw-chat-agent-poc` (ns `llmops`), svc `jw-chat-agent-poc` `8080→8080`, FastAPI `root_path=/jw-chat-agent`(app.py:216), title `JW Chat Agent POC` v`0.2.0` |
-| 운영 이미지 | `jw-chat-agent-poc:chat-838-p1-deep-finish-da3fc15-20260718@sha256:efec7f94…` (3 replicas, HPA min2/max4 mem60%) |
+| 운영 이미지 | `jw-chat-agent-poc:chat-838-p1-deep-finish-da3fc15-20260718@sha256:efec7f94…` (소스 `da3fc153`, 태그 `ops/chat-838-da3fc153-20260718`) |
 | 실호출 캡처일 | 2026-07-18 (라이브 identity·EP는 실측; 응답 본문 예시는 [확인 필요] — §4 참조) |
-| 문서 버전 | v1.0 |
+| 문서 버전 | v1.1 (2026-07-19 계보 갭 해소 반영) |
 
 > 형식 참고: 기존 `DOC-3_API_명세서.md`. 본 문서는 **채팅 서비스**만 다룬다. 시장분석 백엔드 EP는 DOC-3, 아키텍처는 [DOC-1c](DOC-1c_개발문서_채팅에이전트.md) 참조.
 > 모든 파라미터·오류는 `chat/jw-chat-agent-poc/jw_chat_agent_poc/service/` 실코드 `파일:줄`에 근거한다. 자격증명 값은 기재하지 않는다.
 >
-> **★ 계보 갭 각주.** `파일:줄` 인용은 **develop**(`9c34a7d5` 계열) 기준이나, **운영 실행체는 이미지 `da3fc15`**(피처 브랜치 `codex/p3-file-brief-20260718`, develop 미머지 — merge-base `276a47b5`). develop chat은 구버전이라, 운영에만 있는 기능(딥리서치 `/deep` 접두사 트리거·딥 serving `202`)은 `[운영 이미지 기준]`으로 표기한다. HTTP EP 표(§1.1)는 두 계보 공통(EP 추가 없음)이다. 근거·상세: [DOC-1c](DOC-1c_개발문서_채팅에이전트.md) 계보 각주, `evidence/chat_lineage_gap.md`.
+> **★ 계보 각주.** chat 코드는 **develop에 정본화됨**(머지 `dd8a3919`). 본 문서의 `파일:줄` 인용은 develop서 직접 검증 가능하다(과거 "develop 미머지" 전제는 해소됨). 운영 실행체는 이미지 `da3fc15`이며 소스 시점은 태그 `ops/chat-838-da3fc153-20260718`(→`da3fc153`)로 고정, develop은 그보다 전진해 있을 수 있다(회귀 아님). 딥리서치 `/deep` 접두사 트리거·딥 serving `202` 등도 이제 develop에 존재한다. HTTP EP 표(§1.1)는 EP 추가 없음. 근거·상세: [DOC-1c](DOC-1c_개발문서_채팅에이전트.md) 계보 각주, `evidence/chat_lineage_gap.md`.
 
 ---
 
@@ -29,7 +29,7 @@
 | 6 | GET | `/`·`/index.html`·`/{frontend_path}` | `frontend_*` | 경로 | `FileResponse`(정적 프론트) | 아니오 | app.py:378 |
 
 - **★ 포탈/wf301이 호출하는 것 = `/chat/answer`** (동기 완성 JSON). 스트리밍 UI는 `/chat/stream`(SSE).
-- **`/deep`은 URL 엔드포인트가 아니다** — HTTP 라우트 표에 `/deep`은 없다(두 계보 공통). 대신 **`/deep`은 `/chat/answer`·`/chat/stream`의 `question` 본문 맨 앞 접두사 트리거**다: `[운영 이미지 기준]` 운영 이미지 da3fc15에서 질문이 `/deep `로 시작하면 딥리서치 모드가 발동한다(`orchestrator/deep_research.py:10` `^/deep`, 다도구 병렬·보고서형 답변·딥 serving 202). 즉 **"엔드포인트 없음"은 맞으나 "모드 없음"은 오류** — 딥리서치 모드는 운영에 존재하되 URL이 아니라 질문 접두사로 진입한다. (develop 코드엔 `deep_research.py` 부재 = 미머지.) 상세: DOC-1c §1.2.
+- **`/deep`은 URL 엔드포인트가 아니다** — HTTP 라우트 표에 `/deep`은 없다. 대신 **`/deep`은 `/chat/answer`·`/chat/stream`의 `question` 본문 맨 앞 접두사 트리거**다: 질문이 `/deep `로 시작하면 딥리서치 모드가 발동한다(`orchestrator/deep_research.py:10` `^/deep`, 다도구 병렬·보고서형 답변·딥 serving 202). 즉 **"엔드포인트 없음"은 맞으나 "모드 없음"은 오류** — 딥리서치 모드는 URL이 아니라 질문 접두사로 진입한다(코드는 develop 정본, 운영 반영 시점은 태그 `ops/chat-838-da3fc153-20260718`). 상세: DOC-1c §1.2.
 - (develop 공통) "심층분석" 도구 `deep_analysis_events`(뉴스/이슈 curated)는 위 딥리서치 모드와 별개로 답변 라우팅으로 발동한다(`tools/deep_analysis/news.py:21`).
 
 ### 1.2 요청 스키마 `ChatRequest` (`service/models.py:8-30`)
@@ -95,7 +95,7 @@
 | 히스토리 DB(MySQL) | connect 3s / read 5s / write 5s | conversation_history.py:158-160 |
 | 세션 저장 LRU `SESSION_STORE_MAX` | 기본 **500** | app.py:128,144 |
 | 대화 상태 TTL / max_turns / pending TTL | **600초** / **5** / **180초** | conversation.py:38-45 |
-| 딥리서치 `[운영 이미지 기준]` | 합성 타임아웃 **180초** / 총예산 **300초** | da3fc15 `genos_client.py:803-804` |
+| 딥리서치 | 합성 타임아웃 **180초** / 총예산 **300초** | `genos_client.py:803-804` |
 
 ### 3.2 외부 API 실패 시 부분근거 처리 (`tools/external/client.py`)
 - MCP 실패 → `status="error"` 릴레이, **fail-closed**(clinicaltrials는 `external_claim_policy:"fail_closed_error"`, client.py:237-241). 결과 없음 → `status="no_data"` "MCP 조회 결과 없음"(client.py:447-449).
@@ -106,5 +106,5 @@
 
 ## [확인 필요] 목록
 1. `/chat/answer` **실응답 본문 예시**: in-mesh 실호출 캡처가 필요하나, `_require_direct_route_api_key`·wf301 file 세션 의존으로 read-only 단발 캡처는 이번 회차 미수행. 포탈 동등 경로(wf301) 실호출 1건을 evidence로 보존 예정(SSH 슬롯 여유 시). 스키마·오류계약은 코드로 확정됨.
-2. deep(딥리서치) **체감 소요시간·비용**: `[운영 이미지 기준]` 타임아웃 180초·총예산 300초는 확정(§3.1). 실제 체감 시간·질의당 비용은 측정치 필요(코드 상수 아님).
-3. **계보 정합**: 운영 이미지 `da3fc15` develop 미머지 — 딥리서치 모드·serving 202 등 운영 기능이 develop 코드에 없음(PL 별건). DOC-1c 계보 각주 참조.
+2. deep(딥리서치) **체감 소요시간·비용**: 타임아웃 180초·총예산 300초는 확정(§3.1). 실제 체감 시간·질의당 비용은 측정치 필요(코드 상수 아님).
+3. **계보 정합 — 해소됨**: chat 코드가 develop에 정본화됨(머지 `dd8a3919`, 딥리서치 모드·serving 202 등 develop서 검증 가능). 운영 이미지 시점은 태그 `ops/chat-838-da3fc153-20260718`. DOC-1c 계보 각주 참조.

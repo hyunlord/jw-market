@@ -2,16 +2,16 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 코드(develop) SHA | `9c34a7d5` (README·스켈레톤 기준; 작성 시 worktree HEAD `1864e929`, chat 코드 정본 커밋 `0900ed5e` "Isolate jw-chat under a chat top-level folder" → 경로 `chat/jw-chat-agent-poc/`) |
+| 기준 코드(develop) SHA | `bbda45fc` (chat 코드 정본화 머지 `dd8a3919` 포함; 본 문서의 `파일:줄` 인용은 develop에서 직접 검증 가능. chat 코드 경로 `chat/jw-chat-agent-poc/`) |
 | 운영 리소스 | deployment `jw-chat-agent-poc` (ns `llmops`, 3 replicas, HPA `jw-chat-agent-poc-hpa` min2/max4 mem60%), svc `jw-chat-agent-poc` `8080→8080`; 파일 브리지 = `code-serving-235`(wf301-vdb-bridge) |
-| 운영 이미지 | `jw-chat-agent-poc:chat-838-p1-deep-finish-da3fc15-20260718@sha256:efec7f94…` |
-| 생성일 | 2026-07-18 |
-| 문서 버전 | v1.0 |
+| 운영 이미지 | `jw-chat-agent-poc:chat-838-p1-deep-finish-da3fc15-20260718@sha256:efec7f94…` (소스 커밋 `da3fc153`, 태그 `ops/chat-838-da3fc153-20260718`) |
+| 생성일 / 개정일 | 2026-07-18 / 2026-07-19 (계보 갭 해소 반영) |
+| 문서 버전 | v1.1 |
 | 근거 | `chat/jw-chat-agent-poc/`·`chat/wf301-vdb-bridge/` 실코드 `파일:줄`, 라이브 실측(`evidence/chat_identity_consolidated.md`) |
 
-> **★ 계보 갭 각주 (필독).** 본 문서의 `파일:줄` 인용은 **코드 정본 = develop**(`9c34a7d5` 계열) 기준이라 SI가 develop에서 검증할 수 있다. 그러나 **운영 실행체 = 이미지 `da3fc15`**(피처 브랜치 `codex/p3-file-brief-20260718`, "Keep deep reports clean at the evidence boundary")이며 **da3fc15는 develop의 조상이 아니다**(merge-base `276a47b5`=2026-07-11, develop +370 / 피처 +350 커밋 분기). chat 상시 규칙 "❌ develop push"로 오늘까지 chat 작업분이 전부 피처 브랜치에 있어 **develop chat은 구버전**이다. → 운영 이미지에만 있고 develop에 없는 기능은 본문에서 **`[운영 이미지 기준]`**으로 표기한다. 근거: `evidence/chat_lineage_gap.md`. (근본 원인=develop 미머지는 PL 별건.)
+> **★ 계보 각주 (필독).** chat 코드는 **develop에 정본화되었다**(정본화 머지 `dd8a3919`, 규칙 doc 포함 이후 tip 계열). 따라서 본 문서의 모든 `파일:줄` 인용은 **develop에서 직접 검증 가능**하다(과거의 "운영 이미지에만 있음·develop 미머지" 전제는 머지로 해소됨). 운영 실행체는 이미지 `da3fc15`이며 그 소스 시점은 태그 **`ops/chat-838-da3fc153-20260718`**(→ `da3fc153`)로 고정되어 있다. develop은 그 태그 시점보다 **전진**해 있을 수 있다(회귀 아님). 근거: `evidence/chat_lineage_gap.md`, 정본화 머지 기록.
 >
-> **운영 이미지(da3fc15)에만 있는 주요 기능(develop 미머지):** ① 딥리서치 모드 `/deep` 접두사 트리거(§1.2) ② 딥 전용 serving `202`(§3) ③ 235 브리지 정형파일 SQL 질답(`file_sql`·`xlsx_sql_route`·`pdf_vlm`, §4). 이 문서와 같은 형식의 계보-부채 각주 선례 = jw market DOC-1(운영 APP_VERSION이 develop 조상 아님).
+> **딥리서치·정형파일 SQL 등 운영 기능은 이제 develop에 존재한다:** ① 딥리서치 모드 `/deep` 접두사 트리거(§1.2, `orchestrator/deep_research.py`) ② 딥 전용 serving `202`(§3, `genos_config.py`) ③ 235 브리지 정형파일 SQL 질답(`file_sql`·`xlsx_sql_route`·`pdf_vlm`, §4). 운영 이미지 반영 시점은 위 태그 기준이다.
 >
 > **경계.** 본 문서는 **채팅 에이전트 내부**를 다룬다. HTTP EP 상세·오류 계약은 [DOC-3b](DOC-3b_API_채팅.md), 유저 사용법은 [DOC-4d](DOC-4d_사용설명서_채팅.md), 시장분석 백엔드는 DOC-1/DOC-3을 참조한다. 모델명/토큰 등 자격증명 값은 기재하지 않고 env 키명·serving id만 쓴다.
 
@@ -45,7 +45,7 @@ POST /chat/answer  (wf301 경유)
 
 **`/deep`은 URL 엔드포인트가 아니다** — HTTP 라우트에는 `/deep`이 없다(DOC-3b §1.1). 그러나 **딥리서치 "모드"는 운영에 존재한다**: 아래 (a)를 참조.
 
-**(a) `[운영 이미지 기준]` 딥리서치 모드 — `/deep` 질문 접두사 트리거.** 운영 이미지 `da3fc15`에는 `orchestrator/deep_research.py`가 있고, 질문 텍스트 맨 앞이 `/deep `이면(정규식 `^/deep(?:[ \t]+|\n|$)`, `deep_research.py:10`) 딥리서치 경로가 발동한다. `parse_deep_research_request`가 접두사를 떼고, `DeepResearchToolPlanner.decide`(`:31`)가 **한 번의 광범위·독립 근거 배치**(`get_metric` series·`get_market_scope`·`get_brand_series` 24pt 등 다도구 병렬)를 실행한다. 딥 전용 진행 스테이지("딥리서치 질문 분석/조사 설계/자료 수집/근거 정리/종합 분석", `common/timing.py:69-77`)와 보고서형 구조 강제("## 핵심 요약 / ## 종합 분석", `service/answer_safety.py:1245` `ensure_deep_research_structure`)가 붙는다. 합성은 딥 전용 serving `202`(§3)로 수행되며 타임아웃 180초·총예산 300초(`genos_client.py:803-804`). **★ develop에는 `deep_research.py`가 없다(미머지)** — 즉 딥리서치 모드는 운영 이미지 기능이고 develop 코드엔 부재다.
+**(a) 딥리서치 모드 — `/deep` 질문 접두사 트리거.** `orchestrator/deep_research.py`(develop 정본)에서, 질문 텍스트 맨 앞이 `/deep `이면(정규식 `^/deep(?:[ \t]+|\n|$)`, `deep_research.py:10`) 딥리서치 경로가 발동한다. `parse_deep_research_request`가 접두사를 떼고, `DeepResearchToolPlanner.decide`(`:31`)가 **한 번의 광범위·독립 근거 배치**(`get_metric` series·`get_market_scope`·`get_brand_series` 24pt 등 다도구 병렬)를 실행한다. 딥 전용 진행 스테이지("딥리서치 질문 분석/조사 설계/자료 수집/근거 정리/종합 분석", `common/timing.py:69-77`)와 보고서형 구조 강제("## 핵심 요약 / ## 종합 분석", `service/answer_safety.py:1245` `ensure_deep_research_structure`)가 붙는다. 합성은 딥 전용 serving `202`(§3)로 수행되며 타임아웃 180초·총예산 300초(`genos_client.py:803-804`). 운영 이미지 반영 시점은 태그 `ops/chat-838-da3fc153-20260718` 기준이다.
 
 **(b) develop 기준 "deep" 도구(항상 유효).** 위 딥리서치 모드와 별개로, develop·운영 공통으로 아래 도구가 질문 키워드로 loop 안에서 선택된다.
 
@@ -75,9 +75,9 @@ POST /chat/answer  (wf301 경유)
 | 최종 답변 | `GENOS_FINAL_SERVING_ID`(`genos_config.py:40`) | `514` | **`190`** |
 | tool 플래너 | `GENOS_PLANNER_SERVING_ID`(`:50`) | `508` | **`190`** |
 | 공통 fallback | `GENOS_SERVING_ID`(`:27`) | `517` | **`190`** |
-| **딥리서치 합성** `[운영 이미지 기준]` | `GENOS_DEEP_SERVING_ID`(da3fc15 `genos_config.py:12,21`) | `202` | **`202`** |
+| **딥리서치 합성** | `GENOS_DEEP_SERVING_ID`(`genos_config.py:12,21`) | `202` | **`202`** |
 
-- **★ serving id 정정.** develop 코드 기본값은 514/508/517이지만 **라이브 deployment는 세 값을 전부 `190`으로 주입**한다(env 실측, 자격값 아님). 초판이 쓴 514/508/517은 코드 기본값이며 운영값이 아니다. **딥 합성 serving `202`**는 develop 코드엔 없고(`GENOS_DEEP_SERVING_ID` 미정의) 운영 이미지 da3fc15에만 있다 — 라이브 `202` = gemini-3.1-pro-preview(GenOS serving 배포 모델; 채팅 코드엔 모델 리터럴 없음). 딥 타임아웃 180초·총예산 300초(da3fc15 `genos_client.py:803-804`).
+- **★ serving id 정정.** develop 코드 기본값은 514/508/517이지만 **라이브 deployment는 세 값을 전부 `190`으로 주입**한다(env 실측, 자격값 아님). 초판이 쓴 514/508/517은 코드 기본값이며 운영값이 아니다. **딥 합성 serving `202`**는 이제 develop에 존재한다(`GENOS_DEEP_SERVING_ID`, `genos_config.py`) — 라이브 `202` = gemini-3.1-pro-preview(GenOS serving 배포 모델; 채팅 코드엔 모델 리터럴 없음). 딥 타임아웃 180초·총예산 300초(`genos_client.py:803-804`).
 - base URL 기본 `genos_config.py:19` `https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/{id}`. LLM 호출은 planner·final 모두 `POST {base}/chat/completions`(planner.py:54, `genos_client._stream_chat`).
 - **모델명 문자열은 코드에 하드코딩되지 않는다** — serving id로 GenOS 측 배포 모델이 결정된다(190=Flash 계열, 202=gemini-3.1-pro-preview). 코드에 `gemini` 등 모델 리터럴은 없다(모델 확정은 GenOS serving 배포 설정 소관). 토큰 env: `GENOS_*_BEARER_TOKEN`(값 미기재).
 - **Flowise**: 채팅 코드에서 Flowise 직접 참조는 발견되지 않았다(`[확인 필요]` — 플랫폼 `llmops-flowise-300`은 GenOS 측 구성 요소로 채팅 repo와 직접 연동 근거 없음).
@@ -99,7 +99,7 @@ POST /chat/answer  (wf301 경유)
 
 - 포탈 업로드 파일에 대한 질문은 §2-(B) 경로로 처리된다: 채팅이 `conversation_id`를 chat_id/app_session_id로 235 `/search`에 전달(`file_search_client.py:18`), 반환된 `file_context`/`file_sources`만 소비한다. **채팅은 파일 포맷을 직접 파싱하지 않는다**(임베딩/검색은 235·전처리기 소관, VDB 139). 검색 타임아웃 기본 3초, 준비 전/실패 시 `None` → 파일 없이 답변 진행(`file_search_client.py:40-44`).
 - 별도로 `document_paths`로 **텍스트 파일을 직접 첨부**하는 로컬 RAG 경로(`rag/local_rag.py`, TF-IDF top_k=2)가 있으나 **정형 통계 파일(`.csv/.tsv/.xlsx/.xls/.parquet/.json`)은 거부**되고(`local_rag.py:28`) 텍스트만 읽는다. **이 거부는 로컬 RAG 경로 한정**이며 실운영 파일 질답 경로가 아니다.
-- **`[운영 이미지 기준]` 235 브리지 정형파일 SQL 질답.** 운영 235(da3fc15)에는 `wf301-vdb-bridge/src/file_sql/`(service·registry·policy)·`xlsx_sql_route.py`(550줄)·`xlsx_preprocessor.py`·`pdf_vlm.py`가 있어 **XLSX/CSV 정형 파일을 SQL 라우팅으로 질답**(스키마 카드·집계)하고 PDF는 VLM로 처리한다(CHSO 멀티시트 SQL 테스트 `test_chso_multisheet_sql.py`). 즉 사용자 관점에서 **엑셀 업로드 질답은 운영에서 지원된다**(위 로컬 RAG 거부와 별개 경로). develop 235(구버전)엔 이 SQL 경로가 없다(미머지). 형식별 상세 매트릭스는 235 소관 문서로 `[확인 필요]`(chat repo 밖) — "전부 지원" 단정은 하지 않는다. (유저 안내: DOC-4d §4.)
+- **235 브리지 정형파일 SQL 질답.** 235 브리지(develop 정본)에는 `wf301-vdb-bridge/src/file_sql/`(service·registry·policy)·`xlsx_sql_route.py`(550줄)·`xlsx_preprocessor.py`·`pdf_vlm.py`가 있어 **XLSX/CSV 정형 파일을 SQL 라우팅으로 질답**(스키마 카드·집계)하고 PDF는 VLM로 처리한다(CHSO 멀티시트 SQL 테스트 `test_chso_multisheet_sql.py`). 즉 사용자 관점에서 **엑셀 업로드 질답은 운영에서 지원된다**(위 로컬 RAG 거부와 별개 경로). 형식별 상세 매트릭스는 235 소관 문서로 `[확인 필요]`(chat repo 밖) — "전부 지원" 단정은 하지 않는다. (유저 안내: DOC-4d §4.)
 
 ## 5. 배포 형태 · 이미지
 
@@ -114,7 +114,7 @@ POST /chat/answer  (wf301 경유)
 2. **Flowise 연동** 실재 여부 — 채팅 repo에 직접 참조 없음.
 3. 채팅 서비스 **빌드/배포 절차** 문서 — repo에 없음(GenOS UI 경로 추정).
 4. 파일 질답 **지원 형식 전수·형식별 동작** — 235 소관(운영 SQL/VLM 경로 존재는 확인, 매트릭스는 235 문서 소관).
-5. **계보 정합**: 운영 이미지 `da3fc15`(피처 브랜치)가 develop 미머지 — 문서-운영 정본 일치를 위한 머지 여부는 PL 별건(딥리서치·정형 SQL 등 운영 전용 기능이 develop에 없음).
+5. **계보 정합 — 해소됨.** chat 코드는 develop에 정본화됨(머지 `dd8a3919`). 딥리서치·정형 SQL 등 기능이 이제 develop에 존재하므로 문서 인용은 develop서 검증 가능하다. 운영 이미지 시점은 태그 `ops/chat-838-da3fc153-20260718`(→`da3fc153`)로 고정, develop은 그보다 전진해 있을 수 있음(회귀 아님).
 
 ## 스크린샷/다이어그램 캡처 리스트
 - `[그림: 질의 처리 흐름도 (진입→loop→GenOS→SSE)]`
