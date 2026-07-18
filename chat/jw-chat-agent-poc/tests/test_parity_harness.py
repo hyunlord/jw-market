@@ -242,6 +242,11 @@ def test_fresh_representative_acceptance_requires_a_real_recent_sales_trend() ->
         "F03",
         "| 기간 | 매출 |\n| --- | --- |\n| 2026-04 | 81.21억원 |\n| 2026-05 | 81.00억원 |",
     ) == (False, "missing 2026-05 리바로 sales trend")
+    assert _history_golden_acceptance(
+        "F03",
+        "| 기간 | 매출 |\n| --- | --- |\n| 2026-04 | 81.21억원 |\n"
+        "| 2026-05 | 80.39억원 |\n| 2026-05 | 999.00억원 |",
+    ) == (False, "duplicate sales trend periods")
 
 
 def test_history_golden_acceptance_rejects_top5_aggregate_without_ranked_rows() -> None:

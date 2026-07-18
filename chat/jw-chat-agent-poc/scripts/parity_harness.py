@@ -1043,14 +1043,14 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         if any(value.replace(",", "") != "242.72" for value in sales_claims):
             return False, "conflicting 2025-Q2 리바로 sales values"
     if qid == "F03":
-        trend_periods = {
-            period
-            for period, _value in re.findall(
-                r"(?m)^\|\s*(20\d{2}-\d{2})\s*\|\s*([0-9][0-9,.]*)\s*억원\s*\|",
-                answer_body,
-            )
-        }
-        if len(trend_periods) < 2:
+        trend_rows = re.findall(
+            r"(?m)^\|\s*(20\d{2}-\d{2})\s*\|\s*([0-9][0-9,.]*)\s*억원\s*\|",
+            answer_body,
+        )
+        trend_periods = [period for period, _value in trend_rows]
+        if len(trend_periods) != len(set(trend_periods)):
+            return False, "duplicate sales trend periods"
+        if len(set(trend_periods)) < 2:
             return False, "missing multi-period 리바로 sales trend"
     if qid in P0G_TOP5_GOLDEN_QIDS:
         ranked_rows = re.findall(r"(?m)^\|\s*([1-5])(?:위)?\s*\|", answer_body)
