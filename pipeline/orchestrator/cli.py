@@ -66,6 +66,21 @@ def _build_parser() -> argparse.ArgumentParser:
     rehearsal.add_argument("--work-dir", required=True, type=Path)
     rehearsal.add_argument("--dry-run", action="store_true")
 
+    incremental_rehearsal = sub.add_parser(
+        "rehearse-incremental",
+        help="prove isolated full-minus-input then exact incremental equals R-1",
+    )
+    incremental_rehearsal.add_argument("--full-input-manifest", required=True, type=Path)
+    incremental_rehearsal.add_argument("--submission-manifest", required=True, type=Path)
+    incremental_rehearsal.add_argument("--target-db", required=True)
+    incremental_rehearsal.add_argument("--cache-db", required=True)
+    incremental_rehearsal.add_argument("--source-db", required=True)
+    incremental_rehearsal.add_argument("--reference-db", required=True)
+    incremental_rehearsal.add_argument("--reference-cache-db", required=True)
+    incremental_rehearsal.add_argument("--work-dir", required=True, type=Path)
+    incremental_rehearsal.add_argument("--comparison-output", required=True, type=Path)
+    incremental_rehearsal.add_argument("--dry-run", action="store_true")
+
     comparison = sub.add_parser(
         "compare-full",
         help="read-only census comparison of isolated full-rehearsal outputs",
@@ -137,6 +152,32 @@ def main(argv: list[str] | None = None) -> int:
                     cache_db=args.cache_db,
                     source_db=args.source_db,
                     work_dir=args.work_dir,
+                ),
+                dry_run=args.dry_run,
+            )
+        except RehearsalContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.command == "rehearse-incremental":
+        from pipeline.orchestrator.full_rehearsal import RehearsalContractError
+        from pipeline.orchestrator.incremental_rehearsal import (
+            IncrementalRehearsalConfig,
+            execute_incremental_rehearsal,
+        )
+
+        try:
+            return execute_incremental_rehearsal(
+                IncrementalRehearsalConfig(
+                    full_input_manifest=args.full_input_manifest,
+                    submission_manifest=args.submission_manifest,
+                    target_db=args.target_db,
+                    cache_db=args.cache_db,
+                    source_db=args.source_db,
+                    reference_db=args.reference_db,
+                    reference_cache_db=args.reference_cache_db,
+                    work_dir=args.work_dir,
+                    comparison_output=args.comparison_output,
                 ),
                 dry_run=args.dry_run,
             )

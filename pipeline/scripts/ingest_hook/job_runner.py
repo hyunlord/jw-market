@@ -4,8 +4,8 @@ Order is enforced in code (STOP ③ — no load without G3):
   1. contract parse (fail-closed on unknown category)
   2. G3 structural validation
   3. load phase        (rehearsal: CSV -> sqlite staging; real: pipeline.etl.run)
-  4. Σ(parts)=whole gate on the staged data
-  5. downstream refresh (real: pipeline.orchestrator --mode incremental)
+  4. downstream refresh (real: pipeline.orchestrator --mode incremental)
+  5. Σ(parts)=whole gate on the refreshed mart
   6. ledger complete
 Any failure marks the ledger row failed with the reason and exits non-zero;
 nothing is promoted (rehearsal writes staging only; the real loaders keep
@@ -28,8 +28,9 @@ from pathlib import Path
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
-from pipeline.scripts.ingest_hook.g3 import G3Error, validate
+from pipeline.scripts.ingest_hook.g3 import G3Error, G3Report, validate
 from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
+from pipeline.scripts.ingest_hook.sigma_market import MarketSigmaError
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 
 
@@ -78,6 +79,65 @@ def _run_commands(label: str, argv: tuple[str, ...]) -> None:
         raise RuntimeError(f"{label} command failed rc={result.returncode}: {' '.join(argv)}")
 
 
+def _build_load_argv(spec, manifest, input_root: Path) -> tuple[str, ...]:
+    """Bind a validated submission to the exact files consumed by s1."""
+    if not spec.load_argv:
+        return ()
+    if manifest.category != "ubist":
+        return spec.load_argv
+
+    target = config.ubist_target_dir()
+    argv = (*spec.load_argv, "--target-dir", str(target))
+    for entry in manifest.files:
+        path = (input_root / entry.path).resolve()
+        if path.suffix.lower() != ".xlsx":
+            raise RuntimeError(f"UBIST real load requires xlsx manifest files: {entry.path}")
+        argv = (*argv, "--ubist-file", str(path))
+    return argv
+
+
+def _validate_and_load(
+    manifest,
+    spec,
+    input_root: Path,
+    *,
+    previous_total_rows: int | None,
+    rehearsal_root: Path | None,
+) -> G3Report:
+    """Run the mandatory G3 boundary and only then consume its exact files."""
+    report = validate(
+        manifest,
+        spec,
+        input_root,
+        previous_total_rows=previous_total_rows,
+    )
+    print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
+    if rehearsal_root is not None:
+        table = _rehearsal_load(manifest, input_root, rehearsal_root)
+        print(f"gate=sigma status=pass table={table} (rehearsal staging)")
+        return report
+    _run_commands("load", _build_load_argv(spec, manifest, input_root))
+    return report
+
+
+def _check_market_sigma(spec, report: G3Report) -> None:
+    if not spec.sigma_source:
+        return
+    periods = tuple(sorted(report.observed_periods)) or (report.epoch,)
+    conn = config.open_mart_connection()
+    try:
+        from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
+
+        sigma = check_market_sigma(conn, source=spec.sigma_source, periods=periods)
+    finally:
+        conn.close()
+    print(
+        f"gate=sigma status=pass source={spec.sigma_source} "
+        f"markets={sigma.markets_checked} cells={sigma.cells_checked} "
+        f"worst_rel={sigma.worst_rel:.6%}"
+    )
+
+
 def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root: Path | None) -> int:
     run_id = _run_id()
     try:
@@ -103,35 +163,32 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
 
-        # 1) G3 — always first; a failure here has zero DB effect.
-        report = validate(manifest, spec, input_root, previous_total_rows=previous_total)
-        print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
+        # 1) G3 + 2) exact load. A G3 failure has zero DB effect.
+        report = _validate_and_load(
+            manifest,
+            spec,
+            input_root,
+            previous_total_rows=previous_total,
+            rehearsal_root=rehearsal_root,
+        )
 
-        # 2) load + 3) Σ gate
         if rehearsal_root is not None:
-            table = _rehearsal_load(manifest, input_root, rehearsal_root)
-            print(f"gate=sigma status=pass table={table} (rehearsal staging)")
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
-            _run_commands("load", spec.load_argv)
-            if spec.sigma_source:
-                from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
-
-                periods = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
-                sigma = check_market_sigma(
-                    config.open_mart_connection(), source=spec.sigma_source, periods=periods
-                )
-                print(
-                    f"gate=sigma status=pass source={spec.sigma_source} "
-                    f"markets={sigma.markets_checked} cells={sigma.cells_checked} "
-                    f"worst_rel={sigma.worst_rel:.6%}"
-                )
+            # 3) refresh + 4) Σ gate. Sigma must observe the refreshed mart.
             _run_commands("refresh", spec.refresh_argv)
+            _check_market_sigma(spec, report)
 
         ledger.mark_complete(*identity, row_counts=report.file_rows)
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
-    except (G3Error, SigmaGateError, UnknownCategoryError, RuntimeError) as exc:
+    except (
+        G3Error,
+        MarketSigmaError,
+        SigmaGateError,
+        UnknownCategoryError,
+        RuntimeError,
+    ) as exc:
         ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

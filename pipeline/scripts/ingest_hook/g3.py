@@ -84,6 +84,41 @@ def _period_values(path: Path, column: str) -> set[str]:
         }
 
 
+def _read_ubist_workbook(path: Path) -> tuple[int, set[str]]:
+    """Count loader-eligible source rows and inspect metric header periods."""
+    import openpyxl
+
+    from pipeline.etl.io.ubist_loader import classify_sheet, to_string_or_none
+
+    periods: set[str] = set()
+    row_count = 0
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        for sheet_name in workbook.sheetnames:
+            rows = workbook[sheet_name].iter_rows(values_only=True)
+            try:
+                header1 = next(rows)
+                header2 = next(rows)
+            except StopIteration:
+                continue
+            mapping = classify_sheet(sheet_name, header1, header2)
+            periods.update(period for _, _, _, period in mapping.metric_cols)
+            identifier_indexes = [
+                index
+                for index, _, canonical in mapping.dim_cols
+                if canonical in {"약품코드", "제품", "성분", "브랜드"}
+            ]
+            for row in rows:
+                if any(
+                    to_string_or_none(row[index] if index < len(row) else None)
+                    for index in identifier_indexes
+                ):
+                    row_count += 1
+    finally:
+        workbook.close()
+    return row_count, periods
+
+
 def _check_declared_period(entry: ManifestFile, epoch: str, failures: list[str]) -> None:
     if entry.period_start and entry.period_end:
         if not (entry.period_start <= epoch <= entry.period_end):
@@ -118,9 +153,33 @@ def validate(
 
         suffix = path.suffix.lower()
         if suffix in _WORKBOOK_SUFFIXES:
-            # Workbook sheet schemas belong to the s2 catalog gate; G3 pins identity only.
-            report.notes.append(f"{entry.path}: workbook content checks delegated to s2 catalog gate")
             _check_declared_period(entry, manifest.epoch, failures)
+            if spec.key != "ubist":
+                report.notes.append(
+                    f"{entry.path}: workbook content checks delegated to category loader"
+                )
+                continue
+            try:
+                row_count, periods = _read_ubist_workbook(path)
+            except Exception as exc:
+                failures.append(f"{entry.path}: invalid UBIST workbook: {exc}")
+                continue
+            report.observed_periods.update(periods)
+            if manifest.epoch not in periods:
+                failures.append(
+                    f"{entry.path}: epoch {manifest.epoch} absent from workbook periods "
+                    f"{sorted(periods)[:6]}"
+                )
+            future = sorted(value for value in periods if value > manifest.epoch)
+            if future:
+                failures.append(f"{entry.path}: periods beyond epoch {manifest.epoch}: {future[:6]}")
+            if row_count == 0:
+                failures.append(f"{entry.path}: zero data rows")
+            if entry.rows is not None and entry.rows != row_count:
+                failures.append(
+                    f"{entry.path}: manifest declares rows={entry.rows}, actual {row_count}"
+                )
+            report.file_rows[entry.path] = row_count
             continue
         if suffix not in _CSV_SUFFIXES:
             failures.append(f"{entry.path}: unsupported suffix {suffix!r} (contract expects .csv/.xlsx)")

@@ -1,6 +1,10 @@
 """G3 structural validation — pass path plus every rejection class (G-2 units)."""
 from __future__ import annotations
 
+import hashlib
+import json
+
+import openpyxl
 import pytest
 
 from pipeline.scripts.ingest_hook.category_map import resolve_category
@@ -82,6 +86,51 @@ def test_path_escape_fails(bucket):
     text = manifest_path.read_text(encoding="utf-8").replace("ubist/2026-07/data.csv", "../outside.csv")
     manifest_path.write_text(text, encoding="utf-8")
     with pytest.raises(G3Error, match="escapes input root"):
+        _validate(bucket, manifest_path)
+
+
+def _write_workbook_submission(bucket, *, metric_period: str) -> object:
+    data_path = bucket / "ubist" / "2026-05" / "may.xlsx"
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "UBIST"
+    sheet.append((None, "처방조제액(원)"))
+    sheet.append(("브랜드", metric_period))
+    sheet.append(("리바로", 100.0))
+    workbook.save(data_path)
+    manifest = {
+        "contract_version": "v2",
+        "epoch": "2026-05",
+        "category": "ubist",
+        "complete": True,
+        "submitted_at": "2026-07-18T09:00:00+09:00",
+        "files": [
+            {
+                "path": data_path.relative_to(bucket).as_posix(),
+                "sha256": hashlib.sha256(data_path.read_bytes()).hexdigest(),
+                "rows": 1,
+                "period_start": "2026-05",
+                "period_end": "2026-05",
+            }
+        ],
+    }
+    manifest_path = data_path.with_name("manifest.json")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path
+
+
+def test_ubist_workbook_checks_actual_period_and_rows(bucket):
+    report = _validate(bucket, _write_workbook_submission(bucket, metric_period="2026년 5월"))
+
+    assert report.total_rows == 1
+    assert report.observed_periods == {"2026-05"}
+
+
+def test_ubist_workbook_rejects_manifest_epoch_absent_from_headers(bucket):
+    manifest_path = _write_workbook_submission(bucket, metric_period="2026년 4월")
+
+    with pytest.raises(G3Error, match="epoch 2026-05 absent"):
         _validate(bucket, manifest_path)
 
 

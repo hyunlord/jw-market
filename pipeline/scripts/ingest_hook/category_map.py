@@ -56,7 +56,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         description="UBIST monthly submission (incremental append; dedup in frame loader)",
         required_columns=("period", "brand", "value"),
         period_column="period",
-        load_argv=_etl("--source", "ubist", "--incremental"),
+        load_argv=_etl("--stage", "s1", "--source", "ubist", "--incremental"),
         refresh_argv=_orchestrator(),
         sigma_source="ubist",
     ),

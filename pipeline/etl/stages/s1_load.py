@@ -24,13 +24,15 @@ def _run_ubist(params: dict[str, Any]) -> int:
     dry = bool(params.get("dry_run"))
     incremental = bool(params.get("incremental"))
     file_arg = params.get("file")
+    ubist_files = [Path(str(path)) for path in params.get("ubist_files") or ()]
     source_dir = Path(str(params["ubist_source_dir"])) if params.get("ubist_source_dir") else None
     try:
         if incremental:
             stats = run_incremental_ubist_load(
                 target=target,
+                paths=ubist_files or None,
                 file=Path(str(file_arg)) if file_arg else None,
-                all_sources=not bool(file_arg),
+                all_sources=not bool(file_arg or ubist_files),
                 dry=dry,
                 allow_overlap_dedup=bool(params.get("allow_overlap_dedup")),
             )
@@ -154,6 +156,7 @@ def run(params: dict[str, Any]) -> int:
         source in {"ubist", "all"}
         and not params.get("dry_run")
         and not params.get("file")
+        and not params.get("ubist_files")
         and not params.get("ubist_source_dir")
         and not params.get("incremental")
     ):

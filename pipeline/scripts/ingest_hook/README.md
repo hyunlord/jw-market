@@ -8,8 +8,8 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 
 * **서빙 무접촉** — jw-market-backend-api 에는 어떤 엔드포인트도 추가하지 않는다.
   트리거 서비스는 별도 Deployment (같은 orchestrator 이미지, uvicorn factory).
-* **G3 우회 불가** — `job_runner.py` 가 G3 → 적재 → Σ게이트 → refresh 순서를
-  코드로 강제한다. G3 실패 = 적재 0, ledger `failed`.
+* **G3 우회 불가** — `job_runner.py` 가 G3 → exact 적재 → refresh → Σ게이트 순서를
+  코드로 강제한다. G3 실패 = 적재 0, refresh 실패 = Σ/complete 0.
 * **미활성 배포** — `deploy/k8s/ingest-hook/` 의 리소스는 replicas 0 / suspend
   상태로만 repo 에 존재한다. 활성화(적용·스케일업·resume + mysql `ingest_ledger`
   DDL 적용)는 사이트 confirm 구현 + 격리 검증 완료 후 PL 게이트.
@@ -43,6 +43,7 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 | `INGEST_JOB_IMAGE` | Job 이미지 (기본 = 운영 orchestrator digest pin) |
 | `INGEST_JOB_NAMESPACE` | 기본 `llmops` |
 | `INGEST_REHEARSAL_ROOT` | 설정 시 job_runner 격리 모드 (sqlite staging, orchestrator 미호출) |
+| `INGEST_UBIST_TARGET_DIR` | UBIST 실증분이 append될 기존 full parquet 루트 (실 load 필수) |
 
 ## 격리 리허설 (운영 무접촉 E2E)
 
@@ -56,6 +57,26 @@ python -m pipeline.scripts.ingest_hook.job_runner \
 
 게이트 증적·실행 방법: `tests/ingest_hook/` (G-1 E2E, G-2 G3 거부, G-3 멱등,
 G-4 sweep). 전체: `python -m pytest tests/ingest_hook -q`.
+
+## R-2 full-then-incremental 격리 실증
+
+`rehearse-incremental`은 full 입력에서 제출 세트를 SHA256으로 정확히 holdout한 뒤
+격리 DB/cache를 full 재생성하고, 같은 세트를 G3와 실 UBIST incremental loader로
+append한다. 이후 canonical refresh, Σ게이트, R-1 full 산출물 exact digest census를
+순서대로 수행하며 운영 schema를 publish하지 않는다.
+
+```bash
+python -m pipeline.orchestrator rehearse-incremental \
+  --full-input-manifest /work/inputs/input_manifest.json \
+  --submission-manifest /config/ubist-2026-05.json \
+  --target-db jw_mart_rehearsal_r2_example \
+  --cache-db jw_mart_s6_rehearsal_r2_example \
+  --source-db jw_mart_d2_stage_20260630_r2 \
+  --reference-db jw_mart_rehearsal_r1_example \
+  --reference-cache-db jw_mart_s6_rehearsal_r1_example \
+  --work-dir /work/r2 \
+  --comparison-output /work/evidence/r2_compare.json
+```
 
 ## 활성화 절차 (PL 게이트 — 이 repo 커밋만으로는 아무것도 돌지 않음)
 

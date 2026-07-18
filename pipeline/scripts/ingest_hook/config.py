@@ -14,6 +14,7 @@ ENV_LEDGER_SQLITE = "INGEST_LEDGER_SQLITE"      # set => sqlite ledger (rehearsa
 ENV_JOB_IMAGE = "INGEST_JOB_IMAGE"
 ENV_JOB_NAMESPACE = "INGEST_JOB_NAMESPACE"
 ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mode
+ENV_UBIST_TARGET_DIR = "INGEST_UBIST_TARGET_DIR"  # existing full UBIST parquet root
 # INGEST_S3_BUCKET (s3_input.ENV_BUCKET): set => submissions read from MinIO/S3
 
 DEFAULT_NAMESPACE = "llmops"
@@ -28,6 +29,15 @@ def input_root() -> Path:
     if not value:
         raise RuntimeError(f"{ENV_INPUT_ROOT} is required (submission root; no default on purpose)")
     return Path(value)
+
+
+def ubist_target_dir() -> Path:
+    value = os.environ.get(ENV_UBIST_TARGET_DIR, "")
+    if not value:
+        raise RuntimeError(
+            f"{ENV_UBIST_TARGET_DIR} is required for real UBIST incremental loads"
+        )
+    return Path(value).resolve()
 
 
 def job_image() -> str:
