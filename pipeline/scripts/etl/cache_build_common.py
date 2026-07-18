@@ -24,6 +24,11 @@ try:
 except ImportError:  # pragma: no cover - optional local speed-up
     orjson = None
 
+try:
+    from pydantic_core import from_json as pydantic_json_loads
+except ImportError:  # pragma: no cover - ETL-only environments may omit Pydantic
+    pydantic_json_loads = None
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CATALOG_DIR = PROJECT_ROOT / "output" / "catalog"
 
@@ -395,6 +400,11 @@ def decode_json(value: Any) -> Any:
         try:
             return orjson.loads(value)
         except (TypeError, orjson.JSONDecodeError):
+            pass
+    if pydantic_json_loads is not None:
+        try:
+            return pydantic_json_loads(value)
+        except (TypeError, ValueError):
             pass
     try:
         return json.loads(value)
