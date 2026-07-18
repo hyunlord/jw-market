@@ -2201,7 +2201,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             sources=tuple(result.get("sources", ())),
             conversation_id=conversation_id,
         )
-    if _is_market_clarification_result(result):
+    if _is_market_clarification_result(result) or _is_source_absent_brand_result(result):
         timing_payload = finish(timing)
         answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
         trace = trace_envelope(
@@ -2592,6 +2592,11 @@ def _is_market_clarification_result(result: dict) -> bool:
         and item.get("status") == "needs_clarification"
         for item in decomposition
     )
+
+
+def _is_source_absent_brand_result(result: dict) -> bool:
+    sources = result.get("sources")
+    return isinstance(sources, (list, tuple)) and tuple(sources) == ("unsupported_brand",)
 
 
 def _sse_delta(token: str) -> str:

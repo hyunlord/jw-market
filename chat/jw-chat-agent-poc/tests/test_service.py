@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from jw_chat_agent_poc.agent_loop.factory import unsupported_brand_result
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.file_search_client import (
     UploadedFileOverview,
@@ -1832,6 +1833,31 @@ def test_answer_question_direct_agent_loop_reports_mart_absence(monkeypatch) -> 
     assert result["router_diagnostics"] == service_app.router_diagnostics(Dependencies.router)
     assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
     assert "지원하지 않는 브랜드" not in result["answer"]
+
+
+def test_compute_final_answer_preserves_strategic_mart_absence(monkeypatch) -> None:
+    router = BQRouter()
+    question = "타이레놀 매출 알려줘"
+    result = unsupported_brand_result(
+        question,
+        router.route(question, has_documents=False),
+        service_app.router_diagnostics(router),
+    )
+    genos_called = False
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        nonlocal genos_called
+        genos_called = True
+        yield "타이레놀 매출 데이터는 현재 시스템에서 보유하고 있지 않습니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+
+    final = compute_final_answer(question, result, "source-absent-final")
+
+    assert not genos_called
+    assert "전략 마트 원천에서 확인되지 않습니다" in final.text
+    assert "브랜드 목록에서 일치 항목을 찾지 못했습니다" not in final.text
+    assert final.sources == ("unsupported_brand",)
 
 
 def test_answer_question_direct_agent_loop_allows_portfolio_scope_without_single_brand_resolution(monkeypatch) -> None:
