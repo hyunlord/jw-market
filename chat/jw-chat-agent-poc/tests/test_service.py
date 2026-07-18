@@ -565,7 +565,6 @@ def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monk
 @pytest.mark.parametrize(
     ("question", "grounded_question"),
     (
-        ("2025년 2분기 매출 얼마야", "리바로 2025년 2분기 매출 얼마야"),
         (
             "고지혈증 시장 상위 5개 브랜드 알려줘",
             "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
@@ -602,6 +601,177 @@ def test_unanchored_market_goldens_are_grounded_before_direct_execution(
     assert captured == [grounded_question]
     assert item["result"]["effective_question"] == grounded_question
     assert item["result"]["context_scope"] == "MARKET"
+
+
+def test_unanchored_quarter_sales_asks_for_brand_before_tool_execution(monkeypatch) -> None:
+    def direct_loop(_question: str, _external_mode: str) -> dict:
+        raise AssertionError("an ambiguous brand-level sales question must not execute tools")
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "ambiguous-quarter-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["decomposition"] == [
+        {"intent": "market_clarification", "status": "needs_clarification"}
+    ]
+    assert item["result"]["answer"] == "어느 브랜드의 2025년 2분기 매출인지 알려주세요."
+
+
+def test_unanchored_quarter_sales_clarification_bypasses_final_llm(monkeypatch) -> None:
+    def unexpected_stream(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("clarification must not enter final LLM synthesis")
+
+    monkeypatch.setattr(service_app.GenosClient, "stream_answer", unexpected_stream)
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2024년 1분기 매출 얼마야",
+        "live",
+        "ambiguous-quarter-final-session",
+        use_direct_agent_loop=True,
+    )
+
+    final = service_app.compute_final_answer(
+        "2024년 1분기 매출 얼마야",
+        item["result"],
+        "ambiguous-quarter-final-session",
+    )
+
+    assert final.text == "어느 브랜드의 2024년 1분기 매출인지 알려주세요."
+    assert final.sources == ()
+
+
+def test_unanchored_quarter_sales_pending_reply_resumes_with_brand(monkeypatch) -> None:
+    store = SessionStore()
+    captured: list[str] = []
+
+    def direct_loop(question: str, _external_mode: str) -> dict:
+        captured.append(question)
+        return {"answer": "2025-Q2 리바로 매출은 242.72억원입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    first = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "quarter-brand-reply-session",
+        use_direct_agent_loop=True,
+    )
+    second = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "리바로",
+        "live",
+        "quarter-brand-reply-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert "어느 브랜드" in first["result"]["answer"]
+    assert captured == ["리바로 2025년 2분기 매출 얼마야"]
+    assert "242.72억원" in second["result"]["answer"]
+
+
+def test_unanchored_quarter_sales_pending_does_not_hijack_unrelated_followup(monkeypatch) -> None:
+    store = SessionStore()
+    captured: list[str] = []
+
+    def answer_without_pending(
+        _resolver,
+        _factory,
+        _conversation_id: str,
+        question: str,
+        _external_mode: str,
+        _documents,
+        _store,
+        *,
+        use_direct_agent_loop: bool,
+    ) -> dict:
+        assert use_direct_agent_loop is True
+        captured.append(question)
+        return {"answer": "안녕하세요.", "sources": [], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_without_pending", answer_without_pending)
+
+    service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "quarter-unrelated-reply-session",
+        use_direct_agent_loop=True,
+    )
+    second = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "안녕",
+        "live",
+        "quarter-unrelated-reply-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["안녕"]
+    assert "어느 브랜드" not in second["result"]["answer"]
+    assert "안녕하세요" in second["result"]["answer"]
+    assert store.conversations.get_pending("quarter-unrelated-reply-session") is None
+
+
+def test_unanchored_quarter_sales_pending_does_not_rewrite_new_anchored_question(monkeypatch) -> None:
+    store = SessionStore()
+    captured: list[str] = []
+
+    def answer_without_pending(
+        _resolver,
+        _factory,
+        _conversation_id: str,
+        question: str,
+        _external_mode: str,
+        _documents,
+        _store,
+        *,
+        use_direct_agent_loop: bool,
+    ) -> dict:
+        assert use_direct_agent_loop is True
+        captured.append(question)
+        return {"answer": "리바로 최근 매출입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_without_pending", answer_without_pending)
+
+    service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "quarter-new-question-session",
+        use_direct_agent_loop=True,
+    )
+    service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "리바로 최근 매출은?",
+        "live",
+        "quarter-new-question-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 최근 매출은?"]
 
 
 def test_final_answer_uses_grounded_market_question_for_generation_and_contract(monkeypatch) -> None:
@@ -688,9 +858,9 @@ def test_unanchored_quarter_golden_ignores_stale_file_and_external_turn(
         use_direct_agent_loop=True,
     )
 
-    assert captured == ["리바로 2025년 2분기 매출 얼마야"]
+    assert captured == []
     assert item["result"]["context_scope"] == "MARKET"
-    assert "242.72억원" in item["result"]["answer"]
+    assert item["result"]["answer"] == "어느 브랜드의 2025년 2분기 매출인지 알려주세요."
 
 
 def test_unanchored_quarter_golden_hides_stale_file_progress_steps(
@@ -733,7 +903,7 @@ def test_unanchored_quarter_golden_hides_stale_file_progress_steps(
 
     public_steps = {str(event.get("name") or "") for event in events}
     assert item["result"]["context_scope"] == "MARKET"
-    assert "242.72억원" in item["result"]["answer"]
+    assert item["result"]["answer"] == "어느 브랜드의 2025년 2분기 매출인지 알려주세요."
     assert "첨부 파일 확인" not in public_steps
     assert "첨부 파일 구조 분석" not in public_steps
 

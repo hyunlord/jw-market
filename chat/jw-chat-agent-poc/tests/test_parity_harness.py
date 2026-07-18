@@ -77,17 +77,19 @@ def test_parity_harness_registers_channel_paraphrases() -> None:
 def test_parity_harness_registers_fresh_goldens() -> None:
     assert _capture_questions("fresh") == FRESH_GOLDEN_QUESTIONS
     assert FRESH_GOLDEN_QUESTIONS == (
-        ("F01", "2025년 2분기 매출 얼마야"),
+        ("F01", "리바로 2025년 2분기 매출 얼마야"),
         ("F02", "고지혈증 시장 상위 5개 브랜드 알려줘"),
         ("F03", "리바로 최근 매출 추이 어때"),
+        ("F04", "2025년 2분기 매출 얼마야"),
     )
 
 
 def test_parity_harness_registers_history_goldens() -> None:
     assert _capture_questions("history") == HISTORY_GOLDEN_QUESTIONS
-    assert HISTORY_GOLDEN_QUESTIONS[-2:] == (
-        ("H02", "2025년 2분기 매출 얼마야"),
+    assert HISTORY_GOLDEN_QUESTIONS[-3:] == (
+        ("H02", "리바로 2025년 2분기 매출 얼마야"),
         ("H03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+        ("H04", "2025년 2분기 매출 얼마야"),
     )
 
 
@@ -95,8 +97,9 @@ def test_parity_harness_registers_mode_transition_goldens() -> None:
     assert _capture_questions("mode-transition") == MODE_TRANSITION_GOLDEN_QUESTIONS
     assert MODE_TRANSITION_GOLDEN_QUESTIONS == (
         ("M01", "/deep 리바로 경쟁구도"),
-        ("M02", "2025년 2분기 매출 얼마야"),
+        ("M02", "리바로 2025년 2분기 매출 얼마야"),
         ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+        ("M04", "2025년 2분기 매출 얼마야"),
     )
 
 
@@ -245,6 +248,21 @@ def test_history_golden_acceptance_requires_live_values() -> None:
     assert _history_golden_acceptance("M03", top5_answer) == (True, "")
     assert _history_golden_acceptance("F01", "2025-Q2 리바로 매출은 242.72억원입니다.") == (True, "")
     assert _history_golden_acceptance("F02", top5_answer) == (True, "")
+
+
+def test_history_golden_acceptance_requires_brand_clarification_without_data_leakage() -> None:
+    clarification = "어느 브랜드의 2025년 2분기 매출인지 알려주세요."
+
+    for qid in ("F04", "H04", "M04"):
+        assert _history_golden_acceptance(qid, clarification) == (True, "")
+        assert _history_golden_acceptance(qid, f"{clarification}\n참고값은 242.72억원입니다.") == (
+            False,
+            "unexpected brand clarification content",
+        )
+        assert _history_golden_acceptance(qid, f"{clarification}\n\n## 출처\n\n| 출처 |\n| --- |\n| UBIST |") == (
+            False,
+            "unexpected brand clarification source",
+        )
 
 
 def test_history_golden_acceptance_allows_grounded_share_only_top5_table() -> None:
@@ -1386,6 +1404,7 @@ def test_p0g_suite_fails_when_general_golden_runs_contaminated_routes(monkeypatc
     assert summary["scenarios"][1]["route_contamination_failures"] == {
         "H02": ["첨부 파일 확인", "첨부 문서 조회", "임상 데이터 조회"],
         "H03": ["첨부 파일 확인"],
+        "H04": ["첨부 파일 확인"],
     }
 
 

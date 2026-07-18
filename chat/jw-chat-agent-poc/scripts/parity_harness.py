@@ -46,23 +46,32 @@ CHANNEL_PARAPHRASE_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("Q07_CHANNEL_COMPOSITION", "리바로 채널 구성"),
 )
 FRESH_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
-    ("F01", "2025년 2분기 매출 얼마야"),
+    ("F01", "리바로 2025년 2분기 매출 얼마야"),
     ("F02", "고지혈증 시장 상위 5개 브랜드 알려줘"),
     ("F03", "리바로 최근 매출 추이 어때"),
+    ("F04", "2025년 2분기 매출 얼마야"),
 )
 HISTORY_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("H01", "뇌경색 임상·허가 경쟁약물"),
-    ("H02", "2025년 2분기 매출 얼마야"),
+    ("H02", "리바로 2025년 2분기 매출 얼마야"),
     ("H03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+    ("H04", "2025년 2분기 매출 얼마야"),
 )
 MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M01", "/deep 리바로 경쟁구도"),
-    ("M02", "2025년 2분기 매출 얼마야"),
+    ("M02", "리바로 2025년 2분기 매출 얼마야"),
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
+    ("M04", "2025년 2분기 매출 얼마야"),
 )
-P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "F03", "H02", "H03", "M02", "M03"})
+P0G_GENERAL_GOLDEN_QIDS = frozenset(
+    {"F01", "F02", "F03", "F04", "H02", "H03", "H04", "M02", "M03", "M04"}
+)
 P0G_SALES_GOLDEN_QIDS = frozenset({"F01", "H02", "M02"})
 P0G_TOP5_GOLDEN_QIDS = frozenset({"F02", "H03", "M03"})
+P0G_CLARIFICATION_GOLDEN_QIDS = frozenset({"F04", "H04", "M04"})
+P0G_DATA_GOLDEN_QIDS = frozenset(
+    P0G_SALES_GOLDEN_QIDS | P0G_TOP5_GOLDEN_QIDS | {"F03"}
+)
 P0G_TOP5_GOLDEN_ROWS = (
     (1, "로수젯", "9.13", "195.24"),
     (2, "리피토", "6.13", "131.09"),
@@ -622,7 +631,7 @@ def _p0g_missing_step_evidence(rows: list[dict[str, Any]]) -> list[str]:
     failures: list[str] = []
     for row in rows:
         qid = str(row.get("qid", ""))
-        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+        if qid not in P0G_DATA_GOLDEN_QIDS:
             continue
         steps = row.get("steps", ())
         if not isinstance(steps, (list, tuple)) or not any(
@@ -637,7 +646,7 @@ def _p0g_fast_path_stage_failures(rows: list[dict[str, Any]]) -> list[str]:
     failures: list[str] = []
     for row in rows:
         qid = str(row.get("qid", ""))
-        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+        if qid not in P0G_DATA_GOLDEN_QIDS:
             continue
         completed_names = {
             str(step.get("name", "")).strip()
@@ -680,7 +689,7 @@ def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[
     failures: dict[str, dict[str, Any]] = {}
     for row in rows:
         qid = str(row.get("qid", ""))
-        if qid not in P0G_GENERAL_GOLDEN_QIDS:
+        if qid not in P0G_DATA_GOLDEN_QIDS:
             continue
         raw_sources = str(row.get("sources", "")).strip()
         labels = {item.strip() for item in raw_sources.split(",") if item.strip()}
@@ -1166,6 +1175,13 @@ def _cleanup_portal_uploaded_file_session(
 
 
 def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
+    if qid in P0G_CLARIFICATION_GOLDEN_QIDS:
+        expected = "어느 브랜드의 2025년 2분기 매출인지 알려주세요."
+        if "## 출처" in answer:
+            return False, "unexpected brand clarification source"
+        if answer.strip() != expected:
+            return False, "unexpected brand clarification content"
+        return True, ""
     requirements = {
         "F01": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
         "F02": (re.compile(r"29\.52\s*%"), "missing 29.52%"),

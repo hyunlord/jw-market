@@ -133,6 +133,7 @@ def test_strategy_market_size_precision_is_grounded_by_raw_market_fact() -> None
             "view_type": "market_landscape",
             "period": "2025-04",
             "market_size_억원": 2106.71557456,
+            "total_brands_in_market": 470,
         },
     }
     question = "ml_006 2025-04 시장규모"
@@ -141,6 +142,118 @@ def test_strategy_market_size_precision_is_grounded_by_raw_market_fact() -> None
 
     assert "2,106.715575억원" in answer
     assert _ungrounded_numbers(answer, response) == ()
+
+
+def test_strategy_market_size_golden_postcheck_blocks_wrong_value() -> None:
+    call = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_006",
+            "view_type": "market_landscape",
+            "period": "2025-04",
+            "market_size_억원": 2139.250433,
+            "total_brands_in_market": 470,
+        },
+    }
+
+    answer = enforce_market_answer_contract(
+        question="ml_006 2025-04 시장규모",
+        answer="2,139.250433억원입니다.",
+        tool_calls=[call],
+    )
+
+    assert answer == "승인된 2025-04 전략 시장 기준값과 일치하지 않아 수치를 표시하지 않습니다."
+    assert "2,139" not in answer
+
+
+def test_strategy_market_size_golden_postcheck_blocks_wrong_denominator() -> None:
+    call = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_006",
+            "view_type": "market_landscape",
+            "period": "2025-04",
+            "market_size_억원": 2106.71557456,
+            "total_brands_in_market": 555,
+        },
+    }
+
+    answer = enforce_market_answer_contract(
+        question="ml_006 2025-04 시장규모",
+        answer="2,106.715575억원입니다.",
+        tool_calls=[call],
+    )
+
+    assert answer == "승인된 2025-04 전략 시장 기준값과 일치하지 않아 수치를 표시하지 않습니다."
+
+
+def test_strategy_market_size_golden_postcheck_ignores_unrelated_market_calls() -> None:
+    unrelated = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_999",
+            "view_type": "market_landscape",
+            "period": "2025-04",
+            "market_size_억원": 999.0,
+            "total_brands_in_market": 1,
+        },
+    }
+    approved = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_006",
+            "view_type": "market_landscape",
+            "period": "2025-04",
+            "market_size_억원": 2106.71557456,
+            "total_brands_in_market": 470,
+        },
+    }
+
+    answer = enforce_market_answer_contract(
+        question="ml_006 2025-04 시장규모",
+        answer="",
+        tool_calls=[unrelated, approved],
+    )
+
+    assert "2,106.715575억원" in answer
+    assert "일치하지 않아" not in answer
+
+
+def test_period_free_strategy_market_size_keeps_latest_mart_value() -> None:
+    call = {
+        "tool": "get_market_landscape",
+        "source": "UBIST",
+        "render_data": {
+            "status": "ok",
+            "metric": "market_size",
+            "market_id": "ml_006",
+            "view_type": "market_landscape",
+            "period": "2026-05",
+            "market_size_억원": 2139.250433,
+            "total_brands_in_market": 555,
+        },
+    }
+
+    answer = enforce_market_answer_contract(
+        question="ml_006 시장 규모",
+        answer="",
+        tool_calls=[call],
+    )
+
+    assert "2026-05" in answer
+    assert "2,139.250433억원" in answer
 
 
 def test_unsupported_region_repurchase_never_falls_back_to_market_totals() -> None:

@@ -547,9 +547,15 @@ def _answer_question(
         previous_turn = state.turns[-1] if state.turns else None
         routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
+        has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
+        needs_brand_clarification = (
+            is_explicit_quarter_sales_question(routing_question)
+            and not has_explicit_market_anchor
+            and not has_file_reference(routing_question)
+        )
         grounded_market_question = _ground_unanchored_market_golden(
             routing_question,
-            has_explicit_anchor=market_scope_resolver.has_explicit_anchor(routing_question),
+            has_explicit_anchor=has_explicit_market_anchor,
         )
         execution_question = (
             grounded_market_question
@@ -579,6 +585,8 @@ def _answer_question(
             has_market_anchor=has_market_anchor,
             file_schema_columns=file_schema_columns,
         )
+        if needs_brand_clarification:
+            context_scope = ContextScope.MARKET
         if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
             emit_completed_stage(
                 None,
@@ -608,6 +616,20 @@ def _answer_question(
         file_sql_trace: tuple[dict[str, str], ...] = ()
         if routing_resolution.unresolved_reference:
             result = unresolved_reference_result(effective_question)
+        elif needs_brand_clarification:
+            expires_at = store.conversations.pending_expiry()
+            store.conversations.set_pending(
+                state.conversation_id,
+                PendingClarification(
+                    kind="brand_metric",
+                    original_question=effective_question,
+                    brand="",
+                    metric="sales",
+                    created_at=expires_at - store.conversations.pending_ttl_seconds,
+                    expires_at=expires_at,
+                ),
+            )
+            result = _brand_metric_clarification_result(effective_question)
         elif deep_request.enabled:
             context_scope = ContextScope.MARKET
             if has_file:
@@ -920,6 +942,25 @@ def _scope_clarification_result(question: str) -> dict:
     }
 
 
+def _brand_metric_clarification_result(question: str) -> dict:
+    period_match = re.search(r"(20\d{2})년?\s*([1-4])분기", question)
+    period = (
+        f"{period_match.group(1)}년 {period_match.group(2)}분기"
+        if period_match is not None
+        else "해당 기간"
+    )
+    answer = f"어느 브랜드의 {period} 매출인지 알려주세요."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "decomposition": [{"intent": "market_clarification", "status": "needs_clarification"}],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "router_diagnostics": {"mode": "brand_clarification", "deterministic_execution": True},
+    }
+
+
 def _delegated_file_context(
     question: str,
     conversation_id: str | None,
@@ -1073,8 +1114,6 @@ def _ground_unanchored_market_golden(
 
     if has_explicit_anchor or has_file_reference(question):
         return question
-    if is_explicit_quarter_sales_question(question):
-        return f"리바로 {question}"
     top_n = re.fullmatch(
         r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*상위\s*(\d+)\s*개?"
         r"(?:\s*브랜드)?(?:\s*(?:알려줘|보여줘))?[?!.]?",
@@ -1264,6 +1303,31 @@ def _answer_with_conversation(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     pending = store.conversations.get_pending(conversation_id)
+    if pending is not None and pending.kind == "brand_metric":
+        store.conversations.clear_pending(conversation_id)
+        if _is_brand_metric_clarification_reply(question, market_scope_resolver):
+            resumed_question = f"{question.strip()} {pending.original_question}"
+            return _answer_without_pending(
+                market_scope_resolver,
+                agent_factory,
+                conversation_id,
+                resumed_question,
+                external_mode,
+                documents,
+                store,
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
+        result = _answer_without_pending(
+            market_scope_resolver,
+            agent_factory,
+            conversation_id,
+            question,
+            external_mode,
+            documents,
+            store,
+            use_direct_agent_loop=use_direct_agent_loop,
+        )
+        return _prepend_brand_pending_notice(result)
     if pending is not None and pending.kind == "market_view":
         view_type = map_market_view_reply(question)
         store.conversations.clear_pending(conversation_id)
@@ -1546,6 +1610,25 @@ def _prepend_pending_notice(result: dict) -> dict:
     notice = "이전 시장 기준 선택 요청은 이번 답변과 매칭되지 않아 새 질문으로 처리했습니다.\n\n"
     copied["answer"] = notice + str(result.get("answer") or "")
     return copied
+
+
+def _prepend_brand_pending_notice(result: dict) -> dict:
+    copied = dict(result)
+    notice = "이전 브랜드 확인 요청과 매칭되지 않아 새 질문으로 처리했습니다.\n\n"
+    copied["answer"] = notice + str(result.get("answer") or "")
+    return copied
+
+
+def _is_brand_metric_clarification_reply(
+    question: str,
+    market_scope_resolver: MarketScopeResolver,
+) -> bool:
+    if not market_scope_resolver.has_explicit_anchor(question):
+        return False
+    return re.fullmatch(
+        r"\s*(?:그럼\s+)?[가-힣A-Za-z0-9+_-]{2,40}(?:은|는|으로|로)?\s*[?.!。？！]*\s*",
+        question,
+    ) is not None
 
 
 def _applied_filters(result: dict) -> tuple[tuple[str, str], ...]:
