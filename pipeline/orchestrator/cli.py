@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,24 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--state-file", type=Path, default=None)
     run.add_argument("--log-file", type=Path, default=None)
     run.add_argument("--run-id", default=None)
+
+    inputs = sub.add_parser(
+        "materialize-full-inputs",
+        help="download canonical MinIO raw inputs and write an R-1 manifest",
+    )
+    inputs.add_argument("--output-root", required=True, type=Path)
+    inputs.add_argument(
+        "--ubist-bucket",
+        default=os.environ.get("MINIO_BUCKET_RAW_UBIST", "jw-market-raw-ubist"),
+    )
+    inputs.add_argument(
+        "--iqvia-bucket",
+        default=os.environ.get("MINIO_BUCKET_RAW_IQVIA", "jw-market-raw-iqvia"),
+    )
+    inputs.add_argument(
+        "--mi-master-bucket",
+        default=os.environ.get("MINIO_BUCKET_RAW_MIMASTER", "jw-market-raw-mimaster"),
+    )
 
     rehearsal = sub.add_parser(
         "rehearse-full",
@@ -80,6 +99,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "stages":
         print(json.dumps(_stages_table(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "materialize-full-inputs":
+        from pipeline.orchestrator.full_rehearsal_inputs import (
+            InputMaterializationError,
+            materialize_full_inputs,
+        )
+
+        try:
+            manifest = materialize_full_inputs(
+                output_root=args.output_root,
+                ubist_bucket=args.ubist_bucket,
+                iqvia_bucket=args.iqvia_bucket,
+                mi_master_bucket=args.mi_master_bucket,
+            )
+        except InputMaterializationError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(manifest)
         return 0
 
     if args.command == "rehearse-full":
