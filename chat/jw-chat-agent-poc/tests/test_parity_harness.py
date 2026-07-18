@@ -14,6 +14,7 @@ from scripts.parity_harness import (
     _http_sse,
     _p0g_source_evidence_failures,
     _source_section_has_labels_in_row,
+    capture,
     capture_p0g_suite,
     diff_captures,
 )
@@ -125,6 +126,25 @@ def test_http_sse_forwards_shared_conversation_id(monkeypatch) -> None:
         "conversation_id": "dirty-session",
     }
     assert captured["headers"] == {"X-Portal-User-Id": "85"}
+
+
+def test_capture_rejects_render_integrity_failures(monkeypatch, tmp_path: Path) -> None:
+    raw_sse = (
+        "event: markdown_block\n"
+        'data: {"kind":"table","markdown":"2025-Q2 리바로 매출은 242.72억원입니다.\\n\\n| 항목 | 값 |\\n| --- | --- |\\n| 매출 | 242.72억원 | 깨짐 |\\n"}\n\n'
+        "event: done\n"
+        "data: ok\n\n"
+    )
+    monkeypatch.setattr("scripts.parity_harness._http_sse", lambda *_args, **_kwargs: raw_sse)
+
+    assert capture(
+        tmp_path,
+        "live",
+        "http://chat.example",
+        (("F01", "2025년 2분기 매출 얼마야"),),
+    ) == 1
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert any(issue.startswith("table_cell_count:") for issue in summary[0]["render_issues"])
 
 
 def test_history_golden_acceptance_requires_live_values() -> None:

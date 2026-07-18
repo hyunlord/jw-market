@@ -231,6 +231,7 @@ def capture(
             ],
             "steps": list(parsed.steps),
             "conversation_ids": list(parsed.conversation_ids),
+            "render_issues": list(parsed.render_issues),
             "acceptance_pass": acceptance_pass,
             "acceptance_error": acceptance_error,
         }
@@ -242,6 +243,7 @@ def capture(
         row["status"] == "ok"
         and row["done_count"] == 1
         and row["error_count"] == 0
+        and not row["render_issues"]
         and row["acceptance_pass"]
         for row in summary
     ) else 1
