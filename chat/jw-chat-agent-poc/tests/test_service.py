@@ -2708,3 +2708,8 @@ def test_complete_concentration_evidence_bypasses_slow_final_llm(monkeypatch) ->
     assert "HHI 253.62" in answer
     assert "CR5 29.52%" in answer
     assert "29.53%" not in answer
+    assert "| 1위 | 로수젯 | 9.13% |" in answer
+    assert "| 2위 | 리피토 | 6.13% |" in answer
+    assert "| 3위 | 리바로젯 | 5.12% |" in answer
+    assert "| 4위 | 아토젯 | 4.95% |" in answer
+    assert "| 5위 | 로수바미브 | 4.20% |" in answer

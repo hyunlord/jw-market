@@ -85,7 +85,11 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     compact = re.sub(r"\s+", " ", question).strip()
     if "지역" in compact and "재구매율" in compact:
         return "현재 DB는 지역별 재구매율을 지원하지 않습니다."
-    if "시장" in compact and any(token in compact for token in ("고지혈증", "이상지질혈증", "당뇨", "빈혈")):
+    if (
+        "시장" in compact
+        and any(token in compact for token in ("고지혈증", "이상지질혈증", "당뇨", "빈혈"))
+        and not _has_grounded_market_evidence(calls)
+    ):
         return "현재 지원되지 않는 시장 매핑입니다. 브랜드 또는 ATC4 시장을 지정해 주세요."
     if re.fullmatch(r"매출\s*(?:알려\s*줘|알려주세요)?[?.!]?", compact):
         return "브랜드·시장·기간을 지정해 주세요."
@@ -239,11 +243,26 @@ def _concentration_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> 
     if hhi is None or len(shares) < 5:
         return ""
     cr5 = sum(shares, Decimal("0"))
-    return (
+    lines = [
         "## 시장 집중도\n"
         f"HHI {hhi:.2f}, CR5 {cr5:.2f}%입니다. "
         "두 지표는 동일한 최신 시장 범위의 원시 점유율로 계산했습니다."
-    )
+    ]
+    requested = _requested_top_count(question)
+    if requested:
+        ranked = _top_ranked_rows(calls, requested)
+        if len(ranked) != requested:
+            return ""
+        lines.extend(
+            (
+                "",
+                f"## 상위 {requested}개 브랜드",
+                "| 순위 | 브랜드 | 점유율 |",
+                "| --- | --- | --- |",
+                *(f"| {rank}위 | {brand} | {share:.2f}% |" for rank, brand, share in ranked),
+            )
+        )
+    return "\n".join(lines)
 
 
 def _channel_ranking_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
@@ -676,6 +695,56 @@ def _find_hhi(calls: Sequence[Mapping[str, Any]]) -> Decimal | None:
             if value is not None:
                 return value
     return None
+
+
+def _has_grounded_market_evidence(calls: Sequence[Mapping[str, Any]]) -> bool:
+    for call in calls:
+        data = _render_data(call)
+        if str(data.get("status") or "ok").lower() != "ok":
+            continue
+        segments = data.get("level_segments")
+        if isinstance(segments, Sequence) and not isinstance(segments, str | bytes) and segments:
+            return True
+        if any(
+            data.get(key) not in (None, "")
+            for key in ("hhi", "hhi_recent", "market_size_억원", "market_size_recent_krw", "sales_억원")
+        ):
+            return True
+    return False
+
+
+def _requested_top_count(question: str) -> int:
+    match = re.search(r"상위\s*(\d+)\s*개", question)
+    if not match:
+        return 0
+    count = int(match.group(1))
+    return count if 1 <= count <= 20 else 0
+
+
+def _top_ranked_rows(
+    calls: Sequence[Mapping[str, Any]],
+    count: int,
+) -> tuple[tuple[int, str, Decimal], ...]:
+    for call in calls:
+        segments = _render_data(call).get("level_segments")
+        if not isinstance(segments, Sequence) or isinstance(segments, str | bytes):
+            continue
+        rows: list[tuple[int, str, Decimal]] = []
+        for expected_rank, item in enumerate(segments[:count], 1):
+            if not isinstance(item, Mapping):
+                break
+            try:
+                rank = int(item.get("rank"))
+            except (TypeError, ValueError):
+                break
+            brand = str(item.get("brand") or item.get("name") or "").strip()
+            share = _decimal(item.get("ms_recent_pct"))
+            if rank != expected_rank or not brand or share is None:
+                break
+            rows.append((rank, brand, share))
+        if len(rows) == count:
+            return tuple(rows)
+    return ()
 
 
 def _top_shares(calls: Sequence[Mapping[str, Any]], count: int) -> tuple[Decimal, ...]:

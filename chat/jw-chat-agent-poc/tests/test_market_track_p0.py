@@ -76,6 +76,23 @@ def test_concentration_requires_hhi_and_raw_cr5() -> None:
     assert "CR5 29.52%" in answer
 
 
+def test_supported_disease_market_uses_grounded_top_five_instead_of_status_rejection() -> None:
+    answer = enforce_market_answer_contract(
+        question="고지혈증 시장 상위 5개 브랜드와 HHI, CR5를 알려줘",
+        answer="",
+        tool_calls=[
+            _top_call(),
+            {"tool": "get_brand_metric", "render_data": {"status": "ok", "metric": "hhi", "hhi": 253.62}},
+        ],
+    )
+
+    assert "지원되지 않는 시장" not in answer
+    assert "HHI 253.62" in answer
+    assert "CR5 29.52%" in answer
+    assert "| 1위 | 로수젯 | 9.13% |" in answer
+    assert "| 5위 | 로수바미브 | 4.20% |" in answer
+
+
 def test_strategy_identifier_keeps_strategy_view_and_public_name() -> None:
     call = {
         "tool": "get_market_landscape",
