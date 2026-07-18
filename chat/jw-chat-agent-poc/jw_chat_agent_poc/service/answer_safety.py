@@ -11,6 +11,7 @@ from typing import Any
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
+from jw_chat_agent_poc.service.deep_report_cleanup import repair_plain_table_urls, slim_source_tables
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 
@@ -1246,6 +1247,7 @@ def ensure_deep_research_structure(answer: str) -> str:
 
     cleaned = _clean_deep_public_markdown(cleanup_markdown_answer(answer))
     body, source = _split_deep_source_section(cleaned)
+    source = slim_source_tables(source)
     if not body:
         return cleaned
 
@@ -1330,6 +1332,7 @@ def _demote_deep_body_headings(markdown: str) -> str:
 
 def _clean_deep_public_markdown(answer: str) -> str:
     answer = _repair_markdown_link_urls(answer)
+    answer = repair_plain_table_urls(answer)
     answer = _mark_future_deep_dates(answer)
     lines = _drop_deep_policy_and_crawl_debris(answer.splitlines())
     answer = "\n".join(lines).strip()

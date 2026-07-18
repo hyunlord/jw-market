@@ -612,6 +612,53 @@ def test_deep_finalizer_repairs_link_urls_and_marks_future_dates_as_planned() ->
     assert "2999-07-28 (예정)" in revised
 
 
+def test_deep_finalizer_repairs_plain_urls_inside_table_cells() -> None:
+    raw = """## 핵심 요약
+
+확인된 기사와 시장 근거를 함께 봤습니다.
+
+## 종합 분석
+
+| 제목 | URL |
+| --- | --- |
+| 복합제 기사 | https://example.test/ne ws/articleVi ew?id=1 |
+
+## 출처
+- 기사
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert "https://example.test/news/articleView?id=1" in revised
+    assert "ne ws" not in revised
+    assert "articleVi ew" not in revised
+
+
+def test_deep_finalizer_slims_empty_source_rows_and_columns() -> None:
+    raw = """## 핵심 요약
+
+확인된 시장 근거를 요약했습니다.
+
+## 종합 분석
+
+시장 수치 안에서만 경쟁 구도를 설명했습니다.
+
+## 출처
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-05 | — | — | — | — | — |
+| 외부 API | - | — | — | — | — | — |
+"""
+
+    revised = ensure_deep_research_structure(raw)
+
+    assert "| 출처 | 기준기간 |" in revised
+    assert "| UBIST | 2026-05 |" in revised
+    assert "외부 API" not in revised
+    for empty_column in ("뷰", "시장정의", "분모", "채널", "단위"):
+        assert empty_column not in revised
+
+
 def test_deep_finalizer_preserves_analysis_metrics_and_complete_top_five() -> None:
     raw = """## 핵심 요약
 
