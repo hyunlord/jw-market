@@ -513,6 +513,7 @@ def test_p0g_suite_fails_when_general_step_text_leaks_prior_turn_or_internal_met
                     if qid == "H02"
                     else []
                 ),
+                "answer_forbidden_tokens": ["첨부 파일", "뇌경색"] if qid == "H02" else [],
             }
             for qid, _ in questions
         ]
@@ -524,7 +525,13 @@ def test_p0g_suite_fails_when_general_step_text_leaks_prior_turn_or_internal_met
     assert capture_p0g_suite(tmp_path, "live", None) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["scenarios"][1]["route_contamination_failures"] == {
-        "H02": ["질문 분해:뇌경색", "질문 분해:임상·허가", "관련 데이터 조회:mode=parallel"],
+        "H02": [
+            "질문 분해:뇌경색",
+            "질문 분해:임상·허가",
+            "관련 데이터 조회:mode=parallel",
+            "답변:첨부 파일",
+            "답변:뇌경색",
+        ],
     }
 
 

@@ -95,6 +95,13 @@ P0G_FORBIDDEN_GENERAL_STEP_TEXT = (
     "mode=parallel",
     "mode=serial",
 )
+P0G_FORBIDDEN_GENERAL_ANSWER_TEXT = (
+    "뇌경색",
+    "임상·허가",
+    "첨부 파일",
+    "첨부 문서",
+    "딥리서치",
+)
 P0G_FAIL_CLOSED_ANSWER_SENTINELS = (
     "데이터 존재 여부를 확인하지 못했습니다",
     "지원되지 않는 시장",
@@ -196,6 +203,11 @@ def capture(
             "answer_chars": parsed.answer_chars,
             "sources": parsed.sources,
             "source_section_has_ubist": _source_section_has_label(parsed.answer_markdown, "UBIST"),
+            "answer_forbidden_tokens": [
+                token
+                for token in P0G_FORBIDDEN_GENERAL_ANSWER_TEXT
+                if token in parsed.answer_markdown
+            ],
             "steps": list(parsed.steps),
             "conversation_ids": list(parsed.conversation_ids),
             "acceptance_pass": acceptance_pass,
@@ -368,6 +380,10 @@ def _p0g_route_contamination_failures(rows: list[dict[str, Any]]) -> dict[str, l
                 finding = f"{name}:{token}"
                 if token in public_text and finding not in forbidden:
                     forbidden.append(finding)
+        for token in row.get("answer_forbidden_tokens", ()):
+            finding = f"답변:{token}"
+            if finding not in forbidden:
+                forbidden.append(finding)
         if forbidden:
             failures[qid] = forbidden
     return failures
