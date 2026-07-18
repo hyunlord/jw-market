@@ -37,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     inputs = sub.add_parser(
         "materialize-full-inputs",
-        help="download canonical MinIO raw inputs and write an R-1 manifest",
+        help="materialize canonical raw inputs and write an R-1 manifest",
     )
     inputs.add_argument("--output-root", required=True, type=Path)
     inputs.add_argument(
@@ -49,8 +49,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("MINIO_BUCKET_RAW_IQVIA", "jw-market-raw-iqvia"),
     )
     inputs.add_argument(
-        "--mi-master-bucket",
-        default=os.environ.get("MINIO_BUCKET_RAW_MIMASTER", "jw-market-raw-mimaster"),
+        "--mi-master-source-dir",
+        type=Path,
+        default=None,
+        help="repository-pinned MI Master directory (defaults to the canonical data path)",
     )
 
     rehearsal = sub.add_parser(
@@ -112,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_root=args.output_root,
                 ubist_bucket=args.ubist_bucket,
                 iqvia_bucket=args.iqvia_bucket,
-                mi_master_bucket=args.mi_master_bucket,
+                mi_master_source_dir=args.mi_master_source_dir,
             )
         except InputMaterializationError as exc:
             print(f"error: {exc}", file=sys.stderr)
