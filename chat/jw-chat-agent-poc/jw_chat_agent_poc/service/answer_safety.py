@@ -119,6 +119,8 @@ class _SingleBrandTrendFact:
 
 @dataclass(frozen=True, slots=True)
 class _RelationalSeriesFact:
+    brand: str
+    other_brands: tuple[str, ...]
     sales: tuple[_TrendPoint, ...]
     shares: tuple[_TrendPoint, ...]
     market: tuple[_TrendPoint, ...]
@@ -1967,7 +1969,15 @@ def _relational_series_fact(
     market = _relation_points(selected.get("market_size_series"), "sales")
     if len(sales) < 2 and len(shares) < 2:
         return None
-    return _RelationalSeriesFact(sales=sales, shares=shares, market=market, ranks=ranks)
+    other_brands = tuple(sorted({brand for brand, _data in candidates if brand and brand != _brand}))
+    return _RelationalSeriesFact(
+        brand=_brand,
+        other_brands=other_brands,
+        sales=sales,
+        shares=shares,
+        market=market,
+        ranks=ranks,
+    )
 
 
 def _relation_points(raw_series: Any, metric: str) -> tuple[_TrendPoint, ...]:
@@ -2002,6 +2012,8 @@ def _repair_streak_claims(question: str, answer: str, fact: _RelationalSeriesFac
     pattern = re.compile(r"최근\s*\d+\s*(?:개월|분기|년)\s*연속\s*(?:상승|하락)")
 
     def replace(match: re.Match[str]) -> str:
+        if not _relation_claim_targets_fact(answer, match.start(), fact):
+            return match.group(0)
         points = _relation_claim_points(question, answer, match.start(), fact)
         direction, count = _terminal_relation_streak(points)
         if direction is None or count <= 0:
@@ -2023,6 +2035,8 @@ def _repair_turning_claims(question: str, answer: str, fact: _RelationalSeriesFa
     )
 
     def replace(match: re.Match[str]) -> str:
+        if not _relation_claim_targets_fact(answer, match.start(), fact):
+            return match.group(0)
         points = _relation_claim_points(question, answer, match.start(), fact)
         if len(points) < 2:
             return match.group(0)
@@ -2044,6 +2058,8 @@ def _repair_endpoint_direction_claims(question: str, answer: str, fact: _Relatio
     pattern = re.compile(r"시작점\s*대비\s*최신\s*값이\s*(?:높아|낮아)\s*(?:상승|하락)\s*흐름")
 
     def replace(match: re.Match[str]) -> str:
+        if not _relation_claim_targets_fact(answer, match.start(), fact):
+            return match.group(0)
         points = _relation_claim_points(question, answer, match.start(), fact)
         if len(points) < 2 or points[-1].value == points[0].value:
             return "시작점 대비 최신 값은 같은 수준"
@@ -2059,7 +2075,13 @@ def _repair_rank_claims(answer: str, fact: _RelationalSeriesFact) -> str:
     start = int(fact.ranks[0].value)
     end = int(fact.ranks[-1].value)
     pattern = re.compile(r"순위는\s*\d+위\s*에서\s*\d+위\s*로\s*변했습니다")
-    return pattern.sub(f"순위는 {start}위에서 {end}위로 변했습니다", answer)
+
+    def replace(match: re.Match[str]) -> str:
+        if not _relation_claim_targets_fact(answer, match.start(), fact):
+            return match.group(0)
+        return f"순위는 {start}위에서 {end}위로 변했습니다"
+
+    return pattern.sub(replace, answer)
 
 
 def _repair_growth_relation_claims(answer: str, fact: _RelationalSeriesFact) -> str:
@@ -2076,7 +2098,13 @@ def _repair_growth_relation_claims(answer: str, fact: _RelationalSeriesFact) -> 
     else:
         replacement = "브랜드와 시장의 성장률은 같은 수준이었습니다"
     pattern = re.compile(r"브랜드 성장률이 시장 성장률보다 (?:높아|낮아)[^.]*습니다")
-    return pattern.sub(replacement, answer)
+
+    def replace(match: re.Match[str]) -> str:
+        if not _relation_claim_targets_fact(answer, match.start(), fact):
+            return match.group(0)
+        return replacement
+
+    return pattern.sub(replace, answer)
 
 
 def _relation_growth(start: float, end: float) -> float | None:
@@ -2100,6 +2128,23 @@ def _relation_claim_points(
     if "점유율" in question:
         return fact.shares or fact.sales
     return fact.sales or fact.shares
+
+
+def _relation_claim_targets_fact(answer: str, claim_start: int, fact: _RelationalSeriesFact) -> bool:
+    sentence_start = max(
+        answer.rfind(".", 0, claim_start),
+        answer.rfind("\n", 0, claim_start),
+    ) + 1
+    sentence_context = answer[sentence_start:claim_start]
+    if fact.brand and fact.brand in sentence_context:
+        return True
+    if any(brand in sentence_context for brand in fact.other_brands):
+        return False
+    paragraph_start = answer.rfind("\n\n", 0, claim_start) + 2
+    paragraph_context = answer[paragraph_start:claim_start]
+    target_position = paragraph_context.rfind(fact.brand) if fact.brand else -1
+    other_position = max((paragraph_context.rfind(brand) for brand in fact.other_brands), default=-1)
+    return target_position >= other_position
 
 
 def _terminal_relation_streak(points: tuple[_TrendPoint, ...]) -> tuple[str | None, int]:

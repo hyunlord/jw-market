@@ -194,6 +194,30 @@ def test_relational_numeric_gate_fails_closed_for_ambiguous_brand_series() -> No
     ) == answer
 
 
+def test_relational_numeric_gate_does_not_rewrite_competitor_relations() -> None:
+    competitor = _relational_series_call("로수젯")
+    render_data = competitor["render_data"]
+    assert isinstance(render_data, dict)
+    render_data["brand_value_series_10pt"] = [
+        {"period": "2026-03", "value_억원": 190.0},
+        {"period": "2026-04", "value_억원": 192.0},
+        {"period": "2026-05", "value_억원": 195.0},
+    ]
+    answer = (
+        "리바로 매출은 최근 2개월 연속 상승했습니다.\n\n"
+        "로수젯 매출은 최근 2개월 연속 상승했습니다."
+    )
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 경쟁구도 분석",
+        answer,
+        [_relational_series_call(), competitor],
+    )
+
+    assert "리바로 매출은 최근 2개월 연속 하락했습니다" in revised
+    assert "로수젯 매출은 최근 2개월 연속 상승했습니다" in revised
+
+
 def test_metric_answer_is_markdown_with_deterministic_table() -> None:
     result = ChatAgent().answer("리바로 매출/시장")
 
