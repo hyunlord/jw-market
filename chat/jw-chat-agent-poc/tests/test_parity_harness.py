@@ -14,6 +14,7 @@ from scripts.parity_harness import (
     _http_sse,
     _p0g_source_evidence_failures,
     _source_section_forbidden_labels,
+    _source_section_has_canonical_provenance_header,
     _source_section_has_labels_in_row,
     capture,
     capture_p0g_suite,
@@ -295,6 +296,8 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                         "source_section_has_ubist": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "source_section_has_period": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "source_section_has_ubist_period_row": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        "source_section_has_canonical_provenance_header": qid
+                        in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "steps": (
                             [
                                 {"name": "질문 접수", "status": "done"},
@@ -1003,12 +1006,14 @@ def test_p0g_source_evidence_requires_the_golden_period_in_rendered_sources() ->
                 "qid": "F01",
                 "sources": "UBIST",
                 "source_section_has_ubist": True,
+                "source_section_has_canonical_provenance_header": True,
                 "source_section_has_period": False,
             },
             {
                 "qid": "F02",
                 "sources": "UBIST",
                 "source_section_has_ubist": True,
+                "source_section_has_canonical_provenance_header": True,
                 "source_section_has_period": False,
             },
         ]
@@ -1035,6 +1040,7 @@ def test_p0g_source_evidence_requires_ubist_and_period_in_the_same_row() -> None
                 "qid": "F01",
                 "sources": "UBIST",
                 "source_section_has_ubist": True,
+                "source_section_has_canonical_provenance_header": True,
                 "source_section_has_period": True,
                 "source_section_has_ubist_period_row": False,
             }
@@ -1079,6 +1085,43 @@ def test_source_section_forbidden_labels_reads_rendered_provenance() -> None:
     )
 
     assert _source_section_forbidden_labels(answer) == ["ClinicalTrials", "업로드"]
+
+
+def test_p0g_source_evidence_requires_canonical_provenance_header() -> None:
+    assert _p0g_source_evidence_failures(
+        [
+            {
+                "qid": "F01",
+                "sources": "UBIST",
+                "source_section_has_ubist": True,
+                "source_section_has_period": True,
+                "source_section_has_ubist_period_row": True,
+                "source_section_has_canonical_provenance_header": False,
+                "source_section_forbidden_labels": [],
+            }
+        ]
+    ) == {
+        "F01": {
+            "event_sources": "UBIST",
+            "answer_source_section_has_canonical_provenance_header": False,
+        }
+    }
+
+
+def test_canonical_provenance_header_rejects_abbreviated_source_table() -> None:
+    abbreviated = (
+        "답변\n\n## 출처\n"
+        "| 출처 | 기준기간 |\n| --- | --- |\n| UBIST | 2025-Q2 |"
+    )
+    canonical = (
+        "답변\n\n## 출처\n"
+        "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| UBIST | 2025-Q2 | 일반뷰 | 고지혈증 | 전체 | 전체 | 억원 |"
+    )
+
+    assert _source_section_has_canonical_provenance_header(abbreviated) is False
+    assert _source_section_has_canonical_provenance_header(canonical) is True
 
 
 def test_source_section_row_match_does_not_combine_different_rows() -> None:

@@ -16,6 +16,7 @@ import requests
 from scripts.fact_scoreboard.sse import parse_sse_file
 from scripts.fact_scoreboard.text_numbers import extract_numeric_mentions
 
+from jw_chat_agent_poc.orchestrator.provenance_model import PROVENANCE_HEADERS
 from jw_chat_agent_poc.service.app import SessionStore, _answer_question, _default_agent_factory, _sse_events
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
@@ -235,6 +236,9 @@ def capture(
                 )
                 if qid in P0G_SOURCE_PERIOD_BY_QID
                 else False
+            ),
+            "source_section_has_canonical_provenance_header": (
+                _source_section_has_canonical_provenance_header(parsed.answer_markdown)
             ),
             "source_section_forbidden_labels": _source_section_forbidden_labels(
                 parsed.answer_markdown
@@ -507,6 +511,15 @@ def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[
                 "forbidden_answer_sources": forbidden_answer_sources,
             }
             continue
+        source_section_has_canonical_header = (
+            row.get("source_section_has_canonical_provenance_header") is True
+        )
+        if not source_section_has_canonical_header:
+            failures[qid] = {
+                "event_sources": raw_sources,
+                "answer_source_section_has_canonical_provenance_header": False,
+            }
+            continue
         expected_period = P0G_SOURCE_PERIOD_BY_QID[qid]
         source_section_has_period = row.get("source_section_has_period") is True
         if not source_section_has_period:
@@ -545,6 +558,19 @@ def _source_section_has_labels_in_row(answer: str, labels: tuple[str, ...]) -> b
     return any(
         line.lstrip().startswith("|") and all(pattern.search(line) for pattern in patterns)
         for line in source_section.splitlines()
+    )
+
+
+def _source_section_has_canonical_provenance_header(answer: str) -> bool:
+    _body, marker, source_section = answer.rpartition("## 출처")
+    if not marker:
+        return False
+    expected_cells = tuple(header.casefold() for header in PROVENANCE_HEADERS)
+    return any(
+        tuple(cell.strip().casefold() for cell in line.strip().strip("|").split("|"))
+        == expected_cells
+        for line in source_section.splitlines()
+        if line.lstrip().startswith("|")
     )
 
 
