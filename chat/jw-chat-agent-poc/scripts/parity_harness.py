@@ -243,6 +243,15 @@ def capture(
             "source_section_has_canonical_provenance_header": (
                 _source_section_has_canonical_provenance_header(parsed.answer_markdown)
             ),
+            "source_section_has_complete_provenance_row": (
+                _source_section_has_complete_provenance_row(
+                    parsed.answer_markdown,
+                    "UBIST",
+                    P0G_SOURCE_PERIOD_BY_QID[qid],
+                )
+                if qid in P0G_SOURCE_PERIOD_BY_QID
+                else False
+            ),
             "source_section_forbidden_labels": _source_section_forbidden_labels(
                 parsed.answer_markdown
             ),
@@ -546,6 +555,16 @@ def _p0g_source_evidence_failures(rows: list[dict[str, Any]]) -> dict[str, dict[
                 "expected_period": expected_period,
                 "answer_source_section_has_ubist_period_row": source_section_has_ubist_period_row,
             }
+            continue
+        source_section_has_complete_row = (
+            row.get("source_section_has_complete_provenance_row") is True
+        )
+        if not source_section_has_complete_row:
+            failures[qid] = {
+                "event_sources": raw_sources,
+                "expected_period": expected_period,
+                "answer_source_section_has_complete_provenance_row": False,
+            }
     return failures
 
 
@@ -581,6 +600,29 @@ def _source_section_has_canonical_provenance_header(answer: str) -> bool:
         for line in source_section.splitlines()
         if line.lstrip().startswith("|")
     )
+
+
+def _source_section_has_complete_provenance_row(
+    answer: str,
+    source: str,
+    period: str,
+) -> bool:
+    _body, marker, source_section = answer.rpartition("## 출처")
+    if not marker:
+        return False
+    expected_width = len(PROVENANCE_HEADERS)
+    for line in source_section.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+        if (
+            len(cells) == expected_width
+            and cells[0].casefold() == source.casefold()
+            and cells[1].casefold() == period.casefold()
+            and all(cell and cell != "—" for cell in cells)
+        ):
+            return True
+    return False
 
 
 def _matching_forbidden_source_tokens(text: str) -> list[str]:

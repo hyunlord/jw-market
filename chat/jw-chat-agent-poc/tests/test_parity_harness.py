@@ -17,6 +17,7 @@ from scripts.parity_harness import (
     _p0g_source_evidence_failures,
     _source_section_forbidden_labels,
     _source_section_has_canonical_provenance_header,
+    _source_section_has_complete_provenance_row,
     _source_section_has_labels_in_row,
     capture,
     capture_p0g_suite,
@@ -299,6 +300,8 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
                         "source_section_has_period": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "source_section_has_ubist_period_row": qid in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "source_section_has_canonical_provenance_header": qid
+                        in {"F01", "F02", "H02", "H03", "M02", "M03"},
+                        "source_section_has_complete_provenance_row": qid
                         in {"F01", "F02", "H02", "H03", "M02", "M03"},
                         "steps": (
                             [
@@ -1166,6 +1169,47 @@ def test_canonical_provenance_header_rejects_abbreviated_source_table() -> None:
 
     assert _source_section_has_canonical_provenance_header(abbreviated) is False
     assert _source_section_has_canonical_provenance_header(canonical) is True
+
+
+def test_p0g_source_evidence_rejects_incomplete_canonical_row() -> None:
+    assert _p0g_source_evidence_failures(
+        [
+            {
+                "qid": "F01",
+                "sources": "UBIST",
+                "source_section_has_ubist": True,
+                "source_section_has_period": True,
+                "source_section_has_ubist_period_row": True,
+                "source_section_has_canonical_provenance_header": True,
+                "source_section_has_complete_provenance_row": False,
+                "source_section_forbidden_labels": [],
+            }
+        ]
+    ) == {
+        "F01": {
+            "event_sources": "UBIST",
+            "expected_period": "2025-Q2",
+            "answer_source_section_has_complete_provenance_row": False,
+        }
+    }
+
+
+def test_complete_provenance_row_rejects_missing_context_cells() -> None:
+    incomplete = (
+        "답변\n\n## 출처\n"
+        "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| UBIST | 2025-Q2 | — | — | — | — | — |"
+    )
+    complete = (
+        "답변\n\n## 출처\n"
+        "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| UBIST | 2025-Q2 | 전략뷰 | 요청 브랜드의 전략 시장 | 555 | 전체 | 억원 |"
+    )
+
+    assert _source_section_has_complete_provenance_row(incomplete, "UBIST", "2025-Q2") is False
+    assert _source_section_has_complete_provenance_row(complete, "UBIST", "2025-Q2") is True
 
 
 def test_source_section_row_match_does_not_combine_different_rows() -> None:
