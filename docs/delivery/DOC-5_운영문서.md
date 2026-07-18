@@ -235,6 +235,8 @@ jw-data-input(사이트) "제출 확정"
 
 > jw market 소관 잡은 기존 §2·§3·§5에 서술됨. jw agent 소관(크롤·BA·orchestrator·agent3) 행의 `[기고 필요]`만 채우면 된다.
 
+> **★ ETL 적재(s0~s7) 실행 주체 주석(2026-07-19 추가).** mart를 만드는 ETL s0~s7(`python -m pipeline.etl.run`)은 **전용 CronJob이 없다**(`deploy/k8s`에 실행체 grep 0). 실행 주체는 증분 훅의 job_runner(§3, jw market 소관) 또는 수동 실행체다. 따라서 위 표에 ETL s0~s7 행은 없으며, 수동 운영 시 s0가 4개 소스 그룹 전수(present·non-empty)를 요구하는 점에 주의한다(단일 소스 격리 실행은 s0에서 막힘 — DOC-1b §3.5, `s0_verify.py:39-49`).
+
 ---
 
 ## 부록 A. 금지 사항 (요약 — `RUNBOOK_MONTHLY.md` §7)

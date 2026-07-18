@@ -2,9 +2,9 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 코드(develop) SHA | `9c34a7d5` (초판 DOC-1 기준 `7ca98403`에서 전진; 아래 각주) |
+| 기준 코드(develop) SHA | `f2eca6a1` (초판 DOC-1 기준 `7ca98403`에서 전진; 아래 각주. 2026-07-19 갱신: §3.5·§3.6 ETL 적재 동작 범위 추가) |
 | 운영 리소스 | 크롤 `jw-market-crawl@sha256:64bb2b9f…`(tier1/2 라이브), 오케스트레이터 `jw-pipeline-orchestrator@sha256:6bffbc53…`(poll, suspend), agent3 `jw-market-backend-api@sha256:dec3ec3c…` |
-| 생성일 | 2026-07-18 |
+| 생성일 / 갱신일 | 2026-07-18 / 2026-07-19 |
 | 문서 버전 | v1.0 |
 | 근거 디렉토리 | `docs/delivery/evidence/` (본 문서 실측: `doc1b_capture.md`) + 초판 공유 evidence(`k8s_cron_svc.txt` 등) |
 
@@ -180,6 +180,34 @@ brand_activity는 별도 DB(`jw_brand_activity_stage`·`jw_brand_activity_raw_st
 - **정본 아키텍처 = jw market 증분 훅 시스템**(JW_Input_Detection_Contract_v2 — jw-data-input → MinIO manifest → webhook → G3 검증 → incremental Job → Σ게이트). 훅의 실행체는 `python -m pipeline.orchestrator run --mode incremental`이다(우리 오케스트레이터가 인터페이스). 훅 시스템 자체는 **jw market 소관**(DOC-1 §2.8, DOC-5 §3).
 - **과도기 트리거 3종은 예비**: ETL 성공 kick(`pipeline/etl/kick.py`)·CSD 센서(`jw-csd-sensor`)·daily poll(`jw-pipeline-orchestrator-poll-daily`)은 훅 착지 시 **대체·삭제 예정**이며 현재 **전부 suspend**(과도기 수동 예비, resume 금지). 근거: manifest 헤더 주석, evidence §A.
 
+### 3.5 ETL 적재 파이프라인(s0~s7) — 증분 동작 범위 (현 시점 사실)
+
+> mart(`mart_general_*`·`mart_strategic_*`)를 만드는 것은 오케스트레이터 6단계 체인(§3.1~3.3)이 아니라 그 **상류의 ETL s0~s7**(`pipeline/etl/stages/`, 진입점 `python -m pipeline.etl.run`)이다. 훅(§3.4)이 s1 parquet staging까지 보장하며, 그 뒤 mart 반영 경로가 s0~s7이다.
+> **★ 아래는 현 시점(develop `f2eca6a1`) 동작 사실**이다. 향후 스코프 축소·S3 직독화가 이뤄지면 갱신 대상이다(`_UPDATE_QUEUE.md` B7 참조).
+
+**증분 개념은 s1에서 종료한다.** s2~s7은 epoch/period 인자가 없고 누적 전량을 재계산한다. "격리 target_db 전량 재빌드 → deploy 스왑" 아키텍처의 산물(원자성 확보)이며, 결과적으로 **"파일 1개 추가 → s4~s7 전 브랜드·전 기간 재계산"**이 현 동작이다("증분인데 왜 오래 걸리나"의 답).
+
+| 스테이지 | 동작 범위 | 근거(file:line) |
+|---|---|---|
+| s0 verify | 소스 트리 검증(§3.5 하단) | `s0_verify.py:39-49,64-65,69-72` |
+| s1 load | **파일/증분 스코프** — non-dry UBIST는 `--file` 또는 `--incremental` 강제, 증분은 manifest 대조 신규 파일만 append | `s1_load.py:57,133`(가드), `:25,29`(`run_incremental_ubist_load`) |
+| s2 catalog | **전체 재빌드**(카탈로그·차원 메타 — 기간 개념 없음) | `s2_catalog.py:57-90` |
+| s3 enrich | **디렉토리 스코프(전체)** — dir 내용 전부, 기간 필터 없음 | `s3_enrich.py:35-44` |
+| s4 mart(general) | **전 기간 재계산** — `delete_source_rows(source)` 후 전 measure·전 atc4 재삽입, period 필터 없음 | `s4_mart.py:160`, `general_compute.py:41-42,58-59` |
+| s5 mart(strategic) | **전 기간 재계산**(market_id 지정 시만 부분) | `s5_mart.py:179`(compute_strategic_ml/cd) |
+| s6 cache | **전체 재빌드** — `recreate_database` + copy + archive builders | `s6_cache.py:38`(recreate_database) |
+| s7 bridge | **전체 재빌드** | `s7_bridge.py:33`(build_molecule_bridge) |
+
+**s0 verify는 4개 소스 그룹 전수를 요구한다** — MI Master·UBIST dir·IQVIA dir·target priority skeleton이 모두 present·non-empty여야 통과하고, 하나라도 비면 `return 1`(`s0_verify.py:39-49,64-65,69-72`). 이 때문에 단일 소스만 둔 격리 실행(`--source ubist --incremental`)은 s0에서 막힌다. 특정 파일만 수동 로드하려면 s0를 건너뛰고 `--stage s1`로 실행하면 `discover_xlsx`가 `--file`을 존중한다(`ubist_loader.py:283-285`).
+
+**ETL s0~s7 전용 CronJob은 없다** — `deploy/k8s`에 `pipeline.etl.run` 실행체가 없어(grep 0), 실행 주체는 훅 job_runner(jw market 소관) 또는 수동 실행체다.
+
+### 3.6 ETL 소스 입력 경로 — MinIO 직독 불가(현 시점)
+
+- 로더의 파일 발견은 **로컬 디렉토리 스캔**이다: `UBIST_ROOT.rglob("*.xlsx")`(`ubist_loader.py:36,289`). IQVIA 동일 계열.
+- MinIO backend가 코드에 있으나(`storage.py:48 is_minio_backend`) **S3 직독이 아니라 다운로드-후-로컬**(`storage.py:117 sync_minio_to_local`, `download_file` per object) 모델이고, 모듈 docstring이 **"현 ETL 로더가 의도적으로 미사용"**(`storage.py:3-4`)이라 명시한다.
+- MinIO backend는 boto3를 요구하나(`storage.py:94-101`), **현 이미지에 boto3 부재**(ingest-hook 이미지 `jw-pipeline-orchestrator:v0.2.5-51e2c687` 실측 `boto3 ABSENT`). 즉 설정만으로 MinIO 소스화하려면 boto3 추가 + `ETL_STORAGE_BACKEND=minio`+bucket env가 선결이다(현재 미충족). 확정 방식(PVC 마운트/소스 트리 위치)은 미확정 → `_UPDATE_QUEUE.md` B1·B2.
+
 ---
 
 ## 4. 이미지 · 배포
@@ -228,6 +256,10 @@ brand_activity는 별도 DB(`jw_brand_activity_stage`·`jw_brand_activity_raw_st
 | 오케스트레이터 6단계·deps | `stages.py:159-228` | §3.2 ✓ |
 | CLI 옵션 | `--help` 실측 | §3.1 ✓ |
 | 이미지 3종 digest | evidence §B | §4 ✓ |
+| ETL s0~s7 스코프 8행 | `s1_load.py:57,133`·`general_compute.py:41-42,58-59`·`s4~s7` | §3.5 ✓ |
+| s0 4그룹 요구 | `s0_verify.py:39-49,64-65,69-72` | §3.5 ✓ |
+| MinIO 로컬스캔·boto3 부재 | `ubist_loader.py:289`·`storage.py:3-4,117`·v0.2.5 실측 | §3.6 ✓ |
+| ETL CronJob 부재 | `deploy/k8s` grep 0 | §3.5 ✓ |
 
 ### (b) 문서 → 실체 (유령 0)
 본 문서의 전 수치·리소스명·file:line은 `evidence/doc1b_capture.md` 또는 인용 파일에 실재. 추측 서술은 [확인 필요] 4건으로 분리(유령 0).

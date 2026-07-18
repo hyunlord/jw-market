@@ -2,9 +2,9 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 코드(develop) SHA | `1864e929` (초판 DOC-2 기준 `7ca98403`에서 전진; DOC-1b 각주와 동일 계열) |
+| 기준 코드(develop) SHA | `f2eca6a1` (초판 DOC-2 기준 `7ca98403`에서 전진; DOC-1b 각주와 동일 계열. 2026-07-19 갱신: §5 mart 테이블 구조 제약 주석 추가) |
 | 대상 DB | `jw_mart_d2_stage_20260630_r2`(크롤/생성), `jw_brand_activity_stage`·`jw_brand_activity_raw_stage`(브랜드활동) |
-| 캡처일 | 2026-07-18 |
+| 캡처일 / 갱신일 | 2026-07-18 / 2026-07-19 |
 | 문서 버전 | v1.0 |
 | 근거 디렉토리 | `docs/delivery/evidence/doc2b_schema_capture.json`(COUNT+컬럼 실측), `doc1b_capture.md` |
 
@@ -89,6 +89,13 @@ brand_activity:
 - **재적재**: CSD/Keyword는 파일 도착 시 raw 재적재 후 stage 재선별. 크롤은 매일 증분(기존 news_id 제외).
 
 ---
+
+## 5. 관련 mart 테이블 구조 제약 (증분 스코프 연계 주석)
+
+> 본 문서 소관은 크롤/BA 테이블이나, 아래는 그 하류 mart 테이블(정본 스키마는 **DOC-2** 소관)의 구조가 **ETL 증분 스코프**(DOC-1b §3.5)에 미치는 제약을 기록한 주석이다.
+
+- **`mart_general_brand_metric.metric_history`** 는 브랜드(×atc4×measure)당 **전 기간 시계열**을 하나의 JSON dict로 담는다. s4 general 빌더가 각 브랜드 행을 만들 때 해당 atc4의 전 기간(`market_periods`)으로 `metric_history`를 구성한다(`pipeline/etl/io/mart/general_rows.py:57,82-85,105,149`).
+- **제약(현 시점 사실)**: 이 구조 때문에 "특정 기간(period)만" 갱신하는 순수 period-only 증분은 불가하다 — 한 기간이 추가되면 그 브랜드의 `metric_history` 전체를 다시 계산해야 한다. 따라서 스코프 축소 시 **최소 단위는 "영향 브랜드 단위 재계산"**(period 단위 아님)이다. 현행 s4는 이보다 넓은 전 브랜드 재계산이다(DOC-1b §3.5). 향후 축소는 `_UPDATE_QUEUE.md` B7.
 
 ## jw market 확인 결과 (2026-07-18 실측)
 
