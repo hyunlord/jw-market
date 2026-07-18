@@ -1937,7 +1937,8 @@ def enforce_relational_numeric_claims(
     revised = _repair_turning_claims(question, revised, fact)
     revised = _repair_endpoint_direction_claims(question, revised, fact)
     revised = _repair_rank_claims(revised, fact)
-    return _repair_growth_relation_claims(revised, fact)
+    revised = _repair_growth_relation_claims(revised, fact)
+    return _ensure_terminal_relation_summary(question, revised, fact)
 
 
 def _relational_series_fact(
@@ -2026,6 +2027,26 @@ def _repair_streak_claims(question: str, answer: str, fact: _RelationalSeriesFac
         return f"직전 {comparison_unit} 대비 {label}"
 
     return pattern.sub(replace, answer)
+
+
+def _ensure_terminal_relation_summary(
+    question: str,
+    answer: str,
+    fact: _RelationalSeriesFact,
+) -> str:
+    share_question = "점유율" in question or re.search(r"\bMS\b", question, re.IGNORECASE)
+    points = fact.shares if share_question else fact.sales
+    metric = "점유율" if points is fact.shares else "매출"
+    direction, count = _terminal_relation_streak(points)
+    if direction is None or count < 2:
+        return answer
+    label = "상승" if direction == "up" else "하락"
+    unit = _relation_period_unit(points)
+    relation = f"최근 {count}{unit} 연속 {label}"
+    if relation in answer:
+        return answer
+    subject = f"{fact.brand} {metric}" if fact.brand else metric
+    return _insert_before_timing_or_source(answer, f"{subject}은 {relation}했습니다.")
 
 
 def _repair_turning_claims(question: str, answer: str, fact: _RelationalSeriesFact) -> str:

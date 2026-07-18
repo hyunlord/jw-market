@@ -96,6 +96,23 @@ def test_relational_numeric_gate_corrects_recent_sales_direction_from_raw_series
     assert "최근 2개월 연속 상승" not in revised
 
 
+def test_relational_numeric_gate_adds_missing_recent_sales_direction_from_raw_series() -> None:
+    answer = (
+        "리바로 매출은 장기적으로 늘었고 저점 이후 회복 흐름을 보여줍니다.\n\n"
+        "| 기간 | 매출 |\n| --- | --- |\n| 2026-03 | 87.11억원 |\n"
+        "| 2026-04 | 84.93억원 |\n| 2026-05 | 80.39억원 |"
+    )
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 최근 월 매출",
+        answer,
+        [_relational_series_call()],
+    )
+
+    assert "리바로 매출은 최근 2개월 연속 하락했습니다" in revised
+    assert "저점 이후 회복 흐름" in revised
+
+
 def test_relational_numeric_gate_does_not_invent_share_streak_across_a_reversal() -> None:
     answer = "리바로 점유율은 최근 2개월 연속 상승했습니다."
 
