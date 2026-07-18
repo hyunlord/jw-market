@@ -1224,6 +1224,54 @@ def test_positioning_tool_fact_does_not_cross_brand_scope() -> None:
     assert revised is markdown_response
 
 
+def test_positioning_tool_fact_replaces_unrelated_positioning_fact_for_question_brand() -> None:
+    markdown_response = {
+        "fact_md": """### 리피토 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| 브랜드/시장 | 리피토 |
+| 시장점유율 | 6.13% |
+| 순위 | 2/555 |
+
+### 상위 브랜드 점유율 추이 fact
+| 최신 순위 | 브랜드 | 최신 MS |
+| --- | --- | --- |
+| 1 | 로수젯 | 9.13% |
+| 5 | 로수바미브 | 4.20% |""",
+    }
+
+    revised = positioning_markdown_response(
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        markdown_response,
+        [
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "brand": "리바로",
+                    "period": "2026-05",
+                    "rank": 6,
+                    "rank_denominator": 555,
+                    "ms_recent_pct": 3.7634,
+                },
+            }
+        ],
+    )
+
+    assert revised is not markdown_response
+    assert revised is not None
+    fact_md = str(revised["fact_md"])
+    assert fact_md.index("### 리바로 지표 fact") < fact_md.index("### 리피토 지표 fact")
+    completed = enforce_answer_contract(
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        "상위 브랜드는 로수젯과 로수바미브입니다.",
+        revised,
+    )
+    assert "리바로 6위" in completed
+    assert "시장점유율 3.76%" in completed
+    assert "직상위 5위 로수바미브" in completed
+    assert "격차 0.44%p" in completed
+
+
 def test_unavailable_gate_preserves_completed_positioning_contract() -> None:
     # Given: the structural positioning contract is complete even though it has no generic intent.
     fact_md = POSITIONING_COMPLETE_FACT_MD + "\n\n### 추가 축\n- 환자수 데이터 미보유"

@@ -183,10 +183,11 @@ def positioning_markdown_response(
     if _structural_contract_type(question) != "positioning" or not isinstance(markdown_response, Mapping):
         return markdown_response
     fact_md = _fact_markdown(markdown_response)
-    if _positioning_fact(fact_md) is not None:
-        return markdown_response
     brand = _brand_from_question(question)
     if not brand:
+        return markdown_response
+    existing = _positioning_fact(fact_md)
+    if existing is not None and existing.brand == brand:
         return markdown_response
     for call in calls:
         if call.get("tool") != "get_brand_metric":
@@ -214,7 +215,7 @@ def positioning_markdown_response(
             )
         )
         enriched = dict(markdown_response)
-        enriched["fact_md"] = _join_blocks(fact_md, section)
+        enriched["fact_md"] = _join_blocks(section, fact_md)
         return enriched
     return markdown_response
 
@@ -479,7 +480,7 @@ def _positioning_tool_share(data: Mapping[str, Any]) -> str:
         return ""
     if not share.is_finite() or share < 0 or share > 100:
         return ""
-    return f"{format(share.normalize(), 'f')}%"
+    return f"{share:.2f}%"
 
 
 def _has_csd_activity_fact(calls: list[dict[str, Any]], brand: str) -> bool:
