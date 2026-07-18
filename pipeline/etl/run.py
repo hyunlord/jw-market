@@ -53,6 +53,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--audit-dir", help="Override the stage audit directory when supported.")
     parser.add_argument("--catalog-root", help="Override the catalog parquet root when supported.")
     parser.add_argument("--ubist-dir", help="Override the UBIST parquet root when supported.")
+    parser.add_argument("--ubist-source-dir", help="Explicit raw UBIST xlsx root for isolated full loads.")
+    parser.add_argument("--iqvia-source-dir", help="Explicit raw IQVIA NSA root for isolated full loads.")
     parser.add_argument("--iqvia-nsa-dir", help="Override the canonical IQVIA NSA parquet root when supported.")
     parser.add_argument("--enriched-dir", help="Override the layer2 enriched parquet root when supported.")
     parser.add_argument("--input-mode", choices=["raw", "enriched"], default="raw", help="S4 general mart input surface.")
@@ -181,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         "audit_dir": args.audit_dir,
         "catalog_root": args.catalog_root,
         "ubist_dir": args.ubist_dir,
+        "ubist_source_dir": args.ubist_source_dir,
+        "iqvia_source_dir": args.iqvia_source_dir,
         "iqvia_nsa_dir": args.iqvia_nsa_dir,
         "enriched_dir": args.enriched_dir,
         "input_mode": args.input_mode,

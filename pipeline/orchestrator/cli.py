@@ -34,6 +34,17 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--log-file", type=Path, default=None)
     run.add_argument("--run-id", default=None)
 
+    rehearsal = sub.add_parser(
+        "rehearse-full",
+        help="rebuild explicit raw inputs into isolated mart/cache schemas (never publish)",
+    )
+    rehearsal.add_argument("--input-manifest", required=True, type=Path)
+    rehearsal.add_argument("--target-db", required=True)
+    rehearsal.add_argument("--cache-db", required=True)
+    rehearsal.add_argument("--source-db", required=True)
+    rehearsal.add_argument("--work-dir", required=True, type=Path)
+    rehearsal.add_argument("--dry-run", action="store_true")
+
     sub.add_parser("stages", help="print the stage registry and incremental capability table")
     return parser
 
@@ -60,6 +71,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "stages":
         print(json.dumps(_stages_table(), ensure_ascii=False, indent=2))
         return 0
+
+    if args.command == "rehearse-full":
+        from pipeline.orchestrator.full_rehearsal import (
+            FullRehearsalConfig,
+            RehearsalContractError,
+            execute_full_rehearsal,
+        )
+
+        try:
+            return execute_full_rehearsal(
+                FullRehearsalConfig(
+                    input_manifest=args.input_manifest,
+                    target_db=args.target_db,
+                    cache_db=args.cache_db,
+                    source_db=args.source_db,
+                    work_dir=args.work_dir,
+                ),
+                dry_run=args.dry_run,
+            )
+        except RehearsalContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     state = StateStore(args.state_file or default_state_path())
