@@ -134,6 +134,8 @@ P0G_FAIL_CLOSED_ANSWER_SENTINELS = (
     "데이터 존재 여부를 확인하지 못했습니다",
     "지원되지 않는 시장",
     "조회 오류",
+    "현재 확인 불가",
+    "실행되지 않았습니다",
 )
 P0G_HISTORY_SEED_STAGE_NAMES = frozenset(
     {

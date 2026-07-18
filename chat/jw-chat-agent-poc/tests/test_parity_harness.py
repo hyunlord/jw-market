@@ -379,6 +379,14 @@ def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() ->
         "F01",
         "조회 오류입니다. 캐시된 값은 242.72억원입니다.",
     ) == (False, "fail-closed answer: 조회 오류")
+    assert _history_golden_acceptance(
+        "H02",
+        "현재 확인 불가입니다. 2025-Q2 리바로 매출은 242.72억원입니다.",
+    ) == (False, "fail-closed answer: 현재 확인 불가")
+    assert _history_golden_acceptance(
+        "H02",
+        "필요 도구가 이번 턴에 실행되지 않았습니다. 2025-Q2 리바로 매출은 242.72억원입니다.",
+    ) == (False, "fail-closed answer: 실행되지 않았습니다")
 
 
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
