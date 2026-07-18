@@ -213,6 +213,30 @@ jw-data-input(사이트) "제출 확정"
 
 ---
 
+## 8. CronJob 소관별 상세 — [jw agent 기고 필요]
+
+> **기고 자리.** 아래 §2 CronJob 표는 리소스 실측(이름·스케줄·suspend)만 담고 있어 "각 잡이 **무엇을 하는지**"가 부실하다. jw agent 세션이 크롤/BA/orchestrator 잡의 동작·산출물·의존을 채운다. 형식·규칙은 [README §3](README.md) 준수. 스켈레톤 본체는 [DOC-1b](DOC-1b_개발문서_크롤_BA파이프라인.md) 참조.
+
+`[기고 필요]` 잡별로 다음을 서술: 무엇을 하는가(입력→처리→산출 테이블) · 선행/후행 의존 · 실패 시 영향 · 정상 소요·산출 규모. 근거: 잡 매니페스트·스크립트 `파일:줄`.
+
+| CronJob | 소관 세션 | 동작 요약 | 상태 |
+|---|---|---|---|
+| `jw-news-crawl-tier1-daily` | jw agent | `[기고 필요]` | ⏳ |
+| `jw-news-crawl-tier2-daily-slice` | jw agent | `[기고 필요]` | ⏳ |
+| `brand-activity-topic-monthly` | jw agent | `[기고 필요]` | ⏳ |
+| `brand-activity-row-topic-monthly` | jw agent | `[기고 필요]` | ⏳ |
+| `jw-agent3-refresh-daily` | jw agent | `[기고 필요]` | ⏳ |
+| `jw-pipeline-orchestrator-poll-daily` | jw agent | `[기고 필요]` (현재 suspend=True/예비) | ⏳ |
+| `jw-cache-refresh-daily` | jw market | 서빙 캐시 재생성 (기존 §2 참조) | ✅ |
+| `dynamic-market-cache-warm` | jw market | 동적 캐시 워밍 (기존 §2 참조) | ✅ |
+| `iqvia-general-sidecar-quarterly` | jw market | 분기 IQVIA 사이드카 (기존 §2 참조) | ✅ |
+| `jw-ingest-sweep-daily` | jw market | 증분 훅 sweep (§3 참조) | ✅ |
+| `jw-gitea-dump-daily` | jw market | Gitea 백업 (§5 참조) | ✅ |
+
+> jw market 소관 잡은 기존 §2·§3·§5에 서술됨. jw agent 소관(크롤·BA·orchestrator·agent3) 행의 `[기고 필요]`만 채우면 된다.
+
+---
+
 ## 부록 A. 금지 사항 (요약 — `RUNBOOK_MONTHLY.md` §7)
 
 1. **BRANCH_POLICY**: `codex/crawl-2tier`·`codex/short-long-lineage-bulk`·`3f0db0ae` 계보 develop 머지 금지. 크롤 이미지를 역사 브랜치에서 빌드 금지.
