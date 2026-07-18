@@ -469,6 +469,10 @@ def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monk
             "고지혈증 시장 상위 5개 브랜드 알려줘",
             "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
         ),
+        (
+            "고지혈증 상위 5개",
+            "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
+        ),
     ),
 )
 def test_unanchored_market_goldens_are_grounded_before_direct_execution(
