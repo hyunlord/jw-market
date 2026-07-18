@@ -712,19 +712,31 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     requirement = requirements.get(qid)
     if requirement is None:
         return True, ""
+    answer_body = answer.split("## 출처", maxsplit=1)[0]
     for sentinel in P0G_FAIL_CLOSED_ANSWER_SENTINELS:
         if sentinel in answer:
             return False, f"fail-closed answer: {sentinel}"
     pattern, error = requirement
-    if not pattern.search(answer):
+    if not pattern.search(answer_body):
         return False, error
     if qid in P0G_SALES_GOLDEN_QIDS and not re.search(
         r"2025-Q2\s+리바로\s+매출은\s+242\.72\s*억원",
-        answer,
+        answer_body,
     ):
         return False, "incorrect 2025-Q2 리바로 sales context"
+    if qid in P0G_SALES_GOLDEN_QIDS:
+        sales_claims = re.findall(
+            r"2025-Q2\s+리바로\s+매출은\s+([0-9][0-9,.]*)\s*억원",
+            answer_body,
+        )
+        if any(value.replace(",", "") != "242.72" for value in sales_claims):
+            return False, "conflicting 2025-Q2 리바로 sales values"
+    if qid in P0G_TOP5_GOLDEN_QIDS:
+        ranked_rows = re.findall(r"(?m)^\|\s*([1-5])(?:위)?\s*\|", answer_body)
+        if any(ranked_rows.count(str(rank)) > 1 for rank in range(1, 6)):
+            return False, "duplicate top 5 ranked rows"
     if qid in P0G_TOP5_GOLDEN_QIDS and not all(
-        re.search(rf"(?m)^\|\s*{rank}(?:위)?\s*\|", answer)
+        re.search(rf"(?m)^\|\s*{rank}(?:위)?\s*\|", answer_body)
         for rank in range(1, 6)
     ):
         return False, "missing top 5 ranked rows"
@@ -732,7 +744,7 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         re.search(
             rf"(?m)^\|\s*{rank}(?:위)?\s*\|\s*{re.escape(brand)}\s*\|"
             rf"\s*{re.escape(share)}\s*%\s*\|\s*{re.escape(sales)}\s*억원\s*\|",
-            answer,
+            answer_body,
         )
         for rank, brand, share, sales in P0G_TOP5_GOLDEN_ROWS
     ):
