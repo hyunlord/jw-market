@@ -79,6 +79,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="prove isolated full-minus-input then exact incremental equals R-1",
     )
     incremental_rehearsal.add_argument("--full-input-manifest", required=True, type=Path)
+    incremental_rehearsal.add_argument("--full-input-inventory", required=True, type=Path)
+    incremental_rehearsal.add_argument("--expected-input-inventory-sha256", required=True)
     incremental_rehearsal.add_argument("--submission-manifest", required=True, type=Path)
     incremental_rehearsal.add_argument("--submission-source-dir", required=True, type=Path)
     incremental_rehearsal.add_argument("--target-db", required=True)
@@ -184,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
             return execute_incremental_rehearsal(
                 IncrementalRehearsalConfig(
                     full_input_manifest=args.full_input_manifest,
+                    full_input_inventory=args.full_input_inventory,
+                    expected_input_inventory_sha256=args.expected_input_inventory_sha256,
                     submission_manifest=args.submission_manifest,
                     submission_source_dir=args.submission_source_dir,
                     target_db=args.target_db,

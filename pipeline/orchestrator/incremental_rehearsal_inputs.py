@@ -23,6 +23,34 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_input_inventory(path: Path, expected_sha256: str) -> None:
+    expected = expected_sha256.strip().lower()
+    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+        raise RehearsalContractError("expected input inventory SHA256 must be 64 hex characters")
+    if not path.is_file():
+        raise RehearsalContractError(f"input inventory is missing: {path}")
+    actual = _sha256(path)
+    if actual != expected:
+        raise RehearsalContractError(
+            f"input inventory SHA256 mismatch: expected {expected}, got {actual}"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RehearsalContractError(f"cannot read input inventory {path}: {exc}") from exc
+    objects = payload.get("objects") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("classification") != "census"
+        or payload.get("missing") != "fail"
+        or not isinstance(objects, list)
+        or not objects
+        or payload.get("population") != len(objects)
+    ):
+        raise RehearsalContractError("input inventory must be a non-empty census with exact population")
+
+
 def _submission_source_path(root: Path, relative_raw: str) -> Path:
     relative = Path(relative_raw)
     if relative.is_absolute() or not relative.parts or any(

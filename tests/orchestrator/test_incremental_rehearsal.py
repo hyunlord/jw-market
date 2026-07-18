@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -54,6 +55,27 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
         ),
         encoding="utf-8",
     )
+    full_inventory = raw / "input-inventory.json"
+    full_inventory.write_text(
+        json.dumps(
+            {
+                "classification": "census",
+                "missing": "fail",
+                "objects": [
+                    {
+                        "bucket": "pvc-sidecar",
+                        "key": "year=2026/month=05/data.parquet",
+                        "sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+                        "size": sidecar.stat().st_size,
+                    }
+                ],
+                "population": 1,
+                "schema_version": 1,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     submission = raw / "submission.json"
     submission.write_text(
         json.dumps(
@@ -77,6 +99,8 @@ def _write_config(tmp_path: Path) -> IncrementalRehearsalConfig:
     )
     return IncrementalRehearsalConfig(
         full_input_manifest=full_manifest,
+        full_input_inventory=full_inventory,
+        expected_input_inventory_sha256=hashlib.sha256(full_inventory.read_bytes()).hexdigest(),
         submission_manifest=submission,
         submission_source_dir=submission_root,
         target_db="jw_mart_rehearsal_r2_20260718",
@@ -189,6 +213,46 @@ def test_prepare_rejects_multiple_sidecars_for_submission_epoch(tmp_path: Path) 
 
     with pytest.raises(RehearsalContractError, match="exactly one 2026-05 sidecar"):
         prepare_incremental_inputs(config)
+
+
+def test_prepare_rejects_input_inventory_drift_before_creating_work_dir(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    config.full_input_inventory.write_text('{"objects": []}', encoding="utf-8")
+
+    with pytest.raises(RehearsalContractError, match="input inventory SHA256 mismatch"):
+        prepare_incremental_inputs(config)
+
+    assert not config.work_dir.exists()
+
+
+def test_prepare_rejects_empty_inventory_with_matching_sha_before_creating_work_dir(
+    tmp_path: Path,
+) -> None:
+    config = _write_config(tmp_path)
+    config.full_input_inventory.write_text(
+        json.dumps(
+            {
+                "classification": "census",
+                "missing": "fail",
+                "objects": [],
+                "population": 0,
+                "schema_version": 1,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    config = replace(
+        config,
+        expected_input_inventory_sha256=hashlib.sha256(
+            config.full_input_inventory.read_bytes()
+        ).hexdigest(),
+    )
+
+    with pytest.raises(RehearsalContractError, match="non-empty census"):
+        prepare_incremental_inputs(config)
+
+    assert not config.work_dir.exists()
 
 
 def test_prepare_rejects_missing_submission_source_file(tmp_path: Path) -> None:
@@ -346,6 +410,10 @@ def test_rehearse_incremental_cli_dry_run_is_write_free(
             "rehearse-incremental",
             "--full-input-manifest",
             str(config.full_input_manifest),
+            "--full-input-inventory",
+            str(config.full_input_inventory),
+            "--expected-input-inventory-sha256",
+            config.expected_input_inventory_sha256,
             "--submission-manifest",
             str(config.submission_manifest),
             "--submission-source-dir",
@@ -372,5 +440,6 @@ def test_rehearse_incremental_cli_dry_run_is_write_free(
     assert not config.work_dir.exists()
     payload = json.loads(capsys.readouterr().out)
     assert payload["gate"] == "R-2"
+    assert payload["input_inventory_sha256"] == config.expected_input_inventory_sha256
     assert payload["writes_operating"] is False
     assert payload["phases"][-1] == "exact-comparison"

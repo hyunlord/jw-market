@@ -25,6 +25,7 @@ from pipeline.orchestrator.full_rehearsal import (
 from pipeline.orchestrator.full_rehearsal_compare import ComparisonConfig, run_comparison
 from pipeline.orchestrator.incremental_rehearsal_inputs import (
     sidecar_epoch,
+    validate_input_inventory,
     validate_submission_sources,
     write_baseline_manifest,
 )
@@ -36,6 +37,8 @@ from pipeline.scripts.ingest_hook.job_runner import _check_market_sigma, _valida
 @dataclass(frozen=True)
 class IncrementalRehearsalConfig:
     full_input_manifest: Path
+    full_input_inventory: Path
+    expected_input_inventory_sha256: str
     submission_manifest: Path
     submission_source_dir: Path
     target_db: str
@@ -47,6 +50,10 @@ class IncrementalRehearsalConfig:
     comparison_output: Path
 
     def validate(self) -> None:
+        validate_input_inventory(
+            self.full_input_inventory,
+            self.expected_input_inventory_sha256,
+        )
         FullRehearsalConfig(
             input_manifest=self.full_input_manifest,
             target_db=self.target_db,
@@ -173,6 +180,7 @@ def execute_incremental_rehearsal(
                     "gate": "R-2",
                     "classification": "isolated-full-then-incremental",
                     "submission_manifest": str(config.submission_manifest),
+                    "input_inventory_sha256": config.expected_input_inventory_sha256,
                     "submission_source_dir": str(config.submission_source_dir),
                     "target_db": config.target_db,
                     "target_cache_db": config.cache_db,
