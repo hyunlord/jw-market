@@ -720,6 +720,107 @@ def test_p0g_history_upload_fixture_requires_xlsx() -> None:
     )
 
 
+def test_p0g_history_conversation_id_matches_portal_bff_contract() -> None:
+    from scripts.parity_harness import _p0g_history_conversation_id_error
+
+    assert _p0g_history_conversation_id_error("p0g-file-20260718T034544Z") == ""
+    assert _p0g_history_conversation_id_error("a" * 36) == ""
+    assert _p0g_history_conversation_id_error("a" * 37) == (
+        "P-0G portal history conversation ID must contain 1 to 36 letters, digits, "
+        "hyphens or underscores"
+    )
+    assert _p0g_history_conversation_id_error("invalid session") != ""
+
+
+def test_p0g_suite_rejects_invalid_history_conversation_before_network_calls(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    upload_file = tmp_path / "history.xlsx"
+    upload_file.write_bytes(b"xlsx fixture")
+
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **_kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    def unexpected_network_call(*_args, **_kwargs):
+        raise AssertionError("invalid portal session ID must fail before file network calls")
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        unexpected_network_call,
+    )
+    monkeypatch.setattr(
+        "scripts.parity_harness._seed_portal_uploaded_file_session",
+        unexpected_network_call,
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "https://portal.example/stream-lab-api",
+        history_conversation_id="p0g-portal-file-history-20260718T034544Z",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
+        history_upload_file=upload_file,
+        portal_file_access_token="test-token",
+    ) == 1
+    report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert report["qualification_failures"] == [
+        "uploaded-file history conversation ID invalid: P-0G portal history conversation ID "
+        "must contain 1 to 36 letters, digits, hyphens or underscores",
+    ]
+
+
+def test_p0g_suite_reports_bff_upload_and_235_probe_failures_together(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    upload_file = tmp_path / "history.xlsx"
+    upload_file.write_bytes(b"xlsx fixture")
+
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **_kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda *_args: (False, 0, "no documents"),
+    )
+    monkeypatch.setattr(
+        "scripts.parity_harness._seed_portal_uploaded_file_session",
+        lambda *_args: (False, 0, (), "HTTPError: 400 Client Error"),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "https://portal.example/stream-lab-api",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
+        history_upload_file=upload_file,
+        portal_file_access_token="test-token",
+    ) == 1
+    report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert report["qualification_failures"] == [
+        "uploaded-file history session probe failed: no documents",
+        "portal BFF history upload failed: HTTPError: 400 Client Error",
+    ]
+
+
 def test_p0g_suite_rejects_csv_before_portal_upload(monkeypatch, tmp_path: Path) -> None:
     upload_file = tmp_path / "history.csv"
     upload_file.write_text("metric,value\nrevenue,1\n", encoding="utf-8")

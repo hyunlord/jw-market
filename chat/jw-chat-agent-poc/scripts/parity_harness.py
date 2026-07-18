@@ -310,6 +310,11 @@ def capture_p0g_suite(
         if history_upload_file
         else ""
     )
+    history_conversation_error = (
+        _p0g_history_conversation_id_error(history_conversation_id)
+        if history_conversation_id
+        else ""
+    )
     resolved_portal_file_access_token = portal_file_access_token
     portal_file_auth = {
         "attempted": False,
@@ -322,6 +327,7 @@ def capture_p0g_suite(
         and history_conversation_id
         and history_upload_file
         and not history_upload_error
+        and not history_conversation_error
         and not resolved_portal_file_access_token
         and portal_file_auth_url
     ):
@@ -348,6 +354,7 @@ def capture_p0g_suite(
         and history_conversation_id
         and history_upload_file
         and not history_upload_error
+        and not history_conversation_error
         and resolved_portal_file_access_token
     ):
         passed, document_count, document_ids, error = _seed_portal_uploaded_file_session(
@@ -369,7 +376,9 @@ def capture_p0g_suite(
         "passed": False,
         "error": "",
     }
-    if history_conversation_id and not file_base_url:
+    if history_conversation_id and history_conversation_error:
+        file_probe["error"] = history_conversation_error
+    elif history_conversation_id and not file_base_url:
         file_probe["error"] = "file bridge base URL was not supplied"
     elif history_conversation_id and file_base_url:
         passed, document_count, error = _probe_uploaded_file_session(
@@ -476,9 +485,18 @@ def capture_p0g_suite(
         )
     if not history_conversation_id:
         qualification_failures.append("uploaded-file history conversation ID was not supplied")
-    if history_conversation_id and not file_base_url:
+    elif history_conversation_error:
+        qualification_failures.append(
+            f"uploaded-file history conversation ID invalid: {history_conversation_error}"
+        )
+    if history_conversation_id and not history_conversation_error and not file_base_url:
         qualification_failures.append("file bridge base URL was not supplied")
-    elif history_conversation_id and file_base_url and not file_probe["passed"]:
+    elif (
+        history_conversation_id
+        and not history_conversation_error
+        and file_base_url
+        and not file_probe["passed"]
+    ):
         qualification_failures.append(
             f"uploaded-file history session probe failed: {file_probe['error']}"
         )
@@ -490,15 +508,15 @@ def capture_p0g_suite(
         qualification_failures.append(
             f"portal BFF history upload failed: {history_upload_error}"
         )
-    elif portal_equivalent and not qualification_failures:
-        if not portal_file_probe["attempted"]:
-            qualification_failures.append("portal BFF history upload was not supplied")
-        elif not portal_file_probe["passed"]:
+    elif portal_equivalent and not history_conversation_error:
+        if portal_file_probe["attempted"] and not portal_file_probe["passed"]:
             qualification_failures.append(
                 f"portal BFF history upload failed: {portal_file_probe['error']}"
             )
         elif portal_file_probe["cleanup_errors"]:
             qualification_failures.append("portal BFF history upload cleanup failed")
+        elif not qualification_failures and not portal_file_probe["attempted"]:
+            qualification_failures.append("portal BFF history upload was not supplied")
     report = {
         "evidence_context": {
             "external_mode": external_mode,
@@ -961,6 +979,15 @@ def _p0g_history_upload_fixture_error(upload_path: Path) -> str:
     if upload_path.suffix.lower() == ".xlsx":
         return ""
     return "P-0G portal history fixture must be an .xlsx workbook"
+
+
+def _p0g_history_conversation_id_error(conversation_id: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,36}", conversation_id):
+        return ""
+    return (
+        "P-0G portal history conversation ID must contain 1 to 36 letters, digits, "
+        "hyphens or underscores"
+    )
 
 
 def _probe_uploaded_file_session(
