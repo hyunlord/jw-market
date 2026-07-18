@@ -29,6 +29,11 @@ FORBIDDEN_BY_FACT_TYPE: Final[dict[str, tuple[str, ...]]] = {
         "causal_market_impact_without_metric",
         "news_claim_elevation",
     ),
+    "external_clinical_registry": (
+        "clinical_evidence",
+        "registry_outcome_elevation",
+        "registry_market_inference",
+    ),
 }
 
 _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
@@ -49,6 +54,20 @@ _FORBIDDEN_PATTERNS_BY_CLAIM: Final[dict[str, re.Pattern[str]]] = {
     "quantified_sales_impact": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|영향으로|기인해).{0,40}(?:매출|점유율).{0,20}\d[\d,.]*(?:억원|%|%p).{0,20}(?:증가|감소|상승|하락)"),
     "causal_market_impact_without_metric": re.compile(r"(뉴스|이슈|기사).{0,40}(?:때문에|기인|유발|견인|주도).{0,40}(?:매출|점유율|시장|처방)"),
     "news_claim_elevation": re.compile(r"(뉴스|이슈|기사).{0,80}(?:입증|증명|확인됨|확인됐|달성)"),
+    "registry_outcome_elevation": re.compile(
+        r"(혈관\s*보호\s*효과|안전성\s*프로파일|임상(?:적)?\s*이점|"
+        r"보조적\s*치료\s*가능성|처방\s*영역.{0,20}확장|"
+        r"안전성(?:을)?\s*확보|약제\s*특성.{0,8}검증|"
+        r"임상(?:적)?\s*유용성.{0,8}(?:확인|입증)|혈관\s*건강\s*개선\s*가능성|"
+        r"적응증\s*확대|신뢰할\s*수\s*있는\s*치료\s*옵션|최적의\s*치료\s*옵션|"
+        r"안전성.{0,8}유효성.{0,16}검증)"
+    ),
+    "registry_market_inference": re.compile(
+        r"(시장\s*선점|복약\s*편의성.{0,20}(?:확대|증가|높)|"
+        r"신약.{0,20}(?:등장|출시).{0,20}시사|경쟁(?:이|은)?\s*(?:심화|격화)|"
+        r"가능성(?:을)?\s*시사|효율성(?:을)?\s*극대화|방향으로\s*진화|"
+        r"폭넓은\s*임상\s*포트폴리오)"
+    ),
 }
 
 _CHANNEL_FACT_RE: Final = re.compile(r"(?m)^\|\s*channel\s+상위\s*\|")
@@ -68,6 +87,11 @@ _PERIOD_RE: Final = re.compile(r"[12]\d{3}-\d{2}")
 _SENTENCE_RE: Final = re.compile(r"[^.!?\n。]+(?:[.!?。]|$)")
 _SOURCE_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*출처\b")
 _TIMING_HEADING_RE: Final = re.compile(r"(?m)^#{1,6}\s*처리\s*시간\b")
+_URL_RE: Final = re.compile(r"https?://[^\s<>\])]+")
+_PURE_SOURCE_LINE_RE: Final = re.compile(
+    r"^(?:[-*•]\s*)?(?:(?:출처|참고(?:\s*링크)?|링크)\s*:?\s*)?"
+    r"(?:\[[^\]]+\]\(https?://[^)]+\)|https?://\S+)$"
+)
 _BRAND_SHARE_DELTA_RE: Final = re.compile(
     r"(brand_share_delta_pctp|comparison_share_delta_pctp|브랜드\s+MS\s+변화|비교\s+브랜드\s+MS\s+변화|competitive_insight_signals|brand_trend_comparison)"
 )
@@ -82,6 +106,14 @@ class ChannelFact:
     sales: str
 
 
+@dataclass(frozen=True, slots=True)
+class AdverseEventFact:
+    subject: str
+    report_id: str
+    report_date: str
+    reactions: str
+
+
 def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
     """Remove interpretation claims that are not supported by the supplied fact types."""
 
@@ -92,6 +124,9 @@ def apply_claim_policy(question: str, answer: str, fact_md: str) -> str:
         if fact_type == "channel_cross_section":
             support_md = "\n\n".join(part for part in (fact_md.strip(), revised.strip()) if part)
             revised = _rewrite_channel_cross_section(question, revised, support_md)
+            continue
+        if fact_type == "external_adverse_event":
+            revised = _rewrite_external_adverse_event(revised, fact_md)
             continue
         claims = FORBIDDEN_BY_FACT_TYPE.get(fact_type, ())
         revised, removed = _drop_forbidden_claim_sentences(revised, claims)
@@ -115,7 +150,7 @@ def claim_policy_report(answer: str, fact_md: str) -> dict[str, tuple[str, ...]]
     for fact_type in active_fact_types:
         for claim_type in FORBIDDEN_BY_FACT_TYPE.get(fact_type, ()):
             pattern = _FORBIDDEN_PATTERNS_BY_CLAIM[claim_type]
-            if pattern.search(body):
+            if _has_forbidden_analysis_claim(body, pattern):
                 remaining.append(claim_type)
     return {
         "active_fact_types": active_fact_types,
@@ -135,6 +170,27 @@ def _is_brand_share_delta(fact_md: str) -> bool:
 
 def _is_news_context(fact_md: str) -> bool:
     return bool(_NEWS_CONTEXT_RE.search(fact_md))
+
+
+def _is_external_clinical_registry(fact_md: str) -> bool:
+    legacy_registry = "[ClinicalTrials.gov 임상시험 정보]" in fact_md or bool(
+        re.search(r"국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]", fact_md)
+    )
+    current_registry_table = (
+        "### 임상시험 fact" in fact_md
+        and (
+            (
+                "clinicaltrials_v2_search" in fact_md
+                and bool(re.search(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE))
+            )
+            or "mfds_clinical_trial_kr" in fact_md
+        )
+    )
+    return legacy_registry or current_registry_table
+
+
+def _is_external_adverse_event(fact_md: str) -> bool:
+    return "[FDA 이상반응 보고 정보]" in fact_md and "FAERS 자발보고" in fact_md
 
 
 def _active_fact_types(body: str, fact_md: str) -> tuple[str, ...]:
@@ -169,6 +225,15 @@ def _drop_forbidden_claim_sentences(body: str, claim_types: tuple[str, ...]) -> 
         if revised:
             kept_lines.append(revised)
     return "\n".join(kept_lines), removed_any
+
+
+def _has_forbidden_analysis_claim(body: str, pattern: re.Pattern[str]) -> bool:
+    return any(
+        pattern.search(sentence)
+        for raw_line in body.splitlines()
+        if not _is_non_analysis_line(raw_line)
+        for sentence in _sentence_parts(raw_line)
+    )
 
 
 def _channel_safe_summary(question: str, fact_md: str) -> str:
@@ -270,13 +335,34 @@ def _period_from_fact_md(fact_md: str) -> str:
 
 def _sentence_parts(line: str) -> tuple[str, ...]:
     decimal_dot = "__CLAIM_POLICY_DECIMAL_DOT__"
-    protected = re.sub(r"(?<=\d)\.(?=\d)", decimal_dot, line)
+    protected_urls: dict[str, str] = {}
+
+    def protect_url(match: re.Match[str]) -> str:
+        raw_url = match.group(0)
+        url = raw_url.rstrip(".!?。")
+        trailing_punctuation = raw_url[len(url) :]
+        token = f"__CLAIM_POLICY_URL_{len(protected_urls)}__"
+        protected_urls[token] = url
+        return f"{token}{trailing_punctuation}"
+
+    protected = _URL_RE.sub(protect_url, line)
+    protected = re.sub(r"(?<=\d)\.(?=\d)", decimal_dot, protected)
     parts = tuple(
-        match.group(0).replace(decimal_dot, ".").strip()
+        _restore_protected_urls(
+            match.group(0).replace(decimal_dot, "."),
+            protected_urls,
+        ).strip()
         for match in _SENTENCE_RE.finditer(protected)
         if match.group(0).strip()
     )
     return parts or ((line.strip(),) if line.strip() else ())
+
+
+def _restore_protected_urls(text: str, protected_urls: dict[str, str]) -> str:
+    restored = text
+    for token, url in protected_urls.items():
+        restored = restored.replace(token, url)
+    return restored
 
 
 def _is_non_analysis_line(line: str) -> bool:
@@ -285,7 +371,7 @@ def _is_non_analysis_line(line: str) -> bool:
         return True
     if stripped.startswith(("|", ">")):
         return True
-    return bool(re.search(r"https?://", stripped))
+    return bool(_PURE_SOURCE_LINE_RE.fullmatch(stripped))
 
 
 def _split_sources(answer: str) -> tuple[str, str]:
@@ -302,16 +388,82 @@ def _timing_block(body: str) -> str:
     return body[match.start() :].strip()
 
 
+_ADVERSE_EVENT_FACT_RE: Final = re.compile(
+    r"(?m)^-\s*(?P<subject>.+?)\s*\((?P<date>\d{4}-\d{2}-\d{2})\):\s*"
+    r"FAERS\s*자발보고\s*내\s*이상반응\s*=\s*FAERS\s*보고\s*"
+    r"(?P<report_id>\d+)\s*·\s*(?P=date)\s*·\s*보고\s*반응:\s*"
+    r"(?P<reactions>.+?)\s*\[FDA\s*이상반응\s*보고\s*정보\]\s*$"
+)
+
+
+def _adverse_event_facts(fact_md: str) -> tuple[AdverseEventFact, ...]:
+    return tuple(
+        AdverseEventFact(
+            subject=match.group("subject").strip(),
+            report_id=match.group("report_id"),
+            report_date=match.group("date"),
+            reactions=match.group("reactions").strip(),
+        )
+        for match in _ADVERSE_EVENT_FACT_RE.finditer(fact_md)
+    )
+
+
+def _rewrite_external_adverse_event(body: str, fact_md: str) -> str:
+    facts = _adverse_event_facts(fact_md)
+    if not facts:
+        return body
+    subjects = ", ".join(dict.fromkeys(fact.subject for fact in facts))
+    rows = [
+        "| 대상 성분 | FAERS 보고 ID | 보고일 | 보고 반응 |",
+        "| --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {fact.subject} | {fact.report_id} | {fact.report_date} | {fact.reactions} |"
+        for fact in facts
+    )
+    summary = (
+        f"FDA FAERS에서 {subjects} 관련 자발보고 {len(facts)}건이 조회됐습니다. "
+        "아래 숫자는 각 보고 ID이며 건수가 아닙니다. "
+        "또한 자발보고는 약물과 반응의 인과관계를 입증하지 않습니다."
+    )
+    return "\n\n".join((summary, "\n".join(rows), _timing_block(body))).strip()
+
+
 def _cleanup_policy_markdown(markdown: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", markdown).strip()
+
+
+def _clinical_registry_safe_summary(_question: str, fact_md: str) -> str:
+    global_count = len(set(re.findall(r"\bNCT\d+\b", fact_md, flags=re.IGNORECASE)))
+    legacy_domestic_count = len(
+        re.findall(r"(?m)^-\s*.+?:\s*국내\s*임상시험\s*=.*\[식약처\s*의약품\s*정보\]\s*$", fact_md)
+    )
+    table_domestic_count = len(
+        re.findall(r"(?m)^\|\s*mfds_clinical_trial_kr\s*\|", fact_md)
+    )
+    domestic_count = legacy_domestic_count + table_domestic_count
+    observed: list[str] = []
+    if global_count:
+        observed.append(f"ClinicalTrials.gov 등록정보에서 글로벌 임상시험 {global_count}건")
+    if domestic_count:
+        observed.append(f"식약처 등록정보에서 국내 임상시험 {domestic_count}건")
+    if not observed:
+        return ""
+    return (
+        f"{'과 '.join(observed)}이 확인됩니다. "
+        "이는 연구 등록과 제목을 보여주는 근거이며, 결과·효과·안전성 확정이나 개발 성공을 뜻하지는 않습니다."
+    )
 
 
 _FACT_TYPE_DETECTORS: Final[dict[str, Callable[[str], bool]]] = {
     "channel_cross_section": _is_channel_cross_section,
     "brand_share_delta": _is_brand_share_delta,
     "news_context": _is_news_context,
+    "external_clinical_registry": _is_external_clinical_registry,
+    "external_adverse_event": _is_external_adverse_event,
 }
 
 _SAFE_REPLACEMENTS: Final[dict[str, Callable[[str, str], str]]] = {
     "channel_cross_section": _channel_safe_summary,
+    "external_clinical_registry": _clinical_registry_safe_summary,
 }

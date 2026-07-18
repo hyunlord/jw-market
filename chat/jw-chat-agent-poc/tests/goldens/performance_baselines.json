@@ -1,0 +1,37 @@
+{
+  "owner": "candidate performance observations",
+  "contracts": [
+    {
+      "id": "db501dcc_candidate_hot_tool_elapsed",
+      "gate_enabled": true,
+      "request": {
+        "kind": "performance_observation",
+        "exact": "후보 db501dcc의 hot-cache get_top_brands 및 get_brand_share elapsed를 동일 로컬 검증 환경에서 측정"
+      },
+      "generation_method": {
+        "description": "Warm the local candidate cache, execute each tool once under the candidate validation harness, and record wall-clock elapsed seconds.",
+        "canonicalization": "Record elapsed seconds to three decimal places; these are candidate observations, not production latency promises.",
+        "environment": "Local candidate validation only; explicitly not a live-performance golden"
+      },
+      "expected": {
+        "classification": "candidate_validation_baseline",
+        "get_top_brands_seconds": "0.209",
+        "get_brand_share_seconds": "0.553"
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "controlled_candidate_measurement",
+        "evidence": "Both tools were timed in the same controlled candidate validation run. The numbers may only be used as candidate baselines, never relabeled as live latency.",
+        "evidence_paths": ["git://db501dcc64ecb56dfa9357199caff55fe5013e8f"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T00:00:00+09:00",
+        "database": "jw_mart_d2_stage_20260630_r2",
+        "build_sha": "db501dcc64ecb56dfa9357199caff55fe5013e8f",
+        "runtime_digest": "not_recorded: local candidate validation",
+        "file_sha256": "not_applicable: database input"
+      }
+    }
+  ]
+}

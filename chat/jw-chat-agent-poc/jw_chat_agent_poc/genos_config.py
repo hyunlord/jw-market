@@ -9,13 +9,16 @@ GENOS_BASE_URL_ENV: Final[str] = "GENOS_BASE_URL"
 GENOS_SERVING_ID_ENV: Final[str] = "GENOS_SERVING_ID"
 GENOS_FINAL_SERVING_ID_ENV: Final[str] = "GENOS_FINAL_SERVING_ID"
 GENOS_PLANNER_SERVING_ID_ENV: Final[str] = "GENOS_PLANNER_SERVING_ID"
+GENOS_DEEP_SERVING_ID_ENV: Final[str] = "GENOS_DEEP_SERVING_ID"
 GENOS_BEARER_TOKEN_ENV: Final[str] = "GENOS_BEARER_TOKEN"
 GENOS_TOKEN_ENV: Final[str] = "GENOS_TOKEN"
 GENOS_FINAL_BEARER_TOKEN_ENV: Final[str] = "GENOS_FINAL_BEARER_TOKEN"
 GENOS_PLANNER_BEARER_TOKEN_ENV: Final[str] = "GENOS_PLANNER_BEARER_TOKEN"
+GENOS_DEEP_BEARER_TOKEN_ENV: Final[str] = "GENOS_DEEP_BEARER_TOKEN"
 DEFAULT_GENOS_SERVING_ID: Final[str] = "517"
 DEFAULT_GENOS_FINAL_SERVING_ID: Final[str] = "514"
 DEFAULT_GENOS_PLANNER_SERVING_ID: Final[str] = "508"
+DEFAULT_GENOS_DEEP_SERVING_ID: Final[str] = "202"
 DEFAULT_GENOS_BASE_URL: Final[str] = (
     "https://jwai-dev.jwhealthcare.com/api/gateway/rep/"
     f"serving/{DEFAULT_GENOS_SERVING_ID}"
@@ -57,6 +60,16 @@ def resolve_planner_genos_base_url(configured_url: str | None = None) -> str:
     )
 
 
+def resolve_deep_genos_base_url(configured_url: str | None = None) -> str:
+    """Resolve the isolated deep-research endpoint."""
+
+    base_url = configured_url or os.environ.get(GENOS_BASE_URL_ENV) or DEFAULT_GENOS_BASE_URL
+    serving_id = os.environ.get(GENOS_DEEP_SERVING_ID_ENV) or DEFAULT_GENOS_DEEP_SERVING_ID
+    if _SERVING_PATH_RE.search(base_url):
+        return _SERVING_PATH_RE.sub(f"/serving/{serving_id}", base_url.rstrip("/"))
+    return base_url.rstrip("/")
+
+
 def resolve_genos_token(*, scoped_env: str | None = None) -> str | None:
     """Resolve a scoped GenOS token while preserving the existing common fallback."""
 
@@ -77,3 +90,9 @@ def resolve_planner_genos_token() -> str | None:
     """Resolve the token for tool-planning requests."""
 
     return resolve_genos_token(scoped_env=GENOS_PLANNER_BEARER_TOKEN_ENV)
+
+
+def resolve_deep_genos_token() -> str | None:
+    """Resolve the token for isolated deep-research synthesis."""
+
+    return resolve_genos_token(scoped_env=GENOS_DEEP_BEARER_TOKEN_ENV)

@@ -15,6 +15,8 @@ class SseCapture:
     sources: str
     charts: tuple[dict[str, object], ...]
     timing: dict[str, object]
+    steps: tuple[dict[str, object], ...]
+    conversation_ids: tuple[str, ...]
     delta_count: int
     done_count: int
     error_count: int
@@ -35,6 +37,8 @@ def parse_sse_text(raw_text: str) -> SseCapture:
     answer_parts: list[str] = []
     charts: list[dict[str, object]] = []
     timing: dict[str, object] = {}
+    steps: list[dict[str, object]] = []
+    conversation_ids: list[str] = []
     sources = ""
     delta_count = 0
     done_count = 0
@@ -52,12 +56,18 @@ def parse_sse_text(raw_text: str) -> SseCapture:
                 charts.extend(_chart_items(data))
             case "timing":
                 timing = _timing_item(data)
+            case "step":
+                item = _json_object(data)
+                if item:
+                    steps.append(item)
             case "done":
                 done_count += 1
             case "error":
                 error_count += 1
             case "conversation":
-                continue
+                conversation_id = data.strip()
+                if conversation_id:
+                    conversation_ids.append(conversation_id)
             case _:
                 continue
     answer = "".join(answer_parts)
@@ -67,6 +77,8 @@ def parse_sse_text(raw_text: str) -> SseCapture:
         sources=sources,
         charts=tuple(charts),
         timing=timing,
+        steps=tuple(steps),
+        conversation_ids=tuple(conversation_ids),
         delta_count=delta_count,
         done_count=done_count,
         error_count=error_count,
@@ -102,6 +114,10 @@ def _chart_items(raw: str) -> tuple[dict[str, object], ...]:
 
 
 def _timing_item(raw: str) -> dict[str, object]:
+    return _json_object(raw)
+
+
+def _json_object(raw: str) -> dict[str, object]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:

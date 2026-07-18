@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import re
 from typing import Any
 
 from jw_chat_agent_poc.agent_loop import ToolUseAgent, should_use_agent_loop
@@ -11,6 +12,8 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_tool_use_agent,
     unsupported_brand_result,
 )
+from jw_chat_agent_poc.agent_loop.bq_planner import preflight_bq_question
+from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agentic import FilterEntry, relevance_filter_entries, relevance_question_text, validate_metric_filters
 from jw_chat_agent_poc.rag import LocalDocumentRag
@@ -18,14 +21,25 @@ from jw_chat_agent_poc.orchestrator.external_notices import (
     external_unavailable_for_missing_molecule,
     seeded_false_positive_notice,
 )
-from jw_chat_agent_poc.orchestrator.hira_disease import HIRA_DISEASE_MAPPINGS, hira_disease_calls, is_hira_disease_question
+from jw_chat_agent_poc.orchestrator.hira_disease import (
+    HIRA_DISEASE_MAPPINGS,
+    hira_disease_anchor_brand,
+    hira_disease_calls,
+    is_hira_disease_question,
+)
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context, metric_from_question, requires_brand
+from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
+from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
+from jw_chat_agent_poc.orchestrator.question_intent import (
+    allows_background_news_context,
+    metric_from_question,
+    requires_brand,
+)
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
-from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver import BrandResolution, BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter, LLMFirstBQRouter
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.external.policy import (
@@ -40,6 +54,8 @@ from jw_chat_agent_poc.tools.external.policy import (
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tool_use.contracts import FallbackCode
+from jw_chat_agent_poc.tool_use.integration import external_tool_agent_enabled, run_external_tool_agent
 
 
 class ChatAgent:
@@ -80,31 +96,100 @@ class ChatAgent:
     def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
         timing = new_timing()
         docs = documents or []
+        conversation_fallback = _conversation_fallback(question) if not docs else None
+        if conversation_fallback is not None:
+            conversation_fallback["timing"] = timing
+            return conversation_fallback
+        external_fallback_code: str | None = None
+        source_trap = requested_unavailable_source(question)
+        agent_source_trap = requested_unavailable_source(question, identity_only=True)
+        pre_resolved: BrandResolution | None = None
+
+        def finish(payload: dict[str, Any]) -> dict[str, Any]:
+            return _annotate_external_tool_fallback(payload, external_fallback_code)
+
+        if external_tool_agent_enabled() and agent_source_trap is None:
+            tool_pack_routes = BQRouter().route(question, has_documents=bool(docs))
+            if _is_external_tool_agent_candidate(tool_pack_routes, docs):
+                tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
+                    question,
+                    pre_resolved,
+                    timing=timing,
+                )
+                if tool_result is not None:
+                    return finish(tool_result)
+
+        if (
+            not docs
+            and source_trap is None
+            and self.agent_loop is None
+            and self.query_layer is not None
+            and (
+                preflight_bq_question(question, self.resolver) is not None
+                or preflight_structured_market_question(question, self.resolver) is not None
+            )
+        ):
+            loop = build_tool_use_agent(self._agent_loop_dependencies)
+            result = loop.answer(question)
+            diagnostics = result.setdefault("router_diagnostics", {})
+            if isinstance(diagnostics, dict):
+                diagnostics["question_decomposition_bypassed"] = True
+            return finish(result)
+
         with stage(timing, "question_decomposition", "BQ and tool routing"):
             routes = self.router.route(question, has_documents=bool(docs))
+        if (
+            external_tool_agent_enabled()
+            and external_fallback_code is None
+            and _is_external_tool_agent_candidate(routes, docs)
+            and agent_source_trap is None
+        ):
+            tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
+                question,
+                pre_resolved,
+                timing=timing,
+            )
+            if tool_result is not None:
+                return finish(tool_result)
         if not docs and _is_known_ingredient_patent_question(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return loop.answer(question)
+            return finish(loop.answer(question))
         requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
         portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
+        if portfolio_scope:
+            loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
+            return finish(loop.answer(question))
         try:
             with stage(timing, "agent_pre_resolve", "brand resolver"):
-                resolution = self.resolver.resolve(question, allow_default=portfolio_scope or bool(docs) or not requires_brand_flag)
+                resolution = (
+                    pre_resolved
+                    if pre_resolved is not None
+                    else self.resolver.resolve(question, allow_default=False)
+                )
         except UnsupportedBrandError:
-            return self._unsupported_brand(question, routes)
+            disease_anchor = hira_disease_anchor_brand(question)
+            if disease_anchor is not None:
+                resolution = self.resolver.resolve(disease_anchor, allow_default=False)
+            elif docs:
+                resolution = _document_resolution()
+            else:
+                return finish(self._unsupported_brand(question, routes))
+        if resolution.requires_market_clarification and not docs:
+            return finish(_market_ambiguity_result(question, resolution))
+        if resolution.support_source == "document_context" and any("metrics" in route.sources for route in routes):
+            return finish(_brand_clarification_result(question))
         calls: list[dict[str, Any]] = []
         notices: list[str] = []
         sources: list[str] = []
-        source_trap = requested_unavailable_source(question)
         if source_trap is not None and not docs:
-            return self._requested_source_unavailable(question, resolution, routes, source_trap)
+            return finish(self._requested_source_unavailable(question, resolution, routes, source_trap))
 
         if not docs and should_use_agent_loop(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return loop.answer(question)
+            return finish(loop.answer(question))
 
         if any("none" in route.sources for route in routes):
-            return self._no_data(question, resolution, routes)
+            return finish(self._no_data(question, resolution, routes))
 
         if any("deep_analysis_events" in route.sources for route in routes):
             news_filters = tuple(entry for route in routes if "deep_analysis_events" in route.sources for entry in route.filters)
@@ -115,7 +200,7 @@ class ChatAgent:
             sources.append(call["source"])
 
         if any("metrics" in route.sources for route in routes):
-            market = resolution.market_id or ("ml_006" if resolution.canonical_brand in {"리바로", "리바로젯"} else "mock_market")
+            market = resolution.market_id
             metric = metric_from_question(question)
             metric_filters = tuple(entry for route in routes if "metrics" in route.sources for entry in route.filters)
             filter_plan = validate_metric_filters(metric_filters)
@@ -125,6 +210,8 @@ class ChatAgent:
                     resolution.canonical_brand,
                     metric=metric,
                     filter_entries=effective_filters,
+                    market=market,
+                    prefer_mart=_prefer_mart_metric(resolution.support_source),
                 )
             metric_calls = [brand_metric_call]
             scope = _answer_scope(question)
@@ -136,7 +223,12 @@ class ChatAgent:
                     if scope == "single_brand_trend" and data.get("metric") not in {"series", "trend"}:
                         continue
                     data["answer_scope"] = scope
-            if not effective_filters and metric not in {"hhi", "series", "trend", "momentum", "ei"}:
+            if (
+                self.query_layer is None
+                and market is not None
+                and not effective_filters
+                and metric not in {"hhi", "series", "trend", "momentum", "ei"}
+            ):
                 with stage(timing, "tool:get_market_landscape", f"market={market}"):
                     market_landscape_call = self.metrics.get_market_landscape(market)
                 metric_calls.insert(0, market_landscape_call)
@@ -174,7 +266,7 @@ class ChatAgent:
                 notices=notices,
             )
             answer = apply_requested_source_trap_gate(question, markdown.markdown)
-        return {
+        return finish({
             "question": question,
             "resolution": resolution.__dict__,
             "decomposition": [route.__dict__ for route in routes],
@@ -184,7 +276,7 @@ class ChatAgent:
             "markdown_response": markdown.to_dict(),
             "sources": sorted(set(sources)),
             "timing": timing,
-        }
+        })
 
     def _news_brands(self, question: str, routes: list[Any], fallback_brand: str) -> tuple[str, ...]:
         source_text = relevance_question_text(question)
@@ -300,6 +392,38 @@ class ChatAgent:
             with stage(timing, "tool:mfds_permission_search", resolution.canonical_brand):
                 calls.append(self.external.mfds_permission_search(resolution.canonical_brand))
         return calls
+
+    def _attempt_external_tool_agent(
+        self,
+        question: str,
+        pre_resolved: BrandResolution | None,
+        *,
+        timing: Timing | None = None,
+    ) -> tuple[dict[str, Any] | None, BrandResolution | None, str | None]:
+        fixture_alias_check = getattr(self.resolver, "has_fixture_alias", None)
+        should_pre_resolve = not callable(fixture_alias_check) or fixture_alias_check(question)
+        if pre_resolved is None and should_pre_resolve:
+            try:
+                pre_resolved = self.resolver.resolve(question, allow_default=False)
+            except UnsupportedBrandError:
+                pre_resolved = None
+        if pre_resolved is not None and pre_resolved.requires_market_clarification:
+            return _market_ambiguity_result(question, pre_resolved), pre_resolved, None
+        tool_result = run_external_tool_agent(
+            question,
+            resolver=self.resolver,
+            external=self.external,
+            timing=timing,
+        )
+        diagnostics = tool_result.get("router_diagnostics")
+        fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
+        if fallback_code in {
+            None,
+            FallbackCode.UNSUPPORTED_QUERY.value,
+            FallbackCode.VERIFICATION_FAIL.value,
+        }:
+            return tool_result, pre_resolved, None
+        return None, pre_resolved, str(fallback_code)
 
     def _competitor_patent_context_call(self, question: str, resolution, *, timing: Timing | None = None) -> ExternalCall | None:
         if self.query_layer is None or not _asks_competitor_ingredients(question):
@@ -421,29 +545,112 @@ class ChatAgent:
             try:
                 return self.query_layer.brand_metric(brand, "sales", "latest")
             except (LookupError, TypeError, ValueError):
-                pass
+                return None
+        if self.metrics._mode == "cache" and not self.metrics._legacy_cache_injected:
+            return None
         try:
             return self.metrics.get_brand_metric(brand, metric="sales")
         except (LookupError, TypeError, ValueError):
             return None
 
-    def _metric_call(self, brand: str, *, metric: str, filter_entries: tuple[FilterEntry, ...]) -> dict[str, Any]:
+    def _metric_call(
+        self,
+        brand: str,
+        *,
+        metric: str,
+        filter_entries: tuple[FilterEntry, ...],
+        market: str | None = None,
+        prefer_mart: bool = False,
+    ) -> dict[str, Any]:
         if self.query_layer is not None:
             try:
-                catalog = self.query_layer.catalog_for_brand(brand)
-                if catalog.market_structure:
-                    period = _metric_filter_period(filter_entries)
-                    if period is not None:
+                period = _metric_filter_period(filter_entries)
+                if period is not None:
+                    if market is None:
                         return self.query_layer.brand_metric(brand, metric, period)
-                    if not filter_entries:
+                    return self.query_layer.brand_metric(brand, metric, period, market=market)
+                if not filter_entries:
+                    if market is None:
                         return self.query_layer.brand_metric(brand, metric, "latest")
-            except (LookupError, TypeError, ValueError):
-                pass
+                    return self.query_layer.brand_metric(brand, metric, "latest", market=market)
+                plan = validate_metric_filters(filter_entries)
+                if plan.blocks_results:
+                    raise LookupError("d2 query-layer rejected the requested filters")
+                if plan.relative_range is not None:
+                    months = _relative_range_months(plan.relative_range)
+                    if metric in {"market_share", "share"}:
+                        spec = {
+                            "metrics": ["share"],
+                            "derive": ["average"],
+                            "filters": {"brand": brand, "periods": months},
+                        }
+                        if market is not None:
+                            spec["market"] = market
+                        return self.query_layer.query(spec, fallback_brand=brand)
+
+                    spec = {
+                        "group_by": ["product", "period"],
+                        "metrics": ["sales"],
+                        "derive": ["trend"],
+                        "filters": {"brand": brand, "periods": months},
+                    }
+                    if market is not None:
+                        spec["market"] = market
+                    return self.query_layer.query(spec, fallback_brand=brand)
+                dimension = ""
+                if plan.channel is not None:
+                    dimension = "channel"
+                elif plan.level is not None:
+                    dimension = _catalog_dimension_for_level(
+                        self.query_layer,
+                        brand,
+                        market,
+                        plan.level,
+                    )
+                if dimension:
+                    kwargs = {
+                        "source": plan.source or "",
+                        "period": plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                    }
+                    if market is not None:
+                        kwargs["market"] = market
+                    return self.query_layer.dimension_breakdown(brand, dimension, **kwargs)
+                raise LookupError(f"d2 query-layer route does not support filters: {filter_entries!r}")
+            except (LookupError, TypeError, ValueError) as exc:
+                return _query_failed_metric_call(brand, metric, filter_entries, exc)
         return self.metrics.get_brand_metric(brand, metric=metric, filter_entries=filter_entries)
 
 
+def _catalog_dimension_for_level(
+    query_layer: StrategicQueryLayer,
+    brand: str,
+    market: str | None,
+    level: str,
+) -> str:
+    normalized = level.casefold().replace(" ", "_")
+    if normalized == "brand":
+        return "product"
+    catalog = query_layer.catalog_for_brand(brand, market=market)
+    if normalized in catalog.dimensions:
+        return normalized
+    structure = catalog.market_structure or {}
+    display_axis = str(structure.get("display_axis") or "")
+    if "class" in normalized and display_axis in catalog.dimensions:
+        return display_axis
+    axes = structure.get("axes")
+    if isinstance(axes, (list, tuple)):
+        for axis in axes:
+            if not isinstance(axis, dict):
+                continue
+            label = str(axis.get("label") or "").casefold().replace(" ", "_")
+            key = str(axis.get("key") or "")
+            if label == normalized and key in catalog.dimensions:
+                return key
+    raise LookupError(f"catalog does not expose requested level: {level}")
+
+
 def _is_single_brand_trend_question(question: str) -> bool:
-    if "매출" not in question or not any(token in question for token in ("추이", "변화", "증감", "하락", "감소", "줄")):
+    if not needs_market_series(question):
         return False
     widening_tokens = ("경쟁", "구도", "상위", "위협", "시장 영향", "시장 탓", "시장 문제", "고유", "아토젯", "비교", "같이", "랑")
     return not any(token in question for token in widening_tokens)
@@ -460,6 +667,151 @@ def _metric_filter_period(filter_entries: tuple[FilterEntry, ...]) -> str | None
     if plan.period_year is not None:
         return str(plan.period_year)
     return None
+
+
+def _relative_range_months(value: str) -> int:
+    match = re.fullmatch(r"\s*최근\s*(\d{1,2})\s*(개월|달|년)\s*", value)
+    if match is None:
+        raise ValueError(f"unsupported relative range: {value}")
+    amount = int(match.group(1))
+    months = amount * 12 if match.group(2) == "년" else amount
+    if not 1 <= months <= 50:
+        raise ValueError(f"relative range is outside the supported window: {value}")
+    return months
+
+
+def _query_failed_metric_call(
+    brand: str,
+    metric: str,
+    filter_entries: tuple[FilterEntry, ...],
+    error: BaseException,
+) -> dict[str, Any]:
+    message = "요청한 기간의 지표 조회에 실패했습니다. 데이터가 없다는 뜻은 아니며, 확인되지 않은 수치를 추정하지 않습니다."
+    return {
+        "source": "strategic_mart",
+        "tool": "query_failed",
+        "summary_text": message,
+        "render_data": {
+            "brand": brand,
+            "metric": metric,
+            "status": "query_failed",
+            "message": message,
+            "error_type": type(error).__name__,
+            "requested_filters": dict(filter_entries),
+        },
+    }
+
+
+def _market_ambiguity_result(question: str, resolution: Any) -> dict[str, Any]:
+    message = market_ambiguity_message(
+        resolution.canonical_brand,
+        resolution.market_names or resolution.market_ids,
+    )
+    return {
+        "question": question,
+        "resolution": asdict(resolution),
+        "decomposition": [{"intent": "market_clarification", "status": "needs_clarification"}],
+        "router_diagnostics": {"mode": "deterministic", "scope": "market_ambiguity"},
+        "tool_calls": [],
+        "answer": message,
+        "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+        "sources": [],
+    }
+
+
+def _document_resolution() -> BrandResolution:
+    return BrandResolution(
+        canonical_brand="업로드 문서",
+        audit_code="document_context",
+        molecule_en=(),
+        atc=(),
+        edi_code=None,
+        item_seq=None,
+        is_combo=False,
+        support_source="document_context",
+    )
+
+
+def _brand_clarification_result(question: str) -> dict[str, Any]:
+    message = "시장 지표를 함께 조회하려면 브랜드 또는 시장을 지정해 주세요."
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [{"intent": "brand_clarification", "status": "needs_clarification"}],
+        "router_diagnostics": {"mode": "deterministic", "scope": "unresolved_brand"},
+        "tool_calls": [],
+        "answer": message,
+        "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+        "sources": [],
+    }
+
+
+def _conversation_fallback(question: str) -> dict[str, Any] | None:
+    normalized = re.sub(r"[\s!?.,~]+", " ", question.casefold()).strip()
+    if not normalized:
+        return None
+
+    answer: str | None = None
+    intent = "conversation"
+    if normalized in {"안녕", "안녕하세요", "반가워", "반갑습니다", "하이", "hi", "hello"}:
+        answer = "안녕하세요! 의약품 시장 분석을 도와드릴게요. 궁금한 브랜드나 시장을 말씀해 주세요."
+        intent = "greeting"
+    elif normalized in {"고마워", "고맙습니다", "감사해", "감사합니다", "thanks", "thank you"}:
+        answer = "도움이 됐다니 다행이에요. 이어서 궁금한 시장이나 브랜드를 말씀해 주세요."
+        intent = "thanks"
+    elif any(token in normalized for token in ("뭐 할 수", "무엇을 할 수", "어떤 걸 할 수", "기능 알려")):
+        answer = (
+            "브랜드 매출과 점유율 추이, 경쟁 구도, 임상시험·허가·특허·부작용, 최신 이슈를 확인할 수 있어요. "
+            "첨부한 파일의 집계와 비교 분석도 가능합니다."
+        )
+        intent = "capabilities"
+    elif "날씨" in normalized:
+        answer = "날씨는 제 분석 범위가 아니에요. 대신 의약품 시장의 브랜드 매출·점유율이나 경쟁 현황은 확인해 드릴 수 있어요."
+        intent = "out_of_scope"
+    if answer is None:
+        return None
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [{"intent": intent, "status": "answered_without_data"}],
+        "router_diagnostics": {"mode": "deterministic", "scope": intent},
+        "tool_calls": [],
+        "answer": answer,
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "sources": [],
+        "conversation_fallback_ready": True,
+    }
+
+
+def _is_external_tool_agent_candidate(routes: list[Any], documents: list[Path]) -> bool:
+    if documents:
+        return False
+    sources = {source for route in routes for source in route.sources}
+    if "external_api" in sources:
+        return True
+    if sources == {"document"}:
+        return True
+    return sources == {"none"} and all(route.bq == "UNKNOWN" for route in routes)
+
+
+def _annotate_external_tool_fallback(payload: dict[str, Any], fallback_code: str | None) -> dict[str, Any]:
+    if fallback_code is None:
+        return payload
+    annotated = dict(payload)
+    diagnostics = annotated.get("router_diagnostics")
+    normalized = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+    normalized["external_tool_agent_fallback_code"] = fallback_code
+    annotated["router_diagnostics"] = normalized
+    return annotated
+
+
+def _prefer_mart_metric(support_source: str) -> bool:
+    return support_source in {
+        "catalog_membership",
+        "mart_membership",
+        "cache_brands",
+        "cache_brands+fixture_sidecar",
+    }
 
 
 def _single_brand_focus_question(question: str) -> bool:

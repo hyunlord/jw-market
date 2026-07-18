@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import time
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from jw_chat_agent_poc.agentic import FilterEntry, validate_news_filters
 from jw_chat_agent_poc.agentic.news_filters import NewsFilterPlan
@@ -19,6 +20,11 @@ from .news_transparency import no_data_message, no_data_summary, news_summary, t
 
 
 DEEP_ANALYSIS_EVENTS_SOURCE = "deep_analysis_events"
+NEWS_STATUS_OK: Final = "ok"
+NEWS_STATUS_NO_DATA: Final = "no_data"
+NEWS_STATUS_QUERY_FAILED: Final = "query_failed"
+NEWS_STATUS_DISABLED: Final = "unsupported"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +32,8 @@ class DeepAnalysisNewsSnapshot:
     brand: str
     events: tuple[DeepAnalysisNewsEvent, ...]
     loaded_at: float
+    status: str = NEWS_STATUS_OK
+    corpus_state: str = "corpus"
 
 
 class DeepAnalysisNewsReader(Protocol):
@@ -38,10 +46,13 @@ class StaticDeepAnalysisNewsReader:
 
     def load(self, brand: str) -> DeepAnalysisNewsSnapshot:
         payload = self.payloads_by_brand.get(brand, {})
+        events = tuple(events_from_payload(payload))
         return DeepAnalysisNewsSnapshot(
             brand=brand,
-            events=tuple(events_from_payload(payload)),
+            events=events,
             loaded_at=time.monotonic(),
+            status=NEWS_STATUS_OK if events else NEWS_STATUS_NO_DATA,
+            corpus_state="fixture",
         )
 
 
@@ -51,15 +62,24 @@ class FixtureDeepAnalysisNewsReader:
 
     def load(self, brand: str) -> DeepAnalysisNewsSnapshot:
         if not self.fixture_path.exists():
-            return DeepAnalysisNewsSnapshot(brand=brand, events=(), loaded_at=time.monotonic())
+            return DeepAnalysisNewsSnapshot(
+                brand=brand,
+                events=(),
+                loaded_at=time.monotonic(),
+                status=NEWS_STATUS_NO_DATA,
+                corpus_state="fixture",
+            )
         payloads = json.loads(self.fixture_path.read_text(encoding="utf-8"))
         if not isinstance(payloads, dict):
             raise TypeError("deep_analysis_events fixture must be a JSON object")
         payload = payloads.get(brand, {})
+        events = tuple(events_from_payload(payload if isinstance(payload, dict) else {}))
         return DeepAnalysisNewsSnapshot(
             brand=brand,
-            events=tuple(events_from_payload(payload if isinstance(payload, dict) else {})),
+            events=events,
             loaded_at=time.monotonic(),
+            status=NEWS_STATUS_OK if events else NEWS_STATUS_NO_DATA,
+            corpus_state="fixture",
         )
 
 
@@ -78,43 +98,32 @@ class MariaDbDeepAnalysisNewsReader:
     def load(self, brand: str) -> DeepAnalysisNewsSnapshot:
         import pymysql
 
-        with pymysql.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.database,
-            connect_timeout=self.connect_timeout_s,
-            read_timeout=self.read_timeout_s,
-            write_timeout=self.read_timeout_s,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-        ) as connection:
-            if self.corpus_enabled:
-                try:
-                    corpus_events = self._load_corpus_events(connection, brand)
-                except pymysql.MySQLError:
-                    corpus_events = ()
-                if corpus_events:
-                    return DeepAnalysisNewsSnapshot(brand=brand, events=corpus_events, loaded_at=time.monotonic())
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT response_json "
-                    "FROM cache_deep_analysis "
-                    "WHERE brand=%s "
-                    "ORDER BY updated_at DESC "
-                    "LIMIT 1",
-                    (brand,),
-                )
-                row = cursor.fetchone()
-
-        if not row:
-            return DeepAnalysisNewsSnapshot(brand=brand, events=(), loaded_at=time.monotonic())
-        payload = json.loads(str(row["response_json"]))
-        if not isinstance(payload, dict):
-            raise TypeError("cache_deep_analysis.response_json must be a JSON object")
-        return DeepAnalysisNewsSnapshot(brand=brand, events=tuple(events_from_payload(payload)), loaded_at=time.monotonic())
+        if not self.corpus_enabled:
+            LOGGER.info("news_corpus branch=disabled brand=%s", brand)
+            return _news_snapshot(brand, status=NEWS_STATUS_DISABLED, corpus_state="disabled")
+        try:
+            with pymysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database,
+                connect_timeout=self.connect_timeout_s,
+                read_timeout=self.read_timeout_s,
+                write_timeout=self.read_timeout_s,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            ) as connection:
+                corpus_events = self._load_corpus_events(connection, brand)
+        except pymysql.MySQLError:
+            LOGGER.warning("news_corpus branch=query_failed brand=%s", brand)
+            return _news_snapshot(brand, status=NEWS_STATUS_QUERY_FAILED, corpus_state="query_failed")
+        if not corpus_events:
+            LOGGER.info("news_corpus branch=no_data brand=%s", brand)
+            return _news_snapshot(brand, status=NEWS_STATUS_NO_DATA, corpus_state="no_data")
+        LOGGER.info("news_corpus branch=corpus brand=%s count=%d", brand, len(corpus_events))
+        return _news_snapshot(brand, events=corpus_events, status=NEWS_STATUS_OK, corpus_state="corpus")
 
     def _load_corpus_events(self, connection: Any, brand: str) -> tuple[DeepAnalysisNewsEvent, ...]:
         with connection.cursor() as cursor:
@@ -147,7 +156,7 @@ class DeepAnalysisNewsTool:
         reader: DeepAnalysisNewsReader | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
-        self._mode = mode or os.environ.get("CHAT_DEEP_NEWS_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
+        self._mode = mode or os.environ.get("CHAT_DEEP_NEWS_MODE", "fixture")
         resolved_reader = reader or (MariaDbDeepAnalysisNewsReader() if self._mode == "cache" else FixtureDeepAnalysisNewsReader())
         ttl = ttl_seconds or int(os.environ.get("CHAT_DEEP_NEWS_TTL_SECONDS", "300"))
         self._cache = TtlDeepAnalysisNewsCache(resolved_reader, ttl_seconds=ttl)
@@ -156,6 +165,9 @@ class DeepAnalysisNewsTool:
         plan = validate_news_filters(filter_entries)
         requested_brands = plan.relevance_brands or (brand,)
         snapshots = tuple(self._cache.snapshot(item) for item in requested_brands)
+        source_status, corpus_state = _source_state(snapshots)
+        if source_status != NEWS_STATUS_OK:
+            return _unavailable_news_call(brand, plan, source_status, corpus_state)
         snapshot_events = tuple(event for snapshot in snapshots for event in snapshot.events)
         latest = max((event.date for event in snapshot_events if event.date), default="")
         events = _events_matching_relevance(snapshots, requested_brands, plan.relevance_operator)
@@ -167,13 +179,15 @@ class DeepAnalysisNewsTool:
             return {
                 "source": DEEP_ANALYSIS_EVENTS_SOURCE,
                 "tool": "deep_analysis_related_news",
+                "status": NEWS_STATUS_NO_DATA,
                 "deterministic": True,
                 **transparency,
                 "data": {"items": [], "latest_event_date": latest},
                 "summary_text": no_data_summary(brand, plan),
                 "render_data": {
                     "brand": brand,
-                    "status": "no_data",
+                    "status": NEWS_STATUS_NO_DATA,
+                    "news_corpus_state": corpus_state,
                     "message": no_data_message(plan),
                     "items": [],
                     "latest_event_date": latest,
@@ -186,12 +200,15 @@ class DeepAnalysisNewsTool:
         return {
             "source": DEEP_ANALYSIS_EVENTS_SOURCE,
             "tool": "deep_analysis_related_news",
+            "status": NEWS_STATUS_OK,
             "deterministic": True,
             **transparency,
             "data": {"items": items, "latest_event_date": latest},
             "summary_text": news_summary(brand, len(selected), plan),
             "render_data": {
                 "brand": brand,
+                "status": NEWS_STATUS_OK,
+                "news_corpus_state": corpus_state,
                 "items": items,
                 "latest_event_date": latest,
                 "selection": "on_list=true 우선, 없으면 impact_score 상위",
@@ -199,6 +216,62 @@ class DeepAnalysisNewsTool:
                 "deterministic": True,
             },
         }
+
+
+def _news_snapshot(
+    brand: str,
+    *,
+    events: tuple[DeepAnalysisNewsEvent, ...] = (),
+    status: str,
+    corpus_state: str,
+) -> DeepAnalysisNewsSnapshot:
+    return DeepAnalysisNewsSnapshot(
+        brand=brand,
+        events=events,
+        loaded_at=time.monotonic(),
+        status=status,
+        corpus_state=corpus_state,
+    )
+
+
+def _source_state(snapshots: tuple[DeepAnalysisNewsSnapshot, ...]) -> tuple[str, str]:
+    statuses = {snapshot.status for snapshot in snapshots}
+    if NEWS_STATUS_QUERY_FAILED in statuses:
+        return NEWS_STATUS_QUERY_FAILED, "query_failed"
+    if NEWS_STATUS_DISABLED in statuses:
+        return NEWS_STATUS_DISABLED, "disabled"
+    if statuses == {NEWS_STATUS_NO_DATA}:
+        return NEWS_STATUS_NO_DATA, "no_data"
+    return NEWS_STATUS_OK, "corpus"
+
+
+def _unavailable_news_call(brand: str, plan: NewsFilterPlan, status: str, corpus_state: str) -> dict[str, Any]:
+    messages = {
+        NEWS_STATUS_NO_DATA: "관련 뉴스가 없습니다",
+        NEWS_STATUS_QUERY_FAILED: "뉴스 조회에 실패했습니다.",
+        NEWS_STATUS_DISABLED: "뉴스 조회 기능이 비활성 상태입니다",
+    }
+    message = messages[status]
+    return {
+        "source": DEEP_ANALYSIS_EVENTS_SOURCE,
+        "tool": "deep_analysis_related_news",
+        "status": status,
+        "deterministic": True,
+        **transparency_fields(plan, ""),
+        "data": {"items": [], "latest_event_date": ""},
+        "summary_text": message,
+        "render_data": {
+            "brand": brand,
+            "status": status,
+            "news_corpus_state": corpus_state,
+            "message": message,
+            "items": [],
+            "latest_event_date": "",
+            "selection": "corpus 조회 결과",
+            **transparency_fields(plan, ""),
+            "deterministic": True,
+        },
+    }
 
 
 def _events_matching_relevance(

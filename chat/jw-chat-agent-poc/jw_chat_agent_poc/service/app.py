@@ -4,15 +4,16 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from collections import OrderedDict
 from contextlib import nullcontext
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache
 from hmac import compare_digest
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,28 +23,86 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from jw_chat_agent_poc.agent_loop import should_use_agent_loop
+from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
+from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
+from jw_chat_agent_poc.common.periods import (
+    canonical_periods,
+    first_explicit_period_cue,
+    has_explicit_period_cue,
+)
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
+from jw_chat_agent_poc.orchestrator.bq_mixed_analysis import build_file_market_analysis_call
+from jw_chat_agent_poc.orchestrator.bq_runtime_guard import (
+    BQAnalysisValidationError,
+    validate_bq_analysis_call,
+)
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
+from jw_chat_agent_poc.orchestrator.deep_research import (
+    DeepResearchToolPlanner,
+    parse_deep_research_request,
+)
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
+from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
+    append_deterministic_source_block,
     cleanup_markdown_answer,
+    ensure_cross_file_comparison_judgment,
     ensure_file_absence_statement,
+    ensure_file_overview_evidence_coverage,
+    ensure_multi_file_evidence_coverage,
+    ensure_file_page_evidence,
+    ensure_deep_research_structure,
+    ensure_hira_patient_summary,
+    ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
     finalized_fallback_fact_answer,
+    replace_internal_fact_dump,
 )
+from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
-from jw_chat_agent_poc.service.conversation import ConversationStore, PendingClarification
+from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationStore, ConversationTurn, PendingClarification
+from jw_chat_agent_poc.service.conversation_context import (
+    extract_conversation_slots,
+    requires_previous_turn,
+    resolve_anaphora,
+    reused_context_result,
+    unresolved_reference_result,
+)
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
-from jw_chat_agent_poc.service.file_search_client import search_uploaded_files
+from jw_chat_agent_poc.service.context_scope import (
+    ContextScope,
+    file_reference_terms,
+    has_file_reference,
+    matches_file_schema,
+    resolve_context_scope,
+)
+from jw_chat_agent_poc.service.file_search_client import (
+    UploadedFileOverview,
+    fetch_uploaded_file_overviews,
+    fetch_uploaded_file_schema_columns,
+    has_active_uploaded_file,
+    search_uploaded_files,
+)
+from jw_chat_agent_poc.service.file_brief import render_uploaded_file_machine_brief
+from jw_chat_agent_poc.service.file_llm_brief import (
+    FileBriefValidationError,
+    build_file_brief_messages,
+    deserialize_file_overviews,
+    parse_and_render_file_briefs,
+    render_file_brief_grounding_text,
+    serialize_file_overviews,
+)
+from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_question
 from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
@@ -55,7 +114,20 @@ from jw_chat_agent_poc.service.history_projection import (
 from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
-from jw_chat_agent_poc.common.timing import StageEventSink, ensure_timing, finish, stage, stage_event_sink
+from jw_chat_agent_poc.service.startup_warmup import (
+    DisabledStartupWarmup,
+    StartupWarmup,
+    startup_warmup_from_env,
+)
+from jw_chat_agent_poc.common.timing import (
+    StageEventSink,
+    emit_completed_stage,
+    ensure_timing,
+    finish,
+    public_stage_summary,
+    stage,
+    stage_event_sink,
+)
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope import (
@@ -101,7 +173,7 @@ CHAT_STREAM_DESCRIPTION = """
 | conversation | plain string conversation_id | first, if conversation_id exists | 0-1 |
 | step | JSON `{index, name, detail, status, raw_name, raw_detail, elapsed_ms?}` | while live question processing stages start/finish | 0-N |
 | sources | comma-separated source labels | before content | 1 |
-| file_sources | JSON array `[{file_name, document_id?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
+| file_sources | JSON array `[{file_name, i_page?, sheet_name?}]` | after sources, only when uploaded-file grounding was used | 0-1 |
 | delta | markdown text chunk | prose segments | 0-N |
 | markdown_block | JSON `{kind, markdown}` | table segments | 0-N |
 | charts | JSON array | if charts are present | 0-1 |
@@ -122,6 +194,7 @@ class FinalAnswer:
     sources: tuple[str, ...]
     conversation_id: str | None
     file_sources: tuple[dict[str, Any], ...] = ()
+    conversation_slots: ConversationSlots = ConversationSlots()
 
 
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
@@ -212,6 +285,7 @@ def create_app(
     history_store: ConversationHistoryStore | None = None,
     projection_runtime: HistoryProjectionRuntime | None = None,
     concurrency_limiter: ChatConcurrencyLimiter | None = None,
+    startup_warmup: StartupWarmup | None = None,
 ) -> FastAPI:
     app = FastAPI(title="JW Chat Agent POC", version="0.2.0", root_path="/jw-chat-agent")
     app.add_middleware(
@@ -228,10 +302,12 @@ def create_app(
     use_direct_agent_loop = agent_factory is None
     projection = projection_runtime or HistoryProjectionRuntime.from_env()
     history = history_store or MySQLConversationHistoryStore(projection_outbox=projection.outbox)
+    warmup = startup_warmup or DisabledStartupWarmup()
 
     @app.on_event("startup")
     def start_history_projection_worker() -> None:
         projection.start()
+        warmup.start()
 
     @app.on_event("shutdown")
     def stop_history_projection_worker() -> None:
@@ -239,6 +315,12 @@ def create_app(
 
     @app.get("/healthz", response_model=HealthResponse)
     def healthz() -> HealthResponse:
+        return HealthResponse(status="ok")
+
+    @app.get("/readyz", response_model=HealthResponse)
+    def readyz() -> HealthResponse:
+        if not warmup.is_ready():
+            raise HTTPException(status_code=503, detail="strategic mart startup warmup is in progress")
         return HealthResponse(status="ok")
 
     @app.get("/__version")
@@ -267,6 +349,7 @@ def create_app(
                     list(documents),
                     request.file_context,
                     use_direct_agent_loop=use_direct_agent_loop,
+                    conversation_history=history,
                 )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
@@ -302,6 +385,7 @@ def create_app(
                     list(documents),
                     request.file_context,
                     use_direct_agent_loop=use_direct_agent_loop,
+                    conversation_history=history,
                 )
                 final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
         except ChatBusyError as exc:
@@ -319,7 +403,7 @@ def create_app(
             trace=final_answer.trace,
             sources=final_answer.sources,
             conversation_id=final_answer.conversation_id,
-            file_sources=[dict(item) for item in final_answer.file_sources],
+            file_sources=list(_project_public_file_sources(final_answer.file_sources)),
         )
 
     @app.get(
@@ -429,35 +513,424 @@ def _answer_question(
     *,
     use_direct_agent_loop: bool = False,
     timing_sink: StageEventSink | None = None,
+    conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
+        deep_request = parse_deep_research_request(question)
+        effective_question = deep_request.question
         state = store.conversations.get_or_create(conversation_id)
-        delegated_file_context, file_source_items = _delegated_file_context(question, state.conversation_id, file_context)
-        if not question.strip() and _has_file_signal(documents, delegated_file_context):
-            result = _file_only_ready_result(documents, delegated_file_context)
+        if conversation_id and not state.turns and requires_previous_turn(effective_question):
+            _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id)
+            state = store.conversations.get_or_create(state.conversation_id)
+        provided_file = _has_file_signal(documents, file_context)
+        file_probe_started = time.perf_counter()
+        has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
+        file_probe_elapsed_ms = (time.perf_counter() - file_probe_started) * 1000
+        schema_probe_started = time.perf_counter()
+        file_schema_columns = (
+            fetch_uploaded_file_schema_columns(state.conversation_id)
+            if has_file and not provided_file
+            else ()
+        )
+        schema_probe_elapsed_ms = (time.perf_counter() - schema_probe_started) * 1000
+        file_overviews = (
+            fetch_uploaded_file_overviews(state.conversation_id)
+            if has_file and not effective_question.strip()
+            else ()
+        )
+        previous_turn = state.turns[-1] if state.turns else None
+        routing_resolution = resolve_anaphora(effective_question, previous_turn)
+        routing_question = routing_resolution.resolved_question
+        grounded_market_question = _ground_unanchored_market_golden(
+            routing_question,
+            has_explicit_anchor=market_scope_resolver.has_explicit_anchor(routing_question),
+        )
+        execution_question = (
+            grounded_market_question
+            if grounded_market_question != routing_question
+            else effective_question
+        )
+        routing_question = grounded_market_question
+        has_market_intent = deep_request.enabled or _has_market_intent(routing_question)
+        has_market_anchor = (
+            market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
+        )
+        inherit_file_context = has_file and not (
+            has_market_intent
+            and has_market_anchor
+            and not has_file_reference(routing_question)
+        )
+        file_question = (
+            _resolve_file_question(routing_question, previous_turn)
+            if inherit_file_context
+            else routing_question
+        )
+        context_scope = resolve_context_scope(
+            file_question,
+            has_active_file=has_file,
+            is_fresh_upload=bool(documents),
+            has_market_intent=has_market_intent,
+            has_market_anchor=has_market_anchor,
+            file_schema_columns=file_schema_columns,
+        )
+        if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
+            emit_completed_stage(
+                None,
+                "file_session_probe",
+                file_probe_elapsed_ms,
+                "active uploaded file check",
+            )
+            emit_completed_stage(
+                None,
+                "file_schema_probe",
+                schema_probe_elapsed_ms,
+                "active uploaded file schema check",
+            )
+        file_schema_match = matches_file_schema(file_question, file_schema_columns)
+        needs_scope_clarification = (
+            has_file
+            and has_market_intent
+            and not has_market_anchor
+            and not has_file_reference(effective_question)
+            and not _has_explicit_file_sheet_reference(effective_question)
+            and not file_schema_match
+        )
+        delegated_file_context: str | None = None
+        file_source_items: tuple[dict[str, Any], ...] = ()
+        deep_file_names: tuple[str, ...] = ()
+        deterministic_file_answer = ""
+        file_sql_trace: tuple[dict[str, str], ...] = ()
+        if deep_request.enabled:
+            context_scope = ContextScope.MARKET
+            if has_file:
+                with stage(
+                    None,
+                    "deep_research_file_batch",
+                    "현재 세션 업로드 파일 전체 근거 수집",
+                ) as progress:
+                    (
+                        delegated_file_context,
+                        file_source_items,
+                        _has_active_upload,
+                        _deep_file_sql_answer,
+                        file_sql_trace,
+                    ) = _delegated_file_context(
+                        effective_question,
+                        state.conversation_id,
+                        file_context,
+                        include_all_files=True,
+                    )
+                    deep_file_names = tuple(
+                        dict.fromkeys(
+                            str(item.get("file_name") or "").strip()
+                            for item in file_source_items
+                            if str(item.get("file_name") or "").strip()
+                        )
+                    )
+                    progress.summary = f"{len(deep_file_names)}개 파일 근거 확인"
+            result = (
+                _answer_deep_research(effective_question, external_mode)
+                if effective_question
+                else _deep_research_clarification_result()
+            )
+            diagnostics = dict(result.get("router_diagnostics") or {})
+            diagnostics.update(
+                {
+                    "mode": "deep_research",
+                    "model": "gemini-3.1-pro-preview",
+                    "serving_id": "202",
+                    "trigger": "/deep",
+                    "deep_file_source_count": len(deep_file_names) if has_file else 0,
+                    "evidence_scope": (
+                        "uploaded_files+market+external+web"
+                        if delegated_file_context
+                        else "market+external+web"
+                    ),
+                }
+            )
+            result = {
+                **result,
+                "research_mode": "deep",
+                "effective_question": effective_question,
+                "router_diagnostics": diagnostics,
+            }
+        elif needs_scope_clarification:
+            result = _scope_clarification_result(effective_question)
+        elif context_scope is ContextScope.MIXED:
+            result = _answer_mixed_parallel(
+                store,
+                market_scope_resolver,
+                agent_factory,
+                state.conversation_id,
+                effective_question,
+                external_mode,
+                file_context,
+                file_question=file_question,
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
+        elif context_scope is ContextScope.FILE:
+            (
+                delegated_file_context,
+                file_source_items,
+                _has_active_upload,
+                deterministic_file_answer,
+                file_sql_trace,
+            ) = _delegated_file_context(file_question, state.conversation_id, file_context)
+            if not effective_question.strip() and _has_file_signal(documents, delegated_file_context):
+                result = _file_only_ready_result(
+                    documents,
+                    delegated_file_context,
+                    file_overviews=file_overviews,
+                )
+            else:
+                result = _file_scoped_result(effective_question)
         else:
             result = _answer_with_conversation(
                 store,
                 market_scope_resolver,
                 agent_factory,
                 state.conversation_id,
-                question,
+                execution_question,
                 external_mode,
                 [],
                 use_direct_agent_loop=use_direct_agent_loop,
             )
-            result = _attach_file_context(result, delegated_file_context, file_source_items)
-        store.conversations.record_exchange(state.conversation_id, question, str(result.get("answer") or ""), _applied_filters(result))
+        if not effective_question.strip() and context_scope is ContextScope.FILE and not result.get("file_only_ready"):
+            result = _file_only_ready_result(
+                documents,
+                delegated_file_context,
+                file_overviews=file_overviews,
+            )
+        if context_scope is ContextScope.MARKET and execution_question != effective_question:
+            result = {**result, "effective_question": execution_question}
+        result = _enforce_file_scope_isolation(result, effective_question, context_scope)
+        if deterministic_file_answer and context_scope is ContextScope.FILE:
+            result = {**result, "deterministic_file_answer": deterministic_file_answer}
+        if file_sql_trace and (context_scope is ContextScope.FILE or deep_request.enabled):
+            diagnostics = dict(result.get("router_diagnostics") or {})
+            diagnostics["file_sql"] = [dict(item) for item in file_sql_trace]
+            result = {**result, "router_diagnostics": diagnostics}
+        result = _attach_file_context(result, delegated_file_context, file_source_items)
+        result = _annotate_context_scope(result, context_scope)
+        store.conversations.record_exchange(
+            state.conversation_id,
+            question,
+            str(result.get("answer") or ""),
+            _applied_filters(result),
+            slots=extract_conversation_slots(result),
+        )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
 
 
+def _hydrate_latest_conversation_turn(
+    store: SessionStore,
+    history_store: ConversationHistoryStore | None,
+    conversation_id: str,
+) -> None:
+    latest_turn = getattr(history_store, "latest_turn", None)
+    if not callable(latest_turn):
+        return
+    try:
+        turn = latest_turn(conversation_id)
+    except Exception as exc:
+        LOGGER.warning("conversation history hydration failed error_type=%s", type(exc).__name__)
+        return
+    if not isinstance(turn, ConversationTurn):
+        return
+    store.conversations.record_exchange(
+        conversation_id,
+        turn.question,
+        turn.answer,
+        turn.applied_filters,
+        slots=turn.slots,
+    )
+
+
+def _answer_mixed_parallel(
+    store: SessionStore,
+    market_scope_resolver: MarketScopeResolver,
+    agent_factory: AgentFactory,
+    conversation_id: str,
+    question: str,
+    external_mode: str,
+    file_context: str | None,
+    *,
+    file_question: str | None = None,
+    use_direct_agent_loop: bool,
+) -> dict:
+    started = time.perf_counter()
+    timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_LEG_TIMEOUT_S", "90")))
+    total_timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "95")))
+    deadline = started + total_timeout_s
+    market_question = _mixed_market_question(question)
+    resolved_file_question = file_question or question
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mixed-m1")
+    file_future = executor.submit(
+        _delegated_file_context,
+        resolved_file_question,
+        conversation_id,
+        file_context,
+    )
+    market_future = executor.submit(
+        _answer_with_conversation,
+        store,
+        market_scope_resolver,
+        agent_factory,
+        conversation_id,
+        market_question,
+        external_mode,
+        [],
+        use_direct_agent_loop=use_direct_agent_loop,
+    )
+    try:
+        with stage(None, "mixed_file_leg", "uploaded file retrieval"):
+            try:
+                file_payload = file_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+            except FutureTimeoutError:
+                file_future.cancel()
+                file_payload = (None, (), True, "", ())
+            except Exception as exc:
+                LOGGER.warning("mixed file leg failed type=%s", type(exc).__name__)
+                file_payload = (None, (), True, "", ())
+        with stage(None, "mixed_market_leg", "market fact retrieval"):
+            try:
+                market_result = market_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+            except FutureTimeoutError:
+                market_future.cancel()
+                market_result = _mixed_market_failure_result(question)
+            except Exception as exc:
+                LOGGER.warning("mixed market leg failed type=%s", type(exc).__name__)
+                market_result = _mixed_market_failure_result(question)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    if len(file_payload) == 4:
+        context, source_items, _has_active, deterministic_answer = file_payload
+        file_sql_trace = ()
+    else:
+        context, source_items, _has_active, deterministic_answer, file_sql_trace = file_payload
+    file_result = _file_scoped_result(resolved_file_question)
+    file_result = _attach_file_context(file_result, context, source_items)
+    if deterministic_answer:
+        file_result["deterministic_file_answer"] = deterministic_answer
+    if file_sql_trace:
+        diagnostics = dict(file_result.get("router_diagnostics") or {})
+        diagnostics["file_sql"] = [dict(item) for item in file_sql_trace]
+        file_result["router_diagnostics"] = diagnostics
+    if not context:
+        file_result["mixed_leg_error"] = "첨부 문서 근거를 가져오지 못했습니다."
+
+    combined = dict(market_result)
+    combined["mixed_market_result"] = dict(market_result)
+    combined["mixed_file_result"] = file_result
+    combined["mixed_market_question"] = market_question
+    combined["mixed_deadline_monotonic"] = deadline
+    combined["sources"] = list(
+        dict.fromkeys([*market_result.get("sources", []), *file_result.get("sources", [])])
+    )
+    market_calls = [
+        call
+        for call in market_result.get("tool_calls", [])
+        if isinstance(call, dict)
+    ]
+    analysis_call = build_file_market_analysis_call(market_calls, deterministic_answer)
+    analysis_status = "MISSING_EVIDENCE"
+    if analysis_call is not None:
+        try:
+            validate_bq_analysis_call(analysis_call)
+        except BQAnalysisValidationError as exc:
+            LOGGER.warning("mixed BQ analysis rejected reason=%s", exc)
+            analysis_status = "VERIFICATION_FAIL"
+        else:
+            combined["tool_calls"] = [*market_calls, analysis_call]
+            analysis_status = "ok"
+    diagnostics = dict(combined.get("router_diagnostics") or {})
+    diagnostics.update(
+        {
+            "mode": "mixed_m1_parallel",
+            "mixed_leg_timeout_s": timeout_s,
+            "mixed_total_timeout_s": total_timeout_s,
+            "mixed_synthesis_llm_calls": 0,
+            "mixed_bq_analysis_validation": analysis_status,
+        }
+    )
+    combined["router_diagnostics"] = diagnostics
+    return combined
+
+
+def _remaining_seconds(deadline: float) -> float:
+    return max(0.001, deadline - time.perf_counter())
+
+
+def _mixed_market_question(question: str) -> str:
+    normalized = question.strip()
+    lowered = normalized.lower()
+    positions = [
+        (lowered.find(term.lower()), term)
+        for term in file_reference_terms()
+        if lowered.find(term.lower()) >= 0
+    ]
+    if not positions:
+        return normalized
+    position, term = min(positions, key=lambda item: item[0])
+    if position > 0:
+        prefix = re.sub(r"(?:과|와|랑|이랑)\s*$", "", normalized[:position]).strip(" ,")
+        return f"{prefix} 알려줘" if prefix else normalized
+    remainder = normalized[position + len(term) :]
+    match = re.search(r"(?:과|와|랑|이랑)\s+(.+)", remainder)
+    if match:
+        market_part = re.sub(r"(?:비교|대비).*$", "", match.group(1)).strip(" ,")
+        if market_part:
+            return f"{market_part} 알려줘"
+    return normalized
+
+
+def _mixed_market_failure_result(question: str) -> dict:
+    answer = "시장 데이터 조회를 완료하지 못했습니다. 조회 오류입니다."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "mixed_leg_error": answer,
+    }
+
+
+def _scope_clarification_result(question: str) -> dict:
+    answer = "파일과 시장 중 어느 근거를 사용할지 확인이 필요합니다. 브랜드·시장 또는 첨부 문서를 지정해 주세요."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "router_diagnostics": {"mode": "scope_clarification", "deterministic_execution": True},
+    }
+
+
 def _delegated_file_context(
-    question: str, conversation_id: str | None, file_context: str | None
-) -> tuple[str | None, tuple[dict[str, Any], ...]]:
+    question: str,
+    conversation_id: str | None,
+    file_context: str | None,
+    *,
+    include_all_files: bool = False,
+) -> tuple[str | None, tuple[dict[str, Any], ...], bool, str, tuple[dict[str, str], ...]]:
     contexts: list[str] = []
     file_source_items: tuple[dict[str, Any], ...] = ()
-    uploaded = search_uploaded_files(question, conversation_id)
+    uploaded = (
+        search_uploaded_files(
+            question,
+            conversation_id,
+            include_all_files=True,
+        )
+        if include_all_files
+        else search_uploaded_files(question, conversation_id)
+    )
+    has_active_upload = bool(uploaded and uploaded.has_active_file)
+    deterministic_answer = uploaded.deterministic_answer if uploaded is not None else ""
+    sql_trace = uploaded.sql_trace if uploaded is not None else ()
     if uploaded is not None and uploaded.file_context.strip():
         contexts.append(uploaded.file_context.strip())
         file_source_items = uploaded.file_source_items
@@ -465,32 +938,256 @@ def _delegated_file_context(
     if provided:
         contexts.append(provided)
     if not contexts:
-        return None, ()
-    return "\n\n".join(dict.fromkeys(contexts)), file_source_items
+        return None, (), has_active_upload, deterministic_answer, sql_trace
+    return (
+        "\n\n".join(dict.fromkeys(contexts)),
+        file_source_items,
+        has_active_upload,
+        deterministic_answer,
+        sql_trace,
+    )
+
+
+def _resolve_file_question(question: str, previous_turn: ConversationTurn | None) -> str:
+    if is_ambiguous_file_analysis_question(question):
+        return question
+    if previous_turn is None:
+        return question
+    if _is_complete_ranked_file_question(question):
+        return question
+    previous = previous_turn.question.strip()
+    resolved = question.strip()
+    has_current_sheet = bool(re.search(r"[^\s]+\s*시트", question, re.IGNORECASE))
+    has_current_measure = bool(
+        re.search(
+            r"(?:월별\s*(?:추이|흐름|변화|합계|금액|매출|집계)|sell[ -]?out|매출|금액|수량|단가|재구매율|\bq1\b|(?<![A-Za-z])no(?![A-Za-z])|VALUES\s+LC\s+SI\s+PRICE)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+    file_match = re.search(r"(?P<name>[^\s]+\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?))", previous, re.IGNORECASE)
+    file_name = previous_turn.slots.file_name or (file_match.group("name") if file_match else "")
+    if file_name and re.search(r"(?:이|해당|그)\s*문서", resolved):
+        resolved = re.sub(r"(?:이|해당|그)\s*문서", file_name, resolved)
+    elif (
+        file_name
+        and not has_current_sheet
+        and not re.search(r"\.(?:xlsx?|xlsm|csv|pdf|docx?|pptx?)", resolved, re.IGNORECASE)
+    ):
+        resolved = f"{file_name}에서 {resolved}"
+
+    manufacturers = tuple(
+        dict.fromkeys(
+            match.group("name")
+            for match in re.finditer(
+                r"(?P<name>[가-힣A-Za-z0-9_-]+(?:제약|약품))(?=(?:의|은|는|이|가|과|와|\s|[?.,!]|$))",
+                question,
+            )
+        )
+    )
+    if len(manufacturers) == 1:
+        manufacturer = manufacturers[0]
+        resolved = re.sub(
+            rf"{re.escape(manufacturer)}(?:의|은|는|이|가)?",
+            f"{manufacturer}의",
+            resolved,
+            count=1,
+        )
+    elif (
+        not manufacturers
+        and not has_current_sheet
+        and not has_current_measure
+        and previous_turn.slots.file_manufacturer
+    ):
+        resolved = f"{previous_turn.slots.file_manufacturer}의 {resolved}"
+
+    if not re.search(r"(?:합계|총계|합산|평균|개수|건수|집계|비교|총액|금액)", resolved):
+        inherited = re.search(r"(?:합계|총계|합산|평균|개수|건수|집계|비교|총액|금액)", previous)
+        if inherited:
+            resolved = f"{resolved.rstrip('? ')} {inherited.group(0)}는?"
+    file_measure = previous_turn.slots.file_measure or ""
+    if (
+        file_measure
+        and not has_current_measure
+        and not has_explicit_period_cue(question)
+        and file_measure.casefold() not in resolved.casefold()
+    ):
+        resolved = f"{resolved.rstrip('? ')} {file_measure}는?"
+    file_sheet = previous_turn.slots.file_sheet or ""
+    if file_sheet and not has_current_sheet:
+        resolved = f"{file_sheet} 시트에서 {resolved}"
+    return resolved
+
+
+def _is_complete_ranked_file_question(question: str) -> bool:
+    """Keep an explicit ranked axis independent from stale turn slots."""
+
+    return bool(
+        re.search(
+            r"(?:상위|하위)\s*\d+\s*(?:개\s*)?(?:제품|품목|브랜드|제조사|업체|채널)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_explicit_file_sheet_reference(question: str) -> bool:
+    return bool(
+        re.search(
+            r"(?<![0-9A-Za-z가-힣_.-])[0-9A-Za-z가-힣_.-]+\s*시트(?:에서|의|는|은|이|가)?",
+            question,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> bool:
     return bool(documents) or bool((file_context or "").strip())
 
 
-def _file_only_ready_result(documents: list[Path] | None, file_context: str | None) -> dict:
-    file_names = [path.name for path in documents or []]
+def _has_market_intent(question: str) -> bool:
+    metric_signal = re.search(
+        r"(?:시장|매출|실적|점유율|MS|순위|HHI|CR\d*|환자수|특허|영업활동|최근\s*\d*\s*(?:개월|년)?\s*추이)",
+        question,
+        re.IGNORECASE,
+    )
+    return bool(metric_signal) or detect_market_scope_intent(question) is not None or should_use_agent_loop(question)
+
+
+def _ground_unanchored_market_golden(
+    question: str,
+    *,
+    has_explicit_anchor: bool,
+) -> str:
+    """Bind only established standalone market contracts to their strategic anchor."""
+
+    if has_explicit_anchor or has_file_reference(question):
+        return question
+    if is_explicit_quarter_sales_question(question):
+        return f"리바로 {question}"
+    top_n = re.fullmatch(
+        r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*상위\s*(\d+)\s*개?"
+        r"(?:\s*브랜드)?(?:\s*(?:알려줘|보여줘))?[?!.]?",
+        question.strip(),
+    )
+    if top_n:
+        return f"리바로 시장 상위 {top_n.group(1)}개와 HHI, CR5를 알려줘"
+    return question
+
+
+def _file_scoped_result(question: str) -> dict:
+    answer = "업로드 파일에서 확인된 근거만 사용해 답변합니다."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": ["document"],
+        "tool_calls": [],
+        "resolution": {"scope": ContextScope.FILE.value},
+        "router_diagnostics": {"mode": "file_context_scope_lock", "deterministic_execution": True},
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+    }
+
+
+def _enforce_file_scope_isolation(result: dict, question: str, scope: ContextScope) -> dict:
+    if scope is not ContextScope.FILE:
+        return result
+    market_tools = {
+        "get_brand_metric",
+        "get_brand_series",
+        "get_market_scope",
+        "get_market_top_brands",
+        "general_view_unavailable",
+    }
+    calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+    contaminated = any(
+        str(call.get("tool") or "") in market_tools
+        for call in calls
+        if isinstance(call, dict)
+    )
+    sources = {str(value) for value in result.get("sources", ()) if value}
+    if contaminated or any(value not in {"document", "file_upload"} for value in sources):
+        return _file_scoped_result(question)
+    return result
+
+
+_FILE_MARKET_POSTPROCESS_RE = re.compile(
+    r"(?:시장\s*도구\s*미호출|일반뷰\s*(?:브랜드\s*)?(?:비교|조회)|"
+    r"시장\s*지표\s*(?:도구|조회))",
+    re.IGNORECASE,
+)
+
+
+def _enforce_file_postprocess_isolation(answer: str, result: dict) -> str:
+    """Reject market-contract prose introduced after a FILE-scoped execution."""
+
+    if result.get("context_scope") != ContextScope.FILE.value:
+        return answer
+    calls = result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else []
+    if calls or not _FILE_MARKET_POSTPROCESS_RE.search(answer):
+        return answer
+    deterministic = str(result.get("deterministic_file_answer") or "").strip()
+    if deterministic:
+        return deterministic
+    context = str(result.get("file_context") or "").strip()
+    if context:
+        return _file_context_fallback_answer("## 업로드 파일 컨텍스트\n" + context)
+    return "업로드 파일 SQL 결과를 확인하지 못했습니다. 파일의 열과 조건을 확인해 다시 질문해 주세요."
+
+
+def _annotate_context_scope(result: dict, scope: ContextScope) -> dict:
+    copied = dict(result)
+    copied["context_scope"] = scope.value
+    markdown = copied.get("markdown_response")
+    if isinstance(markdown, dict):
+        copied["markdown_response"] = {**markdown, "context_scope": scope.value}
+    return copied
+
+
+def _file_only_ready_result(
+    documents: list[Path] | None,
+    file_context: str | None,
+    *,
+    file_overviews: tuple[UploadedFileOverview, ...] = (),
+) -> dict:
+    file_names = list(
+        dict.fromkeys(
+            [path.name for path in documents or []]
+            + [overview.file_name for overview in file_overviews]
+        )
+    )
     count = len(file_names)
     count_text = f"{count}개" if count else ""
     subject = f"파일 {count_text}".strip()
     answer = f"{subject} 저장 완료했습니다. 이 세션에서 질문하면 업로드한 파일을 참조해 답변합니다."
-    if file_names:
+    if file_overviews:
+        answer = "파일 확인 완료 - 지금 질문하실 수 있어요."
+        answer = f"{answer}\n\n" + "\n\n".join(
+            render_uploaded_file_machine_brief(overview) for overview in file_overviews
+        )
+    elif file_names:
         answer = f"{answer}\n\n" + "\n".join(f"- {name}" for name in file_names)
     if file_context and not file_names:
         answer = f"{answer}\n\n- 업로드 파일"
+    cleaned_answer = cleanup_markdown_answer(answer)
+    grounding_text = "\n".join(
+        value
+        for value in (
+            cleaned_answer,
+            render_file_brief_grounding_text(file_overviews),
+        )
+        if value
+    )
     return {
-        "answer": cleanup_markdown_answer(answer),
+        "answer": cleaned_answer,
         "sources": ["file_upload"],
         "tool_calls": [],
         "file_only_ready": True,
         "file_names": file_names,
+        "file_brief_basis": "observed_schema" if file_overviews else "file_name",
+        "file_brief_is_answer_evidence": False,
+        "file_brief_observed": serialize_file_overviews(file_overviews),
+        "file_brief_grounding_text": grounding_text,
     }
-
 
 def _attach_file_context(
     result: dict, file_context: str | None, file_source_items: tuple[dict[str, Any], ...] = ()
@@ -519,15 +1216,10 @@ def _file_context_fact(result: dict) -> str:
     return "## 업로드 파일 컨텍스트\n" + context
 
 
-def _append_file_context_source(answer: str, file_context_fact: str) -> str:
+def _append_file_context_source(answer: str, fact_md: str, file_context_fact: str) -> str:
     if not file_context_fact:
         return answer
-    source_line = "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과"
-    if source_line in answer:
-        return answer
-    if "## 출처" in answer:
-        return cleanup_markdown_answer("\n".join((answer, source_line)))
-    return cleanup_markdown_answer("\n\n".join((answer, "## 출처\n\n" + source_line)))
+    return append_deterministic_source_block(answer, fact_md, file_context=file_context_fact)
 
 
 def _looks_like_empty_file_context_answer(answer: str) -> bool:
@@ -578,16 +1270,26 @@ def _answer_with_conversation(
             use_direct_agent_loop=use_direct_agent_loop,
         )
         return _prepend_pending_notice(result)
-    return _answer_without_pending(
+    state = store.conversations.get_or_create(conversation_id)
+    previous_turn = state.turns[-1] if state.turns else None
+    resolution = resolve_anaphora(question, previous_turn)
+    if resolution.unresolved_reference:
+        return unresolved_reference_result(question)
+    if resolution.reusable_ranked is not None:
+        return reused_context_result(question, resolution.reusable_ranked, previous_turn.slots if previous_turn else None)
+    result = _answer_without_pending(
         market_scope_resolver,
         agent_factory,
         conversation_id,
-        question,
+        resolution.resolved_question,
         external_mode,
         documents,
         store,
         use_direct_agent_loop=use_direct_agent_loop,
     )
+    if resolution.interpretation_notice:
+        return {**result, "conversation_interpretation": resolution.interpretation_notice}
+    return result
 
 
 def _answer_without_pending(
@@ -681,11 +1383,27 @@ def _answer_existing_without_pending(
     *,
     use_direct_agent_loop: bool = False,
 ) -> dict:
+    explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
+    if explicit_market is not None and "시장" in question:
+        requested_periods = canonical_periods(question)
+        requested_period = requested_periods[0] if requested_periods else "latest"
+        if not requested_periods and has_explicit_period_cue(question):
+            requested_period = first_explicit_period_cue(question)
+        return market_scope_resolver.answer_market_id(
+            question,
+            market_id=explicit_market.group(1).lower(),
+            period=requested_period,
+        )
     if requested_unavailable_source(question) is not None and not documents:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
-    if use_direct_agent_loop and should_use_agent_loop(question) and not documents:
+    if (
+        use_direct_agent_loop
+        and should_use_agent_loop(question)
+        and not documents
+        and not tool_use_requirements(question)
+    ):
         return _answer_direct_agent_loop(question, external_mode)
     if should_use_agent_loop(question):
         with stage(None, "question_classification", "agent setup"):
@@ -716,14 +1434,95 @@ def _answer_existing_without_pending(
 def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     with stage(None, "question_classification", "agent setup"):
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
-    with stage(None, "question_decomposition", "BQ and tool routing"):
-        routes = dependencies.router.route(question, has_documents=False)
+    routes = ()
+    structured_plan = None
+    if callable(getattr(dependencies.resolver, "resolve_many", None)):
+        structured_plan = preflight_structured_market_question(question, dependencies.resolver)
+    if (
+        not is_explicit_quarter_sales_question(question)
+        and structured_plan is None
+    ):
+        with stage(None, "question_decomposition", "BQ and tool routing"):
+            routes = dependencies.router.route(question, has_documents=False)
     if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
         try:
             dependencies.resolver.resolve(question, allow_default=False)
         except UnsupportedBrandError:
             return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
     return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
+
+
+def _answer_deep_research(question: str, external_mode: str) -> dict:
+    with stage(None, "deep_research_prepare", "브랜드와 조사 범위 확인"):
+        dependencies = build_chat_agent_dependencies(external_mode=external_mode)
+        try:
+            dependencies.resolver.resolve(question, allow_default=False)
+        except UnsupportedBrandError:
+            result = unsupported_brand_result(
+                question,
+                [],
+                {
+                    "mode": "deep_research",
+                    "deterministic_execution": True,
+                    "model": "gemini-3.1-pro-preview",
+                    "serving_id": "202",
+                },
+            )
+            return {**result, "research_mode": "deep", "effective_question": question}
+
+    agent = ToolUseAgent(
+        metrics=dependencies.metrics,
+        resolver=dependencies.resolver,
+        planner=DeepResearchToolPlanner(),
+        max_steps=2,
+        news=dependencies.news,
+        external=dependencies.external,
+        query_layer=dependencies.query_layer,
+        progress_namespace="deep",
+    )
+    result = agent.answer(question)
+    diagnostics = dict(result.get("router_diagnostics") or {})
+    timing = result.get("timing")
+    stages = timing.get("stages") if isinstance(timing, dict) else ()
+    parallel_tool_count = sum(
+        1
+        for item in stages
+        if isinstance(item, dict)
+        and str(item.get("name") or "").startswith("tool:")
+        and "mode=parallel" in str(item.get("detail") or "")
+    )
+    diagnostics.update(
+        {
+            "mode": "deep_research",
+            "deterministic_execution": True,
+            "model": "gemini-3.1-pro-preview",
+            "serving_id": "202",
+            "tool_execution_mode": "parallel" if parallel_tool_count >= 2 else "serial",
+            "parallel_tool_count": parallel_tool_count,
+        }
+    )
+    return {
+        **result,
+        "research_mode": "deep",
+        "effective_question": question,
+        "router_diagnostics": diagnostics,
+    }
+
+
+def _deep_research_clarification_result() -> dict[str, Any]:
+    answer = "딥리서치할 질문을 `/deep` 뒤에 입력해 주세요. 예: `/deep 리바로 경쟁구도 분석`"
+    return {
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "router_diagnostics": {
+            "mode": "deep_research",
+            "deterministic_execution": True,
+            "model": "gemini-3.1-pro-preview",
+            "serving_id": "202",
+        },
+    }
 
 
 def _is_known_ingredient_patent_question(question: str) -> bool:
@@ -786,7 +1585,12 @@ def _stream_resolving_session_events(
         return item
 
     def emit_step(event: dict[str, Any]) -> None:
-        item = indexed_step(event)
+        public_event = dict(event)
+        public_event.pop("raw_name", None)
+        public_event.pop("raw_detail", None)
+        if public_event.get("summary"):
+            public_event["summary"] = public_stage_summary(str(public_event["summary"]))
+        item = indexed_step(public_event)
         events.put({"type": "step", "item": item})
 
     def run_worker() -> None:
@@ -799,8 +1603,11 @@ def _stream_resolving_session_events(
                 return
             emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "started", "raw_name": "question_received", "raw_detail": "request accepted"})
             emit_step({"name": "질문 접수", "detail": "요청 처리 시작", "status": "done", "raw_name": "question_received", "raw_detail": "request accepted", "elapsed_ms": 0.0})
+            deep_request = parse_deep_research_request(question)
+            total_stage = "deep_research_total" if deep_request.enabled else "answer_generation_total"
+            total_detail = "딥리서치 전체 진행" if deep_request.enabled else "request processing"
             with stage_event_sink(emit_step):
-                with stage(None, "answer_generation_total", "request processing"):
+                with stage(None, total_stage, total_detail):
                     item = _answer_question(
                         store,
                         market_scope_resolver,
@@ -810,7 +1617,21 @@ def _stream_resolving_session_events(
                         conversation_id,
                         use_direct_agent_loop=use_direct_agent_loop,
                         timing_sink=emit_step,
+                        conversation_history=history_store,
                     )
+                    streamed_prefix = _stream_ready_prefix(item["result"])
+                    if streamed_prefix:
+                        prefix_emitted = threading.Event()
+                        events.put(
+                            {
+                                "type": "file_ready",
+                                "conversation_id": item.get("conversation_id"),
+                                "sources": tuple(item["result"].get("sources", ())),
+                                "text": streamed_prefix,
+                                "emitted": prefix_emitted,
+                            }
+                        )
+                        prefix_emitted.wait(timeout=2.0)
                     final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
             _record_conversation_history(
                 history_store,
@@ -819,7 +1640,14 @@ def _stream_resolving_session_events(
                 final_answer=final_answer,
                 projection_context=projection_context,
             )
-            events.put({"type": "result", "item": item, "final_answer": final_answer})
+            events.put(
+                {
+                    "type": "result",
+                    "item": item,
+                    "final_answer": final_answer,
+                    "streamed_prefix": streamed_prefix,
+                }
+            )
         except Exception as exc:
             acquire_finished.set()
             events.put({"type": "error", "error_type": type(exc).__name__, "message": str(exc)})
@@ -842,7 +1670,17 @@ def _stream_resolving_session_events(
         except queue.Empty:
             waited = time.perf_counter() - wait_started
             if not acquire_finished.is_set() and waited >= next_wait_progress:
-                yield _sse_json_event("step", indexed_step({"name": "대기 중", "detail": "처리 슬롯 대기", "status": "in_progress", "raw_name": "queue_wait", "raw_detail": "concurrency slot", "elapsed_ms": round(waited * 1000, 2)}))
+                yield _sse_json_event(
+                    "step",
+                    indexed_step(
+                        {
+                            "name": "대기 중",
+                            "detail": "처리 슬롯 대기",
+                            "status": "in_progress",
+                            "elapsed_ms": round(waited * 1000, 2),
+                        }
+                    ),
+                )
                 next_wait_progress += QUEUE_PROGRESS_INTERVAL_S
             continue
         event_type = event.get("type")
@@ -852,8 +1690,25 @@ def _stream_resolving_session_events(
         if event_type == "step":
             yield _sse_json_event("step", event.get("item", {}))
             continue
+        if event_type == "file_ready":
+            yield from _sse_initial_text_events(
+                conversation_id=event.get("conversation_id"),
+                sources=tuple(event.get("sources", ())),
+                text=str(event.get("text") or ""),
+            )
+            emitted = event.get("emitted")
+            if isinstance(emitted, threading.Event):
+                emitted.set()
+            continue
         if event_type == "result":
-            yield from _sse_events_from_final_answer(event["final_answer"])
+            streamed_prefix = str(event.get("streamed_prefix") or "")
+            if streamed_prefix:
+                yield from _sse_events_from_final_answer(
+                    event["final_answer"],
+                    streamed_prefix=streamed_prefix,
+                )
+            else:
+                yield from _sse_events_from_final_answer(event["final_answer"])
             return
         if event_type == "error":
             yield _sse_json_event(
@@ -917,6 +1772,13 @@ def _sse_events(
     if limiter is not None and not limiter.try_acquire():
         yield from _sse_busy_events()
         return
+    streamed_prefix = _stream_ready_prefix(result)
+    if streamed_prefix:
+        yield from _sse_initial_text_events(
+            conversation_id=conversation_id,
+            sources=tuple(result.get("sources", ())),
+            text=streamed_prefix,
+        )
     try:
         final_answer = compute_final_answer(question, result, conversation_id)
         _record_conversation_history(
@@ -929,7 +1791,13 @@ def _sse_events(
     finally:
         if limiter is not None:
             limiter.release()
-    yield from _sse_events_from_final_answer(final_answer)
+    if streamed_prefix:
+        yield from _sse_events_from_final_answer(
+            final_answer,
+            streamed_prefix=streamed_prefix,
+        )
+    else:
+        yield from _sse_events_from_final_answer(final_answer)
 
 
 def _sse_busy_events():
@@ -938,13 +1806,117 @@ def _sse_busy_events():
     yield "event: done\ndata: error\n\n"
 
 
-def _sse_events_from_final_answer(final_answer: FinalAnswer):
-    if final_answer.conversation_id:
+def _file_ready_prefix(result: dict[str, Any]) -> str:
+    if not result.get("file_only_ready"):
+        return ""
+    return cleanup_markdown_answer(str(result.get("answer") or ""))
+
+
+_VERIFIED_EVIDENCE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("임상시험", ("clinicaltrials_", "mfds_clinical_", "search_clinical")),
+    ("허가", ("mfds_permission_", "search_drug_info")),
+    ("안전성", ("openfda_", "search_safety")),
+    ("환자수", ("hira_", "get_disease_stats")),
+    ("최신 자료", ("web_search", "search_news")),
+)
+
+
+def _stream_ready_prefix(result: dict[str, Any]) -> str:
+    return _file_ready_prefix(result) or _verified_evidence_prefix(result)
+
+
+def _verified_evidence_prefix(result: dict[str, Any]) -> str:
+    if result.get("research_mode") == "deep":
+        return ""
+    if result.get("context_scope") in {ContextScope.FILE.value, ContextScope.MIXED.value}:
+        return ""
+    diagnostics = result.get("router_diagnostics")
+    if not isinstance(diagnostics, dict) or diagnostics.get("mode") != "tool_use_agent":
+        return ""
+
+    completed_groups: list[str] = []
+    calls = result.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+    for label, tool_prefixes in _VERIFIED_EVIDENCE_GROUPS:
+        evidence = {
+            json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            for call in calls
+            if isinstance(call, dict)
+            and str(call.get("tool") or "").startswith(tool_prefixes)
+            for item in _verified_evidence_items(call)
+        }
+        if evidence:
+            completed_groups.append(f"{label} {len(evidence)}건")
+    if not completed_groups:
+        return ""
+    joined = "·".join(completed_groups)
+    return f"{joined}의 근거를 확인했습니다. 확인된 자료를 종합해 답변을 정리하고 있어요."
+
+
+def _verified_evidence_items(call: dict[str, Any]) -> tuple[Any, ...]:
+    if str(call.get("status") or "").lower() in {"error", "failed", "unavailable"}:
+        return ()
+    data = call.get("render_data")
+    if not isinstance(data, dict) or data.get("ok") is False:
+        return ()
+    for key in ("evidence", "items", "rows"):
+        items = data.get(key)
+        if isinstance(items, (list, tuple)) and items:
+            return tuple(items)
+    payload = data.get("payload")
+    if isinstance(payload, dict):
+        for key in ("studies", "results", "items"):
+            items = payload.get(key)
+            if isinstance(items, (list, tuple)) and items:
+                return tuple(items)
+    return ()
+
+
+def _prepend_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> str:
+    prefix = _verified_evidence_prefix(result)
+    if not prefix or answer.startswith(prefix):
+        return answer
+    return f"{prefix}\n\n{answer}" if answer else prefix
+
+
+def _sse_initial_text_events(
+    *,
+    conversation_id: str | None,
+    sources: tuple[str, ...],
+    text: str,
+):
+    if conversation_id:
+        yield f"event: conversation\ndata: {conversation_id}\n\n"
+    yield f"event: sources\ndata: {','.join(source_labels(sources))}\n\n"
+    yield from iter_markdown_sse_events(text)
+
+
+def _sse_events_from_final_answer(
+    final_answer: FinalAnswer,
+    *,
+    streamed_prefix: str = "",
+):
+    if final_answer.conversation_id and not streamed_prefix:
         yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
-    yield f"event: sources\ndata: {','.join(source_labels(final_answer.sources))}\n\n"
-    if final_answer.file_sources:
-        yield _sse_json_event("file_sources", list(final_answer.file_sources))
-    yield from iter_markdown_sse_events(final_answer.text)
+    public_file_sources = _project_public_file_sources(final_answer.file_sources)
+    labels = source_labels(final_answer.sources)
+    for item in public_file_sources:
+        file_name = (
+            str(item.get("file_name") or "").replace("\n", " ").replace(",", "，").strip()
+        )
+        label = f"업로드 문서: {file_name}" if file_name else ""
+        if label and label not in labels:
+            labels.append(label)
+    if not streamed_prefix:
+        yield f"event: sources\ndata: {','.join(labels)}\n\n"
+    if public_file_sources and not streamed_prefix:
+        yield _sse_json_event("file_sources", list(public_file_sources))
+    remaining_text = final_answer.text
+    if streamed_prefix and remaining_text.startswith(streamed_prefix):
+        remaining_text = remaining_text[len(streamed_prefix):].lstrip()
+    if remaining_text:
+        yield from iter_markdown_sse_events(remaining_text)
     if final_answer.charts:
         yield _sse_json_event("charts", final_answer.charts)
     yield _sse_json_event("timing", final_answer.timing)
@@ -973,6 +1945,7 @@ def _record_conversation_history(
             sources=final_answer.sources,
             charts=final_answer.charts,
             projection_context=projection_context,
+            conversation_slots=final_answer.conversation_slots,
         )
     except Exception:
         LOGGER.exception("failed to persist chat conversation history")
@@ -982,19 +1955,102 @@ def _file_source_items(result: dict) -> tuple[dict[str, Any], ...]:
     items = result.get("file_source_items")
     if not isinstance(items, list):
         return ()
-    return tuple(item for item in items if isinstance(item, dict))
+    return _project_public_file_sources(item for item in items if isinstance(item, dict))
+
+
+def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    public_keys = (
+        "file_name",
+        "i_page",
+        "slide_number",
+        "section_title",
+        "source_channel",
+        "sheet_name",
+        "row_start",
+        "row_end",
+    )
+    projected: list[dict[str, Any]] = []
+    for item in items:
+        public_item = {key: item[key] for key in public_keys if item.get(key) is not None}
+        if "file_name" in public_item:
+            public_item["file_name"] = scrub_internal_terminology(str(public_item["file_name"]))
+        projected.append(public_item)
+    return tuple(projected)
 
 
 def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
-    client = GenosClient()
+    final_answer = replace(
+        _compute_final_answer(question, result, conversation_id),
+        conversation_slots=extract_conversation_slots(result),
+    )
+    notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
+    if not notice or final_answer.text.startswith(notice):
+        return final_answer
+    answer = f"{notice}\n\n{final_answer.text}" if final_answer.text else notice
+    trace = trace_envelope(
+        question=question,
+        result=result,
+        answer=answer,
+        charts=final_answer.charts,
+        timing=final_answer.timing,
+        conversation_id=conversation_id,
+    )
+    return FinalAnswer(
+        text=answer,
+        charts=final_answer.charts,
+        timing=final_answer.timing,
+        trace=trace,
+        sources=final_answer.sources,
+        conversation_id=final_answer.conversation_id,
+        file_sources=final_answer.file_sources,
+        conversation_slots=final_answer.conversation_slots,
+    )
+
+
+def _compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
+    if result.get("context_scope") == ContextScope.MIXED.value:
+        return _compute_mixed_final_answer(question, result, conversation_id)
+    deep_mode = result.get("research_mode") == "deep"
+    active_question = str(result.get("effective_question") or question)
     timing = ensure_timing(result)
-    if result.get("general_view_ready"):
+    if result.get("conversation_fallback_ready"):
         timing_payload = finish(timing)
-        answer = enforce_answer_contract(
+        answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=[],
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=[],
+            timing=timing_payload,
+            trace=trace,
+            sources=(),
+            conversation_id=conversation_id,
+        )
+    client = GenosClient.for_deep_research() if deep_mode else GenosClient()
+    if result.get("general_view_ready") and not deep_mode:
+        timing_payload = finish(timing)
+        markdown_response = result.get("markdown_response")
+        answer = replace_internal_fact_dump(
             question,
             cleanup_markdown_answer(str(result.get("answer") or "")),
-            None,
+            markdown_response,
+        )
+        answer = enforce_answer_contract(
+            question,
+            answer,
+            markdown_response,
             result.get("general_view_contract"),
+        )
+        answer = enforce_market_answer_contract(
+            question,
+            answer,
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )
         trace = trace_envelope(
             question=question,
@@ -1013,8 +2069,36 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             conversation_id=conversation_id,
         )
     if result.get("file_only_ready"):
-        timing_payload = finish(timing)
         answer = cleanup_markdown_answer(str(result.get("answer") or ""))
+        overviews = deserialize_file_overviews(result.get("file_brief_observed"))
+        if overviews:
+            try:
+                generated = client.uploaded_file_brief(build_file_brief_messages(overviews))
+                brief = parse_and_render_file_briefs(generated, overviews)
+            except (requests.RequestException, FileBriefValidationError):
+                brief = ""
+            if brief:
+                answer = cleanup_markdown_answer(f"{answer}\n\n{brief}")
+        timing_payload = finish(timing)
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=[],
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=[],
+            timing=timing_payload,
+            trace=trace,
+            sources=tuple(result.get("sources", ())),
+            conversation_id=conversation_id,
+        )
+    if _is_market_clarification_result(result):
+        timing_payload = finish(timing)
+        answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
         trace = trace_envelope(
             question=question,
             result=result,
@@ -1032,11 +2116,25 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             conversation_id=conversation_id,
         )
     file_context_fact = _file_context_fact(result)
-    try:
-        with stage(timing, "answer_generation_total", "GenOS expression plus safety"):
-            generated_answer = "".join(client.stream_answer(question, result))
-    except requests.RequestException:
-        generated_answer = finalized_fallback_fact_answer(question, result.get("markdown_response"))
+    market_contract_allowed = result.get("context_scope") != ContextScope.FILE.value
+    deterministic_file_answer = str(result.get("deterministic_file_answer") or "").strip()
+    deterministic_market_answer = (
+        _deterministic_simple_market_answer(active_question, result)
+        if not deep_mode and market_contract_allowed and not file_context_fact
+        else ""
+    )
+    if deterministic_market_answer:
+        generated_answer = deterministic_market_answer
+    elif deterministic_file_answer and not _requires_cross_file_synthesis(active_question, result):
+        generated_answer = deterministic_file_answer
+    else:
+        try:
+            generation_stage = "deep_research_synthesis" if deep_mode else "answer_generation_total"
+            generation_detail = "gemini-3.1-pro 근거 종합" if deep_mode else "GenOS expression plus safety"
+            with stage(timing, generation_stage, generation_detail):
+                generated_answer = "".join(client.stream_answer(active_question, result))
+        except requests.RequestException:
+            generated_answer = finalized_fallback_fact_answer(active_question, result.get("markdown_response"))
     for call in client.token_usage_calls:
         record_token_usage(timing, call)
     with stage(timing, "answer_cleanup", "markdown cleanup"):
@@ -1047,24 +2145,83 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             safe_answer = ensure_top_brand_trend_table(safe_answer, fact_md)
         policy_fact_md = "\n\n".join(part for part in (fact_md, file_context_fact) if part)
-        safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
+        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     try:
         with stage(timing, "chart_generation", "fact-backed chart spec"):
-            charts = build_charts(result, question=question, answer=safe_answer)
+            charts = build_charts(result, question=active_question, answer=safe_answer)
     except Exception:
         charts = []
     timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
-    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
-    safe_answer = apply_claim_policy(question, safe_answer, policy_fact_md)
-    safe_answer = enforce_answer_contract(question, safe_answer, markdown_response, result.get("general_view_contract"))
+    router_diagnostics = result.get("router_diagnostics")
+    external_tool_agent_result = (
+        isinstance(router_diagnostics, dict)
+        and router_diagnostics.get("mode") == "tool_use_agent"
+    )
+    general_contracts_allowed = not deep_mode and not external_tool_agent_result
+    if not file_context_fact and market_contract_allowed and general_contracts_allowed:
+        safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
+    safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
+    if not file_context_fact and market_contract_allowed and general_contracts_allowed:
+        safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
-        safe_answer = apply_claim_policy(question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
-    safe_answer = _append_file_context_source(safe_answer, file_context_fact)
+        safe_answer = apply_claim_policy(active_question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
+    safe_answer = ensure_file_page_evidence(
+        active_question,
+        safe_answer,
+        str(result.get("file_context") or ""),
+    )
+    safe_answer = ensure_file_overview_evidence_coverage(
+        active_question,
+        safe_answer,
+        str(result.get("file_context") or ""),
+    )
+    safe_answer = ensure_cross_file_comparison_judgment(
+        active_question,
+        safe_answer,
+        str(result.get("file_context") or ""),
+    )
+    safe_answer = ensure_multi_file_evidence_coverage(
+        active_question,
+        safe_answer,
+        str(result.get("file_context") or ""),
+    )
+    safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
     safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
-    safe_answer = apply_common_unavailable_response(question, safe_answer, markdown_response)
-    safe_answer = apply_requested_source_trap_gate(question, safe_answer)
-    safe_answer = ensure_file_absence_statement(question, safe_answer, str(result.get("file_context") or ""))
+    safe_answer = apply_common_unavailable_response(
+        active_question,
+        safe_answer,
+        markdown_response,
+        tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        source_scope=str(result.get("context_scope") or "MARKET"),
+        connected_source_mode=external_tool_agent_result or deep_mode,
+    )
+    safe_answer = replace_internal_fact_dump(active_question, safe_answer, markdown_response)
+    if not file_context_fact and market_contract_allowed:
+        safe_answer = apply_requested_source_trap_gate(
+            active_question,
+            safe_answer,
+            identity_only=external_tool_agent_result or deep_mode,
+        )
+    safe_answer = ensure_file_absence_statement(active_question, safe_answer, str(result.get("file_context") or ""))
+    safe_answer = ensure_hira_patient_summary(active_question, safe_answer, fact_md)
+    if not deep_mode:
+        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
+    safe_answer = ensure_natural_fact_lead(active_question, safe_answer, fact_md)
+    if not file_context_fact and market_contract_allowed and not deep_mode:
+        safe_answer = enforce_market_answer_contract(
+            active_question,
+            safe_answer,
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        )
+    # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
+    # notice/source appenders above so no path bypasses terminology scrubbing.
+    safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
+    if deep_mode:
+        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
+        safe_answer = ensure_deep_research_structure(safe_answer)
+    safe_answer = scrub_internal_terminology(safe_answer)
+    safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
     trace = trace_envelope(
         question=question,
         result=result,
@@ -1084,6 +2241,244 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     )
 
 
+def _requires_cross_file_synthesis(question: str, result: dict) -> bool:
+    if not re.search(r"(?:비교|대조|교차|일치|차이)", question, re.IGNORECASE):
+        return False
+    file_names = {
+        str(item.get("file_name") or "").strip().casefold()
+        for item in _file_source_items(result)
+        if str(item.get("file_name") or "").strip()
+    }
+    return len(file_names) >= 2
+
+
+def _compute_mixed_final_answer(
+    question: str,
+    result: dict,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    market_result = dict(result.get("mixed_market_result") or {})
+    file_result = dict(result.get("mixed_file_result") or {})
+    market_result["context_scope"] = ContextScope.MARKET.value
+    market_markdown = market_result.get("markdown_response")
+    if isinstance(market_markdown, dict):
+        market_result["markdown_response"] = {
+            **market_markdown,
+            "context_scope": ContextScope.MARKET.value,
+        }
+    file_result["context_scope"] = ContextScope.FILE.value
+
+    timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_LEG_TIMEOUT_S", "90")))
+    total_timeout_s = max(1.0, float(os.getenv("JW_CHAT_MIXED_TOTAL_TIMEOUT_S", "95")))
+    started = time.perf_counter()
+    deadline_value = result.get("mixed_deadline_monotonic")
+    deadline = (
+        float(deadline_value)
+        if isinstance(deadline_value, (int, float))
+        else started + total_timeout_s
+    )
+    market_question = str(result.get("mixed_market_question") or question)
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mixed-m1-final")
+    market_future = executor.submit(
+        _finalize_mixed_leg,
+        "market",
+        market_question,
+        market_result,
+        conversation_id,
+    )
+    file_future = executor.submit(
+        _finalize_mixed_leg,
+        "file",
+        question,
+        file_result,
+        conversation_id,
+    )
+    try:
+        try:
+            market_final = market_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+        except FutureTimeoutError:
+            market_future.cancel()
+            market_final = _mixed_leg_failure_answer("시장 데이터 조회가 처리 시간을 초과했습니다.", conversation_id)
+        except Exception as exc:
+            LOGGER.warning("mixed market finalization failed type=%s", type(exc).__name__)
+            market_final = _mixed_leg_failure_answer(
+                "시장 데이터 조회를 완료하지 못했습니다. 조회 오류입니다.",
+                conversation_id,
+            )
+        try:
+            file_final = file_future.result(timeout=min(timeout_s, _remaining_seconds(deadline)))
+        except FutureTimeoutError:
+            file_future.cancel()
+            file_final = _mixed_leg_failure_answer("첨부 문서 조회가 처리 시간을 초과했습니다.", conversation_id)
+        except Exception as exc:
+            LOGGER.warning("mixed file finalization failed type=%s", type(exc).__name__)
+            file_final = _mixed_leg_failure_answer(
+                "첨부 문서 조회를 완료하지 못했습니다. 조회 오류입니다.",
+                conversation_id,
+            )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    file_name = _mixed_file_name(file_result)
+    answer = cleanup_markdown_answer(
+        "## 시장 데이터\n\n"
+        f"{market_final.text.strip()}\n\n"
+        f"## 첨부 문서 — {file_name}\n\n"
+        f"{file_final.text.strip()}\n\n"
+        "⚠️ 두 근거는 기준기간·단위·정의가 다를 수 있어 직접 비교하지 않습니다."
+    )
+    answer = scrub_internal_terminology(answer)
+    timing = ensure_timing(result)
+    timing_payload = finish(timing)
+    timing_payload["mixed_legs"] = {
+        "market": market_final.timing,
+        "file": file_final.timing,
+        "timeout_s": timeout_s,
+        "total_timeout_s": total_timeout_s,
+        "synthesis_llm_calls": 0,
+    }
+    trace = trace_envelope(
+        question=question,
+        result=result,
+        answer=answer,
+        charts=[*market_final.charts, *file_final.charts],
+        timing=timing_payload,
+        conversation_id=conversation_id,
+    )
+    return FinalAnswer(
+        text=answer,
+        charts=[*market_final.charts, *file_final.charts],
+        timing=timing_payload,
+        trace=trace,
+        sources=tuple(dict.fromkeys([*market_final.sources, *file_final.sources])),
+        conversation_id=conversation_id,
+        file_sources=file_final.file_sources,
+    )
+
+
+def _deterministic_simple_market_answer(question: str, result: dict) -> str:
+    normalized = re.sub(r"\s+", " ", question).strip()
+    if not re.search(r"시장\s*규모", normalized):
+        return ""
+    if any(
+        token in normalized
+        for token in ("추이", "변화", "증감", "왜", "원인", "전망", "비교", "경쟁", "채널", "분석")
+    ):
+        return ""
+    calls = result.get("tool_calls")
+    if not isinstance(calls, list):
+        return ""
+    contracted = enforce_market_answer_contract(normalized, "", calls).strip()
+    if "시장규모" not in contracted and "지원되지 않는 시장 매핑" not in contracted:
+        return ""
+    return contracted
+
+
+def _finalize_mixed_leg(
+    leg: str,
+    question: str,
+    result: dict,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    error = str(result.get("mixed_leg_error") or "").strip()
+    if error:
+        return _mixed_leg_failure_answer(error, conversation_id)
+    if not result:
+        message = "첨부 문서 근거가 없습니다." if leg == "file" else "시장 데이터 근거가 없습니다."
+        return _mixed_leg_failure_answer(message, conversation_id)
+    if leg == "file":
+        return _deterministic_mixed_file_answer(result, conversation_id)
+    return compute_final_answer(question, result, conversation_id)
+
+
+_MIXED_FILE_METADATA_RE = re.compile(
+    r"^(?:\[\d+\]\s|\[DA\]\s|검색 범위:)|document_id=|TEMP_DOCUMENT_",
+    re.IGNORECASE,
+)
+_MIXED_FILE_PAGE_RE = re.compile(r"\bp\.(\d+)\b", re.IGNORECASE)
+
+
+def _deterministic_mixed_file_answer(
+    result: dict,
+    conversation_id: str | None,
+) -> FinalAnswer:
+    context = str(result.get("file_context") or "").strip()
+    deterministic = str(result.get("deterministic_file_answer") or "").strip()
+    evidence = deterministic or _public_mixed_file_evidence(context)
+    if not evidence:
+        return _mixed_leg_failure_answer("첨부 문서 근거를 가져오지 못했습니다.", conversation_id)
+
+    file_name = _mixed_file_name(result)
+    page = _mixed_file_page(result, context)
+    source = f"출처: 업로드 문서 · {file_name}"
+    if page is not None:
+        source += f" · p.{page}"
+    answer = scrub_internal_terminology(cleanup_markdown_answer(f"{evidence}\n\n{source}"))
+    return FinalAnswer(
+        text=answer,
+        charts=[],
+        timing={"deterministic_file_render": True, "synthesis_llm_calls": 0},
+        trace={},
+        sources=("document",),
+        conversation_id=conversation_id,
+        file_sources=_file_source_items(result),
+    )
+
+
+def _public_mixed_file_evidence(context: str) -> str:
+    if not context:
+        return ""
+    kept = [
+        line.strip()
+        for line in context.splitlines()
+        if line.strip() and not _MIXED_FILE_METADATA_RE.search(line.strip())
+    ]
+    max_chars = max(200, int(os.getenv("JW_CHAT_MIXED_FILE_EVIDENCE_MAX_CHARS", "6000")))
+    return "\n\n".join(kept)[:max_chars].strip()
+
+
+def _mixed_file_page(result: dict, context: str) -> int | None:
+    for item in _file_source_items(result):
+        value = item.get("i_page")
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str) and value.isdigit() and int(value) > 0:
+            return int(value)
+    match = _MIXED_FILE_PAGE_RE.search(context)
+    return int(match.group(1)) if match else None
+
+
+def _mixed_leg_failure_answer(message: str, conversation_id: str | None) -> FinalAnswer:
+    return FinalAnswer(
+        text=message,
+        charts=[],
+        timing={},
+        trace={},
+        sources=(),
+        conversation_id=conversation_id,
+    )
+
+
+def _mixed_file_name(result: dict) -> str:
+    for item in _file_source_items(result):
+        name = str(item.get("file_name") or "").strip()
+        if name:
+            return name
+    return "업로드 문서"
+
+
+def _is_market_clarification_result(result: dict) -> bool:
+    decomposition = result.get("decomposition")
+    if not isinstance(decomposition, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("intent") == "market_clarification"
+        and item.get("status") == "needs_clarification"
+        for item in decomposition
+    )
+
+
 def _sse_delta(token: str) -> str:
     lines = token.split("\n")
     data = "\n".join(f"data: {line}" for line in lines)
@@ -1097,4 +2492,4 @@ def _sse_json_event(event_name: str, payload: object) -> str:
     return f"event: {event_name}\n{encoded}\n\n"
 
 
-app = create_app()
+app = create_app(startup_warmup=startup_warmup_from_env())

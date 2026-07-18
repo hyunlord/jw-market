@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from dataclasses import dataclass
 
 from .model import EvalQuestion, GoldObservation, JsonValue, RawResult, ScoredRow
 
@@ -96,7 +97,8 @@ def _contains_observation(answer: str, observation: GoldObservation) -> bool:
         return False
     normalized = answer.replace(",", "")
     for token in _number_tokens(numeric, observation.kind):
-        if token in answer or token.replace(",", "") in normalized:
+        normalized_token = token.replace(",", "")
+        if re.search(rf"(?<![\d.]){re.escape(normalized_token)}(?![\d.])", normalized):
             return True
     return False
 
@@ -131,11 +133,42 @@ def extract_gold(question: EvalQuestion, raw: RawResult | None) -> tuple[GoldObs
     return tuple(observations)
 
 
+@dataclass(frozen=True, slots=True)
+class _NumericScore:
+    accuracy: str
+    checked: int
+    population: int
+    matched: int
+
+    @property
+    def status(self) -> str:
+        return "OK" if self.accuracy == "O" else "FAIL"
+
+    def acceptance_note(self) -> str:
+        return (
+            f"numeric_accuracy={self.status}; checked={self.checked}; "
+            f"population={self.population}; matched={self.matched}"
+        )
+
+
+def _numeric_score(answer: str, observations: tuple[GoldObservation, ...]) -> _NumericScore:
+    population = len(observations)
+    hits = tuple(_contains_observation(answer, observation) for observation in observations)
+    checked = len(hits)
+    matched = sum(hits)
+    complete = population > 0 and checked == population and matched == population
+    return _NumericScore(
+        accuracy="O" if complete else "X",
+        checked=checked,
+        population=population,
+        matched=matched,
+    )
+
+
 def _score_numeric(answer: str, observations: tuple[GoldObservation, ...]) -> str:
-    if not observations:
-        return "NA"
-    hits = [_contains_observation(answer, observation) for observation in observations]
-    return "O" if any(hits) else "X"
+    """Return the legacy O/X value while requiring every gold observation."""
+
+    return _numeric_score(answer, observations).accuracy
 
 
 def _score_qualitative(question: EvalQuestion, answer: str, ok: bool) -> tuple[int, str]:
@@ -174,14 +207,15 @@ def score_question(question: EvalQuestion, raw: RawResult | None) -> ScoredRow:
     answer = _answer_text(raw)
     ok = bool(raw.ok) if raw is not None else False
     observations = extract_gold(question, raw)
-    numeric = _score_numeric(answer, observations)
+    numeric_score = _numeric_score(answer, observations)
     qualitative, note = _score_qualitative(question, answer, ok)
+    note = f"{note}; {numeric_score.acceptance_note()}"
     if raw is not None and raw.error:
         note = f"{note}; error={raw.error}"
     return ScoredRow(
         question=question,
         answer=answer,
-        numeric_accuracy=numeric,
+        numeric_accuracy=numeric_score.accuracy,
         qualitative_score=qualitative,
         note=note,
         gold_observations=observations,

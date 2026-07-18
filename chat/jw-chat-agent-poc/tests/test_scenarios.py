@@ -12,6 +12,7 @@ from jw_chat_agent_poc.orchestrator.agent import HIRA_DISEASE_MAPPINGS
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.router import BQRouter
 from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external.mcp_client import McpClientError
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "jw_chat_agent_poc" / "fixtures"
@@ -49,6 +50,18 @@ def test_hira_disease_question_routes_to_external_disease_stats_without_metrics(
     mapping = next(call for call in result["tool_calls"] if call.get("tool") == "hira_disease_mapping")
     assert mapping["render_data"]["sickCd"] == "E78"
     assert "지질단백질대사장애" in result["answer"]
+
+
+def test_hira_disease_trend_requests_five_distinct_years() -> None:
+    result = ChatAgent().answer("고지혈증 환자수 추이")
+
+    calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "hira_disease_hospitalization_outpatient_stats"
+    ]
+    assert [call["render_data"]["request"]["year"] for call in calls] == ["2020", "2021", "2022", "2023", "2024"]
+    assert all(call.get("tool") != "hira_disease_gender_age_stats" for call in result["tool_calls"])
 
 
 @pytest.mark.parametrize("question", ["이상지질혈증 환자통계", "이상지질혈증 환자분포"])
@@ -242,22 +255,23 @@ def test_document_rag_upload_search_and_citation():
     assert "first-line" in rag_call["summary_text"]
 
 
-def test_no_data_boundary_for_sales_impact():
+def test_sales_impact_uses_csd_activity_without_claiming_unobserved_detail():
     result = ChatAgent().answer("리바로 영업활동 Impact는?")
     assert result["sources"] == ["cache"]
-    assert "현재 데이터로 답변 불가" in result["answer"]
-    assert [call["tool"] for call in result["tool_calls"]] == ["get_brand_metric"]
+    assert "현재 데이터로 답변 불가" not in result["answer"]
+    assert "CSD 월별 aggregate 콜수/활동량" in result["answer"]
+    assert "impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다" in result["answer"]
+    assert [call["tool"] for call in result["tool_calls"]] == ["csd_activity_trend", "get_brand_metric"]
     assert "84.93" in result["answer"]
 
 
-def test_mixed_structured_and_document_sources_are_separated():
+def test_mixed_structured_and_document_sources_require_explicit_market_anchor():
     result = ChatAgent().answer(
         "업로드한 시장 전망이랑 실제 우리 점유율 비교",
         documents=[FIXTURE_DIR / "datamonitor_mock.txt"],
     )
-    assert {"cache", "document"}.issubset(set(result["sources"]))
-    assert any(call.get("tool") == "get_brand_metric" for call in result["tool_calls"])
-    assert any(call.get("tool") == "document_rag" for call in result["tool_calls"])
+    assert result["tool_calls"] == []
+    assert "브랜드 또는 시장을 지정" in result["answer"]
 
 
 def test_structured_upload_guard_rejects_csv(tmp_path):
@@ -295,19 +309,12 @@ def test_external_redaction_masks_service_key():
 
 
 def test_live_error_redacts_service_key_in_summary_and_render_data(monkeypatch):
-    monkeypatch.setenv("DATA_GO_KR_KEY", "SECRETKEY")
+    monkeypatch.setenv("NEDRUG_MCP_URL", "http://mcp-nedrug/mcp?serviceKey=SECRETKEY")
 
-    def fake_get(url, timeout):
-        class Response:
-            status_code = 503
-            text = ""
+    def fail_mcp(_self, _name, _arguments):
+        raise McpClientError("503 Server Error for serviceKey=SECRETKEY")
 
-            def raise_for_status(self):
-                raise requests.HTTPError(f"503 Server Error for url: {url}")
-
-        return Response()
-
-    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.get", fake_get)
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.McpJsonClient.call_tool", fail_mcp)
 
     call = ExternalApiClient(mode="live", timeout_s=1).mfds_patent("pitavastatin")
 
@@ -316,34 +323,34 @@ def test_live_error_redacts_service_key_in_summary_and_render_data(monkeypatch):
     assert "SECRETKEY" not in call.render_data["error"]
     assert "serviceKey=<redacted>" in call.summary_text
     assert "serviceKey=<redacted>" in call.render_data["error"]
+    assert call.safe_url == "http://mcp-nedrug/mcp?serviceKey=<redacted>"
 
 
 def test_live_hira_response_preserves_request_year(monkeypatch):
-    monkeypatch.setenv("DATA_GO_KR_KEY", "SECRETKEY")
+    def fake_post(url, json, headers, timeout):
+        assert json["params"]["arguments"]["year"] == "2024"
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [],
+                    "structuredContent": {
+                        "result": [
+                            {
+                                "inpatOpat": "외래",
+                                "sickCd": "I10",
+                                "sickNm": "본태성 고혈압",
+                                "ptntCnt": "3769201",
+                            }
+                        ]
+                    },
+                },
+            }
+        )
 
-    def fake_get(url, timeout):
-        assert "year=2024" in url
-
-        class Response:
-            status_code = 200
-            text = (
-                "<response>"
-                "<header><resultCode>00</resultCode></header>"
-                "<body><items><item>"
-                "<inpatOpat>외래</inpatOpat>"
-                "<sickCd>I10</sickCd>"
-                "<sickNm>본태성 고혈압</sickNm>"
-                "<ptntCnt>3769201</ptntCnt>"
-                "</item></items><totalCount>1</totalCount></body>"
-                "</response>"
-            )
-
-            def raise_for_status(self):
-                return None
-
-        return Response()
-
-    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.get", fake_get)
+    monkeypatch.setenv("HIRA_MCP_URL", "http://hira-mcp/json")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
 
     call = ExternalApiClient(mode="live", timeout_s=1).hira_disease_hospitalization_outpatient_stats("I10")
 
@@ -371,7 +378,12 @@ def test_tavily_web_search_uses_five_second_timeout_and_caps_results(monkeypatch
             def json(self):
                 return {
                     "results": [
-                        {"title": f"title-{index}", "url": f"https://example.test/{index}", "content": f"snippet-{index}"}
+                        {
+                            "title": f"title-{index}",
+                            "url": f"https://example.test/{index}",
+                            "content": f"snippet-{index}",
+                            "published_date": f"2026-07-{index + 1:02d}",
+                        }
                         for index in range(7)
                     ]
                 }
@@ -384,10 +396,44 @@ def test_tavily_web_search_uses_five_second_timeout_and_caps_results(monkeypatch
 
     assert captured["url"] == "https://api.tavily.com/search"
     assert captured["timeout"] == 5
-    assert captured["json"] == {"query": "리바로 pitavastatin 제약", "max_results": 5, "search_depth": "basic", "include_answer": False}
+    assert captured["json"] == {
+        "query": "리바로 pitavastatin 제약",
+        "max_results": 5,
+        "search_depth": "basic",
+        "include_answer": False,
+        "topic": "general",
+    }
     assert call.status == "live"
     assert len(call.render_data["items"]) == 5
     assert call.render_data["items"][-1]["url"] == "https://example.test/4"
+    assert call.render_data["items"][-1]["published_date"] == "2026-07-05"
+
+
+def test_tavily_news_search_requests_provider_dates(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "SECRETKEY")
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily")
+    captured: dict[str, object] = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        return Response()
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.client.requests.post", fake_post)
+
+    ExternalApiClient(mode="live", timeout_s=12).web_search(
+        "최신 고지혈증 가이드라인",
+        topic="news",
+    )
+
+    assert captured["json"]["topic"] == "news"
 
 
 def test_tavily_web_search_timeout_is_graceful(monkeypatch):
@@ -451,6 +497,42 @@ def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
     study = call.render_data["payload"]["studies"][0]
     assert study["protocolSection"]["identificationModule"]["nctId"] == "NCT05537948"
     assert study["protocolSection"]["armsInterventionsModule"]["interventions"][0]["name"] == "Pitavastatin"
+
+
+def test_clinicaltrials_live_search_uses_structured_content_when_text_is_empty(monkeypatch):
+    def fake_post(url, json, headers, timeout):
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [],
+                    "structuredContent": {
+                        "result": {
+                            "studies": [
+                                {
+                                    "NCTId": "NCT05537948",
+                                    "briefTitle": "Efficacy and Safety of Pitavastatin",
+                                    "overallStatus": "ACTIVE_NOT_RECRUITING",
+                                    "url": "https://clinicaltrials.gov/study/NCT05537948",
+                                }
+                            ],
+                            "totalCount": 1,
+                        }
+                    },
+                },
+            }
+        )
+
+    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://ct-mcp/json")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
+
+    call = ExternalApiClient(mode="live", timeout_s=1).clinicaltrials_v2_search("pitavastatin")
+
+    assert call.status == "live"
+    assert call.render_data["payload"]["totalCount"] == 1
+    assert call.render_data["nct_ids"] == ["NCT05537948"]
+    assert call.render_data["briefTitle"] == "Efficacy and Safety of Pitavastatin"
 
 
 def test_clinicaltrials_live_search_fails_closed_on_mcp_error(monkeypatch):

@@ -8,10 +8,12 @@ from typing import Any
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
-from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _sales_delta_calls
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _answer_contract_required_calls, _sales_delta_calls
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
+from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.external_tools import _web_search_query, clinical_call
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner, select_candidate_tools
+from jw_chat_agent_poc.common.timing import stage_event_sink
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.router import BQRouter
@@ -19,9 +21,10 @@ from jw_chat_agent_poc.tools.deep_analysis.news import DeepAnalysisNewsTool, Sta
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.query_layer import StaticStrategicMartReader, StrategicQueryLayer
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD, cause_payload_with_top_brand_trends
-from test_query_layer_integration import _query_layer
+from test_query_layer_integration import _query_layer, _record_with_market
 
 
 @dataclass(slots=True)
@@ -589,6 +592,118 @@ def test_comparison_brand_uses_market_member_segment_when_not_canonical() -> Non
     assert "아토젯 매출 변화는 현재 지원 브랜드 목록" not in result["markdown_response"]["fact_md"]
 
 
+def test_news_sales_impact_backfills_news_metric_and_market_scope() -> None:
+    metrics = _metrics_tool()
+    news = _news_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        news=news,
+        agent_loop=ToolUseAgent(
+            metrics=metrics,
+            resolver=BrandResolver(),
+            planner=HeuristicToolPlanner(),
+            news=news,
+        ),
+    )
+
+    result = agent.answer("리바로 관련 뉴스가 최근 매출에 미친 영향")
+
+    tools = {call["tool"] for call in result["tool_calls"]}
+    assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
+    assert "unsupported_metric" not in tools
+
+
+def test_news_sales_impact_required_tools_survive_planner_unsupported_metric() -> None:
+    metrics = _metrics_tool()
+    news = _news_tool()
+    calls = [
+        {
+            "source": "cache",
+            "tool": "unsupported_metric",
+            "render_data": {"brand": "리바로", "metric": "sales", "status": "unsupported"},
+        }
+    ]
+
+    completed = _answer_contract_required_calls(
+        "리바로 관련 뉴스가 최근 매출에 미친 영향",
+        calls,
+        [],
+        "리바로",
+        ("리바로",),
+        metrics,
+        BrandResolver(),
+        None,
+        None,
+        news,
+        None,
+        None,
+    )
+
+    tools = {call["tool"] for call in completed}
+    assert {"deep_analysis_related_news", "get_brand_metric", "get_market_landscape"} <= tools
+
+
+def test_quarter_query_spec_does_not_replace_required_period_metric() -> None:
+    metrics = _metrics_tool()
+    question = "리바로 2025년 2분기 매출"
+    quarter_periods = ("2025-04", "2025-05", "2025-06")
+    quarter_layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_market(
+                    "ml_006",
+                    "리바로",
+                    (8_000_000_000.0, 8_100_000_000.0, 8_200_000_000.0),
+                    quarter_periods,
+                    [100_000_000_000.0] * 3,
+                ),
+                _record_with_market(
+                    "ml_006",
+                    "경쟁브랜드",
+                    (92_000_000_000.0, 91_900_000_000.0, 91_800_000_000.0),
+                    quarter_periods,
+                    [100_000_000_000.0] * 3,
+                ),
+            )
+        )
+    )
+    calls = [
+        {
+            "source": "strategic_mart",
+            "tool": "get_brand_metric",
+            "render_data": {
+                "brand": "리바로",
+                "metric": "query_spec",
+                "status": "ok",
+                "query_spec": {"filters": {"brand": "리바로", "period": "2025-Q2"}},
+            },
+        }
+    ]
+
+    completed = _answer_contract_required_calls(
+        question,
+        calls,
+        [],
+        "리바로",
+        ("리바로",),
+        metrics,
+        BrandResolver(),
+        None,
+        build_period_grounding(question),
+        None,
+        None,
+        quarter_layer,
+    )
+
+    metric_calls = [call for call in completed if call.get("tool") == "get_brand_metric"]
+    assert metric_calls
+    render_data = metric_calls[0]["render_data"]
+    assert render_data["period"] == "2025-Q2"
+    assert render_data["query_spec"]["filters"]["period"] == "2025-Q2"
+    assert "fallback_period" not in render_data
+
+
 def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:
     metrics = _metrics_tool_with_atozet_trend_only()
     agent = ChatAgent(
@@ -925,6 +1040,32 @@ def test_genos_planner_uses_deterministic_external_tools_before_llm() -> None:
     assert [call.name for call in procedure_decision.tool_calls] == ["get_procedure_stats"]
 
 
+def test_genos_planner_uses_deterministic_drug_info_before_llm() -> None:
+    class FallbackBomb:
+        def decide(self, *_args, **_kwargs):
+            raise AssertionError("fallback should not be called for explicit drug-info intents")
+
+    planner = GenosToolPlanner(fallback=FallbackBomb(), token=None)
+
+    permission_decision = planner.decide(
+        "리바로 허가일",
+        (),
+        (),
+        ("리바로",),
+        ("2026-04",),
+    )
+    combined_decision = planner.decide(
+        "리바로 임상·허가 현황",
+        (),
+        (),
+        ("리바로",),
+        ("2026-04",),
+    )
+
+    assert [call.name for call in permission_decision.tool_calls] == ["search_drug_info"]
+    assert [call.name for call in combined_decision.tool_calls] == ["search_clinical", "search_drug_info"]
+
+
 def test_genos_planner_routes_explicit_web_search_words_before_llm() -> None:
     class FallbackBomb:
         def decide(self, *_args, **_kwargs):
@@ -990,6 +1131,86 @@ def test_hira_procedure_and_web_search_fixture_tools_render_payloads() -> None:
     assert "MM302" in result["markdown_response"]["data_md"]
     assert "웹 검색 결과(미검증)" in result["markdown_response"]["data_md"]
     assert "https://example.com/livalo-detailing" in result["markdown_response"]["data_md"]
+
+
+def test_non_bq_external_tools_use_the_parallel_batch_executor(monkeypatch) -> None:
+    from jw_chat_agent_poc.agent_loop import loop as agent_loop_module
+
+    planner = Stage3ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        name="get_procedure_stats",
+                        arguments={"brand": "리바로", "query": "MM302 진료행위 통계"},
+                        reason="진료행위 통계 확인",
+                    ),
+                    ToolCallPlan(
+                        name="web_search",
+                        arguments={"brand": "리바로", "query": "리바로 경쟁제품 동향"},
+                        reason="외부 웹 검색 확인",
+                    ),
+                )
+            ),
+            AgentDecision(final_answer="도구 결과로 답변"),
+        )
+    )
+    original_execute_tool_batch = agent_loop_module.execute_tool_batch
+    captured_batches: list[tuple[str, ...]] = []
+
+    def capture_batch(plans, execute, **kwargs):
+        captured_batches.append(tuple(plan.name for plan in plans))
+        return original_execute_tool_batch(plans, execute, **kwargs)
+
+    monkeypatch.setattr(agent_loop_module, "execute_tool_batch", capture_batch)
+    metrics = _metrics_tool()
+    agent = ChatAgent(
+        router=BQRouter(),
+        metrics=metrics,
+        agent_loop=ToolUseAgent(
+            metrics=metrics,
+            resolver=BrandResolver(),
+            planner=planner,
+            external=ExternalApiClient(mode="fixture"),
+        ),
+    )
+
+    events: list[dict[str, Any]] = []
+    with stage_event_sink(events.append):
+        result = agent.answer("리바로 MM302 진료행위와 경쟁제품 동향을 같이 확인해줘")
+
+    assert captured_batches == [("get_procedure_stats", "web_search")]
+    assert {"get_procedure_stats", "web_search"}.issubset(set(_tool_names(result)))
+    tool_stages = {
+        stage["name"]: stage
+        for stage in result["timing"]["stages"]
+        if stage["name"].startswith("tool:")
+    }
+    assert set(tool_stages) >= {"tool:get_procedure_stats", "tool:web_search"}
+    assert "mode=parallel" in tool_stages["tool:get_procedure_stats"]["detail"]
+    assert "mode=parallel" in tool_stages["tool:web_search"]["detail"]
+    assert any(stage["name"] == "tool_batch" for stage in result["timing"]["stages"])
+    tool_done_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.get("status") == "done" and str(event.get("raw_name", "")).startswith("tool:")
+    ]
+    batch_done_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("status") == "done" and event.get("raw_name") == "tool_batch"
+    )
+    assert tool_done_indexes
+    assert max(tool_done_indexes) < batch_done_index
+    completed_elapsed = {
+        event["raw_name"]: event["elapsed_ms"]
+        for event in events
+        if event.get("status") == "done" and str(event.get("raw_name", "")).startswith("tool:")
+    }
+    assert completed_elapsed == {
+        name: stage["elapsed_ms"]
+        for name, stage in tool_stages.items()
+    }
 
 
 def test_mfds_clinical_broad_rows_are_filtered_from_evidence() -> None:

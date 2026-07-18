@@ -2,22 +2,28 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 import requests
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.service.answer_safety import chunk_text
+from jw_chat_agent_poc.service.file_search_client import (
+    UploadedFileOverview,
+    UploadedSqlTableOverview,
+)
+from jw_chat_agent_poc.service.answer_safety import chunk_text, ensure_file_page_evidence
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, compute_final_answer, create_app
-from jw_chat_agent_poc.service.conversation import PendingClarification
+from jw_chat_agent_poc.service.conversation import ConversationSlots, PendingClarification
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
-from jw_chat_agent_poc.resolver import UnsupportedBrandError
+from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
+from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
@@ -50,6 +56,38 @@ def _market_scope_resolver() -> MarketScopeResolver:
         }
     )
     return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader)
+
+
+def test_market_scope_queries_explicit_strategy_id_without_brand_fallback() -> None:
+    def record(brand: str, value: float) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={"2025-04": {"raw_value": value}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(
+                (record("리바로", 8_318_411_500.0), record("리바로젯", 9_781_370_500.0))
+            )
+        ),
+    )
+
+    result = resolver.answer_market_id("ml_006 2025-04 시장규모", market_id="ml_006", period="2025-04")
+
+    data = result["tool_calls"][0]["render_data"]
+    assert data["market_id"] == "ml_006"
+    assert data["period"] == "2025-04"
+    assert data["market_size_recent_krw"] == 18_099_782_000.0
+    assert data["market_size_억원"] == 180.99782
 
 
 def _reconstruct_answer_from_sse(sse: str) -> str:
@@ -116,6 +154,197 @@ def test_compute_final_answer_appends_blocked_metric_notice(monkeypatch) -> None
     assert "23/26" not in final.text
 
 
+def test_compute_final_answer_replaces_internal_csd_facts_for_general_view_ready() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+    leaked = """요청한 값은 현재 조회 결과에 존재합니다.
+
+## 확정 데이터
+
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2026-03 120건 → 2026-04 135건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    final = compute_final_answer(
+        "리바로 영업활동 추이 어때?",
+        {
+            "general_view_ready": True,
+            "answer": leaked,
+            "markdown_response": {"fact_md": fact_md},
+            "sources": ["cache"],
+        },
+        "test-conversation",
+    )
+
+    assert "2026-03 120건" in final.text
+    assert "2026-04 135건" in final.text
+    assert "영업활동" in final.text
+    assert "확정 데이터" not in final.text
+    assert "반드시 반영할 내용" not in final.text
+    assert "CSD 세부 미지원" not in final.text
+
+
+def test_compute_final_answer_replaces_internal_csd_facts_after_agent_loop(monkeypatch) -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+    leaked = """요청한 값은 현재 조회 결과에 존재합니다.
+
+## 확정 데이터
+
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        yield leaked
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    final = compute_final_answer(
+        "리바로 영업활동 추이 어때?",
+        {
+            "answer": "",
+            "markdown_response": {"fact_md": fact_md},
+            "tool_calls": [
+                {"tool": "csd_activity_trend", "render_data": {"status": "ok"}},
+                {"tool": "get_brand_metric", "render_data": {"status": "ok"}},
+            ],
+            "sources": ["CSD ChannelDynamics"],
+        },
+        "test-conversation",
+    )
+
+    assert "2025-06 1,775건" in final.text
+    assert "2026-05 1,769건" in final.text
+    assert "영업활동" in final.text
+    assert "확정 데이터" not in final.text
+    assert "CSD aggregate 콜수" not in final.text
+    assert "CSD 세부 미지원" not in final.text
+
+
+def test_compute_final_answer_keeps_natural_competition_lead_after_all_contracts(monkeypatch) -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
+| Brand 상위 | 2위 리피토 시장점유율 6.13% 매출 131.09억원 |
+| Brand 상위 | 3위 리바로젯 시장점유율 5.12% 매출 109.46억원 |
+"""
+    generated = """구체적으로는 로수젯 시장점유율 9.13%, 매출 195.24억원입니다.
+
+| 순위 | 브랜드 | 점유율 | 매출 |
+| --- | --- | --- | --- |
+| 1위 | 로수젯 | 9.13% | 195.24억원 |
+| 2위 | 리피토 | 6.13% | 131.09억원 |
+| 3위 | 리바로젯 | 5.12% | 109.46억원 |
+"""
+
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))
+    final = compute_final_answer(
+        "리바로 경쟁구도 어떻게 변하고 있어",
+        {
+            "answer": "",
+            "markdown_response": {"fact_md": fact_md},
+            "tool_calls": [{"tool": "get_top_brands", "render_data": {"status": "ok"}}],
+            "sources": ["UBIST"],
+        },
+        "natural-competition",
+    )
+
+    assert final.text.startswith("리바로 경쟁구도를 보면 로수젯이 9.13%(195.24억원)로 선두이며")
+    assert "| 1위 | 로수젯 | 9.13% | 195.24억원 |" in final.text
+
+
+def test_compute_final_answer_keeps_verified_market_size_after_claim_policy(monkeypatch) -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 시장규모 | 리바로가 속한 전략 시장 2026-05 시장규모 2,139.25억원 |
+| channel 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
+| channel 상위 | 2위 의원 시장점유율 3.36% 매출 41.09억원 |
+"""
+    def unexpected_stream(*_args):
+        raise AssertionError("simple verified market size must not invoke synthesis LLM")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_stream)
+
+    final = compute_final_answer(
+        "리바로 시장 규모",
+        {
+            "answer": "",
+            "context_scope": "MARKET",
+            "general_view_contract": {"mode": "dual", "view_type": "general_view"},
+            "markdown_response": {"fact_md": fact_md},
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "render_data": {
+                        "brand": "리바로",
+                        "metric": "market_top_brands",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "market_size_recent_krw": 213_925_043_319.36026,
+                        "market_size_억원": 2_139.25,
+                        "total_brands_in_market": 555,
+                    },
+                }
+            ],
+            "sources": ["UBIST"],
+        },
+        "market-size-final-contract",
+    )
+
+    assert final.text.startswith(
+        "2026-05 리바로가 속한 전략 시장의 시장규모는 2,139.25억원입니다."
+    )
+    assert "채널별 매출" not in final.text
+
+
+def test_compute_final_answer_keeps_synthesis_for_market_size_analysis(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def stream_answer(*_args):
+        calls["count"] += 1
+        return iter(("시장 규모 변화는 추가 기간 근거를 함께 봐야 합니다.",))
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    compute_final_answer(
+        "리바로 시장 규모 변화 분석",
+        {
+            "answer": "",
+            "context_scope": "MARKET",
+            "markdown_response": {"fact_md": ""},
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "render_data": {
+                        "brand": "리바로",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "market_size_억원": 2_139.25,
+                    },
+                }
+            ],
+            "sources": ["UBIST"],
+        },
+        "market-size-analysis",
+    )
+
+    assert calls["count"] == 1
+
+
 def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -168,6 +397,366 @@ def test_answer_question_directs_agent_loop_without_chat_agent_facade(monkeypatc
     assert captured["loop_question"] == "리바로 경쟁 구도 변화"
 
 
+def test_direct_agent_loop_bypasses_question_router_for_explicit_quarter_sales(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class RouterBomb:
+        def route(self, _question: str, *, has_documents: bool = False):
+            raise AssertionError("explicit quarter sales must bypass LLM question decomposition")
+
+    class Dependencies:
+        router = RouterBomb()
+        resolver = BrandResolver(mode="fixture")
+
+        def agent_loop_dependencies(self):
+            return "quarter-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            captured["loop_question"] = question
+            return {"answer": "242.72억원", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+
+    result = service_app._answer_direct_agent_loop("리바로 2025년 2분기 매출", "live")
+
+    assert result["answer"] == "242.72억원"
+    assert captured["loop_question"] == "리바로 2025년 2분기 매출"
+
+
+def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class RouterBomb:
+        def route(self, _question: str, *, has_documents: bool = False):
+            raise AssertionError("structured top-five question must bypass LLM question decomposition")
+
+    class Dependencies:
+        router = RouterBomb()
+        resolver = BrandResolver(mode="fixture")
+
+        def agent_loop_dependencies(self):
+            return "top-five-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            captured["loop_question"] = question
+            return {"answer": "29.52% / HHI 253.62", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+
+    result = service_app._answer_direct_agent_loop("리바로 시장 상위 5개와 HHI, CR5를 알려줘", "live")
+
+    assert result["answer"] == "29.52% / HHI 253.62"
+    assert captured["loop_question"] == "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
+
+
+@pytest.mark.parametrize(
+    ("question", "grounded_question"),
+    (
+        ("2025년 2분기 매출 얼마야", "리바로 2025년 2분기 매출 얼마야"),
+        (
+            "고지혈증 시장 상위 5개 브랜드 알려줘",
+            "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
+        ),
+        (
+            "고지혈증 상위 5개",
+            "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
+        ),
+    ),
+)
+def test_unanchored_market_goldens_are_grounded_before_direct_execution(
+    monkeypatch,
+    question: str,
+    grounded_question: str,
+) -> None:
+    captured: list[str] = []
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "golden", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        question,
+        "live",
+        "golden-clean-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == [grounded_question]
+    assert item["result"]["effective_question"] == grounded_question
+    assert item["result"]["context_scope"] == "MARKET"
+
+
+def test_final_answer_uses_grounded_market_question_for_generation_and_contract(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def stream_answer(_self: GenosClient, question: str, _result: dict):
+        captured.append(question)
+        yield "HHI 253.62, CR5 29.52%입니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    grounded = "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
+    result = {
+        "effective_question": grounded,
+        "context_scope": "MARKET",
+        "answer": "",
+        "sources": ["UBIST"],
+        "markdown_response": {
+            "fact_md": "HHI = 253.62\nCR5 = 29.52%",
+            "allowed_numbers": ["253.62", "29.52"],
+        },
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "period": "2026-05",
+                    "hhi": 253.62,
+                    "level_segments": [
+                        {"rank": rank, "brand": f"brand-{rank}", "ms_recent_pct": share}
+                        for rank, share in enumerate((9.12649, 6.12777, 5.11672, 4.94876, 4.19605), 1)
+                    ],
+                },
+            }
+        ],
+    }
+
+    final = service_app.compute_final_answer(
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        result,
+        "clean-top5",
+    )
+
+    assert captured == [grounded]
+    assert "HHI 253.62" in final.text
+    assert "CR5 29.52%" in final.text
+    assert "지원되지 않는 시장" not in final.text
+
+
+def test_unanchored_quarter_golden_ignores_stale_file_and_external_turn(
+    monkeypatch,
+) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "golden-dirty-session",
+        "뇌경색 임상·허가 경쟁약물",
+        "외부 도구 결과",
+    )
+    captured: list[str] = []
+
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(service_app, "fetch_uploaded_file_schema_columns", lambda _conversation_id: ("질환", "임상"))
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("standalone market golden must not search stale files")
+        ),
+    )
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "2025-Q2 리바로 매출은 242.72억원입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "golden-dirty-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 2025년 2분기 매출 얼마야"]
+    assert item["result"]["context_scope"] == "MARKET"
+    assert "242.72억원" in item["result"]["answer"]
+
+
+def test_unanchored_quarter_golden_hides_stale_file_progress_steps(
+    monkeypatch,
+) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "golden-dirty-progress-session",
+        "뇌경색 임상·허가 경쟁약물",
+        "외부 도구 결과",
+    )
+    events: list[dict] = []
+
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_schema_columns",
+        lambda _conversation_id: ("질환", "임상"),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_answer_direct_agent_loop",
+        lambda _question, _external_mode: {
+            "answer": "2025-Q2 리바로 매출은 242.72억원입니다.",
+            "sources": ["UBIST"],
+            "tool_calls": [],
+        },
+    )
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "golden-dirty-progress-session",
+        use_direct_agent_loop=True,
+        timing_sink=events.append,
+    )
+
+    public_steps = {str(event.get("name") or "") for event in events}
+    assert item["result"]["context_scope"] == "MARKET"
+    assert "242.72억원" in item["result"]["answer"]
+    assert "첨부 파일 확인" not in public_steps
+    assert "첨부 파일 구조 분석" not in public_steps
+
+
+def test_uploaded_file_question_keeps_file_progress_steps(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_schema_columns",
+        lambda _conversation_id: ("제조사", "매출"),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: ("제조사별 매출 근거", (), True, "", ()),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "첨부 파일의 제조사별 매출을 알려줘",
+        "live",
+        "file-progress-session",
+        use_direct_agent_loop=True,
+        timing_sink=events.append,
+    )
+
+    public_steps = {str(event.get("name") or "") for event in events}
+    assert item["result"]["context_scope"] == "FILE"
+    assert "첨부 파일 확인" in public_steps
+    assert "첨부 파일 구조 분석" in public_steps
+
+
+def test_unanchored_top_five_golden_ignores_stale_file_and_external_turn(
+    monkeypatch,
+) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "top-five-dirty-session",
+        "뇌경색 임상·허가 경쟁약물",
+        "외부 도구 결과",
+    )
+    captured: list[str] = []
+
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(service_app, "fetch_uploaded_file_schema_columns", lambda _conversation_id: ("질환", "임상"))
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("standalone top-five golden must not search stale files")
+        ),
+    )
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "상위 5개 합계 시장점유율은 29.52%입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        "top-five-dirty-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 시장 상위 5개와 HHI, CR5를 알려줘"]
+    assert item["result"]["context_scope"] == "MARKET"
+    assert "29.52%" in item["result"]["answer"]
+
+
+def test_general_top_five_golden_resets_after_deep_turn(monkeypatch) -> None:
+    store = SessionStore()
+    captured: list[str] = []
+
+    monkeypatch.setattr(
+        service_app,
+        "_answer_deep_research",
+        lambda question, _external_mode: {
+            "answer": f"딥리서치 완료: {question}",
+            "sources": ["UBIST"],
+            "tool_calls": [],
+        },
+    )
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: False)
+
+    deep_item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "/deep 리바로 경쟁구도",
+        "live",
+        "deep-transition-session",
+        use_direct_agent_loop=True,
+    )
+
+    def direct_loop(value: str, _external_mode: str) -> dict:
+        captured.append(value)
+        return {"answer": "상위 5개 합계 시장점유율은 29.52%입니다.", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+    general_item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        "deep-transition-session",
+        use_direct_agent_loop=True,
+    )
+
+    assert deep_item["result"]["research_mode"] == "deep"
+    assert captured == ["리바로 시장 상위 5개와 HHI, CR5를 알려줘"]
+    assert general_item["result"].get("research_mode") != "deep"
+    assert general_item["result"]["context_scope"] == "MARKET"
+    assert "29.52%" in general_item["result"]["answer"]
+
+
 def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
     def fail_build_loop(_dependencies):
         raise AssertionError("requested-source trap must not enter direct agent loop")
@@ -189,7 +778,154 @@ def test_answer_question_source_trap_uses_chat_agent_facade_before_direct_agent_
     assert FakeAgent.calls == [("리바로 KOL 자문 기준 처방 의견과 시장 시사점을 알려줘", "live")]
 
 
-def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypatch) -> None:
+def test_answer_question_external_contract_uses_chat_agent_facade_before_direct_agent_loop(monkeypatch) -> None:
+    captured: list[tuple[str, str]] = []
+
+    class ExternalContractAgent:
+        def answer(self, question: str, _documents=None) -> dict:
+            captured.append((question, "answered"))
+            return {
+                "answer": "verified external evidence",
+                "sources": ["external"],
+                "tool_calls": [{"tool": "clinicaltrials_v2_search"}],
+                "router_diagnostics": {"mode": "tool_use_agent"},
+            }
+
+    def factory(*, external_mode: str = "live") -> ExternalContractAgent:
+        captured.append((external_mode, "factory"))
+        return ExternalContractAgent()
+
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(
+        service_app,
+        "_answer_direct_agent_loop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("external structural contracts must not bypass the ChatAgent facade")
+        ),
+    )
+
+    questions = (
+        "리바로 임상시험",
+        "리바로 특허 만료일",
+        "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 .",
+    )
+    for question in questions:
+        item = service_app._answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            factory,
+            question,
+            "live",
+            None,
+            use_direct_agent_loop=True,
+        )
+
+        assert item["result"]["router_diagnostics"]["mode"] == "tool_use_agent"
+
+    assert captured == [
+        ("live", "factory"),
+        ("리바로 임상시험", "answered"),
+        ("live", "factory"),
+        ("리바로 특허 만료일", "answered"),
+        ("live", "factory"),
+        (questions[2], "answered"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "tool", "evidence_text"),
+    (
+        ("리바로 임상시험", "clinicaltrials_v2_search", "NCT05537948 임상시험 근거"),
+        ("리바로 특허 만료일", "mfds_patent", "국내 특허 10-0830018 근거"),
+        ("pitavastatin 안전성", "openfda_label_search", "FDA 라벨 이상반응 근거"),
+    ),
+)
+def test_compute_final_answer_preserves_verified_tool_use_evidence(
+    question: str,
+    tool: str,
+    evidence_text: str,
+) -> None:
+    result = {
+        "answer": evidence_text,
+        "sources": ["verified external source"],
+        "tool_calls": [
+            {
+                "tool": tool,
+                "status": "ok",
+                "render_data": {
+                    "ok": True,
+                    "evidence": [{"source_name": "verified external source"}],
+                },
+            }
+        ],
+        "markdown_response": {"fact_md": evidence_text, "allowed_numbers": ()},
+        "router_diagnostics": {"mode": "tool_use_agent"},
+    }
+
+    final = compute_final_answer(question, result, "tool-use-final")
+
+    assert evidence_text in final.text
+    assert "필요 도구" not in final.text
+    assert "현재 확인 불가" not in final.text
+
+
+def test_compute_final_answer_restores_hira_patient_lead_before_table(monkeypatch) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="고지혈증",
+        calls=[
+            {
+                "tool": "hira_disease_hospitalization_outpatient_stats",
+                "source": "hira_disease",
+                "render_data": {
+                    "request": {"year": "2024"},
+                    "items": [
+                        {
+                            "inpatOpat": "외래 남",
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            "ptntCnt": 1_305_727,
+                        },
+                        {
+                            "inpatOpat": "외래 여",
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            "ptntCnt": 1_910_492,
+                        },
+                    ],
+                },
+            }
+        ],
+        sources=["hira_disease"],
+    )
+    table_only = """| 질병코드 | 연도 | 구분 | 성별 | 환자수(명) | 출처 |
+| --- | --- | --- | --- | ---: | --- |
+| E78 | 2024 | 외래 | 남 | 1,305,727 | 건강보험심사평가원 |
+| E78 | 2024 | 외래 | 여 | 1,910,492 | 건강보험심사평가원 |"""
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        yield table_only
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    final = compute_final_answer(
+        "고지혈증 환자수",
+        {
+            "answer": "",
+            "markdown_response": response.to_dict(),
+            "tool_calls": [],
+            "sources": ["hira_disease"],
+            "router_diagnostics": {"mode": "tool_use_agent"},
+        },
+        "hira-patient-lead",
+    )
+
+    first_table = final.text.index("| 질병코드 |")
+    lead = final.text[:first_table]
+    assert "1305727명" in lead
+    assert "1910492명" in lead
+    assert "| E78 | 2024 | 외래 | 남 | 1,305,727 |" in final.text
+
+
+def test_answer_question_locks_fresh_document_questions_to_file_scope(monkeypatch) -> None:
     def fail_direct_dependencies(*, external_mode: str = "fixture"):
         raise AssertionError("document questions must keep the ChatAgent/RAG facade")
 
@@ -200,15 +936,17 @@ def test_answer_question_keeps_document_questions_on_chat_agent_facade(monkeypat
         SessionStore(),
         _market_scope_resolver(),
         _fake_agent_factory,
-        "리바로 경쟁 구도 변화",
+        "이 문서의 리바로 경쟁 구도 변화",
         "live",
         None,
         documents=[Path("/tmp/example.pdf")],
         use_direct_agent_loop=True,
     )
 
-    assert item["result"]["answer"] == "fallback:리바로 경쟁 구도 변화"
-    assert FakeAgent.calls == [("리바로 경쟁 구도 변화", "live")]
+    assert item["result"]["answer"] == "업로드 파일에서 확인된 근거만 사용해 답변합니다."
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["context_scope"] == "FILE"
+    assert FakeAgent.calls == []
 
 
 def test_answer_question_returns_deterministic_file_only_ready_without_agent() -> None:
@@ -232,6 +970,112 @@ def test_answer_question_returns_deterministic_file_only_ready_without_agent() -
     assert "파일 2개 저장 완료" in result["answer"]
     assert "A.pdf" in result["answer"]
     assert "B.xlsx" in result["answer"]
+
+
+def test_file_only_ready_machine_brief_uses_observed_schema_without_llm() -> None:
+    overview = UploadedFileOverview(
+        file_name="CHSO.xlsx",
+        storage_route="hybrid",
+        chunk_count=18,
+        title="CHSO Sell Out",
+        sheet_count=1,
+        page_count=None,
+        sql_tables=(
+            UploadedSqlTableOverview(
+                sheet_name="Sell Out Standard",
+                row_count=12_269,
+                column_count=252,
+            ),
+        ),
+    )
+
+    result = service_app._file_only_ready_result(
+        [Path("/tmp/CHSO.xlsx")],
+        None,
+        file_overviews=(overview,),
+    )
+
+    assert result["file_only_ready"] is True
+    assert result["file_brief_basis"] == "observed_schema"
+    assert result["file_brief_is_answer_evidence"] is False
+    assert "파일 확인 완료 - 지금 질문하실 수 있어요" in result["answer"]
+    assert "CHSO Sell Out" in result["answer"]
+    assert "Sell Out Standard" in result["answer"]
+    assert "12,269행 x 252열" in result["answer"]
+    assert "이 파일의 전체 구조를 설명해줘" in result["answer"]
+
+
+def test_answer_question_fetches_machine_brief_for_fresh_upload(monkeypatch) -> None:
+    overview = UploadedFileOverview(
+        file_name="CHSO.xlsx",
+        storage_route="sql",
+        chunk_count=0,
+        sql_tables=(
+            UploadedSqlTableOverview(
+                sheet_name="Sell Out Standard",
+                row_count=12_269,
+                column_count=252,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_overviews",
+        lambda _conversation_id: (overview,),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: (None, (), True, "", ()),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "",
+        "live",
+        "conv-card",
+        documents=[Path("/tmp/CHSO.xlsx")],
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["file_brief_basis"] == "observed_schema"
+    assert "Sell Out Standard" in item["result"]["answer"]
+    assert "12,269행 x 252열" in item["result"]["answer"]
+
+
+def test_file_only_ready_machine_brief_lists_every_uploaded_file() -> None:
+    overviews = (
+        UploadedFileOverview(
+            file_name="CHSO.xlsx",
+            storage_route="sql",
+            chunk_count=0,
+            sql_tables=(
+                UploadedSqlTableOverview(
+                    sheet_name="Sell Out Standard",
+                    row_count=12_268,
+                    column_count=252,
+                ),
+            ),
+        ),
+        UploadedFileOverview(
+            file_name="guideline.pdf",
+            storage_route="vdb",
+            chunk_count=185,
+        ),
+    )
+
+    result = service_app._file_only_ready_result(
+        None,
+        None,
+        file_overviews=overviews,
+    )
+
+    assert result["file_names"] == ["CHSO.xlsx", "guideline.pdf"]
+    assert "12,268행 x 252열" in result["answer"]
+    assert "검색 가능한 내용 조각: 185개" in result["answer"]
+    assert "이 문서의 핵심 내용을 요약해줘" in result["answer"]
 
 
 def test_chat_rejects_empty_question_without_files() -> None:
@@ -300,12 +1144,13 @@ def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> No
     assert response.status_code == 200
     body = response.json()
     assert "CodexA=123.45" in body["text"]
-    assert "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과" in body["text"]
+    assert "| 업로드 파일(sample.xlsx) | \u2014 | 파일 | \u2014 | \u2014 | 전체 | \u2014 |" in body["text"]
     result = captured["result"]
     assert isinstance(result, dict)
     assert result["file_context"] == "파일: sample.xlsx\nCodexA=123.45"
+    assert result["tool_calls"] == []
     assert "document" in result["sources"]
-    assert body["sources"] == ["cache", "document"]
+    assert body["sources"] == ["document"]
 
 
 def test_genos_final_answer_uses_uploaded_file_context_numbers(monkeypatch) -> None:
@@ -328,11 +1173,227 @@ def test_genos_final_answer_uses_uploaded_file_context_numbers(monkeypatch) -> N
     text = "".join(client.stream_answer("업로드 파일에서 CodexA 값을 알려줘", result))
 
     assert "123.45" in text
-    assert "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과" in text
+    assert "| 업로드 파일(sample.xlsx) | — | 파일 | — | — | 전체 | — |" in text
     messages = captured["messages"]
     assert isinstance(messages, list)
     assert "업로드 파일 컨텍스트" in messages[1]["content"]
     assert "CodexA 값 123.45" in messages[1]["content"]
+
+
+def test_deterministic_file_aggregate_bypasses_final_llm(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("LLM must not run")),
+    )
+    answer = (
+        "## 업로드 파일 집계 결과\n"
+        "파일: CHSO.xlsx\n"
+        "시트·테이블명: Basic / data\n"
+        "필터 조건: 전체 행\n"
+        "사용 열: 1/2026 VALUES LC SI PRICE\n"
+        "집계 함수: SUM, COUNT\n"
+        "적용 행 수: 12,269\n"
+        "결과값: 386,933,825,518"
+    )
+    final = compute_final_answer(
+        "2026년 1월 총 sell-out 금액은?",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": "## 업로드 파일 SQL 결과\n상태: 확인됨\n386933825518",
+            "deterministic_file_answer": answer,
+        },
+        "file-aggregate",
+    )
+
+    assert "386,933,825,518" in final.text
+    assert "적용 행 수: 12,269" in final.text
+
+
+def test_file_page_answer_is_not_rewritten_as_market_brand_compare(monkeypatch) -> None:
+    answer = (
+        "2페이지 기준 2023년 골다공증 51.8 million, 골감소증 139.1 million이며, "
+        "2043년에는 각각 63.7 million과 168.2 million입니다."
+    )
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args, **_kwargs: iter((answer,)))
+
+    final = compute_final_answer(
+        "2페이지에서 2023년과 2043년 골다공증·골감소증 환자 수를 각각 알려줘.",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": (
+                "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (2페이지)\n"
+                "2023 51.8 million 139.1 million; 2043 63.7 million 168.2 million"
+            ),
+            "context_scope": "FILE",
+        },
+        "file-page",
+    )
+
+    assert all(value in final.text for value in ("51.8", "139.1", "63.7", "168.2"))
+    assert "표에 포함된 확정 데이터만" not in final.text
+
+
+def test_file_scope_postprocess_market_message_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: iter(
+            ["시장 도구 미호출로 일반뷰 브랜드 비교를 완료할 수 없습니다."]
+        ),
+    )
+    result = {
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "context_scope": "FILE",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+    }
+
+    final = compute_final_answer(
+        "동아제약과 동화약품 비교",
+        result,
+        "conversation-1",
+    )
+
+    assert "시장 도구" not in final.text
+    assert "일반뷰" not in final.text
+    assert "업로드 파일" in final.text
+
+
+def test_file_scope_postprocess_actual_missing_market_tool_message_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: iter(
+            ["필요 도구(시장 지표 조회)가 이번 턴에 실행되지 않았습니다."]
+        ),
+    )
+    result = {
+        "answer": "업로드 파일에서 확인된 근거만 사용해 답변합니다.",
+        "context_scope": "FILE",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"markdown": "", "fact_md": "", "data_md": ""},
+    }
+
+    final = compute_final_answer(
+        "동아제약과 동화약품 비교",
+        result,
+        "conversation-1",
+    )
+
+    assert "시장 지표 조회" not in final.text
+    assert "업로드 파일" in final.text
+
+
+def test_file_page_answer_backfills_requested_numeric_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: iter(("지정 페이지의 핵심 내용을 확인했습니다.",)),
+    )
+
+    final = compute_final_answer(
+        "2페이지에서 2023년과 2043년 환자 수를 각각 알려줘.",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": (
+                "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (2페이지)\n\n"
+                "[1] F3.pdf | p.2\n"
+                "In 2023 there were 51.8 million and 139.1 million patients. "
+                "By 2043 the totals rise to 63.7 million and 168.2 million."
+            ),
+            "context_scope": "FILE",
+        },
+        "file-page-numeric",
+    )
+
+    assert all(value in final.text for value in ("51.8", "139.1", "63.7", "168.2"))
+    assert "지정 페이지 원문 근거" in final.text
+
+
+def test_file_page_evidence_ignores_source_metadata_numbers() -> None:
+    answer = ensure_file_page_evidence(
+        "2페이지에서 2023년과 2043년 환자 수를 각각 알려줘.",
+        "지정 페이지의 핵심 내용을 확인했습니다.",
+        (
+            "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (2페이지)\n\n"
+            "[1] F3.pdf (document_id=113292)\n[DA] TEMP_DOCUMENT_1845.pdf | p.2\n\n"
+            "[2] F3.pdf (document_id=113292)\n[DA] TEMP_DOCUMENT_1845.pdf | p.2\n\n"
+            "In 2023 there were 51.8 million and 139.1 million patients. "
+            "By 2043 the totals rise to 63.7 million and 168.2 million."
+        ),
+    )
+
+    assert all(value in answer for value in ("51.8", "139.1", "63.7", "168.2"))
+
+
+def test_file_kol_answer_is_not_rewritten_as_unconnected_market_source(monkeypatch) -> None:
+    answer = "31페이지 KOL은 anabolic 치료 후 Prolia 같은 antiresorptive 치료가 필요하다고 설명합니다."
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args, **_kwargs: iter((answer,)))
+
+    final = compute_final_answer(
+        "31페이지 KOL Insights의 anabolic 치료와 Prolia 중단 의견을 요약해줘.",
+        {
+            "answer": "",
+            "sources": ["document"],
+            "tool_calls": [],
+            "markdown_response": {"fact_md": ""},
+            "file_context": (
+                "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (31페이지)\n"
+                "KOL Insights: anabolic treatment should be followed by an antiresorptive; "
+                "Prolia discontinuation needs transition therapy."
+            ),
+            "context_scope": "FILE",
+        },
+        "file-kol",
+    )
+
+    assert "anabolic" in final.text
+    assert "Prolia" in final.text
+    assert "운영 데이터에 미보유" not in final.text
+
+
+def test_genos_markdown_file_kol_skips_market_source_trap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        GenosClient,
+        "_chat_text",
+        lambda *_args, **_kwargs: (
+            "31페이지 KOL은 anabolic 치료 후 Prolia 중단 시 전환 치료가 필요하다고 설명합니다."
+        ),
+    )
+    result = {
+        "answer": "",
+        "sources": ["document"],
+        "tool_calls": [],
+        "markdown_response": {"fact_md": "", "allowed_numbers": ()},
+        "file_context": (
+            "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회 (31페이지)\n"
+            "KOL Insights: anabolic treatment should be followed by an antiresorptive; "
+            "Prolia discontinuation needs transition therapy."
+        ),
+    }
+
+    answer = "".join(
+        GenosClient(base_url="http://unused", token="token").stream_answer(
+            "31페이지 KOL Insights의 anabolic 치료와 Prolia 중단 의견을 요약해줘.",
+            result,
+        )
+    )
+
+    assert "anabolic" in answer
+    assert "Prolia" in answer
+    assert "운영 데이터에 미보유" not in answer
 
 
 def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(monkeypatch) -> None:
@@ -454,6 +1515,7 @@ def test_create_app_exposes_chat_routes() -> None:
     assert "/chat/stream" in paths
     assert "/__version" in paths
     assert "/healthz" in paths
+    assert "/readyz" in paths
 
 
 def test_version_endpoint_reports_runtime_and_policy_provenance(monkeypatch) -> None:
@@ -679,6 +1741,13 @@ def test_chunked_sse_preserves_period_value_separators() -> None:
     assert "2025-125.14%" not in reconstructed
 
 
+@pytest.mark.parametrize("token", ("2026-05", "2025-Q2", "29.52%", "2,052,001"))
+def test_chunk_text_keeps_canonical_numeric_tokens_atomic(token: str) -> None:
+    for prefix_length in range(24):
+        chunks = list(chunk_text(f"{'가' * prefix_length}{token}"))
+        assert any(token in chunk for chunk in chunks), (prefix_length, chunks)
+
+
 def test_markdown_timeout_fallback_keeps_causal_structure_and_deterministic_sources(monkeypatch) -> None:
     def timeout_chat(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
         raise requests.Timeout("simulated final generation timeout")
@@ -712,7 +1781,7 @@ def test_markdown_timeout_fallback_keeps_causal_structure_and_deterministic_sour
     assert "시장 내 침투가 강화되는지 또는 방어 압력이 커지는지" in answer
     assert "출처: UBIST" not in answer
     assert answer.rfind("## 출처") > answer.rfind("시장 내 침투가 강화되는지")
-    assert answer.strip().endswith("- 데이터: UBIST (2026-04)")
+    assert answer.strip().endswith("| UBIST | 2026-04 | — | — | 516 | 전체 | 억원 |")
 
 
 def test_stream_endpoint_does_not_emit_charts_for_single_metric(monkeypatch) -> None:
@@ -985,6 +2054,29 @@ def test_markdown_table_blocks_are_sent_as_atomic_sse_events() -> None:
     assert "event: delta\ndata: | 채널" not in encoded
 
 
+@pytest.mark.parametrize(
+    "heading",
+    ("### 리바로 매출 시계열 (2026-05)", "**리바로 매출 시계열 (2026-05)**"),
+)
+def test_markdown_table_block_keeps_its_heading_atomic(heading: str) -> None:
+    answer = (
+        "리바로 매출은 고점 이후 저점을 거쳐 회복했습니다.\n\n"
+        f"{heading}\n"
+        "| 기간 | 매출 |\n"
+        "| --- | --- |\n"
+        "| 2026-05 | 80.39억원 |\n\n"
+        "## 출처\n"
+    )
+
+    events = list(iter_markdown_sse_events(answer))
+    table_event = next(event for event in events if event.startswith("event: markdown_block"))
+    table_payload = json.loads(table_event.split("data: ", 1)[1])
+    prose_events = "".join(event for event in events if event.startswith("event: delta"))
+
+    assert table_payload["markdown"].startswith(f"\n\n{heading}\n")
+    assert heading not in prose_events
+
+
 def test_stream_endpoint_keeps_timing_out_of_answer_body(monkeypatch) -> None:
     class TimedAgent:
         def __init__(self, *, external_mode: str = "live") -> None:
@@ -1171,7 +2263,7 @@ def test_stream_endpoint_handles_same_market_default_before_agent_fallback() -> 
     assert "event: conversation\ndata: conv-market\n\n" in response.text
     assert "전략뷰 기준" in response.text
     assert "competitive_dynamics" not in response.text
-    assert "market_landscape" not in response.text
+    assert "| 전략뷰 |" in response.text
     assert "## 주의" not in response.text
     assert "2,256.77억원" in response.text
     assert "84.93억원" not in response.text
@@ -1208,7 +2300,7 @@ def test_stream_endpoint_answers_strong_view_question_instead_of_deferring() -> 
     assert "어느 기준으로 볼까요" not in response.text
     assert "전략뷰 기준" in response.text
     assert "competitive_dynamics" not in response.text
-    assert "market_landscape" not in response.text
+    assert "| 전략뷰 |" in response.text
     assert "## 주의" not in response.text
     assert "2,256.77억원" in response.text
     assert FakeAgent.calls == []
@@ -1277,3 +2369,351 @@ def test_stream_endpoint_preserves_single_turn_fallback_without_pending() -> Non
     assert response.status_code == 200
     assert "fallback:리바로 매출" in response.text
     assert FakeAgent.calls == [("리바로 매출", "live")]
+
+
+def test_answer_question_reuses_previous_ranked_brand_series_for_anaphora() -> None:
+    calls: list[str] = []
+
+    class ContextAgent:
+        def answer(self, question: str, _documents=None) -> dict:
+            calls.append(question)
+            return {
+                "answer": "상위 브랜드",
+                "resolution": {"canonical_brand": "리바로"},
+                "sources": ["UBIST"],
+                "tool_calls": [
+                    {
+                        "tool": "get_brand_metric",
+                        "source": "UBIST",
+                        "render_data": {
+                            "brand": "리바로",
+                            "market_id": "ml_006",
+                            "period": "2026-04",
+                            "level_top5_trend_series": [
+                                {
+                                    "brand": "로수젯",
+                                    "rank": 1,
+                                    "series": [
+                                        {"period": "2026-03", "value_krw": 19_500_000_000.0, "ms_pct": 8.7, "rank": 1},
+                                        {"period": "2026-04", "value_krw": 20_685_385_934.33, "ms_pct": 9.1659, "rank": 1},
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+
+    agent = ContextAgent()
+    store = SessionStore()
+    factory = lambda **_kwargs: agent
+
+    first = service_app._answer_question(store, _market_scope_resolver(), factory, "리바로 시장 상위 3개 브랜드 점유율", "live", "conv-context")
+    second = service_app._answer_question(store, _market_scope_resolver(), factory, "그중 1위 브랜드 점유율 추이는?", "live", "conv-context")
+
+    assert first["result"]["tool_calls"]
+    assert calls == ["리바로 시장 상위 3개 브랜드 점유율"]
+    assert second["result"]["context_fact_reused"] is True
+    assert second["result"]["tool_calls"][0]["render_data"]["brand"] == "로수젯"
+
+
+def test_answer_question_routes_market_concentration_anaphora_to_direct_agent_loop(monkeypatch) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "conv-concentration",
+        "리바로와 로수젯을 비교해줘",
+        "두 브랜드를 비교했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006", market_definition="Statin 시장"),
+    )
+    captured: list[str] = []
+
+    def direct_loop(question: str, _external_mode: str) -> dict:
+        captured.append(question)
+        return {
+            "answer": "HHI 253.6207",
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_market_landscape",
+                    "source": "UBIST",
+                    "render_data": {
+                        "anchor_brand": "리바로",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "hhi_recent": 253.6207,
+                    },
+                }
+            ],
+        }
+
+    def fail_factory(*, external_mode: str = "live"):
+        raise AssertionError(f"legacy agent must not handle concentration: {external_mode}")
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        fail_factory,
+        "이 시장 집중도는 어때?",
+        "live",
+        "conv-concentration",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 시장 집중도는 어때?"]
+    assert item["result"]["tool_calls"][0]["render_data"]["hhi_recent"] == 253.6207
+
+
+def test_answer_question_does_not_guess_unbound_anaphora() -> None:
+    FakeAgent.calls = []
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "그 브랜드 점유율 추이는?",
+        "live",
+        "conv-empty-context",
+    )
+
+    assert item["result"]["conversation_reference_unresolved"] is True
+    assert "어느 브랜드" in item["result"]["answer"]
+    assert FakeAgent.calls == []
+
+
+def test_tool_use_permission_date_survives_final_synthesis(monkeypatch) -> None:
+    fact_md = (
+        "- 리바로정1밀리그램(피타바스타틴칼슘수화물) (20050106): 허가 품목 = "
+        "리바로정1밀리그램(피타바스타틴칼슘수화물) · 허가일 20050106 · "
+        "제이더블유중외제약(주) · 성분 Pitavastatin Calcium Hydrate "
+        "[식약처 의약품 정보]"
+    )
+
+    monkeypatch.setattr(
+        GenosClient,
+        "_chat_text",
+        lambda _self, _messages: (
+            "**리바로 허가 정보**\n\n"
+            "* **품목명:** 리바로정1밀리그램(피타바스타틴칼슘수화물)\n"
+            "* **업체명:** 제이더블유중외제약(주)\n"
+            "* **성분:** Pitavastatin Calcium Hydrate"
+        ),
+    )
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {"fact_md": fact_md, "allowed_numbers": ["20050106"]},
+        "tool_calls": [{"tool": "mfds_permission_search", "source": "nedrug_mcp"}],
+    }
+
+    answer = "".join(client.stream_answer("리바로 허가일", agent_result))
+
+    assert "허가일은 20050106" in answer
+    assert "리바로정1밀리그램" in answer
+    assert "제이더블유중외제약" in answer
+
+
+def test_tool_use_permission_date_adds_prose_when_date_only_appears_in_table(monkeypatch) -> None:
+    fact_md = (
+        "- 리바로정1밀리그램(피타바스타틴칼슘수화물) (20050106): 허가 품목 = "
+        "리바로정1밀리그램(피타바스타틴칼슘수화물) · 허가일 20050106 · "
+        "제이더블유중외제약(주) · 성분 Pitavastatin Calcium Hydrate "
+        "[식약처 의약품 정보]"
+    )
+    table_only = (
+        "| 품목명 | 허가일 | 업체명 |\n"
+        "|---|---:|---|\n"
+        "| 리바로정1밀리그램(피타바스타틴칼슘수화물) | 20050106 | 제이더블유중외제약(주) |"
+    )
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda _self, _messages: table_only)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {"fact_md": fact_md, "allowed_numbers": ["20050106"]},
+        "tool_calls": [{"tool": "mfds_permission_search", "source": "nedrug_mcp"}],
+    }
+
+    answer = "".join(client.stream_answer("리바로 허가일", agent_result))
+
+    assert answer.index("식약처 허가일은 20050106입니다") < answer.index("| 품목명 |")
+
+
+def test_combined_clinical_answer_restores_mfds_rows_dropped_by_final_synthesis(monkeypatch) -> None:
+    fact_md = "\n".join(
+        (
+            "- hyperlipidemia: 글로벌 임상시험 = NCT04097990 · Fatty acid study "
+            "[ClinicalTrials.gov 임상시험 정보]",
+            "- 고지혈증 (20120118): 국내 임상시험 = "
+            "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨) [식약처 의약품 정보]",
+            "- 고지혈증 (20120928): 국내 임상시험 = YH14700 [식약처 의약품 정보]",
+            "- 고지혈증 (20121210): 국내 임상시험 = YH16410 [식약처 의약품 정보]",
+        )
+    )
+    global_only = (
+        "글로벌 임상에서는 NCT04097990 연구가 확인됩니다.\n\n"
+        "| 임상시험 번호 | 연구 |\n"
+        "|---|---|\n"
+        "| NCT04097990 | Fatty acid study |"
+    )
+    monkeypatch.setattr(GenosClient, "_chat_text", lambda _self, _messages: global_only)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {
+            "fact_md": fact_md,
+            "allowed_numbers": ["NCT04097990", "20120118", "20120928", "20121210"],
+        },
+        "tool_calls": [
+            {"tool": "clinicaltrials_v2_search", "source": "clinicaltrials_mcp"},
+            {"tool": "mfds_clinical_trial_kr", "source": "nedrug_mcp"},
+        ],
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "국내 식약처 임상 등록에서는" in answer
+    assert "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨)" in answer.replace(", ", ",")
+    assert "YH14700" in answer
+    assert "YH16410" in answer
+    assert answer.index("국내 식약처 임상 등록에서는") < answer.index("| 임상시험 번호 |")
+
+
+def test_combined_clinical_timeout_fallback_keeps_global_and_domestic_evidence(monkeypatch) -> None:
+    fact_md = "\n".join(
+        (
+            "- pitavastatin: 글로벌 임상시험 = NCT00257686 · Pitavastatin versus pravastatin "
+            "· https://clinicaltrials.gov/study/NCT00257686 [ClinicalTrials.gov 임상시험 정보]",
+            "- 고지혈증 (20120118): 국내 임상시험 = "
+            "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨) [식약처 의약품 정보]",
+            "- 고지혈증 (20120928): 국내 임상시험 = YH14700 [식약처 의약품 정보]",
+        )
+    )
+
+    def timeout_chat(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
+        raise requests.Timeout("simulated combined final-generation timeout")
+
+    monkeypatch.setattr(GenosClient, "_chat_text", timeout_chat)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {
+            "fact_md": fact_md,
+            "allowed_numbers": ["NCT00257686", "20120118", "20120928"],
+        },
+        "tool_calls": [
+            {"tool": "clinicaltrials_v2_search", "source": "clinicaltrials_mcp"},
+            {"tool": "mfds_clinical_trial_kr", "source": "nedrug_mcp"},
+        ],
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "고지혈증 질환의 임상·허가심사 단계 경쟁약물 현황을 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "표시할 검증 fact가 제한적" not in answer
+    assert "글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다" in answer
+    assert "NCT00257686" in answer
+    assert "Pitavastatin versus pravastatin" in answer
+    assert "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨)" in answer.replace(", ", ",")
+    assert "YH14700" in answer
+    assert "임상 성공, 허가 완료 또는 현재 개발 단계를 뜻하지 않습니다" in answer
+
+
+def test_combined_clinical_evidence_bypasses_slow_final_llm(monkeypatch) -> None:
+    fact_md = "\n".join(
+        (
+            "- pitavastatin: 글로벌 임상시험 = NCT00257686 · Pitavastatin versus pravastatin "
+            "· https://clinicaltrials.gov/study/NCT00257686 [ClinicalTrials.gov 임상시험 정보]",
+            "- 고지혈증 (20120118): 국내 임상시험 = "
+            "HL040XC정(무수아토르바스타틴칼슘,로자탄칼륨) [식약처 의약품 정보]",
+        )
+    )
+
+    def unexpected_final_llm(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
+        raise AssertionError("combined registry evidence must not wait for final LLM synthesis")
+
+    monkeypatch.setattr(GenosClient, "_chat_text", unexpected_final_llm)
+    client = GenosClient(token="dummy-token")
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "markdown_response": {
+            "fact_md": fact_md,
+            "allowed_numbers": ["NCT00257686", "20120118"],
+        },
+        "tool_calls": [
+            {"tool": "clinicaltrials_v2_search", "source": "clinicaltrials_mcp"},
+            {"tool": "mfds_clinical_trial_kr", "source": "nedrug_mcp"},
+            {"tool": "web_search", "source": "web_search"},
+        ],
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "고지혈증 질환의 임상·허가심사 단계 경쟁약물 현황을 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다" in answer
+    assert "NCT00257686" in answer
+    assert "HL040XC정" in answer
+
+
+def test_complete_concentration_evidence_bypasses_slow_final_llm(monkeypatch) -> None:
+    def unexpected_final_llm(_self: GenosClient, _messages: list[dict[str, str]]) -> str:
+        raise AssertionError("complete HHI and CR5 evidence must not wait for final LLM synthesis")
+
+    monkeypatch.setattr(GenosClient, "_chat_text", unexpected_final_llm)
+    client = GenosClient(token="dummy-token")
+    tool_calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "period": "2026-05",
+                "hhi": 253.62,
+                "level_segments": [
+                    {"rank": 1, "brand": "로수젯", "ms_recent_pct": 9.126493992011786},
+                    {"rank": 2, "brand": "리피토", "ms_recent_pct": 6.127772606529449},
+                    {"rank": 3, "brand": "리바로젯", "ms_recent_pct": 5.116717910777399},
+                    {"rank": 4, "brand": "아토젯", "ms_recent_pct": 4.948762740580882},
+                    {"rank": 5, "brand": "로수바미브", "ms_recent_pct": 4.1960520158172825},
+                ],
+            },
+        }
+    ]
+    agent_result = {
+        "answer": "",
+        "markdown_response": {"fact_md": "HHI = 253.62\nCR5 = 29.52%", "allowed_numbers": ["253.62", "29.52"]},
+        "tool_calls": tool_calls,
+    }
+
+    answer = "".join(
+        client.stream_answer(
+            "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "HHI 253.62" in answer
+    assert "CR5 29.52%" in answer
+    assert "29.53%" not in answer
+    assert "| 1위 | 로수젯 | 9.13% |" in answer
+    assert "| 2위 | 리피토 | 6.13% |" in answer
+    assert "| 3위 | 리바로젯 | 5.12% |" in answer
+    assert "| 4위 | 아토젯 | 4.95% |" in answer
+    assert "| 5위 | 로수바미브 | 4.20% |" in answer

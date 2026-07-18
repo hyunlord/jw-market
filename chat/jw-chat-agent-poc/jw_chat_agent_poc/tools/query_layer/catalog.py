@@ -97,11 +97,11 @@ class QueryCatalog:
 
 
 def default_catalog() -> QueryCatalog:
-    """Fallback enum catalog used before a brand-bound mart snapshot is loaded."""
+    """Shape-only catalog used before a market-bound mart snapshot is loaded."""
 
     dimensions = ("channel", "specialty", "molecule", "dosage_form", "ox_gx", "product", "company")
     return QueryCatalog(
-        market="ml_006",
+        market="",
         source="ubist",
         sources=("ubist",),
         view="market_landscape",

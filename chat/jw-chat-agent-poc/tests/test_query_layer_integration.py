@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
 
 from jw_chat_agent_poc import ChatAgent
+from jw_chat_agent_poc.common.periods import canonical_periods
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
@@ -124,6 +125,179 @@ def test_brand_metric_carries_split_market_structure_for_source_detail() -> None
     fact_md = answer_fact_markdown([call], ["IQVIA NSA"])
     assert "Class 구분 존재" in fact_md
     assert "Class 2 기준" in fact_md
+
+
+def test_brand_metric_aggregates_complete_quarter_and_rejects_incomplete_quarter() -> None:
+    """Given an explicit quarter, all three monthly values are required and summed."""
+
+    question = "리바로 2025년 2분기 매출"
+    requested_period = canonical_periods(question)[0]
+    complete_records = (
+        _record_with_market(
+            "ml_006",
+            "리바로",
+            (1_000_000_000.0, 2_000_000_000.0, 3_000_000_000.0),
+            ("2025-04", "2025-05", "2025-06"),
+            [10_000_000_000.0] * 3,
+        ),
+        _record_with_market(
+            "ml_006",
+            "경쟁브랜드",
+            (9_000_000_000.0, 8_000_000_000.0, 7_000_000_000.0),
+            ("2025-04", "2025-05", "2025-06"),
+            [10_000_000_000.0] * 3,
+        ),
+    )
+
+    complete = StrategicQueryLayer(reader=StaticStrategicMartReader(complete_records)).brand_metric(
+        "리바로", "sales", requested_period
+    )
+    incomplete_record = replace(
+        complete_records[0],
+        metric_history={key: value for key, value in complete_records[0].metric_history.items() if key != "2025-06"},
+    )
+    incomplete = StrategicQueryLayer(
+        reader=StaticStrategicMartReader((incomplete_record, complete_records[1]))
+    ).brand_metric("리바로", "sales", requested_period)
+
+    assert complete["tool"] == "get_brand_metric"
+    assert complete["render_data"]["period"] == "2025-Q2"
+    assert complete["render_data"]["sales_krw"] == 6_000_000_000.0
+    assert complete["render_data"]["market_size_recent_krw"] == 30_000_000_000.0
+    assert "fallback_period" not in complete["render_data"]
+    assert complete["render_data"]["query_spec"]["filters"]["period"] == "2025-Q2"
+    assert "~" not in complete["summary_text"]
+    assert incomplete["tool"] == "query_failed"
+    assert incomplete["render_data"]["period"] == "2025-Q2"
+
+
+def test_brand_metric_uses_the_source_that_contains_an_iqvia_only_brand() -> None:
+    """Given a mixed-source market, an IQVIA-only brand must not inherit the market UBIST default."""
+
+    periods = ("2026-Q1",)
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(_record_with_market("ml_003", "UBIST브랜드", (100.0,), periods, [100.0]), source="ubist"),
+                replace(_record_with_market("ml_003", "마운자로", (200.0,), periods, [200.0]), source="iqvia_nsa"),
+            )
+        )
+    )
+
+    call = layer.brand_metric("마운자로", "market_share", "latest")
+
+    assert call["source"] == "IQVIA"
+    assert call["render_data"]["brand"] == "마운자로"
+
+
+def test_brand_series_keeps_latest_alias_until_iqvia_source_is_selected() -> None:
+    """The facade must not turn ``latest`` into a monthly period before source selection."""
+
+    periods = ("2025-Q4", "2026-Q1")
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(_record_with_market("ml_003", "UBIST브랜드", (100.0, 110.0), periods, [100.0, 110.0]), source="ubist"),
+                replace(_record_with_market("ml_003", "마운자로", (180.0, 200.0), periods, [180.0, 200.0]), source="iqvia_nsa"),
+            )
+        )
+    )
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("마운자로",),
+        query_layer=layer,
+    )
+
+    execution = facade.execute("get_brand_series", {"brand": "마운자로", "period": "latest"})
+
+    assert execution.status == "ok"
+    assert execution.call["source"] == "IQVIA"
+    assert execution.call["tool"] == "get_brand_metric"
+    assert execution.call["render_data"]["period"] == "2026-Q1"
+
+
+def test_metric_query_failure_does_not_fall_through_to_fixture_zero() -> None:
+    class BrokenLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
+            raise LookupError(f"missing {brand} {metric} {period}")
+
+        def catalog_for_brand(self, brand: str | None):
+            return None
+
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=BrokenLayer(),  # type: ignore[arg-type]
+    )
+
+    execution = facade.execute("get_metric", {"brand": "리바로", "measure": "sales", "period": "2025-04"})
+
+    assert execution.status == "error"
+    assert execution.call["tool"] == "query_failed"
+    assert execution.call["render_data"]["status"] == "query_failed"
+    assert "sales_억원" not in execution.call["render_data"]
+
+
+def test_query_uses_the_source_that_contains_an_iqvia_only_fallback_brand() -> None:
+    """Given no explicit source, a filtered query follows the fallback brand's available source."""
+
+    periods = ("2026-Q1",)
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(_record_with_market("ml_003", "UBIST브랜드", (100.0,), periods, [100.0]), source="ubist"),
+                replace(_record_with_market("ml_003", "마운자로", (200.0,), periods, [200.0]), source="iqvia_nsa"),
+            )
+        )
+    )
+
+    call = layer.query(
+        {"market": "ml_003", "metrics": ["sales"], "filters": {"brand": "마운자로", "period": "latest"}},
+        fallback_brand="마운자로",
+    )
+
+    assert call["source"] == "IQVIA"
+    assert call["render_data"]["source_label"] == "IQVIA"
+
+
+def test_iqvia_average_share_converts_six_months_to_two_quarters() -> None:
+    periods = ("2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1")
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                replace(
+                    _record_with_market("ml_003", "마운자로", (100.0, 120.0, 140.0, 160.0, 200.0), periods, [100.0, 120.0, 140.0, 160.0, 200.0]),
+                    source="iqvia_nsa",
+                ),
+            )
+        )
+    )
+
+    call = layer.query(
+        {
+            "market": "ml_003",
+            "source": "iqvia_nsa",
+            "metrics": ["share"],
+            "derive": ["average"],
+            "filters": {"brand": "마운자로", "periods": "6"},
+        },
+        fallback_brand="마운자로",
+    )
+
+    data = call["render_data"]
+    assert [row["period"] for row in data["brand_value_series_10pt"]] == ["2025-Q4", "2026-Q1"]
+    assert data["requested_window_months"] == 6
+    assert data["observation_count"] == 2
+    assert data["window_grain"] == "quarter"
+
+
+def test_average_share_plan_leaves_source_to_brand_availability() -> None:
+    plan = strict_query_plan("마운자로의 최근 6개월 시장점유율 평균은?", "마운자로")
+
+    assert plan is not None
+    assert plan.specs[0]["source"] == ""
 
 
 def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:
@@ -308,7 +482,9 @@ def test_query_layer_falls_back_from_failed_requested_period_and_keeps_split_str
         }
     ]
     series_periods = [item["period"] for item in data["brand_value_series_10pt"]]
-    assert series_periods == ["2025-Q3", "2025-Q4"]
+    assert series_periods == ["2025-Q3", "2025-Q4", "2026-04"]
+    assert data["brand_value_series_10pt"][-1]["value_krw"] is None
+    assert data["brand_value_series_10pt"][-1]["ms_pct"] is None
     assert "0.00억원" not in result["summary_text"]
     assert "MS 0.00%" not in result["summary_text"]
     fact_md = answer_fact_markdown([result], [result["source"]])
@@ -462,6 +638,28 @@ def test_query_spec_builds_dimension_trend_for_period_grouping() -> None:
     assert first["to_ms_pct"] == first["series"][-1]["ms_pct"]
 
 
+def test_query_spec_brand_trend_keeps_market_share_and_rank_population() -> None:
+    call = _query_layer().query(
+        {
+            "market": "ml_006",
+            "source": "ubist",
+            "group_by": ["product", "period"],
+            "metrics": ["sales"],
+            "derive": ["trend"],
+            "filters": {"brand": "리바로", "periods": 3},
+        },
+        fallback_brand="리바로",
+    )
+
+    trend = call["render_data"]["level_top5_trend_series"][0]
+    expected = _query_layer().brand_metric("리바로", "sales", "latest")["render_data"]
+
+    assert trend["brand"] == "리바로"
+    assert trend["rank"] == expected["rank"]
+    assert trend["ms_recent_pct"] == pytest.approx(expected["ms_recent_pct"])
+    assert trend["ms_recent_pct"] != 100.0
+
+
 def test_query_spec_groups_class2_for_split_market() -> None:
     """Given a split market, query(spec) can group the exposed Class 2 population."""
 
@@ -547,6 +745,30 @@ def test_completion_uses_query_layer_for_unsupported_comparison_brand() -> None:
     assert comparison_calls
     assert comparison_calls[0]["source"] == "UBIST"
     assert comparison_calls[0]["render_data"]["metric"] == "market_member_series"
+
+
+def test_concentration_backfill_uses_observed_brand_for_market_anaphora() -> None:
+    planner = ScriptedPlanner(
+        (
+            AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        name="get_metric",
+                        arguments={"brand": "리바로", "measure": "sales", "period": "latest"},
+                        reason="이전 시장 anchor의 브랜드 지표",
+                    ),
+                )
+            ),
+            AgentDecision(final_answer="done"),
+        )
+    )
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=BrandResolver(), planner=planner, query_layer=_query_layer())
+
+    result = agent.answer("이 시장 집중도는 어때?")
+
+    market_scope = next(call for call in result["tool_calls"] if call.get("tool") == "get_market_landscape")
+    assert market_scope["render_data"]["anchor_brand"] == "리바로"
+    assert market_scope["render_data"]["hhi_recent"] is not None
 
 
 def test_share_comparison_completion_uses_query_layer_for_market_member() -> None:
@@ -966,8 +1188,66 @@ def test_simple_sales_question_stays_single_shot() -> None:
     assert not should_use_agent_loop("리바로 매출")
 
 
+def test_metric_free_brand_comparison_enters_agent_loop() -> None:
+    assert should_use_agent_loop("리바로와 로수젯을 비교해줘")
+
+
 def _query_layer() -> StrategicQueryLayer:
     return StrategicQueryLayer(reader=StaticStrategicMartReader(_records()))
+
+
+def test_market_scope_includes_latest_hhi_for_concentration_answers() -> None:
+    call = _query_layer().market_scope("리바로")
+
+    assert call["render_data"]["hhi_recent"] > 0
+    assert call["render_data"]["period"] == "2026-04"
+
+
+def test_query_layer_computes_derived_metrics_from_one_mart_snapshot() -> None:
+    periods = tuple(f"{year}-{month:02d}" for year in range(2020, 2026) for month in range(1, 13))
+    anchor_values = tuple((100.0 + index) * 100_000_000 for index in range(len(periods)))
+    peer_values = tuple((200.0 + index * 0.5) * 100_000_000 for index in range(len(periods)))
+    totals = [anchor_values[index] + peer_values[index] for index in range(len(periods))]
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record_with_market("ml_006", "리바로", anchor_values, periods, totals),
+                _record_with_market("ml_006", "경쟁브랜드", peer_values, periods, totals),
+            )
+        )
+    )
+
+    hhi = layer.brand_derived_metric("리바로", "hhi")
+    momentum = layer.brand_derived_metric("리바로", "momentum")
+    ei = layer.brand_derived_metric("리바로", "ei")
+    contribution = layer.brand_derived_metric("리바로", "growth_contribution")
+
+    assert hhi["source"] == "UBIST"
+    assert hhi["render_data"]["hhi_recent"] > 0
+    assert hhi["render_data"]["hhi_series_5y"]
+    assert hhi["render_data"]["hhi_series_5y"][-1]["hhi"] == 5142.5753
+    assert momentum["render_data"]["momentum_score"] is not None
+    assert ei["render_data"]["ei_basis"].startswith("endpoint_")
+    assert ei["render_data"]["ei"] is not None
+    assert contribution["render_data"]["growth_contribution_basis"] == "year_over_year_absolute_growth"
+    assert contribution["render_data"]["growth_contribution"] is not None
+
+
+def test_chat_agent_query_failure_never_calls_legacy_metrics_fallback() -> None:
+    class BrokenLayer:
+        def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
+            raise LookupError(f"missing {brand} {metric} {period}")
+
+    class LegacyFallbackBomb:
+        def get_brand_metric(self, *args, **kwargs):
+            raise AssertionError("legacy metric fallback must not run")
+
+    agent = ChatAgent(metrics=LegacyFallbackBomb(), query_layer=BrokenLayer())
+
+    call = agent._metric_call("리바로", metric="sales", filter_entries=())
+
+    assert call["tool"] == "query_failed"
+    assert call["render_data"]["status"] == "query_failed"
 
 
 def _portfolio_query_layer() -> StrategicQueryLayer:

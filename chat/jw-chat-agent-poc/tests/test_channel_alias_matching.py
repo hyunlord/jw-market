@@ -93,6 +93,16 @@ def test_specific_channel_sales_plan_filters_instead_of_listing_all_channels(
     )
 
 
+def test_channel_top_brand_plan_ranks_products_inside_requested_channel() -> None:
+    plan = strict_query_plan("리바로 시장에서 상급종합병원 채널 내 상위 브랜드를 알려줘", "리바로")
+
+    assert plan is not None
+    assert plan.specs[0]["group_by"] == ["product"]
+    assert plan.specs[0]["metrics"] == ["share"]
+    assert plan.specs[0]["filters"] == {"channel": "상급종병"}
+    assert plan.specs[0]["limit"] == 5
+
+
 def test_unknown_specific_channel_is_rejected() -> None:
     plan = strict_query_plan("온라인몰 채널에서 리바로 매출은?", "리바로")
 

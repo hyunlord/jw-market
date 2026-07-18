@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from jw_chat_agent_poc.agentic import FilterEntry
 from jw_chat_agent_poc.orchestrator.external_notices import external_unavailable_for_missing_molecule, seeded_false_positive_notice
@@ -25,13 +25,34 @@ class AgentLoopResolution(Protocol):
     is_combo: bool
 
 
+_MFDS_PRODUCT_FORM_PREFIXES: Final[tuple[str, ...]] = (
+    "정",
+    "캡슐",
+    "주",
+    "시럽",
+    "액",
+    "산",
+    "과립",
+    "겔",
+    "크림",
+    "연고",
+    "패치",
+    "서방",
+    "구강",
+    "점안",
+    "흡입",
+    "현탁",
+    "프리필드",
+)
+
+
 def search_news_call(news: DeepAnalysisNewsTool, brand: str, query: str) -> dict:
     filters: tuple[FilterEntry, ...] = (("text_contains", query),) if query else ()
     call = news.related_news(brand, filter_entries=filters)
     data = call.setdefault("render_data", {})
     data["facade_tool"] = "search_news"
     data["filter_entries"] = filters
-    data["provenance"] = {"source": "events/event_brand_scores", "mode": "full_corpus_or_cache_fallback"}
+    data["provenance"] = {"source": "events/event_brand_scores", "mode": "corpus_only"}
     return call
 
 
@@ -47,7 +68,7 @@ def background_news_context_call(news: DeepAnalysisNewsTool, brand: str, relevan
     data["facade_tool"] = "background_news_context"
     data["context_role"] = "background_insight"
     data["filter_entries"] = filters
-    data["provenance"] = {"source": "events/event_brand_scores", "mode": "full_corpus_or_cache_fallback"}
+    data["provenance"] = {"source": "events/event_brand_scores", "mode": "corpus_only"}
     return call
 
 
@@ -112,6 +133,25 @@ def patent_ingredient_call(ingredient_en: str, external: ExternalApiClient) -> d
 def drug_info_call(resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
     calls = _drug_info_calls(resolution, external)
     return _aggregate_call("search_drug_info", "external_api", _aggregate_status(calls), calls, f"{resolution.canonical_brand} MFDS 허가정보")
+
+
+def safety_call(resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
+    if not resolution.molecule_en:
+        calls = [external_unavailable_for_missing_molecule(resolution)]
+    elif is_external_inapplicable_brand(resolution.canonical_brand):
+        calls = [inapplicable_call(resolution.canonical_brand, resolution.molecule_en)]
+    elif resolution.is_combo:
+        calls = [external.openfda_combo_label_search(resolution.molecule_en)]
+        calls.extend(external.openfda_label_search(molecule) for molecule in resolution.molecule_en)
+    else:
+        calls = [external.openfda_label_search(molecule) for molecule in resolution.molecule_en]
+    return _aggregate_call(
+        "search_safety",
+        "external_api",
+        _aggregate_status(calls),
+        calls,
+        f"{resolution.canonical_brand} FDA 안전성 근거",
+    )
 
 
 def web_search_call(question: str, resolution: AgentLoopResolution, external: ExternalApiClient) -> dict:
@@ -261,9 +301,20 @@ def _first_matching_mfds_item(call: ExternalCall, brand: str) -> dict[str, Any] 
     brand_key = _normal_key(brand)
     for item in _mfds_items(call):
         name = _normal_key(item.get("ITEM_NAME") or item.get("itemName") or "")
-        if brand_key and brand_key in name:
+        if _is_mfds_product_family_match(name, brand_key):
             return item
     return None
+
+
+def _is_mfds_product_family_match(product_name: str, canonical_brand: str) -> bool:
+    if not canonical_brand or not product_name.startswith(canonical_brand):
+        return False
+    suffix = product_name[len(canonical_brand) :]
+    if not suffix:
+        return True
+    if suffix[0].isdigit() or suffix[0] in "(-[/":
+        return True
+    return suffix.startswith(_MFDS_PRODUCT_FORM_PREFIXES)
 
 
 def _has_mfds_items(call: ExternalCall) -> bool:

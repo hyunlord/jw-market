@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
+from math import isfinite
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
@@ -128,7 +130,7 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
             ("매출", eok_value(data.get("sales_억원"), data.get("sales_krw")), "render_data.sales_krw"),
             (
                 "시장규모",
-                eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw")) or _latest_market_size(data),
+                _market_size_value(data) or _latest_market_size(data),
                 "render_data.market_size_recent_krw",
             ),
             (
@@ -153,7 +155,127 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
             ("매출 변화율", pct_value(data.get("sales_delta_pct")), "render_data.sales_delta_pct"),
         )
     )
+    rows.extend(_series_insight_values(data.get("series_insight")))
     return rows
+
+
+def _market_size_value(data: dict[str, Any]) -> str:
+    value = eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw"))
+    market_id = str(data.get("market_id") or data.get("market") or "").lower()
+    view = str(data.get("view_type") or data.get("view") or "").lower()
+    if not (market_id.startswith("ml_") or "market_landscape" in view):
+        return value
+
+    raw = data.get("market_size_억원")
+    divisor = Decimal("1")
+    if raw is None:
+        raw = data.get("market_size_recent_krw")
+        divisor = Decimal("100000000")
+    try:
+        amount = Decimal(str(raw)) / divisor
+    except (InvalidOperation, TypeError, ValueError):
+        return value
+    if not amount.is_finite():
+        return value
+    return f"{amount:,.6f}억원"
+
+
+def _series_insight_values(raw: Any) -> list[tuple[str, str, str]]:
+    if not isinstance(raw, dict):
+        return []
+    rows: list[tuple[str, str, str]] = []
+    specs = (
+        ("점유율 시작", "share_start_pct", "pct"),
+        ("점유율 종료", "share_end_pct", "pct"),
+        ("점유율 변화", "share_delta_pctp", "pctp"),
+        ("매출 시작", "sales_start_krw", "eok"),
+        ("매출 종료", "sales_end_krw", "eok"),
+        ("매출 변화", "sales_delta_krw", "eok"),
+        ("브랜드 성장률", "brand_growth_pct", "pct"),
+        ("시장 성장률", "market_growth_pct", "pct"),
+        ("초과성장", "excess_growth_pctp", "pctp"),
+        ("브랜드 MoM", "brand_mom_pct", "pct"),
+        ("시장 MoM", "market_mom_pct", "pct"),
+        ("브랜드 YoY", "brand_yoy_pct", "pct"),
+        ("시장 YoY", "market_yoy_pct", "pct"),
+        ("브랜드 CMGR", "brand_cmgr_pct", "pct"),
+        ("시장 CMGR", "market_cmgr_pct", "pct"),
+        ("브랜드 CQGR", "brand_cqgr_pct", "pct"),
+        ("시장 CQGR", "market_cqgr_pct", "pct"),
+        ("최고 점유율", "share_max_pct", "pct"),
+        ("최저 점유율", "share_min_pct", "pct"),
+        ("HHI", "hhi_end", "num"),
+        ("CR5", "cr5_end_pct", "pct"),
+        ("분모", "denominator_end", "count"),
+        ("추세 기간", "trend_months", "months"),
+        ("시작 순위", "rank_start", "rank"),
+        ("종료 순위", "rank_end", "rank"),
+    )
+    for label, key, kind in specs:
+        value = raw.get(key)
+        rendered = _insight_value(value, kind)
+        if rendered:
+            rows.append((label, rendered, f"render_data.series_insight.{key}"))
+    for key in ("share_max_period", "share_min_period", "turning_point"):
+        period = raw.get(key)
+        if isinstance(period, str) and period:
+            rows.append(("파생 기간", period, f"render_data.series_insight.{key}"))
+    competitors = raw.get("competitors")
+    if isinstance(competitors, list | tuple):
+        for index, competitor in enumerate(competitors):
+            if not isinstance(competitor, dict):
+                continue
+            for label, key, kind in (
+                ("경쟁 브랜드 시작 점유율", "share_start_pct", "pct"),
+                ("경쟁 브랜드 종료 점유율", "share_end_pct", "pct"),
+                ("경쟁 브랜드 매출", "sales_end_krw", "eok"),
+                ("경쟁 브랜드 순위", "rank_end", "rank"),
+            ):
+                rendered = _insight_value(competitor.get(key), kind)
+                if rendered:
+                    rows.append((label, rendered, f"render_data.series_insight.competitors[{index}].{key}"))
+            for label, start_key, end_key, kind in (
+                ("경쟁 브랜드 점유율 변화", "share_start_pct", "share_end_pct", "pctp"),
+                ("경쟁 브랜드 매출 변화", "sales_start_krw", "sales_end_krw", "eok"),
+            ):
+                rendered = _derived_insight_delta(competitor.get(start_key), competitor.get(end_key), kind)
+                if rendered:
+                    rows.append(
+                        (
+                            label,
+                            rendered,
+                            f"render_data.series_insight.competitors[{index}].{end_key}-{start_key}",
+                        )
+                    )
+    return rows
+
+
+def _derived_insight_delta(start: Any, end: Any, kind: str) -> str:
+    if not isinstance(start, int | float) or not isinstance(end, int | float):
+        return ""
+    start_value = float(start)
+    end_value = float(end)
+    if not isfinite(start_value) or not isfinite(end_value):
+        return ""
+    return _insight_value(end_value - start_value, kind)
+
+
+def _insight_value(value: Any, kind: str) -> str:
+    if not isinstance(value, int | float):
+        return ""
+    if kind == "pct":
+        return pct_value(value)
+    if kind == "pctp":
+        return f"{float(value):.2f}%p"
+    if kind == "eok":
+        return eok_value(None, abs(float(value)))
+    if kind == "count":
+        return f"{int(value)}개"
+    if kind == "months":
+        return f"{int(value)}개월"
+    if kind == "rank":
+        return f"{int(value)}위"
+    return f"{float(value):.2f}"
 
 
 def _surfaceable_cagr_value(data: dict[str, Any], key: str) -> str:
@@ -252,6 +374,7 @@ def _fact(
     visible: bool,
 ) -> EvidenceFact:
     allowed = set(number_tokens(value))
+    allowed.update(number_tokens(label))
     allowed.update(_period_display_tokens(value))
     if label == "환자수" and value.isdigit():
         allowed.update(number_tokens(f"{value}명"))

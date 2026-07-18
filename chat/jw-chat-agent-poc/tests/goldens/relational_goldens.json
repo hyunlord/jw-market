@@ -1,0 +1,71 @@
+{
+  "owner": "cross-path equality contracts",
+  "contracts": [
+    {
+      "id": "structured_market_precomputed_equals_realtime",
+      "gate_enabled": true,
+      "request": {
+        "kind": "relational_calculation",
+        "exact": "동일 입력에 대한 사전계산 셀과 실시간 계산 셀을 canonical byte로 전수 비교"
+      },
+      "generation_method": {
+        "description": "Compute both paths from the same source rows and compare every canonical serialized cell.",
+        "canonicalization": "UTF-8 JSON with sort_keys=True, separators=(',', ':'), ensure_ascii=False.",
+        "environment": "Local db501dcc census"
+      },
+      "expected": {
+        "relation": "precomputed == realtime byte-identical",
+        "checked_cells": 2445691,
+        "population_cells": 2445691
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "independent_path_equivalence",
+        "evidence": "The independently executed precomputed and realtime paths matched for all 2,445,691 local census cells.",
+        "evidence_paths": ["git://db501dcc64ecb56dfa9357199caff55fe5013e8f"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T00:00:00+09:00",
+        "database": "jw_mart_d2_stage_20260630_r2",
+        "build_sha": "db501dcc64ecb56dfa9357199caff55fe5013e8f",
+        "runtime_digest": "not_recorded: local census",
+        "file_sha256": "not_applicable: database input"
+      }
+    },
+    {
+      "id": "p91_text_fast_path_psm3_equals_psm4",
+      "gate_enabled": true,
+      "request": {
+        "kind": "relational_extraction",
+        "exact": "동일 ADA 텍스트 레이어 PDF를 PSM3와 PSM4 조건에서 각각 처리하고 canonical 추출 결과를 비교"
+      },
+      "generation_method": {
+        "description": "Run the same text-layer input through both PSM settings; confirm OCR pages remain zero and compare normalized extraction output and chunk count.",
+        "canonicalization": "For each run, remove only volatile reg_date, then serialize UTF-8 JSON with sort_keys=True, separators=(',', ':'), ensure_ascii=False; compare PSM3 and PSM4 bytes directly.",
+        "environment": "p91 live ConfigMap source with identical image/runtime and only OCR_TESSERACT_PSM varied"
+      },
+      "expected": {
+        "relation": "PSM3 vs PSM4 byte-identical",
+        "psm3_chunks": 1411,
+        "psm4_chunks": 1411,
+        "psm3_ocr_pages": 0,
+        "psm4_ocr_pages": 0
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "controlled_pair_equivalence",
+        "evidence": "The same input and runtime were exercised under PSM3 and PSM4. The contract is their equality, not an unreproducible fixed digest from one serialization attempt.",
+        "evidence_paths": ["audit://22c64fd3adaae72d96dea99da3321d82ffd7f4288e6f37d450e446faae88088e"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-15T00:00:00+09:00",
+        "database": "not_applicable: document extraction",
+        "build_sha": "6736054678ca48df50e6db63985c660d6616d1f5",
+        "runtime_digest": "sha256:718277e202b9fbd61c0dd4fe431aa036b2f51541f6e5831a4e3169c1f02cf64f",
+        "file_sha256": "not_recorded: source input was ephemeral; contract relies on controlled same-input equality"
+      }
+    }
+  ]
+}

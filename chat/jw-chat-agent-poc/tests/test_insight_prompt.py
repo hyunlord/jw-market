@@ -83,6 +83,66 @@ def test_final_answer_prompt_prioritizes_direct_metric_questions() -> None:
     assert "브랜드명·기간·값" in user_prompt
 
 
+def test_final_answer_prompt_requires_prose_first_conversation() -> None:
+    """Given verified facts, When prompting Flash, Then prose leads and tables only support it."""
+
+    messages = GenosClient._markdown_messages(
+        "리바로 경쟁구도 어떻게 변하고 있어",
+        {
+            "fact_md": (
+                "### 필수 답변 fact\n"
+                "| 구분 | 반드시 반영할 내용 |\n"
+                "| --- | --- |\n"
+                "| 경쟁 현황 | 로수젯 시장점유율 9.13% |"
+            )
+        },
+    )
+    system_prompt = messages[0]["content"]
+    user_prompt = messages[1]["content"]
+
+    assert "사람에게 설명하듯 자연스러운 문단" in system_prompt
+    assert "핵심을 한두 문장으로 먼저" in system_prompt
+    assert "값이나 표를 먼저 나열하지 않는다" in system_prompt
+    assert "기존 표·차트·뉴스·출처를 삭제하거나 축소하지 않는다" in system_prompt
+    assert "표·차트·뉴스는 자연어 본문 뒤에 근거 자료로 그대로 유지" in system_prompt
+    assert "확정 fact에 없는 수치·사실·원인은 덧붙이지 않는다" in system_prompt
+    assert "자연어 문단을 먼저" in user_prompt
+    assert "기존 표·차트·뉴스는 그대로 유지" in user_prompt
+    assert "표는 꼭 필요한 경우에만" not in system_prompt
+
+
+def test_final_answer_prompt_sends_each_verified_fact_section_once() -> None:
+    """Given repeated fact sections, When prompting, Then redundant context is omitted."""
+
+    # Given
+    mandatory_row = "| 경쟁 현황 | 로수젯 시장점유율 9.13% |"
+    repeated_section = (
+        "### 상위 브랜드 월별 MS fact\n"
+        "| 브랜드 | 월별 MS |\n"
+        "| --- | --- |\n"
+        "| 로수젯 | 2026-04 9.14% → 2026-05 9.13% |"
+    )
+    fact_md = (
+        "### 필수 답변 fact\n"
+        "| 구분 | 반드시 반영할 내용 |\n"
+        "| --- | --- |\n"
+        f"{mandatory_row}\n\n"
+        f"{repeated_section}\n\n"
+        f"{repeated_section}"
+    )
+
+    # When
+    user_prompt = GenosClient._markdown_messages(
+        "리바로 경쟁구도 어떻게 변하고 있어",
+        {"fact_md": fact_md},
+    )[1]["content"]
+
+    # Then
+    assert user_prompt.count("로수젯 시장점유율 9.13%") == 1
+    assert "### 필수 답변 fact" not in user_prompt
+    assert user_prompt.count("### 상위 브랜드 월별 MS fact") == 1
+
+
 def test_mandatory_retry_prompt_preserves_insight_and_fact_boundaries() -> None:
     """Given missing required facts, When retrying, Then the retry prompt still asks for causal insight."""
 

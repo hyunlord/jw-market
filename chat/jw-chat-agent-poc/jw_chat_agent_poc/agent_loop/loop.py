@@ -1,28 +1,74 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Collection
+from dataclasses import asdict, dataclass
 import json
+import logging
 import math
 from typing import Any
 
+from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
+from jw_chat_agent_poc.agent_loop.parallel_execution import (
+    TimedExecution,
+    execute_tool_batch,
+    planned_parallel_tool_names,
+)
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
+from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
+from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
+from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidationError, validate_bq_analysis_call
+from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
-from jw_chat_agent_poc.common.timing import new_timing, stage
+from jw_chat_agent_poc.common.timing import add_stage, emit_completed_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
+from jw_chat_agent_poc.common.periods import canonical_periods
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+
+logger = logging.getLogger(__name__)
+
+_DEEP_PARALLEL_MARKET_TOOLS = frozenset(
+    {"get_metric", "get_market_scope", "get_brand_series", "get_top_brands"}
+)
+_DEEP_TOOL_GROUP_BY_NAME = {
+    "get_metric": "시장",
+    "get_market_scope": "시장",
+    "get_brand_series": "시장",
+    "get_top_brands": "시장",
+    "search_news": "뉴스",
+    "search_clinical": "임상",
+    "search_drug_info": "허가",
+    "get_disease_stats": "환자",
+    "get_procedure_stats": "환자",
+    "search_safety": "안전성",
+    "search_patent": "특허",
+    "csd_activity_trend": "영업 활동",
+    "web_search": "웹",
+}
+_DEEP_TOOL_GROUP_ORDER = (
+    "시장",
+    "뉴스",
+    "임상",
+    "허가",
+    "환자",
+    "안전성",
+    "특허",
+    "영업 활동",
+    "웹",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,12 +81,19 @@ class ToolUseAgent:
     news: DeepAnalysisNewsTool | None = None
     external: ExternalApiClient | None = None
     query_layer: StrategicQueryLayer | None = None
+    progress_namespace: str = "standard"
 
     def answer(self, question: str) -> dict[str, Any]:
         timing = new_timing()
         planner = self.planner or GenosToolPlanner(fallback=HeuristicToolPlanner())
-        with stage(timing, "agent_pre_resolve", "brand and period grounding"):
-            base_allowed_brands = _pre_resolved_brands(question, self.resolver)
+        with stage(timing, self._stage_name("agent_pre_resolve", "deep_research_prepare"), "brand and period grounding"):
+            resolutions = _pre_resolutions(question, self.resolver)
+            base_allowed_brands = tuple(item.canonical_brand for item in resolutions)
+            market_by_brand = {
+                item.canonical_brand: item.market_id
+                for item in resolutions
+                if item.market_id is not None
+            }
             period_grounding = build_period_grounding(question, self.current_month)
         portfolio_call = _portfolio_decline_call(question, self.resolver, self.query_layer)
         if portfolio_call is not None:
@@ -64,14 +117,44 @@ class ToolUseAgent:
                 "sources": [portfolio_call.get("source") or "cache"],
                 "timing": timing,
             }
+        ambiguous = next((item for item in resolutions if item.requires_market_clarification), None)
+        if ambiguous is not None:
+            message = market_ambiguity_message(
+                ambiguous.canonical_brand,
+                ambiguous.market_names or ambiguous.market_ids,
+            )
+            return {
+                "question": question,
+                "resolution": asdict(ambiguous),
+                "decomposition": [{"intent": "market_clarification", "status": "needs_clarification", "max_steps": 0}],
+                "router_diagnostics": {"mode": "agent_loop", "deterministic_execution": True, "scope": "market_ambiguity"},
+                "agent_trace": [],
+                "agent_loop_metrics": {"status": "needs_clarification", "steps": 0, "tool_calls": 0, "selected_tools": []},
+                "tool_calls": [],
+                "answer": message,
+                "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+                "sources": [],
+                "timing": timing,
+            }
         observations: list[AgentObservation] = []
         calls: list[dict[str, Any]] = []
         trace: list[AgentTraceStep] = []
         seen: set[str] = set()
         notices: list[str] = []
         status = "ok"
+        expanded_members_exposed = False
+        deterministic_plan_hit = False
+        deterministic_plan_kind: str | None = None
+        bq_analysis_validation = "not_applicable"
+        bq_missing_sources: tuple[str, ...] = ()
+        llm_plan_calls = 0
         for step in range(1, self.max_steps + 1):
             allowed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
+            planner_allowed_brands = _planner_allowed_brands(
+                base_allowed_brands,
+                tuple(observations),
+                expanded_members_exposed=expanded_members_exposed,
+            )
             facade = AgentToolFacade(
                 metrics=self.metrics,
                 resolver=self.resolver,
@@ -81,23 +164,134 @@ class ToolUseAgent:
                 news=self.news,
                 external=self.external,
                 query_layer=self.query_layer,
+                market_by_brand=market_by_brand,
             )
-            with stage(timing, "market_snapshot", "tool catalog and market snapshot"):
-                tool_schemas = facade.schemas()
+            with stage(timing, self._stage_name("market_snapshot", "deep_research_plan"), "tool catalog and market snapshot"):
+                tool_schemas = facade.schemas(planner_allowed_brands)
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
-            brand_detail = ", ".join(allowed_brands) or "unresolved"
-            with stage(timing, "llm_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
-                decision = planner.decide(question, tuple(observations), tool_schemas, allowed_brands, period_grounding.schema_periods)
-                _record_planner_token_usage(timing, planner)
-                progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
+            brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
+            bq_plan = (
+                plan_bq_question(
+                    question,
+                    self.resolver,
+                    period_grounding,
+                    tool_schemas,
+                    facade.available_sources(),
+                )
+                if self.planner is None and not observations
+                else None
+            )
+            structured_plan = (
+                plan_structured_market_question(
+                    question,
+                    self.resolver,
+                    period_grounding,
+                    tool_schemas,
+                )
+                if (
+                    bq_plan is None
+                    and not observations
+                    and (self.planner is None or is_explicit_quarter_sales_question(question))
+                )
+                else None
+            )
+            if bq_plan is not None:
+                with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                    decision = bq_plan.decision
+                    deterministic_plan_hit = True
+                    deterministic_plan_kind = f"BQ:{bq_plan.contract.contract_id}"
+                    bq_missing_sources = bq_plan.missing_sources
+                    progress.summary = " -> ".join(call.name for call in decision.tool_calls)
+            elif structured_plan is not None:
+                with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                    decision = structured_plan.decision
+                    deterministic_plan_hit = True
+                    deterministic_plan_kind = structured_plan.kind
+                    progress.summary = " -> ".join(call.name for call in decision.tool_calls)
+            else:
+                with stage(timing, self._stage_name("llm_plan", "deep_research_plan"), f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                    decision = planner.decide(
+                        question,
+                        tuple(observations),
+                        tool_schemas,
+                        planner_allowed_brands,
+                        period_grounding.schema_periods,
+                    )
+                    llm_plan_calls += 1
+                    _record_planner_token_usage(timing, planner)
+                    progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
+            if _has_market_members(tuple(observations)):
+                expanded_members_exposed = True
             if not decision.tool_calls:
                 trace.append(_trace_step(step, decision, ()))
                 break
             batch: list[AgentObservation] = []
             duplicate = False
-            for plan in decision.tool_calls:
-                with stage(timing, f"tool:{plan.name}", f"step={step}"):
-                    execution = _execute_grounded(facade, plan)
+            is_bq_batch = bool(
+                deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:")
+            )
+            deep_parallel_tools = (
+                _DEEP_PARALLEL_MARKET_TOOLS if self.progress_namespace == "deep" else ()
+            )
+            deep_batch_detail = _deep_batch_progress_detail(
+                decision.tool_calls,
+                deep_parallel_tools,
+            )
+
+            def record_tool_completion(timed_execution: TimedExecution[ToolExecution]) -> None:
+                plan = timed_execution.plan
+                execution = timed_execution.result
+                detail = f"step={step}; mode={timed_execution.mode}"
+                summary = _deep_tool_progress_summary(execution) if self.progress_namespace == "deep" else None
+                emit_completed_stage(
+                    timing,
+                    f"tool:{plan.name}",
+                    timed_execution.elapsed_ms,
+                    detail,
+                    summary=summary,
+                )
+
+            if is_bq_batch:
+                detail = (
+                    deep_batch_detail
+                    if self.progress_namespace == "deep"
+                    else f"step={step}; bounded independent support tools"
+                )
+                with stage(
+                    timing,
+                    self._stage_name("tool_batch", "deep_research_tool_batch"),
+                    detail,
+                ) as batch_progress:
+                    execution_batch = execute_tool_batch(
+                        decision.tool_calls,
+                        lambda plan: _execute_grounded(facade, plan),
+                        additional_parallel_tools=deep_parallel_tools,
+                        on_complete=record_tool_completion,
+                    )
+                    if self.progress_namespace == "deep":
+                        batch_progress.summary = f"{deep_batch_detail} 완료"
+            else:
+                detail = (
+                    deep_batch_detail
+                    if self.progress_namespace == "deep"
+                    else f"step={step}; independent support tools"
+                )
+                with stage(
+                    timing,
+                    self._stage_name("tool_batch", "deep_research_tool_batch"),
+                    detail,
+                ) as batch_progress:
+                    execution_batch = execute_tool_batch(
+                        decision.tool_calls,
+                        lambda plan: _execute_grounded(facade, plan),
+                        additional_parallel_tools=deep_parallel_tools,
+                        on_complete=record_tool_completion,
+                    )
+                    if self.progress_namespace == "deep":
+                        batch_progress.summary = f"{deep_batch_detail} 완료"
+            for timed_execution in execution_batch:
+                plan = timed_execution.plan
+                execution = timed_execution.result
                 key = _fingerprint(ToolCallPlan(name=plan.name, arguments=execution.arguments, reason=plan.reason))
                 if key in seen:
                     duplicate = True
@@ -112,12 +306,15 @@ class ToolUseAgent:
             trace.append(_trace_step(step, decision, tuple(batch)))
             if duplicate:
                 break
+            if is_bq_batch:
+                break
             if _observation_is_sufficient_for_final_answer(question, tuple(observations), tuple(batch)):
                 break
         else:
             status = "budget_exceeded"
             notices.append("agent loop step 예산을 초과해 확인된 도구 결과만 표시했습니다.")
-        brand = base_allowed_brands[0] if base_allowed_brands else _answer_brand(question, self.resolver)
+        observed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
+        brand = observed_brands[0] if observed_brands else _answer_brand(question, self.resolver)
         with stage(timing, "strict_query_plan", "population-sensitive spec mapping"):
             strict_calls = _strict_query_calls(
                 question,
@@ -210,9 +407,38 @@ class ToolUseAgent:
         _mark_answer_scope(question, calls, brand)
         with stage(timing, "context_retrieval", "background issue material"):
             calls.extend(_background_context_calls(question, calls, brand, self.news))
+        if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
+            with stage(timing, "bq_analysis", "deterministic cross-source calculations"):
+                analysis_call = None
+                if bq_missing_sources:
+                    status = "source_unavailable"
+                    bq_analysis_validation = "SOURCE_UNAVAILABLE"
+                    labels = ", ".join(_bq_source_label(source) for source in bq_missing_sources)
+                    notices.append(f"요청한 분석에 필요한 출처({labels})를 현재 조회할 수 없습니다.")
+                else:
+                    analysis_call = build_bq_analysis_call(deterministic_plan_kind.removeprefix("BQ:"), calls)
+                if not bq_missing_sources and analysis_call is None:
+                    status = "verification_failed"
+                    bq_analysis_validation = "MISSING_EVIDENCE"
+                    notices.append("분석에 필요한 근거가 완결되지 않아 해당 해석은 표시하지 않았습니다.")
+                elif analysis_call is not None:
+                    try:
+                        validate_bq_analysis_call(analysis_call)
+                    except BQAnalysisValidationError as exc:
+                        status = "verification_failed"
+                        bq_analysis_validation = "VERIFICATION_FAIL"
+                        notices.append("분석 근거 검증을 통과하지 못해 해당 해석은 표시하지 않았습니다.")
+                        logger.warning(
+                            "bq_analysis_validation_failed contract=%s reason=%s",
+                            deterministic_plan_kind,
+                            exc,
+                        )
+                    else:
+                        bq_analysis_validation = "passed"
+                        calls.append(analysis_call)
         sources = _sources(calls)
         selection = _tool_selection(question, calls)
-        with stage(timing, "fact_assembly", "markdown fact set build"):
+        with stage(timing, self._stage_name("fact_assembly", "deep_research_evidence"), "markdown fact set build"):
             markdown = MarkdownResponseBuilder().build(brand=brand, calls=calls, sources=sources or ["cache"], notices=notices)
         return {
             "question": question,
@@ -224,6 +450,12 @@ class ToolUseAgent:
                 "status": status,
                 "steps": len(trace),
                 "tool_calls": len([call for call in calls if call.get("tool") != "agent_calculation"]),
+                "deterministic_plan_hit": deterministic_plan_hit,
+                "deterministic_plan_kind": deterministic_plan_kind,
+                "llm_plan_calls": llm_plan_calls,
+                "bq_analysis_validation": bq_analysis_validation,
+                "bq_missing_sources": list(bq_missing_sources),
+                "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
                 **selection,
             },
             "tool_calls": calls,
@@ -232,6 +464,53 @@ class ToolUseAgent:
             "sources": sources or ["cache"],
             "timing": timing,
         }
+
+    def _stage_name(self, standard: str, deep: str) -> str:
+        return deep if self.progress_namespace == "deep" else standard
+
+
+def _bq_source_label(source: str) -> str:
+    return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
+
+
+def _deep_tool_progress_summary(execution: ToolExecution) -> str:
+    call = execution.call if isinstance(execution.call, dict) else {}
+    status = str(call.get("status") or execution.status or "")
+    if status in {"no_data", "unsupported", "inapplicable"}:
+        return "확인된 결과 없음"
+    count = _deep_evidence_count(call.get("render_data"))
+    return f"{count}건 확인" if count is not None else "조회 완료"
+
+
+def _deep_evidence_count(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("items", "rows", "results", "events", "studies", "articles"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return len(items)
+    nested_calls = value.get("calls")
+    if not isinstance(nested_calls, list):
+        return None
+    counts = [
+        count
+        for item in nested_calls
+        if isinstance(item, dict)
+        for count in (_deep_evidence_count(item.get("render_data")),)
+        if count is not None
+    ]
+    return sum(counts) if counts else None
+
+
+def is_explicit_quarter_sales_question(question: str) -> bool:
+    plan = strict_query_plan(question, "")
+    if plan is None or len(plan.specs) != 1 or len(plan.metadata) != 1:
+        return False
+    if plan.metadata[0].get("contract_intent") != "quarter_metric":
+        return False
+    if plan.specs[0].get("metrics") != ["sales"]:
+        return False
+    return not any(token in question for token in ("비교", "각각", "추이", "변화", "증감", "대비", "차이"))
 
 
 def _record_planner_token_usage(timing: dict[str, Any], planner: ToolPlanner) -> None:
@@ -651,6 +930,7 @@ def _completion_facade(
     observations: list[AgentObservation],
 ) -> AgentToolFacade:
     allowed_brands = _step_allowed_brands(metric_brands, tuple(observations))
+    market_by_brand = _observed_market_by_brand(observations)
     return AgentToolFacade(
         metrics=metrics,
         resolver=resolver,
@@ -660,7 +940,26 @@ def _completion_facade(
         news=news,
         external=external,
         query_layer=query_layer,
+        market_by_brand=market_by_brand,
     )
+
+
+def _observed_market_by_brand(observations: list[AgentObservation]) -> dict[str, str]:
+    selected: dict[str, str] = {}
+    for observation in observations:
+        data = observation.call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        brand = str(data.get("brand") or observation.arguments.get("brand") or "")
+        query_spec = data.get("query_spec")
+        market = str(data.get("market_id") or "")
+        if not market and isinstance(query_spec, dict):
+            market = str(query_spec.get("market_id") or query_spec.get("market") or "")
+        if not market and observation.tool_name in {"get_market_scope", "get_market_landscape"}:
+            market = str(data.get("market") or "")
+        if brand and market:
+            selected[brand] = market
+    return selected
 
 
 def _answer_contract_calls(
@@ -678,9 +977,11 @@ def _answer_contract_calls(
     query_layer: StrategicQueryLayer | None,
 ) -> list[dict[str, Any]]:
     plans = answer_contract_backfill_tool_calls(question, brand, calls)
-    if not plans:
+    compare_brands = _comparison_contract_brands(question, resolver, metric_brands)
+    if not plans and not compare_brands:
         return []
-    facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, metric_brands, observations)
+    allowed_brands = tuple(dict.fromkeys((*metric_brands, *compare_brands)))
+    facade = _completion_facade(metrics, resolver, current_month, period_grounding, news, external, query_layer, allowed_brands, observations)
     completed: list[dict[str, Any]] = []
     for plan in plans:
         execution = _execute_grounded(facade, plan)
@@ -689,7 +990,33 @@ def _answer_contract_calls(
         if isinstance(data, dict):
             data["completion_reason"] = "answer_contract_requires_ranking_facts"
         completed.append(call)
+    for compare_brand in compare_brands:
+        if _has_sales_series(calls + completed, compare_brand):
+            continue
+        execution = facade.execute("get_metric", {"brand": compare_brand, "measure": "series", "period": "latest"})
+        call = dict(execution.call)
+        data = call.setdefault("render_data", {})
+        if isinstance(data, dict):
+            data["completion_reason"] = "brand_compare_requires_each_series"
+        completed.append(call)
     return completed
+
+
+def _comparison_contract_brands(
+    question: str,
+    resolver: BrandResolver,
+    metric_brands: tuple[str, ...],
+) -> tuple[str, ...]:
+    if completeness_intent(question) != "brand_compare":
+        return ()
+    brands = list(metric_brands)
+    for subject in comparison_subjects(question):
+        try:
+            canonical = resolver.resolve(subject, allow_default=False).canonical_brand
+        except UnsupportedBrandError:
+            continue
+        brands.append(canonical)
+    return tuple(dict.fromkeys(brands))
 
 
 def _answer_contract_required_calls(
@@ -706,20 +1033,18 @@ def _answer_contract_required_calls(
     external: ExternalApiClient | None,
     query_layer: StrategicQueryLayer | None,
 ) -> list[dict[str, Any]]:
-    if _has_unsupported_metric(calls):
-        return []
     required_tools = _contract_required_tools(question)
     if not required_tools:
         return []
     contract_status = evaluate_answer_contract(question, "", None)
     structural_contract = str(contract_status.get("structural_contract") or "")
+    if _has_unsupported_metric(calls) and structural_contract != "change_drivers":
+        return []
     existing = _public_contract_tools(calls)
     plans: list[ToolCallPlan] = []
     seen_plans: set[str] = set()
     for required_tool in required_tools:
         if required_tool in existing:
-            continue
-        if required_tool == "get_brand_metric" and structural_contract == "quarter_metric" and "query_spec" in existing:
             continue
         plan = _required_contract_plan(required_tool, question, brand)
         if plan is None:
@@ -759,9 +1084,14 @@ def _contract_required_tools(question: str) -> tuple[str, ...]:
 
 def _required_contract_plan(required_tool: str, question: str, brand: str) -> ToolCallPlan | None:
     if required_tool == "get_brand_metric":
+        requested_periods = canonical_periods(question)
         return ToolCallPlan(
             name="get_metric",
-            arguments={"brand": brand, "measure": "sales", "period": "latest"},
+            arguments={
+                "brand": brand,
+                "measure": "sales",
+                "period": requested_periods[0] if requested_periods else "latest",
+            },
             reason=required_tool,
         )
     if required_tool == "market_scope":
@@ -981,7 +1311,7 @@ def _asks_patient_sales_context(question: str) -> bool:
 
 
 def _single_brand_trend_question(question: str) -> bool:
-    if "매출" not in question or not any(token in question for token in ("추이", "변화", "증감", "하락", "감소", "줄")):
+    if not needs_market_series(question):
         return False
     widening_tokens = ("경쟁", "구도", "상위", "위협", "시장 영향", "시장 탓", "시장 문제", "고유", "아토젯", "비교", "같이", "랑")
     return not any(token in question for token in widening_tokens)
@@ -1507,8 +1837,12 @@ def _answer_brand(question: str, resolver: BrandResolver) -> str:
 
 
 def _pre_resolved_brands(question: str, resolver: BrandResolver) -> tuple[str, ...]:
+    return tuple(item.canonical_brand for item in _pre_resolutions(question, resolver))
+
+
+def _pre_resolutions(question: str, resolver: BrandResolver):
     try:
-        return tuple(item.canonical_brand for item in resolver.resolve_many(question, allow_default=False))
+        return resolver.resolve_many(question, allow_default=False)
     except UnsupportedBrandError:
         return ()
 
@@ -1682,6 +2016,40 @@ def _step_allowed_brands(base_allowed_brands: tuple[str, ...], observations: tup
     return tuple(dict.fromkeys(brands))
 
 
+def _planner_allowed_brands(
+    base_allowed_brands: tuple[str, ...],
+    observations: tuple[AgentObservation, ...],
+    *,
+    expanded_members_exposed: bool,
+) -> tuple[str, ...]:
+    if not expanded_members_exposed:
+        return _step_allowed_brands(base_allowed_brands, observations)
+    brands = list(base_allowed_brands)
+    for observation in observations:
+        brands.extend(str(value) for key, value in observation.arguments.items() if key in {"brand", "comparison_brand"} and value)
+        data = (observation.call or {}).get("render_data", {})
+        if not isinstance(data, dict):
+            continue
+        brands.extend(str(data[key]) for key in ("brand", "anchor_brand") if data.get(key))
+        segments = data.get("level_segments")
+        if isinstance(segments, tuple | list):
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                value = segment.get("brand") or segment.get("name")
+                if value:
+                    brands.append(str(value))
+    return tuple(dict.fromkeys(brands))
+
+
+def _has_market_members(observations: tuple[AgentObservation, ...]) -> bool:
+    for observation in observations:
+        data = (observation.call or {}).get("render_data", {})
+        if isinstance(data, dict) and isinstance(data.get("member_brands"), tuple | list):
+            return True
+    return False
+
+
 _SUFFICIENT_METRIC_TOOLS = {
     "get_metric",
     "get_brand_sales",
@@ -1833,3 +2201,32 @@ def _selected_tool_groups(calls: list[dict[str, Any]]) -> set[str]:
         if tool == "search_patent":
             selected.add("patent")
     return selected
+
+
+def _deep_batch_progress_detail(
+    plans: tuple[ToolCallPlan, ...],
+    additional_parallel_tools: Collection[str],
+) -> str:
+    parallel_tools = planned_parallel_tool_names(
+        plans,
+        additional_parallel_tools=additional_parallel_tools,
+    )
+    all_tools = {plan.name for plan in plans}
+    parallel_groups = _deep_tool_groups(parallel_tools)
+    serial_groups = _deep_tool_groups(all_tools.difference(parallel_tools))
+    if parallel_groups and serial_groups:
+        return f"{'·'.join(parallel_groups)} 동시 조회 · {'·'.join(serial_groups)} 순차 조회"
+    if parallel_groups:
+        return f"{'·'.join(parallel_groups)} 동시 조회"
+    if serial_groups:
+        return f"{'·'.join(serial_groups)} 순차 조회"
+    return "관련 근거 조회"
+
+
+def _deep_tool_groups(tool_names: set[str] | frozenset[str]) -> tuple[str, ...]:
+    selected = {
+        group
+        for tool_name in tool_names
+        if (group := _DEEP_TOOL_GROUP_BY_NAME.get(tool_name)) is not None
+    }
+    return tuple(group for group in _DEEP_TOOL_GROUP_ORDER if group in selected)

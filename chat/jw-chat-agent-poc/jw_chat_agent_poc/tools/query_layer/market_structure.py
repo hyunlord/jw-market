@@ -27,7 +27,8 @@ def structure_from_records(records: tuple[MartRecord, ...]) -> dict[str, Any]:
     """Infer whether a market has a split Class 1/Class 2 structure.
 
     Class 1 is preserved as catalog metadata. The user-facing grouping axis is
-    Class 2 because ml_011 is operated with Class 2-only exposure.
+    inferred from each market's catalog records, so every market carrying a
+    Class 2 dimension follows the same routing path.
     """
 
     class_1_values = _dimension_counts(records, CLASS_1_KEY)

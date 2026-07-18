@@ -1,9 +1,49 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
-from jw_chat_agent_poc.orchestrator.answer_contract import answer_contract_backfill_tool_calls, enforce_answer_contract, evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_contract import (
+    CONTRACT_REQUIRED_TOOLS,
+    answer_contract_backfill_tool_calls,
+    enforce_answer_contract,
+    evaluate_answer_contract,
+)
+from jw_chat_agent_poc.service.runtime_provenance import _required_tools
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
+
+
+def test_clinical_evidence_does_not_require_market_metric() -> None:
+    required = CONTRACT_REQUIRED_TOOLS["clinical_evidence"]
+
+    assert "get_brand_metric" not in required
+    assert set(required) == {
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "mfds_permission_search",
+        "openfda_label_search",
+    }
+
+
+def test_pure_external_competitor_question_requires_only_external_tools() -> None:
+    status = evaluate_answer_contract("고지혈증 임상·허가심사 경쟁약물", "", {})
+
+    assert status["structural_contract"] == "clinical_evidence"
+    required = _required_tools(status)
+    assert "get_brand_metric" not in required
+    assert "clinicaltrials_v2_search" in required
+    assert "mfds_permission_search" in required
+
+
+def test_market_question_still_requires_market_metric() -> None:
+    status = {"structural_contract": "trend", "status": "not_applicable"}
+
+    assert _required_tools(status) == ("get_brand_metric",)
+
+
+def test_top_n_share_sum_does_not_require_redundant_market_scope_tool() -> None:
+    status = {"intent": "top_n_share_sum", "status": "pass"}
+
+    assert _required_tools(status) == ("get_brand_metric",)
 
 
 TREND_FACT_MD = """## 확정 fact set
@@ -177,7 +217,8 @@ def test_trend_contract_reinserts_series_table_when_final_answer_is_empty_shell(
     assert "페린젝트 매출은 2023-Q3 41.53억원에서 2025-Q4 35.16억원" in revised
     assert "| 기간 | 매출 | MS |" in revised
     assert revised.count("| 202") >= 4
-    assert "## 출처" in revised
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in revised
+    assert "- 데이터:" not in revised
 
 
 def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> None:
@@ -197,7 +238,8 @@ def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> Non
     assert "매출 84.93억원" in revised
     assert "시장점유율 3.76%" in revised
     assert "순위 6/470" in revised
-    assert "## 출처" in revised
+    assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in revised
+    assert "- 데이터:" not in revised
 
 
 def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
@@ -221,16 +263,17 @@ def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
     assert revised.index("## 영업-매출 연계 분석 설계") < revised.index("## 출처")
 
 
-def test_structural_contract_backfill_requests_metric_proxy() -> None:
+def test_structural_contract_backfill_requests_metric_and_csd_activity() -> None:
     plans = answer_contract_backfill_tool_calls(
         "악템라 영업활동 Impact와 매출 연계성을 분석해줘",
         "악템라",
         [],
     )
 
-    assert len(plans) == 1
-    assert plans[0].name == "get_metric"
-    assert plans[0].arguments == {"brand": "악템라", "measure": "sales", "period": "latest"}
+    assert [(plan.name, plan.arguments) for plan in plans] == [
+        ("get_metric", {"brand": "악템라", "measure": "sales", "period": "latest"}),
+        ("csd_activity_trend", {"brand": "악템라"}),
+    ]
 
 
 def test_structural_contract_backfill_skips_existing_metric_proxy() -> None:
@@ -356,6 +399,16 @@ def test_change_drivers_contract_adds_external_internal_table() -> None:
     assert "이벤트 전후 1~3개월" in revised
 
 
+def test_news_sales_impact_is_change_drivers_and_backfills_all_required_facts() -> None:
+    question = "리바로 관련 뉴스가 최근 매출에 미친 영향"
+
+    status = evaluate_answer_contract(question, "", None)
+    plans = answer_contract_backfill_tool_calls(question, "리바로", [])
+
+    assert status["structural_contract"] == "change_drivers"
+    assert [plan.name for plan in plans] == ["search_news", "get_metric", "get_market_scope"]
+
+
 def test_change_drivers_contract_classifies_news_into_grounded_rows() -> None:
     answer = "채널 현황입니다.\n\n## 출처\n- 데이터: UBIST"
 
@@ -453,6 +506,174 @@ def test_common_unavailable_layer_does_not_fire_for_owned_metric_answer() -> Non
     assert "미보유 데이터 처리" not in revised
 
 
+def test_unavailable_gate_surfaces_owned_fact_instead_of_false_absence() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 매출 알려줘",
+        "리바로 매출은 현재 fact set에 포함되지 않아 미보유입니다.",
+        {"fact_md": RANKING_FACT_MD},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "ok", "brand": "리바로", "sales_억원": 84.93},
+            }
+        ],
+    )
+
+    assert "요청한 값은 현재 조회 결과에 존재합니다." not in revised
+    assert "84.93억원" in revised
+    assert "원천에 없음" not in revised
+
+
+def test_unavailable_gate_never_surfaces_internal_fact_markdown_for_mixed_tool_results() -> None:
+    fact_md = """## 확정 데이터
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 브랜드 핵심 지표 | 리바로 2026-04 매출 84.93억원 시장점유율 3.76% 순위 6/516 |
+
+### 시장 지표
+| 항목 | 값 |
+| --- | --- |
+| 시장규모 | 2,256.77억원 |
+"""
+
+    revised = apply_common_unavailable_response(
+        "리바로와 로수젯을 비교해줘",
+        "요청한 값은 현재 확인 불가합니다.",
+        {"fact_md": fact_md},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "ok", "brand": "리바로", "sales_억원": 84.93},
+            },
+            {
+                "tool": "mfds_permission_search",
+                "render_data": {"status": "error", "message": "upstream timeout"},
+            },
+        ],
+    )
+
+    assert "84.93억원" in revised
+    assert "## 확정 데이터" not in revised
+    assert "반드시 반영할 내용" not in revised
+    assert "| 항목 | 값 |" not in revised
+
+
+def test_unavailable_gate_keeps_csd_activity_ahead_of_colocated_market_facts() -> None:
+    fact_md = """### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| Brand 상위 | 1위 로수젯 시장점유율 9.13% 매출 195.24억원 |
+| CSD aggregate 콜수 | 리바로 CSD ChannelDynamics aggregate 콜수/활동량 2025-06 1,775건 → 2026-05 1,769건 |
+| CSD 세부 미지원 | impact level, HCP/의사별, 기관별 |
+"""
+
+    revised = apply_common_unavailable_response(
+        "리바로 영업활동 추이 어때?",
+        "요청한 일부 지표는 현재 확인 불가합니다.",
+        {"fact_md": fact_md},
+        tool_calls=[
+            {"tool": "csd_activity_trend", "render_data": {"status": "ok"}},
+            {"tool": "get_brand_metric", "render_data": {"status": "ok"}},
+        ],
+    )
+
+    assert "2025-06 1,775건" in revised
+    assert "2026-05 1,769건" in revised
+    assert "로수젯이 선두" not in revised
+    assert "반드시 반영할 내용" not in revised
+
+
+def test_unavailable_gate_marks_missing_required_tool_as_unverified_not_absent() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 시장의 브랜드 집중도는 어때",
+        "집중도는 현재 데이터에 미보유입니다.",
+        {"fact_md": ""},
+        tool_calls=[{"tool": "get_brand_metric", "render_data": {"status": "ok", "sales_억원": 84.93}}],
+    )
+
+    assert revised.startswith("현재 확인 불가:")
+    assert "market_scope" in revised
+    assert "원천 데이터가 없다는 뜻은 아닙니다" in revised
+    assert "원천에 없음" not in revised
+
+
+def test_unavailable_gate_separates_tool_failure_from_source_absence() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 매출 알려줘",
+        "매출 데이터가 없습니다.",
+        {"fact_md": ""},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "query_failed", "message": "upstream timeout"},
+            }
+        ],
+    )
+
+    assert revised.startswith("현재 확인 불가:")
+    assert "get_brand_metric" in revised
+    assert "원천 데이터가 없다는 뜻은 아닙니다" in revised
+
+
+def test_unavailable_gate_allows_proven_source_absence_with_missing_grain() -> None:
+    revised = apply_common_unavailable_response(
+        "리바로 주간 채널별 매출을 알려줘",
+        "요청한 주간 채널 데이터는 미보유입니다.",
+        {"fact_md": "데이터 미보유"},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {"status": "no_data", "metric": "weekly_channel_sales"},
+            }
+        ],
+    )
+
+    assert revised.startswith("원천에 없음:")
+    assert "주간/월간/축별" in revised
+    assert "### 미보유 데이터 처리" in revised
+
+
+def test_source_trap_preserves_explicit_source_absence_state_after_unavailable_gate() -> None:
+    question = "리바로 Datamonitor 기준 글로벌 시장 전망을 알려줘"
+    answer = """Datamonitor 데이터는 현재 운영 데이터에 미보유입니다.
+
+### 미보유 데이터 처리
+| 단계 | 내용 |
+| --- | --- |
+| 1. 미보유 데이터 | 글로벌 시장 전망 원천입니다. |
+| 2. 현재 가능한 proxy | UBIST/IQVIA 국내 지표입니다. |
+| 3. 해석 가능한 상한선 | 국내 관찰만 가능합니다. |
+| 4. 확인 필요 데이터 | Datamonitor 원천 필드입니다. |
+| 5. 확보 시 수행할 분석 | 국가별 CAGR 비교입니다. |
+"""
+    common = apply_common_unavailable_response(
+        question,
+        answer,
+        {"fact_md": "Datamonitor 데이터 미보유"},
+        tool_calls=[
+            {
+                "tool": "requested_source_unavailable",
+                "render_data": {"status": "unsupported", "source": "Datamonitor"},
+            }
+        ],
+    )
+    revised = apply_requested_source_trap_gate(question, common)
+
+    assert revised.startswith("원천에 없음:")
+    assert "글로벌 시장 전망" in revised
+    assert revised.count("### 미보유 데이터 처리") == 1
+
+
+def test_unavailable_gate_does_not_retry_required_tool_after_one_attempt() -> None:
+    calls = [{"tool": "get_brand_metric", "render_data": {"status": "no_data", "brand": "리바로"}}]
+
+    plans = answer_contract_backfill_tool_calls("리바로 순위 알려줘", "리바로", calls)
+
+    assert plans == ()
+
+
 def test_common_unavailable_layer_does_not_duplicate_existing_5step_block() -> None:
     answer = """### 미보유 데이터 처리
 | 단계 | 내용 |
@@ -518,6 +739,89 @@ def test_source_trap_gate_generalizes_to_requested_unavailable_sources() -> None
         revised = apply_requested_source_trap_gate(question, "UBIST 매출 proxy만 확인됩니다.")
 
         assert revised.startswith(expected)
+
+
+def test_source_trap_identity_mode_keeps_generic_guideline_web_evidence() -> None:
+    web_answer = "대한내과학회 가이드라인 검색 결과입니다.\n\n## 출처\n- https://example.test/guideline"
+
+    assert (
+        apply_requested_source_trap_gate(
+            "최신 고지혈증 가이드라인",
+            web_answer,
+            identity_only=True,
+        )
+        == web_answer
+    )
+    assert apply_requested_source_trap_gate(
+        "최신 NCCN 고지혈증 가이드라인",
+        web_answer,
+        identity_only=True,
+    ).startswith("NCCN/가이드라인 데이터는 현재 운영 데이터에 미보유입니다.")
+
+
+def test_common_unavailable_gate_preserves_connected_generic_guideline_web_result() -> None:
+    answer = "대한내과학회 가이드라인 검색 결과입니다.\n\n## 출처\n- https://example.test/guideline"
+    calls = (
+        {
+            "tool": "web_search",
+            "status": "ok",
+            "render_data": {"ok": True, "evidence": [{"source_locator": "https://example.test/guideline"}]},
+        },
+    )
+
+    assert apply_common_unavailable_response(
+        "최신 고지혈증 가이드라인",
+        answer,
+        {"fact_md": answer},
+        tool_calls=calls,
+        connected_source_mode=True,
+    ) == answer
+
+
+def test_common_unavailable_gate_honors_top_level_tool_error() -> None:
+    calls = (
+        {
+            "tool": "web_search",
+            "status": "error",
+            "render_data": {"ok": False, "evidence": []},
+        },
+    )
+
+    revised = apply_common_unavailable_response(
+        "최신 고지혈증 가이드라인",
+        "현재 확인 불가",
+        {"fact_md": ""},
+        tool_calls=calls,
+        connected_source_mode=True,
+    )
+
+    assert "도구 조회(web_search)가 실패했습니다" in revised
+
+
+def test_common_unavailable_gate_preserves_success_when_another_external_tool_fails() -> None:
+    answer = "ClinicalTrials에서 pitavastatin 임상시험 1건을 확인했습니다. MFDS 조회는 실패했습니다."
+    calls = (
+        {
+            "tool": "clinicaltrials_v2_search",
+            "status": "ok",
+            "render_data": {"ok": True, "evidence": [{"metric": "글로벌 임상시험"}]},
+        },
+        {
+            "tool": "mfds_permission_search",
+            "status": "error",
+            "render_data": {"ok": False, "evidence": []},
+        },
+    )
+
+    revised = apply_common_unavailable_response(
+        "고지혈증 임상·허가 경쟁약물",
+        answer,
+        {"fact_md": "확정 fact: ClinicalTrials pitavastatin 임상시험 1건\nMFDS 조회 실패"},
+        tool_calls=calls,
+        connected_source_mode=True,
+    )
+
+    assert revised == answer
 
 
 def test_source_trap_gate_compacts_final_answer_once_common_5step_exists() -> None:
@@ -652,7 +956,7 @@ def test_sanitize_internal_diagnostics_removes_bare_internal_market_ids() -> Non
     revised = sanitize_internal_diagnostics(answer)
 
     assert "strategy_006" not in revised
-    assert "확정 시장" in revised
+    assert "시장 —" in revised
     assert "IQVIA / UBIST" in revised
 
 
@@ -664,8 +968,8 @@ def test_sanitize_internal_diagnostics_preserves_denominator_note_market_ids() -
 
     revised = sanitize_internal_diagnostics(answer)
 
-    assert "시장: ml_006" in revised
-    assert "참고: strategy_006 기준 순위는 6/516으로 표시될 수 있음" in revised
+    assert "시장: —" in revised
+    assert "참고: — 기준 순위는 6/516으로 표시될 수 있음" in revised
     assert "확정 시장" not in revised
 
 
@@ -678,7 +982,7 @@ def test_sanitize_internal_diagnostics_preserves_intended_split_market_context()
 
     revised = sanitize_internal_diagnostics(answer)
 
-    assert "시장: ml_011 (market_landscape, 분모 26)" in revised
+    assert "시장: — (market_landscape, 분모 26)" in revised
     assert "Class 구분 존재" in revised
     assert "Class 2 기준 분모 26" in revised
     assert "확정 시장" not in revised

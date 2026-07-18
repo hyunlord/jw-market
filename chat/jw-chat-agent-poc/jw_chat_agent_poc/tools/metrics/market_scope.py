@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver.brand_resolver import BrandMembershipReader
+from jw_chat_agent_poc.resolver.catalog_membership import shared_catalog_membership_reader
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadKey,
     CausePayloadReader,
-    MariaDbMetricsCacheReader,
     MetricsCacheReader,
     TtlCausePayloadCache,
     TtlMetricsCache,
@@ -36,6 +38,7 @@ from jw_chat_agent_poc.tools.metrics.market_scope_helpers import (
     source_label,
     view_label,
 )
+from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 
 class MarketScopeResolver:
@@ -47,9 +50,10 @@ class MarketScopeResolver:
         cd_mart_reader: CdMartReader | None = None,
         ttl_seconds: int | None = None,
         general_view_service: GeneralViewService | None = None,
+        membership_reader: BrandMembershipReader | None = None,
+        query_layer: StrategicQueryLayer | None = None,
     ) -> None:
         ttl = ttl_seconds or int(os.environ.get("CHAT_MARKET_SCOPE_TTL_SECONDS", "300"))
-        self._reader = cache_reader or MariaDbMetricsCacheReader()
         self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
         self._cause_cache = (
             TtlCausePayloadCache(cause_reader, ttl_seconds=ttl)
@@ -57,11 +61,30 @@ class MarketScopeResolver:
             else shared_cause_payload_cache(ttl)
         )
         self._cd_mart_cache = TtlCdMartCache(cd_mart_reader or MariaDbCdMartReader(), ttl_seconds=ttl)
-        self._resolver = BrandResolver(mode="cache", brand_reader=cache_reader, ttl_seconds=ttl)
+        self._query_layer = query_layer
+        if self._query_layer is None and cache_reader is None and cause_reader is None:
+            if os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
+                self._query_layer = StrategicQueryLayer(ttl_seconds=ttl)
+        catalog_membership = membership_reader
+        if catalog_membership is None and os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
+            catalog_membership = shared_catalog_membership_reader(ttl)
+        self._resolver = BrandResolver(
+            mode="cache",
+            brand_reader=cache_reader,
+            membership_reader=catalog_membership,
+            ttl_seconds=ttl,
+        )
         self._general_view = general_view_service or GeneralViewService.from_env(self._resolver)
 
     def general_route(self, question: str) -> GeneralRoute:
         return self._general_view.route(question)
+
+    def has_explicit_anchor(self, question: str) -> bool:
+        if re.search(r"(?<![A-Za-z0-9_])ml_\d+(?![A-Za-z0-9_])", question, re.IGNORECASE):
+            return True
+        if re.search(r"(?<![A-Za-z0-9])(?:[A-Z]\d{2}[A-Z]\d)(?![A-Za-z0-9])", question, re.IGNORECASE):
+            return True
+        return self._resolver.has_explicit_alias(question)
 
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)
@@ -71,6 +94,8 @@ class MarketScopeResolver:
             return self.unsupported_general_view(question)
         try:
             resolution = self._resolver.resolve(question, allow_default=False)
+            if self._query_layer is not None:
+                return self._query_layer_answer(question, resolution.canonical_brand, view_type)
             snapshot = self._cache.snapshot()
             card = find_brand_card(snapshot.market_status, resolution.canonical_brand)
         except (LookupError, UnsupportedBrandError) as exc:
@@ -121,6 +146,93 @@ class MarketScopeResolver:
             "answer": markdown.markdown,
             "markdown_response": markdown.to_dict(),
             "sources": ["cache"],
+        }
+
+    def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
+        if self._query_layer is None:
+            return self._unsupported("전략 시장 조회 계층을 사용할 수 없습니다.", question, "market_id", market_id)
+        try:
+            call = self._query_layer.market_scope_by_id(market_id, period)
+        except (LookupError, TypeError, ValueError) as exc:
+            return self._unsupported(str(exc), question, "market_id", market_id)
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "market_id", market_id)
+        source = str(data.get("source_label") or call.get("source") or "")
+        markdown = MarkdownResponseBuilder().build(
+            brand="해당 전략 시장",
+            calls=[call],
+            sources=[source],
+            notices=market_view_notices("market_landscape"),
+        )
+        return {
+            "question": question,
+            "resolution": {"market_id": market_id},
+            "decomposition": [{"intent": "market_size", "view_type": "market_landscape", "period": period}],
+            "router_diagnostics": {"deterministic": True, "explicit_market_id": True},
+            "tool_calls": [call],
+            "answer": markdown.markdown,
+            "markdown_response": markdown.to_dict(),
+            "sources": [source],
+        }
+
+    def _query_layer_answer(self, question: str, brand: str, view_type: MarketView) -> dict[str, Any]:
+        assert self._query_layer is not None
+        try:
+            call = self._query_layer.market_scope(brand)
+        except (LookupError, TypeError, ValueError) as exc:
+            return self._unsupported(str(exc), question, "brand", brand)
+
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "brand", brand)
+        market_id = str(data.get("market_id") or data.get("market") or "")
+        source = str(data.get("source_label") or call.get("source") or "")
+        if view_type == "competitive_dynamics":
+            period, market_size, yoy = self._view_market_size(
+                brand=brand,
+                view_type=view_type,
+                source=source,
+                market_id=market_id,
+            )
+            if market_size is None:
+                return self._unsupported(
+                    "경쟁군 시장규모를 전략 CD mart에서 찾지 못했습니다.",
+                    question,
+                    "view_type",
+                    view_type,
+                )
+            data = dict(data)
+            data.update(
+                {
+                    "period": period,
+                    "market_size_recent_krw": market_size,
+                    "market_size_억원": float(market_size) / 100_000_000,
+                    "yoy_growth_pct": yoy,
+                }
+            )
+        data["view_type"] = view_type
+        data["view_label"] = view_label(view_type)
+        call["render_data"] = data
+        call["summary_text"] = (
+            f"{brand} 기준 같은 시장 전체 매출은 {view_label(view_type)} 기준 "
+            f"{eok_value(None, data.get('market_size_recent_krw'))}입니다."
+        )
+        markdown = MarkdownResponseBuilder().build(
+            brand=brand,
+            calls=[call],
+            sources=[source],
+            notices=market_view_notices(view_type),
+        )
+        return {
+            "question": question,
+            "resolution": {"canonical_brand": brand, "market_id": market_id},
+            "decomposition": [{"intent": "same_market_sales", "view_type": view_type}],
+            "router_diagnostics": {"deterministic": True},
+            "tool_calls": [call],
+            "answer": markdown.markdown,
+            "markdown_response": markdown.to_dict(),
+            "sources": [source],
         }
 
     def clarification(self, question: str, *, brand: str) -> dict[str, Any]:

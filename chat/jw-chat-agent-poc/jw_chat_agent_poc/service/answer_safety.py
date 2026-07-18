@@ -3,20 +3,30 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from html import unescape
 from collections.abc import Iterator
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
+from jw_chat_agent_poc.service.deep_report_cleanup import repair_plain_table_urls, slim_source_tables
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 
-GENERATION_ATTEMPTS = int(os.environ.get("GENOS_GENERATION_ATTEMPTS", "3"))
+GENERATION_ATTEMPTS = int(os.environ.get("GENOS_GENERATION_ATTEMPTS", "2"))
 FAIL_CLOSED_TEXT = "- 표에 포함된 확정 데이터만 기준으로 해석합니다."
 _UNSUPPORTED_SERIES_RE = re.compile(r"(미지원|미보유|확인\s*안\s*됨|확인되지|데이터\s*없음|지원하지)")
 _NEGATED_UNSUPPORTED_RE = re.compile(r"(아니|아님|아닙)")
 _EMPTY_NEWS_SHELL_RE = re.compile(r"관련\s*기사에서.*언급이\s*확인|언급이\s*확인됐습니다|언급이\s*확인되었습니다")
+_STREAM_ATOMIC_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"\d{4}-(?:0[1-9]|1[0-2])|"
+    r"\d{4}-Q[1-4]|"
+    r"[+-]?\d[\d,]*(?:\.\d+)?(?:%p|%|억원|원|명|건|개|위)?"
+    r")(?![A-Za-z0-9])"
+)
 _NEWS_ISSUE_NUMBER_RE = re.compile(
     r"(?<![A-Za-z])[+-]?\d[\d,]*(?:\.\d+)?(?:\s*(?:억\s*원|억원|원|명|건|개|위|년|월|%p|%|분기))?"
 )
@@ -26,6 +36,65 @@ _RAW_LEVEL_TOP_LINE_RE = re.compile(
     r"(?P<rank>\d+위)\s+(?P<name>.+?)\s+시장점유율\s+"
     r"(?P<share>-?\d+(?:\.\d+)?%)\s+매출\s+(?P<sales>-?\d+(?:\.\d+)?억원)\s*$"
 )
+_MULTI_FILE_REQUEST_RE = re.compile(
+    r"(?:두|여러|모든)\s*(?:업로드\s*)?파일|(?:업로드\s*)?파일(?:을|를)?\s*모두|파일별",
+    re.IGNORECASE,
+)
+_FILE_OVERVIEW_REQUEST_RE = re.compile(
+    r"(?:문서|보고서|파일|발표).{0,20}(?:요약|핵심|결론|뭐에\s*관한|무슨\s*내용)"
+    r"|(?:요약|핵심|결론).{0,20}(?:문서|보고서|파일|발표)",
+    re.IGNORECASE,
+)
+_FILE_OVERVIEW_SECTION_RE = re.compile(
+    r"(?:Key\s+Takeaways?|Executive\s+Summary|Conclusions?|Unmet\s+Needs?|Overview|"
+    r"Market\s+Landscape|Market\s+Size|Growth\s+Contribution|HHI|"
+    r"핵심\s*요약|주요\s*결론|미충족\s*수요|시장\s*개요|시장\s*규모)",
+    re.IGNORECASE,
+)
+_FILE_CONTEXT_NOISE_RE = re.compile(
+    r"^(?:\[DA\]\s*문서:|섹션:|검색\s*범위:|Copyright\s|<!--|\d+\s+\d{1,2}\s+[A-Za-z]{3},\s+\d{4}\s*$)",
+    re.IGNORECASE,
+)
+_CROSS_FILE_COMPARISON_RE = re.compile(r"(?:비교|일치|같(?:은|나|은지)|대조)", re.IGNORECASE)
+_COMPARISON_JUDGMENT_RE = re.compile(
+    r"(?:대상|정의|단위).{0,30}(?:다르|불일치)|직접.{0,20}(?:비교|일치).{0,30}(?:어렵|불가|없|판정)",
+    re.IGNORECASE,
+)
+_CATALOG_EVIDENCE_RE = re.compile(
+    r"(?:Approved\s+drug|\bDrug\b|Approval(?:\s+Date)?|\bPhase\b|\bTarget\b|"
+    r"승인\s*약물|허가\s*(?:약물|품목|목록)|임상\s*(?:약물|목록))",
+    re.IGNORECASE,
+)
+_AGGREGATE_EVIDENCE_RE = re.compile(
+    r"(?:total_value|applied_rows|\bSUM\b|\bCOUNT\b|매출\s*합계|총\s*매출|전체\s*합계|집계\s*금액)",
+    re.IGNORECASE,
+)
+_FILE_CONTEXT_BLOCK_RE = re.compile(
+    r"^\[(?:\d+)\]\s+([^\n]+)\n(.*?)(?=^\[(?:\d+)\]\s+|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_FILE_QUERY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{1,}|[가-힣]{2,}")
+_FILE_QUERY_STOP_WORDS = frozenset(
+    {"업로드", "파일", "모두", "사용해서", "비교해줘", "알려줘", "그리고", "대한", "기준"}
+)
+_GLOBAL_CLINICAL_FACT_RE = re.compile(
+    r"^-\s*(?P<subject>.+?):\s*글로벌 임상시험\s*=\s*"
+    r"(?P<nct>NCT\d+)\s*·\s*(?P<detail>.+?)\s*"
+    r"\[ClinicalTrials\.gov 임상시험 정보\]\s*$"
+)
+_DOMESTIC_CLINICAL_FACT_RE = re.compile(
+    r"^-\s*(?P<subject>.+?)\s*\((?P<date>\d{8})\):\s*국내 임상시험\s*=\s*"
+    r"(?P<item>.+?)\s*\[식약처 의약품 정보\]\s*$"
+)
+_INGREDIENT_IDENTITY_FACT_RE = re.compile(
+    r"^-\s*(?P<brand>.+?):\s*성분\s*=\s*(?P<ingredient>.+?)\s*\[(?P<source>.+?)\]\s*$"
+)
+_DISEASE_IDENTITY_FACT_RE = re.compile(
+    r"^-\s*(?P<code>[A-Z]\d{2}(?:\.\d+)?)\s*:\s*질병명/상병코드\s*=\s*"
+    r"(?P<disease>.+?)\s*\[(?P<source>.+?)\]\s*$"
+)
+_DEEP_SOURCE_HEADING_RE = re.compile(r"(?m)^##\s+출처\b")
+_DEEP_BODY_HEADING_RE = re.compile(r"(?m)^##\s+(?!출처\b).+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +180,17 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
     context = (file_context or "").strip()
     if not context:
         return answer
+    exhaustive = (
+        "검색 범위: 문서 전체 키워드 검색" in context
+        or "검색 범위: 지정 페이지 직접 조회" in context
+        or "## 업로드 파일 SQL 결과" in context
+    )
+    if not exhaustive:
+        return answer
+    if "## 업로드 파일 SQL 결과" in context and (
+        "상태: 확인됨" in context or "상태: 조건 일치 0건" in context
+    ):
+        return answer
     context_fold = context.casefold()
     answer_fold = answer.casefold()
     missing = [
@@ -124,11 +204,182 @@ def ensure_file_absence_statement(question: str, answer: str, file_context: str)
     return cleanup_markdown_answer(f"{lines}\n\n{answer}")
 
 
+_PAGE_DIRECTED_CONTEXT_MARKER = "검색 범위: 문서 전체 키워드 검색 + 지정 페이지 직접 조회"
+_PAGE_NUMERIC_REQUEST_RE = re.compile(r"(?:수치|환자\s*수|값|금액|비율|각각|몇\s*(?:명|개|건))")
+_PAGE_NUMERIC_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])\d[\d,]*(?:\.\d+)?(?:%|[mb])?", re.IGNORECASE)
+_PAGE_SOURCE_METADATA_RE = re.compile(
+    r"^(?:\[\d+\]\s|\[DA\]\s|섹션:|검색 범위:)|document_id=|TEMP_DOCUMENT_|\|\s*p\.\d+",
+    re.IGNORECASE,
+)
+
+
+def _page_evidence_content(block: str) -> str:
+    return "\n".join(
+        line for line in block.splitlines() if not _PAGE_SOURCE_METADATA_RE.search(line)
+    ).strip()
+
+
+def ensure_file_page_evidence(question: str, answer: str, file_context: str) -> str:
+    """Append bounded exact-page evidence when a numeric page answer drops source values."""
+
+    context = (file_context or "").strip()
+    if _PAGE_DIRECTED_CONTEXT_MARKER not in context or not _PAGE_NUMERIC_REQUEST_RE.search(question):
+        return answer
+    question_tokens = set(_PAGE_NUMERIC_TOKEN_RE.findall(question))
+    answer_tokens = set(_PAGE_NUMERIC_TOKEN_RE.findall(answer))
+    missing_tokens = {
+        token
+        for token in _PAGE_NUMERIC_TOKEN_RE.findall(context)
+        if token not in question_tokens and token not in answer_tokens
+    }
+    if not missing_tokens:
+        return answer
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", context) if block.strip()]
+    evidence = [
+        content
+        for block in blocks
+        if (content := _page_evidence_content(block))
+        and any(token in content for token in missing_tokens)
+    ][:2]
+    if not evidence:
+        return answer
+    excerpt = "\n\n".join(block[:1800] for block in evidence)
+    return cleanup_markdown_answer(f"{answer}\n\n### 지정 페이지 원문 근거\n{excerpt}")
+
+
+def ensure_file_overview_evidence_coverage(question: str, answer: str, file_context: str) -> str:
+    """Keep bounded, retrieved overview sections when synthesis omits them."""
+
+    context = (file_context or "").strip()
+    if not context or not _FILE_OVERVIEW_REQUEST_RE.search(question):
+        return answer
+
+    excerpts: list[str] = []
+    total_chars = 0
+    for match in _FILE_CONTEXT_BLOCK_RE.finditer(context):
+        header = match.group(1).strip()
+        body = match.group(2).strip()
+        meaningful_lines = [
+            line.strip()
+            for line in body.splitlines()
+            if line.strip() and not _FILE_CONTEXT_NOISE_RE.search(line.strip())
+        ]
+        excerpt = "\n".join(meaningful_lines).strip()
+        if not excerpt or not _FILE_OVERVIEW_SECTION_RE.search(excerpt):
+            continue
+        substantive_lines = [
+            line.lstrip("#- ").strip()
+            for line in meaningful_lines
+            if not re.fullmatch(
+                r"#{0,6}\s*(?:Key\s+Takeaways?|Executive\s+Summary|Conclusions?|"
+                r"Unmet\s+Needs?|Overview|Market\s+(?:Landscape|Size)|"
+                r"핵심\s*요약|주요\s*결론|미충족\s*수요|시장\s*개요)\s*",
+                line,
+                re.IGNORECASE,
+            )
+        ]
+        if substantive_lines and all(
+            line.casefold() in answer.casefold() for line in substantive_lines
+        ):
+            continue
+        remaining = 7000 - total_chars
+        if remaining <= 0:
+            break
+        is_summary = re.search(
+            r"(?:Key\s+Takeaways?|Executive\s+Summary|Conclusions?|Unmet\s+Needs?|Overview|"
+            r"핵심\s*요약|주요\s*결론|미충족\s*수요|시장\s*개요)",
+            excerpt,
+            re.IGNORECASE,
+        )
+        block_limit = 3000 if is_summary else 900
+        excerpt = excerpt[: min(block_limit, remaining)].rstrip()
+        if not excerpt:
+            continue
+        filename = re.sub(r"\s+\(document_id=.*", "", header).strip()
+        excerpts.append(f"### {filename}\n{excerpt}")
+        total_chars += len(excerpt)
+
+    if not excerpts:
+        return answer
+    section = "## 업로드 파일 핵심 근거\n" + "\n\n".join(excerpts)
+    return _insert_before_timing_or_source(answer, section)
+
+
+def ensure_cross_file_comparison_judgment(question: str, answer: str, file_context: str) -> str:
+    """State non-comparability only for retrieved catalog-vs-aggregate evidence."""
+
+    context = (file_context or "").strip()
+    if (
+        not context
+        or not _CROSS_FILE_COMPARISON_RE.search(question)
+        or _COMPARISON_JUDGMENT_RE.search(answer)
+        or "## 업로드 파일 SQL 결과" not in context
+    ):
+        return answer
+    document_context, sql_context = context.split("## 업로드 파일 SQL 결과", 1)
+    if (
+        not _CATALOG_EVIDENCE_RE.search(document_context)
+        or not _AGGREGATE_EVIDENCE_RE.search(sql_context)
+    ):
+        return answer
+    judgment = (
+        "문서의 항목형 근거와 엑셀 집계는 대상과 단위가 서로 달라 "
+        "직접적인 일치 여부를 판정할 수 없습니다."
+    )
+    return _insert_before_timing_or_source(answer, judgment)
+
+
+def ensure_multi_file_evidence_coverage(question: str, answer: str, file_context: str) -> str:
+    """Append bounded verbatim evidence for every file in an explicit multi-file request."""
+
+    if not _MULTI_FILE_REQUEST_RE.search(question):
+        return answer
+    blocks: dict[str, list[str]] = {}
+    for match in _FILE_CONTEXT_BLOCK_RE.finditer((file_context or "").strip()):
+        filename = re.sub(r"\s+\(document_id=.*\)\s*$", "", match.group(1)).strip()
+        if filename:
+            blocks.setdefault(filename, []).extend(
+                line.strip() for line in match.group(2).splitlines() if line.strip()
+            )
+    if len(blocks) < 2:
+        return answer
+
+    query_tokens = {
+        token.casefold()
+        for token in _FILE_QUERY_TOKEN_RE.findall(question)
+        if token.casefold() not in _FILE_QUERY_STOP_WORDS
+    }
+    evidence_lines = []
+    for filename, lines in blocks.items():
+        ranked = sorted(
+            enumerate(lines),
+            key=lambda item: (
+                -sum(token in item[1].casefold() for token in query_tokens),
+                item[0],
+            ),
+        )
+        excerpt = ranked[0][1] if ranked else ""
+        if len(excerpt) > 700:
+            excerpt = excerpt[:697].rstrip() + "..."
+        evidence_lines.append(f"- **{filename}**: {excerpt or '검색 근거가 비어 있습니다.'}")
+
+    section = "## 파일별 근거 확인\n" + "\n".join(evidence_lines)
+    source_index = answer.find("## 출처")
+    if source_index < 0:
+        return cleanup_markdown_answer(f"{answer}\n\n{section}")
+    before = answer[:source_index].rstrip()
+    source = answer[source_index:].lstrip()
+    return cleanup_markdown_answer(f"{before}\n\n{section}\n\n{source}")
+
+
 def fallback_fact_answer(markdown_response: Any) -> str:
     """Build a non-empty deterministic answer from verified fact markdown."""
     if not isinstance(markdown_response, dict):
         return "확정 데이터만으로 답변을 구성할 수 있는 정보가 제한적입니다."
     fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    clinical_answer = _external_clinical_fallback_answer(fact_md)
+    if clinical_answer:
+        return clinical_answer
     lines = list(dict.fromkeys(mandatory_fact_lines(fact_md)))
     if not lines:
         lines = list(dict.fromkeys(_table_fact_lines(_non_news_fact_markdown(fact_md))))
@@ -139,11 +390,99 @@ def fallback_fact_answer(markdown_response: Any) -> str:
     top_brand_answer = _top_brand_fallback_answer(lines, fact_md, source_line)
     if top_brand_answer:
         return top_brand_answer
+    csd_answer = _csd_activity_fallback_answer(lines, source_line)
+    if csd_answer:
+        return csd_answer
     body = "\n".join(lines) if lines else "- 표시할 검증 fact가 제한적입니다."
-    parts = ["확정 데이터 기준으로 정리하면 다음과 같습니다.", body]
+    parts = ["조회된 수치로 요약하면 다음과 같습니다.", body]
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))
+    if source_line:
+        parts.append(source_line)
+    return "\n\n".join(parts)
+
+
+def _external_clinical_fallback_answer(fact_md: str) -> str:
+    """Render exact clinical registry evidence when final LLM expression is unavailable."""
+    global_rows: list[tuple[str, str, str, str]] = []
+    domestic_rows: list[tuple[str, str, str]] = []
+    for line in fact_md.splitlines():
+        global_match = _GLOBAL_CLINICAL_FACT_RE.match(line.strip())
+        if global_match:
+            detail = global_match.group("detail").strip()
+            title, separator, url = detail.rpartition(" · ")
+            if not separator or not url.startswith(("http://", "https://")):
+                title, url = detail, "-"
+            global_rows.append(
+                (
+                    global_match.group("subject").strip(),
+                    global_match.group("nct").strip(),
+                    title.strip(),
+                    url.strip(),
+                )
+            )
+            continue
+        domestic_match = _DOMESTIC_CLINICAL_FACT_RE.match(line.strip())
+        if domestic_match:
+            domestic_rows.append(
+                (
+                    domestic_match.group("subject").strip(),
+                    domestic_match.group("date").strip(),
+                    domestic_match.group("item").strip(),
+                )
+            )
+    if not global_rows or not domestic_rows:
+        return ""
+
+    first_global = global_rows[0]
+    highlighted_domestic = ", ".join(row[2] for row in domestic_rows[:3])
+    domestic_remainder = " 등" if len(domestic_rows) > 3 else ""
+    parts = [
+        (
+            "확인된 등록 근거를 보면, 글로벌 임상 등록과 국내 식약처 임상 등록이 함께 확인됩니다. "
+            f"글로벌 등록에는 {first_global[2]} 연구가 포함됩니다. "
+            f"국내 식약처 임상 등록에서는 {highlighted_domestic}{domestic_remainder}가 확인됩니다."
+        ),
+        (
+            "다만 이 등록정보는 연구·품목과 등록일을 보여주는 근거이며, "
+            "임상 성공, 허가 완료 또는 현재 개발 단계를 뜻하지 않습니다."
+        ),
+        "## 근거 데이터",
+        "### 글로벌 임상 등록",
+        "| 대상 | 임상시험 번호 | 연구 | 링크 |",
+        "| --- | --- | --- | --- |",
+    ]
+    parts.extend(
+        f"| {_markdown_cell(subject)} | {_markdown_cell(nct)} | {_markdown_cell(title)} | {_markdown_cell(url)} |"
+        for subject, nct, title, url in global_rows
+    )
+    parts.extend(
+        (
+            "",
+            "### 국내 식약처 임상 등록",
+            "| 대상 | 등록일 | 품목 |",
+            "| --- | --- | --- |",
+        )
+    )
+    parts.extend(
+        f"| {_markdown_cell(subject)} | {_markdown_cell(date)} | {_markdown_cell(item)} |"
+        for subject, date, item in domestic_rows
+    )
+    return "\n".join(parts)
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _csd_activity_fallback_answer(lines: list[str], source_line: str) -> str:
+    activity = next((line for line in lines if "CSD aggregate 콜수" in line), "")
+    if not activity:
+        return ""
+    detail = activity.split("CSD aggregate 콜수", 1)[-1].lstrip(" :|-—")
+    detail = detail.replace("CSD ChannelDynamics aggregate 콜수/활동량", "월별 영업활동량")
+    parts = [f"확인된 월별 영업활동 추이는 {detail}입니다."]
     if source_line:
         parts.append(source_line)
     return "\n\n".join(parts)
@@ -160,6 +499,22 @@ def finalized_fallback_fact_answer(question: str, markdown_response: Any) -> str
     answer = strip_generated_source_sections(answer)
     answer = remove_raw_fact_residue(answer, fact_md)
     return append_deterministic_source_block(answer, fact_md)
+
+
+def replace_internal_fact_dump(question: str, answer: str, markdown_response: Any) -> str:
+    """Replace a leaked CSD fact prompt with the deterministic user-facing answer."""
+    markers = ("## 확정 데이터", "반드시 반영할 내용", "CSD 세부 미지원")
+    marker_count = sum(marker in answer for marker in markers)
+    if "CSD aggregate 콜수" not in answer or (marker_count < 2 and "CSD 세부 미지원" not in answer):
+        return answer
+    fact_md = ""
+    if isinstance(markdown_response, dict):
+        fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    lines = list(dict.fromkeys(mandatory_fact_lines(fact_md)))
+    csd_answer = _csd_activity_fallback_answer(lines, _source_line(fact_md))
+    if csd_answer:
+        return cleanup_markdown_answer(csd_answer)
+    return cleanup_markdown_answer(fallback_fact_answer(markdown_response))
 
 
 def answer_has_only_fact_numbers(answer: str, fact_numbers: tuple[str, ...]) -> bool:
@@ -343,30 +698,109 @@ def _top_brand_fallback_answer(lines: list[str], fact_md: str, source_line: str)
         return ""
     trend_rows = [_parse_top_trend_line(line) for line in lines]
     trend_rows = [row for row in trend_rows if row]
-    leader = rows[0]["brand"]
-    followers = ", ".join(row["brand"] for row in rows[1:4])
+    leader = rows[0]
+    followers = rows[1:4]
+    follower_names = ", ".join(row["brand"] for row in followers)
     trend_sentence = _top_trend_sentence(trend_rows)
     insight_sentence = _competitive_insight_sentence(lines)
     intro = (
-        f"확정 데이터상 {_subject_with_particle(leader)} 선두이고"
-        + (f", {followers} 등이 뒤따르는 경쟁 구도입니다." if followers else " 경쟁 구도를 형성합니다.")
+        f"조회 결과에서 {_subject_with_particle(leader['brand'])} 선두를 지키고 있으며, "
+        f"{leader['brand']} 시장점유율 {leader['share']}%(매출 {leader['sales']}억원)입니다."
+        + (f" {follower_names} 등이 뒤따르고 있어 경쟁 구도가 이어지고 있습니다." if followers else "")
         + (f" {trend_sentence}" if trend_sentence else "")
         + (f" {insight_sentence}" if insight_sentence else "")
         + " 이 신호는 상위권 점유율·매출 변화에서 드러나는 경쟁 압력의 근거로 해석할 수 있습니다."
     )
+    verified_values = ", ".join(
+        f"{row['brand']} 시장점유율 {row['share']}%, 매출 {row['sales']}억원" for row in rows
+    )
+    detail_sentence = f"구체적으로는 {verified_values}입니다."
     table = [
         "| 순위 | 브랜드 | 점유율 | 매출 |",
         "| --- | --- | ---: | ---: |",
     ]
     for row in rows:
         table.append(f"| {row['rank']}위 | {row['brand']} | {row['share']}% | {row['sales']}억원 |")
-    parts = [intro, "\n".join(table)]
+    parts = [intro, detail_sentence, "\n".join(table)]
     news_lines = list(safe_news_summary_lines(fact_md))[:3]
     if news_lines:
         parts.extend(("관련 이슈 맥락", "\n".join(news_lines)))
     if source_line:
         parts.append(source_line)
     return "\n\n".join(parts)
+
+
+def ensure_natural_fact_lead(question: str, answer: str, fact_md: str) -> str:
+    """Prepend grounded prose when a market answer still starts as a fact dump."""
+
+    first_line = next((line.strip() for line in answer.splitlines() if line.strip()), "")
+    ingredient_question = re.fullmatch(r"\s*[^\s]+\s+(?:성분|주성분)\s*[?.!。？！]*\s*", question)
+    ingredient_fact = _INGREDIENT_IDENTITY_FACT_RE.fullmatch(first_line)
+    if ingredient_question and ingredient_fact:
+        lead = (
+            f"{ingredient_fact.group('brand')}의 주성분은 "
+            f"{ingredient_fact.group('ingredient')}입니다."
+        )
+        return cleanup_markdown_answer("\n\n".join((lead, "## 근거 데이터", answer)))
+    disease_question = re.fullmatch(r"\s*(?P<brand>[^\s]+)\s+(?:질환|질병)\s*[?.!。？！]*\s*", question)
+    disease_fact = next(
+        (
+            match
+            for line in fact_md.splitlines()
+            if (match := _DISEASE_IDENTITY_FACT_RE.fullmatch(line.strip())) is not None
+        ),
+        None,
+    )
+    if disease_question and disease_fact:
+        lead = (
+            f"{disease_question.group('brand')}는 {disease_fact.group('source')} 기준 상병코드 "
+            f"{disease_fact.group('code')}, 질병명 '{disease_fact.group('disease')}'에 해당합니다."
+        )
+        evidence = disease_fact.group(0)
+        source_start = re.search(r"(?m)^##\s*출처\s*$", answer)
+        source_block = answer[source_start.start() :].strip() if source_start else ""
+        return cleanup_markdown_answer(
+            "\n\n".join(part for part in (lead, "## 근거 데이터", evidence, source_block) if part)
+        )
+    if any(token in question for token in ("경쟁", "구도", "상위")):
+        if first_line.startswith(("조회 결과에서", f"{question.split(maxsplit=1)[0]} 경쟁구도를 보면")):
+            return answer
+        rows = _competition_table_rows(answer)
+        if rows:
+            leader = rows[0]
+            followers = "·".join(row[1] for row in rows[1:3])
+            subject = question.split(maxsplit=1)[0]
+            lead = (
+                f"{subject} 경쟁구도를 보면 {_subject_with_particle(leader[1])} {leader[2]}({leader[3]})로 선두이며"
+                + (f", {_subject_with_particle(followers)} 뒤를 잇고 있습니다." if followers else ".")
+                + " 관련 순위와 이슈는 아래 표와 뉴스에서 확인할 수 있습니다."
+            )
+            return cleanup_markdown_answer("\n\n".join((lead, answer)))
+    if "매출" in question and any(token in question for token in ("최근", "어때", "현황", "추이")):
+        if first_line and not first_line.startswith(("#", "|")):
+            return answer
+        fact = _brand_metric_fact(fact_md)
+        if fact:
+            lead = (
+                f"{fact['brand']}는 {fact['period']} 기준 매출 {fact['sales']}억원을 기록하고 있으며, "
+                f"시장점유율 {fact['share']}%와 순위 {fact['rank']}으로 확인됩니다."
+            )
+            return cleanup_markdown_answer("\n\n".join((lead, answer)))
+    return answer
+
+
+def _competition_table_rows(answer: str) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
+    for line in answer.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 4 or not re.fullmatch(r"\d+위?", cells[0]):
+            continue
+        if not re.fullmatch(r"\d+(?:\.\d+)?%", cells[2]):
+            continue
+        if not re.fullmatch(r"\d+(?:,\d{3})*(?:\.\d+)?억원", cells[3]):
+            continue
+        rows.append((cells[0], cells[1], cells[2], cells[3]))
+    return rows
 
 
 def _sales_delta_fallback_answer(lines: list[str], fact_md: str, source_line: str) -> str:
@@ -647,9 +1081,7 @@ def _subject_with_particle(value: str) -> str:
 
 
 def _needs_top_brand_insight(question: str, answer: str) -> bool:
-    if not any(token in question for token in ("경쟁", "구도", "상위", "브랜드")):
-        return False
-    return answer.count("Brand 상위:") >= 3
+    return "Brand 상위:" in answer
 
 
 def needs_safe_news_summary(question: str, answer: str, fact_md: str) -> bool:
@@ -810,6 +1242,203 @@ def strip_generated_source_sections(answer: str) -> str:
     return cleanup_markdown_answer("\n".join(kept).strip())
 
 
+def ensure_deep_research_structure(answer: str) -> str:
+    """Enforce the public deep-report shape without changing verified facts."""
+
+    cleaned = _clean_deep_public_markdown(cleanup_markdown_answer(answer))
+    body, source = _split_deep_source_section(cleaned)
+    source = slim_source_tables(source)
+    if not body:
+        return cleaned
+
+    headings = tuple(_DEEP_BODY_HEADING_RE.finditer(body))
+    summary_heading = re.search(r"(?m)^##\s+핵심 요약\s*$", body)
+    analysis_heading = re.search(r"(?m)^##\s+종합 분석\s*$", body)
+    if summary_heading and analysis_heading and summary_heading.start() < analysis_heading.start():
+        structured_body = body
+        return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
+
+    blocks = [block.strip() for block in re.split(r"\n{2,}", body) if block.strip()]
+    if not headings:
+        if len(blocks) < 2:
+            return cleaned
+        structured_body = "\n\n".join(
+            (
+                "## 핵심 요약",
+                blocks[0],
+                "## 종합 분석",
+                "\n\n".join(blocks[1:]),
+            )
+        )
+    elif len(headings) >= 2:
+        first_heading = headings[0]
+        second_heading = headings[1]
+        leading = body[: first_heading.start()].strip()
+        first_section = body[first_heading.end() : second_heading.start()].strip()
+        first_title = body[first_heading.start() : first_heading.end()].removeprefix("##").strip()
+        second_title = body[second_heading.start() : second_heading.end()].removeprefix("##").strip()
+        remaining_sections = body[second_heading.end() :].strip()
+        first_labeled_section = (
+            first_section if first_title == "핵심 요약" else f"**{first_title}** {first_section}".strip()
+        )
+        summary = "\n\n".join(part for part in (leading, first_labeled_section) if part)
+        remaining_sections = _demote_deep_body_headings(remaining_sections)
+        second_labeled_section = f"**{second_title}** {remaining_sections}".strip()
+        structured_body = "\n\n".join(
+            (
+                "## 핵심 요약",
+                summary,
+                "## 종합 분석",
+                second_labeled_section,
+            )
+        )
+    else:
+        first_heading = headings[0]
+        leading = body[: first_heading.start()].strip()
+        if leading:
+            first_title = body[first_heading.start() : first_heading.end()].removeprefix("##").strip()
+            first_content = body[first_heading.end() :].strip()
+            structured_body = "\n\n".join(
+                (
+                    "## 핵심 요약",
+                    leading,
+                    "## 종합 분석",
+                    f"**{first_title}** {first_content}".strip(),
+                )
+            )
+        else:
+            content_blocks = [
+                block.strip()
+                for block in re.split(r"\n{2,}", body[first_heading.end() :].strip())
+                if block.strip()
+            ]
+            if len(content_blocks) < 2:
+                return cleaned
+            structured_body = "\n\n".join(
+                (
+                    "## 핵심 요약",
+                    content_blocks[0],
+                    "## 종합 분석",
+                    "\n\n".join(content_blocks[1:]),
+                )
+            )
+
+    return cleanup_markdown_answer("\n\n".join(part for part in (structured_body, source) if part))
+
+
+def _demote_deep_body_headings(markdown: str) -> str:
+    return re.sub(r"(?m)^##\s+", "### ", markdown)
+
+
+def _clean_deep_public_markdown(answer: str) -> str:
+    answer = _repair_markdown_link_urls(answer)
+    answer = repair_plain_table_urls(answer)
+    answer = _mark_future_deep_dates(answer)
+    lines = _drop_deep_policy_and_crawl_debris(answer.splitlines())
+    answer = "\n".join(lines).strip()
+    answer = re.sub(
+        r"(습니다|입니다|됩니다|보입니다|확인됩니다)\s+(?=[가-힣A-Za-z])",
+        r"\1. ",
+        answer,
+    )
+    return _dedupe_deep_blocks(answer)
+
+
+def _repair_markdown_link_urls(answer: str) -> str:
+    def repair(match: re.Match[str]) -> str:
+        target = match.group("target")
+        if not target.lstrip().startswith(("http://", "https://")):
+            return match.group(0)
+        compact_target = re.sub(r"\s+", "", target)
+        return f"]({compact_target})"
+
+    return re.sub(r"]\((?P<target>[^)]+)\)", repair, answer)
+
+
+def _mark_future_deep_dates(answer: str) -> str:
+    today = date.today()
+
+    def mark_dates(text: str) -> str:
+        def mark(match: re.Match[str]) -> str:
+            raw = match.group(0)
+            try:
+                parsed = date.fromisoformat(raw)
+            except ValueError:
+                return raw
+            suffix = text[match.end() : match.end() + 8]
+            return f"{raw} (예정)" if parsed > today and "예정" not in suffix else raw
+
+        return re.sub(r"(?<![\d/])\d{4}-\d{2}-\d{2}(?![\d/])", mark, text)
+
+    parts = re.split(r"(]\(https?://[^)]+\))", answer)
+    return "".join(part if part.startswith("](") else mark_dates(part) for part in parts)
+
+
+def _drop_deep_policy_and_crawl_debris(lines: list[str]) -> list[str]:
+    kept: list[str] = []
+    skipping_policy = False
+    for line in lines:
+        stripped = line.strip()
+        heading = re.match(r"^(#{1,6})\s+", stripped)
+        if re.match(r"^#{1,6}\s+(?:미보유 데이터 처리|미지원 축 처리)\s*$", stripped):
+            skipping_policy = True
+            continue
+        if skipping_policy:
+            if heading and len(heading.group(1)) <= 3:
+                skipping_policy = False
+            else:
+                continue
+        if re.match(r"^#{1,6}\s*Image\s+\d+\s*:?$", stripped, re.IGNORECASE):
+            continue
+        if re.match(r"^[-*•]?\s*Image\s+\d+\s*:?$", stripped, re.IGNORECASE):
+            continue
+        if stripped in {"→ 내부 지표 확인 가능", "내부 지표 확인 가능"}:
+            continue
+        public_line = re.sub(r"\s*→?\s*내부 지표 확인 가능", "", line).rstrip()
+        kept.append(public_line)
+    return kept
+
+
+def _dedupe_deep_blocks(answer: str) -> str:
+    blocks = [block.strip() for block in re.split(r"\n{2,}", answer) if block.strip()]
+    seen: set[str] = set()
+    kept: list[str] = []
+    for block in blocks:
+        if block.startswith("#") or block.startswith("|"):
+            kept.append(block)
+            continue
+        normalized = re.sub(r"\s+", " ", re.sub(r"[*_`]", "", block)).strip()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        kept.append(block)
+    return "\n\n".join(kept)
+
+
+def _split_deep_source_section(answer: str) -> tuple[str, str]:
+    lines = answer.splitlines()
+    body: list[str] = []
+    source: list[str] = []
+    in_source = False
+    source_seen = False
+    for line in lines:
+        stripped = line.strip()
+        if _DEEP_SOURCE_HEADING_RE.fullmatch(stripped):
+            in_source = True
+            if not source_seen:
+                source_seen = True
+                source.append("## 출처")
+            continue
+        if in_source and re.match(r"^##\s+", stripped):
+            in_source = False
+        if in_source:
+            if source_seen:
+                source.append(line)
+            continue
+        body.append(line)
+    return "\n".join(body).strip(), "\n".join(source).strip()
+
+
 def _is_inline_source_line(stripped: str) -> bool:
     """Return whether a generated prose line is only an inline citation/source bullet."""
 
@@ -817,11 +1446,11 @@ def _is_inline_source_line(stripped: str) -> bool:
     return bool(re.match(r"^출처\s*\(\d{4}(?:-\d{2})?(?:-\d{2})?\)", normalized))
 
 
-def append_deterministic_source_block(answer: str, fact_md: str) -> str:
+def append_deterministic_source_block(answer: str, fact_md: str, *, file_context: str = "") -> str:
     """Append a code-rendered source block built from verified facts."""
 
     stripped_answer = strip_generated_source_sections(answer)
-    source_block = deterministic_source_block(fact_md)
+    source_block = deterministic_source_block(fact_md, file_context=file_context)
     if not source_block:
         return stripped_answer
     return cleanup_markdown_answer("\n\n".join((stripped_answer, source_block)))
@@ -849,26 +1478,10 @@ def append_competitor_patent_coverage_block(answer: str, fact_md: str) -> str:
     return cleanup_markdown_answer("\n\n".join((answer.strip(), "\n".join(lines))))
 
 
-def deterministic_source_block(fact_md: str) -> str:
-    """Return final user-facing sources from verified fact markdown only."""
+def deterministic_source_block(fact_md: str, *, file_context: str = "") -> str:
+    """Return the single public seven-field provenance schema."""
 
-    rows: list[str] = []
-    value_source_table = _deterministic_value_source_table(fact_md)
-    if value_source_table:
-        rows.extend(value_source_table)
-        rows.extend(_deterministic_data_source_detail_lines(fact_md))
-    else:
-        data_line = _deterministic_data_source_line(fact_md)
-        if data_line:
-            rows.append(data_line)
-        rows.extend(_deterministic_data_source_detail_lines(fact_md))
-    rows.extend(_deterministic_news_source_lines(fact_md))
-    rows.extend(_deterministic_news_search_lines(fact_md))
-    rows.extend(_deterministic_external_source_lines(fact_md))
-    clean = tuple(dict.fromkeys(row for row in rows if row and not _contains_internal_source_name(row)))
-    if not clean:
-        return ""
-    return "\n".join(("## 출처", *clean))
+    return provenance_source_block_from_facts(fact_md, file_context=file_context)
 
 
 def _fact_table_rows(fact_md: str, title_fragment: str) -> list[str]:
@@ -1126,6 +1739,23 @@ def ensure_hira_patient_summary(question: str, answer: str, fact_md: str) -> str
     answer_numbers = set(_plain_number_tokens(answer))
     line_numbers = {token for line in lines for token in _hira_patient_count_tokens(line)}
     if answer_numbers & line_numbers:
+        answer_lines = answer.splitlines()
+        first_table = next(
+            (offset for offset, line in enumerate(answer_lines) if line.lstrip().startswith("|")),
+            None,
+        )
+        lead_lines = answer_lines if first_table is None else answer_lines[:first_table]
+        lead_prose = "\n".join(line for line in lead_lines if not line.lstrip().startswith("|"))
+        if set(_plain_number_tokens(lead_prose)) & line_numbers:
+            return answer
+        natural_lines = presentable_mandatory_lines(lines[:3])
+        if natural_lines:
+            without_late_duplicates = answer
+            for line in natural_lines:
+                without_late_duplicates = without_late_duplicates.replace(line, "", 1)
+            return cleanup_markdown_answer(
+                f"{' '.join(natural_lines)}\n\n{cleanup_markdown_answer(without_late_duplicates)}"
+            )
         return answer
     summary = "\n".join(lines[:3])
     return cleanup_markdown_answer(_insert_before_timing_or_source(answer, summary))
@@ -1288,7 +1918,7 @@ def mandatory_retry_messages(
     previous_answer: str,
     missing_lines: tuple[str, ...],
 ) -> list[dict[str, str]]:
-    missing_md = "\n".join(missing_lines)
+    missing_md = "\n".join(_mandatory_retry_line(previous_answer, line) for line in missing_lines)
     return [
         {
             "role": "system",
@@ -1316,6 +1946,27 @@ def mandatory_retry_messages(
     ]
 
 
+def _mandatory_retry_line(answer: str, line: str) -> str:
+    missing_items = _mandatory_line_missing_items(answer, line)
+    if not missing_items:
+        return line
+    return f"{line}\n  누락 수치: {', '.join(missing_items)}"
+
+
+def _mandatory_line_missing_items(answer: str, line: str) -> tuple[str, ...]:
+    if line.startswith("- 매출 변화:"):
+        return _missing_required_number_tokens(answer, _number_like_tokens(line))
+    if "인사이트 계산" in line and not ("상승폭" in line and "하락폭" in line):
+        return _missing_required_number_tokens(answer, _number_like_tokens(line))
+    if "월별 MS" in line:
+        payload = line.split(":", 1)[-1].strip()
+        return _missing_required_number_tokens(answer, _number_like_tokens(payload))
+    if "브랜드 핵심 지표" in line:
+        payload = line.split(":", 1)[-1].strip()
+        return _missing_required_number_tokens(answer, _number_like_tokens(payload))
+    return ()
+
+
 def chunk_text(text: str, size: int = 24) -> Iterator[str]:
     if not text:
         return
@@ -1328,6 +1979,7 @@ def chunk_text(text: str, size: int = 24) -> Iterator[str]:
         forward = text.find(" ", limit, min(len(text), index + int(size * 1.5)))
         if forward > limit:
             limit = _space_aware_limit(text, forward, index, size)
+        limit = _atomic_stream_limit(text, limit)
         while limit < len(text) and text[limit].isspace():
             limit += 1
         yield text[index:limit]
@@ -1341,6 +1993,15 @@ def _space_aware_limit(text: str, forward: int, index: int, size: int) -> int:
     return next_forward + 1 if next_forward > forward else forward + 1
 
 
+def _atomic_stream_limit(text: str, limit: int) -> int:
+    window_start = max(0, limit - 40)
+    window_end = min(len(text), limit + 40)
+    for match in _STREAM_ATOMIC_TOKEN_RE.finditer(text, window_start, window_end):
+        if match.start() < limit < match.end():
+            return match.end()
+    return limit
+
+
 def _mandatory_line_present(answer: str, line: str) -> bool:
     if "데이터 미보유" in line:
         subject = line.split(":", 1)[1].strip().split(" ", 1)[0] if ":" in line else ""
@@ -1351,8 +2012,22 @@ def _mandatory_line_present(answer: str, line: str) -> bool:
         return bool(numbers) and any(token in answer_numbers for token in numbers)
     if line.startswith("- 상위 브랜드 추이:"):
         return _top_brand_trend_line_present(answer, line)
-    if "매출 변화" in line:
-        return "매출" in answer and "변화" in answer and any(token in answer for token in _number_like_tokens(line))
+    if "브랜드 추세 비교" in line:
+        required_deltas = tuple(
+            re.findall(r"(?:MS 변화|매출 변화율)\s+([+-]?\d+(?:\.\d+)?)%p?", line)
+        )
+        return (
+            "리바로" in answer
+            and "아토젯" in answer
+            and any(token in answer for token in ("추세", "위협", "비교", "성장"))
+            and _all_required_numbers_present(answer, required_deltas)
+        )
+    if line.startswith("- 매출 변화:"):
+        return (
+            "매출" in answer
+            and "변화" in answer
+            and _all_required_numbers_present(answer, _number_like_tokens(line))
+        )
     if "매출 추이" in line:
         return _sales_trend_line_present(answer, line)
     if "점유율 변화" in line:
@@ -1383,28 +2058,20 @@ def _mandatory_line_present(answer: str, line: str) -> bool:
             and all(_signed_number_present(answer, token) for token in delta_numbers)
             and any(token in answer for token in ("인과", "동행", "유사", "고유", "대조", "비교"))
         )
-    if "브랜드 추세 비교" in line:
-        numbers = tuple(_number_like_tokens(line))
-        return (
-            "리바로" in answer
-            and "아토젯" in answer
-            and any(token in answer for token in ("추세", "위협", "비교", "성장"))
-            and all(_signed_number_present(answer, token) for token in numbers[-4:])
-        )
     if "인사이트 계산" in line:
         if "상승폭" in line and "하락폭" in line:
             movement = _movement_phrase(line)
             ratio = _regex_value(line, r"대비\s+([+-]?\d+(?:\.\d+)?%)")
             return bool(movement and ratio and ratio in answer and any(token in answer for token in ("반대 방향", "직접 처방 이동", "재편")))
         numbers = tuple(_number_like_tokens(line))
-        return any(token in answer for token in ("share-of-growth", "시장 성장", "점유 이동", "백분위")) and any(
-            _signed_number_present(answer, token) for token in numbers
+        return any(token in answer for token in ("share-of-growth", "시장 성장", "점유 이동", "백분위")) and (
+            _all_required_numbers_present(answer, numbers)
         )
     if "월별 MS" in line:
         payload = line.split(":", 1)[-1].strip()
         brand = payload.split(" 월별 MS", 1)[0]
         numbers = tuple(_number_like_tokens(payload))
-        return bool(brand) and brand in answer and any(token in answer for token in numbers)
+        return bool(brand) and brand in answer and _all_required_numbers_present(answer, numbers)
     if "Brand 상위" in line:
         return _top_brand_line_present(answer, line)
     return line.split(":", 1)[-1].strip() in answer
@@ -1501,7 +2168,7 @@ def _single_brand_focus_line_present(answer: str, line: str) -> bool:
     if checks:
         return all(checks)
     numbers = tuple(_number_like_tokens(payload))
-    return any(token in answer for token in numbers)
+    return _all_required_numbers_present(answer, numbers)
 
 
 def _mandatory_numeric_assertion(line: str) -> tuple[str, set[str]] | None:
@@ -1546,6 +2213,16 @@ def _number_like_tokens(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r"-?\d+(?:,\d{3})*(?:\.\d+)?", text))
 
 
+def _missing_required_number_tokens(answer: str, tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Return mandatory numeric tokens absent from the answer, preserving fact order."""
+
+    return tuple(dict.fromkeys(token for token in tokens if not _signed_number_present(answer, token)))
+
+
+def _all_required_numbers_present(answer: str, tokens: tuple[str, ...]) -> bool:
+    return bool(tokens) and not _missing_required_number_tokens(answer, tokens)
+
+
 def _plain_number_tokens(text: str) -> tuple[str, ...]:
     return tuple(token.replace(",", "") for token in _number_like_tokens(text))
 
@@ -1567,6 +2244,32 @@ def _hira_patient_summary_lines(fact_md: str) -> tuple[str, ...]:
     lines = [line for line in mandatory_fact_lines(fact_md) if "HIRA 환자수" in line]
     if lines:
         return tuple(lines)
+    tool_lines: list[str] = []
+    tool_fact_pattern = re.compile(
+        r"^-\s+(?P<code>[A-Z]\d+[A-Z0-9.]*)\s+\((?P<year>20\d{2})\):\s+"
+        r"질병 입원/외래 통계\s*=\s*(?P<count>\d[\d,]*)\s+"
+        r"\[건강보험심사평가원 통계\s+·\s+(?P<locator>[^\]]+)\]$"
+    )
+    for raw in fact_md.splitlines():
+        match = tool_fact_pattern.match(raw.strip())
+        if not match:
+            continue
+        locator = tuple(
+            part.strip()
+            for part in match.group("locator").split(" · ")
+            if part.strip()
+        )
+        if len(locator) < 2:
+            continue
+        disease, segment, *qualifiers = locator
+        segment_label = " ".join((segment, *qualifiers))
+        count = f'{int(match.group("count").replace(",", "")):,}'
+        tool_lines.append(
+            f"- HIRA 환자수: {disease}({match.group('code')}) "
+            f"{match.group('year')}년 {segment_label}: {count}명"
+        )
+    if tool_lines:
+        return tuple(dict.fromkeys(tool_lines))
     parsed: list[str] = []
     in_table = False
     for raw in fact_md.splitlines():
@@ -2347,160 +3050,6 @@ def _is_source_heading(stripped: str) -> bool:
 
 def _is_heading(stripped: str) -> bool:
     return bool(re.match(r"#{1,6}\s+\S", stripped))
-
-
-def _contains_internal_source_name(text: str) -> bool:
-    return any(token in text for token in ("cache", "deep_analysis_events", "내부 심층분석"))
-
-
-def _deterministic_data_source_line(fact_md: str) -> str:
-    non_news = _non_news_fact_markdown(fact_md)
-    source_line = _source_line(fact_md)
-    sources: list[str] = []
-    if "UBIST" in source_line or "지표 fact" in non_news:
-        sources.append("UBIST")
-    if "IQVIA" in source_line:
-        sources.append("IQVIA NSA")
-    if not sources:
-        return ""
-    period_label = _source_period_label(non_news)
-    suffix = f" ({period_label})" if period_label else ""
-    return "- 데이터: " + " / ".join(dict.fromkeys(sources)) + suffix
-
-
-def _deterministic_data_source_detail_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "데이터 상세" or not detail or detail == "-":
-            continue
-        rows.append(f"- 데이터 상세: {detail}")
-    return rows
-
-
-def _deterministic_value_source_table(fact_md: str) -> list[str]:
-    records = _value_source_records(fact_md)
-    if not records:
-        return []
-    rows = ["| 수치 | 소스 | 기간 | 시장정의 | 축 |", "| --- | --- | --- | --- | --- |"]
-    for record in records:
-        value, source, period, market, axis = record[:5]
-        if not value or not source:
-            continue
-        rows.append(f"| {value} | {source} | {period or '-'} | {market or '-'} | {axis or '-'} |")
-    if len(rows) == 2:
-        return []
-    return ["", *rows]
-
-
-def _value_source_records(fact_md: str) -> list[tuple[str, str, str, str, str, str]]:
-    records: list[tuple[str, str, str, str, str, str]] = []
-    in_value_sources = False
-    for line in fact_md.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("### "):
-            in_value_sources = "수치별 출처 fact" in stripped
-            continue
-        if not in_value_sources or not stripped.startswith("|") or "---" in stripped:
-            continue
-        cells = [_clean_news_cell(cell) for cell in stripped.strip("|").split("|")]
-        cells = [cell for cell in cells if cell]
-        if not cells or cells[0] == "수치":
-            continue
-        padded = (*cells[:6], *("-" for _ in range(max(0, 6 - len(cells)))))
-        records.append(tuple(padded[:6]))
-    return records
-
-
-def _source_period_label(markdown: str) -> str:
-    periods = sorted(set(re.findall(r"20\d{2}-(?:\d{2}|Q[1-4])", markdown)))
-    if not periods:
-        return ""
-    if len(periods) == 1:
-        return periods[0]
-    return f"{periods[0]}~{periods[-1]}"
-
-
-def _deterministic_news_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for record in _news_fact_records(fact_md):
-        title = record.get("title") or ""
-        if not title:
-            continue
-        outlet = record.get("source") or "뉴스"
-        date = record.get("date") or "날짜 미상"
-        url = record.get("url") or ""
-        url_part = f" {url}" if url else ""
-        rows.append(f"- 뉴스: {outlet} ({date}) 「{title}」{url_part}")
-    return rows
-
-
-def _deterministic_news_search_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "뉴스 검색" or not detail or detail == "-":
-            continue
-        source, _, condition = detail.partition(" — ")
-        if condition:
-            rows.append(f"- 뉴스({source}): {condition}")
-        else:
-            rows.append(f"- 뉴스({detail})")
-    return rows
-
-
-def _deterministic_external_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    rows.extend(_deterministic_hira_source_lines(fact_md))
-    rows.extend(_deterministic_external_api_source_lines(fact_md))
-    if not rows and ("HIRA 질병" in fact_md or "HIRA 환자수" in fact_md):
-        rows.append("- 외부: HIRA 질병정보서비스 (KCD 기반 환자 통계)")
-    if not any("임상" in row for row in rows) and "### 임상시험 fact" in fact_md:
-        rows.append("- 외부: ClinicalTrials/MFDS 임상 정보")
-    if not any("특허" in row or "Orange" in row for row in rows) and "### 특허/라벨 fact" in fact_md:
-        rows.append("- 외부: MFDS/OpenFDA/Orange Book 특허·라벨 정보")
-    return rows
-
-
-def _deterministic_hira_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "외부 HIRA" or not detail or detail == "-":
-            continue
-        source, _, condition = detail.partition(" — ")
-        if condition:
-            rows.append(f"- 외부({source}): {condition}")
-        else:
-            rows.append(f"- 외부: {detail}")
-    return rows
-
-
-def _deterministic_external_api_source_lines(fact_md: str) -> list[str]:
-    rows: list[str] = []
-    for label, detail in _source_detail_records(fact_md):
-        if label != "외부 API" or not detail or detail == "-":
-            continue
-        rows.append(f"- 외부: {detail}")
-    return rows
-
-
-def _source_detail_records(fact_md: str) -> list[tuple[str, str]]:
-    records: list[tuple[str, str]] = []
-    in_source = False
-    for line in fact_md.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("### "):
-            in_source = "출처 유형 fact" in stripped
-            continue
-        if not in_source or not stripped.startswith("|") or "---" in stripped:
-            continue
-        cells = [_clean_news_cell(cell) for cell in stripped.strip("|").split("|")]
-        cells = [cell for cell in cells if cell]
-        if not cells or cells[0] == "출처":
-            continue
-        if len(cells) >= 2:
-            records.append((cells[0], cells[1]))
-        else:
-            records.append((cells[0], ""))
-    return records
 
 
 def _non_news_fact_markdown(fact_md: str) -> str:

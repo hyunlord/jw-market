@@ -24,7 +24,7 @@ def news_md(data: dict[str, Any]) -> str:
     filter_rows = _news_filter_rows(data)
     if filter_rows:
         blocks.append(table("### 뉴스 필터", ("구분", "값"), filter_rows))
-    if data.get("status") == "no_data":
+    if data.get("status") in {"no_data", "query_failed", "unsupported"}:
         blocks.append(table("### 상태", ("항목", "값"), (("상태", data.get("message") or "관련 뉴스 없음"),)))
     return "\n\n".join(blocks)
 

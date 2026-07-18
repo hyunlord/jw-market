@@ -77,6 +77,8 @@
     "atc": ["C10A1"],
     "edi_code": "645304520",
     "item_seq": "200402090",
+    "market_id": "ml_006",
+    "market_name": "고지혈증 치료제 시장",
     "evidence_source": "existing fixture + MFDS T1 ITEM_INGR_NAME"
   },
   {
@@ -87,6 +89,8 @@
     "atc": ["C10A1", "C10C"],
     "edi_code": "645306730",
     "item_seq": "202105123",
+    "market_id": "ml_006",
+    "market_name": "고지혈증 치료제 시장",
     "evidence_source": "existing fixture + MFDS T1 ITEM_INGR_NAME"
   },
   {

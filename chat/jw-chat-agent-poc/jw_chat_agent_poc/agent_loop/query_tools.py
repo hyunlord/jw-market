@@ -14,6 +14,7 @@ BRAND_TOOLS = {
     "get_procedure_stats",
     "search_clinical",
     "search_drug_info",
+    "search_safety",
     "web_search",
     "csd_activity_trend",
     "get_brand_sales",
@@ -33,36 +34,63 @@ class QueryToolResult:
     call: dict[str, Any]
 
 
-def catalog_for(layer: StrategicQueryLayer | None, brand: str | None) -> QueryCatalog | None:
+def catalog_for(layer: StrategicQueryLayer | None, brand: str | None, market: str | None = None) -> QueryCatalog | None:
     if layer is None:
         return None
     try:
-        return layer.catalog_for_brand(brand)
+        return layer.catalog_for_brand(brand, market=market)
     except (LookupError, TypeError, ValueError):
         return None
 
 
-def brand_metric(layer: StrategicQueryLayer | None, brand: str, metric: str, period: str) -> QueryToolResult:
+def brand_metric(
+    layer: StrategicQueryLayer | None,
+    brand: str,
+    metric: str,
+    period: str,
+    market: str | None = None,
+    source: str = "",
+    history_points: int = 10,
+) -> QueryToolResult:
     active_layer = required_layer(layer)
-    call = active_layer.brand_metric(brand, metric, period)
+    call = active_layer.brand_metric(
+        brand,
+        metric,
+        period,
+        market=market,
+        source=source,
+        history_points=history_points,
+    )
     return QueryToolResult(f"{brand} {metric} query-layer", call)
 
 
-def compare_series(layer: StrategicQueryLayer | None, brand: str, comparison: str) -> QueryToolResult:
+def compare_series(layer: StrategicQueryLayer | None, brand: str, comparison: str, market: str | None = None) -> QueryToolResult:
     active_layer = required_layer(layer)
     if not comparison:
         raise LookupError("comparison_brand argument is required")
-    call = active_layer.market_member_metric(brand, comparison)
+    call = active_layer.market_member_metric(brand, comparison, market=market)
     return QueryToolResult(f"{brand} vs {comparison} series query-layer", call)
 
 
-def top_brands(layer: StrategicQueryLayer | None, brand: str, limit: str | None) -> QueryToolResult:
+def top_brands(
+    layer: StrategicQueryLayer | None,
+    brand: str,
+    limit: str | None,
+    market: str | None = None,
+    source: str = "",
+) -> QueryToolResult:
     active_layer = required_layer(layer)
-    call = active_layer.top_brands(brand, int_arg(limit, 5))
+    call = active_layer.top_brands(brand, int_arg(limit, 5), market=market, source=source)
     return QueryToolResult(f"{brand} top brands query-layer", call)
 
 
-def dimension_breakdown(layer: StrategicQueryLayer | None, brand: str, dimension: str, arguments: Mapping[str, str]) -> QueryToolResult:
+def dimension_breakdown(
+    layer: StrategicQueryLayer | None,
+    brand: str,
+    dimension: str,
+    arguments: Mapping[str, str],
+    market: str | None = None,
+) -> QueryToolResult:
     active_layer = required_layer(layer)
     call = active_layer.dimension_breakdown(
         brand,
@@ -70,13 +98,14 @@ def dimension_breakdown(layer: StrategicQueryLayer | None, brand: str, dimension
         source=arguments.get("source", ""),
         period=arguments.get("period", "latest"),
         limit=int_arg(arguments.get("limit"), 10),
+        market=market,
     )
     return QueryToolResult(f"{brand} {dimension} breakdown query-layer", call)
 
 
 def query_spec(layer: StrategicQueryLayer | None, arguments: Mapping[str, str], fallback_brand: str) -> QueryToolResult:
     active_layer = required_layer(layer)
-    call = active_layer.query(arguments.get("spec", ""), fallback_brand=fallback_brand)
+    call = active_layer.query(arguments.get("spec", {}), fallback_brand=fallback_brand)
     return QueryToolResult("query(spec) strategic mart", call)
 
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import re
 import shutil
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
+import fitz
 import pymysql
 from fastapi import UploadFile
 
@@ -19,9 +22,18 @@ from . import settings
 
 FILE_UPLOAD_PLUGIN_CODE = "WP01"
 LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
+# 로컬 XLSX 전처리 경로가 직접 처리하는 확장자. .xlsm은 매크로를 무시하고 데이터 시트만 색인한다.
+LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
 GATED_EXTERNAL_PREPROCESSOR_EXTENSIONS = frozenset({"pdf", "pptx"})
-PDF_PAGE_MARKER = re.compile(rb"/Type\s*/Page\b")
 PPTX_SLIDE_NAME = re.compile(r"^ppt/slides/slide\d+\.xml$")
+PREPROCESSOR_TIMEOUT_MESSAGE = (
+    "문서가 커서 처리 시간이 초과되었습니다. "
+    "파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
+)
+PREPROCESSOR_FAILURE_MESSAGE = (
+    "문서 전처리에 실패했습니다. 파일 형식이나 내용을 확인한 뒤 다시 시도해 주세요."
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +62,38 @@ class SavedTempDocument:
 @dataclass(frozen=True, slots=True)
 class PreprocessorGateBlock:
     file_name: str
-    route: Literal["blocked_oversized"]
+    route: Literal["blocked_oversized", "preprocess_failed"]
     route_reason: str
     file_size_bytes: int
+    user_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PdfProcessingEstimate:
+    page_count: int
+    text_layer_pages: int
+    ocr_candidate_pages: int
+    estimated_seconds: float
+
+
+class PreprocessorRunError(RuntimeError):
+    """facade가 200으로 감싼 전처리 실패(envelope code != 0)를 명시 실패로 올린다.
+
+    facade(preprocess-api)는 worker 5xx/OOM에도 HTTP 200 + {"code":1,...}을 반환하므로
+    HTTP status만으로는 실패를 알 수 없다. 이 예외로 조용한 성공(빈 temp 커밋)을 차단한다.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        file_names: list[str] | None = None,
+        user_message: str = PREPROCESSOR_FAILURE_MESSAGE,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.file_names = list(file_names or [])
+        self.user_message = user_message
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -172,25 +213,51 @@ def _size_gate_block(file_name: str, size_bytes: int) -> PreprocessorGateBlock |
     limit_bytes = _external_preprocessor_limit_bytes()
     if size_bytes <= limit_bytes:
         return None
-    reason = (
-        f"file_size_bytes={size_bytes} exceeds PDF/PPTX preprocessor limit "
-        f"{limit_bytes} bytes ({settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB} MiB); "
-        "preprocessor-64 delegation is blocked to avoid shared-service OOM."
-    )
+    reason = f"PDF·PPTX 파일은 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB}MB까지 지원됩니다."
     return PreprocessorGateBlock(
         file_name=file_name,
         route="blocked_oversized",
         route_reason=reason,
         file_size_bytes=size_bytes,
+        user_message=reason,
     )
 
 
-def _pdf_page_count(path: Path) -> int | None:
+def _pdf_processing_estimate(path: Path) -> PdfProcessingEstimate | None:
     try:
-        data = path.read_bytes()
-    except OSError:
+        with fitz.open(path) as document:
+            page_count = len(document)
+            text_layer_pages = 0
+            for page in document:
+                native_text = page.get_text("text") or ""
+                nonspace_chars = len("".join(native_text.split()))
+                if nonspace_chars >= settings.PDF_TEXT_LAYER_MIN_CHARS:
+                    text_layer_pages += 1
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("PDF admission profile failed for %s: %s", path.name, exc)
         return None
-    return len(PDF_PAGE_MARKER.findall(data))
+
+    ocr_candidate_pages = page_count - text_layer_pages
+    estimated_seconds = (
+        text_layer_pages * settings.PDF_TEXT_PAGE_SECONDS
+        + ocr_candidate_pages * settings.PDF_OCR_PAGE_SECONDS
+    )
+    estimate = PdfProcessingEstimate(
+        page_count=page_count,
+        text_layer_pages=text_layer_pages,
+        ocr_candidate_pages=ocr_candidate_pages,
+        estimated_seconds=estimated_seconds,
+    )
+    logger.info(
+        "PDF admission profile file=%s pages=%d text_layer_pages=%d "
+        "ocr_candidate_pages=%d estimated_seconds=%.2f",
+        path.name,
+        page_count,
+        text_layer_pages,
+        ocr_candidate_pages,
+        estimated_seconds,
+    )
+    return estimate
 
 
 def _pptx_slide_count(path: Path) -> int | None:
@@ -210,32 +277,59 @@ def _metadata_gate_block(
     extension = _extension(file_name)
     path = Path(file_path)
     if extension == "pdf":
-        page_count = _pdf_page_count(path)
-        if page_count is not None and page_count > settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES:
+        estimate = _pdf_processing_estimate(path)
+        if estimate is None:
             reason = (
-                f"page_count={page_count} exceeds PDF preprocessor limit "
-                f"{settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES}; "
-                "preprocessor-64 delegation is blocked to avoid shared-service OOM."
+                "PDF 페이지와 텍스트 레이어를 확인할 수 없습니다. "
+                "파일이 손상되었거나 암호화되었는지 확인해 주세요."
+            )
+            return PreprocessorGateBlock(
+                file_name=file_name,
+                route="preprocess_failed",
+                route_reason=reason,
+                file_size_bytes=file_size_bytes,
+                user_message=reason,
+            )
+        if (
+            settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES > 0
+            and estimate.page_count > settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES
+        ):
+            reason = f"PDF는 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES}페이지까지 지원됩니다."
+            return PreprocessorGateBlock(
+                file_name=file_name,
+                route="blocked_oversized",
+                route_reason=reason,
+                file_size_bytes=file_size_bytes,
+                user_message=reason,
+            )
+        if (
+            estimate.estimated_seconds > settings.PDF_MAX_ESTIMATED_SECONDS
+        ):
+            estimated_seconds = math.ceil(estimate.estimated_seconds)
+            time_budget = math.floor(settings.PDF_MAX_ESTIMATED_SECONDS)
+            reason = (
+                f"이 문서는 {estimate.page_count}페이지 중 OCR 예상 "
+                f"{estimate.ocr_candidate_pages}페이지로 예상 처리 시간 "
+                f"{estimated_seconds}초가 {time_budget}초 한도를 초과합니다. "
+                "파일을 나누거나 스캔 페이지 수를 줄여 다시 시도해 주세요."
             )
             return PreprocessorGateBlock(
                 file_name=file_name,
                 route="blocked_oversized",
                 route_reason=reason,
                 file_size_bytes=file_size_bytes,
+                user_message=reason,
             )
     if extension == "pptx":
         slide_count = _pptx_slide_count(path)
         if slide_count is not None and slide_count > settings.EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES:
-            reason = (
-                f"slide_count={slide_count} exceeds PPTX preprocessor limit "
-                f"{settings.EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES}; "
-                "preprocessor-64 delegation is blocked to avoid shared-service OOM."
-            )
+            reason = f"PPTX는 최대 {settings.EXTERNAL_PREPROCESSOR_MAX_PPTX_SLIDES}슬라이드까지 지원됩니다."
             return PreprocessorGateBlock(
                 file_name=file_name,
                 route="blocked_oversized",
                 route_reason=reason,
                 file_size_bytes=file_size_bytes,
+                user_message=reason,
             )
     return None
 
@@ -278,7 +372,7 @@ def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[s
     errors: list[str] = []
     for file in files:
         extension = _extension(file.filename)
-        if extension in LOCAL_PREPROCESSOR_EXTENSIONS:
+        if extension in LOCAL_PREPROCESSOR_EXTENSIONS or extension in LOCAL_XLSX_EXTENSIONS:
             continue
         if extension not in allowed_extensions:
             errors.append(f"허용되지 않는 파일 확장자입니다: {file.filename}")
@@ -287,7 +381,7 @@ def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[s
 
 def requires_external_preprocessor(item: SavedTempDocument) -> bool:
     extension = _extension(item.file_name)
-    return extension not in LOCAL_PREPROCESSOR_EXTENSIONS and extension != "xlsx"
+    return extension not in LOCAL_PREPROCESSOR_EXTENSIONS and extension not in LOCAL_XLSX_EXTENSIONS
 
 
 def create_temp_vdb_index(
@@ -358,14 +452,16 @@ def save_temp_documents(
     files: list[UploadFile],
     *,
     temp_document_ids: list[int],
+    destination_dir: Path | None = None,
 ) -> list[SavedTempDocument]:
-    Path(settings.TEMP_DOCUMENT_DIR).mkdir(parents=True, exist_ok=True)
+    target_dir = destination_dir or Path(settings.TEMP_DOCUMENT_DIR)
+    target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     saved: list[SavedTempDocument] = []
     for file, temp_document_id in zip(files, temp_document_ids, strict=True):
         extension = Path(file.filename or "").suffix.lstrip(".")
         file_name = file.filename or f"upload-{temp_document_id}"
         temp_path = (
-            Path(settings.TEMP_DOCUMENT_DIR) / f"TEMP_DOCUMENT_{temp_document_id}.{extension}"
+            target_dir / f"TEMP_DOCUMENT_{temp_document_id}.{extension}"
         )
         file.file.seek(0)
         with temp_path.open("wb") as output:
@@ -426,12 +522,60 @@ def run_preprocessor(
             for item in saved_documents
         ],
     }
-    response = client.post(
-        f"{settings.PREPROCESSOR_API_BASE.rstrip('/')}/temp/run",
-        json=body,
-        headers=headers,
-        timeout=settings.PREPROCESSOR_TIMEOUT_S,
-    )
+    try:
+        response = client.post(
+            f"{settings.PREPROCESSOR_API_BASE.rstrip('/')}/temp/run",
+            json=body,
+            headers=headers,
+            timeout=settings.PREPROCESSOR_TIMEOUT_S,
+        )
+    except httpx.TimeoutException as exc:
+        raise PreprocessorRunError(
+            PREPROCESSOR_TIMEOUT_MESSAGE,
+            file_names=[item.file_name for item in saved_documents],
+            user_message=PREPROCESSOR_TIMEOUT_MESSAGE,
+        ) from exc
     response.raise_for_status()
     payload = response.json()
-    return payload if isinstance(payload, dict) else {"raw": payload}
+    payload = payload if isinstance(payload, dict) else {"raw": payload}
+    # fail-closed: facade는 HTTP 200으로 실패를 감싸므로 envelope code를 반드시 검사한다.
+    # code가 없으면(비-GenOS 응답) 오탐 방지를 위해 성공으로 두고, code가 있고 성공값이
+    # 아닐 때만 실패로 올린다.
+    code = payload.get("code")
+    if code is not None and int(code) != settings.PREPROCESSOR_ENVELOPE_SUCCESS_CODE:
+        reason = str(payload.get("errMsg") or payload.get("error") or "preprocessor returned failure envelope")
+        raise PreprocessorRunError(
+            reason,
+            file_names=[item.file_name for item in saved_documents],
+            user_message=PREPROCESSOR_FAILURE_MESSAGE,
+        )
+    return payload
+
+
+def preprocessor_failure_blocks(
+    error: PreprocessorRunError,
+    saved_documents: list[SavedTempDocument],
+) -> list[PreprocessorGateBlock]:
+    """전처리 실패를 blocked_oversized와 일관된 blocked_uploads 형식으로 변환한다."""
+    names = error.file_names or [item.file_name for item in saved_documents]
+    reason = f"preprocessor delegation failed: {error.reason}"
+    sizes = {item.file_name: item.file_path for item in saved_documents}
+    blocks: list[PreprocessorGateBlock] = []
+    for name in names:
+        size_bytes = 0
+        path = sizes.get(name)
+        if path:
+            try:
+                size_bytes = Path(path).stat().st_size
+            except OSError:
+                size_bytes = 0
+        blocks.append(
+            PreprocessorGateBlock(
+                file_name=name,
+                route="preprocess_failed",
+                route_reason=reason,
+                file_size_bytes=size_bytes,
+                user_message=error.user_message,
+            )
+        )
+    return blocks

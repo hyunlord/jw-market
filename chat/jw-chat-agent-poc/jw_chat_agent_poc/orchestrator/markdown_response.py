@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -12,12 +13,13 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     pct_value,
     rank_value,
     sanitize_interpretation,
-    source_description,
-    source_label,
     table,
 )
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
+from jw_chat_agent_poc.orchestrator.call_normalization import dedupe_blocked_metric_messages
 from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
+from jw_chat_agent_poc.orchestrator.market_insights import render_market_insights
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
 from jw_chat_agent_poc.orchestrator.provenance import (
     evidence_from_calls,
     evidence_markdown,
@@ -54,6 +56,7 @@ class MarkdownResponseBuilder:
         sources: list[str],
         notices: list[str] | None = None,
     ) -> MarkdownResponse:
+        calls = dedupe_blocked_metric_messages(calls)
         summary_md = self._summary_md(brand, sources)
         data_md = self._data_md(calls)
         facts = evidence_from_calls(calls, data_md)
@@ -86,14 +89,14 @@ class MarkdownResponseBuilder:
     def no_data(self, message: str) -> MarkdownResponse:
         summary_md = ""
         interpretation_md = f"## 해석\n\n- {cell(message)}"
-        sources_md = "## 출처\n\n- 데이터 없음: 현재 POC 범위 밖"
+        sources_md = provenance_source_block([], ["none"])
         markdown = self._join(summary_md, interpretation_md, sources_md)
         return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
 
     def unsupported_brand(self, message: str) -> MarkdownResponse:
         summary_md = ""
         interpretation_md = f"## 해석\n\n- {cell(message)}"
-        sources_md = "## 출처\n\n- 지원 범위: 현재 운영에 연결된 지원 브랜드 목록"
+        sources_md = provenance_source_block([], ["unsupported_brand"])
         markdown = self._join(summary_md, interpretation_md, sources_md)
         return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
 
@@ -132,14 +135,42 @@ class MarkdownResponseBuilder:
 
     @staticmethod
     def _interpretation_md(calls: list[dict[str, Any]]) -> str:
-        bullets = []
+        bullets = [f"- {cell(line)}" for line in render_market_insights(calls)]
+        primary_brand = MarkdownResponseBuilder._primary_insight_brand(calls)
         for call in calls:
             summary = MarkdownResponseBuilder._interpretation_summary(call)
+            data = call.get("render_data")
+            call_brand = str(data.get("brand") or "") if isinstance(data, dict) else ""
+            if (
+                bullets
+                and primary_brand
+                and call_brand == primary_brand
+                and not MarkdownResponseBuilder._requires_interpretation_summary(call)
+            ):
+                continue
             if isinstance(summary, str) and summary and "None" not in summary:
                 bullets.append(f"- {cell(summary)}")
         if not bullets:
             bullets.append("- 확인 가능한 도구 결과가 없어 정성 해석을 제한합니다.")
         return "## 해석\n\n" + "\n".join(bullets[:8])
+
+    @staticmethod
+    def _primary_insight_brand(calls: list[dict[str, Any]]) -> str:
+        for call in calls:
+            data = call.get("render_data")
+            if isinstance(data, dict) and isinstance(data.get("series_insight"), dict):
+                return str(data.get("brand") or "")
+        return ""
+
+    @staticmethod
+    def _requires_interpretation_summary(call: dict[str, Any]) -> bool:
+        data = call.get("render_data")
+        status = data.get("status") if isinstance(data, dict) else None
+        return call.get("tool") in {"query_failed", "unsupported_metric"} or status in {
+            "error",
+            "query_failed",
+            "unsupported",
+        }
 
     @staticmethod
     def _interpretation_summary(call: dict[str, Any]) -> str:
@@ -247,23 +278,73 @@ class MarkdownResponseBuilder:
     @staticmethod
     def _data_md(calls: list[dict[str, Any]]) -> str:
         seen: set[tuple[str, str, str, str]] = set()
+        seen_insights: set[tuple[str, str, str, str]] = set()
+        seen_level_segments: set[str] = set()
         seen_metric_labels: set[str] = set()
         blocks: list[str] = []
+        semantic_metric_headers = any(
+            isinstance(call.get("render_data"), dict)
+            and isinstance(call["render_data"].get("series_insight"), dict)
+            for call in calls
+        )
         for call in calls:
             if call.get("tool") == "matching_policy_notice":
                 continue
+            insight_signature = MarkdownResponseBuilder._insight_signature(call)
+            if insight_signature is not None:
+                if insight_signature in seen_insights:
+                    continue
+                seen_insights.add(insight_signature)
             signature = MarkdownResponseBuilder._data_signature(call)
             if signature in seen:
                 continue
             seen.add(signature)
             render_call = MarkdownResponseBuilder._call_without_duplicate_metric_fields(call, seen_metric_labels)
+            render_call = MarkdownResponseBuilder._call_without_duplicate_level_segments(
+                render_call,
+                seen_level_segments,
+            )
+            if semantic_metric_headers:
+                render_call = MarkdownResponseBuilder._call_with_semantic_metric_header(render_call)
             block = call_data_md(render_call)
             if block:
                 blocks.append(block)
                 seen_metric_labels.update(MarkdownResponseBuilder._visible_metric_labels(render_call))
+                level_signature = MarkdownResponseBuilder._level_segments_signature(render_call)
+                if level_signature is not None:
+                    seen_level_segments.add(level_signature)
         if not blocks:
             return "## 데이터\n\n- 표시할 표 데이터가 없습니다."
         return "## 데이터\n\n" + "\n\n".join(blocks)
+
+    @staticmethod
+    def _call_with_semantic_metric_header(call: dict[str, Any]) -> dict[str, Any]:
+        if call.get("tool") not in {
+            "get_brand_metric",
+            "get_market_landscape",
+            "unsupported_metric",
+            "query_failed",
+            "agent_calculation",
+        }:
+            return call
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            return call
+        clean_call = dict(call)
+        clean_call["render_data"] = {**data, "_semantic_value_header": True}
+        return clean_call
+
+    @staticmethod
+    def _insight_signature(call: dict[str, Any]) -> tuple[str, str, str, str] | None:
+        data = call.get("render_data")
+        if not isinstance(data, dict) or not isinstance(data.get("series_insight"), dict):
+            return None
+        return (
+            str(data.get("brand") or ""),
+            str(data.get("market_id") or ""),
+            str(data.get("source_label") or ""),
+            str(data.get("period") or ""),
+        )
 
     @staticmethod
     def _call_without_duplicate_metric_fields(call: dict[str, Any], seen_labels: set[str]) -> dict[str, Any]:
@@ -283,6 +364,29 @@ class MarkdownResponseBuilder:
         return clean_call
 
     @staticmethod
+    def _call_without_duplicate_level_segments(
+        call: dict[str, Any],
+        seen: set[str],
+    ) -> dict[str, Any]:
+        signature = MarkdownResponseBuilder._level_segments_signature(call)
+        if signature is None or signature not in seen:
+            return call
+        data = call.get("render_data")
+        clean_data = dict(data) if isinstance(data, dict) else {}
+        clean_data.pop("level_segments", None)
+        clean_call = dict(call)
+        clean_call["render_data"] = clean_data
+        return clean_call
+
+    @staticmethod
+    def _level_segments_signature(call: dict[str, Any]) -> str | None:
+        data = call.get("render_data")
+        segments = data.get("level_segments") if isinstance(data, dict) else None
+        if not isinstance(segments, list) or not segments:
+            return None
+        return json.dumps(segments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
     def _visible_metric_labels(call: dict[str, Any]) -> set[str]:
         if call.get("tool") not in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
             return set()
@@ -290,6 +394,8 @@ class MarkdownResponseBuilder:
         if not isinstance(data, dict):
             return set()
         labels: set[str] = set()
+        if data.get("period") is not None:
+            labels.add("기간")
         scalar_keys = {
             "매출": ("sales_억원", "sales_krw"),
             "시장점유율": ("ms_recent_pct", "market_share"),
@@ -326,6 +432,7 @@ class MarkdownResponseBuilder:
     @staticmethod
     def _dedupe_metric_fields() -> dict[str, tuple[str, ...]]:
         return {
+            "기간": ("period",),
             "시장규모": ("market_size_억원", "market_size_recent_krw"),
             "시장 CAGR": ("market_cagr_5y_pct",),
             "HHI": ("hhi_recent", "hhi"),
@@ -347,12 +454,7 @@ class MarkdownResponseBuilder:
 
     @staticmethod
     def _sources_md(calls: list[dict[str, Any]], sources: list[str]) -> str:
-        rows = [(source_label(source), source_description(source)) for source in sorted(set(sources))]
-        for call in calls:
-            safe_url = call.get("safe_url")
-            if isinstance(safe_url, str) and safe_url:
-                rows.append((str(call.get("tool") or "external_api"), f"[호출 URL]({safe_url})"))
-        return table("## 출처", ("출처", "설명"), tuple(rows))
+        return provenance_source_block(calls, sources)
 
     @staticmethod
     def _notice_md(notices: list[str]) -> str:

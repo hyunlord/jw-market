@@ -29,18 +29,18 @@ def top_brand_share_series(render_data: Mapping[str, Any]) -> tuple[list[str], l
         if not brand or not isinstance(raw_series, Sequence) or isinstance(raw_series, (str, bytes)):
             continue
         row_labels: list[str] = []
-        values: list[float] = []
+        values: list[float | None] = []
         for point in raw_series:
             point_map = as_mapping(point)
             if not point_map:
                 continue
             label = text(point_map.get("period"))
             value = number(point_map.get("ms_pct"))
-            if label is None or value is None:
+            if label is None:
                 continue
             row_labels.append(label)
             values.append(value)
-        if len(row_labels) < 2:
+        if len(row_labels) < 2 or not any(value is not None for value in values):
             continue
         if labels is None:
             labels = row_labels

@@ -220,6 +220,8 @@ def _citation_sources(page: WikiPage) -> list[FileSource]:
                 chunk_id=f"wiki:{alias}",
                 i_page=citation.get("i_page"),
                 i_chunk_on_doc=citation.get("i_chunk_on_doc"),
+                source_channel=str(citation.get("source_channel") or "native_text"),
+                visual_model=citation.get("visual_model"),
             )
         )
     return rows
@@ -378,7 +380,12 @@ def _alias_chunks(chunks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 def _compile_prompt(documents: list[dict[str, Any]], aliases: dict[str, dict[str, Any]]) -> str:
     docs = "\n".join(f"- {doc.get('document_id')}: {doc.get('file_name')}" for doc in documents)
-    excerpts = "\n\n".join(f"[{alias}] {row['text']}" for alias, row in aliases.items())
+    excerpts = "\n\n".join(
+        f"[{alias}]"
+        f"{' [image-derived extraction]' if row.get('source_channel') == 'vlm_image_extraction' else ''} "
+        f"{row['text']}"
+        for alias, row in aliases.items()
+    )
     return (
         "Return strict JSON only: {\"pages\":[{\"page_type\":\"overview\",\"title\":\"...\","
         "\"md\":\"...\",\"citations\":[\"C1\"]}]}\n"
@@ -419,6 +426,8 @@ def _page_from_model(row: dict[str, Any], aliases: dict[str, dict[str, Any]]) ->
                 "file_name": hit.get("file_name"),
                 "i_page": hit.get("i_page"),
                 "i_chunk_on_doc": hit.get("i_chunk_on_doc"),
+                "source_channel": hit.get("source_channel") or "native_text",
+                "visual_model": hit.get("visual_model"),
             })
     return WikiPage(str(row.get("page_type") or "overview")[:64], str(row.get("title") or "Session Wiki")[:512], str(row["md"]), tuple(citations))
 

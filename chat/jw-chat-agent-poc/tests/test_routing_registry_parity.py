@@ -44,6 +44,19 @@ GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+SOURCE_NEUTRAL_IDS = frozenset(
+    {
+        "Q07",
+        "Q07_CHANNEL",
+        "Q07_CHANNEL_SALES",
+        "Q07_CHANNEL_SHARE",
+        "Q07_CHANNEL_ALIAS",
+        "STRICT_AVG_SHARE",
+    }
+)
+INTENTIONAL_ROUTING_DELTA_IDS = SOURCE_NEUTRAL_IDS | {"STRICT_CAUSAL_NEWS", "STRICT_SPECIALTY"}
+
+
 @dataclass(frozen=True, slots=True)
 class RoutingSnapshot:
     id: str
@@ -57,12 +70,63 @@ class RoutingSnapshot:
 
 
 def test_routing_public_output_matches_legacy_snapshot() -> None:
-    """Given golden questions, registry routing must preserve the legacy public output."""
+    """Unaffected golden questions must preserve the legacy public output."""
 
-    current = [_snapshot(key, question, strict_query_plan, should_use_agent_loop) for key, question in GOLDEN_QUESTIONS]
-    legacy = [_snapshot(key, question, _legacy_strict_query_plan, _legacy_should_use_agent_loop) for key, question in GOLDEN_QUESTIONS]
+    stable_questions = [item for item in GOLDEN_QUESTIONS if item[0] not in INTENTIONAL_ROUTING_DELTA_IDS]
+    current = [_snapshot(key, question, strict_query_plan, should_use_agent_loop) for key, question in stable_questions]
+    legacy = [_snapshot(key, question, _legacy_strict_query_plan, _legacy_should_use_agent_loop) for key, question in stable_questions]
 
     assert _snapshot_json(current) == _snapshot_json(legacy)
+
+
+def test_intentional_routing_deltas_have_explicit_contracts() -> None:
+    assert INTENTIONAL_ROUTING_DELTA_IDS == {
+        "Q07",
+        "Q07_CHANNEL",
+        "Q07_CHANNEL_SALES",
+        "Q07_CHANNEL_SHARE",
+        "Q07_CHANNEL_ALIAS",
+        "STRICT_AVG_SHARE",
+        "STRICT_CAUSAL_NEWS",
+        "STRICT_SPECIALTY",
+    }
+
+    questions_by_id = dict(GOLDEN_QUESTIONS)
+    for key in SOURCE_NEUTRAL_IDS:
+        plan = strict_query_plan(questions_by_id[key], "리바로")
+        assert plan is not None
+        assert plan.specs
+        assert all(spec["source"] == "" for spec in plan.specs)
+
+    causal_question = questions_by_id["STRICT_CAUSAL_NEWS"]
+    assert strict_query_plan(causal_question, "리바로") is None
+    assert should_use_agent_loop(causal_question) is True
+
+    specialty_plan = strict_query_plan(questions_by_id["STRICT_SPECIALTY"], "리바로")
+    assert specialty_plan is not None
+    assert specialty_plan.needs_top_competitor_specialty is False
+    assert specialty_plan.specs == (
+        {
+            "source": "",
+            "view": "market_landscape",
+            "dimensions": ["specialty"],
+            "group_by": ["specialty"],
+            "metrics": ["sales"],
+            "derive": [],
+            "filters": {"brand": "리바로"},
+            "limit": 10,
+        },
+    )
+
+
+def test_news_sales_impact_is_not_rejected_before_fact_backfill() -> None:
+    question = "리바로 관련 뉴스가 최근 매출에 미친 영향"
+    assert strict_query_plan(question, "리바로") is None
+    assert should_use_agent_loop(question) is True
+
+
+def test_market_concentration_uses_deterministic_agent_loop() -> None:
+    assert should_use_agent_loop("리바로 시장 집중도는 어때?") is True
 
 
 def _snapshot(

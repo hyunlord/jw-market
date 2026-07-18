@@ -5,8 +5,15 @@ import re
 from typing import Any, Final, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
+from jw_chat_agent_poc.orchestrator.answer_completeness import (
+    COMPLETENESS_INTENTS,
+    completeness_intent,
+    completeness_status,
+    repair_completeness,
+)
 from jw_chat_agent_poc.orchestrator.dosage_notes import DOSAGE_COMBINATION_NOTE_PREFIX, dosage_combination_note
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +37,7 @@ ANSWER_CONTRACT: Final[dict[str, ContractRule]] = {
         required_claims=("start_end_summary", "trend_state"),
         min_rows=4,
     ),
+    **{intent: ContractRule(required_facts=("deterministic_completion_fact",)) for intent in COMPLETENESS_INTENTS},
 }
 
 _MI_IMPLICATION_CONTRACTS: Final[frozenset[str]] = frozenset(
@@ -38,7 +46,12 @@ _MI_IMPLICATION_CONTRACTS: Final[frozenset[str]] = frozenset(
 
 CONTRACT_REQUIRED_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "patent_exclusivity": ("search_patent", "mfds_patent"),
-    "clinical_evidence": ("get_brand_metric", "mfds_permission_search"),
+    "clinical_evidence": (
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr",
+        "mfds_permission_search",
+        "openfda_label_search",
+    ),
     "news_ei": ("search_news",),
     "change_drivers": ("search_news", "get_brand_metric", "market_scope"),
     "sales_activity_link": ("get_brand_metric", "csd_activity_trend"),
@@ -51,6 +64,12 @@ CONTRACT_REQUIRED_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "trend_support_matrix": ("get_brand_metric", "market_scope"),
     "ranking": ("get_brand_metric", "market_scope"),
     "trend": ("get_brand_metric",),
+    "brand_compare": ("get_brand_metric",),
+    "share_delta_compare": ("get_brand_metric", "market_scope"),
+    "top_n_share_sum": ("get_brand_metric",),
+    "concentration": ("get_brand_metric", "market_scope"),
+    "target_share_gap": ("get_brand_metric", "market_scope"),
+    "channel_provenance": ("get_brand_metric",),
 }
 
 
@@ -60,7 +79,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
     structural = _structural_contract_type(question)
     if structural == "sales_activity_link":
         plans: list[ToolCallPlan] = []
-        if not _has_brand_metric_fact(calls, brand):
+        if not _has_tool_attempt(calls, "get_brand_metric"):
             plans.append(
                 ToolCallPlan(
                     name="get_metric",
@@ -68,7 +87,7 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                     reason="AnswerContract structural proxy backfill",
                 )
             )
-        if not _has_csd_activity_fact(calls, brand):
+        if not _has_tool_attempt(calls, "csd_activity_trend"):
             plans.append(
                 ToolCallPlan(
                     name="csd_activity_trend",
@@ -77,17 +96,64 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
                 )
             )
         return tuple(plans)
-    if structural == "change_drivers" and not _has_brand_metric_fact(calls, brand):
+    if structural == "change_drivers":
+        if not _is_news_sales_impact_question(question):
+            if _has_brand_metric_fact(calls, brand):
+                return ()
+            return (
+                ToolCallPlan(
+                    name="get_metric",
+                    arguments={"brand": brand, "measure": "sales", "period": "latest"},
+                    reason="AnswerContract structural proxy backfill",
+                ),
+            )
+        plans: list[ToolCallPlan] = []
+        existing = _contract_tool_names(calls)
+        if "search_news" not in existing:
+            plans.append(
+                ToolCallPlan(
+                    name="search_news",
+                    arguments={"brand": brand, "query": question},
+                    reason="AnswerContract change-driver news backfill",
+                )
+            )
+        if not _has_tool_attempt(calls, "get_brand_metric"):
+            plans.append(
+                ToolCallPlan(
+                    name="get_metric",
+                    arguments={"brand": brand, "measure": "sales", "period": "latest"},
+                    reason="AnswerContract structural proxy backfill",
+                )
+            )
+        if "market_scope" not in existing:
+            plans.append(
+                ToolCallPlan(
+                    name="get_market_scope",
+                    arguments={"brand": brand, "view": "market_landscape"},
+                    reason="AnswerContract change-driver market-scope backfill",
+                )
+            )
+        return tuple(plans)
+    intent = _intent(question)
+    if intent == "concentration" and not _has_market_scope_fact(calls):
+        return (
+            ToolCallPlan(
+                name="get_market_scope",
+                arguments={"brand": brand, "view": "market_landscape"},
+                reason="AnswerContract concentration fact backfill",
+            ),
+        )
+    if intent in {"share_delta_compare", "top_n_share_sum"} and not _has_tool_attempt(calls, "get_brand_metric"):
         return (
             ToolCallPlan(
                 name="get_metric",
-                arguments={"brand": brand, "measure": "sales", "period": "latest"},
-                reason="AnswerContract structural proxy backfill",
+                arguments={"brand": brand, "measure": "market_share", "period": "latest"},
+                reason="AnswerContract share completeness fact backfill",
             ),
         )
-    if _intent(question) != "ranking":
+    if intent != "ranking":
         return ()
-    if _has_brand_metric_fact(calls, brand):
+    if _has_tool_attempt(calls, "get_brand_metric"):
         return ()
     return (
         ToolCallPlan(
@@ -106,8 +172,8 @@ def enforce_answer_contract(
 ) -> str:
     """Repair final-model omissions when required facts already exist."""
 
-    intent = _intent(question)
     fact_md = _fact_markdown(markdown_response)
+    intent = _intent(question, fact_md)
     repaired = answer
     if intent is not None and fact_md:
         rule = ANSWER_CONTRACT[intent]
@@ -119,6 +185,8 @@ def enforce_answer_contract(
             fact = _trend_fact(fact_md)
             if fact is not None and len(fact.rows) >= rule.min_rows and not _trend_surface_ok(answer, fact, rule):
                 repaired = _join_blocks(_trend_answer(fact), _source_block(fact_md))
+        elif intent in COMPLETENESS_INTENTS:
+            repaired = repair_completeness(intent, question, answer, fact_md)
     repaired = _append_general_dosage_combination_note(_enforce_structural_contract(question, repaired, fact_md))
     return enforce_general_view_contract(repaired, dict(general_view_contract) if general_view_contract else None)
 
@@ -126,7 +194,8 @@ def enforce_answer_contract(
 def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return the contract status for trace metadata without mutating the answer."""
 
-    intent = _intent(question)
+    fact_md = _fact_markdown(markdown_response)
+    intent = _intent(question, fact_md)
     structural = _structural_contract_type(question)
     if intent is None:
         return {
@@ -135,7 +204,6 @@ def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapp
             "status": "pass" if structural and _structural_contract_present(answer, structural) else "not_applicable",
         }
     rule = ANSWER_CONTRACT[intent]
-    fact_md = _fact_markdown(markdown_response)
     if not fact_md:
         return {"intent": intent, "status": "missing_fact_set", "required_facts": rule.required_facts}
     if intent == "ranking":
@@ -164,6 +232,14 @@ def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapp
             "required_tables": rule.required_tables,
             "required_claims": rule.required_claims,
             "row_count": len(fact.rows),
+        }
+    if intent in COMPLETENESS_INTENTS:
+        return {
+            "intent": intent,
+            "structural_contract": structural,
+            "status": completeness_status(intent, question, answer, fact_md),
+            "required_facts": rule.required_facts,
+            "derived": intent != "channel_provenance",
         }
     return {"intent": intent, "structural_contract": structural, "status": "not_evaluated"}
 
@@ -233,7 +309,10 @@ class ClinicalEvidenceRow:
     source: str
 
 
-def _intent(question: str) -> str | None:
+def _intent(question: str, fact_md: str = "") -> str | None:
+    completeness = completeness_intent(question, fact_md)
+    if completeness is not None:
+        return completeness
     if _ranking_question(question):
         return "ranking"
     if _trend_question(question):
@@ -268,6 +347,10 @@ def _has_ranking_fact(calls: list[dict[str, Any]], brand: str) -> bool:
     return _has_brand_metric_fact(calls, brand)
 
 
+def _has_tool_attempt(calls: list[dict[str, Any]], tool: str) -> bool:
+    return tool in _contract_tool_names(calls)
+
+
 def _has_brand_metric_fact(calls: list[dict[str, Any]], brand: str) -> bool:
     for call in calls:
         if call.get("tool") != "get_brand_metric":
@@ -298,6 +381,18 @@ def _has_csd_activity_fact(calls: list[dict[str, Any]], brand: str) -> bool:
         if data.get("brand") != brand:
             continue
         if data.get("status") == "ok" and data.get("series"):
+            return True
+    return False
+
+
+def _has_market_scope_fact(calls: list[dict[str, Any]]) -> bool:
+    for call in calls:
+        if call.get("tool") != "get_market_landscape":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("hhi_recent") is not None or data.get("hhi") is not None:
             return True
     return False
 
@@ -653,13 +748,7 @@ def _trend_answer(fact: TrendFact) -> str:
 
 
 def _source_block(fact_md: str) -> str:
-    rows = _key_value_section(fact_md, "출처 유형 fact")
-    if not rows:
-        return ""
-    lines = ["## 출처"]
-    for label, value in rows.items():
-        lines.append(f"- {label}: {value}")
-    return "\n".join(lines)
+    return provenance_source_block_from_facts(fact_md)
 
 
 def _join_blocks(*blocks: str) -> str:
@@ -738,6 +827,8 @@ def _structural_contract_type(question: str) -> str:
         "목표 시장" in question and any(token in question for token in ("출시", "정책", "Line extension", "채널", "변화"))
     ):
         return "change_drivers"
+    if _is_news_sales_impact_question(question):
+        return "change_drivers"
     if "change driver" in text or "market expansion" in text:
         return "change_drivers"
     if _is_threat_detection_question(question):
@@ -747,6 +838,30 @@ def _structural_contract_type(question: str) -> str:
     if _is_news_ei_question(question):
         return "news_ei"
     return ""
+
+
+def _contract_tool_names(calls: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for call in calls:
+        tool = str(call.get("tool") or "")
+        data = call.get("render_data")
+        if tool == "deep_analysis_related_news":
+            names.add("search_news")
+        elif tool == "get_market_landscape":
+            names.add("market_scope")
+        elif tool:
+            names.add(tool)
+        if isinstance(data, dict) and data.get("facade_tool"):
+            names.add(str(data["facade_tool"]))
+    return names
+
+
+def _is_news_sales_impact_question(question: str) -> bool:
+    return (
+        "매출" in question
+        and any(token in question for token in ("뉴스", "이슈"))
+        and any(token in question for token in ("영향", "원인", "왜"))
+    )
 
 
 def _structural_contract_present(answer: str, contract_type: str) -> bool:

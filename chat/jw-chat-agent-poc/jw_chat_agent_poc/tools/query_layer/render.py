@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
+MISSING_VALUE_LABEL = "—"
+
+
 def metric_name(metric: str) -> str:
     if metric in {"share", "market_share", "rank"}:
         return "market_share"
@@ -16,10 +19,12 @@ def source_label(source: str) -> str:
 
 
 def metric_summary(brand: str, data: Mapping[str, Any], label: str) -> str:
+    sales = format_eok(data.get("sales_억원"))
+    share = format_pct(data.get("ms_recent_pct"))
+    rank = format_rank(data.get("rank"))
     return (
         f"{brand} {data.get('period')} {label} 전략 mart 지표: "
-        f"매출 {float(data.get('sales_억원') or 0):,.2f}억원, "
-        f"MS {float(data.get('ms_recent_pct') or 0):.2f}%, 순위 {data.get('rank')}위."
+        f"매출 {sales}, MS {share}, 순위 {rank}."
     )
 
 
@@ -27,7 +32,8 @@ def level_segments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
         name = row.get("name") or row.get("brand")
-        value = float(row.get("value") or 0.0)
+        raw_value = row.get("value")
+        value = float(raw_value) if isinstance(raw_value, int | float) else None
         out.append(
             {
                 "name": name,
@@ -35,7 +41,7 @@ def level_segments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "rank": row.get("rank"),
                 "ms_recent_pct": row.get("ms_recent_pct"),
                 "value": value,
-                "value_억원": round(value / 100_000_000, 2),
+                "value_억원": round(value / 100_000_000, 2) if value is not None else None,
             }
         )
     return out
@@ -47,3 +53,15 @@ def result_rows_from_render_data(data: Mapping[str, Any]) -> list[dict[str, Any]
         if isinstance(item, dict):
             rows.append(dict(item))
     return rows
+
+
+def format_eok(value: Any) -> str:
+    return f"{float(value):,.2f}억원" if isinstance(value, int | float) else MISSING_VALUE_LABEL
+
+
+def format_pct(value: Any) -> str:
+    return f"{float(value):.2f}%" if isinstance(value, int | float) else MISSING_VALUE_LABEL
+
+
+def format_rank(value: Any) -> str:
+    return f"{int(value)}위" if isinstance(value, int | float) else MISSING_VALUE_LABEL

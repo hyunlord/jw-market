@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jw_chat_agent_poc.agentic import FilterEntry, validate_metric_filters
-from jw_chat_agent_poc.tools.metrics.cache_cause_metrics import CauseMetricMixin
+from jw_chat_agent_poc.tools.metrics.legacy_payload_metrics import CauseMetricMixin
 from jw_chat_agent_poc.tools.metrics.cache_helpers import CacheMetricHelperMixin
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadReader,
@@ -27,6 +27,9 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     shared_metrics_cache,
 )
 
+if TYPE_CHECKING:
+    from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+
 
 class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
     def __init__(
@@ -37,11 +40,14 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         cause_reader: CausePayloadReader | None = None,
         csd_activity_reader: CsdActivityReader | None = None,
         csd_activity_target_reader: CsdActivityTargetReader | None = None,
+        query_layer: StrategicQueryLayer | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
         self._mode = mode or os.environ.get("CHAT_METRICS_MODE", "fixture")
         path = fixture_path or Path(__file__).resolve().parents[2] / "fixtures" / "metrics_cache.json"
         self._data = json.loads(path.read_text(encoding="utf-8"))
+        self._query_layer = query_layer
+        self._legacy_cache_injected = cache_reader is not None or cause_reader is not None
         ttl = ttl_seconds or int(os.environ.get("CHAT_METRICS_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
         cause_ttl = int(os.environ.get("CHAT_CAUSE_TTL_SECONDS", str(ttl)))
@@ -92,12 +98,43 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         filter_entries: tuple[FilterEntry, ...] = (),
     ) -> dict:
         if self._mode == "cache":
+            if self._query_layer is not None:
+                if filter_entries:
+                    plan = validate_metric_filters(filter_entries)
+                    if plan.blocks_results:
+                        return self._unsupported(brand, metric, "요청 필터는 d2 query-layer에서 지원하지 않습니다.")
+                    if plan.channel is not None:
+                        return self._query_layer.dimension_breakdown(
+                            brand,
+                            "channel",
+                            source=plan.source or "",
+                            period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                        )
+                    if plan.level is not None:
+                        dimension = "product" if plan.level == "Brand" else plan.level.casefold().replace(" ", "_")
+                        return self._query_layer.dimension_breakdown(
+                            brand,
+                            dimension,
+                            source=plan.source or "",
+                            period=plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                        )
+                if self._is_cause_metric(metric):
+                    kind = self._cause_metric_kind(metric)
+                    if kind in {"hhi", "momentum", "ei"}:
+                        return self._query_layer.brand_derived_metric(brand, kind)
+                if metric.casefold() == "growth_contribution":
+                    return self._query_layer.brand_derived_metric(brand, "growth_contribution")
+                return self._query_layer.brand_metric(brand, metric, period)
+            if not self._legacy_cache_injected:
+                raise LookupError("d2 query-layer is unavailable")
             return self._get_brand_card_metric(brand, metric, period, filter_entries)
         item = self._data["brands"].get(brand)
         if not item:
             raise LookupError(f"Unknown brand fixture: {brand}")
         if metric in {"hhi", "series", "trend"}:
-            market_id = "ml_006" if brand in {"리바로", "리바로젯"} else "mock_market"
+            market_id = str(item.get("market_id") or "")
+            if not market_id:
+                raise LookupError(f"Fixture market is unresolved for {brand}")
             market = self._data["markets"].get(market_id, {})
             hhi = market.get("hhi")
             return {
@@ -158,17 +195,24 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                     "unsupported_fields": _csd_unsupported_fields(),
                 },
             }
-        first = payload.rows[0]
-        latest = payload.rows[-1]
-        delta = latest.product_details - first.product_details
-        delta_pct = (delta / first.product_details * 100) if first.product_details else None
+        known_rows = tuple(row for row in payload.rows if row.product_details is not None)
+        missing_periods = [row.period_ym for row in payload.rows if row.product_details is None]
+        first = known_rows[0] if known_rows else None
+        latest = known_rows[-1] if known_rows else None
+        delta = latest.product_details - first.product_details if first is not None and latest is not None else None
+        delta_pct = (
+            delta / first.product_details * 100
+            if delta is not None and first is not None and first.product_details not in (None, 0)
+            else None
+        )
+        status = "no_data" if not known_rows else "partial_data" if missing_periods else "ok"
         return {
             "source": "cache",
             "tool": "csd_activity_trend",
-            "status": "ok",
+            "status": status,
             "summary_text": _csd_activity_summary(brand, payload.rows, delta, delta_pct),
             "render_data": {
-                "status": "ok",
+                "status": status,
                 "brand": brand,
                 "market": target.market,
                 "master_product": target.master_product,
@@ -177,12 +221,23 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                 "available_fields": _csd_available_fields(),
                 "unsupported_fields": _csd_unsupported_fields(),
                 "series": [{"period": row.period_ym, "product_details": row.product_details} for row in payload.rows],
-                "start_period": first.period_ym,
-                "start_product_details": first.product_details,
-                "latest_period": latest.period_ym,
-                "latest_product_details": latest.product_details,
+                "seller_series": [
+                    {
+                        "period": row.period_ym,
+                        "company": row.representing_company,
+                        "product_details": row.product_details,
+                    }
+                    for row in payload.seller_rows
+                ],
+                "anchor_companies": list(payload.anchor_companies),
+                "start_period": first.period_ym if first is not None else None,
+                "start_product_details": first.product_details if first is not None else None,
+                "latest_period": latest.period_ym if latest is not None else None,
+                "latest_product_details": latest.product_details if latest is not None else None,
                 "delta_product_details": delta,
                 "delta_pct": delta_pct,
+                "missing_periods": missing_periods,
+                "data_availability_note": _missing_activity_note(missing_periods),
             },
         }
 
@@ -332,15 +387,25 @@ def _brand_card_summary(
     )
 
 
-def _csd_activity_summary(brand: str, rows: tuple[CsdActivityRow, ...], delta: int, delta_pct: float | None) -> str:
-    first = rows[0]
-    latest = rows[-1]
+def _csd_activity_summary(brand: str, rows: tuple[CsdActivityRow, ...], delta: int | None, delta_pct: float | None) -> str:
+    known_rows = tuple(row for row in rows if row.product_details is not None)
+    missing_periods = [row.period_ym for row in rows if row.product_details is None]
+    if not known_rows:
+        return f"{brand}의 CSD ChannelDynamics aggregate 콜수/활동량 데이터가 없습니다."
+    first = known_rows[0]
+    latest = known_rows[-1]
     pct = "" if delta_pct is None else f"({delta_pct:+.1f}%)"
+    change = f"{delta:+,}건 {pct} 변했습니다." if delta is not None else "증감은 계산할 수 없습니다."
+    note = f" {_missing_activity_note(missing_periods)}" if missing_periods else ""
     return (
         f"{brand}의 CSD ChannelDynamics aggregate 콜수/활동량은 "
         f"{first.period_ym} {first.product_details:,}건에서 {latest.period_ym} {latest.product_details:,}건으로 "
-        f"{delta:+,}건 {pct} 변했습니다. impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다."
+        f"{change}{note} impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다."
     )
+
+
+def _missing_activity_note(periods: list[str]) -> str:
+    return f"{', '.join(periods)} 데이터가 없어 해당 기간을 제외하고 계산했습니다" if periods else ""
 
 
 def _csd_available_fields() -> tuple[str, ...]:
