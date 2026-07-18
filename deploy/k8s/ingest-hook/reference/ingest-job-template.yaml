@@ -1,0 +1,94 @@
+# Reference template for the incremental ingest Job.
+#
+# The trigger service renders the equivalent body in code
+# (pipeline/scripts/ingest_hook/job_launcher.py::render_job); this file is the
+# human-reviewable canon for the env/volume contract the live launcher copies
+# at activation. NOT applied directly — Jobs only ever come from the launcher.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jw-ingest-<category>-<sha8>          # rendered per submission
+  namespace: llmops
+  labels:
+    app: jw-ingest
+    jw-ingest/category: "<category>"
+    jw-ingest/manifest-sha8: "<sha8>"
+spec:
+  backoffLimit: 0                            # retries are a ledger decision, not kubelet's
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 259200
+  template:
+    metadata:
+      labels:
+        app: jw-ingest
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ingest
+          # Same digest pin as the orchestrator poll CronJob — one code identity.
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:a362ceb8a60f04688917d8c73dddf63c29e22b295c6e45f1c4036424240d703a
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - pipeline.scripts.ingest_hook.job_runner
+            - --manifest
+            - "<manifest_path>"
+          env:
+            # Job step 1 is ALWAYS G3 (job_runner enforces the order in code).
+            # J5: the real load writes parquet under INGEST_LOAD_STAGING_ROOT and
+            # the M-2 gate confirms the uploaded epoch landed; the mart refresh is
+            # skipped in this staging-verify posture (D-3 swaps to
+            # INGEST_LOAD_TARGET_ROOT under PL gate). Injected by job_launcher.
+            - name: INGEST_LOAD_STAGING_ROOT
+              value: /tmp/ingest-load-staging
+            # Submission set is fetched from the MinIO market bucket (S3 mode).
+            - name: INGEST_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: jw-data-portal-secrets
+                  key: MINIO_MARKET_BUCKET
+            - name: MINIO_ENDPOINT
+              value: "http://minio.llmops.svc.cluster.local:9000"
+            - name: MINIO_REGION
+              value: "us-east-1"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jw-ingest-hook-minio   # read-only user; portal creds are write-only
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jw-ingest-hook-minio
+                  key: MINIO_SECRET_KEY
+            - name: MARIADB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: "3306"
+            - name: MARIADB_DATABASE
+              value: jw_mart_d2_stage_20260630_r2
+            - name: AGENT3_DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            # Fail-closed rev pins, same double-entry as the orchestrator poll CronJob.
+            - name: AGENT3_WORKFLOW_REV
+              value: "5692"
+            - name: AGENT3_EXPECTED_WORKFLOW_REV
+              value: "5692"
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi

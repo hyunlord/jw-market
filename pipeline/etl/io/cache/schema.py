@@ -20,6 +20,7 @@ def create_cache_tables(target_db: str) -> None:
             """
             CREATE TABLE IF NOT EXISTS cache_dynamic_market_response (
                 cache_key CHAR(64) NOT NULL,
+                namespace VARCHAR(32) NOT NULL DEFAULT 'dynamic',
                 request_json LONGTEXT NOT NULL CHECK (JSON_VALID(request_json)),
                 source_epoch CHAR(64) NOT NULL,
                 state ENUM('building', 'ready', 'failed') NOT NULL,
@@ -31,20 +32,35 @@ def create_cache_tables(target_db: str) -> None:
                 expires_at DATETIME NULL,
                 hit_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
                 last_hit_at DATETIME NULL,
+                failure_reason VARCHAR(255) NULL,
+                attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+                last_error TEXT NULL,
+                last_attempt_at DATETIME NULL,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 PRIMARY KEY (cache_key),
                 KEY idx_dynamic_response_expiry (state, expires_at),
-                KEY idx_dynamic_response_lease (state, lease_expires_at)
+                KEY idx_dynamic_response_lease (state, lease_expires_at),
+                KEY idx_dynamic_response_eviction (state, hit_count, last_hit_at, updated_at),
+                KEY idx_dynamic_response_namespace_eviction (namespace, state, hit_count, last_hit_at, updated_at)
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
+        for column in (
+            "failure_reason VARCHAR(255) NULL",
+            "attempt_count INT UNSIGNED NOT NULL DEFAULT 0",
+            "last_error TEXT NULL",
+            "last_attempt_at DATETIME NULL",
+        ):
+            cur.execute(f"ALTER TABLE cache_dynamic_market_response ADD COLUMN IF NOT EXISTS {column}")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS cache_brands (
                 query_key VARCHAR(255) PRIMARY KEY,
                 response_json LONGTEXT NOT NULL CHECK (JSON_VALID(response_json)),
                 payload_size INT NOT NULL,
+                build_sha VARCHAR(64) NULL,
+                input_manifest_json LONGTEXT NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
@@ -56,11 +72,18 @@ def create_cache_tables(target_db: str) -> None:
                 query_key VARCHAR(255) PRIMARY KEY,
                 response_json LONGTEXT NOT NULL CHECK (JSON_VALID(response_json)),
                 payload_size INT NOT NULL,
+                build_sha VARCHAR(64) NULL,
+                input_manifest_json LONGTEXT NULL,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP
             ) CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci
             """
         )
+        for table in ("cache_brands", "cache_market_status"):
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS build_sha VARCHAR(64) NULL")
+            cur.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS input_manifest_json LONGTEXT NULL"
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS cache_cause (

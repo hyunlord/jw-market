@@ -6,9 +6,9 @@ from pathlib import Path
 
 HELPER_PATH = "pipeline/scripts/api/market_definition_display.py"
 
-MARKET_STATUS_IMPORT_ANCHOR = '''from pipeline.scripts.api.services import MARKET_STATUS_COMPANY_BY_BRAND
+MARKET_STATUS_IMPORT_ANCHOR = '''from pipeline.etl.io.cache.archive_services_shim import MARKET_STATUS_COMPANY_BY_BRAND
 '''
-MARKET_STATUS_IMPORT_BLOCK = '''from pipeline.scripts.api.services import MARKET_STATUS_COMPANY_BY_BRAND
+MARKET_STATUS_IMPORT_BLOCK = '''from pipeline.etl.io.cache.archive_services_shim import MARKET_STATUS_COMPANY_BY_BRAND
 from pipeline.scripts.api.market_definition_display import cd_display_for_catalog_row
 '''
 
@@ -27,9 +27,9 @@ MARKET_STATUS_LABEL_NEW = '''            "market_definition_label": cd_display.l
             "atc_count": len(atc_codes),
 '''
 
-CAUSE_IMPORT_ANCHOR = '''from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels
+CAUSE_IMPORT_ANCHOR = '''from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
 '''
-CAUSE_IMPORT_BLOCK = '''from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels
+CAUSE_IMPORT_BLOCK = '''from pipeline.scripts.etl.ubist_channel_resolver import resolve_market_channels, strategic_channel_totals_context
 from pipeline.scripts.api.market_definition_display import cd_display_for_catalog_row
 '''
 

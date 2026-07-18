@@ -12,7 +12,7 @@ from pymysql.err import MySQLError
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import build_analysis_rows
 from pipeline.scripts.api.dynamic_market.cause_time import SOURCE_LABELS
 from pipeline.scripts.api.dynamic_market.general_analysis_levels import build_general_analysis_level_sections
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 
 
 ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
@@ -32,6 +32,7 @@ def build_analysis_level_sections(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     mart_db: str,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any] | None:
     """Build the three cache-compatible analysis-level sections for dynamic data.
 
@@ -47,6 +48,7 @@ def build_analysis_level_sections(
             metrics=metrics,
             focus=focus,
             mart_db=mart_db,
+            period_range=period_range,
         )
 
     market = definition.market_catalog_row
@@ -70,6 +72,11 @@ def build_analysis_level_sections(
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
         ubist_channel_context = resolve_market_channels(rows=rows, market=dict(market), measure=metrics.measure)
+    resolved_levels = set(cause_builder._strategic_levels(dict(market), rows))
+    resolved_periods = cause_builder._history_periods(rows, source_api)
+    series_value_cache: cause_builder._SeriesValueCache = {}
+    series_observed_cache: cause_builder._SeriesObservedCache = {}
+    channel_rows_cache: cause_builder._ChannelRowsCache = {}
     try:
         analysis_levels = cause_builder._build_analysis_levels_from_mart(
             rows=rows,
@@ -79,6 +86,11 @@ def build_analysis_level_sections(
             target_name=None,
             fallback_level_top5={},
             channels_override=analysis_level_channels,
+            resolved_levels=resolved_levels,
+            resolved_periods=resolved_periods,
+            series_value_cache=series_value_cache,
+            series_observed_cache=series_observed_cache,
+            channel_rows_cache=channel_rows_cache,
         )
         analysis_levels = cause_builder._ensure_split_class_alias(analysis_levels)
         rows_by_level = cause_builder._level_rows_by_segment(
@@ -93,6 +105,8 @@ def build_analysis_level_sections(
             rows_by_level=rows_by_level,
             include_all_options=bool(focus),
             channel="전체",
+            series_value_cache=series_value_cache,
+            channel_rows_cache=channel_rows_cache,
         )
         market_status_channels = _market_status_channels(
             source=source_api,
@@ -110,6 +124,11 @@ def build_analysis_level_sections(
                     target_name=None,
                     fallback_level_top5={},
                     channels_override=market_status_channels,
+                    resolved_levels=resolved_levels,
+                    resolved_periods=resolved_periods,
+                    series_value_cache=series_value_cache,
+                    series_observed_cache=series_observed_cache,
+                    channel_rows_cache=channel_rows_cache,
                 )
             )
         market_status = cause_builder._ensure_analysis_level_market_status_contract(
@@ -131,6 +150,8 @@ def build_analysis_level_sections(
         "level_top5_trend": level_top5_trend,
         "rows": rows,
         "ubist_channel_context": ubist_channel_context,
+        "series_value_cache": series_value_cache,
+        "channel_rows_cache": channel_rows_cache,
     }
 
 

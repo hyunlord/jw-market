@@ -1,0 +1,14 @@
+fatal: not a git repository (or any of the parent directories): .git
+8ca9d98 docs: Gitea 정본 repo 명기 (미러 아님·직접 push 대상)
+d066a31 chore(market): agent 카테고리 ingest 매핑 + 배포 manifest env(트리거/상태 URL·MinIO)
+00e7c28 feat(market): 화면 — 업로드 확정 플로우·제출 상태 패널(적재중→완료)·대시보드 컬럼
+8660d8d feat(market): 업로드 경로 통합 — S3 서명 URL·잡 프로세서 market 분기 (R&D NFS 경로 무변경)
+1547542 feat(market): 제출 API — submissions 목록/confirm(manifest PUT+webhook)/retry
+becc309 feat(market): 인입 코어 라이브러리 — manifest/epoch 검증·제출 store·훅 클라이언트
+16e2d40 docs(market): JW Input Detection Contract v2.1 + ingestion v21 design/plan
+a0848c2 chore(deploy): pin v0.5.0 with temp NFS nodeAffinity
+6005848 fix(build): track empty web/public dir via .gitkeep
+da56a2f feat(storage): 시장분석 인입용 S3(MinIO) provider 및 agent 단위 라우팅
+===
+* feat/market-ingest-v21
+  main

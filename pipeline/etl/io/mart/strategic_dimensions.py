@@ -8,7 +8,11 @@ import pandas as pd
 
 from .general_config import ENRICHED_DIR, SKU_DIMENSION_COLUMNS
 from .general_history import fill_periods
-from .general_utils import ubist_channel_to_raw
+from .general_utils import (
+    filter_ubist_aggregate_specialty_rows,
+    ubist_channel_to_raw,
+    ubist_specialty_to_raw,
+)
 from .layer3_normalize import prev_month, prev_quarter_month, same_month_prev_year
 from .layer3_compute_extended import compute_ei, compute_growth_contribution, compute_momentum
 from .general_history import cagr_from_history, mat_growth, pct_growth, value_at
@@ -128,19 +132,30 @@ def load_ubist_dimension_context(ml_id: str, strategic_products: pd.DataFrame) -
 def _display_specialty_channel(channel: Any, specialty: Any) -> str | None:
     facility = {"TH": "GH", "GH": "GH", "Semi": "GH", "CL": "CL", "기타": "OT", "OT": "OT"}.get(str(channel or "").strip())
     specialty_text = str(specialty or "").strip()
-    if not facility or not specialty_text or specialty_text == "Unknown":
-        return None
-    try:
-        parsed = parse_channel_code(f"{facility} {specialty_text}")
-    except ValueError:
-        return None
-    return parsed.display_name if parsed else None
+    if facility and specialty_text and specialty_text != "Unknown":
+        try:
+            parsed = parse_channel_code(f"{facility} {specialty_text}")
+        except ValueError:
+            parsed = None
+        if parsed:
+            return parsed.display_name
+
+    # Preserve unmapped facility/specialty values as explicit unclassified
+    # buckets. Dropping them makes the specialty breakdown smaller than the
+    # market total even after the aggregate parent is correctly removed.
+    facility_label = {
+        "GH": "종합병원",
+        "CL": "의원",
+        "OT": "기타",
+    }.get(facility, ubist_channel_to_raw(channel))
+    return f"{facility_label} {ubist_specialty_to_raw(specialty)}"
 
 
 def _build_channel_context(raw_channel: pd.DataFrame, code_dimensions: dict[str, dict[str, str]]) -> dict[str, Any]:
     channel_history: dict[str, Any] = {"sales": {}, "volume": {}}
     specialty_history: dict[str, Any] = {"sales": {}, "volume": {}}
-    for row in raw_channel.to_dict("records"):
+    filtered_channel = filter_ubist_aggregate_specialty_rows(raw_channel)
+    for row in filtered_channel.to_dict("records"):
         code = str(row.get("product_code") or "").strip()
         if not code or code not in code_dimensions:
             continue

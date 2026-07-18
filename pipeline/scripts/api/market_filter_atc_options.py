@@ -15,26 +15,29 @@ ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
 PUBLIC_SOURCES = {"ubist", "iqvia"}
 
 
-def build_market_filter_atc_options(*, brand_name: str, view: str, source: str) -> dict[str, object]:
+def build_market_filter_atc_options(*, brand_name: str | None, view: str, source: str) -> dict[str, object]:
     """Return ATC1~4 key-only option lists for market filter step 1.
 
     The public contract accepts and echoes only ``ubist`` or ``iqvia``; IQVIA's
     internal ``iqvia_nsa`` source value is resolved behind this boundary.
     """
 
-    normalized_brand = brand_name.strip()
-    if not normalized_brand:
-        raise DynamicMarketInputError("brand_name is required")
+    normalized_brand = (brand_name or "").strip()
     normalized_view = normalize_view(view)
+    if not normalized_brand and normalized_view != "general":
+        raise DynamicMarketInputError("brand_name is required")
     public_source = normalize_public_source(source)
     normalized_source = normalize_source(public_source)
-    market_id = _resolve_market_id(brand=normalized_brand, view=normalized_view, source=normalized_source)
-    flagged_atc4 = _load_brand_atc4_values(
-        brand=normalized_brand,
-        view=normalized_view,
-        source=normalized_source,
-        market_id=market_id,
-    )
+    market_id = None
+    flagged_atc4: tuple[str, ...] = ()
+    if normalized_brand:
+        market_id = _resolve_market_id(brand=normalized_brand, view=normalized_view, source=normalized_source)
+        flagged_atc4 = _load_brand_atc4_values(
+            brand=normalized_brand,
+            view=normalized_view,
+            source=normalized_source,
+            market_id=market_id,
+        )
     atc_rows = _load_atc_rows(view=normalized_view, source=normalized_source, market_id=market_id)
     return {
         "brand_name": normalized_brand,
@@ -90,18 +93,7 @@ def _resolve_market_id(*, brand: str, view: str, source: str) -> str | None:
 
 def _load_brand_atc4_values(*, brand: str, view: str, source: str, market_id: str | None) -> tuple[str, ...]:
     if view == "general":
-        rows = db.fetch_all(
-            f"""
-            SELECT DISTINCT atc4_code
-            FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
-            WHERE source = %s
-              AND measure = 'sales'
-              AND (brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')))
-            ORDER BY atc4_code
-            """,
-            [source, brand, brand, brand],
-        )
-        return _unique_atc4(row.get("atc4_code") for row in rows)
+        return _general_brand_atc4_source_values(brand=brand, source=source)
 
     where = [
         "source = %s",
@@ -122,6 +114,44 @@ def _load_brand_atc4_values(*, brand: str, view: str, source: str, market_id: st
         params,
     )
     return _unique_atc4(row.get("atc4_code") for row in rows)
+
+
+def general_brand_atc4_values(*, brand: str, source: str) -> tuple[str, ...]:
+    """Return one brand's canonical general-view memberships in stable catalog order."""
+
+    return canonical_atc4_values(_general_brand_atc4_source_values(brand=brand, source=source))
+
+
+def _general_brand_atc4_source_values(*, brand: str, source: str) -> tuple[str, ...]:
+    display_brand = get_display_brand(brand)
+    aliases = display_brand.layer3_aliases if display_brand is not None else ()
+    alias_predicates = "".join(
+        " OR brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', ''))"
+        for _ in aliases
+    )
+    params: list[object] = [source, brand, brand, brand]
+    for alias in aliases:
+        params.extend((alias, alias, alias))
+
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT atc4_code
+        FROM {quote_identifier(config.db_name)}.mart_general_brand_metric
+        WHERE source = %s
+          AND measure = 'sales'
+          AND (brand_key = %s OR brand_name = %s OR LOWER(REPLACE(brand_name, ' ', '')) = LOWER(REPLACE(%s, ' ', '')){alias_predicates})
+        ORDER BY atc4_code
+        """,
+        params,
+    )
+    values = _raw_unique_atc4(row.get("atc4_code") for row in rows)
+    return values if source == "ubist" else canonical_atc4_values(values)
+
+
+def canonical_atc4_values(values: Iterable[Any]) -> tuple[str, ...]:
+    """Canonicalize an unordered ATC4 collection using the public filter contract."""
+
+    return _unique_atc4(values)
 
 
 def _load_atc_rows(*, view: str, source: str, market_id: str | None) -> tuple[str, ...]:
@@ -151,7 +181,19 @@ def _load_atc_rows(*, view: str, source: str, market_id: str | None) -> tuple[st
         """,
         [source],
     )
-    return _unique_atc4(row.get("atc4_code") for row in rows)
+    values = _raw_unique_atc4(row.get("atc4_code") for row in rows)
+    return values if source == "ubist" else canonical_atc4_values(values)
+
+
+def _raw_unique_atc4(values: Iterable[Any]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        item = str(value or "").strip().upper()
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return tuple(result)
 
 
 def _unique_atc4(values: Iterable[Any]) -> tuple[str, ...]:

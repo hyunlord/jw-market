@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Final, Sequence
@@ -12,6 +13,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandSetResolution,
     resolve_brand_set,
 )
+from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
@@ -23,6 +25,7 @@ from pipeline.scripts.api.brand_activity_topics import (
 )
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
 
 
 ALIAS_MAPPING_PATH: Final = Path("docs/design/brand_activity/alias/ALIAS_01_MAPPING.json")
@@ -32,10 +35,27 @@ KEYWORD_FILTER_COLUMNS: Final = {
     "interest": "interest",
     "prescription_evolution": "prescription_evolution",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 class TopicRequestError(RuntimeError):
     """Raised when a topic matrix request cannot be parsed."""
+
+
+def get_topic_period_bounds() -> dict[str, str]:
+    """Return the available monthly range from the indexed keyword source."""
+    schema = quote_identifier(config.brand_activity_db_name)
+    row = db.fetch_one(
+        f"""
+        SELECT MIN(period_ym) AS available_start,
+               MAX(period_ym) AS available_end
+        FROM {schema}.`km_keyword_event_stage`
+        """
+    ) or {}
+    return {
+        "available_start": _text(row.get("available_start")),
+        "available_end": _text(row.get("available_end")),
+    }
 
 
 def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue] | None:
@@ -49,18 +69,24 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             market_id=request["market_id"],
             selected_brand=request["selected_brand"],
             filter_payload=_json_object(request.get("filter")),
+            prefilter_strategic_choices=True,
         )
     except BrandSetInputError as exc:
         raise TopicRequestError(str(exc)) from exc
     if brand_set is None:
         return None
     topic_rows = _fetch_topic_rows()
-    topic_index = _topic_brand_index(topic_rows)
     aliases = _alias_lookup()
-    topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows, aliases=aliases)
+    topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows)
+    topic_index = _topic_brand_index([topic_scope]) if topic_scope else {}
     is_sliced = _is_sliced_request(request)
+    product_codes_by_brand = (
+        _topic_product_codes_by_brand(brand_set=brand_set, topic_scope=topic_scope, aliases=aliases)
+        if topic_scope
+        else {}
+    )
     payload_source = "row_topic_assignment_filtered" if is_sliced else "row_topic_assignment_unfiltered"
-    return {
+    result: dict[str, JsonValue] = {
         "scope": {
             "view": request["view"],
             "market_id": brand_set.market_id,
@@ -93,6 +119,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                     topic_index=topic_index,
                     request=request,
                     aliases=aliases,
+                    product_codes=product_codes_by_brand.get(choice.brand_key, ()),
                     top_n=int(request["top_n"]),
                 )
                 if topic_scope
@@ -101,6 +128,14 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             for choice in brand_set.choices
         ],
     }
+    if not topic_scope:
+        result["reason"] = "no_topic_scope"
+        LOGGER.warning(
+            "brand activity topic scope unavailable: reason=no_topic_scope view=%s market_id=%s",
+            brand_set.view_name,
+            brand_set.market_id,
+        )
+    return result
 
 
 def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -108,8 +143,8 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
     view = _text(payload.get("view"))
     selected_brand = _text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
-    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else ""
-    if not view or not selected_brand or (view == "general" and not market_id):
+    market_id = _first_filter_value(filter_payload, "atc4") if view == "general" else _text(payload.get("market_id"))
+    if not view or not selected_brand or (view == "general" and not market_id and not _has_market_scope(filter_payload)):
         raise TopicRequestError("view, filters.atc4, and selected_brand are required")
     top_n = _integer(payload.get("top_n") or 5)
     return {
@@ -169,6 +204,7 @@ def _sliced_topic_brand_item(
     topic_index: dict[str, dict[str, JsonValue]],
     request: dict[str, JsonValue],
     aliases: dict[str, str],
+    product_codes: Sequence[str],
     top_n: int,
 ) -> dict[str, JsonValue]:
     """Project one brand from row-topic assignments under keyword filters."""
@@ -177,7 +213,7 @@ def _sliced_topic_brand_item(
     rows = _fetch_sliced_topic_rows(
         scope_id=_text(topic_scope.get("scope_id")),
         topic_set_version=_text(topic_scope.get("topic_set_version")),
-        product_codes=_brand_product_codes(meta, aliases),
+        product_codes=product_codes,
         visit_locations=_filter_tuple(request.get("visit_location")),
         specialties=_filter_tuple(request.get("specialty")),
         interests=_filter_tuple(request.get("interest")),
@@ -185,7 +221,7 @@ def _sliced_topic_brand_item(
         period_start=_text(request.get("period_start")),
         period_end=_text(request.get("period_end")),
     )
-    stored = _stored_brand_topics(meta, topic_index, aliases)
+    stored = _stored_brand_topics(product_codes, topic_index, aliases)
     axis_labels = _axis_topic_label_index(topic_scope)
     brand_labels = _brand_topic_label_index(stored)
     axis_topics: list[dict[str, JsonValue]] = []
@@ -236,12 +272,12 @@ def _sliced_topic_brand_item(
 
 
 def _stored_brand_topics(
-    meta: BrandMeta,
+    product_codes: Sequence[str],
     topic_index: dict[str, dict[str, JsonValue]],
     aliases: dict[str, str],
 ) -> dict[str, JsonValue] | None:
     """Return stored topics for the first matching IQVIA product code."""
-    for code in meta.product_codes:
+    for code in product_codes:
         normalized = normalize_iqvia_en(code)
         for key in (normalized, aliases.get(normalized, "")):
             if key and key in topic_index:
@@ -267,24 +303,73 @@ def _topic_scope(
     *,
     brand_set: BrandSetResolution,
     topic_rows: Sequence[dict[str, JsonValue]],
-    aliases: dict[str, str],
 ) -> dict[str, JsonValue]:
-    """Resolve the stored topic scope that backs one brand-set request."""
-    direct_scope_id = f"atc4:{brand_set.market_id}"
-    for row in topic_rows:
-        if _text(row.get("scope_id")) == direct_scope_id:
-            return _scope_catalog_row(row)
-    selected_meta = brand_set.brand_meta.get(brand_set.selected_brand)
-    if selected_meta is None:
+    """Resolve one stored scope from the request market catalog."""
+    catalog_codes = set(_catalog_atc4_values(brand_set))
+    if not catalog_codes:
         return {}
-    selected_codes = set(_brand_product_codes(selected_meta, aliases))
-    for row in topic_rows:
-        payload = _json_object(row.get("payload"))
-        for raw_brand in _json_list(payload.get("brands")):
-            brand = _json_object(raw_brand)
-            if normalize_iqvia_en(_text(brand.get("brand"))) in selected_codes:
+    if brand_set.view_name == "general" and len(catalog_codes) == 1:
+        market_codes = _atc4_values(brand_set.market_id)
+        direct_scope_id = f"atc4:{market_codes[0]}" if len(market_codes) == 1 else ""
+        for row in topic_rows:
+            if direct_scope_id and _text(row.get("scope_id")) == direct_scope_id:
                 return _scope_catalog_row(row)
+    candidates: list[tuple[int, dict[str, JsonValue]]] = []
+    for row in topic_rows:
+        row_codes = set(_atc4_values(row.get("atc4_values")))
+        if row_codes and row_codes <= catalog_codes:
+            candidates.append((len(row_codes), row))
+    if not candidates:
+        return {}
+    largest = max(size for size, _row in candidates)
+    winners = [row for size, row in candidates if size == largest]
+    if len(winners) == 1:
+        return _scope_catalog_row(winners[0])
     return {}
+
+
+def _catalog_atc4_values(brand_set: BrandSetResolution) -> tuple[str, ...]:
+    if brand_set.view_name == "general":
+        applied_codes = _atc4_values(
+            _json_object(brand_set.applied_filter).get("atc4")
+        )
+        if applied_codes:
+            return applied_codes
+        return _atc4_values(brand_set.market_id)
+    schema = quote_identifier(config.db_name)
+    if brand_set.view_name == "strategic_ml":
+        row = db.fetch_one(
+            f"SELECT atc_codes_json FROM {schema}.`catalog_ml_market` WHERE ml_id = %s LIMIT 1",
+            (brand_set.market_id,),
+        ) or {}
+    elif brand_set.view_name == "strategic_cd":
+        row = db.fetch_one(
+            f"SELECT ml.atc_codes_json FROM {schema}.`catalog_cd_market` cd "
+            f"JOIN {schema}.`catalog_ml_market` ml ON ml.ml_id = cd.ml_id "
+            "WHERE cd.cd_id = %s LIMIT 1",
+            (brand_set.market_id,),
+        ) or {}
+    else:
+        return ()
+    return _atc4_values(row.get("atc_codes_json"))
+
+
+def _atc4_values(value: JsonValue) -> tuple[str, ...]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ()
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            values = text.split(",")
+        else:
+            values = decoded if isinstance(decoded, list) else [decoded]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = [value] if value is not None else []
+    return canonical_atc4_values(item for item in values if str(item).strip())
 
 
 def _scope_catalog_row(row: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -331,8 +416,13 @@ def _brand_topic_label_index(stored: dict[str, JsonValue] | None) -> dict[str, d
 
 def _brand_product_codes(meta: BrandMeta, aliases: dict[str, str]) -> tuple[str, ...]:
     """Return normalized product codes and aliases used by topic row brands."""
+    return _normalized_topic_product_codes(meta.product_codes, aliases)
+
+
+def _normalized_topic_product_codes(product_codes: Sequence[str], aliases: dict[str, str]) -> tuple[str, ...]:
+    """Normalize source-independent product codes for keyword row matching."""
     codes: list[str] = []
-    for code in meta.product_codes:
+    for code in product_codes:
         normalized = normalize_iqvia_en(code)
         if normalized:
             codes.append(normalized)
@@ -340,6 +430,31 @@ def _brand_product_codes(meta: BrandMeta, aliases: dict[str, str]) -> tuple[str,
         if alias:
             codes.append(alias)
     return tuple(dict.fromkeys(codes))
+
+
+def _topic_product_codes_by_brand(
+    *,
+    brand_set: BrandSetResolution,
+    topic_scope: dict[str, JsonValue],
+    aliases: dict[str, str],
+) -> dict[str, tuple[str, ...]]:
+    """Resolve topic product codes without depending on the requested sales source."""
+    scope_index = _topic_brand_index([topic_scope])
+    resolved: dict[str, tuple[str, ...]] = {}
+    unresolved: dict[str, str] = {}
+    for choice in brand_set.choices:
+        meta = brand_set.brand_meta[choice.brand_key]
+        direct = _brand_product_codes(meta, aliases)
+        resolved[choice.brand_key] = direct
+        if not direct or _stored_brand_topics(direct, scope_index, aliases) is None:
+            unresolved[choice.brand_key] = choice.brand_name
+    if not unresolved:
+        return resolved
+    fallback_codes = iqvia_product_codes_by_brand(unresolved)
+    for brand_key, raw_codes in fallback_codes.items():
+        fallback = _normalized_topic_product_codes(raw_codes, aliases)
+        resolved[brand_key] = tuple(dict.fromkeys((*resolved.get(brand_key, ()), *fallback)))
+    return resolved
 
 
 def _fetch_sliced_topic_rows(
@@ -501,6 +616,10 @@ def _first_filter_value(filter_payload: dict[str, JsonValue], key: str) -> str:
     if isinstance(value, list):
         return _text(value[0]) if value else ""
     return _text(value)
+
+
+def _has_market_scope(filter_payload: dict[str, JsonValue]) -> bool:
+    return isinstance(filter_payload.get("market_scope"), dict)
 
 
 def _resolved_market_payload(request: dict[str, JsonValue], brand_set: BrandSetResolution) -> dict[str, JsonValue]:

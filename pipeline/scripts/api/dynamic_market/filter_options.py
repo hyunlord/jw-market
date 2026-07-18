@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import parse_audit_code_matrix, parse_channel_specialty_matrix
 from pipeline.scripts.api.dynamic_market.general_brand_aliases import sidecar_brand_aliases
-from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
+from pipeline.scripts.api.dynamic_market.resolvers import normalize_source, resolve_strategic_market_for_focus
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
 
@@ -30,6 +31,7 @@ FILTER_OPTION_CACHE_TTL_ENV = "DYNAMIC_MARKET_FILTER_OPTIONS_CACHE_TTL_SECONDS"
 DEFAULT_FILTER_OPTION_CACHE_TTL_SECONDS = 6 * 60 * 60
 DIMENSION_LABELS: dict[str, str] = {
     "seller": "판매사",
+    "molecule": "성분",
     "molecule_strength": "성분용량",
     "form": "제형",
     "route": "투여경로",
@@ -104,6 +106,11 @@ def build_filter_options(
     """
 
     normalized_view = normalize_view(view)
+    strategic_market_kind = "cd" if normalized_view == "strategic_cd" else "ml"
+    if normalized_view == "strategic_cd":
+        # Downstream option builders only distinguish general vs strategic;
+        # the CD scope travels through the resolved cd_* market id.
+        normalized_view = "strategic"
     normalized_source = normalize_source(source)
     normalized_measure = measure.strip().lower() or "sales"
     normalized_brand = brand.strip() if brand else ""
@@ -113,10 +120,22 @@ def build_filter_options(
         source=normalized_source,
         brand=brand,
         market_id=market_id,
+        strategic_market_kind=strategic_market_kind,
+        measure=normalized_measure,
     )
     dimension_db = (general_dimension_db if normalized_view == "general" else strategic_dimension_db) or mart_db
     market_id_for_atc = resolved_market_id if normalized_view == "general" else None
     parsed_atc4_codes = _parse_atc4_codes(market_id_for_atc, atc4_codes)
+    brand_atc4_codes: tuple[str, ...] = ()
+    if normalized_view == "general" and normalized_brand:
+        brand_atc4_codes = _general_atc4_codes_for_brand(
+            mart_db=mart_db,
+            source=normalized_source,
+            brand=normalized_brand,
+        )
+    option_atc4_codes = parsed_atc4_codes
+    if normalized_view == "general" and normalized_brand and not market_id:
+        option_atc4_codes = ()
     parsed_selections = _parse_selection_map(selections)
     payload = _build_filter_options_uncached(
         mart_db=mart_db,
@@ -126,13 +145,13 @@ def build_filter_options(
         brand=normalized_brand,
         market_id=resolved_market_id,
         measure=normalized_measure,
-        atc4_codes=parsed_atc4_codes,
+        atc4_codes=option_atc4_codes,
         selections=parsed_selections,
     )
     brand_matched: dict[str, list[str]] = {}
     if normalized_brand:
         payload["brand"] = normalized_brand
-        if normalized_view == "general" and parsed_atc4_codes:
+        if normalized_view == "general":
             brand_matched = _load_brand_dimension_matches(
                 dimension_db=dimension_db,
                 brand=normalized_brand,
@@ -140,9 +159,9 @@ def build_filter_options(
                 source=normalized_source,
                 market_id=resolved_market_id,
                 measure=normalized_measure,
-                atc4_codes=parsed_atc4_codes,
+                atc4_codes=brand_atc4_codes,
             )
-            brand_matched.setdefault("atc4", list(parsed_atc4_codes))
+            brand_matched["atc4"] = list(brand_atc4_codes)
         payload["brand_matched"] = brand_matched
     _apply_option_state(
         payload=payload,
@@ -161,13 +180,18 @@ def resolve_filter_option_market_id(
     source: str,
     brand: str | None,
     market_id: str | None,
+    strategic_market_kind: str = "ml",
+    measure: str = "sales",
 ) -> str | None:
     """Resolve the optional market id hidden behind the filter-options API.
 
     Explicit ``market_id`` stays authoritative for old callers.  Without it,
-    strategic views use the 25-brand display catalog and general views use the
-    general mart's brand-to-ATC4 mapping.  Missing or unknown brands fall back
-    to the source-wide option universe instead of failing the option list.
+    strategic ML views use the 25-brand display catalog and strategic CD views
+    derive the brand's cd market from the strategic mart (the same resolver the
+    dynamic-market endpoint uses), so the market id is never a required input.
+    General views keep the source-wide option universe and resolve brand ATC4
+    membership separately so every matching market can be flagged without
+    narrowing the list.
     """
 
     explicit_market_id = market_id.strip() if market_id else ""
@@ -179,10 +203,19 @@ def resolve_filter_option_market_id(
         return None
 
     if view == "strategic":
+        if strategic_market_kind == "cd":
+            selection = resolve_strategic_market_for_focus(
+                mart_db=mart_db,
+                view_kind="strategic_cd",
+                focus_brand_key=normalized_brand,
+                source=source,
+                measure=measure,
+            )
+            return selection.market_id
         display_brand = get_display_brand(normalized_brand)
         return display_brand.ml_id if display_brand else None
 
-    return _general_market_id_for_brand(mart_db=mart_db, source=source, brand=normalized_brand)
+    return None
 
 
 def clear_filter_option_cache() -> None:
@@ -190,6 +223,42 @@ def clear_filter_option_cache() -> None:
 
     with _FILTER_OPTION_CACHE_LOCK:
         _FILTER_OPTION_CACHE.clear()
+    strategic_cd_atc4_option_codes.cache_clear()
+
+
+@lru_cache(maxsize=64)
+def strategic_cd_atc4_option_codes(cd_market_id: str, mart_db: str | None = None) -> tuple[str, ...]:
+    """Canonical ATC4 codes for one CD market, ordered as filter-options emits them.
+
+    Market-definition displays reuse this instead of re-declaring the dropdown
+    source, so ``cause.atc_codes`` and the filter-options ``atc.atc4`` list stay
+    single-sourced (same mart query, same :func:`build_atc_hierarchy` order).
+    The union across sources is returned because market_meta carries one code
+    list for a multi-source payload.
+    """
+
+    normalized = (cd_market_id or "").strip()
+    if not normalized.startswith("cd_"):
+        return ()
+    if mart_db is None:
+        from pipeline.scripts.api.config import DB_NAME
+
+        mart_db = DB_NAME
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(by_dimension, '$.atc4_code')) AS atc4_code
+        FROM {quote_identifier(mart_db)}.mart_strategic_cd_brand_metric
+        WHERE cd_market_id = %s
+        """,
+        [normalized],
+    )
+    hierarchy = build_atc_hierarchy(rows)
+    options = hierarchy.get("atc4") or []
+    return tuple(
+        str(option["value"])
+        for option in options
+        if isinstance(option, dict) and option.get("value")
+    )
 
 
 def _filter_option_cache_key(
@@ -437,8 +506,18 @@ def _parent_for_atc_level(level: str, value: str) -> str | None:
 
 
 def normalize_view(value: str) -> str:
+    """Normalize the public view token.
+
+    ``strategic`` keeps its historical ML meaning so existing portal calls stay
+    untouched; ``strategic_ml`` is accepted as its explicit alias and
+    ``strategic_cd`` selects the competitive-dynamics scope. The market id is
+    derived from the brand — never required as input.
+    """
+
     normalized = value.strip().lower()
-    if normalized not in {"general", "strategic"}:
+    if normalized == "strategic_ml":
+        return "strategic"
+    if normalized not in {"general", "strategic", "strategic_cd"}:
         raise DynamicMarketInputError(f"unsupported filter option view: {value}")
     return normalized
 
@@ -979,6 +1058,36 @@ def _general_brand_alias_key(brand: str) -> str:
     return brand.replace(" ", "").lower()
 
 
+def _restrict_strategic_atc_rows(
+    rows: tuple[dict[str, object], ...],
+    atc4_codes: Sequence[str],
+) -> tuple[dict[str, object], ...]:
+    """Respect the caller-provided ATC4 list as a strategic option restriction.
+
+    The portal already sends the view-aware market codes (the cause response's
+    ``market_meta.atc_codes``) with every strategic filter-options call, so
+    intersecting the market universe with that list renders the CD tab
+    correctly without any portal change. Without codes the full universe is
+    returned unchanged, and an empty intersection (e.g. legacy label values
+    still cached on the frontend) also falls back to the universe so the
+    dropdown never goes blank.
+    """
+
+    requested = {
+        _canonical_general_atc4(str(code))
+        for code in atc4_codes or ()
+        if str(code).strip()
+    }
+    if not requested:
+        return rows
+    restricted = tuple(
+        row
+        for row in rows
+        if str(row.get("atc4_code") or "").strip().upper() in requested
+    )
+    return restricted or rows
+
+
 def _load_atc_rows(
     *,
     mart_db: str,
@@ -1000,7 +1109,7 @@ def _load_atc_rows(
             FROM {quote_identifier(mart_db)}.{table}
             WHERE {" AND ".join(where)}
         """
-        return tuple(db.fetch_all(sql, params))
+        return _restrict_strategic_atc_rows(tuple(db.fetch_all(sql, params)), atc4_codes)
     where = ["source = %s"]
     params: list[str] = [source]
     if atc4_codes:
@@ -1204,7 +1313,10 @@ def _mark_atc_state(
             key = str(option.get("key") or "")
             option["default"] = key in default_values
             option["selected"] = key in selected_by_level[level] or key in default_values
-            option["flag"] = key in brand_by_level[level]
+            if view == "general" and level != "atc4":
+                option.pop("flag", None)
+            else:
+                option["flag"] = key in brand_by_level[level]
     return defaults
 
 
@@ -1219,7 +1331,7 @@ def _atc_values_by_level(atc4_codes: Sequence[str]) -> dict[str, set[str]]:
     return values
 
 
-def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> str | None:
+def _general_atc4_codes_for_brand(*, mart_db: str, source: str, brand: str) -> tuple[str, ...]:
     rows = db.fetch_all(
         f"""
         SELECT DISTINCT atc4_code
@@ -1235,10 +1347,13 @@ def _general_market_id_for_brand(*, mart_db: str, source: str, brand: str) -> st
         """,
         [source, brand, brand, brand, brand],
     )
-    for row in rows:
-        if atc4_code := str(row.get("atc4_code") or "").strip().upper():
-            return atc4_code
-    return None
+    return tuple(
+        dict.fromkeys(
+            atc4_code
+            for row in rows
+            if (atc4_code := str(row.get("atc4_code") or "").strip().upper())
+        )
+    )
 
 
 def _strategic_market_filter(market_id: str) -> tuple[str, str]:

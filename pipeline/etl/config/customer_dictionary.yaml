@@ -50,6 +50,21 @@ ubist_specialty_reverse:
   Uro: [비뇨의학과]
   Neuro: [신경과]
 
+# UBIST 원천의 aggregate parent와 이를 대체하는 atomic specialty 목록.
+# Parent 행은 children 전건과 동일 grain을 중복하므로 집계 전에 제외한다.
+ubist_specialty_hierarchies:
+  "내과(IM)":
+    - "알레르기(Allergy IM)"
+    - "내분비(Endocrinology IM)"
+    - "순환기(Cardiology IM)"
+    - "신장(Nephrology IM)"
+    - "류마티스(Rheumatology IM)"
+    - "소화기(Gastroenterology IM)"
+    - "감염(Infection Disease IM)"
+    - "혈액종양(Hemoto Oncology IM)"
+    - "호흡기(Pulmonology IM)"
+    - "분리되지 않은 내과"
+
 # ============================================================================
 # IQVIA channel — raw AUDIT CODE 기반 자동 추적
 # ============================================================================

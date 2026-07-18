@@ -5,6 +5,7 @@ import sys
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -58,6 +59,234 @@ def test_normalized_product_overlap_respects_alias_rules() -> None:
     assert overlap == {"APITO"}
 
 
+def test_csd_market_resolution_requires_selected_brand_membership(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "Selected Market", "master_product": "SELECTED"},
+            {"market": "Selected Market", "master_product": "RIVAL_A"},
+            {"market": "Competitor Market", "master_product": "RIVAL_A"},
+            {"market": "Competitor Market", "master_product": "RIVAL_B"},
+            {"market": "Competitor Market", "master_product": "RIVAL_C"},
+        ],
+    )
+
+    resolved = service.resolve_csd_market(
+        selected_product_codes={"SELECTED"},
+        candidate_product_codes={"SELECTED", "RIVAL_A", "RIVAL_B", "RIVAL_C"},
+    )
+
+    assert resolved.market == "Selected Market"
+    assert resolved.overlap == ("RIVAL_A", "SELECTED")
+
+
+def test_csd_market_resolution_limits_scan_to_configured_product_variants(monkeypatch) -> None:
+    # Given
+    captured: dict[str, str | tuple[str, ...] | None] = {}
+
+    def fetch_all(sql: str, params: tuple[str, ...] | None = None) -> list[dict[str, str]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            {"market": "Selected Market", "master_product": "A-PITO"},
+            {"market": "Selected Market", "master_product": "LOWOSMOPERI"},
+        ]
+
+    monkeypatch.setattr(service.db, "fetch_all", fetch_all)
+
+    # When
+    resolved = service.resolve_csd_market(
+        selected_product_codes={"APITO"},
+        candidate_product_codes={"APITO", "LOW OSMO PERI"},
+    )
+
+    # Then
+    assert "master_product IN (%s, %s, %s, %s)" in str(captured["sql"])
+    assert captured["params"] == ("A-PITO", "APITO", "LOW OSMO PERI", "LOWOSMOPERI")
+    assert resolved.market == "Selected Market"
+    assert resolved.overlap == ("APITO", "LOW OSMO PERI")
+
+
+def test_csd_product_codes_are_reloaded_from_iqvia_for_ubist_brand_meta(monkeypatch) -> None:
+    brand_meta = {
+        "리바로": shared.BrandMeta("리바로", "리바로", ("UBIST-LIVALO",), True),
+        "경쟁품": shared.BrandMeta("경쟁품", "경쟁품", ("UBIST-RIVAL",), False),
+    }
+    captured: dict[str, object] = {}
+
+    def fake_iqvia_codes(brands: dict[str, str]) -> dict[str, tuple[str, ...]]:
+        captured["brands"] = brands
+        return {"리바로": ("LIVALO",), "경쟁품": ("IQVIA-RIVAL",)}
+
+    monkeypatch.setattr(service, "iqvia_product_codes_by_brand", fake_iqvia_codes)
+
+    resolved = service._iqvia_csd_product_codes(brand_meta, selected_brand="리바로")
+
+    assert captured["brands"] == {"리바로": "리바로", "경쟁품": "경쟁품"}
+    assert resolved.selected == frozenset({"LIVALO"})
+    assert resolved.candidates == frozenset({"LIVALO", "IQVIA-RIVAL"})
+    assert resolved.by_brand == {
+        "리바로": frozenset({"LIVALO"}),
+        "경쟁품": frozenset({"IQVIA-RIVAL"}),
+    }
+
+
+def test_csd_activity_join_uses_iqvia_codes_instead_of_ubist_codes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params: [
+            {"period_ym": "2025-01", "master_product": "LIVALO", "value": 17.0},
+        ],
+    )
+
+    activity = service._activity_series(
+        "LIVALO Market",
+        [shared.BrandChoice("리바로", "리바로", 1, True)],
+        {"리바로": frozenset({"LIVALO"})},
+        ("2025-01",),
+    )
+
+    assert activity["by_brand"]["리바로"] == {"2025-01": 17.0}
+
+
+def test_csd_activity_join_preserves_shared_product_mappings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params: [
+            {"period_ym": "2025-01", "master_product": "SHARED", "value": 7.0},
+        ],
+    )
+
+    activity = service._activity_series(
+        "SHARED Market",
+        [
+            shared.BrandChoice("brand-a", "Brand A", 1, True),
+            shared.BrandChoice("brand-b", "Brand B", 2, False),
+        ],
+        {
+            "brand-a": frozenset({"SHARED"}),
+            "brand-b": frozenset({"SHARED"}),
+            "not-returned": frozenset({"SHARED"}),
+        },
+        ("2025-01",),
+    )
+
+    assert activity["by_brand"] == {
+        "brand-a": {"2025-01": 7.0},
+        "brand-b": {"2025-01": 7.0},
+    }
+    assert activity["matched"] == {"brand-a": True, "brand-b": True}
+
+
+def test_resolve_csd_markets_excludes_competitor_only_markets(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "LIVALO Market", "master_product": "LIVALO"},
+            {"market": "LIVALO Market", "master_product": "RIVAL"},
+            {"market": "LIVALO FENO Market", "master_product": "LIVALO FENO"},
+        ],
+    )
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes={"LIVALO"},
+        candidate_product_codes={"LIVALO", "LIVALO FENO", "RIVAL"},
+    )
+
+    assert [item.market for item in resolved] == ["LIVALO Market"]
+
+
+def test_resolve_csd_markets_keeps_legacy_selected_market_as_primary(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "Selected Market", "master_product": "SELECTED"},
+            {"market": "Selected Market", "master_product": "RIVAL_A"},
+            {"market": "Competitor Market", "master_product": "RIVAL_A"},
+            {"market": "Competitor Market", "master_product": "RIVAL_B"},
+            {"market": "Competitor Market", "master_product": "RIVAL_C"},
+        ],
+    )
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes={"SELECTED"},
+        candidate_product_codes={"SELECTED", "RIVAL_A", "RIVAL_B", "RIVAL_C"},
+    )
+
+    assert [item.market for item in resolved] == ["Selected Market"]
+
+    with pytest.raises(service.CsdMarketFilterError):
+        service._select_csd_markets(resolved, "Competitor Market")
+
+
+def test_aggregate_csd_markets_uses_period_union_without_zero_fill() -> None:
+    aggregate = service._aggregate_market_activity(
+        {
+            "A": {
+                "totals": {"2024-01": 10.0, "2025-01": 20.0},
+                "by_brand": {"brand": {"2024-01": 4.0, "2025-01": 8.0}},
+            },
+            "B": {
+                "totals": {"2025-01": 3.0},
+                "by_brand": {"brand": {"2025-01": 1.0}},
+            },
+        }
+    )
+
+    assert aggregate["series"]["market_totals"] == {"2024-01": 10.0, "2025-01": 23.0}
+    assert aggregate["series"]["by_entity"]["brand"] == {"2024-01": 4.0, "2025-01": 9.0}
+    assert aggregate["contributing_markets_by_period"] == {
+        "2024-01": ["A"],
+        "2025-01": ["A", "B"],
+    }
+    assert "2024-01" not in aggregate["series_by_market"]["B"]["market_totals"]
+
+
+def test_csd_market_resolution_rejects_competitor_only_overlap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [{"market": "Competitor Market", "master_product": "RIVAL"}],
+    )
+
+    try:
+        service.resolve_csd_market(
+            selected_product_codes={"SELECTED"},
+            candidate_product_codes={"SELECTED", "RIVAL"},
+        )
+    except shared.CsdTimeseriesNoMappingError as exc:
+        assert str(exc) == "이 브랜드는 CSD 원천에 활동 데이터가 없음"
+        assert exc.csd_source_present is False
+    else:
+        raise AssertionError("competitor-only overlap must not select a CSD market")
+
+
+def test_csd_market_resolution_exposes_true_tie_candidates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "Alpha Market", "master_product": "SELECTED"},
+            {"market": "Beta Market", "master_product": "SELECTED"},
+        ],
+    )
+
+    try:
+        service.resolve_csd_market(
+            selected_product_codes={"SELECTED"},
+            candidate_product_codes={"SELECTED"},
+        )
+    except shared.CsdTimeseriesAmbiguousMarketError as exc:
+        assert [item["market"] for item in exc.candidates] == ["Alpha Market", "Beta Market"]
+    else:
+        raise AssertionError("a true top-score tie must remain ambiguous")
+
+
 def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
     expected = {
         "scope": {
@@ -96,11 +325,37 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {"data": expected, "meta": {"request_normalized": True}}
     assert "market_id" not in captured
     assert captured["filters"]["atc4"] == ["C10A1"]
     assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
     assert captured["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
+
+
+def test_csd_timeseries_route_returns_422_for_unknown_csd_market(monkeypatch) -> None:
+    def reject(_payload: dict[str, object]) -> None:
+        raise service.CsdMarketFilterError("UNKNOWN", available=("LIVALO",))
+
+    monkeypatch.setattr(brand_activity, "get_csd_timeseries", reject)
+    app = FastAPI()
+    app.include_router(brand_activity.router)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/csd-timeseries",
+        json={
+            "view": "general",
+            "selected_brand": "LIVALO",
+            "filters": {"atc4": ["C10A1"]},
+            "csd_market": "UNKNOWN",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "error": "invalid_csd_market",
+        "message": "unsupported csd_market: UNKNOWN",
+        "available": ["LIVALO"],
+    }
 
 
 def test_csd_timeseries_route_ignores_stale_market_id_input(monkeypatch) -> None:
@@ -113,8 +368,15 @@ def test_csd_timeseries_route_ignores_stale_market_id_input(monkeypatch) -> None
         json={"view": "general", "market_id": "missing", "selected_brand": "리바로", "filter": {}},
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"data": None, "reason": "market_not_found"}
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": {
+            "error": "market_not_found",
+            "message": "요청 필터로 시장을 식별할 수 없음",
+            "requested": {"view": "general", "filters_received": {}},
+            "hint": "flat filters.atc4 or market_id expected",
+        }
+    }
 
 
 def test_csd_timeseries_service_uses_select_only_sql() -> None:
@@ -135,6 +397,33 @@ def test_csd_timeseries_parse_accepts_general_market_scope_without_atc4() -> Non
 
     assert parsed["market_id"] is None
     assert parsed["filter"]["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
+
+
+def test_csd_timeseries_parse_accepts_strategic_cd_market_id() -> None:
+    parsed = service._parse_request(
+        {
+            "view": "strategic_cd",
+            "market_id": "cd_006",
+            "selected_brand": "리바로",
+            "filters": {},
+        }
+    )
+
+    assert parsed["view"] == "strategic_cd"
+    assert parsed["market_id"] == "cd_006"
+
+
+def test_csd_timeseries_parse_preserves_optional_csd_market() -> None:
+    parsed = service._parse_request(
+        {
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "csd_market": "LIVALO FENO",
+        }
+    )
+
+    assert parsed["csd_market"] == "LIVALO FENO"
 
 
 def test_csd_timeseries_public_measures_include_sales() -> None:
@@ -202,7 +491,7 @@ def test_csd_timeseries_activity_preserves_monthly_keys(monkeypatch) -> None:
     activity = service._activity_series(
         "LIVALO Market",
         [shared.BrandChoice("LIVALO", "LIVALO", 1, True)],
-        {"LIVALO": shared.BrandMeta("LIVALO", "LIVALO", ("LIVALO",), True)},
+        {"LIVALO": frozenset({"LIVALO"})},
         months,
     )
 
@@ -225,6 +514,7 @@ def test_csd_timeseries_scope_keeps_quarters_and_adds_activity_months() -> None:
         "2025-Q1",
         {},
         shared.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),
+        (shared.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),),
         ["2025-Q1"],
         ("2025-01", "2025-02", "2025-03"),
     )

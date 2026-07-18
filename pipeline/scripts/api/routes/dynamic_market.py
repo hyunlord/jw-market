@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import os
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
+from pipeline.scripts.api.brand_presence import brand_exists
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT
-from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.composers.cache_to_response import compose_dynamic_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
@@ -18,18 +22,17 @@ from pipeline.scripts.api.dynamic_market.resolvers import (
     GeneralViewResolver,
     StrategicMarketSelection,
     StrategicViewResolver,
+    normalize_measure,
+    normalize_source,
     resolve_strategic_market_for_focus,
 )
-from pipeline.scripts.api.dynamic_market.response_cache import (
-    DynamicMarketOverloadedError,
-    DynamicResponseCache,
-    DynamicResponseCacheUnavailable,
-    MySQLDynamicResponseCacheStore,
-)
-from pipeline.scripts.api.dynamic_market.strategic_runtime import build_strategic_payload
-from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import build_cached_payload, success_envelope
+from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, DynamicResponseCacheUnavailable
+from pipeline.scripts.api.dynamic_market.runtime_cache import dynamic_response_cache
+from pipeline.scripts.api.dynamic_market.strategic_cause import get_strategic_payload
+from pipeline.scripts.api.dynamic_market.strategic_runtime_cache import success_envelope
 from pipeline.scripts.api.dynamic_market.types import (
     DynamicMarketInputError,
+    DynamicMarketPeriodNoDataError,
     DynamicMarketScopeTooBroadError,
     MarketDefinition,
     PeriodRange,
@@ -50,13 +53,12 @@ from pipeline.scripts.api.openapi_docs import (
 
 
 router = APIRouter()
-_dynamic_response_cache = DynamicResponseCache(
-    store=MySQLDynamicResponseCacheStore(
-        mart_db=config.db_name,
-        dimension_db=config.general_dimension_db_name,
-        ttl_seconds=config.cache_ttl_seconds,
-    )
-)
+_dynamic_response_cache = dynamic_response_cache
+logger = logging.getLogger(__name__)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 
 @router.post(
@@ -84,11 +86,18 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
         try:
             _reject_strategic_expansion_filters(payload)
             _reject_strategic_channel_axis(payload)
-            market_selection = _resolve_strategic_market_selection(payload)
+            try:
+                market_selection = _resolve_strategic_market_selection(payload)
+            except DynamicMarketInputError:
+                if _brand_exists(payload.filters.focus_brand_key):
+                    return _empty_strategic_response(payload, effective_view)
+                raise
             analysis_level = _strategic_analysis_level_from_top_level_atc4(payload)
+            started = perf_counter() if _stage_timing_enabled() else None
+            strategic_started = perf_counter() if started is not None else None
             envelope = success_envelope(
-                build_cached_payload(
-                    builder=build_strategic_payload,
+                get_strategic_payload(
+                    cache=_dynamic_response_cache,
                     mart_db=config.db_name,
                     ml_id=market_selection.market_id if market_selection.market_kind == "ml" else None,
                     cd_market_id=market_selection.market_id if market_selection.market_kind == "cd" else None,
@@ -96,9 +105,25 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
                     source=payload.source,
                     measure=payload.measure,
                     analysis_level=analysis_level,
+                    period_range=_period_range(payload),
                 )
             )
+            if started is not None:
+                logger.info(
+                    "market_latency_stage path=strategic view=%s source=%s measure=%s payload_ms=%.3f total_ms=%.3f",
+                    effective_view, payload.source, payload.measure,
+                    (perf_counter() - strategic_started) * 1000,
+                    (perf_counter() - started) * 1000,
+                )
             return _with_view_echo(envelope, effective_view)
+        except DynamicMarketPeriodNoDataError:
+            return _empty_period_response(payload, effective_view)
+        except DynamicMarketOverloadedError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "dynamic_market_overloaded", "message": str(exc)},
+                headers={"Retry-After": "2"},
+            ) from exc
         except DynamicMarketInputError as exc:
             raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
 
@@ -119,15 +144,16 @@ def dynamic_market(raw_payload: dict[str, Any] = Body(default_factory=dict)) -> 
 
 
 def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, Any]:
+    started = perf_counter() if _stage_timing_enabled() else None
     aggregator = MetricAggregator(mart_db=config.db_name, strategic_dimension_db=config.strategic_dimension_db_name)
     composer = ResponseComposer()
-    period_range = PeriodRange(
-        start=payload.options.period_range.start if payload.options.period_range else None,
-        end=payload.options.period_range.end if payload.options.period_range else None,
-    )
+    period_range = _period_range(payload)
+    resolve_started = perf_counter() if started is not None else None
     try:
         definition = _resolve_definition(payload)
         _enforce_scope_size_limit(definition, limit=config.dynamic_max_brand_rows)
+        resolve_ms = (perf_counter() - resolve_started) * 1000 if resolve_started is not None else 0.0
+        aggregate_started = perf_counter() if started is not None else None
         metrics = aggregator.aggregate(
             brands=definition.brands,
             source=definition.source,
@@ -140,6 +166,9 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
             strategic_market_id=definition.strategic_market_id,
             selected_brand_key=getattr(definition, "focus_brand_key", None),
         )
+        aggregate_ms = (perf_counter() - aggregate_started) * 1000 if aggregate_started is not None else 0.0
+        if (period_range.start is not None or period_range.end is not None) and not metrics.monthly_series:
+            return _empty_period_response(payload, "general")
     except DynamicMarketScopeTooBroadError as exc:
         raise HTTPException(
             status_code=400,
@@ -152,8 +181,76 @@ def _build_general_dynamic_response(payload: DynamicMarketRequest) -> dict[str, 
         ) from exc
     except DynamicMarketInputError as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_dynamic_market_request", "message": str(exc)}) from exc
-    result = composer.compose(definition=definition, metrics=metrics)
-    return compose_cached_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+    compose_started = perf_counter() if started is not None else None
+    result = composer.compose_unformatted(definition=definition, metrics=metrics, period_range=period_range)
+    compose_ms = (perf_counter() - compose_started) * 1000 if compose_started is not None else 0.0
+    serialize_started = perf_counter() if started is not None else None
+    response = compose_dynamic_json({"status": "SUCCESS", "result": result}, measure=payload.measure)
+    serialize_ms = (perf_counter() - serialize_started) * 1000 if serialize_started is not None else 0.0
+    if started is not None:
+        logger.info(
+            "market_latency_stage path=general view=%s source=%s measure=%s resolve_ms=%.3f aggregate_ms=%.3f compose_ms=%.3f serialize_ms=%.3f total_ms=%.3f",
+            definition.view, definition.source, definition.measure, resolve_ms, aggregate_ms,
+            compose_ms, serialize_ms, (perf_counter() - started) * 1000,
+        )
+    return response
+
+
+def _period_range(payload: DynamicMarketRequest) -> PeriodRange:
+    return PeriodRange(
+        start=payload.options.period_range.start if payload.options.period_range else None,
+        end=payload.options.period_range.end if payload.options.period_range else None,
+    )
+
+
+def _brand_exists(brand: str | None) -> bool:
+    return brand_exists(brand)
+
+
+def _empty_strategic_response(payload: DynamicMarketRequest, view: str) -> dict[str, Any]:
+    source = normalize_source(payload.source)
+    measure = normalize_measure(source, payload.measure)
+    unit_label = "KRW" if measure == "sales" else ("Rx" if source == "ubist" else measure.replace("_", " ").title())
+    return success_envelope(
+        {
+            "brand": payload.filters.focus_brand_key,
+            "market_id": None,
+            "view": view,
+            "source": payload.source,
+            "measure": payload.measure,
+            "unit_label": unit_label,
+            "data": None,
+            "reason": "brand_not_in_source",
+            "market_meta": None,
+            "markets": [],
+        }
+    )
+
+
+def _empty_period_response(payload: DynamicMarketRequest, view: str) -> dict[str, Any]:
+    source = normalize_source(payload.source)
+    measure = normalize_measure(source, payload.measure)
+    unit_label = (
+        "KRW"
+        if measure == "sales"
+        else ("Rx" if source == "ubist" else measure.replace("_", " ").title())
+    )
+    requested = payload.options.period_range
+    return success_envelope(
+        {
+            "brand": payload.filters.focus_brand_key,
+            "market_id": None,
+            "view": view,
+            "source": payload.source,
+            "measure": payload.measure,
+            "unit_label": unit_label,
+            "data": None,
+            "reason": "no_data_in_period",
+            "period_range": requested.model_dump(mode="json") if requested else None,
+            "market_meta": None,
+            "markets": [],
+        }
+    )
 
 
 def _is_strategic_request(payload: DynamicMarketRequest) -> bool:
@@ -318,18 +415,23 @@ def _resolve_strategic_market_selection(payload: DynamicMarketRequest) -> Strate
     summary="동적 시장 필터 옵션",
     description=(
         "포탈 필터 UI가 사용하는 옵션 목록입니다. 전략뷰는 시장 소속 ATC/차원을 한 번에 반환하고, "
-        "일반뷰는 선택된 ATC4 set 기준으로 소스별 scoped 옵션을 실시간 산출합니다."
+        "일반뷰에서 brand를 보내면 소스의 전체 ATC4 universe를 유지하고 브랜드 소속 시장만 flag=true로 표시합니다. "
+        "brand가 없고 ATC4를 명시한 요청은 선택된 ATC4 set 기준으로 소스별 scoped 옵션을 실시간 산출합니다."
     ),
     response_model=None,
     responses=FILTER_OPTIONS_RESPONSES,
 )
 def dynamic_market_filter_options(
-    view: str = Query("general", description="[입력] general 또는 strategic.", examples=["general"]),
+    view: str = Query(
+        "general",
+        description="[입력] general, strategic(전략뷰 ML, 기존 그대로), strategic_cd(전략뷰 CD). market_id 없이 brand로 시장을 유도합니다.",
+        examples=["general"],
+    ),
     source: str = Query("ubist", description="[입력] ubist 또는 iqvia.", examples=["ubist"]),
     measure: str = Query("sales", description="[입력] sales 또는 qty.", examples=["sales"]),
     brand: str | None = Query(
         default=None,
-        description="[입력] 선택 브랜드명. market_id는 이 브랜드로 내부 조회되어 응답에 echo됩니다.",
+        description="[입력] 선택 브랜드명. 전체 목록을 제한하지 않고 브랜드 소속 ATC4에 flag를 표시합니다.",
         examples=["리바로"],
     ),
     atc4_codes: list[str] | None = Query(

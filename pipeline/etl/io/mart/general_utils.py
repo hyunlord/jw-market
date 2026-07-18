@@ -8,7 +8,7 @@ import pandas as pd
 
 from .brand_key_normalize import normalize_brand_name
 from .dict_ubist_translation import CHANNEL_CODE_TO_RAW, SPECIALTY_CODE_TO_RAW
-from .ubist_channel_mapping import STANDALONE_INTERNAL_MEDICINE_SPECIALTY
+from .ubist_channel_mapping import aggregate_specialty_labels
 
 def safe_float(value: Any) -> float:
     try:
@@ -63,10 +63,10 @@ def ubist_specialty_to_raw(value: Any) -> str:
             return raws[0]
     return "분리되지 않은 진료과"
 
-def deduplicate_ubist_internal_medicine_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    """Drop standalone 내과(IM) rows before UBIST aggregation.
+def filter_ubist_aggregate_specialty_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop catalogued aggregate specialties before UBIST aggregation.
 
-    무엇: UBIST raw의 standalone ``내과(IM)`` 행만 제거하고 세부 10개 내과
+    무엇: UBIST specialty hierarchy의 aggregate parent 행을 제거하고 detail
     specialty는 보존한다.
     왜: PL 검증에서 standalone 내과가 세부 10개 합과 등가라 같이 더하면
     시장 총합이 약 40% 과대 집계된다.
@@ -76,10 +76,15 @@ def deduplicate_ubist_internal_medicine_rows(frame: pd.DataFrame) -> pd.DataFram
     """
     if frame.empty or "specialty" not in frame.columns:
         return frame
-    mask = frame["specialty"].astype(str).str.strip() == STANDALONE_INTERNAL_MEDICINE_SPECIALTY
+    mask = frame["specialty"].astype(str).str.strip().isin(aggregate_specialty_labels())
     if not mask.any():
         return frame
     return frame.loc[~mask].copy()
+
+
+def deduplicate_ubist_internal_medicine_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Compatibility name for the shared catalog-driven specialty filter."""
+    return filter_ubist_aggregate_specialty_rows(frame)
 
 def normalize_period_label(value: Any) -> str | None:
     if value is None or pd.isna(value):

@@ -7,7 +7,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, status
 
 from pipeline.scripts.api import db
-from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.market_scope.catalog import MarketScopeCatalog
 from pipeline.scripts.api.market_scope.fact_collector import (
@@ -25,6 +24,7 @@ from pipeline.scripts.api.market_scope.types import (
     ViewFamily,
 )
 from pipeline.scripts.api.models.market_scope import MarketScopeCauseRequest, MarketScopeResolveRequest
+from pipeline.scripts.api.routes.cause import _fetch_cause_rows
 from pipeline.scripts.api.validators.query_params import validate_cause_query
 
 
@@ -88,33 +88,27 @@ def build_strategy_resolver() -> StrategyScopeResolver:
 
     return StrategyScopeResolver(
         catalog=MarketScopeCatalog.load_default(),
-        cache_reader=_read_cache_cause,
+        cache_reader=_read_mart_cause,
         fact_provider=_read_strategy_facts,
     )
 
 
-def _read_cache_cause(request: MarketScopeRequest, resolved: ResolvedScope) -> dict[str, Any]:
-    """Read the legacy single-market ``cache_cause`` row."""
+def _read_mart_cause(request: MarketScopeRequest, resolved: ResolvedScope) -> dict[str, Any]:
+    """Build one resolved strategic market through the shared mart-direct cache path."""
 
     view, source, measure = validate_cause_query(request.view, request.source, request.measure)
-    row = db.fetch_one(
-        """
-        SELECT response_json
-        FROM cache_cause
-        WHERE brand = %s
-          AND view_type = %s
-          AND source = %s
-          AND measure = %s
-          AND market_id = %s
-        LIMIT 1
-        """,
-        [request.brand, view, source, measure, resolved.resolved_source_markets[0]],
+    rows = _fetch_cause_rows(
+        request.brand,
+        view,
+        source,
+        measure,
+        resolved.resolved_source_markets[0],
     )
-    if not row:
-        raise MarketScopeValidationError("single-market cache_cause row was not found")
-    payload = compose_cached_json(row["response_json"], measure=measure)
+    if not rows:
+        raise MarketScopeValidationError("single-market mart payload was not found")
+    payload = rows[0].get("response_json")
     if not isinstance(payload, dict):
-        raise MarketScopeValidationError("single-market cache_cause payload is not an object")
+        raise MarketScopeValidationError("single-market mart payload is not an object")
     return payload
 
 

@@ -14,6 +14,7 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
 
     assert sorted(schema["paths"]) == [
         "/api/brand-activity/csd-activity-series",
+        "/api/brand-activity/csd-presence",
         "/api/brand-activity/csd-timeseries",
         "/api/brand-activity/interest-rx-matrix",
         "/api/brand-activity/topics",
@@ -108,6 +109,17 @@ def test_brand_activity_csd_routes_are_portal_shared_docs_only() -> None:
             "/api/brand-activity/interest-rx-matrix",
         }:
             assert getattr(route, "response_model", None) is None
+
+
+def test_interest_rx_matrix_documents_prescription_evolution_y_axis() -> None:
+    schema = app.openapi()
+    operation = schema["paths"]["/api/brand-activity/interest-rx-matrix"]["post"]
+    response_description = operation["responses"]["200"]["description"]
+
+    assert "Y축은 prescription_evolution_score" in operation["description"]
+    assert "Y=prescription_evolution_score" in response_description
+    assert "Y축은 interest_score" not in operation["description"]
+    assert "Y=interest_score" not in response_description
 
 
 def test_dynamic_market_documents_competitive_dynamics_contract() -> None:

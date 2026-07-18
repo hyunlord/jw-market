@@ -28,10 +28,11 @@ from pipeline.scripts.etl.cache_deep_analysis_brand_factors import (
     load_brand_factor_map,
     quote_ident,
 )
+from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
-TARGET_DATABASE: Final[str] = "jw_mart_d2_stage_20260630_r2"
+TARGET_DATABASE: Final[str] = DEFAULT_MART_DB_NAME
 CACHE_TABLE: Final[str] = "cache_brand_elements"
 AGENT3_TABLE: Final[str] = "agent3_brand_strength"
 DEFAULT_SOURCE_TABLES: Final[tuple[str, ...]] = ("cache_deep_analysis", "cache_deep_analysis_general")
@@ -384,7 +385,14 @@ def main() -> None:
     conn = connect_db()
     result: dict[str, Any] = {"database": os.environ.get("MARIADB_DATABASE", TARGET_DATABASE), "table": args.table}
     try:
-        if args.ensure_table:
+        # --dry-run wins over every other flag: no DDL, no upsert, no commit,
+        # regardless of combination (2026-07-17 incident: --dry-run --pilot-fill
+        # combined still upserted one live row).
+        if args.dry_run:
+            blocked = [name for name in ("ensure_table", "pilot_fill") if getattr(args, name)]
+            if blocked:
+                result["dry_run_blocked_writes"] = blocked
+        if args.ensure_table and not args.dry_run:
             ensure_cache_brand_elements_table(conn, args.table)
             conn.commit()
             result["ensure_table"] = {"ok": True}
@@ -394,7 +402,7 @@ def main() -> None:
         if args.dry_run:
             payloads = build_brand_element_payloads(conn, brands, agent3_schema=args.agent3_schema)
             result["dry_run"] = {"brands": len(brands), "sample": [payload.brand_key for payload in payloads[:10]]}
-        if args.pilot_fill:
+        if args.pilot_fill and not args.dry_run:
             ensure_cache_brand_elements_table(conn, args.table)
             payloads = build_brand_element_payloads(conn, brands, agent3_schema=args.agent3_schema)
             result["pilot_fill"] = {"upserted_rows": upsert_brand_elements(conn, payloads, args.table)}

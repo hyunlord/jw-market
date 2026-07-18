@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 
-from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
+from pipeline.scripts.analysis.brand_activity.alias.normalize import configured_variants_for, normalize_iqvia_en
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, resolve_brand_set
+from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
 from pipeline.scripts.api.brand_activity_csd_shared import (
     PUBLIC_MEASURES,
     RANKING_MEASURE,
@@ -13,8 +15,10 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     BrandChoice,
     BrandMeta,
     CsdCrosswalk,
+    CsdMarketFilterError,
     CsdTimeseriesAmbiguousMarketError,
     CsdTimeseriesInputError,
+    CsdTimeseriesNoMappingError,
     JsonMap,
     ViewConfig,
     display_csd_market,
@@ -29,6 +33,15 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
 )
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+
+
+@dataclass(frozen=True, slots=True)
+class CsdProductCodes:
+    """IQVIA product-code sets used only at the CSD crosswalk boundary."""
+
+    selected: frozenset[str]
+    candidates: frozenset[str]
+    by_brand: dict[str, frozenset[str]]
 
 
 def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
@@ -47,6 +60,7 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
             selected_brand=request["selected_brand"],
             filter_payload=request["filter"],
             ranking_quarters=quarters,
+            prefilter_strategic_choices=True,
         )
     except BrandSetInputError as exc:
         raise CsdTimeseriesInputError(str(exc)) from exc
@@ -54,13 +68,23 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
         return None
     choices = list(brand_set.choices)
     brand_meta = brand_set.brand_meta
-    selected_meta = brand_meta.get(request["selected_brand"])
+    selected_meta = brand_meta.get(brand_set.selected_brand)
     if selected_meta is None:
         return None
-    mart_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
-    crosswalk = resolve_csd_market(mart_codes)
+    csd_codes = _iqvia_csd_product_codes(brand_meta, selected_brand=brand_set.selected_brand)
+    crosswalks = resolve_csd_markets(
+        selected_product_codes=set(csd_codes.selected),
+        candidate_product_codes=set(csd_codes.candidates),
+    )
+    selected_crosswalks = _select_csd_markets(crosswalks, request["csd_market"])
+    crosswalk = selected_crosswalks[0]
     rx_rows = _fetch_rx_rows(brand_set.view, brand_set.market_id, tuple(choice.brand_key for choice in choices))
-    activity = _activity_series(crosswalk.market, choices, brand_meta, activity_months)
+    activity_by_market = {
+        item.display_market: _activity_series(item.market, choices, csd_codes.by_brand, activity_months)
+        for item in selected_crosswalks
+    }
+    aggregate = _aggregate_market_activity(activity_by_market)
+    activity = activity_by_market[crosswalk.display_market]
     return {
         "scope": _scope_payload(
             request,
@@ -70,43 +94,159 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
             brand_set.ranking_quarter,
             brand_set.applied_filter,
             crosswalk,
+            crosswalks,
             quarters,
             activity_months,
         ),
         "brands": [_brand_payload(choice, brand_meta, rx_rows, activity, quarters, activity_months) for choice in choices],
         "market_totals": _market_totals(brand_set.view, brand_set.market_id, quarters, activity["totals"]),
+        "series_by_csd_market": aggregate["series_by_market"],
+        "aggregate": {
+            "series": aggregate["series"],
+            "available": aggregate["available"],
+            "contributing_markets_by_period": aggregate["contributing_markets_by_period"],
+        },
     }
 
 
-def resolve_csd_market(mart_product_codes: set[str]) -> CsdCrosswalk:
-    """Resolve a mart market to exactly one CSD market by product overlap."""
+def _iqvia_csd_product_codes(
+    brand_meta: Mapping[str, BrandMeta],
+    *,
+    selected_brand: str,
+) -> CsdProductCodes:
+    iqvia_codes = iqvia_product_codes_by_brand(
+        {brand_key: meta.brand_name for brand_key, meta in brand_meta.items()}
+    )
+    by_brand = {brand_key: frozenset(codes) for brand_key, codes in iqvia_codes.items()}
+    selected = by_brand.get(selected_brand, frozenset())
+    candidates = frozenset(code for codes in by_brand.values() for code in codes)
+    return CsdProductCodes(selected=selected, candidates=candidates, by_brand=by_brand)
 
-    rows = db.fetch_all(_sql_csd_products())
+
+def resolve_csd_markets(
+    *,
+    selected_product_codes: set[str],
+    candidate_product_codes: set[str],
+) -> tuple[CsdCrosswalk, ...]:
+    """Resolve CSD markets represented by the selected IQVIA market brand set."""
+
+    scored, selected_markets = _scored_csd_markets(
+        selected_product_codes=selected_product_codes,
+        candidate_product_codes=candidate_product_codes,
+    )
+    primary = _primary_csd_market(scored, selected_markets)
+    return (
+        primary,
+        *(
+            item
+            for item in scored
+            if item.market in selected_markets and item.market != primary.market
+        ),
+    )
+
+
+def _scored_csd_markets(
+    *,
+    selected_product_codes: set[str],
+    candidate_product_codes: set[str],
+) -> tuple[list[CsdCrosswalk], set[str]]:
+    product_codes = tuple(
+        sorted(
+            {
+                variant
+                for code in selected_product_codes | candidate_product_codes
+                for variant in configured_variants_for(normalize_iqvia_en(code))
+            }
+        )
+    )
+    rows = db.fetch_all(_sql_csd_products(product_codes), product_codes) if product_codes else []
     by_market: dict[str, set[str]] = {}
     for row in rows:
         by_market.setdefault(str(row["market"]), set()).add(str(row["master_product"]))
     scored: list[CsdCrosswalk] = []
+    selected_markets: set[str] = set()
     for market, products in by_market.items():
-        overlap = tuple(sorted(normalized_product_overlap(mart_product_codes, products)))
-        if overlap:
-            scored.append(CsdCrosswalk(market=market, display_market=display_csd_market(market), overlap=overlap, score=len(overlap)))
-    if not scored:
-        raise CsdTimeseriesAmbiguousMarketError("no CSD market overlaps mart product codes")
-    scored.sort(key=lambda item: (-item.score, item.market))
-    best = scored[0]
-    ties = [item for item in scored if item.score == best.score]
+        selected_overlap = normalized_product_overlap(selected_product_codes, products)
+        overlap = tuple(sorted(normalized_product_overlap(candidate_product_codes, products)))
+        if not overlap:
+            continue
+        if selected_overlap:
+            selected_markets.add(market)
+        scored.append(
+            CsdCrosswalk(
+                market=market,
+                display_market=display_csd_market(market),
+                overlap=overlap,
+                score=len(overlap),
+            )
+        )
+    return sorted(scored, key=lambda item: (-item.score, item.market)), selected_markets
+
+
+def resolve_csd_market(
+    *,
+    selected_product_codes: set[str],
+    candidate_product_codes: set[str],
+) -> CsdCrosswalk:
+    """Resolve the selected brand to one CSD market, then rank by full overlap."""
+
+    all_scored, selected_markets = _scored_csd_markets(
+        selected_product_codes=selected_product_codes,
+        candidate_product_codes=candidate_product_codes,
+    )
+    return _primary_csd_market(all_scored, selected_markets)
+
+
+def _primary_csd_market(
+    scored: list[CsdCrosswalk],
+    selected_markets: set[str],
+) -> CsdCrosswalk:
+    selected = [item for item in scored if item.market in selected_markets]
+    if not selected:
+        raise CsdTimeseriesNoMappingError("이 브랜드는 CSD 원천에 활동 데이터가 없음")
+    best = selected[0]
+    ties = [item for item in selected if item.score == best.score]
     if len(ties) > 1:
-        raise CsdTimeseriesAmbiguousMarketError(f"CSD market overlap tie: {', '.join(item.market for item in ties)}")
+        raise CsdTimeseriesAmbiguousMarketError(
+            f"CSD market overlap tie: {', '.join(item.market for item in ties)}",
+            candidates=tuple(_crosswalk_payload(item) for item in ties),
+        )
     return best
+
+
+def _select_csd_markets(
+    crosswalks: tuple[CsdCrosswalk, ...],
+    requested: str | None,
+) -> tuple[CsdCrosswalk, ...]:
+    if requested is None:
+        return crosswalks
+    normalized = requested.strip().casefold()
+    selected = tuple(
+        item
+        for item in crosswalks
+        if normalized in {item.market.casefold(), item.display_market.casefold()}
+    )
+    if selected:
+        return selected
+    raise CsdMarketFilterError(requested, available=tuple(item.display_market for item in crosswalks))
+
+
+def _crosswalk_payload(item: CsdCrosswalk) -> JsonMap:
+    return {
+        "market": item.market,
+        "display_market": item.display_market,
+        "overlap": list(item.overlap),
+        "score": item.score,
+    }
 
 
 def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
     view = text(payload.get("view"))
-    if view not in {"general", "strategic_ml"}:
+    if view not in {"general", "strategic_ml", "strategic_cd"}:
         raise CsdTimeseriesInputError(f"unsupported view: {view}")
     selected_brand = text(payload.get("selected_brand"))
     filter_payload = _filter_payload(payload)
-    market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else None
+    market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else (text(payload.get("market_id")) or None)
     if not selected_brand or (view == "general" and not market_id and not _has_market_scope(filter_payload)):
         raise CsdTimeseriesInputError("filters.atc4 and selected_brand are required")
     window = payload.get("window")
@@ -114,6 +254,7 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
         "view": view,
         "market_id": market_id,
         "selected_brand": selected_brand,
+        "csd_market": text(payload.get("csd_market")).strip() or None,
         "filter": filter_payload,
         "mode": text(payload.get("mode")) or "absolute",
         "window": window if isinstance(window, dict) else {},
@@ -128,6 +269,7 @@ def _scope_payload(
     ranking_quarter: str,
     applied_filter: JsonMap,
     crosswalk: CsdCrosswalk,
+    crosswalks: tuple[CsdCrosswalk, ...],
     quarters: list[str],
     activity_months: tuple[str, ...],
 ) -> JsonMap:
@@ -136,6 +278,7 @@ def _scope_payload(
         "market_id": str(market_row.get(view.market_key) or request["market_id"]),
         "market_name": str(market_row.get(view.market_name_column) or market_row.get(view.market_key) or request["market_id"]),
         "csd_market": crosswalk.display_market,
+        "csd_markets": [item.display_market for item in crosswalks],
         "selected_brand": {"brand_key": selected_meta.brand_key, "product_code": first(selected_meta.product_codes)},
         "ranking_measure": RANKING_MEASURE,
         "ranking_quarter": ranking_quarter,
@@ -219,24 +362,77 @@ def _market_totals(view: ViewConfig, market_id: str, quarters: list[str], activi
     return totals
 
 
-def _activity_series(csd_market: str, choices: list[BrandChoice], metas: dict[str, BrandMeta], activity_months: tuple[str, ...]) -> JsonMap:
+def _activity_series(
+    csd_market: str,
+    choices: list[BrandChoice],
+    product_codes_by_brand: Mapping[str, frozenset[str]],
+    activity_months: tuple[str, ...],
+) -> JsonMap:
     rows = db.fetch_all(_sql_csd_activity(), (csd_market,))
     totals = {month: 0.0 for month in activity_months}
     by_brand = {choice.brand_key: {month: 0.0 for month in activity_months} for choice in choices}
     matched = {choice.brand_key: False for choice in choices}
-    code_sets = {key: set(meta.product_codes) for key, meta in metas.items()}
+    brand_keys_by_product: dict[str, list[str]] = {}
+    for brand_key in by_brand:
+        for product_code in product_codes_by_brand.get(brand_key, ()):
+            brand_keys_by_product.setdefault(product_code, []).append(brand_key)
+    observed_months: set[str] = set()
     for row in rows:
         month = str(row["period_ym"])
         if month not in totals:
             continue
+        observed_months.add(month)
         value = float_value(row.get("value"))
         totals[month] += value
         product = normalize_iqvia_en(str(row["master_product"]))
-        for brand_key, codes in code_sets.items():
-            if brand_key in by_brand and product in codes:
-                by_brand[brand_key][month] += value
-                matched[brand_key] = True
-    return {"totals": totals, "by_brand": by_brand, "matched": matched}
+        for brand_key in brand_keys_by_product.get(product, ()):
+            by_brand[brand_key][month] += value
+            matched[brand_key] = True
+    return {
+        "totals": totals,
+        "by_brand": by_brand,
+        "matched": matched,
+        "observed_months": tuple(sorted(observed_months)),
+    }
+
+
+def _aggregate_market_activity(activity_by_market: Mapping[str, JsonMap]) -> JsonMap:
+    totals: dict[str, float] = {}
+    by_entity: dict[str, dict[str, float]] = {}
+    contributors: dict[str, list[str]] = {}
+    available: dict[str, JsonMap] = {}
+    series_by_market: dict[str, JsonMap] = {}
+    for market, activity in activity_by_market.items():
+        observed = activity.get("observed_months")
+        periods = tuple(str(period) for period in (observed if observed is not None else activity["totals"].keys()))
+        if periods:
+            available[market] = {"start": periods[0], "end": periods[-1]}
+        market_totals = {period: float_value(activity["totals"].get(period)) for period in periods}
+        market_entities = {
+            entity: {period: float_value(values.get(period)) for period in periods}
+            for entity, values in activity["by_brand"].items()
+        }
+        series_by_market[market] = {
+            "available": available.get(market),
+            "market_totals": market_totals,
+            "by_entity": market_entities,
+        }
+        for period, value in market_totals.items():
+            totals[period] = totals.get(period, 0.0) + value
+            contributors.setdefault(period, []).append(market)
+        for entity, values in market_entities.items():
+            target = by_entity.setdefault(entity, {})
+            for period, value in values.items():
+                target[period] = target.get(period, 0.0) + value
+    return {
+        "series": {
+            "market_totals": dict(sorted(totals.items())),
+            "by_entity": {key: dict(sorted(values.items())) for key, values in by_entity.items()},
+        },
+        "series_by_market": series_by_market,
+        "available": available,
+        "contributing_markets_by_period": {period: markets for period, markets in sorted(contributors.items())},
+    }
 
 
 def _brand_payload(
@@ -291,8 +487,9 @@ def _sql_csd_months() -> str:
     return f"SELECT DISTINCT period_ym FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` ORDER BY period_ym"
 
 
-def _sql_csd_products() -> str:
-    return f"SELECT market, master_product FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE jw_channel = 'TOTAL' GROUP BY market, master_product"
+def _sql_csd_products(product_codes: tuple[str, ...]) -> str:
+    placeholders = ", ".join("%s" for _code in product_codes)
+    return f"SELECT market, master_product FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE jw_channel = 'TOTAL' AND master_product IN ({placeholders}) GROUP BY market, master_product"
 
 
 def _sql_csd_activity() -> str:

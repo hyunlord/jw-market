@@ -1,6 +1,12 @@
 {
-  "catalog_version": "GROUP_01_20260619",
+  "catalog_version": "GROUP_01_20260716",
   "source_markets": [
+    {
+      "source_market": "strategy_003",
+      "label": "가드렛/가드메트",
+      "atc4_set": ["A10N1", "A10N3"],
+      "available_sources": ["UBIST", "IQVIA"]
+    },
     {
       "source_market": "strategy_006",
       "label": "리바로/리바로젯",
@@ -33,6 +39,26 @@
     }
   ],
   "groups": [
+    {
+      "group_id": "gardlet_family",
+      "label": "가드렛 시장군",
+      "members": [
+        {
+          "brand_name": "가드렛",
+          "source_market": "strategy_003",
+          "atc4_set": ["A10N1"],
+          "member_status": "present",
+          "reason": null
+        },
+        {
+          "brand_name": "가드메트",
+          "source_market": "strategy_003",
+          "atc4_set": ["A10N3"],
+          "member_status": "present",
+          "reason": null
+        }
+      ]
+    },
     {
       "group_id": "livalo_family",
       "label": "리바로 시장군",

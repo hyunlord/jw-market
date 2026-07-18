@@ -24,6 +24,7 @@ CSD_ACTIVITY_SERIES_EXAMPLE: Final[JsonMap] = {
     "filters": {"atc4": ["C10A1"]},
     "entity_level": "brand",
     "csd_channel": "TOTAL",
+    "csd_market": "LIVALO",
     "period": {"start": "2024-Q1", "end": "2025-Q4"},
 }
 
@@ -40,6 +41,7 @@ class ParsedCsdActivityRequest:
     filter_payload: JsonMap
     entity_level: CsdEntityLevel
     csd_channel: str
+    csd_market: str | None
     selected_entities: tuple[str, ...]
     period: JsonMap
 
@@ -58,26 +60,30 @@ class CsdActivitySeriesRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    view: str = Field(description="분석 뷰. general 또는 strategic_ml.")
-    selected_brand: str = Field(description="강조/시장 결정 브랜드.")
+    view: str = Field(description="분석 뷰. general, strategic_ml 또는 strategic_cd.")
+    selected_brand: str | list[str] = Field(description="강조/시장 결정 브랜드. 문자열 또는 BFF 호환 문자열 배열.")
     filters: MarketFilter = Field(
         default_factory=MarketFilter,
         description="시장·차원 필터. nested ATC4와 IQVIA 분석레벨·audit_code 구조를 명시합니다.",
     )
     filter: MarketFilter = Field(default_factory=MarketFilter, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
-    entity_level: str = Field(default="brand", description="brand 또는 company. company면 representing_company 단위로 활동량을 합산합니다.")
+    entity_level: str = Field(
+        default="brand",
+        description="brand 또는 company. company면 선택 브랜드 활동량을 IQVIA mart 회사 기준으로 합산합니다.",
+    )
     csd_channel: str = Field(default="TOTAL", description="CSD 원본 jw_channel 값. TOTAL/GH/SHPPI/CPPI/GH+SHPPI.")
+    csd_market: str | None = Field(default=None, description="선택 CSD 시장. 미지정 시 매핑된 전체 시장과 합산을 반환합니다.")
     selected_entities: list[str] = Field(default_factory=list, max_length=MAX_ENTITIES, description="사용자 지정 브랜드/회사 최대 6개. 미지정 시 선택 + top5.")
     period: CsdActivitySeriesPeriod | None = Field(default=None, description="분기 window. 미지정 시 최신 1년, 최대 3년으로 제한.")
 
 
 def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityRequest:
     view = text(payload.get("view"))
-    if view not in {"general", "strategic_ml"}:
+    if view not in {"general", "strategic_ml", "strategic_cd"}:
         raise CsdActivitySeriesInputError(f"unsupported view: {view}")
     filter_payload = _filter_payload(payload)
     market_id = (_first_filter_value(filter_payload, "atc4") or None) if view == "general" else None
-    selected_brand = text(payload.get("selected_brand"))
+    selected_brand = _selected_brand(payload.get("selected_brand"))
     if not selected_brand or (view == "general" and not market_id and not _has_market_scope(filter_payload)):
         raise CsdActivitySeriesInputError("filters.atc4 and selected_brand are required")
     period = payload.get("period")
@@ -88,6 +94,7 @@ def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityReque
         filter_payload=filter_payload,
         entity_level=_typed_value(payload.get("entity_level"), ALLOWED_ENTITY_LEVELS, "entity_level", "brand"),
         csd_channel=_typed_value(payload.get("csd_channel"), ALLOWED_CHANNELS, "csd_channel", "TOTAL"),
+        csd_market=text(payload.get("csd_market")).strip() or None,
         selected_entities=_selected_entities(payload.get("selected_entities")),
         period=period if isinstance(period, dict) else {},
     )
@@ -111,6 +118,16 @@ def _selected_entities(value: Any) -> tuple[str, ...]:
             result.append(candidate)
             seen.add(candidate)
     return tuple(result[:MAX_ENTITIES])
+
+
+def _selected_brand(value: Any) -> str:
+    if isinstance(value, list | tuple):
+        for item in value:
+            candidate = text(item).strip()
+            if candidate:
+                return candidate
+        return ""
+    return text(value).strip()
 
 
 def _filter_payload(payload: Mapping[str, Any]) -> JsonMap:

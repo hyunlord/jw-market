@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.scripts.api.market_growth import compound_period_growth_pct
+from pipeline.scripts.api.market_growth import fixed_five_year_growth_series
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,19 +48,10 @@ def market_yoy_series(market_size: Mapping[str, float]) -> dict[str, float | Non
 
 
 def market_cmgr_series(market_size: Mapping[str, float], *, source: str) -> dict[str, float | None]:
-    """Return compound period growth against each exact prior-year period."""
+    """Return range-baseline CQGR/CMGR values for each period."""
 
-    periods_per_year = _expected_periods_per_year(source)
-    return {
-        period: compound_period_growth_pct(
-            market_size.get(_previous_year_period(period)),
-            value,
-            periods_per_year,
-        )
-        if _previous_year_period(period) in market_size
-        else None
-        for period, value in market_size.items()
-    }
+    results = fixed_five_year_growth_series(market_size, source=source)
+    return {period: results[period].value for period in market_size}
 
 
 def period_coverage(periods: tuple[str, ...], *, source: str) -> dict[str, Any]:

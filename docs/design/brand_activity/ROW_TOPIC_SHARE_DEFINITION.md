@@ -10,10 +10,19 @@ affected_rows(topic_id, brand, scope) / brand_total_rows(brand, scope) * 100
 
 The unit of judgment is an independent row-topic yes/no decision. A single keyword activity row may be assigned to multiple topics when it substantially conveys multiple concepts. Therefore topic shares are not mutually exclusive and their sum is not expected to equal 100%.
 
+`etc_pct` is a compatibility field computed after ranking and truncating the displayed axis topics:
+
+```text
+max(0, 100 - sum(share_pct for displayed top_n axis topics))
+```
+
+It is not an "other topic" share, an unassigned-row share, or the complement of a mutually exclusive distribution. Because the topic decisions overlap, the displayed topic sum may exceed 100%, in which case `etc_pct` is clipped to 0. It also changes when `top_n` changes because only the displayed axis topics are subtracted.
+
 Frontend wording:
 
 ```text
 share = 해당 토픽을 언급·전달한 활동 비율(중복 가능)
+etc_pct = 표시된 상위 토픽 비율 합을 100에서 차감한 호환값(기타·미분류 비율 아님)
 ```
 
 ## Prompt Policy

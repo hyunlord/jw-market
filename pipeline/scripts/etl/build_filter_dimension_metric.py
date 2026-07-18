@@ -31,6 +31,9 @@ from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.filter_dimension_metric import build_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
 from pipeline.etl.io.mart.filter_dimension_metric import summarize_dimension_rows
+from pipeline.etl.io.mart.filter_dimension_metric import validate_filter_dimension_market_coverage
+from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
+from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
 from pipeline.etl.io.mart.general_config import first_existing
 from pipeline.etl.io.mart.general_config import load_env
@@ -38,6 +41,7 @@ from pipeline.etl.io.mart.general_config import MEASURES_BY_SOURCE
 from pipeline.etl.io.mart.general_iqvia import iqvia_measure_frame
 from pipeline.etl.io.mart.general_iqvia import load_iqvia_base_frame
 from pipeline.etl.io.mart.general_ubist import load_ubist_base_frame
+from pipeline.etl.io.mart.general_ubist import iter_ubist_base_frames
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
 
 
@@ -73,8 +77,25 @@ def parse_args() -> argparse.Namespace:
         help="Permit target-db=jw_mart only when the connection host is localhost.",
     )
     parser.add_argument("--ubist-dir", type=Path, help="Raw UBIST parquet root. Defaults to S4_UBIST_DIR/output/ubist")
+    parser.add_argument("--spool-dir", type=Path, help="PVC-backed spill directory for bounded raw UBIST aggregation")
     parser.add_argument("--max-rows", type=int, default=None, help="Fast validation only; do not use for production evidence")
     parser.add_argument("--batch-size", type=int, default=200)
+    parser.add_argument(
+        "--dimension-type",
+        help="Build one enabled dimension only. F-046 uses molecule for the bounded UBIST rebuild.",
+    )
+    parser.add_argument("--promote-to", help="Approved shared serving schema for the bounded ubist/molecule promotion.")
+    parser.add_argument(
+        "--allow-shared-serving-target",
+        action="store_true",
+        help="Explicit PL gate for promoting only the ubist/molecule slice into --promote-to.",
+    )
+    parser.add_argument(
+        "--direct-shared-promotion",
+        action="store_true",
+        help="Compute the approved ubist/molecule slice fully before bounded direct promotion; creates no staging schema.",
+    )
+    parser.add_argument("--build-sha", default=os.environ.get("BUILD_GIT_SHA"), help="Code SHA recorded in provenance.")
     return parser.parse_args()
 
 
@@ -84,23 +105,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--batch-size must be <= 200 for Galera writeset safety")
     if args.ubist_dir:
         os.environ["S4_UBIST_DIR"] = str(args.ubist_dir)
+    if args.dimension_type and args.source != "ubist":
+        raise ValueError("--dimension-type is currently restricted to --source ubist")
+    if args.promote_to and not (args.allow_shared_serving_target and args.dimension_type == "molecule"):
+        raise ValueError("shared promotion requires --dimension-type molecule and explicit approval")
+    if args.promote_to and not args.build_sha:
+        raise ValueError("--build-sha is required for shared promotion provenance")
+    if args.direct_shared_promotion and not args.promote_to:
+        raise ValueError("--direct-shared-promotion requires --promote-to")
 
     started = time.perf_counter()
     conn = _connect_admin()
     try:
         if args.allow_local_serving_target:
             _guard_local_serving_target(conn, args.target_db)
-        if _schema_exists(conn, args.target_db) and not args.allow_local_serving_target:
+        if (
+            not args.direct_shared_promotion
+            and _schema_exists(conn, args.target_db)
+            and not args.allow_local_serving_target
+        ):
             raise RuntimeError(f"target schema already exists: {args.target_db}")
-        before_live = _general_table_counts(conn, "jw_mart")
-        create_filter_dimension_table(
-            conn,
-            args.target_db,
-            allow_local_serving_target=args.allow_local_serving_target,
-        )
+        serving_guard_schema = _serving_guard_schema(args)
+        before_live = _general_table_counts(conn, serving_guard_schema)
+        if not args.direct_shared_promotion:
+            create_filter_dimension_table(
+                conn,
+                args.target_db,
+                allow_local_serving_target=args.allow_local_serving_target,
+            )
 
         manifest: dict[str, Any] = {
             "target_db": args.target_db,
+            "serving_guard_schema": serving_guard_schema,
             "table": FILTER_DIMENSION_TABLE,
             "source": args.source,
             "policy": {
@@ -109,14 +145,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "local_serving_target_allowed": bool(args.allow_local_serving_target),
                 "batch_size": args.batch_size,
                 "iqvia_molecule_desc_dimension": "enabled",
-                "ubist_molecule_dimension": "disabled",
+                "ubist_molecule_dimension": "enabled_raw_unsplit",
                 "pack_desc": "disabled",
                 "grain": "product_level",
+                "direct_shared_promotion": bool(args.direct_shared_promotion),
+            },
+            "provenance": {
+                "code_sha": args.build_sha,
+                "source_epoch": _source_epoch(),
+                "ubist_dir": str(args.ubist_dir or os.environ.get("S4_UBIST_DIR") or ""),
             },
             "sources": {},
             "live_before": before_live,
         }
+        computed_rows: list[dict[str, Any]] = []
         for source in _selected_sources(args.source):
+            expected_markets_by_measure = (
+                _general_market_expectations(conn, serving_guard_schema, source)
+                if source == "ubist" and not args.dimension_type
+                else None
+            )
+            if args.direct_shared_promotion:
+                source_manifest, rows = _build_direct_source_rows(
+                    source,
+                    max_rows=args.max_rows,
+                    dimension_types={args.dimension_type} if args.dimension_type else None,
+                    spool_dir=args.spool_dir,
+                )
+                if expected_markets_by_measure is not None:
+                    _validate_source_market_coverage(
+                        source,
+                        rows,
+                        expected_markets_by_measure=expected_markets_by_measure,
+                        source_manifest=source_manifest,
+                    )
+                manifest["sources"][source] = source_manifest
+                computed_rows.extend(rows)
+                continue
             if args.copy_all_from:
                 manifest["sources"][source] = _copy_source_rows(
                     conn,
@@ -138,10 +203,42 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     source,
                     max_rows=args.max_rows,
                     batch_size=args.batch_size,
+                    dimension_types={args.dimension_type} if args.dimension_type else None,
+                    expected_markets_by_measure=expected_markets_by_measure,
                 )
 
-        manifest["target"] = _target_summary(conn, args.target_db)
-        manifest["live_after"] = _general_table_counts(conn, "jw_mart")
+        if args.direct_shared_promotion:
+            manifest["target"] = {
+                "row_count": len(computed_rows),
+                "storage": "computed_before_direct_promotion",
+            }
+        else:
+            manifest["target"] = _target_summary(conn, args.target_db)
+        if args.promote_to:
+            build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            if args.direct_shared_promotion:
+                manifest["promotion"] = promote_filter_dimension_rows(
+                    conn,
+                    computed_rows,
+                    target_db=args.promote_to,
+                    source="ubist",
+                    dimension_type="molecule",
+                    build_marker=build_marker,
+                    batch_size=args.batch_size,
+                    allow_shared_serving_target=args.allow_shared_serving_target,
+                )
+            else:
+                manifest["promotion"] = promote_filter_dimension_slice(
+                    conn,
+                    source_db=args.target_db,
+                    target_db=args.promote_to,
+                    source="ubist",
+                    dimension_type="molecule",
+                    build_marker=build_marker,
+                    batch_size=args.batch_size,
+                    allow_shared_serving_target=args.allow_shared_serving_target,
+                )
+        manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)
         _write_json(args.manifest_path, manifest)
@@ -156,6 +253,19 @@ def _selected_sources(source: str) -> tuple[str, ...]:
     return (source,)
 
 
+def _serving_guard_schema(args: argparse.Namespace) -> str:
+    """Check the schema that this run is allowed to affect."""
+
+    if args.promote_to:
+        return str(args.promote_to)
+    env_path = first_existing(
+        PROJECT_ROOT / "pipeline" / "docker" / ".env",
+        PROJECT_ROOT / "docker" / ".env",
+    )
+    env = load_env(env_path)
+    return str(env.get("MARIADB_DATABASE") or "jw_mart")
+
+
 def _load_source_rows(
     conn: pymysql.connections.Connection,
     target_db: str,
@@ -163,6 +273,8 @@ def _load_source_rows(
     *,
     max_rows: int | None,
     batch_size: int,
+    dimension_types: set[str] | None = None,
+    expected_markets_by_measure: dict[str, dict[str, tuple[str, float]]] | None = None,
 ) -> dict[str, Any]:
     if source == "ubist":
         base = load_ubist_base_frame(max_rows=max_rows)
@@ -179,13 +291,134 @@ def _load_source_rows(
     }
     for measure in MEASURES_BY_SOURCE[source]:
         frame = measure_frame(base, measure)
-        rows = build_filter_dimension_rows(source, measure, frame)
+        rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
+        period_gate = None
+        if expected_markets_by_measure is not None:
+            expectations = expected_markets_by_measure.get(measure, {})
+            validate_filter_dimension_market_coverage(
+                source,
+                rows,
+                expected_markets=expectations,
+            )
+            period_gate = _period_gate_summary(expectations)
         insert_filter_dimension_rows(conn, target_db, rows, batch_size=batch_size)
         source_manifest["measures"][measure] = {
             "input_rows": int(len(frame)),
             "sidecar": summarize_dimension_rows(rows),
+            "period_gate": period_gate,
         }
     return source_manifest
+
+
+def _build_direct_source_rows(
+    source: str,
+    *,
+    max_rows: int | None,
+    dimension_types: set[str] | None,
+    spool_dir: Path | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if source != "ubist":
+        raise ValueError("direct shared promotion is restricted to UBIST")
+    source_manifest: dict[str, Any] = {
+        "source_rows": 0,
+        "measures": {},
+    }
+    computed_rows: list[dict[str, Any]] = []
+    input_rows = {measure: 0 for measure in MEASURES_BY_SOURCE[source]}
+    rows_by_measure: dict[str, list[dict[str, Any]]] = {
+        measure: [] for measure in MEASURES_BY_SOURCE[source]
+    }
+    for base in iter_ubist_base_frames(max_rows=max_rows, spool_dir=spool_dir):
+        source_manifest["source_rows"] += int(len(base))
+        for measure in MEASURES_BY_SOURCE[source]:
+            frame = ubist_measure_frame(base, measure)
+            rows = build_filter_dimension_rows(source, measure, frame, dimension_types=dimension_types)
+            input_rows[measure] += int(len(frame))
+            rows_by_measure[measure].extend(rows)
+            computed_rows.extend(rows)
+    for measure in MEASURES_BY_SOURCE[source]:
+        source_manifest["measures"][measure] = {
+            "input_rows": input_rows[measure],
+            "sidecar": summarize_dimension_rows(rows_by_measure[measure]),
+        }
+    return source_manifest, computed_rows
+
+
+def _validate_source_market_coverage(
+    source: str,
+    rows: list[dict[str, Any]],
+    *,
+    expected_markets_by_measure: dict[str, dict[str, tuple[str, float]]],
+    source_manifest: dict[str, Any],
+) -> None:
+    for measure in MEASURES_BY_SOURCE[source]:
+        expectations = expected_markets_by_measure.get(measure, {})
+        measure_rows = [row for row in rows if row.get("measure") == measure]
+        validate_filter_dimension_market_coverage(
+            source,
+            measure_rows,
+            expected_markets=expectations,
+        )
+        source_manifest["measures"][measure]["period_gate"] = _period_gate_summary(expectations)
+
+
+def _general_market_expectations(
+    conn: pymysql.connections.Connection,
+    db_name: str,
+    source: str,
+) -> dict[str, dict[str, tuple[str, float]]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT atc4_code, measure, market_size_series
+            FROM {quote_id(db_name)}.mart_general_market_metric
+            WHERE source=%s
+            ORDER BY measure, atc4_code
+            """,
+            (source,),
+        )
+        rows = cur.fetchall()
+
+    expectations: dict[str, dict[str, tuple[str, float]]] = {}
+    for row in rows:
+        history = row.get("market_size_series")
+        if isinstance(history, str):
+            history = json.loads(history)
+        if not isinstance(history, dict) or not history:
+            continue
+        periods = sorted(str(period) for period, value in history.items() if value is not None)
+        if not periods:
+            continue
+        latest = periods[-1]
+        expectations.setdefault(str(row["measure"]), {})[str(row["atc4_code"])] = (
+            latest,
+            float(history[latest]),
+        )
+    if not expectations:
+        raise RuntimeError(
+            f"general market period reference is empty: db={db_name} source={source}"
+        )
+    return expectations
+
+
+def _period_gate_summary(expectations: dict[str, tuple[str, float]]) -> dict[str, Any]:
+    periods = sorted({period for period, _total in expectations.values()})
+    return {
+        "validated": True,
+        "market_count": len(expectations),
+        "periods": periods,
+    }
+
+
+def _source_epoch() -> str | None:
+    try:
+        from pipeline.scripts.api.dynamic_market.runtime_cache import dynamic_response_cache
+
+        return dynamic_response_cache._store.source_epoch()
+    except Exception as exc:
+        if os.environ.get("REQUIRE_SOURCE_EPOCH") == "1":
+            raise RuntimeError("source epoch is required for this build") from exc
+        return None
 
 
 def _copy_source_rows(

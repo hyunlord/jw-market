@@ -266,7 +266,7 @@ def _query_events(
             return []
 
     where = [
-        "COALESCE(s.brand_canonical, s.brand_name) = %s",
+        "s.brand_canonical = %s",
         "s.score >= %s",
     ]
     params: list[Any] = [brand, min_score]
@@ -332,10 +332,11 @@ def get_brand_events_cut_a(
     final_threshold: int | None = None
 
     for lookback_months in lookback_candidates:
+        rows = _query_events(conn, brand, min_score=50, lookback_months=lookback_months, limit=None)
         threshold = 50
         while threshold >= 0:
-            rows = _query_events(conn, brand, min_score=threshold, lookback_months=lookback_months, limit=None)
-            exposed_rows = _filter_news_exposure_rows(rows)[:target_max]
+            threshold_rows = [row for row in rows if int(row.get("score") or 0) >= threshold]
+            exposed_rows = _filter_news_exposure_rows(threshold_rows)[:target_max]
             formatted = [
                 format_event(row, cut_threshold=max(threshold, _news_cutoff(row)))
                 for row in exposed_rows
@@ -343,6 +344,8 @@ def get_brand_events_cut_a(
             if (len(formatted) >= target_min and _cut_a_unique_cluster_count(formatted) >= target_min) or threshold == 0:
                 break
             threshold -= 1
+            if threshold == 49:
+                rows = _query_events(conn, brand, min_score=0, lookback_months=lookback_months, limit=None)
 
         final_lookback = lookback_months
         final_threshold = threshold
@@ -356,17 +359,23 @@ def get_brand_events_cut_b(
     conn: pymysql.connections.Connection,
     brand: str,
     *,
-    lookback_months: int | None = 6,
+    lookback_months: int | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Cut B: processor-versioned direct-only chart/model events."""
+    """Cut B: processor-versioned chart/model events across all derivations.
+
+    Score is the only membership criterion: the derivation restriction and the
+    six-month lookback were removed so exposed news from any derivation and any
+    period can qualify. ``min_score=80`` is a SQL pushdown equal to the lowest
+    versioned Cut B threshold; the authoritative per-processor cut stays in
+    :func:`_filter_cut_b_rows`.
+    """
     rows = _query_events(
         conn,
         brand,
         min_score=80,
         lookback_months=lookback_months,
         limit=None,
-        derivation="llm_direct",
     )
     exposed_rows = _filter_cut_b_rows(rows)
     if limit is not None:
@@ -422,7 +431,8 @@ def build_events_for_cache(conn: pymysql.connections.Connection, brand: str) -> 
             "cut_a_final_lookback_months": cut_a_final_lookback,
             "cut_b_threshold": 80,
             "cut_b_threshold_rev5674": 88,
-            "cut_b_derivation": "llm_direct",
+            "cut_b_derivation": None,
+            "cut_b_lookback_months": None,
         },
     }
 

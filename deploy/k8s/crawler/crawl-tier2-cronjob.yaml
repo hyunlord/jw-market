@@ -1,79 +1,252 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: jw-news-crawl-tier2-daily-slice
-  namespace: llmops
   labels:
     app: jw-news-crawl
-    crawl-tier: "2"
+    crawl-tier: '2'
+  name: jw-news-crawl-tier2-daily-slice
+  namespace: llmops
 spec:
-  # Keep suspended until PL approves the first large production run.
-  suspend: true
-  schedule: "40 18 * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
+    metadata: {}
     spec:
       backoffLimit: 1
       template:
         metadata:
+          annotations:
+            sidecar.istio.io/inject: 'false'
           labels:
             app: jw-news-crawl
-            crawl-tier: "2"
+            crawl-tier: '2'
         spec:
-          restartPolicy: Never
           containers:
-            - name: crawler
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:crawl-2tier-REPLACE_WITH_TAG
-              imagePullPolicy: IfNotPresent
-              resources:
-                requests:
-                  cpu: "500m"
-                  memory: "1Gi"
-                limits:
-                  cpu: "1"
-                  memory: "2Gi"
-              env:
-                - name: DB_HOST
-                  value: llmops-mariadb-service.llmops.svc.cluster.local
-                - name: DB_PORT
-                  value: "3306"
-                - name: DB_USER
-                  value: llmops
-                - name: DB_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: galera-mariadb-galera
-                      key: mariadb-password
-                - name: DB_NAME
-                  value: jw_mart_d1_stage_20260625_173115
-              command: ["/bin/sh", "-lc"]
-              args:
-                - |
-                  set -euo pipefail
-                  WORK=/tmp/jw-news-crawl/tier2/$(date +%Y%m%d)
-                  WEEKDAY=$(python -c 'from datetime import datetime; print(datetime.now().weekday())')
-                  python -m pipeline.scripts.crawler.crawl_2tier \
-                    --tier 2 \
-                    --run-crawl \
-                    --score \
-                    --weekday-slice "$WEEKDAY" \
-                    --days 7 \
-                    --max-pages-per-site 3 \
-                    --max-links-per-page 80 \
-                    --delay-sec 2 \
-                    --output-dir "$WORK/raw" \
-                    --processed-dir "$WORK/processed" \
-                    --brand-plan-output "$WORK/tier2_brand_plan.json"
-                  python -m pipeline.scripts.agent_2.corpus_loader \
-                    --corpus "$WORK/processed" \
-                    --catalog docs/crawl/_catalog.json \
-                    --output "$WORK/load_summary.json" \
-                    --db-name jw_mart \
-                    --tier 2 \
-                    --processed-by tier2_exact_rule_v1
-                  python -m pipeline.scripts.crawler.crawl_retention \
-                    --db-name jw_mart \
-                    --retention-days 365 \
-                    --apply
+          - args:
+            - |
+              set -euo pipefail
+              WORK=/tmp/jw-news-crawl/tier2/$(date +%Y%m%d)
+              RAW="$WORK/raw"
+              SCORED="$WORK/processed"
+              SCORED_NEW="$WORK/processed_new"
+              WEEKDAY=$(python -c 'from datetime import datetime; print(datetime.now().weekday())')
+              export WORK RAW SCORED SCORED_NEW
+              mkdir -p "$RAW" "$SCORED" "$SCORED_NEW"
+              python - <<'PY_PRESEED'
+              import os
+              from pathlib import Path
+              import pymysql
+
+              raw = Path(os.environ["RAW"])
+              conn = pymysql.connect(
+                  host=os.environ["DB_HOST"],
+                  port=int(os.environ.get("DB_PORT", "3306")),
+                  user=os.environ["DB_USER"],
+                  password=os.environ["DB_PASSWORD"],
+                  database=os.environ.get("DB_NAME", "jw_mart_d2_stage_20260630_r2"),
+                  charset="utf8mb4",
+                  cursorclass=pymysql.cursors.Cursor,
+              )
+              try:
+                  with conn.cursor() as cur:
+                      cur.execute("SELECT DISTINCT article_url FROM news_raw WHERE article_url IS NOT NULL AND article_url <> ''")
+                      urls = [row[0] for row in cur.fetchall() if row and row[0]]
+              finally:
+                  conn.close()
+              (raw / "scraped_urls.txt").write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+              print(f"PRESEED_URL_COUNT={len(urls)}")
+              PY_PRESEED
+              python crawl/crawler/crawl_2tier.py \
+                --tier 2 \
+                --run-crawl \
+                --score \
+                --weekday-slice "$WEEKDAY" \
+                --days 7 \
+                --tier2-concurrent-sites 4 \
+                --max-pages-per-site 3 \
+                --max-links-per-page 80 \
+                --delay-sec 5 \
+                --output-dir "$RAW" \
+                --processed-dir "$SCORED" \
+                --brand-plan-output "$WORK/tier2_brand_plan.json"
+              python - <<'PY_RAW_COUNT'
+              import os
+              from pathlib import Path
+
+              raw = Path(os.environ["RAW"])
+              article_files = [
+                  path
+                  for path in raw.rglob("*.json")
+                  if path.name not in {"crawl_report.json", "tier2_brand_plan.json", "tier2_site_report.json"}
+                  and not path.name.endswith("_report.json")
+              ]
+              print(f"CRAWL_ARTICLE_FILE_COUNT={len(article_files)}")
+              if not article_files:
+                  print("TIER2_DAILY_NOOP=no raw articles")
+                  Path(os.environ["WORK"], "NO_NEW_RAW").write_text("1\n", encoding="utf-8")
+              PY_RAW_COUNT
+              if [ -f "$WORK/NO_NEW_RAW" ]; then
+                exit 0
+              fi
+              python - <<'PY_DUP_GATE'
+              import json
+              import os
+              import shutil
+              import sys
+              from pathlib import Path
+              import pymysql
+
+              sys.path[:0] = ["/app/crawl/agent1"]
+              from corpus_loader_v2 import generate_news_id, read_json, resolve_news_path, scored_files
+
+              raw = Path(os.environ["RAW"])
+              scored = Path(os.environ["SCORED"])
+              scored_new = Path(os.environ["SCORED_NEW"])
+              files = scored_files(raw, scored)
+              items = []
+              seen = {}
+              duplicate_within = []
+              for scored_path in files:
+                  scored_json = read_json(scored_path)
+                  source_path = resolve_news_path(raw, scored_path, scored_json)
+                  news = read_json(source_path)
+                  news_id = generate_news_id(news, source_path, scored_json)
+                  rel = scored_path.relative_to(scored)
+                  if news_id in seen:
+                      duplicate_within.append({"news_id": news_id, "first": str(seen[news_id]), "second": str(rel)})
+                  else:
+                      seen[news_id] = rel
+                  items.append({"news_id": news_id, "rel": str(rel), "scored_path": str(scored_path)})
+              if duplicate_within:
+                  raise SystemExit("ABORT: duplicate candidate IDs within batch: " + json.dumps(duplicate_within[:10], ensure_ascii=False))
+              existing = set()
+              conn = pymysql.connect(
+                  host=os.environ["DB_HOST"],
+                  port=int(os.environ.get("DB_PORT", "3306")),
+                  user=os.environ["DB_USER"],
+                  password=os.environ["DB_PASSWORD"],
+                  database=os.environ.get("DB_NAME", "jw_mart_d2_stage_20260630_r2"),
+                  charset="utf8mb4",
+                  cursorclass=pymysql.cursors.DictCursor,
+              )
+              try:
+                  with conn.cursor() as cur:
+                      for i in range(0, len(items), 200):
+                          batch = [item["news_id"] for item in items[i:i + 200]]
+                          if not batch:
+                              continue
+                          placeholders = ",".join(["%s"] * len(batch))
+                          cur.execute(f"SELECT news_id FROM news_raw WHERE news_id IN ({placeholders})", batch)
+                          existing.update(row["news_id"] for row in cur.fetchall())
+              finally:
+                  conn.close()
+              new_count = 0
+              for item in items:
+                  if item["news_id"] in existing:
+                      continue
+                  src = Path(item["scored_path"])
+                  dst = scored_new / item["rel"]
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(src, dst)
+                  new_count += 1
+              summary = {
+                  "candidate_count": len(items),
+                  "candidate_unique_count": len(seen),
+                  "existing_count": len(existing),
+                  "new_count": new_count,
+                  "filtered_scored_dir": str(scored_new),
+              }
+              Path(os.environ["WORK"], "candidate_gate.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+              print("CANDIDATE_GATE=" + json.dumps(summary, ensure_ascii=False, sort_keys=True))
+              if new_count <= 0:
+                  print("NO_NEW_CANDIDATES_AFTER_GATE=1")
+                  Path(os.environ["WORK"], "NO_NEW_CANDIDATES_AFTER_GATE").write_text("1\n", encoding="utf-8")
+                  raise SystemExit(0)
+              PY_DUP_GATE
+              if [ -f "$WORK/NO_NEW_CANDIDATES_AFTER_GATE" ]; then
+                echo "TIER2_DAILY_NOOP=no new candidates after duplicate gate"
+                exit 0
+              fi
+              python crawl/agent1/corpus_loader_v2.py \
+                --batch-dir "$RAW" \
+                --scored-dir "$SCORED_NEW" \
+                --catalog crawl/config/_catalog.json \
+                --output "$WORK/load_summary.json" \
+                --db-name "$DB_NAME" \
+                --tier 2 \
+                --processed-by tier2_exact_rule_v1
+              python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw \
+                --retries 1
+              python /opt/tier2/tier2_full_scoring_runner.py append-live \
+                --source-processor tier2_exact_rule_v1 \
+                --target-processor tier2_llm_v2_rev5671 \
+                --workflow-url "$WF337_URL" \
+                --daily-call-limit 60 \
+                --max-cost-krw 203.40
+              # Category refresh must follow append-live and must not be
+              # skippable: under set -euo pipefail this line only runs after a
+              # successful append, and its own failure fails the Job (the
+              # missing invocation was the tier2 category gap - audit dd41f8aa).
+              python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories
+            command:
+            - /bin/sh
+            - -lc
+            env:
+            - name: DB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: DB_PORT
+              value: '3306'
+            - name: WF337_URL
+              value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
+            - name: D2_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: D2_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+            - name: DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
+            imagePullPolicy: IfNotPresent
+            name: crawler
+            volumeMounts:
+            - mountPath: /opt/tier2
+              name: tier2-llm-runner
+              readOnly: true
+            resources:
+              limits:
+                cpu: '1'
+                memory: 2Gi
+              requests:
+                cpu: 500m
+                memory: 1Gi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            genos: enabled
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          terminationGracePeriodSeconds: 30
+          volumes:
+          - configMap:
+              name: tier2-llm-runner-rev5671
+            name: tier2-llm-runner
+  schedule: 40 18 * * *
+  successfulJobsHistoryLimit: 3
+  suspend: false

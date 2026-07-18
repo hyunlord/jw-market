@@ -86,7 +86,7 @@ def test_default_config_uses_full_brand_monthly_params(monkeypatch: pytest.Monke
     config = topic_monthly_job._config_from_env()
 
     assert config.max_real_calls == 350
-    assert config.brands_per_market == 10000
+    assert config.brands_per_market is None
     assert config.large_market_limit == 0
 
 

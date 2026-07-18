@@ -51,16 +51,19 @@ TARGET_LABEL_REWRITE_ANCHOR = '''    target_customer_competition_by_channel = _t
         target_name=brand_row.get("brand_name"),
         periods=periods,
         channels=target_customer_channels,
+        series_value_cache=analysis_series_value_cache,
+        channel_rows_cache=analysis_channel_rows_cache,
+        rank_series_cache=analysis_rank_series_cache,
     )
 '''
 
-ALMS_LABEL_REWRITE_ANCHOR = '''        if not include_all_d3_options:
-            clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
+ALMS_LABEL_REWRITE_ANCHOR = '''            if not include_all_d3_options:
+                clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
 
 '''
 
-ALMS_LABEL_REWRITE_BLOCK = '''        if not include_all_d3_options:
-            clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
+ALMS_LABEL_REWRITE_BLOCK = '''            if not include_all_d3_options:
+                clone_analysis_levels = _trim_analysis_levels(clone_analysis_levels)
         if source_api == "UBIST" and isinstance(ubist_channel_context, dict):
             target_label_map = ubist_channel_context.get("target_channel_label_map")
             if isinstance(target_label_map, dict) and target_label_map:
@@ -82,6 +85,9 @@ TARGET_LABEL_REWRITE_BLOCK = '''    target_customer_competition_by_channel = _ta
         target_name=brand_row.get("brand_name"),
         periods=periods,
         channels=target_customer_channels,
+        series_value_cache=analysis_series_value_cache,
+        channel_rows_cache=analysis_channel_rows_cache,
+        rank_series_cache=analysis_rank_series_cache,
     )
     if source_api == "UBIST" and isinstance(ubist_channel_context, dict):
         target_label_map = ubist_channel_context.get("target_channel_label_map")

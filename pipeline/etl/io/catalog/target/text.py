@@ -102,7 +102,7 @@ def ubist_customer_label(channel: Any, specialty: Any) -> str:
         suffix = "Nephro"
     elif "혈액종양" in specialty_text:
         suffix = "Hemato"
-    elif "일반의" in specialty_text or "가정의학" in specialty_text or specialty_text == "내과(IM)":
+    elif "일반의" in specialty_text or "가정의학" in specialty_text:
         suffix = "IGF"
     elif "정형" in specialty_text:
         suffix = "OS"

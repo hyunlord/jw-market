@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from typing import Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -12,15 +13,51 @@ class BrandMetadata:
     market_label_kor: str
     mkt_team: str | None
     sources: list[str]
-    atc_codes: list[str]
     atc_desc: str
     is_jw: bool
     is_target: bool
     is_dual_source: bool
     rank: int
 
-    def to_response(self) -> dict:
-        return asdict(self)
+    def to_response(self, *, atc_codes: list[str]) -> dict[str, object]:
+        return {
+            "brand": self.brand,
+            "market_id": self.market_id,
+            "market_name": self.market_name,
+            "market_name_short": self.market_name_short,
+            "market_label_kor": self.market_label_kor,
+            "mkt_team": self.mkt_team,
+            "sources": list(self.sources),
+            "atc_codes": list(atc_codes),
+            "atc_desc": self.atc_desc,
+            "is_jw": self.is_jw,
+            "is_target": self.is_target,
+            "is_dual_source": self.is_dual_source,
+            "rank": self.rank,
+        }
+
+
+def build_brand_metadata_payload(
+    atc_codes_by_market: Mapping[str, Sequence[str]],
+) -> list[dict[str, object]]:
+    missing = sorted(
+        {meta.market_id for meta in BRAND_METADATA} - atc_codes_by_market.keys()
+    )
+    if missing:
+        raise ValueError(f"brand metadata markets missing from ml market catalog: {missing}")
+    empty = sorted(
+        {
+            meta.market_id
+            for meta in BRAND_METADATA
+            if not atc_codes_by_market[meta.market_id]
+        }
+    )
+    if empty:
+        raise ValueError(f"brand metadata markets have empty ATC codes: {empty}")
+    return [
+        meta.to_response(atc_codes=list(atc_codes_by_market[meta.market_id]))
+        for meta in BRAND_METADATA
+    ]
 
 
 BRAND_METADATA: tuple[BrandMetadata, ...] = (
@@ -32,7 +69,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="위궤양/PPI",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["A2B2"],
         atc_desc="PROTON PUMP INHIBITORS (PPI)",
         is_jw=True,
         is_target=True,
@@ -47,7 +83,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="위궤양/PPI",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["A2B2"],
         atc_desc="PROTON PUMP INHIBITORS (PPI)",
         is_jw=True,
         is_target=False,
@@ -62,7 +97,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="장정결",
         mkt_team="MKT 1팀",
         sources=["IQVIA"],
-        atc_codes=["A06B1", "A06B2"],
         atc_desc="OSMOTIC BOWEL CLEANSERS",
         is_jw=True,
         is_target=True,
@@ -77,22 +111,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="당뇨",
         mkt_team="MKT 1팀",
         sources=["UBIST", "IQVIA"],
-        atc_codes=[
-            "A10N1",
-            "A10N3",
-            "A10S0",
-            "A10P1",
-            "A10C5",
-            "A10P3",
-            "A10J1",
-            "A10H0",
-            "A10C3",
-            "A10K1",
-            "A10C1",
-            "A10C9",
-            "A10P5",
-            "A10P9",
-        ],
         atc_desc="DPP-IV INH A-DIAB PLAIN (OAD 시장)",
         is_jw=True,
         is_target=True,
@@ -107,22 +125,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="당뇨",
         mkt_team="MKT 1팀",
         sources=["UBIST", "IQVIA"],
-        atc_codes=[
-            "A10N1",
-            "A10N3",
-            "A10S0",
-            "A10P1",
-            "A10C5",
-            "A10P3",
-            "A10J1",
-            "A10H0",
-            "A10C3",
-            "A10K1",
-            "A10C1",
-            "A10C9",
-            "A10P5",
-            "A10P9",
-        ],
         atc_desc="DPP-IV INH A-DIAB PLAIN (OAD 시장)",
         is_jw=True,
         is_target=False,
@@ -137,7 +139,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="혈소판",
         mkt_team="MKT 1팀",
         sources=["IQVIA"],
-        atc_codes=["B02E1", "B02E9"],
         atc_desc="PLATELET-ENHAN PRDS OTH",
         is_jw=True,
         is_target=True,
@@ -152,7 +153,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="협심증",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["C01D0"],
         atc_desc="CORONARY THERAPY",
         is_jw=True,
         is_target=True,
@@ -167,7 +167,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="고지혈증",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["C10A1", "C10C0", "C10C"],
         atc_desc="STATINS (HMG-COA RED) + 복합제제",
         is_jw=True,
         is_target=True,
@@ -182,7 +181,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="고지혈증",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["C10A1", "C10C0", "C10C"],
         atc_desc="STATINS (HMG-COA RED) + 복합제제",
         is_jw=True,
         is_target=False,
@@ -197,7 +195,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="고지혈증/복합",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["C10C", "C10A2", "C10B"],
         atc_desc="LIP.REG.CO.W.OTH.LIP.REG (지질조절제 복합)",
         is_jw=True,
         is_target=True,
@@ -212,21 +209,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="고혈압/복합",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=[
-            "C11A1",
-            "C9C",
-            "C9D1",
-            "C9D3",
-            "C8A",
-            "C7A",
-            "C3A1",
-            "C3A2",
-            "C3A3",
-            "C7B1",
-            "C9A",
-            "C9B1",
-            "C9B3",
-        ],
         atc_desc="심혈관 다중요법 복합제 + 고혈압",
         is_jw=True,
         is_target=True,
@@ -241,21 +223,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="고혈압/복합",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=[
-            "C11A1",
-            "C9C",
-            "C9D1",
-            "C9D3",
-            "C8A",
-            "C7A",
-            "C3A1",
-            "C3A2",
-            "C3A3",
-            "C7B1",
-            "C9A",
-            "C9B1",
-            "C9B3",
-        ],
         atc_desc="심혈관 다중요법 복합제 + 고혈압",
         is_jw=True,
         is_target=False,
@@ -270,7 +237,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="전립선비대증",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["G04C2", "G04C3", "G4C4", "G4C9", "G4D4"],
         atc_desc="BPH (전립선비대증)",
         is_jw=True,
         is_target=True,
@@ -285,7 +251,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="전립선비대증",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["G04C2", "G04C3", "G4C4", "G4C9", "G4D4"],
         atc_desc="BPH (전립선비대증)",
         is_jw=True,
         is_target=False,
@@ -300,7 +265,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="전립선비대증",
         mkt_team="MKT 1팀",
         sources=["UBIST"],
-        atc_codes=["G04C2", "G04C3", "G4C4", "G4C9", "G4D4"],
         atc_desc="BPH (전립선비대증)",
         is_jw=True,
         is_target=False,
@@ -315,7 +279,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="G-CSF",
         mkt_team="MKT 1팀",
         sources=["IQVIA"],
-        atc_codes=["L03A1", "L03A9"],
         atc_desc="COLONY-STIMULATING FACT (G-CSF)",
         is_jw=True,
         is_target=True,
@@ -330,7 +293,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="G-CSF",
         mkt_team="MKT 1팀",
         sources=["IQVIA"],
-        atc_codes=["L03A1", "L03A9"],
         atc_desc="COLONY-STIMULATING FACT (G-CSF)",
         is_jw=True,
         is_target=False,
@@ -345,7 +307,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="항류마티스",
         mkt_team="MKT 1팀",
         sources=["IQVIA"],
-        atc_codes=["M01C0"],
         atc_desc="SPEC ANTIRHEUMATIC AGENT",
         is_jw=True,
         is_target=True,
@@ -360,7 +321,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="철결핍",
         mkt_team="MKT 2팀",
         sources=["IQVIA"],
-        atc_codes=["B03A1", "B03A2"],
         atc_desc="IRON PLAIN + COMBINATION",
         is_jw=True,
         is_target=True,
@@ -375,7 +335,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="철결핍",
         mkt_team="MKT 2팀",
         sources=["IQVIA"],
-        atc_codes=["B03A1", "B03A2"],
         atc_desc="IRON PLAIN + COMBINATION",
         is_jw=True,
         is_target=False,
@@ -390,7 +349,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="혈우병",
         mkt_team="MKT 2팀",
         sources=["IQVIA"],
-        atc_codes=["B02D1", "B02D3"],
         atc_desc="FACTOR VIII INCL SUBSTIT",
         is_jw=True,
         is_target=True,
@@ -405,7 +363,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="TPN",
         mkt_team="MKT 3팀",
         sources=["IQVIA"],
-        atc_codes=["K01D2", "K01E", "K01D"],
         atc_desc="FAT EMULSIONS,COMBINAT (TPN)",
         is_jw=True,
         is_target=True,
@@ -420,7 +377,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="TPN",
         mkt_team="MKT 3팀",
         sources=["IQVIA"],
-        atc_codes=["K01D2", "K01E", "K01D"],
         atc_desc="FAT EMULSIONS,COMBINAT (TPN)",
         is_jw=True,
         is_target=False,
@@ -435,7 +391,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="영양제",
         mkt_team="MKT 2팀",
         sources=["IQVIA", "UBIST"],
-        atc_codes=["V06D0"],
         atc_desc="OTHER GENERAL NUTRIENTS",
         is_jw=True,
         is_target=True,
@@ -450,7 +405,6 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         market_label_kor="전해질",
         mkt_team="MKT 3팀",
         sources=["IQVIA"],
-        atc_codes=["K01A3", "K01A1"],
         atc_desc="1/2-ELECTROLYTE SOLUTIONS",
         is_jw=True,
         is_target=True,

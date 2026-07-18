@@ -8,9 +8,9 @@ raw Korean channel/specialty labels whenever raw data provides them.
 from __future__ import annotations
 
 try:
-    from .ubist_channel_mapping import INTERNAL_MEDICINE_DETAIL_SPECIALTIES
+    from ..ubist_specialties import detail_specialty_labels
 except ModuleNotFoundError:  # pragma: no cover - direct script execution path
-    from .ubist_channel_mapping import INTERNAL_MEDICINE_DETAIL_SPECIALTIES
+    from pipeline.etl.io.ubist_specialties import detail_specialty_labels
 
 from pipeline.scripts.utils.ubist_target_channel_mapping import (
     OTHERS_SPECIALTY,
@@ -35,7 +35,7 @@ SPECIALTY_CODE_TO_RAW = {
     # 풀 때만 쓰이며 headline 시장총합/MS/순위/HHI 계산식에는 들어가지 않는다.
     # 기각 대안: 별도 ``IM`` target code를 유지하면 화면에 독립 내과 채널이
     # 되살아나 PL 결정과 충돌한다.
-    "IGF": ["가정의학과(FM)", "일반의(GP)", *INTERNAL_MEDICINE_DETAIL_SPECIALTIES],
+    "IGF": ["가정의학과(FM)", "일반의(GP)", *detail_specialty_labels()],
     "Cardio": ["순환기(Cardiology IM)"],
     "GI": ["소화기(Gastroenterology IM)"],
     "Endo": ["내분비(Endocrinology IM)"],

@@ -122,6 +122,10 @@ def fetch_detailing_rows(query: DetailingQuery) -> list[JsonMap]:
 def _market_clause(view: ViewConfig, market_id: str, product_codes: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     if product_codes:
         placeholders = ", ".join(["%s"] * len(product_codes))
-        market_key = view.market_key.replace("atc4_code", "therapeutic_class").replace("ml_id", "therapeutic_class")
+        market_key = (
+            view.market_key.replace("atc4_code", "therapeutic_class")
+            .replace("ml_id", "therapeutic_class")
+            .replace("cd_market_id", "therapeutic_class")
+        )
         return f"({market_key} = %s OR product_name IN ({placeholders}))", (market_id, *product_codes)
     return "therapeutic_class = %s", (market_id,)

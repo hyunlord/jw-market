@@ -14,12 +14,14 @@ from contextlib import contextmanager
 import copy
 from collections import defaultdict
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import math
 from pathlib import Path
 import random
 import re
+import threading
 from typing import Any, Final, Iterator
 import warnings
 
@@ -29,7 +31,6 @@ import statsmodels.api as sm
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 from pipeline.scripts.etl.cache_build_common import (
-    CANONICAL_25,
     decode_json,
     fetch_all,
     metric_recent,
@@ -57,20 +58,43 @@ UNIT_LABELS = {
 
 _FORECAST_ENTRY_CACHE: dict[tuple[Any, str, str, int], dict[str, Any]] = {}
 _MARKET_FORECAST_CACHE: dict[tuple[tuple[Any, ...], str, int], dict[str, Any]] = {}
-FORECAST_RANDOM_SEED: Final = 1729
+FORECAST_RNG_NAMESPACE: Final = "forecast_rng_v2"
+_PROPHET_RNG_LOCK = threading.Lock()
+
+
+def _stable_forecast_seed(identity: tuple[Any, ...]) -> int:
+    digest = hashlib.sha256()
+    for component in (FORECAST_RNG_NAMESPACE, *identity):
+        encoded = str(component).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+    return int.from_bytes(digest.digest()[:16], byteorder="big")
+
+
+def _forecast_rng(
+    identity: tuple[Any, ...],
+    spec: ModelSpec,
+    steps: int,
+    phase: str,
+) -> np.random.Generator:
+    seed = _stable_forecast_seed((*identity, spec.name, spec.variant, steps, phase))
+    return np.random.Generator(np.random.PCG64(seed))
 
 
 @contextmanager
-def _forecast_seed() -> Iterator[None]:
-    np_state = np.random.get_state()
-    random_state = random.getstate()
-    np.random.seed(FORECAST_RANDOM_SEED)
-    random.seed(FORECAST_RANDOM_SEED)
-    try:
-        yield
-    finally:
-        np.random.set_state(np_state)
-        random.setstate(random_state)
+def _prophet_global_rng(seed: int) -> Iterator[None]:
+    # Prophet 1.3.0 samples uncertainty through np.random's global API.
+    with _PROPHET_RNG_LOCK:
+        np_state = np.random.get_state()
+        random_state = random.getstate()
+        seed32 = seed % (2**32 - 1)
+        np.random.seed(seed32)
+        random.seed(seed32)
+        try:
+            yield
+        finally:
+            np.random.set_state(np_state)
+            random.setstate(random_state)
 
 
 @dataclass(frozen=True)
@@ -378,7 +402,13 @@ def _native_95_ci(point: np.ndarray | list[float], lower: np.ndarray | list[floa
     }
 
 
-def _fit_prophet(periods: list[str], values: list[float], source: str, steps: int) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
+def _fit_prophet(
+    periods: list[str],
+    values: list[float],
+    source: str,
+    steps: int,
+    seed: int,
+) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     if SOURCE_TO_INTERNAL[source] != "ubist":
         raise RuntimeError("Prophet path is monthly-only in Phase 30")
     from prophet import Prophet
@@ -397,8 +427,8 @@ def _fit_prophet(periods: list[str], values: list[float], source: str, steps: in
             uncertainty_samples=1000,
             interval_width=0.95,
         )
-        with _forecast_seed():
-            model.fit(df)
+        model.fit(df, seed=seed % (2**32 - 1))
+        with _prophet_global_rng(seed):
             in_sample = model.predict(df)["yhat"].to_numpy(dtype=float)
             future = model.make_future_dataframe(periods=steps, freq="MS", include_history=False)
             forecast = model.predict(future)
@@ -452,7 +482,13 @@ def _fit_sarimax(values: list[float], source: str, steps: int, spec: ModelSpec) 
     }
 
 
-def _fit_holtwinters(values: list[float], source: str, steps: int, spec: ModelSpec) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
+def _fit_holtwinters(
+    values: list[float],
+    source: str,
+    steps: int,
+    spec: ModelSpec,
+    rng: np.random.Generator,
+) -> tuple[list[float], dict[str, Any], float, dict[str, Any]]:
     season = steps_per_year(source)
     seasonal = "add" if len(values) >= season * 2 else None
     seasonal_periods = season if seasonal else None
@@ -471,13 +507,18 @@ def _fit_holtwinters(values: list[float], source: str, steps: int, spec: ModelSp
     fitted = np.asarray(result.fittedvalues, dtype=float)
     residual_std = _residual_std(np.asarray(values, dtype=float), fitted)
     try:
-        with _forecast_seed():
-            simulations = result.simulate(
-                steps,
-                anchor="end",
-                repetitions=1000,
-                random_errors="bootstrap",
-            )
+        bootstrap_residuals = np.asarray(result.model._y, dtype=float) - fitted
+        random_errors = rng.choice(
+            bootstrap_residuals,
+            size=(steps, 1000),
+            replace=True,
+        )
+        simulations = result.simulate(
+            steps,
+            anchor="end",
+            repetitions=1000,
+            random_errors=random_errors,
+        )
         sim_arr = np.asarray(simulations, dtype=float)
         if sim_arr.ndim == 1:
             sim_arr = sim_arr.reshape(steps, 1)
@@ -542,8 +583,15 @@ def _fit_mean(values: list[float], steps: int) -> tuple[list[float], dict[str, A
     }
 
 
-def _fit_values(periods: list[str], values: list[float], source: str, steps: int) -> dict[str, Any]:
+def _fit_values(
+    periods: list[str],
+    values: list[float],
+    source: str,
+    steps: int,
+    rng_identity: tuple[Any, ...],
+) -> dict[str, Any]:
     spec = select_model(len(values), source)
+    rng = _forecast_rng(rng_identity, spec, steps, "primary")
     warnings_list: list[str] = []
     if not values:
         point, ci, residual_std, actual_model = _fit_mean([0.0], steps)
@@ -551,11 +599,17 @@ def _fit_values(periods: list[str], values: list[float], source: str, steps: int
     else:
         try:
             if spec.name == "Prophet":
-                point, ci, residual_std, actual_model = _fit_prophet(periods, values, source, steps)
+                point, ci, residual_std, actual_model = _fit_prophet(
+                    periods,
+                    values,
+                    source,
+                    steps,
+                    _stable_forecast_seed((*rng_identity, spec.name, spec.variant, steps, "primary")),
+                )
             elif spec.name == "SARIMAX":
                 point, ci, residual_std, actual_model = _fit_sarimax(values, source, steps, spec)
             elif spec.name == "HoltWinters":
-                point, ci, residual_std, actual_model = _fit_holtwinters(values, source, steps, spec)
+                point, ci, residual_std, actual_model = _fit_holtwinters(values, source, steps, spec, rng)
             elif spec.name == "Linear":
                 point, ci, residual_std, actual_model = _fit_linear(values, steps)
             else:
@@ -564,7 +618,14 @@ def _fit_values(periods: list[str], values: list[float], source: str, steps: int
             warnings_list.append(f"{spec.name.lower()}_fit_failed_fallback:{type(exc).__name__}")
             try:
                 if len(values) >= 20:
-                    point, ci, residual_std, actual_model = _fit_holtwinters(values, source, steps, select_model(20, source))
+                    fallback_spec = select_model(20, source)
+                    point, ci, residual_std, actual_model = _fit_holtwinters(
+                        values,
+                        source,
+                        steps,
+                        fallback_spec,
+                        _forecast_rng(rng_identity, fallback_spec, steps, "fallback"),
+                    )
                 elif len(values) >= 12:
                     point, ci, residual_std, actual_model = _fit_linear(values, steps)
                 else:
@@ -708,9 +769,21 @@ def calculate_market_comparison(
     }
 
 
-def build_forecast_result(periods: list[str], values: list[float], source: str, steps: int | None = None) -> dict[str, Any]:
+def build_forecast_result(
+    periods: list[str],
+    values: list[float],
+    source: str,
+    steps: int | None = None,
+    *,
+    rng_identity: tuple[Any, ...] | None = None,
+) -> dict[str, Any]:
     steps = steps if steps is not None else forecast_steps(source)
-    result = _anchor_forecast_to_history(values, _fit_values(periods, values, source, steps))
+    if rng_identity is None:
+        series_digest = hashlib.sha256(
+            json.dumps([periods, values], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        rng_identity = ("series", source, series_digest)
+    result = _anchor_forecast_to_history(values, _fit_values(periods, values, source, steps, rng_identity))
     adaptive = build_horizon_adaptive_ci(result, source)
     result["adaptive_ci"] = adaptive
     return result
@@ -730,7 +803,19 @@ def build_forecast_brand_entry(
         cached["is_target"] = cached.get("brand") == target_brand
         return cached
     periods, values = history_from_row(brand_row)
-    forecast_result = build_forecast_result(periods, values, source, forecast_steps_count)
+    forecast_result = build_forecast_result(
+        periods,
+        values,
+        source,
+        forecast_steps_count,
+        rng_identity=(
+            "brand",
+            brand_row.get("brand_key") or brand_row.get("id") or brand_row.get("brand_name"),
+            brand_row.get("atc4_code"),
+            source,
+            measure,
+        ),
+    )
     recent = metric_recent(decode_json(brand_row.get("metric_history")))
     baseline_value = safe_float(recent.get("raw_value"))
     actual_model = forecast_result["actual_model"]
@@ -782,7 +867,20 @@ def build_market_forecast(market_rows: list[dict[str, Any]], source: str, steps:
     if cache_key in _MARKET_FORECAST_CACHE:
         return copy.deepcopy(_MARKET_FORECAST_CACHE[cache_key])
     periods, values = aggregate_market_history(market_rows)
-    result = build_forecast_result(periods, values, source, steps)
+    first_row = market_rows[0] if market_rows else {}
+    result = build_forecast_result(
+        periods,
+        values,
+        source,
+        steps,
+        rng_identity=(
+            "market",
+            "__market__",
+            first_row.get("atc4_code"),
+            source,
+            first_row.get("measure"),
+        ),
+    )
     forecast = {"history_periods": periods, "history_values": values, "forecast_values": result["point_forecast"]}
     _MARKET_FORECAST_CACHE[cache_key] = copy.deepcopy(forecast)
     return forecast
@@ -890,8 +988,6 @@ def main() -> int:
     report = {"phase": "30", "brands": {}, "row_count": len(rows)}
     for row in rows:
         brand = row.get("brand_name")
-        if args.all_brands and brand not in CANONICAL_25:
-            continue
         source = "UBIST" if row.get("source") == "ubist" else "IQVIA"
         periods, values = history_from_row(row)
         spec = select_model(len(values), source)

@@ -68,15 +68,17 @@ async def run(data: dict, opener: Callable | None = None) -> dict:
 
 def _topic_arguments(data: dict) -> dict:
     dry_run = _as_bool(data.get("dry_run"), default=True)
-    return {
+    arguments = {
         "dry_run": dry_run,
         "save_to_db": False if dry_run else _as_bool(data.get("save_to_db"), default=False),
         "max_real_calls": _as_int(data.get("max_real_calls"), default=0 if dry_run else 86),
-        "brands_per_market": _as_int(data.get("brands_per_market"), default=1),
         "large_market_limit": _as_int(data.get("large_market_limit"), default=0),
         "stage_schema": "jw_brand_activity_stage",
         "raw_schema": "jw_brand_activity_raw_stage",
     }
+    if data.get("brands_per_market") is not None:
+        arguments["brands_per_market"] = _as_int(data.get("brands_per_market"), default=0)
+    return arguments
 
 
 def _rpc(name: str, arguments: dict, rpc_id: str, opener: Callable) -> dict:

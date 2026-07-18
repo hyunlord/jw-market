@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolution
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, CsdCrosswalk, ViewConfig
+from pipeline.scripts.api.brand_activity_interest_rx_source import _market_clause
 from pipeline.scripts.api.routes import brand_activity
 
 
@@ -40,7 +41,7 @@ def test_interest_rx_route_wraps_success_envelope(monkeypatch) -> None:
 
     # Then
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {"data": expected, "meta": {"request_normalized": True}}
     assert "market_id" not in captured
     assert captured["filters"]["atc4"] == ["C10A1"]
     assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
@@ -53,7 +54,7 @@ def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(mon
     from pipeline.scripts.api import brand_activity_interest_rx_source as source
 
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
-    monkeypatch.setattr(service, "resolve_csd_market", lambda _codes: _crosswalk())
+    monkeypatch.setattr(service, "resolve_csd_market", lambda **_codes: _crosswalk())
     monkeypatch.setattr(service, "_alias_lookup", lambda: {})
     monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
 
@@ -86,13 +87,36 @@ def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(mon
     assert payload["scope"]["csd_market"] == "LIVALO"
 
 
+def test_interest_rx_csd_tiebreak_preserves_full_market_product_universe(monkeypatch) -> None:
+    # Given
+    from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
+    from pipeline.scripts.api import brand_activity_interest_rx_source as source
+
+    captured: dict[str, set[str]] = {}
+
+    def capture_crosswalk(**codes: set[str]) -> CsdCrosswalk:
+        captured.update(codes)
+        return _crosswalk()
+
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(service, "resolve_csd_market", capture_crosswalk)
+    monkeypatch.setattr(service, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
+
+    # When
+    service.get_interest_rx_matrix({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
+
+    # Then
+    assert captured["candidate_product_codes"] == {"LIVALO", "LIPITOR", "CRESTOR", "BACKBENCH"}
+
+
 def test_interest_rx_service_rebuilds_distribution_for_specialty_filter(monkeypatch) -> None:
     # Given
     from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
     from pipeline.scripts.api import brand_activity_interest_rx_source as source
 
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
-    monkeypatch.setattr(service, "resolve_csd_market", lambda _codes: _crosswalk())
+    monkeypatch.setattr(service, "resolve_csd_market", lambda **_codes: _crosswalk())
     monkeypatch.setattr(service, "_alias_lookup", lambda: {})
     monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
 
@@ -115,7 +139,7 @@ def test_interest_rx_service_ignores_nested_ubist_channel_axis_for_keyword_filte
     from pipeline.scripts.api import brand_activity_interest_rx_source as source
 
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
-    monkeypatch.setattr(service, "resolve_csd_market", lambda _codes: _crosswalk())
+    monkeypatch.setattr(service, "resolve_csd_market", lambda **_codes: _crosswalk())
     monkeypatch.setattr(service, "_alias_lookup", lambda: {})
     monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
 
@@ -147,7 +171,7 @@ def test_interest_rx_service_applies_weight_overrides(monkeypatch) -> None:
     from pipeline.scripts.api import brand_activity_interest_rx_source as source
 
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
-    monkeypatch.setattr(service, "resolve_csd_market", lambda _codes: _crosswalk())
+    monkeypatch.setattr(service, "resolve_csd_market", lambda **_codes: _crosswalk())
     monkeypatch.setattr(service, "_alias_lookup", lambda: {})
     monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
 
@@ -175,7 +199,7 @@ def test_interest_rx_service_marks_thin_slice_insufficient(monkeypatch) -> None:
     from pipeline.scripts.api import brand_activity_interest_rx_source as source
 
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
-    monkeypatch.setattr(service, "resolve_csd_market", lambda _codes: _crosswalk())
+    monkeypatch.setattr(service, "resolve_csd_market", lambda **_codes: _crosswalk())
     monkeypatch.setattr(service, "_alias_lookup", lambda: {})
     monkeypatch.setattr(source.db, "fetch_all", _fetch_all)
 
@@ -223,12 +247,71 @@ def test_interest_rx_parse_accepts_general_market_scope_without_atc4() -> None:
     assert request.filter_payload["market_scope"] == {"option_id": "group:livalo_family", "member": "리바로"}
 
 
+def test_interest_rx_parse_accepts_strategic_cd_market_id() -> None:
+    from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
+
+    request = service._parse_request(
+        {
+            "view": "strategic_cd",
+            "market_id": "cd_006",
+            "selected_brand": "리바로",
+            "filters": {},
+        }
+    )
+
+    assert request.view == "strategic_cd"
+    assert request.market_id == "cd_006"
+
+
+def test_strategic_cd_keyword_scope_reuses_the_ml_market_clause() -> None:
+    ml = ViewConfig("ml_brand", "ml_market", "ml_id", "ml_name", "ranking", True)
+    cd = ViewConfig("cd_brand", "cd_market", "cd_market_id", "cd_name", "ranking", True)
+
+    assert _market_clause(cd, "cd_006", ("LIVALO",)) == _market_clause(ml, "cd_006", ("LIVALO",))
+
+
+def test_interest_rx_scope_exposes_no_csd_mapping(monkeypatch) -> None:
+    from pipeline.scripts.api import brand_activity_interest_rx_matrix as service
+    from pipeline.scripts.api.brand_activity_csd_shared import CsdTimeseriesNoMappingError
+
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(
+        service,
+        "resolve_csd_market",
+        lambda **_codes: (_ for _ in ()).throw(
+            CsdTimeseriesNoMappingError("이 브랜드는 CSD 원천에 활동 데이터가 없음")
+        ),
+    )
+    monkeypatch.setattr(service, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        service,
+        "dynamic_period_window",
+        lambda: service.PeriodWindow("2025-01", "2025-12", "2025-01", "2025-12", "test"),
+    )
+    monkeypatch.setattr(service, "fetch_keyword_rows", lambda _query: [])
+    monkeypatch.setattr(service, "fetch_detailing_rows", lambda _query: [])
+
+    result = service.get_interest_rx_matrix(
+        {"view": "general", "selected_brand": "헴리브라", "filters": {"atc4": ["B02D1"]}}
+    )
+
+    assert result is not None
+    assert result["scope"]["csd_availability"] == {
+        "available": False,
+        "reason": "no_csd_mapping",
+        "message": "이 브랜드는 CSD 원천에 활동 데이터가 없음",
+        "csd_source_present": False,
+        "candidates": [],
+    }
+
+
 def _brand_set() -> BrandSetResolution:
     view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     brand_meta = {
         "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
         "리피토": BrandMeta("리피토", "리피토", ("LIPITOR",), False),
         "크레스토": BrandMeta("크레스토", "크레스토", ("CRESTOR",), False),
+        "후순위": BrandMeta("후순위", "후순위", ("BACKBENCH",), False),
     }
     return BrandSetResolution(
         view_name="general",

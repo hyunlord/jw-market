@@ -89,9 +89,10 @@ CAUSE_RESPONSE_SCHEMA: Final = {
             "description": (
                 "원인분석 23섹션 payload. 주요 섹션: kpi, market_size_series, brand_ranking, "
                 "company_ranking, analysis_levels, analysis_level_market_status, level_top5_trend. "
-                "market_size_series.mom_growth_pct는 정확히 1년 전 같은 기간 대비 복리 기간성장률입니다. "
-                "UBIST 월축은 12제곱근, IQVIA 분기축은 4제곱근을 사용하며, 비교 기간이 없거나 "
-                "1년 전 값이 0 이하이면 null입니다. 기존 yoy_growth_pct는 단순 전년 대비 증감률입니다. "
+                "market_size_series.mom_growth_pct는 선택 range의 고정 기준점 대비 연환산 복리성장률입니다. "
+                "최신점의 5년 전 값이 range에 있으면 그 값을, 없으면 range 내 최초 유효값을 모든 시점의 기준으로 사용합니다. "
+                "분모가 0 이하이거나 데이터 포인트가 하나뿐이면 null입니다. "
+                "기존 yoy_growth_pct는 단순 전년 대비 증감률입니다. "
                 "그 밖의 주요 섹션: "
                 "target_customer_competition, ubist_specialty_channels, market_meta."
             ),
@@ -107,7 +108,7 @@ CAUSE_RESPONSES: Final = {
         "description": "포탈 원인분석 표준 응답",
         "content": {"application/json": {"schema": CAUSE_RESPONSE_SCHEMA, "example": CAUSE_RESPONSE_EXAMPLE}},
     },
-    404: {"description": "브랜드가 cache_cause에 없음"},
+    404: {"description": "브랜드가 mart 브랜드 universe에 없음"},
 }
 
 
@@ -199,10 +200,11 @@ top-level `filters.atc4`는 일반뷰와 전략뷰가 모두 사용합니다. �
 `brand_ranking`, `company_ranking`, `analysis_levels`, `analysis_level_market_status`,
 `level_top5_trend`, `target_customer_competition`입니다. 해당 source/범위에 데이터가 없거나
 채널축이 없으면 빈 배열(`[]`), 빈 객체(`{}`), 또는 `note`가 있는 fallback 객체로 반환됩니다.
-`market_size_series` 각 포인트의 `mom_growth_pct`는 정확히 1년 전 같은 기간 대비 복리 기간성장률입니다.
-UBIST는 `((V_t / V_{t-12})^(1/12) - 1) * 100`, IQVIA는
-`((V_t / V_{t-4})^(1/4) - 1) * 100`을 사용합니다. 비교 기간이 없거나 분모가 0 이하이면 null입니다.
-기존 `yoy_growth_pct`는 같은 두 값을 이용한 단순 전년 대비 증감률이며 변경되지 않습니다.
+`market_size_series` 각 포인트의 `mom_growth_pct`는 선택 range의 고정 기준점 대비 연환산 복리성장률입니다.
+최신점의 5년 전 값이 range에 있으면 그 값을, 없으면 range 내 최초 유효값을 모든 시점의 기준으로 사용합니다.
+UBIST는 실제 경과 월수 `n`에 `((V_t / V_start)^(12/n) - 1) * 100`, IQVIA는
+실제 경과 분기수 `n`에 `((V_t / V_start)^(4/n) - 1) * 100`을 사용합니다. 분모가 0 이하이거나 데이터 포인트가 하나뿐이면
+null입니다. 기존 `yoy_growth_pct`는 단순 전년 대비 증감률이며 변경되지 않습니다.
 
 명시 view와 legacy view_kind 충돌은 422 `detail.error=invalid_dynamic_market_view`입니다.
 요청 검증 실패는 대부분 400 `detail.error=invalid_dynamic_market_request`입니다.
@@ -227,7 +229,11 @@ PUBLIC_GENERAL_UBIST_ANALYSIS_SCHEMA: Final = {
         "atc3": {"type": "array", "items": {"type": "string"}, "description": "atc3(ATC3 좁히기)"},
         "atc4": {"type": "array", "items": {"type": "string"}, "description": "atc4(ATC4 좁히기)"},
         "seller": {"type": "array", "items": {"type": "string"}, "description": "seller(판매사)"},
-        "molecule": {"type": "array", "items": {"type": "string"}, "description": "molecule(성분)"},
+        "molecule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "molecule(성분): UBIST 원천 문자열을 분해하지 않고 복합 성분도 한 값으로 취급",
+        },
         "molecule_strength": {"type": "array", "items": {"type": "string"}, "description": "molecule_strength(성분용량)"},
         "form": {"type": "array", "items": {"type": "string"}, "description": "form(제형)"},
         "route": {"type": "array", "items": {"type": "string"}, "description": "route(투여경로)"},
@@ -586,7 +592,7 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 
 - **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 선택된 window의 audit code 매출 합계에 반영됩니다.
 
-- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `period_start`, `period_end`는 토픽/interest 행을 자르는 필터입니다. `filters.channel.visit_location`과 `filters.channel.specialty`도 호환 입력으로 flat 필드에 정규화됩니다.
+- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `start_date`, `end_date`는 토픽 행을 자르는 필터입니다. `period_start`, `period_end`와 `filters.channel.visit_location`, `filters.channel.specialty`는 호환 입력으로 flat 필드에 정규화됩니다.
 
 - **missing/null 처리:** `filters`와 `filter`를 생략하면 빈 필터 객체입니다. `filters:null` 또는 `filter:null`은 validation error입니다. `filters`와 legacy `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다.
 
@@ -729,6 +735,8 @@ BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE: Final = {
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
     "visit_location": "전체",
     "specialty": "전체",
+    "start_date": "2025-02",
+    "end_date": "2025-05",
     "top_n": 5,
 }
 
@@ -737,6 +745,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_REQUEST_EXAMPLE: Final = {
     "view": "general",
     "selected_brand": "리바로",
     "filters": BRAND_ACTIVITY_FILTER_EXAMPLE,
+    "csd_market": "LIVALO",
     "mode": "absolute",
     "window": {"start": "2024Q1", "end": "2025Q4"},
 }
@@ -761,7 +770,7 @@ BRAND_ACTIVITY_SCOPE_SCHEMA: Final = {
     "type": "object",
     "description": "요청 view/시장/필터를 서버가 해석한 결과입니다. 화면의 적용 필터 칩과 차트 캡션에 사용합니다.",
     "properties": {
-        "view": {"type": "string", "description": "general 또는 strategic_ml. 현재 CSD 서비스는 strategic_cd를 런타임에서 지원하지 않습니다."},
+        "view": {"type": "string", "description": "general, strategic_ml 또는 strategic_cd."},
         "market_id": {"type": "string", "description": "해석된 시장 id. 일반뷰는 ATC4, 전략뷰는 ml_id입니다."},
         "market_name": {"type": "string", "description": "시장 표시명."},
         "resolved_market": {"type": "object", "description": "type/market_id/market_label/source로 구성된 resolved market echo."},
@@ -821,7 +830,11 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                 "scope": BRAND_ACTIVITY_SCOPE_SCHEMA,
                                 "brands": {
                                     "type": "array",
-                                    "description": "브랜드 카드 목록. topic_shares 합 + etc_pct = 100입니다.",
+                                    "description": (
+                                        "브랜드 카드 목록. topic_shares의 각 share_pct는 토픽별 독립 비율이므로 "
+                                        "합계가 100%를 초과할 수 있습니다. etc_pct는 표시된 top_n 토픽 비율 합을 "
+                                        "100에서 뺀 뒤 0을 하한으로 적용한 호환 필드입니다."
+                                    ),
                                     "items": {
                                         "type": "object",
                                         "properties": {
@@ -833,7 +846,13 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                             "sales_rank": {"type": ["integer", "null"], "description": "시장 내 매출 rank. rank를 산출할 수 없으면 null."},
                                             "topic_shares": {"type": "array", "description": "상위 토픽 막대 목록(label/share_pct/topic_id/rank)."},
                                             "topics": {"type": "array", "description": "topic_shares와 같은 포탈 호환 alias."},
-                                            "etc_pct": {"type": "number", "description": "상위 토픽 외 기타 비율."},
+                                            "etc_pct": {
+                                                "type": "number",
+                                                "description": (
+                                                    "max(0, 100 - 표시된 top_n 토픽 share_pct 합). 기타 토픽 또는 "
+                                                    "미분류 행 비율이 아니며 top_n에 따라 달라지는 호환 필드입니다."
+                                                ),
+                                            },
                                             "brand_specific_topics": {"type": "array", "description": "토픽 정의/근거 행 수를 포함한 상세 목록."},
                                         },
                                     },
@@ -841,6 +860,21 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                             },
                         },
                         "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
+                        "meta": {
+                            "type": "object",
+                            "properties": {
+                                "period": {
+                                    "type": "object",
+                                    "properties": {
+                                        "start_date": {"type": "string"},
+                                        "end_date": {"type": "string"},
+                                        "available_start": {"type": "string"},
+                                        "available_end": {"type": "string"},
+                                    },
+                                },
+                                "reason": {"type": "string", "description": "기간 내 데이터가 없을 때 no_data_in_period."},
+                            },
+                        },
                     },
                 },
                 "example": {
@@ -883,7 +917,15 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                 ],
                             }
                         ],
-                    }
+                    },
+                    "meta": {
+                        "period": {
+                            "start_date": "2025-02",
+                            "end_date": "2025-05",
+                            "available_start": "2024-06",
+                            "available_end": "2026-05",
+                        }
+                    },
                 },
             }
         },
@@ -896,7 +938,8 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
     200: {
         "description": (
             "활동·처방 추세. CSD 활동량은 csd_channel_dynamics_stage에서 jw_channel='TOTAL'(region=TOTAL)만 사용하며 월간 activity_months 축으로 반환합니다. "
-            "IQVIA mart의 sales/unit/counting_unit/dosage_unit은 기존 quarters 분기축을 유지합니다."
+            "IQVIA mart의 sales/unit/counting_unit/dosage_unit은 기존 quarters 분기축을 유지합니다. "
+            "csd_market 미지정 시 매핑된 CSD 시장 전체와 기간 union 합산을 반환하며, 기여하지 않은 시장은 0으로 채우지 않습니다."
         ),
         "content": {
             "application/json": {
@@ -912,6 +955,11 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                     "properties": {
                                         **BRAND_ACTIVITY_SCOPE_SCHEMA["properties"],
                                         "csd_market": {"type": "string", "description": "mart product code overlap으로 결정한 CSD 시장 표시명."},
+                                        "csd_markets": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "매핑된 CSD 시장 목록. 시장이 하나여도 1원소 배열입니다.",
+                                        },
                                         "quarters": {"type": "array", "items": {"type": "string"}, "description": "Rx measure 분기축. 예: 2025-Q4."},
                                         "activity_months": {"type": "array", "items": {"type": "string"}, "description": "CSD activity 월간축. 요청 분기 window 안의 YYYY-MM 목록."},
                                         "mode": {"type": "string", "description": "absolute 또는 share."},
@@ -922,6 +970,14 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                                     "description": "브랜드별 activity/Rx series. is_selected 브랜드는 굵게, is_jw는 강조 표시 대상입니다.",
                                 },
                                 "market_totals": {"type": "object", "description": "activity와 Rx measure별 시장 총합 series."},
+                                "series_by_csd_market": {
+                                    "type": "object",
+                                    "description": "CSD 시장별 월간 activity. 각 시장의 실제 관측 기간만 포함합니다.",
+                                },
+                                "aggregate": {
+                                    "type": "object",
+                                    "description": "기간 union 합산과 시장별 가용 범위, 시점별 기여 시장 목록.",
+                                },
                             },
                         },
                         "reason": {"type": "string", "description": "data가 null인 경우의 사유."},
@@ -933,6 +989,7 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                             "view": "general",
                             "market_id": "C10A1",
                             "csd_market": "LIVALO",
+                            "csd_markets": ["LIVALO", "LIVALO FENO"],
                             "quarters": ["2025-Q1", "2025-Q2"],
                             "activity_months": ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06"],
                             "mode": "absolute",
@@ -952,19 +1009,32 @@ BRAND_ACTIVITY_CSD_TIMESERIES_RESPONSES: Final = {
                             }
                         ],
                         "market_totals": {"activity": {"2025-01": 90.7, "2025-02": 99.3}, "sales": {"2025-Q1": 2675.0}},
+                        "series_by_csd_market": {
+                            "LIVALO": {
+                                "available": {"start": "2023-06", "end": "2026-05"},
+                                "market_totals": {"2025-01": 90.7},
+                                "by_entity": {"리바로": {"2025-01": 40.0}},
+                            }
+                        },
+                        "aggregate": {
+                            "series": {"market_totals": {"2025-01": 90.7}, "by_entity": {"리바로": {"2025-01": 40.0}}},
+                            "available": {"LIVALO": {"start": "2023-06", "end": "2026-05"}},
+                            "contributing_markets_by_period": {"2025-01": ["LIVALO"]},
+                        },
                     }
                 },
             }
         },
     },
     400: {"description": "view/selected_brand/filter/window 조합이 유효하지 않음"},
+    422: {"description": "요청 csd_market이 매핑된 시장 목록에 없음"},
 }
 
 
 BRAND_ACTIVITY_INTEREST_RX_RESPONSES: Final = {
     200: {
         "description": (
-            "interest×처방빈도 버블. X=rx_frequency_score, Y=interest_score, 버블 면적=event_count. "
+            "interest×처방빈도 버블. X=rx_frequency_score, Y=prescription_evolution_score, 버블 면적=event_count. "
             "market_average는 차트 점선 십자 기준선입니다."
         ),
         "content": {
@@ -1483,9 +1553,13 @@ DEEP_ANALYSIS_BRAND_FACTORS_EXAMPLE: Final = {
 DEEP_ANALYSIS_RESPONSES: Final = {
     200: {
         "description": (
-            "포탈 심층분석 payload. query `view`는 general 또는 strategic이며 생략 시 strategic입니다. "
-            "general은 브랜드 카탈로그/mart에서 ATC4를 유도합니다. `atc4` query parameter는 지원하지 않습니다. "
-            "데이터가 없는 섹션은 404/500 대신 빈 배열, 빈 객체, unavailable 객체 등 기존 구조 안의 빈 상태로 반환됩니다."
+            "포탈 심층분석 payload. 신규 호출은 `view_kind`(general/strategic_ml/strategic_cd), "
+            "`market_id`, `source`(ubist/iqvia)로 시장 컨텍스트를 지정합니다. `market_id`와 source는 "
+            "가용 컨텍스트가 하나일 때만 생략할 수 있으며, 모호하면 가용 컨텍스트와 함께 409를 반환합니다. "
+            "기존 `view=general|strategic` 호출은 SI 전환 기간 동안 유지됩니다. `atc4` query parameter는 "
+            "지원하지 않으며 general의 ATC4는 `market_id`로 전달합니다. optional 섹션이 없거나 catalog에는 "
+            "있지만 mart 데이터가 없으면 전체 요청을 실패시키지 않고 "
+            "`{available:false, reason:not_generated|no_history}` 섹션과 상태 meta를 반환합니다."
         ),
         "content": {
             "application/json": {
@@ -1504,6 +1578,42 @@ DEEP_ANALYSIS_RESPONSES: Final = {
                                 "ai_analysis_short": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "ai_analysis_long": deepcopy(AI_ANALYSIS_FIELD_SCHEMA),
                                 "brand_factors": deepcopy(DEEP_ANALYSIS_BRAND_FACTORS_SCHEMA),
+                                "events_meta": {
+                                    "type": "object",
+                                    "description": "이벤트 번들 가용 상태. 뉴스가 없으면 status=no_news입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "forecast_meta": {
+                                    "type": "object",
+                                    "description": "선택 시장 컨텍스트의 forecast 생성/가용 상태입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "forecast": {
+                                    "type": "object",
+                                    "description": (
+                                        "deep_forecast_block의 정본 forecast입니다. 미생성 시 "
+                                        "available=false와 not_generated 또는 no_history reason을 반환합니다."
+                                    ),
+                                    "additionalProperties": True,
+                                },
+                                "simulation": {
+                                    "type": "object",
+                                    "description": (
+                                        "forecast와 동일한 deep_forecast_block의 simulation입니다. 미생성 시 "
+                                        "available=false와 not_generated 또는 no_history reason을 반환합니다."
+                                    ),
+                                    "additionalProperties": True,
+                                },
+                                "strength_meta": {
+                                    "type": "object",
+                                    "description": "선택 시장 컨텍스트의 Agent3 strength 생성/가용 상태입니다.",
+                                    "additionalProperties": True,
+                                },
+                                "data_meta": {
+                                    "type": "object",
+                                    "description": "catalog membership은 유효하지만 mart 데이터가 없을 때 원인과 source 범위를 제공합니다.",
+                                    "additionalProperties": True,
+                                },
                             },
                         },
                     },
@@ -1519,8 +1629,9 @@ DEEP_ANALYSIS_RESPONSES: Final = {
             }
 	        },
     },
-    404: {"description": "브랜드 심층분석 cache 없음"},
-    422: {"description": "지원하지 않는 view 또는 제거된 atc4 query parameter"},
+    404: {"description": "브랜드가 요청 시장에 실제로 속하지 않거나 view에 가용 컨텍스트가 없음"},
+    409: {"description": "market_id 또는 source를 생략했으나 가용 컨텍스트가 둘 이상임"},
+    422: {"description": "지원하지 않는 view/source/market_id 조합 또는 제거된 atc4 query parameter"},
 }
 
 

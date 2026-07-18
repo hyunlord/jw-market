@@ -11,13 +11,21 @@ from functools import lru_cache
 import json
 from pathlib import Path
 import sys
+from threading import Lock
 from typing import Any
 
 from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
-from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
+from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import analysis_level_profile_signature
+from pipeline.scripts.api.dynamic_market.period_window import trim_period_rows
+from pipeline.scripts.api.dynamic_market.types import (
+    DynamicMarketInputError,
+    DynamicMarketPeriodNoDataError,
+    PeriodRange,
+    quote_identifier,
+)
 from pipeline.scripts.api.market_definition_display import apply_cd_market_definition
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketAnalysisLevelFilters
 
@@ -31,6 +39,7 @@ from pipeline.scripts.etl.ubist_channel_resolver import strategic_channel_totals
 
 
 JsonRow = dict[str, Any]
+_STRATEGIC_BUILD_LOCK = Lock()
 
 
 def build_strategic_payload(
@@ -42,25 +51,45 @@ def build_strategic_payload(
     source: str,
     measure: str,
     analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
 ) -> JsonRow:
-    """Build a strategic dynamic-market response with cache-cause overlays."""
+    """Build one strategic response while bounding shared builder cache memory."""
+
+    with _STRATEGIC_BUILD_LOCK:
+        _clear_cause_builder_runtime_caches()
+        try:
+            return _build_strategic_payload(
+                mart_db=mart_db,
+                ml_id=ml_id,
+                cd_market_id=cd_market_id,
+                focus_brand_key=focus_brand_key,
+                source=source,
+                measure=measure,
+                analysis_level=analysis_level,
+                period_range=period_range,
+            )
+        finally:
+            _clear_cause_builder_runtime_caches()
+
+
+def _build_strategic_payload(
+    *,
+    mart_db: str,
+    ml_id: str | None,
+    cd_market_id: str | None,
+    focus_brand_key: str | None,
+    source: str,
+    measure: str,
+    analysis_level: DynamicMarketAnalysisLevelFilters,
+    period_range: PeriodRange = PeriodRange(),
+) -> JsonRow:
+    """Assemble a strategic response from mart rows."""
 
     market_kind, view_source_id = _resolve_market_id(ml_id=ml_id, cd_market_id=cd_market_id)
     mart_source = normalize_source(source)
     source_api = cause_builder.api_source(mart_source)
     response_market_id = _response_market_id(market_kind, view_source_id)
     has_runtime_filter = bool(_selected_filters(source=mart_source, analysis_level=analysis_level))
-    if focus_brand_key and not has_runtime_filter:
-        cached_payload = _cached_cause_payload(
-            brand=focus_brand_key,
-            view_type=_view_type(market_kind),
-            market_id=response_market_id,
-            source=source_api,
-            measure=measure,
-        )
-        if cached_payload is not None:
-            apply_cd_market_definition(cached_payload, view_source_id)
-            return cached_payload
 
     brand_table, market_table, id_column = _tables_for_market_kind(market_kind)
     sibling_rows = _fetch_sibling_rows(
@@ -84,7 +113,6 @@ def build_strategic_payload(
     if not filtered_rows:
         raise DynamicMarketInputError("analysis-level filters removed all strategic market rows")
 
-    brand_row = _choose_focus_row(filtered_rows, focus_brand_key)
     market_row = _fetch_market_row(
         mart_db=mart_db,
         table=market_table,
@@ -110,9 +138,20 @@ def build_strategic_payload(
             measure=measure,
             market_catalog_row=market_catalog_row,
         )
+    filtered_rows = trim_period_rows(filtered_rows, period_range)
+    market_row = trim_period_rows([market_row], period_range)[0]
+    if (period_range.start is not None or period_range.end is not None) and not cause_builder._history_periods(
+        filtered_rows,
+        source_api,
+    ):
+        raise DynamicMarketPeriodNoDataError("requested period range contains no strategic market data")
+    brand_row = _choose_focus_row(filtered_rows, focus_brand_key)
+    period_profile_sig = analysis_level_profile_signature(
+        base_profile="",
+        dimension_filters=(),
+        period_range=(period_range.start, period_range.end),
+    )
     strategic_brand = _strategic_brand_catalog()
-    if has_runtime_filter:
-        _clear_cause_builder_runtime_caches()
     with strategic_channel_totals_context(filtered_rows):
         raw_payload = cause_builder.build_response(
             brand_row=brand_row,
@@ -127,6 +166,7 @@ def build_strategic_payload(
             market_sources=_market_sources(market_catalog_row, source_api),
             market_catalog_row=market_catalog_row,
             strategic_brand=strategic_brand,
+            analysis_profile_sig=period_profile_sig,
         )
     composed = compose_cached_json(raw_payload, measure=measure)
     if not isinstance(composed, dict):
@@ -134,37 +174,6 @@ def build_strategic_payload(
     composed["markets"] = [{"market_id": response_market_id, "is_primary": True}]
     apply_cd_market_definition(composed, view_source_id)
     return composed
-
-
-def _cached_cause_payload(
-    *,
-    brand: str,
-    view_type: str,
-    market_id: str,
-    source: str,
-    measure: str,
-) -> JsonRow | None:
-    rows = db.fetch_all(
-        """
-        SELECT response_json
-        FROM cache_cause
-        WHERE brand = %s
-          AND view_type = %s
-          AND market_id = %s
-          AND source = %s
-          AND measure = %s
-        ORDER BY market_id
-        LIMIT 1
-        """,
-        [brand, view_type, market_id, source, measure],
-    )
-    if not rows:
-        return None
-    payload = compose_cached_json(rows[0]["response_json"], measure=measure)
-    if not isinstance(payload, dict):
-        return None
-    payload["markets"] = [{"market_id": market_id, "is_primary": True}]
-    return payload
 
 
 def _resolve_market_id(*, ml_id: str | None, cd_market_id: str | None) -> tuple[str, str]:

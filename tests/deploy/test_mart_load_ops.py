@@ -244,6 +244,47 @@ def test_copy_table_caps_no_id_batch_size_at_200(monkeypatch) -> None:
     assert statements[3].endswith("WHERE (`query_key` > %s) ORDER BY `query_key` LIMIT 200")
 
 
+def test_publish_retries_transient_partial_count_before_atomic_rename(monkeypatch) -> None:
+    executed: list[str] = []
+    counts = iter([14_328, 14_267, 14_328])
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str) -> None:
+            executed.append(sql)
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    def fake_table_exists(_conn: Connection, db_name: str, table_name: str) -> bool:
+        return (db_name, table_name) in {
+            ("build_db", "mart_strategic_ml_brand_metric"),
+            ("target_db", "mart_strategic_ml_brand_metric"),
+        }
+
+    monkeypatch.setattr(mart_load_ops, "table_exists", fake_table_exists)
+    monkeypatch.setattr(mart_load_ops, "_copy_table", lambda *args: None)
+    monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: next(counts))
+    monkeypatch.setattr(mart_load_ops.time, "sleep", lambda _seconds: None)
+
+    action = mart_load_ops._publish_one(
+        Connection(),
+        "build_db",
+        "target_db",
+        "mart_strategic_ml_brand_metric",
+        "f116",
+    )
+
+    assert action.mode == "atomic_rename"
+    assert any(statement.startswith("RENAME TABLE") for statement in executed)
+
+
 def test_direct_import_manifest_verifies_canonical_digest(monkeypatch) -> None:
     manifest = {
         "tables": [

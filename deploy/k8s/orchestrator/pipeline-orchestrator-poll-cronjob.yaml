@@ -1,0 +1,138 @@
+# TRANSITIONAL (2026-07-17 PL scope decision): the hook-driven input system
+# (JW_Input_Detection_Contract_v2: jw-data-input -> MinIO manifest -> webhook
+# -> G3 validation -> incremental Job -> sigma gate) is the canonical
+# architecture; its execution target is `python -m pipeline.orchestrator run
+# --mode incremental`. This object is a manual/interim fallback only and is
+# slated for REPLACEMENT/DELETION when the hook system lands.
+# DO NOT RESUME (keep suspend: true).
+# Daily safety-net poll: python -m pipeline.orchestrator run --mode full
+#
+# Event-driven architecture (2026-07-17): the PRIMARY trigger is the ETL
+# success-path kick (pipeline/etl/kick.py) creating a Job from this CronJob.
+# This daily schedule is the safety net for lost kicks - same epoch means
+# the orchestrator no-ops in seconds, so a redundant run costs nothing.
+#
+# Registered suspended (suspend: true). Resume is a PL decision; before
+# resuming, confirm the image digest below matches the intended build and the
+# schedule fits the mart refresh calendar (see RUNBOOK_MONTHLY.md).
+#
+# The state PVC keeps the per-stage checkpoint (mart-epoch keyed) so re-runs
+# are idempotent across pods. With WaitForFirstConsumer binding no disk is
+# provisioned while the CronJob stays suspended.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jw-pipeline-orchestrator-state
+  namespace: llmops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-pipeline-orchestrator-poll-daily
+  namespace: llmops
+spec:
+  # Daily 01:00 KST safety-net poll (epoch unchanged -> no-op).
+  schedule: "0 16 * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 43200
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: orchestrator
+              # PINNED-BY-DIGEST after the first canonical build; see stage3_genos.md
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6bffbc5350aadd302124c500eb91b16415b0dcfe42c635774fd0abd763441996
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -lc
+              args:
+                - |
+                  set -eu
+                  # Fail-closed double-entry pins (kept in sync by tests/deploy/test_mart_db_single_source.py)
+                  test "${MARIADB_DATABASE}" = "jw_mart_d2_stage_20260630_r2"
+                  test "${AGENT3_DB_NAME}" = "jw_mart_d2_stage_20260630_r2"
+                  test -n "${AGENT3_WORKFLOW_REV}"
+                  test -n "${AGENT3_EXPECTED_WORKFLOW_REV}"
+                  cd /app
+                  exec python -m pipeline.orchestrator run \
+                    --mode full \
+                    --state-file /var/lib/jw-pipeline/state.json \
+                    --log-file /var/lib/jw-pipeline/run-$(date -u +%Y%m%d%H%M%S).jsonl
+              env:
+                - name: MARIADB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_DATABASE
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: AGENT3_DB_NAME
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: AGENT3_WORKFLOW_REV
+                  value: "5692"
+                - name: AGENT3_EXPECTED_WORKFLOW_REV
+                  value: "5692"
+                - name: JW_PIPELINE_STATE_FILE
+                  value: /var/lib/jw-pipeline/state.json
+                # Agent3 (run_source) reads AGENT3_DB_*; keep both env families
+                # pointing at the same mart writer identity.
+                - name: AGENT3_DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: AGENT3_DB_PORT
+                  value: "3306"
+                - name: AGENT3_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: AGENT3_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+                - name: MARIADB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: MARIADB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+                - name: D2_WRITER_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: D2_WRITER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 2Gi
+                limits:
+                  cpu: "2"
+                  memory: 6Gi
+              volumeMounts:
+                - name: state
+                  mountPath: /var/lib/jw-pipeline
+          volumes:
+            - name: state
+              persistentVolumeClaim:
+                claimName: jw-pipeline-orchestrator-state

@@ -39,7 +39,7 @@ class TopicRunRequest:
     execute: bool = False
     save_to_db: bool = False
     max_real_calls: int = 86
-    brands_per_market: int = 1
+    brands_per_market: int | None = None
     brand_rows: int = 5
     axis_per_brand: int = 3
     large_market_limit: int = 0
@@ -133,7 +133,7 @@ def parse_topic_request(arguments: dict[str, JsonValue]) -> TopicRunRequest:
         execute=execute and not dry_run,
         save_to_db=_bool(arguments.get("save_to_db"), default=False),
         max_real_calls=_int(arguments.get("max_real_calls"), default=86),
-        brands_per_market=_int(arguments.get("brands_per_market"), default=1),
+        brands_per_market=_optional_int(arguments.get("brands_per_market")),
         brand_rows=_int(arguments.get("brand_rows"), default=5),
         axis_per_brand=_int(arguments.get("axis_per_brand"), default=3),
         large_market_limit=_int(arguments.get("large_market_limit"), default=0),
@@ -187,6 +187,12 @@ def _int(value: JsonValue, *, default: int) -> int:
     if isinstance(value, str):
         return int(value)
     raise TopicJobError(f"expected integer-compatible value, got {type(value).__name__}")
+
+
+def _optional_int(value: JsonValue) -> int | None:
+    if value is None:
+        return None
+    return _int(value, default=0)
 
 
 def _str(value: JsonValue, *, default: str) -> str:

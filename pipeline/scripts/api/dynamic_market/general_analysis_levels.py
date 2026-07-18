@@ -11,9 +11,20 @@ from typing import Any
 from pymysql.err import MySQLError
 
 from pipeline.scripts.api.dynamic_market.analysis_level_dimensions import build_analysis_rows
+from pipeline.scripts.api.dynamic_market.analysis_level_block_contract import (
+    analysis_level_profile_signature,
+    channel_profile_signature,
+)
+from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
+    AnalysisLevelBlock,
+    AnalysisLevelBlockKey,
+    current_analysis_level_source_epoch,
+    load_analysis_level_block,
+)
 from pipeline.scripts.api.dynamic_market.analysis_level_series import metric_history_from_periods
+from pipeline.scripts.api.dynamic_market.period_window import trim_period_rows
 from pipeline.scripts.api.dynamic_market.cause_time import SOURCE_LABELS
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
 
 
 ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
@@ -43,6 +54,7 @@ FIELD_BY_CANONICAL_LEVEL: dict[str, str] = {
 GENERAL_LEVEL_SPECS: dict[str, tuple[GeneralLevelSpec, ...]] = {
     "ubist": (
         GeneralLevelSpec("판매사", "Class", "seller"),
+        GeneralLevelSpec("성분", "Ox/Gx", "molecule"),
         GeneralLevelSpec("성분용량", "Molecule", "molecule_strength"),
         GeneralLevelSpec("제형", "제형/투여경로", "form"),
         GeneralLevelSpec("투여경로", "용량", "route"),
@@ -64,6 +76,7 @@ def build_general_analysis_level_sections(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     mart_db: str,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any] | None:
     specs = GENERAL_LEVEL_SPECS.get(metrics.source)
     if not specs:
@@ -74,13 +87,28 @@ def build_general_analysis_level_sections(
             metrics=metrics,
             focus=focus,
             mart_db=mart_db,
+            reuse_general_dimensions=True,
+            retain_decoded_dimensions=True,
+            defer_dimension_data_encoding=True,
         )
     except (MySQLError, RuntimeError, TypeError, ValueError, OSError):
         rows = _rows_from_metrics(metrics=metrics, focus=focus)
     if not rows:
         return None
     source_api = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
-    canonical_rows = [_with_canonical_dimension_aliases(row, specs) for row in rows]
+    defer_period_series_encoding = period_range.start is not None or period_range.end is not None
+    canonical_rows = trim_period_rows(
+        [
+            _with_canonical_dimension_aliases(
+                row,
+                specs,
+                defer_period_series_encoding=defer_period_series_encoding,
+            )
+            for row in rows
+        ],
+        period_range,
+        materialize_predecoded_fields=False,
+    )
     channels = list(cause_builder._channels_for_source(source_api))
     ubist_channel_context: dict[str, Any] | None = None
     if source_api == "UBIST":
@@ -95,20 +123,34 @@ def build_general_analysis_level_sections(
         ubist_channel_context=ubist_channel_context,
     )
     build_channels = list(dict.fromkeys([*channels, *status_channels]))
-    all_channel_levels = _rename_analysis_levels(
-        cause_builder._build_analysis_levels_from_mart(
-            rows=canonical_rows,
-            source=source_api,
-            market=_synthetic_market(specs),
-            view_source_id=None,
-            target_name=None,
-            fallback_level_top5={},
-            channels_override=build_channels,
-            use_latest_valid_share=True,
-        ),
-        specs,
+    series_value_cache: cause_builder._SeriesValueCache = {}
+    channel_rows_cache: cause_builder._ChannelRowsCache = {}
+    precomputed = _load_precomputed_general_block(
+        definition=definition,
+        source=source_api,
+        measure=metrics.measure,
+        status_channels=status_channels,
+        period_range=period_range,
     )
-    analysis_levels = _project_analysis_level_channels(all_channel_levels, channels)
+    if precomputed is None:
+        all_channel_levels = _rename_analysis_levels(
+            cause_builder._build_analysis_levels_from_mart(
+                rows=canonical_rows,
+                source=source_api,
+                market=_synthetic_market(specs),
+                view_source_id=None,
+                target_name=None,
+                fallback_level_top5={},
+                channels_override=build_channels,
+                use_latest_valid_share=True,
+                series_value_cache=series_value_cache,
+                channel_rows_cache=channel_rows_cache,
+            ),
+            specs,
+        )
+        analysis_levels = _project_analysis_level_channels(all_channel_levels, channels)
+    else:
+        analysis_levels = precomputed.analysis_levels
     canonical_levels = [spec.canonical_level for spec in specs]
     rows_by_level = cause_builder._level_rows_by_segment(canonical_rows, canonical_levels)
     level_top5_trend = _rename_level_top5_trend(
@@ -121,35 +163,95 @@ def build_general_analysis_level_sections(
             include_all_options=bool(focus),
             channel="전체",
             use_latest_valid_share=True,
+            series_value_cache=series_value_cache,
+            channel_rows_cache=channel_rows_cache,
         ),
         specs,
     )
-    market_status_levels = _project_analysis_level_channels(all_channel_levels, status_channels)
-    market_status = cause_builder._ensure_analysis_level_market_status_contract(
-        cause_builder._analysis_level_market_status_by_channel(
-            level_top5_trend=level_top5_trend,
-            analysis_levels=market_status_levels,
-            rows=canonical_rows,
-            source=source_api,
-            channels=status_channels,
-            include_all_options=bool(focus),
+    if precomputed is None:
+        market_status_levels = _project_analysis_level_channels(all_channel_levels, status_channels)
+        market_status = cause_builder._ensure_analysis_level_market_status_contract(
+            cause_builder._analysis_level_market_status_by_channel(
+                level_top5_trend=level_top5_trend,
+                analysis_levels=market_status_levels,
+                rows=canonical_rows,
+                source=source_api,
+                channels=status_channels,
+                include_all_options=bool(focus),
+            )
         )
-    )
+    else:
+        market_status = precomputed.analysis_level_market_status
     return {
         "analysis_levels": analysis_levels,
         "analysis_level_market_status": market_status,
         "level_top5_trend": level_top5_trend,
         "rows": canonical_rows,
         "ubist_channel_context": ubist_channel_context,
+        "series_value_cache": series_value_cache,
+        "channel_rows_cache": channel_rows_cache,
     }
 
 
-def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralLevelSpec, ...]) -> dict[str, Any]:
+def _load_precomputed_general_block(
+    *,
+    definition: MarketDefinition,
+    source: str,
+    measure: str,
+    status_channels: list[str],
+    period_range: PeriodRange = PeriodRange(),
+) -> AnalysisLevelBlock | None:
+    atc4_codes = [str(value) for value in definition.filter_echo.get("atc4", []) if str(value)]
+    epoch = current_analysis_level_source_epoch()
+    if len(atc4_codes) != 1 or epoch is None:
+        return None
+    base_profile = channel_profile_signature(status_channels) if source == "UBIST" else ""
+    profile_sig = analysis_level_profile_signature(
+        base_profile=base_profile,
+        dimension_filters=tuple(
+            (item.dimension_type, item.values)
+            for item in definition.dimension_filters
+        ),
+        period_range=(period_range.start, period_range.end),
+    )
+    return load_analysis_level_block(
+        key=AnalysisLevelBlockKey(
+            view="general",
+            market_id=atc4_codes[0],
+            source=source,
+            measure=measure,
+            profile_sig=profile_sig,
+            trim_mode="full",
+        ),
+        source_epoch=epoch,
+    )
+
+
+def _with_canonical_dimension_aliases(
+    row: dict[str, Any],
+    specs: tuple[GeneralLevelSpec, ...],
+    *,
+    defer_period_series_encoding: bool = False,
+) -> dict[str, Any]:
     clone = dict(row)
-    by_dimension = _json_object(clone.get("by_dimension"))
-    dimension_data = _json_object(clone.get("dimension_data"))
+    decoded_by_dimension = clone.get("__by_dimension")
+    by_dimension = (
+        dict(decoded_by_dimension)
+        if isinstance(decoded_by_dimension, dict)
+        else _json_object(clone.get("by_dimension"))
+    )
+    decoded_dimension_data = clone.get("__dimension_data")
+    dimension_data = (
+        dict(decoded_dimension_data)
+        if isinstance(decoded_dimension_data, dict)
+        else _json_object(clone.get("dimension_data"))
+    )
     dimension_channel_data = _json_object(clone.get("dimension_channel_data"))
     dimension_specialty_data = _json_object(clone.get("dimension_specialty_data"))
+    source_labels = {spec.source_field: by_dimension.get(spec.source_field) for spec in specs}
+    source_dimension_data = {spec.source_field: dimension_data.get(spec.source_field) for spec in specs}
+    source_channel_data = {spec.source_field: dimension_channel_data.get(spec.source_field) for spec in specs}
+    source_specialty_data = {spec.source_field: dimension_specialty_data.get(spec.source_field) for spec in specs}
     if _uses_source_specific_dimensions(specs):
         for spec in specs:
             canonical_field = FIELD_BY_CANONICAL_LEVEL[spec.canonical_level]
@@ -159,17 +261,23 @@ def _with_canonical_dimension_aliases(row: dict[str, Any], specs: tuple[GeneralL
             dimension_specialty_data.pop(canonical_field, None)
     for spec in specs:
         canonical_field = FIELD_BY_CANONICAL_LEVEL[spec.canonical_level]
-        source_value = by_dimension.get(spec.source_field)
+        source_value = source_labels.get(spec.source_field)
         if source_value not in (None, "", [], {}):
             by_dimension[canonical_field] = source_value
-        _copy_dimension_field(dimension_data, source=spec.source_field, target=canonical_field)
-        _copy_dimension_field(dimension_channel_data, source=spec.source_field, target=canonical_field)
-        _copy_dimension_field(dimension_specialty_data, source=spec.source_field, target=canonical_field)
+        _copy_dimension_value(dimension_data, value=source_dimension_data.get(spec.source_field), target=canonical_field)
+        _copy_dimension_value(dimension_channel_data, value=source_channel_data.get(spec.source_field), target=canonical_field)
+        _copy_dimension_value(dimension_specialty_data, value=source_specialty_data.get(spec.source_field), target=canonical_field)
     clone["by_dimension"] = _json_dump(by_dimension)
-    clone["dimension_data"] = _json_dump(dimension_data)
-    clone["dimension_channel_data"] = _json_dump(dimension_channel_data)
-    if dimension_specialty_data:
-        clone["dimension_specialty_data"] = _json_dump(dimension_specialty_data)
+    if defer_period_series_encoding:
+        clone["dimension_data"] = "{}"
+        clone["dimension_channel_data"] = "{}"
+        if dimension_specialty_data:
+            clone["dimension_specialty_data"] = "{}"
+    else:
+        clone["dimension_data"] = _json_dump(dimension_data)
+        clone["dimension_channel_data"] = _json_dump(dimension_channel_data)
+        if dimension_specialty_data:
+            clone["dimension_specialty_data"] = _json_dump(dimension_specialty_data)
     clone["__by_dimension"] = by_dimension
     clone["__dimension_data"] = dimension_data
     clone["__dimension_channel_data"] = dimension_channel_data
@@ -228,8 +336,7 @@ def _rows_from_metrics(*, metrics: AggregatedMetrics, focus: BrandMetric | None)
     return rows
 
 
-def _copy_dimension_field(payload: dict[str, Any], *, source: str, target: str) -> None:
-    value = payload.get(source)
+def _copy_dimension_value(payload: dict[str, Any], *, value: Any, target: str) -> None:
     if isinstance(value, dict):
         payload[target] = value
 

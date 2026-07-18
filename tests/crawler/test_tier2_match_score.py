@@ -3,6 +3,7 @@ from __future__ import annotations
 from pipeline.scripts.crawler.tier2_match_score import (
     Tier2Brand,
     build_tier2_matches,
+    candidate_brands_for_item,
     is_ambiguous_brand_name,
     score_exact_match,
 )
@@ -63,3 +64,36 @@ def test_multi_brand_mapping_uses_search_keyword_and_exact_text() -> None:
     assert [m["drug"] for m in matches] == ["리바로"]
     assert matches[0]["score"] >= 70
 
+
+def test_candidate_brands_expand_from_full_article_text() -> None:
+    brands = [
+        Tier2Brand(brand_name="프랄런트", brand_key="프랄런트", source="ubist"),
+        Tier2Brand(brand_name="레파타", brand_key="레파타", source="ubist"),
+        Tier2Brand(brand_name="가드렛", brand_key="가드렛", source="ubist"),
+    ]
+    item = {
+        "title": "PCSK9 항체, 무사건 죽상경화성 심혈관질환 환자에도 이득",
+        "content": "레파타와 프랄런트는 PCSK9 계열 치료제로 처방 근거가 확대됐다.",
+        "search_keyword": "프랄런트",
+    }
+
+    candidates = candidate_brands_for_item(item, brands)
+
+    assert [brand.brand_name for brand in candidates] == ["프랄런트", "레파타"]
+
+
+def test_candidate_brands_use_merged_search_keyword_provenance() -> None:
+    brands = [
+        Tier2Brand(brand_name="빌로이", brand_key="빌로이", source="ubist"),
+        Tier2Brand(brand_name="테빔브라", brand_key="테빔브라", source="ubist"),
+    ]
+    item = {
+        "title": "약평위 통과",
+        "content": "위암 치료제와 면역항암제 급여 논의가 이어졌다.",
+        "search_keyword": "빌로이",
+        "matched_search_keywords": ["빌로이", "테빔브라"],
+    }
+
+    candidates = candidate_brands_for_item(item, brands)
+
+    assert [brand.brand_name for brand in candidates] == ["빌로이", "테빔브라"]

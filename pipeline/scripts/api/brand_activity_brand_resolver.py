@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
@@ -29,8 +30,14 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.config import config
+from pipeline.scripts.api.deep_analysis_context import (
+    DeepAnalysisContext,
+    DeepAnalysisContextError,
+    resolve_deep_analysis_context,
+)
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values, general_brand_atc4_values
 from pipeline.scripts.api.market_scope.catalog import MarketScopeCatalog
 from pipeline.scripts.api.market_scope.types import MarketScopeOption, OptionType, ViewFamily
 
@@ -41,6 +48,33 @@ GENERAL_IQVIA_SIDE_CAR_DIMENSIONS: Final = ("mfr", "molecule_type", "molecule_de
 
 class BrandSetInputError(RuntimeError):
     """Raised when a Brand Activity brand-set request cannot be parsed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 400,
+        error: str = "invalid_brand_activity_request",
+        available_contexts: Sequence[Mapping[str, Any]] = (),
+        requested: Mapping[str, Any] | None = None,
+        hint: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error = error
+        self.available_contexts = tuple(dict(item) for item in available_contexts)
+        self.requested = dict(requested or {})
+        self.hint = hint
+
+    def detail(self) -> dict[str, Any]:
+        detail: dict[str, Any] = {"error": self.error, "message": str(self)}
+        if self.available_contexts:
+            detail["available_contexts"] = list(self.available_contexts)
+        if self.requested:
+            detail["requested"] = self.requested
+        if self.hint:
+            detail["hint"] = self.hint
+        return detail
 
 
 class BrandSetResolutionError(RuntimeError):
@@ -84,6 +118,9 @@ def resolve_brand_set(
     ranking_quarters: Sequence[str] | None = None,
     source: str = SOURCE,
     rank_by_latest_period: bool = False,
+    resolved_context: DeepAnalysisContext | None = None,
+    restrict_strategic_to_ranking: bool = False,
+    prefilter_strategic_choices: bool = False,
 ) -> BrandSetResolution | None:
     """Resolve the Brand Activity selected brand plus top sales competitors."""
 
@@ -95,20 +132,81 @@ def resolve_brand_set(
         filter_payload=raw_filter_payload,
     )
     resolved_market_id = market_scope_market_id or market_id
-    if not resolved_market_id and view_name == "strategic_ml":
-        resolved_market_id = _ml_id_for_brand(selected_brand, source=source)
+    resolved_selected_brand = selected_brand
+    resolved_source = source
+    if view_name == "general" and market_scope_market_id is None:
+        resolved_market_id = _resolve_general_market_id(
+            selected_brand=selected_brand,
+            requested_market_id=market_id,
+            filter_payload=raw_filter_payload,
+            source=source,
+        )
+    if view_name in {"strategic_ml", "strategic_cd"}:
+        if resolved_context is not None:
+            # F-055: the caller already resolved this exact strategic context;
+            # re-resolving here repeated the expensive mart scans per request.
+            # Preserve its source-specific market identity as well.
+            resolved_market_id = resolved_context.market_id
+            resolved_selected_brand = resolved_context.brand_key
+            resolved_source = resolved_context.db_source
+        else:
+            context = _resolve_strategic_brand_context(
+                selected_brand,
+                view_name=view_name,
+                market_id=resolved_market_id,
+            )
+            resolved_market_id = context.market_id
+            resolved_selected_brand = context.brand_key
+            resolved_source = context.db_source
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
-    brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=source))
+    market_row = None
+    ranked_brand_keys: tuple[str, ...] | None = None
+    strategic_choice_meta: dict[str, BrandMeta] | None = None
+    is_unfiltered_strategic = view_name in {"strategic_ml", "strategic_cd"} and not raw_filter_payload
+    if prefilter_strategic_choices and is_unfiltered_strategic and not rank_by_latest_period:
+        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+        if market_row is not None:
+            ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+            choice_rows = tuple(_fetch_brand_choice_rows(view, resolved_market_id, source=resolved_source))
+            strategic_choice_meta = _brand_choice_meta_by_key(choice_rows, has_is_jw=view.has_is_jw)
+            if resolved_selected_brand in strategic_choice_meta:
+                choice_candidates = _brand_choice_candidates(
+                    choice_rows,
+                    strategic_choice_meta,
+                    ranking,
+                    ranking_quarters=ranking_quarters,
+                )
+                choices = _select_choices(
+                    choice_candidates,
+                    selected_brand=resolved_selected_brand,
+                    applied_filter={},
+                    rank_by_latest_period=rank_by_latest_period,
+                )
+                ranked_brand_keys = tuple(choice.brand_key for choice in choices)
+            else:
+                strategic_choice_meta = None
+    elif restrict_strategic_to_ranking and is_unfiltered_strategic:
+        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+        if market_row is not None:
+            ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+            ranked_brand_keys = _ranking_brand_keys(ranking, selected_brand=resolved_selected_brand)
+    if ranked_brand_keys:
+        brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source, brand_keys=ranked_brand_keys))
+    else:
+        brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source))
     if not brand_rows:
         return None
-    market_row = _fetch_market_row(view, resolved_market_id, source=source)
+    if market_row is None:
+        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
     if market_row is None:
         return None
     ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
-    brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
-    if selected_brand not in brand_meta:
+    brand_meta = strategic_choice_meta or _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
+    if view_name == "general":
+        resolved_selected_brand = _resolve_general_selected_brand_key(resolved_selected_brand, brand_meta)
+    if resolved_selected_brand not in brand_meta:
         return None
     effective_filter_payload = _filter_payload_for_effective_market(raw_filter_payload, resolved_market_id, market_scope_market_id is not None)
     applied_filter = applied_brand_filter(view_name, resolved_market_id, effective_filter_payload)
@@ -121,18 +219,18 @@ def resolve_brand_set(
         ranking,
         ranking_quarters=ranking_quarters,
         audit_code_axis=channel_axis,
-        source=source,
+        source=resolved_source,
     )
     choices = _select_choices(
         candidates,
-        selected_brand=selected_brand,
+        selected_brand=resolved_selected_brand,
         applied_filter=applied_filter,
         rank_by_latest_period=rank_by_latest_period,
     )
     return BrandSetResolution(
         view_name=view_name,
         market_id=resolved_market_id,
-        selected_brand=selected_brand,
+        selected_brand=resolved_selected_brand,
         view=view,
         market_row=market_row,
         brand_rows=brand_rows,
@@ -143,6 +241,51 @@ def resolve_brand_set(
         applied_filter=applied_filter,
         channel_axis=channel_axis,
     )
+
+
+def _resolve_general_market_id(
+    *,
+    selected_brand: str,
+    requested_market_id: str | None,
+    filter_payload: Mapping[str, Any],
+    source: str,
+) -> str | None:
+    """Resolve an unordered ATC list against the selected brand's memberships."""
+
+    raw_values = filter_payload.get("atc4")
+    values = (
+        raw_values
+        if isinstance(raw_values, Sequence) and not isinstance(raw_values, str | bytes)
+        else (raw_values,)
+    )
+    requested = canonical_atc4_values(value for value in values if value is not None)
+    if len(requested) <= 1:
+        return requested_market_id
+
+    requested_set = set(requested)
+    for membership in general_brand_atc4_values(brand=selected_brand, source=source):
+        if membership in requested_set:
+            return membership
+    return requested_market_id
+
+
+def _resolve_general_selected_brand_key(selected_brand: str, brand_meta: Mapping[str, BrandMeta]) -> str:
+    if selected_brand in brand_meta:
+        return selected_brand
+    display_brand = get_display_brand(selected_brand)
+    if display_brand is None:
+        return selected_brand
+    aliases = {_compact_brand_name(value) for value in display_brand.layer3_aliases}
+    matches = [
+        brand_key
+        for brand_key, meta in brand_meta.items()
+        if _compact_brand_name(brand_key) in aliases or _compact_brand_name(meta.brand_name) in aliases
+    ]
+    return matches[0] if len(matches) == 1 else selected_brand
+
+
+def _compact_brand_name(value: str) -> str:
+    return value.replace(" ", "").lower()
 
 
 def _market_scope_market_id(
@@ -194,7 +337,13 @@ def _filter_payload_for_effective_market(filter_payload: Mapping[str, Any], mark
     if not market_scope_used:
         return filter_payload
     payload = dict(filter_payload)
-    payload["atc4"] = [market_id]
+    raw_atc4 = filter_payload.get("atc4")
+    requested_atc4 = canonical_atc4_values(
+        raw_atc4
+        if isinstance(raw_atc4, Sequence) and not isinstance(raw_atc4, str | bytes)
+        else (raw_atc4,)
+    )
+    payload["atc4"] = list(requested_atc4) if market_id in requested_atc4 else [market_id]
     return payload
 
 
@@ -205,40 +354,103 @@ def view_config(view_name: str) -> ViewConfig:
         return ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     if view_name == "strategic_ml":
         return ViewConfig("mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "ml_id", "ml_name", "brand_ranking_stacked", True)
+    if view_name == "strategic_cd":
+        return ViewConfig(
+            "mart_strategic_cd_brand_metric",
+            "mart_strategic_cd_market_metric",
+            "cd_market_id",
+            "cd_market_name",
+            "brand_ranking_stacked",
+            True,
+        )
     raise BrandSetInputError(f"unsupported view: {view_name}")
 
 
-def _ml_id_for_brand(brand: str, *, source: str = SOURCE) -> str:
-    """Resolve one strategic ML market for a selected brand in the ranking scope."""
+def _resolve_strategic_brand_context(
+    brand: str,
+    *,
+    view_name: str,
+    market_id: str | None,
+) -> DeepAnalysisContext:
+    """Resolve strategic membership through the shared catalog contract."""
 
-    rows = db.fetch_all(
-        f"""
-        SELECT DISTINCT ml_id
-        FROM {quote_identifier(config.db_name)}.`mart_strategic_ml_brand_metric`
-        WHERE source = %s AND measure = %s AND (brand_key = %s OR brand_name = %s)
-        ORDER BY ml_id
-        """,
-        (source, RANKING_MEASURE, brand, brand),
-    )
-    market_ids = tuple(str(row["ml_id"]) for row in rows if row.get("ml_id"))
-    if not market_ids:
-        raise BrandSetInputError("brand not in any ml market")
-    if len(market_ids) > 1:
-        # Expected 1:1 in the IQVIA sales scope. If violated, fail loudly
-        # rather than silently returning a possibly-wrong market.
-        raise BrandSetInputError(
-            f"ambiguous ml market for brand: {', '.join(market_ids)}"
+    try:
+        return resolve_deep_analysis_context(
+            brand=brand,
+            view_kind=view_name,
+            market_id=market_id,
+            source=None,
         )
-    return market_ids[0]
+    except DeepAnalysisContextError as exc:
+        if exc.error == "ambiguous_source_context":
+            try:
+                return resolve_deep_analysis_context(
+                    brand=brand,
+                    view_kind=view_name,
+                    market_id=market_id,
+                    source="iqvia",
+                )
+            except DeepAnalysisContextError as source_exc:
+                raise _brand_set_context_error(brand, view_name, market_id, source_exc) from source_exc
+        raise _brand_set_context_error(brand, view_name, market_id, exc) from exc
 
 
-def _fetch_brand_rows(view: ViewConfig, market_id: str, *, source: str = SOURCE) -> list[JsonMap]:
+def _brand_set_context_error(
+    brand: str,
+    view_name: str,
+    market_id: str | None,
+    error: DeepAnalysisContextError,
+) -> BrandSetInputError:
+    status_code = 400 if error.status_code == 404 else error.status_code
+    return BrandSetInputError(
+        error.message,
+        status_code=status_code,
+        error=error.error,
+        available_contexts=error.available_contexts,
+        requested={"brand": brand, "view": view_name, "market_id": market_id},
+        hint="provide market_id from available_contexts" if error.available_contexts else "verify strategic catalog membership",
+    )
+
+
+def _fetch_brand_rows(
+    view: ViewConfig,
+    market_id: str,
+    *,
+    source: str = SOURCE,
+    brand_keys: Sequence[str] | None = None,
+) -> list[JsonMap]:
     is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
     overlay = "overlay_data" if view.has_is_jw else "NULL AS overlay_data"
     audit_code_matrix = "audit_code_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS audit_code_matrix"
+    key_clause = ""
+    params: list[object] = [market_id, source, RANKING_MEASURE]
+    if brand_keys:
+        key_clause = f" AND brand_key IN ({_placeholders(brand_keys)})"
+        params.extend(brand_keys)
     return db.fetch_all(
         f"""
         SELECT DISTINCT brand_key, brand_name, {is_jw}, by_dimension, {overlay}, metric_history, {audit_code_matrix}
+        FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
+        WHERE {view.market_key} = %s AND source = %s AND measure = %s
+          {key_clause}
+        ORDER BY brand_key
+        """,
+        tuple(params),
+    )
+
+
+def _fetch_brand_choice_rows(
+    view: ViewConfig,
+    market_id: str,
+    *,
+    source: str = SOURCE,
+) -> list[JsonMap]:
+    is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
+    return db.fetch_all(
+        f"""
+        SELECT DISTINCT brand_key, brand_name, {is_jw},
+               JSON_EXTRACT(by_dimension, '$.products[*].product_code') AS product_codes,
+               raw_value_history
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
         ORDER BY brand_key
@@ -295,6 +507,30 @@ def _brand_candidates(
                 dimensions=_dimensions(view_name, row, meta, general_molecules, general_sidecar.get(brand_key, {})),
                 sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
                 sales_value=_candidate_sales_value(row, ranking=ranking, ranking_quarters=ranking_quarters, audit_code_axis=audit_code_axis),
+            )
+        )
+    return tuple(candidates)
+
+
+def _brand_choice_candidates(
+    rows: tuple[JsonMap, ...],
+    metas: dict[str, BrandMeta],
+    ranking: JsonMap,
+    *,
+    ranking_quarters: Sequence[str] | None = None,
+) -> tuple[BrandCandidate, ...]:
+    rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
+    candidates: list[BrandCandidate] = []
+    for row in rows:
+        brand_key = str(row["brand_key"])
+        raw_history = json_map(row.get("raw_value_history"))
+        periods = tuple(ranking_quarters or sorted(raw_history))
+        candidates.append(
+            BrandCandidate(
+                meta=metas[brand_key],
+                dimensions={},
+                sales_rank=int_or_none(rank_by_key.get(brand_key, {}).get("rank")),
+                sales_value=sum(float_value(raw_history.get(period)) for period in periods),
             )
         )
     return tuple(candidates)
@@ -452,6 +688,36 @@ def _brand_meta_by_key(rows: tuple[JsonMap, ...], *, has_is_jw: bool) -> dict[st
     return metas
 
 
+def _brand_choice_meta_by_key(rows: tuple[JsonMap, ...], *, has_is_jw: bool) -> dict[str, BrandMeta]:
+    metas: dict[str, BrandMeta] = {}
+    for row in rows:
+        brand_key = str(row["brand_key"])
+        products = tuple(
+            sorted(
+                {
+                    normalize_iqvia_en(code)
+                    for code in _json_list(row.get("product_codes"))
+                    if isinstance(code, str)
+                }
+            )
+        )
+        is_jw = bool(row.get("is_jw")) if has_is_jw else get_display_brand(brand_key) is not None
+        metas[brand_key] = BrandMeta(brand_key, str(row.get("brand_name") or brand_key), products, is_jw)
+    return metas
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str | bytes | bytearray):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
 def _product_codes(value: Any) -> list[str]:
     products = json_map(value).get("products")
     if not isinstance(products, list):
@@ -474,6 +740,19 @@ def _ranking_for_quarter(row: JsonMap, ranking_column: str, quarters: Sequence[s
 def _ranking_items(ranking: JsonMap) -> list[JsonMap]:
     items = ranking.get("items")
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _ranking_brand_keys(ranking: JsonMap, *, selected_brand: str) -> tuple[str, ...]:
+    """Return the selected brand plus the first five ranked competitors."""
+
+    keys: list[str] = [selected_brand]
+    for item in _ranking_items(ranking):
+        key = text(item.get("brand_key"))
+        if key and key not in keys:
+            keys.append(key)
+        if len(keys) == MAX_BRAND_SET_SIZE:
+            break
+    return tuple(keys) if len(keys) == MAX_BRAND_SET_SIZE else ()
 
 
 def _text_values(*values: Any) -> tuple[str, ...]:

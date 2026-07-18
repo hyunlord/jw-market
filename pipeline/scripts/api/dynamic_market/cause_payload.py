@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
+import logging
+import os
 from pathlib import Path
 import sys
+from time import perf_counter
 from typing import Any
 
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.analysis_levels import build_analysis_level_sections
-from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking, company_ranking
+from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking, company_hhi_series, company_ranking
 from pipeline.scripts.api.dynamic_market.cause_sections import (
     display_matrix_rows,
     growth_contribution,
@@ -27,8 +31,16 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     market_size_series,
     recent_yoy,
 )
-from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition
+from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric, MarketDefinition, PeriodRange
+from pipeline.scripts.api.market_growth import growth_endpoint_meta
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code, raw_pair_to_channel_code
+
+
+logger = logging.getLogger(__name__)
+
+
+def _stage_timing_enabled() -> bool:
+    return os.getenv("LATENCY_STAGE_TIMING", "").strip().lower() in {"1", "true", "yes"}
 
 
 ETL_DIR = Path(__file__).resolve().parents[2] / "etl"
@@ -50,13 +62,15 @@ GENERAL_UNUSED_DATA_KEYS = frozenset(
 )
 
 
-def build_cause_payload(*, definition: MarketDefinition, metrics: AggregatedMetrics) -> dict[str, Any]:
+def build_cause_payload(
+    *, definition: MarketDefinition, metrics: AggregatedMetrics, period_range: PeriodRange = PeriodRange()
+) -> dict[str, Any]:
     """Return a runtime payload with the same field tree as ``/api/cause``."""
 
     source = SOURCE_LABELS.get(metrics.source, metrics.source.upper())
     market_id = _market_id(definition)
     focus = _focus_brand(metrics.all_brands, definition.focus_brand_key)
-    data = build_cause_data(definition=definition, metrics=metrics, focus=focus)
+    data = build_cause_data(definition=definition, metrics=metrics, focus=focus, period_range=period_range)
     meta = build_market_meta(definition=definition, metrics=metrics, market_id=market_id, data=data)
     payload = {
         "brand": focus.brand_name if focus else "동적 시장",
@@ -79,9 +93,12 @@ def build_cause_data(
     definition: MarketDefinition,
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
+    period_range: PeriodRange = PeriodRange(),
 ) -> dict[str, Any]:
     """Build all direct ``data`` keys expected by the cause renderer."""
 
+    timing_enabled = _stage_timing_enabled()
+    started = perf_counter() if timing_enabled else None
     series = market_size_series(metrics)
     yoy_series = {item["period"]: item["yoy_growth_pct"] for item in series}
     hhi = hhi_series(metrics.all_brands, source=metrics.source)
@@ -90,25 +107,47 @@ def build_cause_data(
     display_matrix = display_matrix_rows(matrix, focus=focus)
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
+    company_hhi = company_hhi_series(metrics.all_brands, source=metrics.source)
+    if timing_enabled and started is not None:
+        logger.info(
+            "market_latency_compose_stage section=base_metrics ms=%.3f brands=%d",
+            (perf_counter() - started) * 1000,
+            len(metrics.all_brands),
+        )
+    analysis_started = perf_counter() if timing_enabled else None
     levels = empty_analysis_levels(series)
     analysis_sections = build_analysis_level_sections(
         definition=definition,
         metrics=metrics,
         focus=focus,
         mart_db=config.db_name,
+        period_range=period_range,
     )
+    if timing_enabled and analysis_started is not None:
+        logger.info(
+            "market_latency_compose_stage section=analysis_levels ms=%.3f present=%s",
+            (perf_counter() - analysis_started) * 1000,
+            bool(analysis_sections),
+        )
     if analysis_sections:
         levels = analysis_sections["analysis_levels"]
     ubist_channels = _general_ubist_channels(metrics)
     if analysis_sections and isinstance(analysis_sections.get("ubist_channel_context"), dict):
         ubist_channels = _ubist_channels_from_context(analysis_sections["ubist_channel_context"], fallback=ubist_channels)
     target_channels = _general_target_customer_channels(metrics=metrics, ubist_channels=ubist_channels)
+    competition_started = perf_counter() if timing_enabled else None
     target_competition_by_channel = _target_customer_competition_by_channel(
         analysis_sections=analysis_sections,
         metrics=metrics,
         focus=focus,
         channels=target_channels,
     )
+    if timing_enabled and competition_started is not None:
+        logger.info(
+            "market_latency_compose_stage section=target_competition ms=%.3f channels=%d",
+            (perf_counter() - competition_started) * 1000,
+            len(target_channels),
+        )
     hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
     matrix_payload = {
         "data": display_matrix,
@@ -123,13 +162,17 @@ def build_cause_data(
         "brand_ranking": ranking,
         "brand_ranking_stacked": ranking,
         "company_concentration_trend": {
-            "periods": [item["year"] for item in hhi],
-            "hhi_values": [item["hhi"] for item in hhi],
+            "periods": [item["year"] for item in company_hhi],
+            "hhi_values": [item["hhi"] for item in company_hhi],
         },
         "company_ranking": company,
         "company_ranking_stacked": company,
         "ei_ms_matrix": matrix_payload,
-        "growth_contribution": growth_contribution(metrics.all_brands, focus=focus),
+        "growth_contribution": growth_contribution(
+            metrics.all_brands,
+            focus=focus,
+            source=metrics.source,
+        ),
         "growth_contribution_ms_matrix": matrix_payload,
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,
@@ -256,6 +299,8 @@ def _target_customer_competition_by_channel(
         target_name=focus.brand_name if focus else None,
         periods=periods,
         channels=[str(channel) for channel in channels if str(channel)],
+        series_value_cache=analysis_sections.get("series_value_cache"),
+        channel_rows_cache=analysis_sections.get("channel_rows_cache"),
     )
 
 
@@ -428,12 +473,16 @@ def normalize_portal_read_data(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ensure_class_alias(section: dict[str, Any]) -> dict[str, Any]:
-    """Mirror the cache builder's split-class alias for portal chart compatibility."""
+    """Expose the detailed split class while preserving portal chart compatibility."""
 
     data = section.get("data")
-    if not isinstance(data, dict) or "Class" in data or "Class 1" not in data:
+    if not isinstance(data, dict) or "Class" in data:
         return section
-    return {**section, "data": {**data, "Class": data["Class 1"]}}
+    if "Class 2" in data:
+        return {**section, "data": {**data, "Class": deepcopy(data["Class 2"])}}
+    if "Class 1" in data:
+        return {**section, "data": {**data, "Class": deepcopy(data["Class 1"])}}
+    return section
 
 
 def build_market_meta(
@@ -451,6 +500,10 @@ def build_market_meta(
     label = _market_label(atc_codes=atc_codes, molecules=molecules)
     if definition.view.startswith("strategic_"):
         label = f"전략 동적 시장: {market_id}"
+    growth_values = {
+        str(item["period"]): item.get("market_size")
+        for item in metrics.monthly_series
+    }
     return {
         "strategic_market_id": market_id,
         "market_name": label,
@@ -475,6 +528,7 @@ def build_market_meta(
         "direct_competition_count": len(metrics.all_brands),
         "market_size_recent": latest_market_value(data["market_size_series"]),
         "market_cagr_5y_pct": metrics.cagr,
+        "mom_growth_meta": growth_endpoint_meta(growth_values),
         "is_jw": False,
         "is_target": False,
     }

@@ -27,7 +27,14 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     ratio,
     text,
 )
-from pipeline.scripts.api.brand_activity_csd_timeseries import resolve_csd_market
+from pipeline.scripts.api.brand_activity_csd_timeseries import (
+    CsdProductCodes,
+    CsdMarketFilterError,
+    _aggregate_market_activity,
+    _iqvia_csd_product_codes,
+    _select_csd_markets,
+    resolve_csd_markets,
+)
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
@@ -41,6 +48,7 @@ class ActivityRows:
     totals: dict[str, float]
     by_product: dict[str, dict[str, float]]
     by_company: dict[str, dict[str, float]]
+    observed_months: tuple[str, ...]
 
 
 def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
@@ -61,28 +69,60 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
             selected_brand=request.selected_brand,
             filter_payload=_brand_set_filter_payload(request),
             ranking_quarters=quarters,
+            prefilter_strategic_choices=True,
         )
     except BrandSetInputError as exc:
         raise CsdActivitySeriesInputError(str(exc)) from exc
     if brand_set is None:
         return None
-    selected_meta = brand_set.brand_meta.get(request.selected_brand)
+    selected_meta = brand_set.brand_meta.get(brand_set.selected_brand)
     if selected_meta is None:
         return None
-    crosswalk = resolve_csd_market({code for meta in brand_set.brand_meta.values() for code in meta.product_codes})
-    rows = _fetch_activity_rows(crosswalk, request.csd_channel)
-    activity = _activity_rows(rows, activity_months, all_months)
-    selected_key = _selected_entity_key(request.entity_level, request.selected_brand, selected_meta, brand_set)
+    csd_codes = _iqvia_csd_product_codes(brand_set.brand_meta, selected_brand=brand_set.selected_brand)
+    crosswalks = resolve_csd_markets(
+        selected_product_codes=set(csd_codes.selected),
+        candidate_product_codes=set(csd_codes.candidates),
+    )
+    selected_crosswalks = _select_csd_markets(crosswalks, request.csd_market)
+    crosswalk = selected_crosswalks[0]
+    selected_key = _selected_entity_key(request.entity_level, selected_meta, brand_set)
     entity_keys = _entity_keys(request, selected_key, brand_set)
-    rank_source = activity.by_company if request.entity_level == "company" else _brand_activity_by_key(brand_set, activity)
-    ranks = _ranks_by_period(rank_source, activity_months)
-    values = rank_source
+    activity_by_market: dict[str, JsonMap] = {}
+    primary_values: dict[str, dict[str, float]] = {}
+    primary_totals: dict[str, float] = {}
+    for item in selected_crosswalks:
+        activity = _activity_rows(
+            _fetch_activity_rows(item, request.csd_channel, activity_months),
+            activity_months,
+            all_months,
+        )
+        values = (
+            _company_activity_by_key(brand_set, activity, csd_codes.by_brand)
+            if request.entity_level == "company"
+            else _brand_activity_by_key(brand_set, activity, csd_codes.by_brand)
+        )
+        activity_by_market[item.display_market] = {
+            "totals": activity.totals,
+            "by_brand": values,
+            "observed_months": activity.observed_months,
+        }
+        if item == crosswalk:
+            primary_values = values
+            primary_totals = activity.totals
+    aggregate = _aggregate_market_activity(activity_by_market)
+    ranks = _ranks_by_period(primary_values, activity_months)
     return {
-        "scope": _scope_payload(request, brand_set, crosswalk, quarters),
+        "scope": _scope_payload(request, brand_set, crosswalk, crosswalks, quarters),
         "entity_level": request.entity_level,
         "channel": request.csd_channel,
         "period": {"quarters": list(quarters), "months": list(activity_months), "max_quarters": MAX_QUARTERS, "default_quarters": DEFAULT_QUARTERS},
-        "entities": [_entity_payload(key, selected_key, values.get(key, {}), activity.totals, ranks, activity_months, brand_set) for key in entity_keys],
+        "entities": [_entity_payload(key, selected_key, primary_values.get(key, {}), primary_totals, ranks, activity_months, brand_set) for key in entity_keys],
+        "series_by_csd_market": aggregate["series_by_market"],
+        "aggregate": {
+            "series": aggregate["series"],
+            "available": aggregate["available"],
+            "contributing_markets_by_period": aggregate["contributing_markets_by_period"],
+        },
         "applied": {"csd_channel": request.csd_channel, "entity_level": request.entity_level},
     }
 
@@ -107,8 +147,15 @@ def _brand_set_filter_payload(request: ParsedCsdActivityRequest) -> JsonMap:
     return request.filter_payload
 
 
-def _fetch_activity_rows(crosswalk: CsdCrosswalk, csd_channel: str) -> list[JsonMap]:
-    return db.fetch_all(_sql_csd_activity(), (crosswalk.market, csd_channel))
+def _fetch_activity_rows(
+    crosswalk: CsdCrosswalk,
+    csd_channel: str,
+    activity_months: tuple[str, ...],
+) -> list[JsonMap]:
+    return db.fetch_all(
+        _sql_csd_activity(),
+        (crosswalk.market, csd_channel, activity_months[0], activity_months[-1]),
+    )
 
 
 def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tuple[str, ...]) -> ActivityRows:
@@ -125,7 +172,14 @@ def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tup
         _add_value(by_product, product, month, value)
         _add_value(by_company, company, month, value)
         totals[month] += value
-    return ActivityRows(months=months, all_months=all_months, totals=totals, by_product=by_product, by_company=by_company)
+    return ActivityRows(
+        months=months,
+        all_months=all_months,
+        totals=totals,
+        by_product=by_product,
+        by_company=by_company,
+        observed_months=tuple(sorted({str(row["period_ym"]) for row in rows if str(row["period_ym"]) in totals})),
+    )
 
 
 def _entity_keys(request: ParsedCsdActivityRequest, selected_key: str, brand_set: BrandSetResolution) -> tuple[str, ...]:
@@ -142,11 +196,16 @@ def _iqvia_sales_keys(entity_level: CsdEntityLevel, brand_set: BrandSetResolutio
     return tuple(_unique(_company_for_brand(choice.brand_key, brand_set) for choice in brand_set.choices))
 
 
-def _brand_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRows) -> dict[str, dict[str, float]]:
+def _brand_activity_by_key(
+    brand_set: BrandSetResolution,
+    activity: ActivityRows,
+    product_codes_by_brand: Mapping[str, frozenset[str]] | None = None,
+) -> dict[str, dict[str, float]]:
     values: dict[str, dict[str, float]] = dict(activity.by_product)
     for brand_key, meta in brand_set.brand_meta.items():
         merged: dict[str, float] = {}
-        for product in meta.product_codes:
+        product_codes = (product_codes_by_brand or {}).get(brand_key, frozenset(meta.product_codes))
+        for product in product_codes:
             for quarter, value in activity.by_product.get(normalize_iqvia_en(product), {}).items():
                 merged[quarter] = merged.get(quarter, 0.0) + value
         if merged:
@@ -154,7 +213,22 @@ def _brand_activity_by_key(brand_set: BrandSetResolution, activity: ActivityRows
     return values
 
 
-def _selected_entity_key(entity_level: CsdEntityLevel, selected_brand: str, selected_meta: BrandMeta, brand_set: BrandSetResolution) -> str:
+def _company_activity_by_key(
+    brand_set: BrandSetResolution,
+    activity: ActivityRows,
+    product_codes_by_brand: Mapping[str, frozenset[str]] | None = None,
+) -> dict[str, dict[str, float]]:
+    brand_values = _brand_activity_by_key(brand_set, activity, product_codes_by_brand)
+    values: dict[str, dict[str, float]] = {}
+    for choice in brand_set.choices:
+        company = _company_for_brand(choice.brand_key, brand_set)
+        for period, value in brand_values.get(choice.brand_key, {}).items():
+            _add_value(values, company, period, value)
+    return values
+
+
+def _selected_entity_key(entity_level: CsdEntityLevel, selected_meta: BrandMeta, brand_set: BrandSetResolution) -> str:
+    selected_brand = brand_set.selected_brand
     if entity_level == "company":
         return _company_for_brand(selected_brand, brand_set)
     return selected_brand or normalize_iqvia_en(selected_meta.product_codes[0])
@@ -163,7 +237,7 @@ def _selected_entity_key(entity_level: CsdEntityLevel, selected_brand: str, sele
 def _company_for_brand(brand_key: str, brand_set: BrandSetResolution) -> str:
     row = next((item for item in brand_set.brand_rows if str(item.get("brand_key")) == brand_key), {})
     company = text(json_map(row.get("by_dimension")).get("company")) or text(json_map(row.get("by_dimension")).get("manufacturer"))
-    return company or brand_key
+    return company or "미분류"
 
 
 def _entity_payload(key: str, selected_key: str, values: dict[str, float], totals: dict[str, float], ranks: dict[str, dict[str, int]], months: tuple[str, ...], brand_set: BrandSetResolution) -> JsonMap:
@@ -194,12 +268,19 @@ def _ranks_by_period(values: dict[str, dict[str, float]], periods: tuple[str, ..
     return ranks
 
 
-def _scope_payload(request: ParsedCsdActivityRequest, brand_set: BrandSetResolution, crosswalk: CsdCrosswalk, quarters: tuple[str, ...]) -> JsonMap:
+def _scope_payload(
+    request: ParsedCsdActivityRequest,
+    brand_set: BrandSetResolution,
+    crosswalk: CsdCrosswalk,
+    crosswalks: tuple[CsdCrosswalk, ...],
+    quarters: tuple[str, ...],
+) -> JsonMap:
     return {
         "view": request.view,
         "market_id": brand_set.market_id,
         "market_name": str(brand_set.market_row.get(brand_set.view.market_name_column) or brand_set.market_id),
         "csd_market": crosswalk.display_market,
+        "csd_markets": [item.display_market for item in crosswalks],
         "selected_brand": request.selected_brand,
         "filter": request.filter_payload,
         "applied_filter": brand_set.applied_filter,
@@ -231,5 +312,6 @@ def _sql_csd_activity() -> str:
         SELECT period_ym, master_product, representing_company, SUM(product_details) AS value
         FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage`
         WHERE market = %s AND jw_channel = %s
+          AND period_ym BETWEEN %s AND %s
         GROUP BY period_ym, master_product, representing_company
     """

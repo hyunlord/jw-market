@@ -1,0 +1,25 @@
+\"generation\":302
+\"jw-market/release\":\"f139-brand-activity-general-scope\"
+{\"name\":\"GENERAL_DIMENSION_DB_NAME\"
+{\"name\":\"AGENT3_DB\"
+\"image\":\"asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:30291dc854600c20d60a1196e642b518aa13e8838022acd78425a0c9a651dc4d\"
+\"nodeSelector\":{\"cloud.google.com/gke-nodepool\":\"knp-jw-agn-dev-genos-api-01\"}
+\"observedGeneration\":302
+
+DB_HOST = llmops-mariadb-service.llmops.svc.cluster.local
+DB_PORT = 3306
+DB_USER = llmops
+DB_PASSWORD = <secret:{'secretKeyRef': {'key': 'mariadb-password', 'name': 'galera-mariadb-gal
+DB_NAME = jw_mart_d2_stage_20260630_r2
+LOG_LEVEL = INFO
+API_HOST = 0.0.0.0
+API_PORT = 8000
+PROJECT_ROOT = /app
+BRIDGE_DB_NAME = jw_mart_d2_stage_20260630_r2
+GENERAL_DIMENSION_DB_NAME = jw_mart_d2_stage_20260630_r2
+STRATEGIC_DIMENSION_DB_NAME = jw_mart_d2_stage_20260630_r2
+APP_VERSION = ad782bc064ba03a45eaa4f1e301dbd75b8bf9a9e
+EXTERNAL_PATH_PREFIX = /jw-market-backend-api
+DYNAMIC_MAX_BRAND_ROWS = 3000
+AGENT3_DB = jw_mart_d2_stage_20260630_r2
+LATENCY_STAGE_TIMING = false

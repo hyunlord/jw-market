@@ -53,7 +53,15 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
             assert params == ["iqvia_nsa", "가드렛", "가드렛", "가드렛"]
             return [{"atc4_code": "A10X9"}]
         if "FROM `jw_mart`.mart_general_brand_metric" in sql and "brand_key" in sql:
-            assert params == ["iqvia_nsa", "가드렛", "가드렛", "가드렛"]
+            assert params == [
+                "iqvia_nsa",
+                "가드렛",
+                "가드렛",
+                "가드렛",
+                "ANAGLIPTIN",
+                "ANAGLIPTIN",
+                "ANAGLIPTIN",
+            ]
             return [{"atc4_code": "A10X9"}]
         if "FROM `jw_mart`.mart_general_brand_metric" in sql:
             assert params == ["iqvia_nsa"]
@@ -72,6 +80,115 @@ def test_market_filter_atc_options_flags_general_brand_atc_and_uses_source_unive
     assert atc4_by_key["A01A2"] == {"key": "A01A2", "level": "atc4", "parent": "A01A", "flag": False}
     assert atc4_by_key["C10A1"]["flag"] is False
     assert any("SELECT DISTINCT atc4_code" in sql and "brand_key" not in sql for sql, _ in calls)
+
+
+def test_market_filter_atc_options_general_without_brand_returns_unflagged_source_universe(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert "brand_key" not in sql
+        assert params == ["ubist"]
+        return [{"atc4_code": "A01A1"}, {"atc4_code": "C10A1"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    response = TestClient(app).get(
+        "/api/market-filter/atc-options",
+        params={"view": "general", "source": "ubist"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["brand_name"] == ""
+    assert payload["market_id"] is None
+    assert payload["flagged_atc4"] == []
+    assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
+    assert all(option["flag"] is False for level in payload["atc"].values() for option in level)
+
+
+def test_market_filter_atc_options_defaults_to_general_universe(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert "mart_strategic_ml_brand_metric" not in sql
+        assert params == ["ubist"]
+        return [{"atc4_code": "A01A1"}, {"atc4_code": "C10A1"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    response = TestClient(app).get(
+        "/api/market-filter/atc-options",
+        params={"source": "ubist"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["view"] == "general"
+    assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
+
+
+def test_market_filter_atc_options_general_preserves_ubist_source_codes(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        assert "mart_general_brand_metric" in sql
+        assert params == ["ubist"]
+        return [{"atc4_code": "A2B2"}, {"atc4_code": "C10C"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    response = TestClient(app).get(
+        "/api/market-filter/atc-options",
+        params={"source": "ubist"},
+    )
+
+    assert response.status_code == 200
+    assert [option["key"] for option in response.json()["atc"]["atc4"]] == ["A2B2", "C10C"]
+
+
+def test_market_filter_atc_options_uses_existing_display_brand_aliases(monkeypatch) -> None:
+    calls: list[list[object]] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        calls.append(params)
+        if "brand_key" in sql:
+            assert "위너프에이플러스" in params
+            return [{"atc4_code": "K01D2"}]
+        return [{"atc4_code": "K01D2"}, {"atc4_code": "K01E"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    payload = build_market_filter_atc_options(brand_name="위너프A+", view="general", source="iqvia")
+
+    assert payload["market_id"] == "K01D2"
+    assert payload["flagged_atc4"] == ["K01D2"]
+    assert calls
+
+
+@pytest.mark.parametrize(
+    ("brand_name", "brand_atc4"),
+    [
+        ("리바로", ("C10A1",)),
+        ("포도당 대한", ("K01B3", "K01C1", "K04B1", "K04B2", "K04C0")),
+        ("없는 브랜드", ()),
+    ],
+)
+def test_market_filter_atc_options_general_brand_never_restricts_source_universe(
+    monkeypatch,
+    brand_name: str,
+    brand_atc4: tuple[str, ...],
+) -> None:
+    universe = ("A01A1", "C10A1", "K01B3", "K01C1", "K04B1", "K04B2", "K04C0")
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        if "brand_key" in sql:
+            assert params == ["ubist", brand_name, brand_name, brand_name]
+            return [{"atc4_code": code} for code in brand_atc4]
+        assert params == ["ubist"]
+        return [{"atc4_code": code} for code in universe]
+
+    monkeypatch.setattr("pipeline.scripts.api.market_filter_atc_options.db.fetch_all", fake_fetch_all)
+
+    payload = build_market_filter_atc_options(brand_name=brand_name, view="general", source="ubist")
+
+    assert [option["key"] for option in payload["atc"]["atc4"]] == list(universe)
+    assert payload["flagged_atc4"] == list(brand_atc4)
 
 
 def test_market_filter_atc_options_is_get_only_and_exposed_in_openapi() -> None:

@@ -11,8 +11,9 @@ dimension filter is present, while the unfiltered path keeps using the proven
 general mart.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import math
 from typing import TYPE_CHECKING, Any
 import re
 
@@ -33,6 +34,9 @@ BLOCKED_DIMENSION_TARGETS = frozenset(
     }
 )
 EMPTY_DIMENSION_VALUES = frozenset({"", "-", "<na>", "n/a", "na", "nan", "none", "null", "미상", "해당없음"})
+PERIOD_COMPLETE_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    "ubist": ("seller", "molecule", "molecule_strength", "form", "route", "reimbursement"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +79,9 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             dimension_type="molecule",
             display_name="성분",
             source_columns=("ubist_molecule_raw",),
-            enabled=False,
+            enabled=True,
             source="ubist",
-            notes="PL 결정으로 MVP 동적 필터에서 제외한다. raw provenance만 보존한다.",
+            notes="원천 molecule 값을 분해하지 않고 양끝 공백만 제거해 하나의 성분 값으로 보존한다.",
         ),
         "molecule_strength": DimensionSpec(
             dimension_type="molecule_strength",
@@ -186,7 +190,13 @@ def normalize_dimension_value(value: object) -> str | None:
     return normalized
 
 
-def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) -> list[dict[str, Any]]:
+def build_filter_dimension_rows(
+    source: str,
+    measure: str,
+    frame: pd.DataFrame,
+    *,
+    dimension_types: set[str] | None = None,
+) -> list[dict[str, Any]]:
     if measure not in MEASURES_BY_SOURCE.get(source, ()):
         raise ValueError(f"unsupported measure for {source}: {measure}")
     if frame.empty:
@@ -200,11 +210,18 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
     working = frame.loc[frame["raw_value"].notna() & (frame["raw_value"] > 0)].copy()
     working["source"] = source
     working["measure"] = measure
-    for spec in enabled_dimension_specs(source):
+    specs = enabled_dimension_specs(source)
+    if dimension_types is not None:
+        enabled_types = {spec.dimension_type for spec in specs}
+        unknown = dimension_types.difference(enabled_types)
+        if unknown:
+            raise ValueError(f"unsupported enabled dimensions for {source}: {sorted(unknown)}")
+        specs = tuple(spec for spec in specs if spec.dimension_type in dimension_types)
+    for spec in specs:
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
         working[label_col] = _dimension_display_series(working, spec)
-        working[norm_col] = working[label_col].map(normalize_dimension_value)
+        working[norm_col] = working[label_col].map(lambda value: _normalize_spec_value(value, spec))
         dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
             continue
@@ -238,6 +255,112 @@ def build_filter_dimension_rows(source: str, measure: str, frame: pd.DataFrame) 
                 }
             )
     return rows
+
+
+def validate_filter_dimension_period_coverage(
+    source: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    expected_period: str,
+    expected_total: float | None = None,
+) -> dict[str, dict[str, float | int | str]]:
+    """Reject a sidecar slice that cannot represent the mart's latest month."""
+
+    required_dimensions = PERIOD_COMPLETE_DIMENSIONS.get(source)
+    if required_dimensions is None:
+        raise ValueError(f"period-complete dimensions are not defined for source: {source}")
+
+    coverage = {
+        dimension_type: {"period_rows": 0, "period_sum": 0.0, "latest_period": ""}
+        for dimension_type in required_dimensions
+    }
+    for row in rows:
+        dimension_type = str(row.get("dimension_type") or "")
+        if dimension_type not in coverage:
+            continue
+        history = row.get("raw_value_history")
+        if not isinstance(history, Mapping):
+            continue
+        periods = sorted(str(period) for period, value in history.items() if value is not None)
+        if periods:
+            coverage[dimension_type]["latest_period"] = max(
+                str(coverage[dimension_type]["latest_period"]),
+                periods[-1],
+            )
+        if expected_period not in history:
+            continue
+        value = history[expected_period]
+        if value is None:
+            continue
+        coverage[dimension_type]["period_rows"] += 1
+        coverage[dimension_type]["period_sum"] += float(value)
+
+    missing = [
+        dimension_type
+        for dimension_type, item in coverage.items()
+        if int(item["period_rows"]) == 0
+    ]
+    if missing:
+        raise RuntimeError(
+            f"filter dimension sidecar is missing expected period {expected_period}: {missing}"
+        )
+
+    period_mismatches = {
+        dimension_type: str(item["latest_period"])
+        for dimension_type, item in coverage.items()
+        if item["latest_period"] != expected_period
+    }
+    if period_mismatches:
+        raise RuntimeError(
+            f"filter dimension sidecar latest period mismatch: "
+            f"expected={expected_period}, actual={period_mismatches}"
+        )
+
+    if expected_total is not None:
+        mismatched = {
+            dimension_type: float(item["period_sum"])
+            for dimension_type, item in coverage.items()
+            if not math.isclose(
+                float(item["period_sum"]),
+                float(expected_total),
+                rel_tol=0.0,
+                abs_tol=0.01,
+            )
+        }
+        if mismatched:
+            raise RuntimeError(
+                f"filter dimension sidecar total mismatch for {expected_period}: "
+                f"expected={expected_total}, actual={mismatched}"
+            )
+    return coverage
+
+
+def validate_filter_dimension_market_coverage(
+    source: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    expected_markets: Mapping[str, tuple[str, float]],
+) -> dict[str, dict[str, dict[str, float | int | str]]]:
+    """Validate every market against the period and total in the general mart."""
+
+    rows_by_market: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        market = str(row.get("atc4_code") or "")
+        if market in expected_markets:
+            rows_by_market.setdefault(market, []).append(row)
+
+    results: dict[str, dict[str, dict[str, float | int | str]]] = {}
+    for market, (period, total) in expected_markets.items():
+        try:
+            results[market] = validate_filter_dimension_period_coverage(
+                source,
+                rows_by_market.get(market, ()),
+                expected_period=period,
+                expected_total=total,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"market {market}: {exc}") from exc
+    return results
 
 
 def guard_dimension_stage_target(target_db: str, *, allow_local_serving_target: bool = False) -> None:
@@ -274,11 +397,25 @@ def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Se
     for column in spec.source_columns:
         if column not in frame:
             continue
-        values = frame[column].map(normalize_dimension_value)
+        values = frame[column].map(lambda value: _normalize_spec_value(value, spec))
         if spec.dimension_type == "atc3":
             values = values.map(_atc3_from_atc4)
         result = result.where(result.notna(), values)
     return result
+
+
+def _normalize_spec_value(value: object, spec: DimensionSpec) -> str | None:
+    if spec.source == "ubist" and spec.dimension_type == "molecule":
+        if value is None:
+            return None
+        try:
+            if value != value:
+                return None
+        except TypeError:
+            pass
+        trimmed = str(value).strip()
+        return None if trimmed.lower() in EMPTY_DIMENSION_VALUES else trimmed
+    return normalize_dimension_value(value)
 
 
 def _atc3_from_atc4(value: str | None) -> str | None:

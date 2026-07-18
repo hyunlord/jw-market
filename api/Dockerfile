@@ -26,7 +26,10 @@ COPY pipeline/scripts/api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY pipeline/scripts/api /app/pipeline/scripts/api
+COPY pipeline/scripts/agent3 /app/pipeline/scripts/agent3
+COPY pipeline/scripts/ai_analysis/bundle_builder /app/pipeline/scripts/ai_analysis/bundle_builder
 COPY pipeline/scripts/analysis /app/pipeline/scripts/analysis
+COPY pipeline/scripts/deploy /app/pipeline/scripts/deploy
 COPY pipeline/scripts/etl /app/pipeline/scripts/etl
 COPY pipeline/scripts/forecast /app/pipeline/scripts/forecast
 COPY pipeline/scripts/utils /app/pipeline/scripts/utils

@@ -45,6 +45,32 @@ def with_dimension_series_from_labels(
     by_dimension_raw: Any,
     history_by_period: dict[str, float],
 ) -> str:
+    encoded, _, _ = with_dimension_series_from_labels_decoded(
+        dimension_data_raw,
+        by_dimension_raw,
+        history_by_period,
+    )
+    return encoded
+
+
+def with_dimension_series_from_labels_decoded(
+    dimension_data_raw: Any,
+    by_dimension_raw: Any,
+    history_by_period: dict[str, float],
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    dimension_data, by_dimension = dimension_series_from_labels_decoded(
+        dimension_data_raw,
+        by_dimension_raw,
+        history_by_period,
+    )
+    return json.dumps(dimension_data, ensure_ascii=False, sort_keys=True), dimension_data, by_dimension
+
+
+def dimension_series_from_labels_decoded(
+    dimension_data_raw: Any,
+    by_dimension_raw: Any,
+    history_by_period: dict[str, float],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     dimension_data = cause_builder.decode_json(dimension_data_raw)
     if not isinstance(dimension_data, dict):
         dimension_data = {}
@@ -56,11 +82,11 @@ def with_dimension_series_from_labels(
         for period, value in history_by_period.items()
     }
     if not metric_series:
-        return json.dumps(dimension_data, ensure_ascii=False, sort_keys=True)
+        return dimension_data, by_dimension
     for field, label in by_dimension.items():
         field_data = dimension_data.setdefault(str(field), {})
         if not isinstance(field_data, dict):
             continue
         for item in cause_builder._split_atomic_dimension("", label):
             field_data.setdefault(str(item), metric_series)
-    return json.dumps(dimension_data, ensure_ascii=False, sort_keys=True)
+    return dimension_data, by_dimension

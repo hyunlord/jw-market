@@ -1,0 +1,46 @@
+NAME                                     READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS     IMAGES                                                                                                                                          SELECTOR
+deployment.apps/portal-api-sse-test      0/0     0            0           49d   portal-api     asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/portal-api:sse-test-20260611-181707-sources-pdf-api                 app=portal-api-sse-test
+deployment.apps/portal-api-sse-test2     1/1     1            1           36d   portal-api     asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/portal-api:test2-noauth-api-v2-20260713-0025-api9ca8a8d             app=portal-api-sse-test2
+deployment.apps/portal-back              2/2     2            2           58d   portal-api     asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/portal-api:dev-20260717-160836-front608cdf5-api7006597              app=portal-api
+deployment.apps/portal-front             2/2     2            2           58d   portal-react   asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/portal-react:dev-20260717-160836-front608cdf5-api7006597            app=portal-react
+deployment.apps/portal-front-sse-test    0/0     0            0           49d   portal-front   asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/portal-react:sse-test-20260611-181707-sources-pdf-front             app=portal-front-sse-test
+deployment.apps/portal-front-sse-test2   1/1     1            1           36d   portal-front   asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/portal-react:test2-brandactivity-fix-20260712-163958-front9afdd78   app=portal-front-sse-test2
+
+NAME                                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE   SELECTOR
+service/portal-api-sse-test-svc      ClusterIP   10.13.33.142   <none>        8080/TCP   49d   app=portal-api-sse-test
+service/portal-api-sse-test2-svc     ClusterIP   10.13.33.254   <none>        8080/TCP   36d   app=portal-api-sse-test2
+service/portal-api-svc               ClusterIP   10.13.33.252   <none>        8080/TCP   58d   app=portal-api
+service/portal-front-sse-test-svc    ClusterIP   10.13.33.56    <none>        80/TCP     49d   app=portal-front-sse-test
+service/portal-front-sse-test2-svc   ClusterIP   10.13.33.222   <none>        80/TCP     36d   app=portal-front-sse-test2
+service/portal-front-svc             ClusterIP   10.13.33.144   <none>        80/TCP     56d   app=portal-react
+===
+"
+%s
+)
+    jw_by_brand={}
+    for row in cur.fetchall():
+      brand=str(row[product_name])
+      jw_by_brand[brand]=jw_by_brand.get(brand, False) or is_jw(row[representing_company])
+    cur.execute(fSELECT
+580963
+GenOSSaaS
+GenOSSaaS.tar
+TEMP_DOCUMENT_1123_bbox_preview.pdf
+__pycache__
+admin-portal-map-backup-20260526-034314
+angle_pilot_v2_223047
+angle_pilot_v3_005441
+angle_pilot_v4_013000
+angle_pilot_v5_023000
+angle_pilot_v6_032744
+angle_pilot_v7_034803
+angle_v3_payload_005441.tar.gz
+angle_v3_results_005441.tar.gz
+angle_v3_retry_perinject_005441.tar.gz
+angle_v4_payload_013000.tar.gz
+angle_v4_results_013000.tar.gz
+angle_v5_payload_023000.tar.gz
+angle_v5_results_023000.tar.gz
+angle_v6_mobilia_retry_results.tar.gz
+angle_v6_payload.tar.gz
+angle_v6_results.tar.gz

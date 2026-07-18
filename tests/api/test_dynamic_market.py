@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.scripts.api.dynamic_market import aggregator as aggregator_module
 from pipeline.scripts.api.dynamic_market import cause_payload, cause_time, resolvers, strategic_runtime
 from pipeline.scripts.api.dynamic_market import general_analysis_levels
+from pipeline.scripts.api.composers import cache_to_response
+from pipeline.scripts.etl import ubist_channel_resolver
 from pipeline.scripts.api.dynamic_market.aggregator import (
     MetricAggregator,
     collect_ubist_channel_latest_totals,
@@ -24,7 +26,13 @@ from pipeline.scripts.api.dynamic_market.aggregator import (
 )
 from pipeline.scripts.api.dynamic_market.aggregator import sidecar_rows_to_metric_rows
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.cause_sections import display_matrix_rows, matrix_rows
+from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
+from pipeline.scripts.api.composers.number_format import deep_format_numbers
+from pipeline.scripts.api.dynamic_market.cause_sections import (
+    display_matrix_rows,
+    growth_contribution,
+    matrix_rows,
+)
 from pipeline.scripts.api.dynamic_market.cause_payload import build_cause_payload
 from pipeline.scripts.api.dynamic_market.resolvers import GeneralViewResolver, StrategicViewResolver
 from pipeline.scripts.api.dynamic_market.types import (
@@ -33,6 +41,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     BrandRef,
     DimensionFilter,
     DynamicMarketInputError,
+    DynamicMarketPeriodNoDataError,
     MarketDefinition,
     PeriodRange,
 )
@@ -61,6 +70,115 @@ def test_compute_cagr_accepts_iqvia_quarter_periods() -> None:
 def test_month_distance_accepts_month_and_quarter_periods() -> None:
     assert month_distance("2024-01", "2024-12") == 11
     assert month_distance("2025-Q1", "2026-Q2") == 15
+
+
+def test_general_growth_contribution_uses_distinct_source_period_windows() -> None:
+    periods = tuple(
+        f"{year}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    )[:65]
+    brands = (
+        BrandMetric(
+            "focus",
+            "Focus",
+            "A10N1",
+            0.0,
+            0.0,
+            1,
+            periods[-1],
+            0.0,
+            tuple(
+                {"period": period, "value": float(index)}
+                for index, period in enumerate(periods, start=1)
+            ),
+        ),
+        BrandMetric(
+            "other",
+            "Other",
+            "A10N1",
+            0.0,
+            0.0,
+            2,
+            periods[-1],
+            0.0,
+            tuple(
+                {"period": period, "value": float(index * index)}
+                for index, period in enumerate(periods, start=1)
+            ),
+        ),
+    )
+
+    payload = growth_contribution(brands, focus=brands[0], source="ubist")
+
+    assert [payload["windows"][f"{years}y"]["period_start"] for years in range(1, 6)] == [
+        periods[-12],
+        periods[-24],
+        periods[-36],
+        periods[-48],
+        periods[-60],
+    ]
+    assert len(
+        {
+            payload["windows"][f"{years}y"]["by_brand"]["top_contributors"][0]["contribution_value"]
+            for years in range(1, 6)
+        }
+    ) == 5
+
+
+def test_general_growth_contribution_marks_truncated_history_without_zero_fallback() -> None:
+    periods = ("2025-01", "2025-02", "2025-03")
+    brand = BrandMetric(
+        "focus",
+        "Focus",
+        "A10N1",
+        60.0,
+        100.0,
+        1,
+        periods[-1],
+        30.0,
+        tuple(
+            {"period": period, "value": float(index * 10)}
+            for index, period in enumerate(periods, start=1)
+        ),
+    )
+
+    payload = growth_contribution((brand,), focus=brand, source="ubist")
+
+    for window in payload["windows"].values():
+        assert window["period_start"] == "2025-01"
+        assert window["period_start_actual"] == "2025-01"
+        assert window["reason"] == "earliest_available"
+        assert window["market_start"] == 10.0
+
+
+def test_general_growth_contribution_uses_quarterly_iqvia_stride() -> None:
+    periods = tuple(
+        f"{year}-Q{quarter}"
+        for year in range(2021, 2027)
+        for quarter in range(1, 5)
+    )[:21]
+    brand = BrandMetric(
+        "focus",
+        "Focus",
+        "A10N1",
+        0.0,
+        100.0,
+        1,
+        periods[-1],
+        21.0,
+        tuple({"period": period, "value": float(index)} for index, period in enumerate(periods, start=1)),
+    )
+
+    payload = growth_contribution((brand,), focus=brand, source="iqvia_nsa")
+
+    assert [payload["windows"][f"{years}y"]["period_start"] for years in range(1, 6)] == [
+        periods[-4],
+        periods[-8],
+        periods[-12],
+        periods[-16],
+        periods[-20],
+    ]
 
 
 def test_cause_time_cagr_helpers_accept_iqvia_quarter_periods() -> None:
@@ -227,19 +345,6 @@ def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(mon
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append(sql)
         assert "ubist_channel_by_display" not in sql
-        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
-            yield {
-                "brand_key": "a",
-                "atc4_code": "C10A1",
-                "channel_specialty_matrix": json.dumps(
-                    {
-                        "종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}},
-                        "의원": {"가정의학과(FM)": {"2026-05": 10.0}},
-                    },
-                    ensure_ascii=False,
-                )
-            }
-            return
         assert "channel_specialty_matrix" in sql
         assert "audit_code_matrix" in sql
         yield {
@@ -273,12 +378,13 @@ def test_general_aggregate_keeps_ubist_matrix_columns_for_specialty_channels(mon
 
     metric_sql = calls[0]
     assert "raw_value_history" in metric_sql
-    assert "by_dimension" not in metric_sql
+    assert "by_dimension" in metric_sql
     assert "dimension_data" not in metric_sql
     assert "dimension_channel_data" not in metric_sql
     assert "channel_data" not in metric_sql
     assert "channel_specialty_matrix" in metric_sql
     assert "audit_code_matrix" in metric_sql
+    assert len(calls) == 1
     assert metrics.all_brands[0].channel_specialty_matrix
     assert metrics.all_brands[0].analysis_row["by_dimension"] is None
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기", "의원 IGF")
@@ -518,6 +624,46 @@ def test_matrix_rows_uses_recent_four_market_share_points_for_momentum() -> None
     assert rows[0]["momentum_score"] == pytest.approx(10.0)
 
 
+def test_matrix_rows_keeps_zero_contribution_instead_of_momentum() -> None:
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=10.0,
+        monthly_series=tuple(
+            {"period": f"2026-0{index}", "market_size": 100.0}
+            for index in range(1, 5)
+        ),
+        brands=(),
+        all_brands=(
+            BrandMetric(
+                "zero",
+                "Zero contribution",
+                "C10A1",
+                70.0,
+                10.0,
+                1,
+                "2026-04",
+                10.0,
+                history_by_period={
+                    "2026-01": 10.0,
+                    "2026-02": 20.0,
+                    "2026-03": 30.0,
+                    "2026-04": 10.0,
+                },
+            ),
+        ),
+    )
+
+    row = matrix_rows(metrics=metrics, focus=metrics.all_brands[0])[0]
+
+    assert row["momentum_score"] != 0.0
+    assert row["growth_contribution"] == 0.0
+    assert row["contribution_pct"] is None
+
+
 def test_matrix_rows_returns_none_for_momentum_with_fewer_than_four_share_points() -> None:
     metrics = AggregatedMetrics(
         source="ubist",
@@ -692,7 +838,19 @@ def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monke
                 }
             ]
         if "mart_general_filter_dimension_metric" in sql:
-            return []
+            return [
+                {
+                    "brand_key": "focus",
+                    "brand_name": "Focus",
+                    "atc4_code": "A10N1",
+                    "dimension_type": "molecule",
+                    "dimension_value": "Sitagliptin / Metformin",
+                    "raw_value_history": json.dumps(
+                        {"2026-04": 80.0, "2026-05": 100.0},
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
         return [dict(row) for row in strategic_rows]
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", fake_fetch_all)
@@ -750,16 +908,127 @@ def test_build_cause_data_keeps_general_source_levels_with_focus_ml_market(monke
         ),
         metrics=metrics,
         focus=metrics.all_brands[0],
+        period_range=PeriodRange("2026-05", "2026-05"),
     )
 
     assert any(call[1] == ("ml_999", "ubist", "sales") for call in calls)
-    assert data["analysis_levels"]["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
+    assert data["analysis_levels"]["levels"] == ["판매사", "성분", "성분용량", "제형", "투여경로", "급여구분"]
     assert "Class" not in data["analysis_levels"]["data"]
     seller_segments = data["analysis_levels"]["data"]["판매사"]["by_channel"]["전체"]
+    ingredient_segments = data["analysis_levels"]["data"]["성분"]["by_channel"]["전체"]
     molecule_segments = data["analysis_levels"]["data"]["성분용량"]["by_channel"]["전체"]
     assert [item["name"] for item in seller_segments] == ["전체", "JW중외제약"]
+    assert [item["name"] for item in ingredient_segments] == ["전체", "Sitagliptin / Metformin"]
     assert [item["name"] for item in molecule_segments] == ["전체", "Sitagliptin 100mg"]
     assert data["level_top5_trend"]["by_level"]["판매사"]["values"][1]["value"] == "JW중외제약"
+    analysis_json = json.dumps(
+        {
+            "analysis_levels": data["analysis_levels"],
+            "analysis_level_market_status": data["analysis_level_market_status"],
+            "level_top5_trend": data["level_top5_trend"],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert "2026-04" not in analysis_json
+    assert "2026-05" in analysis_json
+
+
+@pytest.mark.parametrize(
+    ("ml_id", "cd_market_id"),
+    (("ml_006", None), (None, "cd_006")),
+)
+def test_strategic_runtime_trims_every_builder_row_before_ml_or_cd_assembly(
+    monkeypatch,
+    ml_id: str | None,
+    cd_market_id: str | None,
+) -> None:
+    captured: dict[str, object] = {}
+    sibling_rows = [
+        {
+            "brand_key": "리바로",
+            "brand_name": "리바로",
+            "metric_history": json.dumps(
+                {"2025-01": {"raw_value": 10.0}, "2026-01": {"raw_value": 20.0}}
+            ),
+            "extended_metric_history": json.dumps(
+                {"2025-01": {"raw_value": 10.0}, "2026-01": {"raw_value": 20.0}}
+            ),
+            "dimension_data": json.dumps(
+                {"molecule": {"Pitavastatin": {"2025-01": 10.0, "2026-01": 20.0}}}
+            ),
+            "is_jw": 1,
+        }
+    ]
+    market_row = {
+        "market_size_series": json.dumps({"2025-01": 100.0, "2026-01": 200.0}),
+        "hhi_series_5y": json.dumps(
+            [{"year": 2025, "hhi": 100.0}, {"year": 2026, "hhi": 200.0}]
+        ),
+    }
+
+    monkeypatch.setattr(strategic_runtime, "_fetch_sibling_rows", lambda **_kwargs: sibling_rows)
+    monkeypatch.setattr(strategic_runtime, "_fetch_market_row", lambda **_kwargs: market_row)
+    monkeypatch.setattr(strategic_runtime, "_catalog_row", lambda *_args: {})
+    monkeypatch.setattr(strategic_runtime, "_strategic_brand_catalog", lambda: [])
+    monkeypatch.setattr(strategic_runtime, "compose_cached_json", lambda payload, **_kwargs: payload)
+    monkeypatch.setattr(strategic_runtime, "apply_cd_market_definition", lambda *_args: None)
+
+    def fake_build_response(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"data": {"kpi": {"market_size_recent": 100.0}}}
+
+    monkeypatch.setattr(strategic_runtime.cause_builder, "build_response", fake_build_response)
+
+    strategic_runtime._build_strategic_payload(
+        mart_db="mart",
+        ml_id=ml_id,
+        cd_market_id=cd_market_id,
+        focus_brand_key="리바로",
+        source="iqvia",
+        measure="sales",
+        analysis_level=DynamicMarketRequest().filters.analysis_level,
+        period_range=PeriodRange("2025-01", "2025-12"),
+    )
+
+    captured_rows = captured["sibling_rows"]
+    assert isinstance(captured_rows, list)
+    assert json.loads(captured_rows[0]["metric_history"]) == {"2025-01": {"raw_value": 10.0}}
+    assert json.loads(captured_rows[0]["dimension_data"])["molecule"]["Pitavastatin"] == {
+        "2025-01": 10.0
+    }
+    captured_market = captured["market_row"]
+    assert isinstance(captured_market, dict)
+    assert json.loads(captured_market["market_size_series"]) == {"2025-01": 100.0}
+    assert json.loads(captured_market["hhi_series_5y"]) == [{"hhi": 100.0, "year": 2025}]
+
+
+def test_strategic_runtime_rejects_period_window_without_observed_points(monkeypatch) -> None:
+    sibling_rows = [
+        {
+            "brand_key": "리바로",
+            "brand_name": "리바로",
+            "metric_history": json.dumps({"2026-01": {"raw_value": 20.0}}),
+            "extended_metric_history": json.dumps({"2026-01": {"raw_value": 20.0}}),
+            "is_jw": 1,
+        }
+    ]
+    market_row = {"market_size_series": json.dumps({"2026-01": 200.0})}
+    monkeypatch.setattr(strategic_runtime, "_fetch_sibling_rows", lambda **_kwargs: sibling_rows)
+    monkeypatch.setattr(strategic_runtime, "_fetch_market_row", lambda **_kwargs: market_row)
+    monkeypatch.setattr(strategic_runtime, "_catalog_row", lambda *_args: {})
+
+    with pytest.raises(DynamicMarketPeriodNoDataError):
+        strategic_runtime._build_strategic_payload(
+            mart_db="mart",
+            ml_id="ml_006",
+            cd_market_id=None,
+            focus_brand_key="리바로",
+            source="iqvia",
+            measure="sales",
+            analysis_level=DynamicMarketRequest().filters.analysis_level,
+            period_range=PeriodRange("2030-01", "2030-12"),
+        )
 
 
 def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch, caplog) -> None:
@@ -771,27 +1040,9 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
 
     def fake_iter_rows(sql: str, params: tuple[object, ...]):
         calls.append((sql, params))
-        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql:
-            assert "(brand_key, atc4_code) IN" not in sql
-            assert "brand_key IN" in sql
-            assert "atc4_code IN" in sql
-            yield {
-                "brand_key": "a",
-                "atc4_code": "C10A1",
-                "channel_specialty_matrix": json.dumps(
-                    {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
-                    ensure_ascii=False,
-                ),
-            }
-            yield {
-                "brand_key": "a",
-                "atc4_code": "C10C0",
-                "channel_specialty_matrix": json.dumps(
-                    {"의원": {"가정의학과(FM)": {"2026-05": 999.0}}},
-                    ensure_ascii=False,
-                ),
-            }
-            return
+        assert "(brand_key, atc4_code) IN" not in sql
+        assert "brand_key IN" in sql
+        assert "atc4_code IN" in sql
         yield {
             "brand_key": "a",
             "brand_name": "A",
@@ -800,6 +1051,25 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
             "measure": "sales",
             "unit_label": "KRW",
             "raw_value_history": json.dumps({"2026-05": 100.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"종합병원": {"순환기(Cardiology IM)": {"2026-05": 90.0}}},
+                ensure_ascii=False,
+            ),
+            "audit_code_matrix": json.dumps({}),
+        }
+        yield {
+            "brand_key": "a",
+            "brand_name": "A-other-market",
+            "atc4_code": "C10C0",
+            "source": "ubist",
+            "measure": "sales",
+            "unit_label": "KRW",
+            "raw_value_history": json.dumps({"2026-05": 999.0}),
+            "channel_specialty_matrix": json.dumps(
+                {"의원": {"가정의학과(FM)": {"2026-05": 999.0}}},
+                ensure_ascii=False,
+            ),
+            "audit_code_matrix": json.dumps({}),
         }
 
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
@@ -814,14 +1084,12 @@ def test_ubist_channel_summary_uses_superset_scope_with_pair_filter(monkeypatch,
             top_n=20,
         )
 
-    summary_sql, summary_params = next(
-        (sql, params)
-        for sql, params in calls
-        if "channel_specialty_matrix" in sql and "raw_value_history" not in sql
-    )
-    assert summary_params == ("ubist", "sales", "a", "C10A1")
+    assert len(calls) == 1
+    metric_sql, metric_params = calls[0]
+    assert "raw_value_history" in metric_sql
+    assert metric_params == ("ubist", "sales", "a", "C10A1")
     assert metrics.ubist_specialty_channels == ("전체", "종합병원 순환기")
-    assert "filtered_rows=1" in caplog.text
+    assert "general_metric_rows_pair_filter filtered_rows=1" in caplog.text
 
 
 def test_general_aggregate_slices_ubist_channel_axis_from_raw_matrix() -> None:
@@ -1022,6 +1290,54 @@ def test_compose_when_definition_and_metrics_are_ready() -> None:
     assert response["data"]["market_size_series"][0]["value"] == 100.0
 
 
+def test_unformatted_compose_has_identical_final_route_payload() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"view": "general", "atc4": ["C10B"], "molecule": [], "source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.12349,
+        hhi=5000.56789,
+        cagr=None,
+        monthly_series=({"period": "2026-04", "market_size": 100.12349},),
+        brands=(),
+    )
+    composer = ResponseComposer()
+
+    formatted = composer.compose(definition=definition, metrics=metrics)
+    unformatted = composer.compose_unformatted(definition=definition, metrics=metrics)
+
+    assert compose_cached_json(
+        {"status": "SUCCESS", "result": unformatted}, measure="sales"
+    ) == compose_cached_json(
+        {"status": "SUCCESS", "result": formatted}, measure="sales"
+    )
+
+
+def test_dynamic_cleaner_preserves_preformatted_matrix_derivations() -> None:
+    raw = {
+        "status": "SUCCESS",
+        "result": {
+            "growth_contribution_ms_matrix": [
+                {"ms": 1.23459},
+                {"ms": 2.34569},
+            ],
+            "market_size_series": {
+                "2021-01": 100.12349,
+                "2022-01": 110.98769,
+            },
+        },
+    }
+    expected = compose_cached_json(deep_format_numbers(raw), measure="sales")
+
+    assert cache_to_response.compose_dynamic_json(raw, measure="sales") == expected
+
+
 def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypatch) -> None:
     bare_payload = {
         "brand": "리바로",
@@ -1039,7 +1355,7 @@ def test_dynamic_market_route_wraps_composer_payload_in_cause_envelope(monkeypat
             return object()
 
     class FakeComposer:
-        def compose(self, **_: object) -> dict:
+        def compose_unformatted(self, **_: object) -> dict:
             return dict(bare_payload)
 
     definition = SimpleNamespace(
@@ -1092,7 +1408,7 @@ def test_dynamic_market_route_allows_scope_at_brand_row_limit(monkeypatch) -> No
             return object()
 
     class FakeComposer:
-        def compose(self, **_: object) -> dict:
+        def compose_unformatted(self, **_: object) -> dict:
             return dict(bare_payload)
 
     monkeypatch.setattr(
@@ -1265,6 +1581,209 @@ def test_general_response_slimming_removes_only_approved_unused_fields() -> None
     assert brand["ms_recent_pct"] == 50.0
 
 
+def test_general_dimension_aliases_defer_series_encoding_until_window_projection(monkeypatch) -> None:
+    specs = general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"]
+    period_series = {
+        "2025-05": {"raw_value": 10.0},
+        "2025-06": {"raw_value": 20.0},
+        "2026-05": {"raw_value": 30.0},
+    }
+    row = {
+        "by_dimension": json.dumps({"seller": "JW중외제약"}, ensure_ascii=False),
+        "dimension_data": json.dumps(
+            {"seller": {"JW중외제약": period_series}},
+            ensure_ascii=False,
+        ),
+        "dimension_channel_data": json.dumps(
+            {"seller": {"JW중외제약": {"전체": period_series}}},
+            ensure_ascii=False,
+        ),
+        "dimension_specialty_data": json.dumps(
+            {"seller": {"JW중외제약": {"의원": {"내과": period_series}}}},
+            ensure_ascii=False,
+        ),
+    }
+    period_range = PeriodRange(start="2025-06", end="2026-05")
+    expected = general_analysis_levels.trim_period_rows(
+        [general_analysis_levels._with_canonical_dimension_aliases(row, specs)],
+        period_range,
+    )[0]
+    dump_calls: list[dict[str, object]] = []
+    json_dump = general_analysis_levels._json_dump
+
+    def record_dump(payload: dict[str, object]) -> str:
+        dump_calls.append(payload)
+        return json_dump(payload)
+
+    monkeypatch.setattr(general_analysis_levels, "_json_dump", record_dump)
+
+    deferred = general_analysis_levels._with_canonical_dimension_aliases(
+        row,
+        specs,
+        defer_period_series_encoding=True,
+    )
+    actual = general_analysis_levels.trim_period_rows([deferred], period_range)[0]
+
+    assert len(dump_calls) == 1
+    assert deferred["dimension_data"] == "{}"
+    assert deferred["dimension_channel_data"] == "{}"
+    assert deferred["dimension_specialty_data"] == "{}"
+    assert actual == expected
+
+
+def test_general_analysis_levels_leave_predecoded_dimension_json_unmaterialized(monkeypatch) -> None:
+    class ProjectionObserved(Exception):
+        pass
+
+    monkeypatch.setattr(
+        general_analysis_levels,
+        "build_analysis_rows",
+        lambda **_kwargs: [{"brand_key": "brand"}],
+    )
+
+    def observe_projection(
+        _rows: object,
+        _period_range: PeriodRange,
+        *,
+        materialize_predecoded_fields: bool = True,
+    ) -> list[dict[str, object]]:
+        assert materialize_predecoded_fields is False
+        raise ProjectionObserved
+
+    monkeypatch.setattr(general_analysis_levels, "trim_period_rows", observe_projection)
+
+    with pytest.raises(ProjectionObserved):
+        general_analysis_levels.build_general_analysis_level_sections(
+            definition=SimpleNamespace(),
+            metrics=SimpleNamespace(source="iqvia_nsa", measure="sales"),
+            focus=None,
+            mart_db="mart",
+            period_range=PeriodRange("2025-01", "2025-12"),
+        )
+
+
+def test_general_channel_resolver_reuses_windowed_private_matrix(monkeypatch) -> None:
+    private_matrix = {"의원": {"내과": {"2026-05": 30.0}}}
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        general_analysis_levels,
+        "build_analysis_rows",
+        lambda **_kwargs: [
+            {
+                "brand_key": "brand",
+                "brand_name": "Brand",
+                "channel_specialty_matrix": "{}",
+                "__channel_specialty_matrix": private_matrix,
+            }
+        ],
+    )
+
+    def capture_resolver(**kwargs):
+        captured.update(kwargs["rows"][0])
+        raise RuntimeError("stop after resolver")
+
+    monkeypatch.setattr(general_analysis_levels, "resolve_market_channels", capture_resolver)
+
+    with pytest.raises(RuntimeError, match="stop after resolver"):
+        general_analysis_levels.build_general_analysis_level_sections(
+            definition=SimpleNamespace(market_catalog_row={}),
+            metrics=SimpleNamespace(source="ubist", measure="sales"),
+            focus=None,
+            mart_db="mart",
+            period_range=PeriodRange("2025-06", "2026-05"),
+        )
+
+    assert captured["channel_specialty_matrix"] == "{}"
+    assert captured["__channel_specialty_matrix"] is private_matrix
+
+
+def test_ubist_channel_resolver_prefers_private_matrix_over_empty_wire_field() -> None:
+    private_matrix = {"의원": {"내과": {"2026-05": 30.0}}}
+    rows = [
+        {
+            "brand_key": "brand",
+            "brand_name": "Brand",
+            "channel_specialty_matrix": "{}",
+            "__channel_specialty_matrix": private_matrix,
+        }
+    ]
+
+    assert ubist_channel_resolver._raw_matrices_available(rows)
+    assert list(ubist_channel_resolver._iter_raw_matrix(rows[0])) == [
+        ("의원", "내과", {"2026-05": 30.0})
+    ]
+
+
+def test_window_channel_specialty_matrix_drops_out_of_range_periods() -> None:
+    matrix = {
+        "의원": {
+            "내과": {
+                "2025-05": 10.0,
+                "2025-06": 20.0,
+                "2026-05": 30.0,
+                "2026-06": 40.0,
+            }
+        }
+    }
+
+    result = aggregator_module._window_channel_specialty_matrix(
+        matrix,
+        PeriodRange("2025-06", "2026-05"),
+    )
+
+    assert result == {"의원": {"내과": {"2025-06": 20.0, "2026-05": 30.0}}}
+
+
+def test_window_channel_specialty_matrix_reuses_unbounded_input() -> None:
+    matrix = {"의원": {"내과": {"2026-05": 30.0}}}
+
+    result = aggregator_module._window_channel_specialty_matrix(
+        matrix,
+        PeriodRange(None, None),
+    )
+
+    assert result is matrix
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"by_dimension": "{}"},
+        {
+            "by_dimension": {},
+            "dimension_data": {
+                "seller": {"JW중외제약": {"2026-05": {"raw_value": 30.0}}}
+            },
+            "dimension_channel_data": {},
+            "dimension_specialty_data": {},
+        },
+    ],
+)
+def test_general_deferred_dimension_encoding_preserves_sparse_and_decoded_shapes(
+    row: dict[str, object],
+) -> None:
+    specs = general_analysis_levels.GENERAL_LEVEL_SPECS["ubist"]
+    period_range = PeriodRange(start="2025-06", end="2026-05")
+
+    expected = general_analysis_levels.trim_period_rows(
+        [general_analysis_levels._with_canonical_dimension_aliases(row, specs)],
+        period_range,
+    )[0]
+    actual = general_analysis_levels.trim_period_rows(
+        [
+            general_analysis_levels._with_canonical_dimension_aliases(
+                row,
+                specs,
+                defer_period_series_encoding=True,
+            )
+        ],
+        period_range,
+    )[0]
+
+    assert actual == expected
+
+
 def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch) -> None:
     monkeypatch.setattr("pipeline.scripts.api.dynamic_market.analysis_level_dimensions.db.fetch_all", lambda *_args: [])
 
@@ -1393,7 +1912,7 @@ def test_cause_payload_uses_source_specific_levels_for_general_ubist(monkeypatch
     payload = build_cause_payload(definition=definition, metrics=metrics)
 
     analysis_levels = payload["data"]["analysis_levels"]
-    assert analysis_levels["levels"] == ["판매사", "성분용량", "제형", "투여경로", "급여구분"]
+    assert analysis_levels["levels"] == ["판매사", "성분", "성분용량", "제형", "투여경로", "급여구분"]
     assert analysis_levels["channels"] == ["전체", "상급종병", "종병", "(상급종병 + 종병)", "병원", "의원", "보건소", "기타"]
     assert any(
         segment["name"] == "JW중외제약"
@@ -2083,22 +2602,13 @@ def test_cause_payload_hhi_recent_uses_complete_calendar_year_not_partial_latest
     assert payload["data"]["kpi"]["hhi_recent"] == 6250.0
 
 
-def test_reject_disabled_analysis_level_when_molecule_is_requested() -> None:
-    resolver = GeneralViewResolver(mart_db="jw_mart", bridge_db="jw_mart")
+def test_build_dimension_filters_accepts_raw_ubist_molecule() -> None:
+    filters = resolvers.build_dimension_filters(
+        analysis_level={"ubist": {"molecule": ["PITAVASTATIN / EZETIMIBE"]}},
+        source="ubist",
+    )
 
-    try:
-        resolver.resolve(
-            atc4=["A10A1"],
-            molecule=[],
-            analysis_level={"ubist": {"molecule": ["PITAVASTATIN"]}},
-            focus_brand_key=None,
-            source="ubist",
-            measure="sales",
-        )
-    except DynamicMarketInputError as exc:
-        assert "disabled" in str(exc)
-    else:
-        raise AssertionError("disabled molecule dimension was accepted")
+    assert filters == (DimensionFilter("molecule", ("PITAVASTATIN / EZETIMIBE",)),)
 
 
 def test_build_dimension_filters_accepts_ubist_atc_narrowing_dimensions() -> None:
@@ -2587,7 +3097,7 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
         def __init__(self, **_: object) -> None:
             raise AssertionError("strategic requests must not use the generic aggregator path")
 
-    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
     monkeypatch.setattr(dynamic_market_route, "MetricAggregator", FailingAggregator)
     monkeypatch.setattr(
         "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
@@ -2610,9 +3120,55 @@ def test_route_uses_cache_cause_builder_for_strategic_market(monkeypatch) -> Non
     assert response["status"] == "SUCCESS"
     assert captured["ml_id"] == "ml_006"
     assert captured["focus_brand_key"] == "리바로"
+    assert captured["cache"] is dynamic_market_route._dynamic_response_cache
     assert response["result"]["view"] == "strategic_ml"
     assert response["result"]["market_meta"]["view"] == "strategic_ml"
     assert response["result"]["data"]["ubist_specialty_channels"][1] == "주요고객 종합병원 순환기"
+
+
+@pytest.mark.parametrize("view_kind", ["market_landscape", "competitive_dynamics"])
+def test_route_forwards_period_range_to_every_strategic_view(monkeypatch, view_kind: str) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build_cached_payload(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"data": {"kpi": {}}}
+
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
+        lambda *_args, **_kwargs: [{"market_id": "ml_006" if view_kind == "market_landscape" else "cd_006"}],
+    )
+
+    dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "filters": {"view_kind": view_kind, "focus_brand_key": "리바로"},
+                "source": "ubist",
+                "measure": "sales",
+                "options": {"period_range": {"start": "2025-01", "end": "2025-12"}},
+            }
+        )
+    )
+
+    assert captured["period_range"] == PeriodRange("2025-01", "2025-12")
+
+
+def test_empty_period_response_is_null_with_explicit_reason() -> None:
+    payload = DynamicMarketRequest.model_validate(
+        {
+            "filters": {"focus_brand_key": "리바로"},
+            "source": "ubist",
+            "measure": "sales",
+            "options": {"period_range": {"start": "2030-01", "end": "2030-12"}},
+        }
+    )
+
+    response = dynamic_market_route._empty_period_response(payload, "general")
+
+    assert response["result"]["data"] is None
+    assert response["result"]["reason"] == "no_data_in_period"
+    assert response["result"]["period_range"] == {"start": "2030-01", "end": "2030-12"}
 
 
 def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monkeypatch) -> None:
@@ -2622,7 +3178,7 @@ def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monke
         captured.update(kwargs)
         return {"view": "market_landscape", "market_meta": {"view": "market_landscape"}, "data": {"kpi": {}}}
 
-    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
     monkeypatch.setattr(
         "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
         lambda *_args, **_kwargs: [{"market_id": "ml_006"}],
@@ -2643,6 +3199,35 @@ def test_route_accepts_explicit_strategic_ml_view_without_legacy_view_kind(monke
     assert captured["ml_id"] == "ml_006"
     assert response["result"]["view"] == "strategic_ml"
     assert response["result"]["market_meta"]["view"] == "strategic_ml"
+
+
+def test_route_returns_explicit_empty_strategic_state_for_unmapped_mart_brand(monkeypatch) -> None:
+    # Given: the focus brand exists in the general mart but has no strategic market membership.
+    monkeypatch.setattr(
+        "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(dynamic_market_route, "_brand_exists", lambda _brand: True)
+
+    # When: the brand is requested through the strategic dynamic route.
+    response = dynamic_market_route.dynamic_market(
+        DynamicMarketRequest.model_validate(
+            {
+                "view": "strategic_ml",
+                "filters": {"focus_brand_key": "비JW브랜드"},
+                "source": "ubist",
+                "measure": "sales",
+            }
+        )
+    )
+
+    # Then: the route preserves the envelope and returns an explicit empty state, not 400/404.
+    assert response["status"] == "SUCCESS"
+    assert response["result"]["brand"] == "비JW브랜드"
+    assert response["result"]["view"] == "strategic_ml"
+    assert response["result"]["data"] is None
+    assert response["result"]["reason"] == "brand_not_in_source"
+    assert response["result"]["markets"] == []
 
 
 def test_route_rejects_general_view_with_legacy_view_kind() -> None:
@@ -2736,7 +3321,7 @@ def test_route_allows_top_level_atc4_for_strategic_view(monkeypatch) -> None:
         captured.update(kwargs)
         return {"data": {"kpi": {"market_size_recent": 1.0}}}
 
-    monkeypatch.setattr(dynamic_market_route, "build_cached_payload", fake_build_cached_payload)
+    monkeypatch.setattr(dynamic_market_route, "get_strategic_payload", fake_build_cached_payload)
     monkeypatch.setattr(
         "pipeline.scripts.api.dynamic_market.resolvers.db.fetch_all",
         lambda *_args, **_kwargs: [{"market_id": "ml_006"}],
@@ -3181,43 +3766,37 @@ def test_strategic_resolver_uses_cd_table_for_competitive_dynamics(monkeypatch) 
     assert any("mart_strategic_cd_brand_metric" in sql for sql in calls)
 
 
-def test_strategic_payload_adds_cd_definition_to_cached_payload(monkeypatch) -> None:
-    # Given: a brand-scoped CD request can reuse the cache-cause payload.
-    monkeypatch.setattr(strategic_runtime, "_response_market_id", lambda *_args, **_kwargs: "strategy_008")
+def test_strategic_runtime_has_no_legacy_cache_cause_read() -> None:
+    import inspect
+
+    source = inspect.getsource(strategic_runtime)
+
+    assert "FROM cache_cause" not in source
+    assert "_cached_cause_payload" not in source
+
+
+def test_strategic_runtime_clears_builder_caches_around_every_mart_build(monkeypatch) -> None:
+    events: list[str] = []
+
+    monkeypatch.setattr(strategic_runtime, "_clear_cause_builder_runtime_caches", lambda: events.append("clear"))
     monkeypatch.setattr(
         strategic_runtime,
-        "_cached_cause_payload",
-        lambda **_kwargs: {
-            "market_meta": {
-                "view_source_id": "cd_008",
-                "market_definition_label": "old",
-                "market_definition_full": "old",
-                "atc_codes": [],
-                "atc_count": 0,
-            },
-            "data": {},
-            "markets": [{"market_id": "strategy_008", "is_primary": True}],
-        },
+        "_build_strategic_payload",
+        lambda **_kwargs: events.append("build") or {"data": {"kpi": {}}},
     )
 
-    # When: the strategic runtime returns the cached competitive-dynamics payload.
     result = strategic_runtime.build_strategic_payload(
-        mart_db="jw_mart",
-        ml_id=None,
-        cd_market_id="cd_008",
-        focus_brand_key="리바로하이",
+        mart_db="mart",
+        ml_id="ml_006",
+        cd_market_id=None,
+        focus_brand_key="리바로",
         source="ubist",
         measure="sales",
         analysis_level=DynamicMarketRequest().filters.analysis_level,
     )
 
-    # Then: the response exposes the narrowed CD market definition expected by the portal.
-    assert result["market_meta"]["view_source_id"] == "cd_008"
-    assert result["market_meta"]["market_definition_label"] == "Statin/ARB/CCB"
-    assert result["market_meta"]["market_definition_full"] == (
-        "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
-    )
-    assert result["market_meta"]["atc_codes"] == ["Statin/ARB/CCB"]
+    assert result == {"data": {"kpi": {}}}
+    assert events == ["clear", "build", "clear"]
 
 
 def test_strategic_sidecar_aggregation_keeps_recode_product_history(monkeypatch) -> None:

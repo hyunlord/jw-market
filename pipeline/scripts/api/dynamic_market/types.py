@@ -27,6 +27,10 @@ class DynamicMarketScopeTooBroadError(DynamicMarketInputError):
         super().__init__("시장 범위가 너무 넓습니다. 범위를 좁혀주세요.")
 
 
+class DynamicMarketPeriodNoDataError(DynamicMarketInputError):
+    """Raised when a bounded period window contains no observed data points."""
+
+
 @dataclass(frozen=True, slots=True)
 class PeriodRange:
     """Inclusive month range used by the runtime metric window."""

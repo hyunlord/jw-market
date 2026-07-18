@@ -1,0 +1,64 @@
+{
+  "canonicalization": "json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')",
+  "contracts": [
+    {
+      "id": "brands",
+      "canonical_sha256": "77917362f9ca356bc6a596abcb59d5b7b8e418c45ca7599d5c618852866fa6ab",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/brands"
+      },
+      "truth_basis": "Exactly the 25 cache_brands default members; general_sources and strategic_sources match the independently probed data-serving contexts for all 100 brand-view-source cells.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "not deployed; generated with candidate F-092 v2 91187f8f420c9179e213857b49e1ddd4e5f60d27"
+    },
+    {
+      "id": "market_status",
+      "canonical_sha256": "ed7fd426f9c9094a2bbeb3ce37e57b7baafd886f8696e1679afc928d43c5ec2d",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/market-status"
+      },
+      "truth_basis": "28 source observations independently recalculated from mart source values matched the response.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "reference runtime sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    },
+    {
+      "id": "cause_livalo",
+      "canonical_sha256": "746247256baa8865e47b4c93afb44eee0e613753487c6ebb17a2a3dde404b91c",
+      "request": {
+        "method": "GET",
+        "path": "/jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales"
+      },
+      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류; F-123 preserves strategic brand-ranking continuity, expanding the first yearly ranking from 7 to 11 entries.",
+      "measured_at": "2026-07-15",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "test2 generation 530, image sha256:ce95d66f049e3a69c31a16c5df3def1e144c3ec0a3e58e9d0c8715a95de062a0, integrated F-123/F-127 commit 5b7aadfb0884913ad3877bf5d6884e71d8f73ee3, PL re-approved 2026-07-15"
+    },
+    {
+      "id": "dynamic_general_c10a1_livalo",
+      "canonical_sha256": "78b8bc3ba22db9bd4216e4b9879be8e5b3feb8e213d2e70b1cb4c416da5d28ca",
+      "request": {
+        "method": "POST",
+        "path": "/jw-market-backend-api/api/dynamic-market",
+        "body": {
+          "view": "general",
+          "source": "ubist",
+          "measure": "sales",
+          "filters": {
+            "atc4": [
+              "C10A1"
+            ],
+            "focus_brand_key": "리바로"
+          }
+        }
+      },
+      "truth_basis": "Payload was re-read unchanged from the reference runtime; F-079 and F-080 do not affect this general-view request path.",
+      "measured_at": "2026-07-14",
+      "database": "jw_mart_d2_stage_20260630_r2",
+      "runtime_provenance": "reference runtime sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+    }
+  ]
+}

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import shutil
 
+import pandas as pd
+
 from pipeline.etl.io.cache.archive_runner import materialize_archive
+from pipeline.etl.io.catalog.target.sales import load_ubist_sales
 from pipeline.etl.io.catalog.target.text import ubist_customer_label
 from pipeline.etl.io.mart.dict_ubist_translation import translate_target_ubist
 from pipeline.etl.io.mart.general_utils import ubist_channel_to_raw
@@ -23,6 +26,31 @@ def test_ubist_customer_label_uses_target_only_four_buckets() -> None:
         == "OT Others"
     )
     assert ubist_customer_label("의원", "가정의학과(FM)") == "CL IGF"
+
+
+def test_load_ubist_sales_drops_catalogued_aggregate_specialty(tmp_path) -> None:
+    source = tmp_path / "ubist.parquet"
+    pd.DataFrame(
+        [
+            {
+                "종별": "의원",
+                "진료과": specialty,
+                "제조사": "제조사",
+                "제품": "제품",
+                "브랜드": "브랜드",
+                "rx_amt": amount,
+            }
+            for specialty, amount in (
+                ("내과(IM)", 100.0),
+                ("내분비(Endocrinology IM)", 10.0),
+            )
+        ]
+    ).to_parquet(source, index=False)
+
+    result = load_ubist_sales(source)
+
+    assert result["_sales"].tolist() == [10.0]
+    assert result["_customer"].tolist() == ["CL Endo"]
 
 
 def test_translate_target_ubist_expands_four_bucket_raw_values() -> None:

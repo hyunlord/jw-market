@@ -40,15 +40,22 @@ def annual_ranking_payload(
 
     annual = _annual_totals(histories)
     years = sorted(annual)[-5:]
-    ranked_by_year = {year: _rank_rows(annual[year], label_key=label_key, display_names=display_names) for year in years}
-    fixed_ids = _fixed_ids(ranked_by_year.get(years[-1], []), label_key=label_key, focus_id=focus_id) if years else []
-    yearly = [_yearly_selection(year, ranked_by_year[year], fixed_ids, label_key=label_key) for year in years]
-    labels = [*fixed_ids, "기타"]
+    ranked_by_year = {
+        year: _rank_rows(annual[year], label_key=label_key, display_names=display_names)
+        for year in years
+    }
+    visible_ids = (
+        _visible_ids(ranked_by_year.get(years[-1], []), label_key=label_key, focus_id=focus_id)
+        if years
+        else []
+    )
+    yearly = [_yearly_selection(year, ranked_by_year[year], visible_ids, label_key=label_key) for year in years]
+    labels = [*visible_ids, "기타"]
     trend_key = "brands" if label_key == "brand_key" else "companies"
     return {
         "years": years,
         "yearly": yearly,
-        trend_key: _latest_trends(years, ranked_by_year, fixed_ids, label_key=label_key),
+        trend_key: _latest_trends(years, ranked_by_year, visible_ids, label_key=label_key),
         "top_brands": labels,
         "series": {
             label: [
@@ -205,24 +212,48 @@ def _rank_rows(values: dict[str, float], *, label_key: str, display_names: dict[
     return rows
 
 
-def _fixed_ids(latest_rows: list[dict[str, Any]], *, label_key: str, focus_id: str | None) -> list[str]:
+def _visible_ids(latest_rows: list[dict[str, Any]], *, label_key: str, focus_id: str | None) -> list[str]:
     ids = [str(row[label_key]) for row in latest_rows if row.get(label_key)]
     if focus_id and focus_id in ids:
         return [focus_id, *(item_id for item_id in ids if item_id != focus_id)][:6]
     return ids[:6]
 
 
-def _yearly_selection(year: int, ranked_rows: list[dict[str, Any]], fixed_ids: list[str], *, label_key: str) -> dict[str, Any]:
+def _yearly_selection(
+    year: int,
+    ranked_rows: list[dict[str, Any]],
+    visible_ids: list[str],
+    *,
+    label_key: str,
+) -> dict[str, Any]:
     row_by_id = {str(row[label_key]): row for row in ranked_rows if row.get(label_key)}
-    selected = [row_by_id[item_id] for item_id in fixed_ids if item_id in row_by_id]
+    selected = [row_by_id[item_id] for item_id in visible_ids if item_id in row_by_id]
     selected_ids = {str(row[label_key]) for row in selected}
     others = [row for row in ranked_rows if str(row.get(label_key)) not in selected_ids]
     displayed_ms = sum(float(row.get("ms_pct") or 0.0) for row in selected)
-    selected.append({label_key: "기타", "brand": "기타", "company": "기타", "is_others": True, "rank": None, "raw_value": sum(float(row.get("raw_value") or 0.0) for row in others), "value": sum(float(row.get("value") or 0.0) for row in others), "ms": round(max(0.0, 100.0 - displayed_ms), 4), "ms_pct": round(max(0.0, 100.0 - displayed_ms), 4)})
+    selected.append(
+        {
+            label_key: "기타",
+            "brand": "기타",
+            "company": "기타",
+            "is_others": True,
+            "rank": None,
+            "raw_value": sum(float(row.get("raw_value") or 0.0) for row in others),
+            "value": sum(float(row.get("value") or 0.0) for row in others),
+            "ms": round(max(0.0, 100.0 - displayed_ms), 4),
+            "ms_pct": round(max(0.0, 100.0 - displayed_ms), 4),
+        }
+    )
     return {"year": year, "rankings": selected}
 
 
-def _latest_trends(years: list[int], ranked_by_year: dict[int, list[dict[str, Any]]], fixed_ids: list[str], *, label_key: str) -> list[dict[str, Any]]:
+def _latest_trends(
+    years: list[int],
+    ranked_by_year: dict[int, list[dict[str, Any]]],
+    visible_ids: list[str],
+    *,
+    label_key: str,
+) -> list[dict[str, Any]]:
     return [
         {
             label_key: item_id,
@@ -231,7 +262,7 @@ def _latest_trends(years: list[int], ranked_by_year: dict[int, list[dict[str, An
                 for year in years
             ],
         }
-        for item_id in fixed_ids
+        for item_id in visible_ids
     ]
 
 

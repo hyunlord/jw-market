@@ -17,8 +17,15 @@ pipeline/docker/data/
 docker/data/
 
 # Raw data moved to object storage
-data/
+data/*
 !data/.gitkeep
+# MI Master (strategic-view value source): the pinned version is tracked so a
+# fresh clone can rerun the s2 catalog build; everything else in data/ stays
+# object-storage-only. Loader path: pipeline/etl/lib/storage.py (MI_MASTER_*).
+!data/JW 주요 약품 수동 매핑/
+data/JW 주요 약품 수동 매핑/*
+!data/JW 주요 약품 수동 매핑/MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx
+!data/JW 주요 약품 수동 매핑/SOURCE_PINS.sha256
 inputs/molecule_v4_worklist.csv
 
 # Documentation and audit artifacts moved out of source git
@@ -26,6 +33,13 @@ docs/*
 !docs/reference/
 !docs/reference/**
 docs/reference/*.xlsx
+# SI delivery document set (DOC-1~5 + gates + evidence) is tracked deliberately.
+!docs/delivery/
+!docs/delivery/**
+# Runtime catalog input; keep other untracked crawl artifacts ignored.
+!docs/crawl/
+docs/crawl/*
+!docs/crawl/search_keywords.json
 audit_*.json
 audit_F5_*
 
@@ -39,7 +53,9 @@ viewer/
 reports/
 exports/
 audits/
-phase_*/
+# Generated phase outputs at the repository root only. Nested phase_* paths may
+# be Python packages and must remain visible to git.
+/phase_*/
 phase_*_audit_*/
 phase_*_audit_*.zip
 *_audit_*.zip

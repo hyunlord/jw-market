@@ -4,12 +4,22 @@ from pathlib import Path
 import sys
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api.main import app
 from pipeline.scripts.api.routes import brand_activity
+
+
+@pytest.fixture(autouse=True)
+def topic_period_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
 
 
 def test_openapi_hides_internal_and_alias_routes() -> None:
@@ -66,12 +76,15 @@ def test_brand_activity_public_request_schema_is_iqvia_only() -> None:
     assert "mfr_name_kor" in schema_text
     assert "nhi_type" in schema_text
     assert "audit_code" in schema_text
+    assert request_schema["properties"]["start_date"]["pattern"] == r"^\d{4}-(0[1-9]|1[0-2])$"
+    assert request_schema["properties"]["end_date"]["pattern"] == r"^\d{4}-(0[1-9]|1[0-2])$"
 
 
 def test_csd_activity_request_documents_nested_filter_fields() -> None:
     schema = app.openapi()["components"]["schemas"]["CsdActivitySeriesRequest"]
 
     assert schema["properties"]["filters"]["$ref"] == "#/components/schemas/MarketFilter"
+    assert "strategic_cd" in schema["properties"]["view"]["description"]
     operation_text = str(app.openapi()["paths"]["/api/brand-activity/csd-activity-series"]["post"]["requestBody"])
     for field in ("atc4", "mfr_name_kor", "molecule_desc", "audit_code", "market_scope"):
         assert field in operation_text
@@ -98,6 +111,8 @@ def test_brand_activity_topics_response_documents_live_scope_and_brand_fields() 
     ):
         assert field in scope_fields
     assert "sales_rank" in brand_fields
+    period_fields = response_schema["content"]["application/json"]["schema"]["properties"]["meta"]["properties"]["period"]["properties"]
+    assert set(period_fields) == {"start_date", "end_date", "available_start", "available_end"}
 
 
 def test_dynamic_market_request_schema_exposes_only_public_filter_surface() -> None:
@@ -168,7 +183,18 @@ def test_brand_activity_accepts_nested_filters_and_legacy_flat_filter(monkeypatc
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {
+        "data": expected,
+        "meta": {
+            "period": {
+                "start_date": "2024-06",
+                "end_date": "2026-05",
+                "available_start": "2024-06",
+                "available_end": "2026-05",
+            },
+            "request_normalized": True,
+        },
+    }
     assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
     assert captured["payload"]["filter"]["analysis_level"]["ubist"]["seller"] == ["JW중외제약"]
 
@@ -306,7 +332,17 @@ def test_brand_activity_preserves_flat_filter_payload(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {
+        "data": expected,
+        "meta": {
+            "period": {
+                "start_date": "2024-06",
+                "end_date": "2026-05",
+                "available_start": "2024-06",
+                "available_end": "2026-05",
+            }
+        },
+    }
     assert captured["payload"]["filters"]["atc4"] == ["C10A1"]
     assert captured["payload"]["filter"]["atc4"] == ["C10A1"]
 

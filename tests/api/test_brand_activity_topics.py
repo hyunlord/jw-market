@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -32,6 +34,15 @@ INTERNAL_BRAND_KEYS = {
     "brand_specific_dedup_count",
     "brand_specific_dedup_log",
 }
+
+
+@pytest.fixture(autouse=True)
+def topic_period_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
 
 
 def test_topics_endpoint_projects_public_contract_when_rows_exist(monkeypatch) -> None:
@@ -103,7 +114,18 @@ def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": expected}
+    assert response.json() == {
+        "data": expected,
+        "meta": {
+            "period": {
+                "start_date": "2024-06",
+                "end_date": "2026-05",
+                "available_start": "2024-06",
+                "available_end": "2026-05",
+            },
+            "request_normalized": True,
+        },
+    }
     assert "market_id" not in captured
     assert captured["filters"]["atc4"] == ["C10A1"]
     assert captured["filters"]["analysis_level"] == {"iqvia": {"audit_code": ["KHPA"]}}
@@ -139,6 +161,192 @@ def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
     assert captured["specialty"] == ["Cardio"]
     assert captured["interest"] == ["VERY USEFUL", "SOMEWHAT USEFUL"]
     assert captured["prescription_evolution"] == ["increase"]
+
+
+def test_post_topics_route_preserves_general_market_scope_without_atc4(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_get_topic_brand_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return {"scope": {"view": "general"}, "brands": [{"event_count": 1}]}
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {
+                "market_scope": {
+                    "option_id": "group:livalo_family",
+                    "member": "리바로",
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["filters"]["market_scope"] == {
+        "option_id": "group:livalo_family",
+        "member": "리바로",
+    }
+
+
+def test_post_topics_route_accepts_canonical_period_and_returns_applied_bounds(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_get_topic_brand_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.update(payload)
+        return {"scope": {"sliced": True}, "brands": [{"event_count": 4}]}
+
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", fake_get_topic_brand_payload)
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "start_date": "2025-02",
+            "end_date": "2025-05",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["period_start"] == "2025-02"
+    assert captured["period_end"] == "2025-05"
+    assert response.json()["meta"]["period"] == {
+        "start_date": "2025-02",
+        "end_date": "2025-05",
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+
+
+def test_post_topics_route_keeps_legacy_period_keys_compatible(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda payload: captured.update(payload) or {"scope": {"sliced": True}, "brands": [{"event_count": 1}]},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "period_start": "2025-02",
+            "period_end": "2025-05",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["start_date"] == "2025-02"
+    assert captured["end_date"] == "2025-05"
+
+
+def test_post_topics_route_resolves_open_period_against_available_bounds(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda _payload: {"scope": {"sliced": True}, "brands": [{"event_count": 1}]},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+    client = TestClient(app)
+    base = {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}}
+
+    start_only = client.post("/api/brand-activity/topics", json={**base, "start_date": "2025-02"}).json()
+    end_only = client.post("/api/brand-activity/topics", json={**base, "end_date": "2025-05"}).json()
+    unfiltered = client.post("/api/brand-activity/topics", json=base).json()
+
+    assert start_only["meta"]["period"]["end_date"] == "2026-05"
+    assert end_only["meta"]["period"]["start_date"] == "2024-06"
+    assert unfiltered["meta"]["period"] == {
+        "start_date": "2024-06",
+        "end_date": "2026-05",
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+
+
+def test_post_topics_route_rejects_invalid_or_reversed_period() -> None:
+    client = TestClient(app)
+    base = {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}}
+
+    invalid = client.post("/api/brand-activity/topics", json={**base, "start_date": "2025-2"})
+    reversed_period = client.post(
+        "/api/brand-activity/topics",
+        json={**base, "start_date": "2025-06", "end_date": "2025-05"},
+    )
+
+    assert invalid.status_code == 422
+    assert "YYYY-MM" in invalid.text
+    assert reversed_period.status_code == 422
+
+
+def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda _payload: {"scope": {"sliced": True}, "brands": [{"event_count": 0, "topic_shares": []}]},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "start_date": "2023-01",
+            "end_date": "2023-02",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["brands"] == []
+    assert response.json()["meta"]["reason"] == "no_data_in_period"
+
+
+def test_topic_period_bounds_reads_indexable_month_extrema(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_one(sql: str, params=None) -> dict[str, str]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return {"available_start": "2024-06", "available_end": "2026-05"}
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_one", fake_fetch_one)
+
+    assert topic_matrix.get_topic_period_bounds() == {
+        "available_start": "2024-06",
+        "available_end": "2026-05",
+    }
+    assert "MIN(period_ym)" in captured["sql"]
+    assert "MAX(period_ym)" in captured["sql"]
+    assert "km_keyword_event_stage" in captured["sql"]
+    assert captured["params"] is None
 
 
 def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeypatch) -> None:
@@ -332,6 +540,34 @@ def test_post_topic_service_reads_keyword_filters_from_filters_envelope(monkeypa
     assert parsed["interest"] == ("VERY USEFUL",)
 
 
+@pytest.mark.parametrize(
+    ("option_id", "member"),
+    (
+        ("group:livalo_family", "리바로"),
+        ("group:gardlet_family", "가드렛"),
+    ),
+)
+def test_post_topic_service_accepts_general_market_scope_without_atc4(option_id: str, member: str) -> None:
+    parsed = topic_matrix._parse_topic_request(
+        {
+            "view": "general",
+            "selected_brand": member,
+            "filters": {
+                "market_scope": {
+                    "option_id": option_id,
+                    "member": member,
+                }
+            },
+        }
+    )
+
+    assert parsed["market_id"] == ""
+    assert parsed["filter"]["market_scope"] == {
+        "option_id": option_id,
+        "member": member,
+    }
+
+
 def test_post_topic_service_rejects_unknown_filter_values(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "_keyword_filter_domain", lambda _column: frozenset({"Cardio"}))
 
@@ -441,6 +677,397 @@ def _brand_set() -> BrandSetResolution:
     )
 
 
+def _strategic_brand_set(
+    *,
+    empty_product_codes: bool = False,
+    include_crestor: bool = False,
+) -> BrandSetResolution:
+    base = _brand_set()
+    brand_meta = {
+        key: BrandMeta(
+            meta.brand_key,
+            meta.brand_name,
+            () if empty_product_codes else meta.product_codes,
+            meta.is_jw,
+        )
+        for key, meta in base.brand_meta.items()
+    }
+    choices = list(base.choices)
+    if include_crestor:
+        brand_meta["크레스토"] = BrandMeta("크레스토", "크레스토", ("CRESTOR",), False)
+        choices.append(BrandChoice("크레스토", "크레스토", 8, False))
+    return BrandSetResolution(
+        view_name="strategic_ml",
+        market_id="ml_006",
+        selected_brand=base.selected_brand,
+        view=ViewConfig(
+            "mart_strategic_ml_brand_metric",
+            "mart_strategic_ml_market_metric",
+            "ml_id",
+            "ml_name",
+            "brand_ranking_stacked",
+            True,
+        ),
+        market_row={"ml_name": "리바로 리바로젯"},
+        brand_rows=(),
+        brand_meta=brand_meta,
+        choices=tuple(choices),
+        candidates=(),
+        ranking_quarter=base.ranking_quarter,
+        applied_filter={},
+    )
+
+
+def test_topic_scope_uses_catalog_atc_membership_not_payload_brand_membership(monkeypatch) -> None:
+    brand_set = _brand_set()
+    strategic = BrandSetResolution(
+        view_name="strategic_ml",
+        market_id="ml_003",
+        selected_brand=brand_set.selected_brand,
+        view=ViewConfig(
+            "mart_strategic_ml_brand_metric",
+            "mart_strategic_ml_market_metric",
+            "ml_id",
+            "ml_name",
+            "brand_ranking_stacked",
+            True,
+        ),
+        market_row={"ml_name": "GUARDLET Market"},
+        brand_rows=(),
+        brand_meta=brand_set.brand_meta,
+        choices=brand_set.choices,
+        candidates=(),
+        ranking_quarter="2025-Q4",
+        applied_filter={},
+    )
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("A10N1", "A10N3"))
+    rows = [
+        {
+            "scope_id": "group:gardlet_family",
+            "atc4_values": json.dumps(["A10N1", "A10N3"]),
+            "payload": json.dumps(
+                {"scope": {"scope_id": "group:gardlet_family"}, "brands": [{"brand": "UNRELATED"}]},
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    scope = topic_matrix._topic_scope(brand_set=strategic, topic_rows=rows)
+
+    assert scope["scope_id"] == "group:gardlet_family"
+
+
+def test_general_topic_scope_uses_full_applied_atc_membership() -> None:
+    brand_set = replace(
+        _brand_set(),
+        applied_filter={"atc4": ["C10A1", "C10C0"]},
+    )
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[_group_topic_row()],
+    )
+
+    assert scope["scope_id"] == "group:livalo_family"
+
+
+def test_general_group_topic_scope_wins_over_member_scope() -> None:
+    brand_set = replace(
+        _brand_set(),
+        applied_filter={"atc4": ["C10A1", "C10C0"]},
+    )
+    member_row = {
+        "scope_id": "atc4:C10A1",
+        "atc4_values": json.dumps(["C10A1"]),
+        "payload": json.dumps(
+            {"scope": {"scope_id": "atc4:C10A1"}, "brands": [{"brand": "LIVALO"}]},
+            ensure_ascii=False,
+        ),
+    }
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[member_row, _group_topic_row()],
+    )
+
+    assert scope["scope_id"] == "group:livalo_family"
+
+
+def test_general_single_atc_filter_does_not_broaden_to_group() -> None:
+    scope = topic_matrix._topic_scope(
+        brand_set=_brand_set(),
+        topic_rows=[_group_topic_row()],
+    )
+
+    assert scope == {}
+
+
+def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_none(monkeypatch) -> None:
+    strategic = _strategic_brand_set(empty_product_codes=True)
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: strategic)
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda brands: {key: ("LIVALO",) if key == "리바로" else ("LIPITOR",) for key in brands},
+        raising=False,
+    )
+    group_row = _group_topic_row()
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [group_row]
+        if params and "LIPITOR" in params:
+            return []
+        assert params == (
+            "group:livalo_family",
+            "LIVALO",
+            "2025-04",
+            "2026-03",
+            "group:livalo_family",
+            "brand_activity_group_replay",
+        )
+        return [
+            {"topic_id": "T01", "affected_row_count": 29, "brand_total_rows": 31, "share_pct": "93.55"},
+            {"topic_id": "B1", "affected_row_count": 7, "brand_total_rows": 31, "share_pct": "22.58"},
+        ]
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert result is not None
+    assert result["scope"]["topic_set_version"] == "brand_activity_group_replay"
+    assert result["brands"][0]["event_count"] == 31
+    assert result["brands"][0]["brand_specific_topics"] == [
+        {
+            "topic_id": "B1",
+            "label": "리바로 고유",
+            "share_pct": 22.58,
+            "row_count": 7,
+            "definition": "리바로 특화",
+        }
+    ]
+
+
+def test_post_topic_service_uses_brand_labels_from_resolved_scope_only(monkeypatch) -> None:
+    base = _strategic_brand_set()
+    brand_meta = dict(base.brand_meta)
+    brand_meta["리바로"] = BrandMeta("리바로", "리바로", ("UBISTDIRECT",), True)
+    strategic = BrandSetResolution(
+        view_name=base.view_name,
+        market_id=base.market_id,
+        selected_brand=base.selected_brand,
+        view=base.view,
+        market_row=base.market_row,
+        brand_rows=base.brand_rows,
+        brand_meta=brand_meta,
+        choices=base.choices,
+        candidates=base.candidates,
+        ranking_quarter=base.ranking_quarter,
+        applied_filter=base.applied_filter,
+    )
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: strategic)
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda brands: {key: ("LIVALO",) if key == "리바로" else () for key in brands},
+        raising=False,
+    )
+    resolved_scope = _group_topic_row()
+    unrelated_scope = _post_topic_row()
+    unrelated_payload = json.loads(unrelated_scope["payload"])
+    unrelated_payload["scope"] = {"scope_id": "atc4:A02B2", "atc4_values": ["A02B2"]}
+    unrelated_payload["brands"][0]["brand"] = "UBISTDIRECT"
+    unrelated_payload["brands"][0]["brand_specific_topics"][0]["label"] = "다른 시장 고유"
+    unrelated_scope = {
+        **unrelated_scope,
+        "scope_id": "atc4:A02B2",
+        "atc4_values": json.dumps(["A02B2"]),
+        "payload": json.dumps(unrelated_payload, ensure_ascii=False),
+    }
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [resolved_scope, unrelated_scope]
+        if params and "LIVALO" in params:
+            assert "UBISTDIRECT" in params
+            return [
+                {"topic_id": "B1", "affected_row_count": 7, "brand_total_rows": 31, "share_pct": "22.58"}
+            ]
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert result is not None
+    assert result["brands"][0]["brand_specific_topics"][0]["label"] == "리바로 고유"
+
+
+def test_post_topic_service_reads_assignments_for_brand_omitted_from_stored_payload(monkeypatch) -> None:
+    brand_set = _strategic_brand_set(include_crestor=True)
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: brand_set)
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda brands: {brand_key: () for brand_key in brands},
+        raising=False,
+    )
+
+    def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        if "row_topic_assignment" not in sql:
+            return [_group_topic_row()]
+        if params and "CRESTOR" in params:
+            return [
+                {
+                    "topic_id": "T01",
+                    "affected_row_count": 254,
+                    "brand_total_rows": 591,
+                    "share_pct": "42.98",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert result is not None
+    crestor = next(brand for brand in result["brands"] if brand["brand_key"] == "크레스토")
+    assert crestor["event_count"] == 591
+    assert crestor["topic_shares"] == [
+        {
+            "rank": 1,
+            "topic_id": "T01",
+            "label": "당뇨 안전성",
+            "share_pct": 42.98,
+            "row_count": 254,
+        }
+    ]
+
+
+def test_missing_catalog_topic_scope_returns_explicit_reason(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(topic_matrix, "_fetch_topic_rows", lambda: [])
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1",))
+
+    with caplog.at_level("WARNING"):
+        result = topic_matrix.get_topic_brand_payload(
+            {
+                "view": "general",
+                "selected_brand": "리바로",
+                "filter": {"atc4": ["C10A1"]},
+            }
+        )
+
+    assert result is not None
+    assert result["reason"] == "no_topic_scope"
+    assert len(result["brands"]) == 2
+    assert "reason=no_topic_scope" in caplog.text
+
+
+def test_cd_topic_scope_reads_atc_membership_through_ml_catalog(monkeypatch) -> None:
+    brand_set = _brand_set()
+    strategic_cd = BrandSetResolution(
+        view_name="strategic_cd",
+        market_id="cd_003",
+        selected_brand=brand_set.selected_brand,
+        view=ViewConfig(
+            "mart_strategic_cd_brand_metric",
+            "mart_strategic_cd_market_metric",
+            "cd_market_id",
+            "cd_market_name",
+            "brand_ranking_stacked",
+            True,
+        ),
+        market_row={"cd_market_name": "GUARDLET Market"},
+        brand_rows=(),
+        brand_meta=brand_set.brand_meta,
+        choices=brand_set.choices,
+        candidates=(),
+        ranking_quarter="2025-Q4",
+        applied_filter={},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_fetch_one(sql: str, params: tuple[str, ...]) -> dict[str, str]:
+        captured.update({"sql": sql, "params": params})
+        return {"atc_codes_json": '["A10N1", "A10N3"]'}
+
+    monkeypatch.setattr(topic_matrix.db, "fetch_one", fake_fetch_one)
+
+    assert topic_matrix._catalog_atc4_values(strategic_cd) == ("A10N1", "A10N3")
+    assert "JOIN" in str(captured["sql"])
+    assert "catalog_cd_market" in str(captured["sql"])
+    assert "catalog_ml_market" in str(captured["sql"])
+    assert captured["params"] == ("cd_003",)
+
+
+def test_topic_scope_normalizes_catalog_and_stored_atc_codes(monkeypatch) -> None:
+    brand_set = _brand_set()
+    strategic = BrandSetResolution(
+        view_name="strategic_ml",
+        market_id="ml_001",
+        selected_brand=brand_set.selected_brand,
+        view=brand_set.view,
+        market_row=brand_set.market_row,
+        brand_rows=brand_set.brand_rows,
+        brand_meta=brand_set.brand_meta,
+        choices=brand_set.choices,
+        candidates=brand_set.candidates,
+        ranking_quarter=brand_set.ranking_quarter,
+        applied_filter=brand_set.applied_filter,
+    )
+    monkeypatch.setattr(
+        topic_matrix,
+        "_catalog_atc4_values",
+        lambda _brand_set: topic_matrix._atc4_values(["A2B2"]),
+    )
+
+    scope = topic_matrix._topic_scope(
+        brand_set=strategic,
+        topic_rows=[
+            {
+                "scope_id": "atc4:A02B2",
+                "atc4_values": json.dumps(["A02B2"]),
+                "payload": json.dumps({"scope": {"scope_id": "atc4:A02B2"}}),
+            }
+        ],
+    )
+
+    assert scope["scope_id"] == "atc4:A02B2"
+
+
 def _post_topic_row() -> dict[str, str]:
     payload = {
         "scope": {"scope_id": "atc4:C10A1", "atc4_values": ["C10A1"]},
@@ -470,5 +1097,21 @@ def _post_topic_row() -> dict[str, str]:
         "quality_grade": "A",
         "source_row_count": "1",
         "run_id": "brand_activity_replay_20260703_125045",
+        "payload": json.dumps(payload, ensure_ascii=False),
+    }
+
+
+def _group_topic_row() -> dict[str, str]:
+    row = _post_topic_row()
+    payload = json.loads(row["payload"])
+    payload["scope"] = {
+        "scope_id": "group:livalo_family",
+        "atc4_values": ["C10A1", "C10C0"],
+    }
+    return {
+        **row,
+        "scope_id": "group:livalo_family",
+        "run_id": "brand_activity_group_replay",
+        "atc4_values": json.dumps(["C10A1", "C10C0"]),
         "payload": json.dumps(payload, ensure_ascii=False),
     }

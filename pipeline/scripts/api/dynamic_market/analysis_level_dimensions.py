@@ -8,8 +8,10 @@ from typing import Any
 
 from pipeline.scripts.api import db
 from pipeline.scripts.api.dynamic_market.analysis_level_series import (
+    dimension_series_from_labels_decoded,
     metric_history_from_periods,
     with_dimension_series_from_labels,
+    with_dimension_series_from_labels_decoded,
 )
 from pipeline.scripts.api.dynamic_market.aggregator import (
     brand_matrix_summary_scope,
@@ -21,7 +23,7 @@ from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMe
 logger = logging.getLogger(__name__)
 
 IQVIA_GENERAL_DIMENSIONS = frozenset({"mfr", "molecule_type", "molecule_desc", "strength", "nhi"})
-UBIST_GENERAL_DIMENSIONS = frozenset({"seller", "molecule_strength", "form", "route", "reimbursement"})
+UBIST_GENERAL_DIMENSIONS = frozenset({"seller", "molecule", "molecule_strength", "form", "route", "reimbursement"})
 GENERAL_SIDECAR_DIMENSIONS_BY_SOURCE = {
     "iqvia_nsa": IQVIA_GENERAL_DIMENSIONS,
     "ubist": UBIST_GENERAL_DIMENSIONS,
@@ -34,11 +36,22 @@ def build_analysis_rows(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     mart_db: str,
+    reuse_general_dimensions: bool = False,
+    retain_decoded_dimensions: bool = False,
+    defer_dimension_data_encoding: bool = False,
 ) -> list[dict[str, Any]]:
     """Return cache-cause mart rows enriched for analysis-level builders."""
 
-    general_dimensions = _general_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
-    sidecar_dimensions = _general_sidecar_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
+    general_dimensions = (
+        _general_dimensions_from_metrics(metrics)
+        if reuse_general_dimensions
+        else _general_dimensions_by_pair(metrics=metrics, mart_db=mart_db)
+    )
+    sidecar_dimensions = _general_sidecar_dimensions_by_pair(
+        metrics=metrics,
+        mart_db=mart_db,
+        retain_decoded_dimensions=retain_decoded_dimensions,
+    )
     strategic_dimensions = _strategic_dimensions_by_brand(
         definition=definition,
         source=metrics.source,
@@ -51,8 +64,28 @@ def build_analysis_rows(
         general_dimensions=general_dimensions,
         sidecar_dimensions=sidecar_dimensions,
         strategic_dimensions=strategic_dimensions,
+        retain_decoded_dimensions=retain_decoded_dimensions,
+        defer_dimension_data_encoding=defer_dimension_data_encoding,
     )
     return rows
+
+
+def _general_dimensions_from_metrics(metrics: AggregatedMetrics) -> dict[tuple[str, str], dict[str, Any]]:
+    """Reuse general dimension fields already loaded by the request aggregator."""
+
+    dimensions: dict[tuple[str, str], dict[str, Any]] = {}
+    for brand in metrics.all_brands:
+        dimensions[(brand.brand_key, brand.atc4_code)] = {
+            key: brand.analysis_row.get(key)
+            for key in (
+                "by_dimension",
+                "dimension_data",
+                "dimension_channel_data",
+                "channel_data",
+                "channel_specialty_matrix",
+            )
+        }
+    return dimensions
 
 
 def _general_dimensions_by_pair(
@@ -98,6 +131,7 @@ def _general_sidecar_dimensions_by_pair(
     *,
     metrics: AggregatedMetrics,
     mart_db: str,
+    retain_decoded_dimensions: bool = False,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     dimension_types = GENERAL_SIDECAR_DIMENSIONS_BY_SOURCE.get(metrics.source)
     if not dimension_types or not metrics.all_brands:
@@ -129,6 +163,8 @@ def _general_sidecar_dimensions_by_pair(
         field_data = payload["dimension_data"].setdefault(dimension_type, {})
         field_data.setdefault(dimension_value, {})
         _add_history(field_data[dimension_value], row.get("raw_value_history"))
+    if retain_decoded_dimensions:
+        return payloads
     return {
         key: {
             "by_dimension": json.dumps(value["by_dimension"], ensure_ascii=False, sort_keys=True),
@@ -182,6 +218,8 @@ def _analysis_rows(
     general_dimensions: dict[tuple[str, str], dict[str, Any]],
     sidecar_dimensions: dict[tuple[str, str], dict[str, Any]],
     strategic_dimensions: dict[str, dict[str, Any]],
+    retain_decoded_dimensions: bool = False,
+    defer_dimension_data_encoding: bool = False,
 ) -> list[dict[str, Any]]:
     totals_by_period = {
         str(item["period"]): float(item.get("market_size") or 0.0)
@@ -192,17 +230,55 @@ def _analysis_rows(
         row = _base_analysis_row(brand=brand, metrics=metrics, focus=focus)
         key = (brand.brand_key, brand.atc4_code)
         row = _merge_dimension_payload(row, general_dimensions.get(key))
-        row = _merge_dimension_payload(row, sidecar_dimensions.get(key))
         strategic = strategic_dimensions.get(brand.brand_key) or strategic_dimensions.get(brand.brand_name) or {}
-        if strategic.get("by_dimension"):
-            row["by_dimension"] = _merge_dimension_labels(row.get("by_dimension"), strategic["by_dimension"])
+        if retain_decoded_dimensions:
+            by_dimension = _json_object(row.get("by_dimension"))
+            dimension_data = _json_object(row.get("dimension_data"))
+            sidecar = sidecar_dimensions.get(key) or {}
+            _merge_dimension_label_objects(by_dimension, sidecar.get("by_dimension"))
+            _merge_dimension_data_objects(dimension_data, sidecar.get("dimension_data"))
+            _merge_dimension_label_objects(
+                by_dimension,
+                strategic.get("by_dimension"),
+                protected={"molecule"},
+            )
+            row["by_dimension"] = json.dumps(by_dimension, ensure_ascii=False, sort_keys=True)
+        else:
+            row = _merge_dimension_payload(row, sidecar_dimensions.get(key))
+            if strategic.get("by_dimension"):
+                row["by_dimension"] = _merge_dimension_labels_preserving(
+                    row.get("by_dimension"),
+                    strategic["by_dimension"],
+                    protected={"molecule"},
+                )
         row["is_jw"] = bool(row["is_target"] or strategic.get("is_jw"))
         row["metric_history"] = _metric_history(brand=brand, totals_by_period=totals_by_period)
-        row["dimension_data"] = with_dimension_series_from_labels(
-            row.get("dimension_data"),
-            row.get("by_dimension"),
-            brand.history_by_period,
-        )
+        if retain_decoded_dimensions:
+            if defer_dimension_data_encoding:
+                dimension_data, by_dimension = dimension_series_from_labels_decoded(
+                    dimension_data,
+                    by_dimension,
+                    brand.history_by_period,
+                )
+                row["dimension_data"] = "{}"
+            else:
+                encoded, dimension_data, by_dimension = with_dimension_series_from_labels_decoded(
+                    dimension_data,
+                    by_dimension,
+                    brand.history_by_period,
+                )
+                row["dimension_data"] = encoded
+            row["__dimension_data"] = dimension_data
+            row["__by_dimension"] = by_dimension
+        else:
+            row["dimension_data"] = with_dimension_series_from_labels(
+                row.get("dimension_data"),
+                row.get("by_dimension"),
+                brand.history_by_period,
+            )
+        if metrics.source == "ubist":
+            row["channel_specialty_matrix"] = "{}"
+            row["__channel_specialty_matrix"] = brand.channel_specialty_matrix
         rows.append(row)
     return rows
 
@@ -260,6 +336,38 @@ def _merge_dimension_labels(existing: Any, extra: Any) -> str:
             continue
         merged[key] = value
     return json.dumps(merged, ensure_ascii=False, sort_keys=True)
+
+
+def _merge_dimension_labels_preserving(existing: Any, extra: Any, *, protected: set[str]) -> str:
+    merged = _json_object(existing)
+    for key, value in _json_object(extra).items():
+        if (key in protected and key in merged) or _is_empty_dimension_value(value):
+            continue
+        merged[key] = value
+    return json.dumps(merged, ensure_ascii=False, sort_keys=True)
+
+
+def _merge_dimension_label_objects(
+    merged: dict[str, Any],
+    extra: Any,
+    *,
+    protected: set[str] | None = None,
+) -> None:
+    protected = protected or set()
+    for key, value in _json_object(extra).items():
+        if (key in protected and key in merged) or _is_empty_dimension_value(value):
+            continue
+        merged[key] = value
+
+
+def _merge_dimension_data_objects(merged: dict[str, Any], extra: Any) -> None:
+    for key, value in _json_object(extra).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
 
 
 def _add_history(target: dict[str, Any], raw_history: Any) -> None:

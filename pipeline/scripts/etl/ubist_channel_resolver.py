@@ -26,6 +26,8 @@ SCREEN_FACILITY_CHANNELS = ["전체", "상급종병", "종병", "(상급종병 +
 UBIST_CHANNEL_BY_DISPLAY_COLUMN = "ubist_channel_by_display"
 UBIST_CHANNEL_BY_CODE_COLUMN = "ubist_channel_by_code"
 CHANNEL_SPECIALTY_MATRIX_COLUMN = "channel_specialty_matrix"
+_DECODED_CHANNEL_SPECIALTY_MATRIX = "__channel_specialty_matrix_decoded"
+_PRIVATE_CHANNEL_SPECIALTY_MATRIX = "__channel_specialty_matrix"
 _STRATEGIC_CHANNEL_ROWS: ContextVar[tuple[dict[str, Any], ...] | None] = ContextVar(
     "strategic_channel_rows",
     default=None,
@@ -231,7 +233,14 @@ def _normalize_target_channel_series(payload: dict[str, Any]) -> dict[str, dict[
 
 
 def _raw_matrices_available(rows: list[dict[str, Any]]) -> bool:
-    return any(bool(_decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))) for row in rows)
+    available = False
+    for row in rows:
+        matrix = row.get(_PRIVATE_CHANNEL_SPECIALTY_MATRIX)
+        if not isinstance(matrix, dict):
+            matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
+        row[_DECODED_CHANNEL_SPECIALTY_MATRIX] = matrix
+        available = available or bool(matrix)
+    return available
 
 
 def _parse_target_label(label: str | None) -> tuple[str, str]:
@@ -245,7 +254,11 @@ def _parse_target_label(label: str | None) -> tuple[str, str]:
 
 
 def _iter_raw_matrix(row: dict[str, Any]) -> Iterator[tuple[str, str, dict[str, Any]]]:
-    matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
+    matrix = row.get(_DECODED_CHANNEL_SPECIALTY_MATRIX)
+    if not isinstance(matrix, dict):
+        matrix = row.get(_PRIVATE_CHANNEL_SPECIALTY_MATRIX)
+    if not isinstance(matrix, dict):
+        matrix = _decode_object(row.get(CHANNEL_SPECIALTY_MATRIX_COLUMN))
     for facility, specialties in matrix.items():
         if not isinstance(specialties, dict):
             continue
@@ -395,14 +408,55 @@ def resolve_market_channels(
     max_channels: int = 4,
 ) -> dict[str, Any]:
     """Resolve UBIST target channels and attach raw series to mart rows."""
-    if _raw_matrices_available(rows):
-        channels, target_codes = _resolve_channels_from_raw_matrix(
-            rows=rows,
-            market=market,
-            max_channels=max_channels,
-        )
-        series_by_brand = _attach_raw_matrix_channel_series(rows, channels)
+    try:
+        if _raw_matrices_available(rows):
+            channels, target_codes = _resolve_channels_from_raw_matrix(
+                rows=rows,
+                market=market,
+                max_channels=max_channels,
+            )
+            series_by_brand = _attach_raw_matrix_channel_series(rows, channels)
+            display_names = [channel.display_name for channel in channels]
+            return {
+                "channels": list(SCREEN_FACILITY_CHANNELS),
+                "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
+                "target_channels": [channel.as_dict() for channel in channels],
+                "specialty_target_channels": [channel.as_dict() for channel in channels],
+                "fallback_codes": [channel.code for channel in channels if channel.code not in target_codes],
+                "series_brand_count": len(series_by_brand),
+                "raw_brand_count": len(_brand_names(rows)),
+            }
+
+        brand_names = _brand_names(rows)
+        series_by_brand, totals_by_code = _load_market_raw_totals(brand_names, measure)
+
+        channels = []
+        used_codes: set[str] = set()
+        target_codes: set[str] = set()
+        for target in _targets_from_market(market):
+            parsed = parse_target_channel_code(target)
+            if parsed is None or parsed.code in used_codes:
+                continue
+            channels.append(parsed)
+            used_codes.add(parsed.code)
+            target_codes.add(parsed.code)
+
+        if len(channels) < max_channels:
+            for code, _ in sorted(totals_by_code.items(), key=lambda item: item[1], reverse=True):
+                if len(channels) >= max_channels:
+                    break
+                parsed = parse_target_channel_code(code)
+                if parsed is None or parsed.code in used_codes:
+                    continue
+                channels.append(parsed)
+                used_codes.add(parsed.code)
+
         display_names = [channel.display_name for channel in channels]
+        for row in rows:
+            brand = str(row.get("brand_name") or row.get("brand_key") or "").strip()
+            row["__ubist_dual_channel_data"] = series_by_brand.get(brand, {})
+            row["__ubist_specialty_channel_data"] = series_by_brand.get(brand, {})
+
         return {
             "channels": list(SCREEN_FACILITY_CHANNELS),
             "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
@@ -410,45 +464,8 @@ def resolve_market_channels(
             "specialty_target_channels": [channel.as_dict() for channel in channels],
             "fallback_codes": [channel.code for channel in channels if channel.code not in target_codes],
             "series_brand_count": len(series_by_brand),
-            "raw_brand_count": len(_brand_names(rows)),
+            "raw_brand_count": len(brand_names),
         }
-
-    brand_names = _brand_names(rows)
-    series_by_brand, totals_by_code = _load_market_raw_totals(brand_names, measure)
-
-    channels = []
-    used_codes: set[str] = set()
-    target_codes: set[str] = set()
-    for target in _targets_from_market(market):
-        parsed = parse_target_channel_code(target)
-        if parsed is None or parsed.code in used_codes:
-            continue
-        channels.append(parsed)
-        used_codes.add(parsed.code)
-        target_codes.add(parsed.code)
-
-    if len(channels) < max_channels:
-        for code, _ in sorted(totals_by_code.items(), key=lambda item: item[1], reverse=True):
-            if len(channels) >= max_channels:
-                break
-            parsed = parse_target_channel_code(code)
-            if parsed is None or parsed.code in used_codes:
-                continue
-            channels.append(parsed)
-            used_codes.add(parsed.code)
-
-    display_names = [channel.display_name for channel in channels]
-    for row in rows:
-        brand = str(row.get("brand_name") or row.get("brand_key") or "").strip()
-        row["__ubist_dual_channel_data"] = series_by_brand.get(brand, {})
-        row["__ubist_specialty_channel_data"] = series_by_brand.get(brand, {})
-
-    return {
-        "channels": list(SCREEN_FACILITY_CHANNELS),
-        "specialty_channels": ["전체", *display_names] if display_names else ["전체"],
-        "target_channels": [channel.as_dict() for channel in channels],
-        "specialty_target_channels": [channel.as_dict() for channel in channels],
-        "fallback_codes": [channel.code for channel in channels if channel.code not in target_codes],
-        "series_brand_count": len(series_by_brand),
-        "raw_brand_count": len(brand_names),
-    }
+    finally:
+        for row in rows:
+            row.pop(_DECODED_CHANNEL_SPECIALTY_MATRIX, None)

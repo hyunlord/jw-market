@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-agent3-refresh-daily
+  namespace: llmops
+  labels:
+    app: jw-agent3
+    component: brand-strength
+spec:
+  schedule: "0 21 * * *" # 06:00 KST, after crawl and cache-refresh windows
+  # Aligned to the live state (PL-approved resume; drift fixed 2026-07-17).
+  # Resume preconditions already satisfied in production: cfc8f3e6-lineage
+  # image + AGENT3_WORKFLOW_REV=5692 pin (see env below).
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600
+      template:
+        metadata:
+          labels:
+            app: jw-agent3
+            component: brand-strength
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: "enabled"
+          containers:
+            - name: agent3
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:1824db4d358d31bc5b74b5482ff510c787692f3a7151cf1a6d31c637b7ac223f
+              imagePullPolicy: Always
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "2"
+                  memory: "4Gi"
+              env:
+                - name: AGENT3_DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: AGENT3_DB_PORT
+                  value: "3306"
+                - name: D2_WRITER_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: D2_WRITER_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+                - name: AGENT3_DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: username
+                - name: AGENT3_DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: jw-mart-d2-writer
+                      key: password
+                - name: AGENT3_DB_NAME
+                  value: jw_mart_d2_stage_20260630_r2
+                - name: WF316_DIRECT_RUN_URL
+                  value: http://workflow-316.llmops.svc.cluster.local:8080/run/v2
+                - name: AGENT3_WORKFLOW_REV
+                  value: "5692"
+              command: ["/bin/bash", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+                  cd /app
+                  python -m pipeline.scripts.agent3.run_source \
+                    --brand-source general_all \
+                    --mode full \
+                    --source all \
+                    --expected-workflow-rev 5692 \
+                    --output /tmp/agent3_refresh_result.json
+                  cat /tmp/agent3_refresh_result.json

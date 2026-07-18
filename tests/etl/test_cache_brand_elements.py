@@ -117,3 +117,36 @@ def test_cache_brand_elements_builds_and_upserts_payloads() -> None:
     assert json.loads(row[3])["atc"] == ["C10A1"]
     assert json.loads(row[4])["available"] is True
     assert verify_cache_brand_elements(conn)["rows_total"] == 1
+
+
+def test_dry_run_wins_over_every_write_flag(monkeypatch, capsys) -> None:
+    """--dry-run must block ALL write paths regardless of flag combination.
+
+    Regression for the 2026-07-17 staging incident: --dry-run --pilot-fill
+    combined still upserted one live row.
+    """
+    import sys
+
+    from pipeline.scripts.etl import cache_brand_elements as mod
+
+    class ClosableFakeConnection(FakeConnection):
+        def close(self) -> None:
+            return None
+
+    conn = ClosableFakeConnection()
+    monkeypatch.setattr(mod, "connect_db", lambda: conn)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cache_brand_elements.py", "--dry-run", "--pilot-fill", "--ensure-table", "--brand", "리바로"],
+    )
+
+    mod.main()
+
+    out = capsys.readouterr().out
+    assert "CACHE_BRAND_ELEMENTS_JSON=" in out
+    assert '"dry_run"' in out
+    # write 0: no upsert rows, no DDL, no commit
+    assert conn.cursor_obj.executemany_rows == []
+    assert not any("CREATE TABLE" in sql or "INSERT" in sql.upper() for sql, _ in conn.cursor_obj.calls)
+    assert conn.commits == 0

@@ -26,7 +26,9 @@ def test_cd_display_falls_back_to_spec_rows_without_parquet(tmp_path, monkeypatc
     assert display is not None
     assert display.label == "Statin/ARB/CCB"
     assert display.full == "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB/CCB"
-    assert display.atc_codes == ["Statin/ARB/CCB"]
+    # Without a reachable mart the display falls back to the raw-definition
+    # ATC codes; the label itself must never masquerade as an ATC code.
+    assert display.atc_codes == ["C11A1"]
     assert INTERNAL_MARKET_DEFINITION_PATTERN.search(display.label) is None
     assert INTERNAL_MARKET_DEFINITION_PATTERN.search(display.full) is None
 
@@ -152,8 +154,8 @@ def test_apply_ml_equals_cd_definition_preserves_payload_atc_codes(monkeypatch) 
     assert payload["market_meta"]["atc_count"] == 2
 
 
-def test_apply_ml_equals_cd_definition_uses_parent_cache_when_payload_has_placeholder(monkeypatch) -> None:
-    # Given: a slim API image receives a CD cache payload with only a placeholder ATC value.
+def test_apply_ml_equals_cd_definition_uses_parent_catalog_when_payload_has_placeholder(monkeypatch) -> None:
+    # Given: a mart-direct CD payload has only a placeholder ATC value.
     monkeypatch.setattr(
         market_definition_display,
         "_cd_dim_by_id",
@@ -167,13 +169,12 @@ def test_apply_ml_equals_cd_definition_uses_parent_cache_when_payload_has_placeh
             }
         },
     )
-    monkeypatch.setattr(market_definition_display, "_ml_atc_codes", lambda: {})
-    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {"ml_011": "악템라"})
     monkeypatch.setattr(
         market_definition_display,
-        "_cached_parent_ml_atc_codes",
-        lambda payload, cd_market_id: ["L01G1", "L04B0", "L04D0", "M01C0"],
+        "_ml_atc_codes",
+        lambda: {"ml_011": ["L01G1", "L04B0", "L04D0", "M01C0"]},
     )
+    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {"ml_011": "악템라"})
     payload = {
         "brand": "악템라",
         "source": "IQVIA",
@@ -226,7 +227,115 @@ def test_apply_cd_market_definition_updates_only_cd_payloads() -> None:
     # Then: only the CD payload is narrowed to the CD display definition.
     assert cd_payload["market_meta"]["market_definition_label"] == "Statin/ARB"
     assert cd_payload["market_meta"]["market_definition_full"] == "[C11A1] 심혈관 질환 다중요법 목적의 복합제제 (단일 투약 형태) - Statin/ARB"
-    assert cd_payload["market_meta"]["atc_codes"] == ["Statin/ARB"]
+    # atc_codes carry real ATC values (raw-definition fallback without a mart),
+    # never the display label.
+    assert cd_payload["market_meta"]["atc_codes"] == ["C11A1"]
     assert cd_payload["market_meta"]["atc_count"] == 1
     assert ml_payload["market_meta"]["market_definition_label"] == "1 ATC"
     assert ml_payload["market_meta"]["market_definition_full"] == "C10A1"
+
+
+def test_label_path_uses_filter_option_canonical_codes(monkeypatch) -> None:
+    # Given: a label-defined CD market and a reachable filter-options source.
+    market_definition_display._cd_dim_by_id.cache_clear()
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_003": {
+                "competitive_dynamics_id": "cd_003",
+                "cd_definition_type": "filter_explicit",
+                "cd_definition_brand_class": "A10N3 + A10N1",
+                "cd_filter_raw_json": None,
+            }
+        },
+    )
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    monkeypatch.setattr(
+        filter_options,
+        "strategic_cd_atc4_option_codes",
+        lambda cd_id, mart_db=None: ("A10C5", "A10N1", "A10N3"),
+    )
+
+    # When: the CD display definition is resolved.
+    display = cd_display_for_id("cd_003")
+
+    # Then: atc_codes mirror the filter-options canonical list and order,
+    # while the label fields keep the human-readable definition.
+    assert display is not None
+    assert display.atc_codes == ["A10C5", "A10N1", "A10N3"]
+    assert display.atc_count == 3
+    assert display.label == "A10N3 + A10N1"
+    assert display.cd_definition_class == "A10N3 + A10N1"
+
+
+def test_label_path_never_returns_label_as_atc_code(monkeypatch) -> None:
+    # Given: neither the mart nor the raw definition yields ATC codes.
+    market_definition_display._cd_dim_by_id.cache_clear()
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_002": {
+                "competitive_dynamics_id": "cd_002",
+                "cd_definition_type": "filter_explicit",
+                "cd_definition_brand_class": "NON_NHI",
+                "cd_filter_raw_json": None,
+            }
+        },
+    )
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    def _raise(cd_id, mart_db=None):
+        raise RuntimeError("mart unreachable")
+
+    monkeypatch.setattr(filter_options, "strategic_cd_atc4_option_codes", _raise)
+
+    # When: the CD display definition is resolved.
+    display = cd_display_for_id("cd_002")
+
+    # Then: the label survives for display fields but is not an ATC code.
+    assert display is not None
+    assert display.label == "NON_NHI"
+    assert display.full == "NON_NHI"
+    assert display.atc_codes == []
+    assert display.atc_count == 0
+
+
+def test_ml_equals_path_falls_back_to_canonical_codes(monkeypatch) -> None:
+    # Given: an ml-equals CD whose inherited/ML/raw code resolution all fail.
+    market_definition_display._cd_dim_by_id.cache_clear()
+    monkeypatch.setattr(
+        market_definition_display,
+        "_cd_dim_by_id",
+        lambda: {
+            "cd_014": {
+                "competitive_dynamics_id": "cd_014",
+                "parent_market_landscape_id": "ml_014",
+                "cd_definition_type": "ml_equals_cd_by_empty",
+                "cd_definition_brand_class": "악템라",
+                "sheet_name": "악템라",
+                "cd_filter_raw_json": None,
+            }
+        },
+    )
+    monkeypatch.setattr(market_definition_display, "_ml_atc_codes", lambda: {})
+    monkeypatch.setattr(market_definition_display, "_ml_market_names", lambda: {})
+    from pipeline.scripts.api.dynamic_market import filter_options
+
+    monkeypatch.setattr(
+        filter_options,
+        "strategic_cd_atc4_option_codes",
+        lambda cd_id, mart_db=None: ("L01G1", "L04B0", "L04D0", "M01C0"),
+    )
+
+    # When: the display is resolved without any inherited codes.
+    display = cd_display_for_id("cd_014")
+
+    # Then: the ml-equals market renders the canonical ML-style definition
+    # instead of degrading to the brand-class label path.
+    assert display is not None
+    assert display.atc_codes == ["L01G1", "L04B0", "L04D0", "M01C0"]
+    assert display.label == "4 ATC 통합"
+    assert "경쟁 시장" in display.full

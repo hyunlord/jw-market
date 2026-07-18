@@ -1,0 +1,39 @@
+NAME                                        SCHEDULE           TIMEZONE     SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+brand-activity-row-topic-monthly            0 22 4 * *         <none>       False     0        <none>          11d
+brand-activity-topic-monthly                0 19 4 * *         <none>       False     0        12d             14d
+credit-monthly-renew                        0 0 1 * *          Asia/Seoul   False     0        <none>          7d8h
+dynamic-market-cache-warm                   7,37 * * * *       <none>       False     1        83s             6d13h
+dynamic-market-cache-warm-test2             7,37 * * * *       <none>       False     1        83s             6d19h
+iqvia-general-sidecar-quarterly             0 3 5 1,4,7,10 *   Asia/Seoul   True      0        <none>          8d
+jw-agent3-refresh-daily                     0 21 * * *         <none>       False     0        12h             5d
+jw-brand-activity-run                       0 0 30 2 *         <none>       True      0        <none>          5h35m
+jw-cache-refresh-daily                      0 20 * * *         <none>       False     0        13h             12d
+jw-csd-sensor                               */10 * * * *       <none>       True      0        <none>          5h35m
+jw-gitea-dump-daily                         40 19 * * *        <none>       False     0        <none>          155m
+jw-news-crawl-retention-daily               0 19 * * *         <none>       True      0        <none>          16d
+jw-news-crawl-tier1-daily                   10 18 * * *        <none>       False     0        14h             16d
+jw-news-crawl-tier1-daily-canonical         10 18 * * *        <none>       True      0        <none>          17h
+jw-news-crawl-tier2-daily-slice             40 18 * * *        <none>       False     0        14h             16d
+jw-news-crawl-tier2-daily-slice-canonical   40 18 * * *        <none>       True      0        <none>          17h
+jw-pipeline-orchestrator-poll-daily         0 16 * * *         <none>       True      0        <none>          5h35m
+mcp-health-checker                          0 7 * * *          Asia/Seoul   False     0        11h             8d
+===SVC===
+galera-mariadb-galera                       ClusterIP      10.13.33.73    <none>                           3306/TCP                       107d
+galera-mariadb-galera-headless              ClusterIP      None           <none>                           4567/TCP,4568/TCP,4444/TCP     107d
+jw-brand-activity-demo-service              ClusterIP      10.13.33.23    <none>                           80/TCP                         23d
+jw-brand-activity-mock-service              ClusterIP      10.13.33.192   <none>                           80/TCP                         23d
+jw-chat-agent-poc                           ClusterIP      10.13.33.173   <none>                           8080/TCP                       32d
+jw-data-portal-service                      ClusterIP      10.13.33.58    <none>                           80/TCP                         6d23h
+jw-market-api-service                       ClusterIP      10.13.33.163   <none>                           80/TCP                         66d
+jw-market-backend-api-service               ClusterIP      10.13.33.240   <none>                           80/TCP                         52d
+jw-market-backend-api-test-service          ClusterIP      10.13.33.125   <none>                           80/TCP                         36d
+llmops-gitea-service                        ClusterIP      10.13.33.29    <none>                           3000/TCP,22/TCP                88d
+llmops-mariadb-service                      ClusterIP      10.13.33.27    <none>                           3306/TCP                       107d
+llmops-minio-service                        ExternalName   <none>         minio.llmops.svc.cluster.local   <none>                         102d
+llmops-mongodb-service                      ClusterIP      10.13.33.221   <none>                           27017/TCP                      107d
+minio                                       ClusterIP      10.13.33.26    <none>                           9000/TCP                       107d
+minio-console                               ClusterIP      10.13.33.161   <none>                           9090/TCP                       107d
+===STS===
+NAME                    READY   AGE
+galera-mariadb-galera   3/3     107d
+weaviate                3/3     107d

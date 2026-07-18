@@ -164,3 +164,15 @@ Tier2 cost:
 3. PL approval before unsuspending CronJobs or running the large crawl.
 4. Confirm final Tier2 count after JW catalog dedupe in the target runtime DB.
 
+## Canonical Branch Policy
+
+The crawl and short/long producers were recovered by extracting their reviewed
+dependency closure onto current `develop`. The historical branches
+`codex/crawl-2tier` and `codex/short-long-lineage-bulk` are retained for
+provenance but must never be merged into `develop`: they contain workflow
+revision 5365 and stale Agent3 and API contracts.
+
+The reviewed extraction lineage is canonical. Imports from API, Agent3, and
+forecast modules must continue to resolve to the current `develop` versions.
+The crawl image still requires a separately gated rebuild from the approved
+extraction commit; neither historical branch is a valid image build base.

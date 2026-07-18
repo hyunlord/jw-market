@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dynamic-market-cache-warm
+  namespace: llmops
+spec:
+  schedule: "7,37 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: warmer
+              image: JW_MARKET_API_IMAGE
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - >-
+                  python -m pipeline.scripts.api.dynamic_market.cache_maintenance
+                  --batch-limit 100 --max-batches 10 --grace-seconds 300;
+                  python -m pipeline.scripts.api.dynamic_market.warm_cache
+                  --base-url http://jw-market-backend-api-service
+                  --timeout-seconds 120 --workers 3
+              env:
+                - name: DB_HOST
+                  value: llmops-mariadb-service.llmops.svc.cluster.local
+                - name: DB_PORT
+                  value: "3306"
+                - name: DB_USER
+                  value: llmops
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: galera-mariadb-galera
+                      key: mariadb-password
+                - name: DB_NAME
+                  value: jw_mart_d2_stage_20260630_r2
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 128Mi
