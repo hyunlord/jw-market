@@ -26,7 +26,7 @@ spec:
       containers:
         - name: ingest
           # Same digest pin as the orchestrator poll CronJob — one code identity.
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:fea296850e89bc1f8fe98f4c1eb4d1570bb778a22ef835f4712e0769db9ab88c
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:e79aa0986a4e2163849d97d4b3aafacd05fe4db7fc3db48dc36a96164b4c46d8
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -36,6 +36,12 @@ spec:
             - "<manifest_path>"
           env:
             # Job step 1 is ALWAYS G3 (job_runner enforces the order in code).
+            # J5: the real load writes parquet under INGEST_LOAD_STAGING_ROOT and
+            # the M-2 gate confirms the uploaded epoch landed; the mart refresh is
+            # skipped in this staging-verify posture (D-3 swaps to
+            # INGEST_LOAD_TARGET_ROOT under PL gate). Injected by job_launcher.
+            - name: INGEST_LOAD_STAGING_ROOT
+              value: /tmp/ingest-load-staging
             # Submission set is fetched from the MinIO market bucket (S3 mode).
             - name: INGEST_S3_BUCKET
               valueFrom:

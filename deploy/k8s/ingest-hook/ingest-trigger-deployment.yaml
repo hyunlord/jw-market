@@ -27,7 +27,7 @@ spec:
       containers:
         - name: trigger
           # Keep in lockstep with deploy/k8s/orchestrator/pipeline-orchestrator-poll-cronjob.yaml
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:fea296850e89bc1f8fe98f4c1eb4d1570bb778a22ef835f4712e0769db9ab88c
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:e79aa0986a4e2163849d97d4b3aafacd05fe4db7fc3db48dc36a96164b4c46d8
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -40,6 +40,12 @@ spec:
             - --port
             - "8080"
           env:
+            # J5 real-loader staging output. INGEST_LOAD_STAGING_ROOT keeps the
+            # parquet output isolated and SKIPS the mart-writing refresh (D-3
+            # swaps this for INGEST_LOAD_TARGET_ROOT on a mounted live parquet
+            # root under PL gate). Carried to launched Jobs by job_launcher.
+            - name: INGEST_LOAD_STAGING_ROOT
+              value: /tmp/ingest-load-staging
             # Submissions live in the MinIO market bucket (contract v2.1);
             # same secret keys the portal uses. S3 mode makes INGEST_INPUT_ROOT unnecessary.
             - name: INGEST_S3_BUCKET

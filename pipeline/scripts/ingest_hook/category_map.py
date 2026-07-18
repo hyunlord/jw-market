@@ -32,7 +32,9 @@ class CategorySpec:
     # Column whose distinct values must contain the manifest epoch (period
     # consistency). None = fall back to files[].period_start/end containment.
     period_column: str | None
-    # System A load phase argv (without manifest-derived file args).
+    # System A load phase base argv. The uploaded files and the output target
+    # are injected per-run by job_runner (load_input_flag / load_target_flag);
+    # this tuple carries only the source/mode selection.
     load_argv: tuple[str, ...]
     # System B downstream refresh argv.
     refresh_argv: tuple[str, ...]
@@ -40,6 +42,16 @@ class CategorySpec:
     # mart source key for the post-load Σ(brands)=market reconciliation
     # (sigma_market.check_market_sigma); None = no market sigma for the category.
     sigma_source: str | None = None
+    # J5 wiring — how the materialized upload reaches the loader:
+    #   load_input_flag  : CLI flag repeated once per uploaded file (e.g. "--file").
+    #   load_target_flag : CLI flag for the isolated parquet output dir (e.g. "--target-dir").
+    #   load_verify      : load_verify.verify_epoch_loaded kind confirming the
+    #                      uploaded epoch actually landed (silent-failure gate).
+    # A category with a non-empty load_argv but no load_input_flag is UNWIRED:
+    # job_runner fails it closed in real mode rather than load unrelated defaults.
+    load_input_flag: str | None = None
+    load_target_flag: str | None = None
+    load_verify: str | None = None
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -56,9 +68,17 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         description="UBIST monthly submission (incremental append; dedup in frame loader)",
         required_columns=("period", "brand", "value"),
         period_column="period",
-        load_argv=_etl("--source", "ubist", "--incremental"),
+        # --stage s1 loads the uploaded file's parquet in isolation: it bypasses
+        # s0 verify (which requires the full four-source tree) and honors --file
+        # (discover_xlsx adds the exact file). The upstream parquet->mart_general_*
+        # propagation (s2..s7 / mounted source tree) is a separate stage-orchestration
+        # decision flagged to jw agent for D-3; M-2 here proves the staging landing.
+        load_argv=_etl("--stage", "s1", "--source", "ubist", "--incremental"),
         refresh_argv=_orchestrator(),
         sigma_source="ubist",
+        load_input_flag="--file",
+        load_target_flag="--target-dir",
+        load_verify="ubist_parquet_manifest",
     ),
     CategorySpec(
         key="iqvia",
