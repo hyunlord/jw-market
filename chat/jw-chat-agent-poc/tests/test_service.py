@@ -910,6 +910,51 @@ def test_compute_final_answer_applies_positioning_contract_to_tool_use_agent(mon
     assert "격차 0.44%p" in final.text
 
 
+def test_compute_final_answer_applies_positioning_contract_from_metric_fact(monkeypatch) -> None:
+    fact_md = """## 확정 fact set
+
+### 리바로 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| 브랜드/시장 | 리바로 |
+| 지표 | market_share |
+| 기간 | 2026-05 |
+| 시장점유율 | 3.76% |
+| 순위 | 6/555 |
+
+### 상위 브랜드 점유율 추이 fact
+| 최신 순위 | 브랜드 | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 로수젯 | 9.10% | 9.13% | +0.03%p | 195.10억원 | +1.00억원 |
+| 2 | 리피토 | 6.80% | 6.13% | -0.67%p | 130.92억원 | -8.00억원 |
+| 3 | 리바로젯 | 4.71% | 5.12% | +0.41%p | 109.54억원 | +8.00억원 |
+| 4 | 아토젯 | 4.90% | 4.95% | +0.05%p | 105.90억원 | +1.00억원 |
+| 5 | 로수바미브 | 4.18% | 4.20% | +0.02%p | 89.82억원 | +0.50억원 |
+"""
+
+    def stream_answer(_self: GenosClient, _question: str, _result: dict):
+        yield "상위 브랜드는 로수젯, 리피토, 리바로젯, 아토젯, 로수바미브입니다."
+
+    monkeypatch.setattr(GenosClient, "stream_answer", stream_answer)
+    final = compute_final_answer(
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        {
+            "answer": "",
+            "markdown_response": {"fact_md": fact_md, "allowed_numbers": ()},
+            "tool_calls": [{"tool": "get_brand_metric", "source": "UBIST"}],
+            "sources": ["UBIST"],
+            "router_diagnostics": {"mode": "tool_use_agent"},
+        },
+        "positioning-metric-fact-tool-use-agent",
+    )
+
+    assert "## 포지셔닝 축" in final.text
+    assert "리바로 6위" in final.text
+    assert "시장점유율 3.76%" in final.text
+    assert "직상위 5위 로수바미브" in final.text
+    assert "격차 0.44%p" in final.text
+
+
 def test_compute_final_answer_restores_hira_patient_lead_before_table(monkeypatch) -> None:
     response = MarkdownResponseBuilder().build(
         brand="고지혈증",

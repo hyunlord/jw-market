@@ -192,6 +192,28 @@ POSITIONING_COMPLETE_FACT_MD = POSITIONING_FACT_MD + """
 """
 
 
+POSITIONING_KEY_VALUE_FACT_MD = """## 확정 fact set
+
+### 리바로 지표 fact
+| 항목 | 값 |
+| --- | --- |
+| 브랜드/시장 | 리바로 |
+| 지표 | market_share |
+| 기간 | 2026-04 |
+| 시장점유율 | 3.76% |
+| 순위 | 6/470 |
+
+### 상위 Brand 점유율 추이 fact
+| 최신 순위 | Brand | 시작 MS | 최신 MS | MS 변화 | 최신 매출 | 매출 변화 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 로수젯 | 2025-07 9.10% | 2026-04 9.13% | +0.03%p | 206.00억원 | +1.00억원 |
+| 2 | 리피토 | 2025-07 6.95% | 2026-04 6.13% | -0.82%p | 138.00억원 | -15.00억원 |
+| 3 | 리바로젯 | 2025-07 4.79% | 2026-04 5.12% | +0.33%p | 115.00억원 | +12.00억원 |
+| 4 | 아토젯 | 2025-07 5.01% | 2026-04 4.95% | -0.06%p | 112.00억원 | +3.00억원 |
+| 5 | 로수바미브 | 2025-07 4.30% | 2026-04 4.20% | -0.10%p | 94.00억원 | -2.00억원 |
+"""
+
+
 THREAT_FACT_MD = POSITIONING_FACT_MD + """
 
 ### 인사이트 근거 fact - 뉴스/이슈
@@ -1142,6 +1164,41 @@ def test_positioning_contract_requires_competitors_own_position_and_superior_gap
     assert "격차 0.44%p" in revised
     assert status["structural_contract"] == "positioning"
     assert status["status"] == "pass"
+
+
+def test_positioning_contract_uses_key_value_rank_when_required_fact_block_is_absent() -> None:
+    # Given: portal fact assembly preserved rank and share only in the metric key/value section.
+    answer = "상위 브랜드는 로수젯, 리피토, 리바로젯, 아토젯, 로수바미브입니다."
+
+    # When: the positioning contract completes the portal answer.
+    revised = enforce_answer_contract(
+        "경쟁사 대비 리바로 위치",
+        answer,
+        {"fact_md": POSITIONING_KEY_VALUE_FACT_MD},
+    )
+
+    # Then: rank, share, and the immediate-superior gap are surfaced without requiring sales.
+    assert "## 포지셔닝 축" in revised
+    assert "리바로 6위" in revised
+    assert "시장점유율 3.76%" in revised
+    assert "직상위 5위 로수바미브" in revised
+    assert "격차 0.44%p" in revised
+
+
+def test_positioning_status_accepts_rank_and_share_without_sales() -> None:
+    # Given: positioning has the required own-brand relation facts but no sales value.
+    answer = "상위 5개 브랜드를 확인했습니다."
+
+    # When: the contract status is evaluated before repair.
+    status = evaluate_answer_contract(
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        answer,
+        {"fact_md": POSITIONING_KEY_VALUE_FACT_MD},
+    )
+
+    # Then: the contract is applicable and reports the missing answer surface.
+    assert status["structural_contract"] == "positioning"
+    assert status["status"] == "surface_missing"
 
 
 def test_positioning_contract_names_missing_superior_gap_without_inventing_it() -> None:

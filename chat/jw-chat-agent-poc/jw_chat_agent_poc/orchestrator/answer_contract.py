@@ -207,7 +207,7 @@ def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapp
     intent = _intent(question, fact_md)
     structural = _structural_contract_type(question)
     if intent is None:
-        positioning_applicable = structural == "positioning" and _ranking_fact(fact_md) is not None
+        positioning_applicable = structural == "positioning" and _positioning_fact(fact_md) is not None
         structural_pass = _positioning_surface_ok(answer, fact_md) if positioning_applicable else bool(
             structural and structural != "positioning" and _structural_contract_present(answer, structural)
         )
@@ -264,6 +264,15 @@ class RankingFact:
     sales: str
     share: str
     rank: str
+
+
+@dataclass(frozen=True, slots=True)
+class PositioningFact:
+    brand: str
+    share: str
+    rank: str
+    period: str = ""
+    sales: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,6 +465,31 @@ def _ranking_from_text(text: str) -> RankingFact | None:
     if match is None:
         return None
     return RankingFact(**match.groupdict())
+
+
+def _positioning_fact(fact_md: str) -> PositioningFact | None:
+    ranking = _ranking_fact(fact_md)
+    if ranking is not None:
+        return PositioningFact(
+            brand=ranking.brand,
+            share=ranking.share,
+            rank=ranking.rank,
+            period=ranking.period,
+            sales=ranking.sales,
+        )
+    rows = _key_value_section(fact_md, "지표 fact")
+    brand = rows.get("브랜드/시장", "")
+    share = rows.get("시장점유율", "")
+    rank = rows.get("순위", "")
+    if not all((brand, share, rank)):
+        return None
+    return PositioningFact(
+        brand=brand,
+        share=share,
+        rank=rank,
+        period=rows.get("기간", ""),
+        sales=rows.get("매출", ""),
+    )
 
 
 def _trend_fact(fact_md: str) -> TrendFact | None:
@@ -1419,7 +1453,7 @@ def _positioning_contract_block(fact_md: str, answer: str = "") -> str:
     rows = _positioning_rows(fact_md)
     if not rows:
         return ""
-    ranking = _ranking_fact(fact_md)
+    ranking = _positioning_fact(fact_md)
     competitors = _positioning_competitors(fact_md)
     direct = _positioning_direct_answer(rows, ranking, competitors)
     lines = [
@@ -1448,6 +1482,16 @@ def _positioning_rows(fact_md: str) -> tuple[tuple[str, str, str], ...]:
     items = _mandatory_row_items(fact_md)
     rows: list[tuple[str, str, str]] = []
     ranking = mandatory.get("브랜드 핵심 지표", "")
+    if not ranking:
+        positioning = _positioning_fact(fact_md)
+        if positioning is not None:
+            parts = [positioning.brand]
+            if positioning.period:
+                parts.append(positioning.period)
+            if positioning.sales:
+                parts.extend(("매출", positioning.sales))
+            parts.extend(("시장점유율", positioning.share, "순위", positioning.rank))
+            ranking = " ".join(parts)
     if ranking:
         rows.append(("시장 순위/MS", ranking, "보유 rank/MS fact 범위에서만 자사 위치를 표시합니다."))
     growth = _first_payload_containing(items, ("share-of-growth", "성장분해", "점유"))
@@ -1470,7 +1514,7 @@ def _first_payload_containing(items: tuple[tuple[str, str], ...], tokens: tuple[
 
 def _positioning_direct_answer(
     rows: tuple[tuple[str, str, str], ...],
-    ranking_fact: RankingFact | None = None,
+    ranking_fact: PositioningFact | None = None,
     competitors: tuple[PositioningCompetitor, ...] = (),
 ) -> str:
     if ranking_fact is not None:
@@ -1553,7 +1597,7 @@ def _positioning_competitor_surface_ok(answer: str, competitors: tuple[Positioni
 def _positioning_surface_ok(answer: str, fact_md: str) -> bool:
     if not _structural_contract_present(answer, "positioning"):
         return False
-    ranking = _ranking_fact(fact_md)
+    ranking = _positioning_fact(fact_md)
     if ranking is None:
         return False
     rank = _positioning_rank(ranking.rank)
