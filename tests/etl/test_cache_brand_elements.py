@@ -150,3 +150,24 @@ def test_dry_run_wins_over_every_write_flag(monkeypatch, capsys) -> None:
     assert conn.cursor_obj.executemany_rows == []
     assert not any("CREATE TABLE" in sql or "INSERT" in sql.upper() for sql, _ in conn.cursor_obj.calls)
     assert conn.commits == 0
+
+
+def test_connect_db_allows_only_d2_or_isolated_rehearsal_cache(monkeypatch) -> None:
+    from pipeline.scripts.etl import cache_brand_elements as mod
+
+    sentinel = object()
+    monkeypatch.setenv("MARIADB_HOST", "127.0.0.1")
+    monkeypatch.setenv("MARIADB_USER", "writer")
+    monkeypatch.setenv("MARIADB_PASSWORD", "test-only")
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_s6_rehearsal_r1_20260718")
+    monkeypatch.setattr(mod.pymysql, "connect", lambda **_kwargs: sentinel)
+
+    assert mod.connect_db() is sentinel
+
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_s6_scratch")
+    try:
+        mod.connect_db()
+    except mod.CacheBrandElementsError as exc:
+        assert "refusing to write" in str(exc)
+    else:
+        raise AssertionError("an arbitrary cache schema must remain blocked")

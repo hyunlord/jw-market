@@ -45,6 +45,16 @@ def _build_parser() -> argparse.ArgumentParser:
     rehearsal.add_argument("--work-dir", required=True, type=Path)
     rehearsal.add_argument("--dry-run", action="store_true")
 
+    comparison = sub.add_parser(
+        "compare-full",
+        help="read-only census comparison of isolated full-rehearsal outputs",
+    )
+    comparison.add_argument("--reference-db", required=True)
+    comparison.add_argument("--target-db", required=True)
+    comparison.add_argument("--reference-cache-db", required=True)
+    comparison.add_argument("--target-cache-db", required=True)
+    comparison.add_argument("--output", required=True, type=Path)
+
     sub.add_parser("stages", help="print the stage registry and incremental capability table")
     return parser
 
@@ -91,6 +101,26 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
         except RehearsalContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.command == "compare-full":
+        from pipeline.orchestrator.full_rehearsal_compare import (
+            ComparisonConfig,
+            run_comparison,
+        )
+
+        try:
+            return run_comparison(
+                ComparisonConfig(
+                    reference_db=args.reference_db,
+                    target_db=args.target_db,
+                    reference_cache_db=args.reference_cache_db,
+                    target_cache_db=args.target_cache_db,
+                ),
+                args.output,
+            )
+        except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 

@@ -7,6 +7,43 @@ from typing import Any
 from pipeline.scripts.etl import build_cache_deep_analysis_general as general_builder
 
 
+class _DatabaseCursor:
+    def __init__(self, database: str) -> None:
+        self.database = database
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, _sql: str) -> None:
+        return None
+
+    def fetchone(self) -> dict[str, str]:
+        return {"db": self.database}
+
+
+class _DatabaseConnection:
+    def __init__(self, database: str) -> None:
+        self.database = database
+
+    def cursor(self) -> _DatabaseCursor:
+        return _DatabaseCursor(self.database)
+
+
+def test_database_guard_allows_only_d2_or_isolated_rehearsal_cache() -> None:
+    general_builder.assert_d2_database(_DatabaseConnection(general_builder.TARGET_DATABASE))
+    general_builder.assert_d2_database(_DatabaseConnection("jw_mart_s6_rehearsal_r1_20260718"))
+
+    try:
+        general_builder.assert_d2_database(_DatabaseConnection("jw_mart_s6_scratch"))
+    except SystemExit as exc:
+        assert "refusing to write" in str(exc)
+    else:
+        raise AssertionError("an arbitrary cache schema must remain blocked")
+
+
 def _history(values: list[float]) -> str:
     return json.dumps({f"2025-{index + 1:02d}": {"raw_value": value, "ms": index + 1, "rank": index + 1} for index, value in enumerate(values)})
 

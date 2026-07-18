@@ -8,6 +8,7 @@ mart, and creates caches in a second isolated schema.  It never publishes.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -61,12 +62,14 @@ class FullRehearsalConfig:
 class RehearsalStep:
     key: str
     argv: tuple[str, ...]
+    env: tuple[tuple[str, str], ...] = ()
     writes_operating: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
             "key": self.key,
             "argv": list(self.argv),
+            "env": dict(self.env),
             "writes_operating": self.writes_operating,
         }
 
@@ -125,6 +128,18 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
     catalog_root = work / "output" / "catalog"
     enriched = work / "enriched"
     common = ("--target-db", config.target_db)
+    api_env = (
+        ("BRIDGE_DB_NAME", config.target_db),
+        ("DB_NAME", config.target_db),
+        ("GENERAL_DIMENSION_DB_NAME", config.target_db),
+        ("MALB_TARGET_DB", config.target_db),
+        ("MALB_TARGET_TABLE", "mart_analysis_level_block"),
+        ("STRATEGIC_DIMENSION_DB_NAME", config.target_db),
+    )
+    cache_env = (
+        ("DB_NAME", config.cache_db),
+        ("MARIADB_DATABASE", config.cache_db),
+    )
 
     return (
         RehearsalStep(
@@ -172,10 +187,45 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
             ),
         ),
         RehearsalStep(
+            "general_dimension",
+            (
+                PY,
+                "-m",
+                "pipeline.scripts.etl.build_filter_dimension_metric",
+                "--target-db",
+                config.target_db,
+                "--manifest-path",
+                str(work / "general-dimension.json"),
+                "--source",
+                "all",
+                "--ubist-dir",
+                str(ubist_parquet),
+            ),
+            env=(
+                ("MARIADB_DATABASE", config.target_db),
+                ("MARIADB_SOURCE_DATABASE", config.target_db),
+            ),
+        ),
+        RehearsalStep(
             "strategic_mart",
             _etl(
                 "--stage", "s5", *common, "--source-db", config.target_db,
                 "--catalog-root", str(catalog_root),
+            ),
+        ),
+        RehearsalStep(
+            "strategic_dimension",
+            (
+                PY,
+                "-m",
+                "pipeline.scripts.etl.build_strategic_filter_dimension_metric",
+                "--source-db",
+                config.target_db,
+                "--target-db",
+                config.target_db,
+                "--manifest",
+                str(work / "strategic-dimension.json"),
+                "--replace-table",
             ),
         ),
         RehearsalStep(
@@ -186,6 +236,23 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
             ),
         ),
         RehearsalStep(
+            "prepare_malb",
+            (
+                PY,
+                "-m",
+                "pipeline.orchestrator.full_rehearsal_sidecars",
+                "--reference-db",
+                config.source_db,
+                "--target-db",
+                config.target_db,
+            ),
+        ),
+        RehearsalStep(
+            "analysis_blocks",
+            (PY, "-m", "pipeline.scripts.etl.build_analysis_level_blocks"),
+            env=api_env,
+        ),
+        RehearsalStep(
             "cache",
             _etl(
                 "--stage", "s6", "--target-db", config.cache_db,
@@ -193,6 +260,30 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
                 "--strategic-source-db", config.target_db,
                 "--event-source-db", config.source_db,
             ),
+        ),
+        RehearsalStep(
+            "general_deep_cache",
+            (
+                PY,
+                "-m",
+                "pipeline.scripts.etl.build_cache_deep_analysis_general",
+                "--verbose",
+            ),
+            env=cache_env,
+        ),
+        RehearsalStep(
+            "brand_elements_cache",
+            (
+                PY,
+                "-m",
+                "pipeline.scripts.etl.cache_brand_elements",
+                "--ensure-table",
+                "--pilot-fill",
+                "--verify",
+                "--agent3-schema",
+                config.source_db,
+            ),
+            env=cache_env,
         ),
     )
 
@@ -205,7 +296,7 @@ def execute_full_rehearsal(config: FullRehearsalConfig, *, dry_run: bool) -> int
 
     config.work_dir.mkdir(parents=True, exist_ok=False)
     for step in plan:
-        result = subprocess.run(step.argv, check=False)
+        result = subprocess.run(step.argv, check=False, env={**os.environ, **dict(step.env)})
         if result.returncode != 0:
             print(f"rehearsal failed step={step.key} rc={result.returncode}", file=sys.stderr)
             return int(result.returncode or 1)

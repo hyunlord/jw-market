@@ -37,6 +37,7 @@ CACHE_TABLE: Final[str] = "cache_brand_elements"
 AGENT3_TABLE: Final[str] = "agent3_brand_strength"
 DEFAULT_SOURCE_TABLES: Final[tuple[str, ...]] = ("cache_deep_analysis", "cache_deep_analysis_general")
 DEFAULT_BRAND_ELEMENTS_TTL_DAYS: Final[int] = 35
+REHEARSAL_CACHE_PREFIX: Final[str] = "jw_mart_s6_rehearsal_"
 
 
 class CacheBrandElementsError(RuntimeError):
@@ -347,7 +348,7 @@ def verify_cache_brand_elements(conn: Any, table_name: str = CACHE_TABLE) -> dic
 
 def connect_db() -> Any:
     database = os.environ.get("MARIADB_DATABASE", TARGET_DATABASE)
-    if database != TARGET_DATABASE:
+    if database != TARGET_DATABASE and not database.startswith(REHEARSAL_CACHE_PREFIX):
         raise CacheBrandElementsError(f"refusing to write non-d2 database: {database}")
     user = os.environ.get("D2_WRITER_USER") or os.environ.get("MARIADB_USER")
     password = os.environ.get("D2_WRITER_PASSWORD") or os.environ.get("MARIADB_PASSWORD")

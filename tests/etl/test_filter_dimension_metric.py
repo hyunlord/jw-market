@@ -371,6 +371,10 @@ def test_guard_dimension_stage_accepts_new_dimension_stage_schema() -> None:
     sidecar.guard_dimension_stage_target("jw_mart_dim_stage_20260626_010203")
 
 
+def test_guard_dimension_stage_accepts_full_rehearsal_schema() -> None:
+    sidecar.guard_dimension_stage_target("jw_mart_rehearsal_r1_20260718")
+
+
 def test_filter_dimension_ddl_preserves_long_values_and_indexes_hash() -> None:
     ddl = filter_dimension_table_ddl()
 
