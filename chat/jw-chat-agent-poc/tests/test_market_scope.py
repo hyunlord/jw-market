@@ -35,6 +35,20 @@ def _resolver() -> MarketScopeResolver:
     return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader, cd_mart_reader=_cd_mart_reader())
 
 
+class RecordingGeneralViewService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool, bool]] = []
+
+    def answer(self, question: str, *, compact: bool, dual: bool) -> dict:
+        self.calls.append((question, compact, dual))
+        return {
+            "question": question,
+            "tool_calls": [{"tool": "general_view_dynamic_market", "source": "UBIST"}],
+            "answer": "## 일반뷰 (ATC4)\n\n동적 일반뷰 결과",
+            "sources": ["UBIST"],
+        }
+
+
 def test_detect_market_scope_intent_defaults_to_market_landscape() -> None:
     intent = detect_market_scope_intent("리바로랑 같은 시장 매출")
 
@@ -129,11 +143,15 @@ def test_market_scope_competitive_dynamics_uses_cd_mart_series() -> None:
     assert "경쟁군 기준" in result["answer"]
 
 
-def test_market_scope_general_view_is_transparent_unsupported() -> None:
-    result = _resolver().unsupported_general_view("리바로 같은 시장 일반뷰")
+def test_market_scope_general_view_delegates_to_dynamic_mart() -> None:
+    general_view = RecordingGeneralViewService()
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        general_view_service=general_view,
+    )
 
-    call = result["tool_calls"][0]
-    assert call["tool"] == "unsupported_metric"
-    assert call["render_data"]["status"] == "unsupported"
-    assert call["render_data"]["unsupported_filters"][0]["field"] == "view_type"
-    assert "일반뷰(atc4) 기준 시장 데이터는 현재 채팅 데이터에 없습니다" in result["answer"]
+    result = resolver.answer("리바로 같은 시장 일반뷰", view_type="general_view")
+
+    assert general_view.calls == [("리바로 같은 시장 일반뷰", False, False)]
+    assert result["tool_calls"][0]["tool"] == "general_view_dynamic_market"
+    assert "동적 일반뷰 결과" in result["answer"]

@@ -91,7 +91,7 @@ class MarketScopeResolver:
 
     def answer(self, question: str, *, view_type: MarketView) -> dict[str, Any]:
         if view_type == "general_view":
-            return self.unsupported_general_view(question)
+            return self.answer_general(question, compact=False, dual=False)
         try:
             resolution = self._resolver.resolve(question, allow_default=False)
             if self._query_layer is not None:
@@ -253,14 +253,6 @@ class MarketScopeResolver:
             "markdown_response": None,
             "sources": ["cache"],
         }
-
-    def unsupported_general_view(self, question: str) -> dict[str, Any]:
-        return self._unsupported(
-            "일반뷰(atc4) 기준 시장 데이터는 현재 채팅 데이터에 없습니다. 현재는 전략뷰와 경쟁군 기준만 제공합니다.",
-            question,
-            "view_type",
-            "general_view",
-        )
 
     def _view_market_size(
         self,

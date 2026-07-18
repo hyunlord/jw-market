@@ -2765,6 +2765,51 @@ def test_stream_endpoint_resolves_pending_market_view_reply_deterministically() 
     assert "2,256.77억원" in second.text
 
 
+def test_stream_endpoint_resolves_pending_general_view_with_dynamic_mart() -> None:
+    class GeneralViewStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bool, bool]] = []
+
+        def answer(self, question: str, *, compact: bool, dual: bool) -> dict:
+            self.calls.append((question, compact, dual))
+            return {
+                "question": question,
+                "tool_calls": [{"tool": "general_view_dynamic_market", "source": "UBIST"}],
+                "answer": "## 일반뷰 (ATC4)\n\n동적 일반뷰 결과",
+                "sources": ["UBIST"],
+            }
+
+    general_view = GeneralViewStub()
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        general_view_service=general_view,
+    )
+    store = SessionStore()
+    store.conversations.set_pending(
+        "conv-general-view",
+        PendingClarification(
+            kind="market_view",
+            original_question="리바로랑 같은 시장 매출",
+            brand="리바로",
+            metric="sales",
+            created_at=1.0,
+            expires_at=store.conversations.pending_expiry(),
+        ),
+    )
+    app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=resolver, store=store)
+    client = TestClient(app)
+
+    response = client.get(
+        "/chat/stream",
+        params={"conversation_id": "conv-general-view", "question": "일반뷰"},
+    )
+
+    assert response.status_code == 200
+    assert "동적 일반뷰 결과" in response.text
+    assert "현재 채팅 데이터에 없습니다" not in response.text
+    assert general_view.calls == [("리바로랑 같은 시장 매출", False, False)]
+
+
 def test_stream_endpoint_keeps_pending_isolated_by_conversation_id() -> None:
     FakeAgent.calls = []
     store = SessionStore()
