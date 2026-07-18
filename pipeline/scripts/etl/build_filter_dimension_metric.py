@@ -119,12 +119,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         if args.allow_local_serving_target:
             _guard_local_serving_target(conn, args.target_db)
-        if (
-            not args.direct_shared_promotion
-            and _schema_exists(conn, args.target_db)
-            and not args.allow_local_serving_target
-        ):
-            raise RuntimeError(f"target schema already exists: {args.target_db}")
+        if not args.direct_shared_promotion and not args.allow_local_serving_target:
+            _guard_new_sidecar_target(conn, args.target_db)
         serving_guard_schema = _serving_guard_schema(args)
         before_live = _general_table_counts(conn, serving_guard_schema)
         if not args.direct_shared_promotion:
@@ -476,6 +472,29 @@ def _schema_exists(conn: pymysql.connections.Connection, db_name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS n FROM information_schema.schemata WHERE schema_name=%s", (db_name,))
         return int(cur.fetchone()["n"]) > 0
+
+
+def _guard_new_sidecar_target(
+    conn: pymysql.connections.Connection,
+    target_db: str,
+) -> None:
+    if not _schema_exists(conn, target_db):
+        return
+    if not target_db.startswith("jw_mart_rehearsal_"):
+        raise RuntimeError(f"target schema already exists: {target_db}")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM information_schema.tables
+            WHERE table_schema=%s AND table_name=%s
+            """,
+            (target_db, FILTER_DIMENSION_TABLE),
+        )
+        if int(cur.fetchone()["n"]) > 0:
+            raise RuntimeError(
+                f"target sidecar table already exists: {target_db}.{FILTER_DIMENSION_TABLE}"
+            )
 
 
 def _general_table_counts(conn: pymysql.connections.Connection, db_name: str) -> dict[str, int | None]:

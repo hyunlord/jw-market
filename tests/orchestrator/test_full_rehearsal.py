@@ -100,17 +100,39 @@ def test_plan_builds_raw_to_mart_then_separate_cache_chain(tmp_path: Path) -> No
         "catalog",
         "enrich",
         "general_mart",
+        "general_dimension",
         "strategic_mart",
+        "strategic_dimension",
         "bridge",
+        "prepare_malb",
+        "analysis_blocks",
         "cache",
+        "general_deep_cache",
+        "brand_elements_cache",
     ]
     assert all(not step.writes_operating for step in plan)
     assert "--ubist-source-dir" in plan[0].argv
     assert "--iqvia-source-dir" in plan[1].argv
     assert "--iqvia-nsa-dir" in plan[1].argv
     assert "jw_mart_rehearsal_r1_20260718" in plan[4].argv
-    assert "jw_mart_s6_rehearsal_r1_20260718" in plan[-1].argv
-    assert "jw_mart_rehearsal_r1_20260718" in plan[-1].argv
+    assert dict(plan[5].env)["MARIADB_DATABASE"] == "jw_mart_rehearsal_r1_20260718"
+    assert dict(plan[5].env)["MARIADB_SOURCE_DATABASE"] == "jw_mart_rehearsal_r1_20260718"
+    assert plan[7].argv.count("jw_mart_rehearsal_r1_20260718") == 2
+    assert dict(plan[10].env) == {
+        "BRIDGE_DB_NAME": "jw_mart_rehearsal_r1_20260718",
+        "DB_NAME": "jw_mart_rehearsal_r1_20260718",
+        "GENERAL_DIMENSION_DB_NAME": "jw_mart_rehearsal_r1_20260718",
+        "MALB_TARGET_DB": "jw_mart_rehearsal_r1_20260718",
+        "MALB_TARGET_TABLE": "mart_analysis_level_block",
+        "STRATEGIC_DIMENSION_DB_NAME": "jw_mart_rehearsal_r1_20260718",
+    }
+    assert "jw_mart_s6_rehearsal_r1_20260718" in plan[11].argv
+    assert "jw_mart_rehearsal_r1_20260718" in plan[11].argv
+    assert dict(plan[12].env)["MARIADB_DATABASE"] == "jw_mart_s6_rehearsal_r1_20260718"
+    assert dict(plan[12].env)["DB_NAME"] == "jw_mart_s6_rehearsal_r1_20260718"
+    assert "pipeline.scripts.etl.build_cache_deep_analysis_general" in plan[12].argv
+    assert dict(plan[13].env)["MARIADB_DATABASE"] == "jw_mart_s6_rehearsal_r1_20260718"
+    assert plan[13].argv[-1] == "jw_mart_d2_stage_20260630_r2"
 
 
 def test_rehearse_full_dry_run_prints_plan_without_writes(
@@ -144,5 +166,5 @@ def test_rehearse_full_dry_run_prints_plan_without_writes(
     assert not work_dir.exists()
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["key"] == "load_ubist"
-    assert payload[-1]["key"] == "cache"
+    assert payload[-1]["key"] == "brand_elements_cache"
     assert all(row["writes_operating"] is False for row in payload)

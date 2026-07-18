@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 FILTER_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
 DIMENSION_STAGE_PREFIX = "jw_mart_dim_stage_"
+REHEARSAL_STAGE_PREFIX = "jw_mart_rehearsal_"
 LOCAL_SERVING_TARGET = "jw_mart"
 BLOCKED_DIMENSION_TARGETS = frozenset(
     {
@@ -377,8 +378,11 @@ def guard_dimension_stage_target(target_db: str, *, allow_local_serving_target: 
         return
     if target_db in BLOCKED_DIMENSION_TARGETS:
         raise ValueError(f"refusing protected target schema: {target_db}")
-    if not target_db.startswith(DIMENSION_STAGE_PREFIX):
-        raise ValueError(f"target_db must start with {DIMENSION_STAGE_PREFIX}: {target_db}")
+    if not target_db.startswith((DIMENSION_STAGE_PREFIX, REHEARSAL_STAGE_PREFIX)):
+        raise ValueError(
+            f"target_db must start with {DIMENSION_STAGE_PREFIX} or "
+            f"{REHEARSAL_STAGE_PREFIX}: {target_db}"
+        )
     if "`" in target_db or not target_db.replace("_", "").isalnum():
         raise ValueError(f"unsafe target schema name: {target_db}")
 

@@ -6,6 +6,7 @@ import pandas as pd
 
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
+from pipeline.scripts.etl.build_filter_dimension_metric import _guard_new_sidecar_target
 from pipeline.scripts.etl.build_filter_dimension_metric import _serving_guard_schema
 from pipeline.scripts.etl.build_filter_dimension_metric import _source_epoch
 
@@ -94,6 +95,34 @@ def test_isolated_builder_checks_the_configured_serving_schema(monkeypatch) -> N
         _serving_guard_schema(Namespace(promote_to=None))
         == "jw_mart_d2_stage_20260630_r2"
     )
+
+
+def test_rehearsal_builder_allows_an_empty_existing_target_schema() -> None:
+    conn = _Connection(expected_rows=[1, 0])
+
+    _guard_new_sidecar_target(conn, "jw_mart_rehearsal_cycle0137")
+
+
+def test_rehearsal_builder_refuses_an_existing_sidecar_table() -> None:
+    conn = _Connection(expected_rows=[1, 1])
+
+    try:
+        _guard_new_sidecar_target(conn, "jw_mart_rehearsal_cycle0137")
+    except RuntimeError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("an existing rehearsal sidecar must not be overwritten")
+
+
+def test_builder_refuses_reusing_a_non_rehearsal_target_schema() -> None:
+    conn = _Connection(expected_rows=1)
+
+    try:
+        _guard_new_sidecar_target(conn, "jw_mart_dim_stage_f046")
+    except RuntimeError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("a non-rehearsal staging schema must remain single-use")
 
 
 def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:

@@ -50,6 +50,7 @@ GENERAL_CACHE_TABLE: Final[str] = "cache_deep_analysis_general"
 GENERAL_MARKET_FORECAST_TABLE: Final[str] = "cache_market_forecast_general"
 GENERAL_BRAND_TABLE: Final[str] = "mart_general_brand_metric"
 DEFAULT_GENERAL_CACHE_TTL_DAYS: Final[int] = 35
+REHEARSAL_CACHE_PREFIX: Final[str] = "jw_mart_s6_rehearsal_"
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,7 +297,7 @@ def assert_d2_database(conn: Any) -> None:
         cur.execute("SELECT DATABASE() AS db")
         row = cur.fetchone()
     current = str(row.get("db") if isinstance(row, dict) else "")
-    if current != TARGET_DATABASE:
+    if current != TARGET_DATABASE and not current.startswith(REHEARSAL_CACHE_PREFIX):
         raise SystemExit(f"refusing to write non-d2 database: {current}")
 
 
