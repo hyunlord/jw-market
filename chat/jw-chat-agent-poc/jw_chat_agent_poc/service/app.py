@@ -606,7 +606,9 @@ def _answer_question(
         deep_file_names: tuple[str, ...] = ()
         deterministic_file_answer = ""
         file_sql_trace: tuple[dict[str, str], ...] = ()
-        if deep_request.enabled:
+        if routing_resolution.unresolved_reference:
+            result = unresolved_reference_result(effective_question)
+        elif deep_request.enabled:
             context_scope = ContextScope.MARKET
             if has_file:
                 with stage(
@@ -635,8 +637,8 @@ def _answer_question(
                     )
                     progress.summary = f"{len(deep_file_names)}개 파일 근거 확인"
             result = (
-                _answer_deep_research(effective_question, external_mode)
-                if effective_question
+                _answer_deep_research(routing_question, external_mode)
+                if routing_question
                 else _deep_research_clarification_result()
             )
             diagnostics = dict(result.get("router_diagnostics") or {})
@@ -660,6 +662,8 @@ def _answer_question(
                 "effective_question": effective_question,
                 "router_diagnostics": diagnostics,
             }
+            if routing_resolution.interpretation_notice:
+                result["conversation_interpretation"] = routing_resolution.interpretation_notice
         elif needs_scope_clarification:
             result = _scope_clarification_result(effective_question)
         elif context_scope is ContextScope.MIXED:

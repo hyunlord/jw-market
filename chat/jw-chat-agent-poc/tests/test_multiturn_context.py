@@ -4,6 +4,7 @@ from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
     ConversationTurn,
     RankedBrandSlot,
+    ResultReference,
     SeriesPoint,
     conversation_slots_from_dict,
     conversation_slots_to_dict,
@@ -35,6 +36,15 @@ def test_conversation_slots_json_round_trip_preserves_verified_context() -> None
         anchor_brand="리바로",
         market="ml_006",
         period="2026-05",
+        metric="매출",
+        view="strategic_ml",
+        result_ref=ResultReference(
+            tool="get_brand_metric",
+            source="UBIST",
+            brand="리바로",
+            market="ml_006",
+            period="2026-05",
+        ),
         ranked_brands=("로수젯",),
         ranked=(_ranked_slot(),),
         file_name="sellout.xlsx",
@@ -52,6 +62,8 @@ def test_extract_slots_keeps_anchor_market_period_denominator_and_ranked_series(
                 "tool": "get_brand_metric",
                 "render_data": {
                     "market_id": "ml_006",
+                    "metric": "시장점유율",
+                    "view_source_id": "strategic_ml",
                     "market_definition_full": "Statin 시장",
                     "period": "2026-04",
                     "market_size_억원": 2256.77,
@@ -76,6 +88,15 @@ def test_extract_slots_keeps_anchor_market_period_denominator_and_ranked_series(
     assert slots.market == "ml_006"
     assert slots.market_definition == "Statin 시장"
     assert slots.period == "2026-04"
+    assert slots.metric == "시장점유율"
+    assert slots.view == "strategic_ml"
+    assert slots.result_ref == ResultReference(
+        tool="get_brand_metric",
+        source=None,
+        brand="리바로",
+        market="ml_006",
+        period="2026-04",
+    )
     assert slots.denominator == "2256.77억원"
     assert slots.ranked_brands == ("로수젯",)
     assert slots.ranked[0].series[-1].ms_pct == 9.1659
@@ -119,6 +140,20 @@ def test_resolve_anaphora_never_guesses_without_previous_basis() -> None:
     assert resolved.resolved_question == "그 브랜드 점유율 추이는?"
     assert resolved.brand is None
     assert resolved.unresolved_reference is True
+
+
+def test_generic_demonstrative_without_resolvable_slot_fails_closed() -> None:
+    previous = ConversationTurn(
+        question="리바로 어때?",
+        answer="어떤 지표가 궁금한지 물었습니다.",
+        slots=ConversationSlots(anchor_brand="리바로"),
+    )
+
+    assert requires_previous_turn("그건?") is True
+    resolved = resolve_anaphora("그건?", previous)
+
+    assert resolved.unresolved_reference is True
+    assert resolved.resolved_question == "그건?"
 
 
 def test_resolve_anaphora_uses_anchor_market_for_ranked_brand_requery() -> None:
@@ -240,6 +275,19 @@ def test_resolve_anaphora_inherits_grounded_brand_and_metric_for_period_only_fol
     assert resolved.unresolved_reference is False
 
 
+def test_period_followup_prefers_persisted_metric_when_question_text_is_opaque() -> None:
+    previous = ConversationTurn(
+        question="요청을 처리했습니다.",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", period="2025", metric="매출"),
+    )
+
+    resolved = resolve_anaphora("2024년은?", previous)
+
+    assert resolved.resolved_question == "리바로 2024년 매출은?"
+    assert resolved.unresolved_reference is False
+
+
 def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(monkeypatch) -> None:
     class SharedHistory:
         def latest_turn(self, conversation_id: str):
@@ -271,6 +319,57 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
 
     assert captured == ["가드렛 매출 추이는?"]
     assert item["result"]["conversation_interpretation"] == "가드렛의 매출 추이로 이해했어요."
+
+
+def test_deep_mode_followup_uses_resolved_state_and_discloses_interpretation(monkeypatch) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "deep-followup",
+        "가드렛 매출 추이",
+        "가드렛 매출 추이를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="가드렛", metric="매출", view="strategic_cd"),
+    )
+    captured: list[str] = []
+
+    def capture_deep(question: str, _external_mode: str) -> dict:
+        captured.append(question)
+        return {"answer": "리바로 매출 추이", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_deep_research", capture_deep)
+
+    item = _answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "/deep 그럼 리바로는?",
+        "live",
+        "deep-followup",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 매출 추이는?"]
+    assert item["result"]["conversation_interpretation"] == "리바로의 매출 추이로 이해했어요."
+
+
+def test_unresolved_deep_followup_never_calls_deep_or_web_tools(monkeypatch) -> None:
+    def fail_deep(*_args, **_kwargs):
+        raise AssertionError("unresolved follow-ups must stop before deep or web tools")
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_deep_research", fail_deep)
+
+    item = _answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "/deep 그건?",
+        "live",
+        "deep-unresolved",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["conversation_reference_unresolved"] is True
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["sources"] == []
 
 
 def test_spaced_first_rank_followup_hydrates_verified_cross_pod_series() -> None:

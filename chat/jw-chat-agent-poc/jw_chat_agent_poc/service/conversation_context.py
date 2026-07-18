@@ -9,6 +9,7 @@ from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
     ConversationTurn,
     RankedBrandSlot,
+    ResultReference,
     SeriesPoint,
 )
 
@@ -32,6 +33,10 @@ _METRIC_ONLY_FOLLOWUP_RE = re.compile(
 )
 _PERIOD_ONLY_FOLLOWUP_RE = re.compile(
     r"^\s*(?P<period>20\d{2}년|\d{1,2}월|\d{1,2}분기)(?:은|는)?[?!.]?\s*$"
+)
+_GENERIC_REFERENCE_RE = re.compile(
+    r"^\s*(?:그건|그거|그것|이건|이거|이것|저건|저거|저것)(?:은|는|도)?(?:\s+.*)?[?!.]?\s*$",
+    re.IGNORECASE,
 )
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
@@ -63,6 +68,9 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     market = ""
     market_definition = ""
     period = ""
+    metric = ""
+    view = ""
+    result_ref: ResultReference | None = None
     denominator = ""
     ranked: tuple[RankedBrandSlot, ...] = ()
     ranked_names: tuple[str, ...] = ()
@@ -105,6 +113,8 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         if not isinstance(data, dict):
             continue
         anchor = anchor or _text(data.get("anchor_brand") or data.get("brand"))
+        metric = metric or _text(data.get("metric"))
+        view = view or _text(data.get("view_source_id") or data.get("view"))
         market = market or _text(data.get("market_id") or data.get("market_name") or data.get("view_source_id"))
         market_definition = market_definition or _text(
             data.get("market_definition_full") or data.get("market_definition_label") or data.get("market_name")
@@ -115,6 +125,16 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
             ranked = _ranked_slots(data.get("level_top5_trend_series"))
         if not ranked_names:
             ranked_names = tuple(item.brand for item in ranked) or _segment_names(data.get("level_segments"))
+        if result_ref is None:
+            tool = _text(call.get("tool"))
+            if tool:
+                result_ref = ResultReference(
+                    tool=tool,
+                    source=_text(call.get("source")) or None,
+                    brand=anchor or None,
+                    market=market or None,
+                    period=period or None,
+                )
 
     if not period and ranked:
         period = next((item.series[-1].period for item in ranked if item.series), "")
@@ -123,6 +143,9 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         market=market or None,
         market_definition=market_definition or None,
         period=period or None,
+        metric=metric or None,
+        view=view or None,
+        result_ref=result_ref,
         denominator=denominator or None,
         ranked_brands=ranked_names,
         ranked=ranked,
@@ -149,7 +172,7 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
     if period_followup is not None:
         if previous_turn is None or not previous_turn.slots.anchor_brand:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-        intent = _inheritable_intent(previous_turn.question)
+        intent = _turn_intent(previous_turn)
         if not intent:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
         brand = previous_turn.slots.anchor_brand
@@ -166,7 +189,7 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
         if previous_turn is None:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-        intent = _inheritable_intent(previous_turn.question)
+        intent = _turn_intent(previous_turn)
         if not intent:
             return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
         return AnaphoraResolution(
@@ -174,6 +197,8 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
             brand=brand,
             interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
         )
+    if _GENERIC_REFERENCE_RE.match(question):
+        return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
     if not any(pattern.search(question) for pattern in _REFERENCE_RES):
         return AnaphoraResolution(resolved_question=question)
     if previous_turn is None:
@@ -214,6 +239,7 @@ def requires_previous_turn(question: str) -> bool:
         _CONTRAST_FOLLOWUP_RE.match(question)
         or _METRIC_ONLY_FOLLOWUP_RE.match(question)
         or _PERIOD_ONLY_FOLLOWUP_RE.match(question)
+        or _GENERIC_REFERENCE_RE.match(question)
         or any(pattern.search(question) for pattern in _REFERENCE_RES)
     )
 
@@ -222,6 +248,24 @@ def _inheritable_intent(question: str) -> str:
     for pattern, intent in _INHERITABLE_INTENTS:
         if pattern.search(question):
             return intent
+    return ""
+
+
+def _turn_intent(turn: ConversationTurn) -> str:
+    intent = _inheritable_intent(turn.question)
+    if intent:
+        return intent
+    metric = (turn.slots.metric or "").strip()
+    intent = _inheritable_intent(metric)
+    if intent:
+        return intent
+    normalized = metric.lower().replace("_", " ")
+    if any(token in normalized for token in ("raw value", "sales", "revenue")):
+        return "매출"
+    if any(token in normalized for token in ("market share", "share", "ms pct")):
+        return "점유율"
+    if "rank" in normalized:
+        return "순위"
     return ""
 
 

@@ -23,11 +23,23 @@ class RankedBrandSlot:
 
 
 @dataclass(frozen=True, slots=True)
+class ResultReference:
+    tool: str
+    source: str | None = None
+    brand: str | None = None
+    market: str | None = None
+    period: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationSlots:
     anchor_brand: str | None = None
     market: str | None = None
     market_definition: str | None = None
     period: str | None = None
+    metric: str | None = None
+    view: str | None = None
+    result_ref: ResultReference | None = None
     denominator: str | None = None
     ranked_brands: tuple[str, ...] = ()
     ranked: tuple[RankedBrandSlot, ...] = ()
@@ -43,6 +55,19 @@ def conversation_slots_to_dict(slots: ConversationSlots) -> dict[str, Any]:
         "market": slots.market,
         "market_definition": slots.market_definition,
         "period": slots.period,
+        "metric": slots.metric,
+        "view": slots.view,
+        "result_ref": (
+            {
+                "tool": slots.result_ref.tool,
+                "source": slots.result_ref.source,
+                "brand": slots.result_ref.brand,
+                "market": slots.result_ref.market,
+                "period": slots.result_ref.period,
+            }
+            if slots.result_ref is not None
+            else None
+        ),
         "denominator": slots.denominator,
         "ranked_brands": list(slots.ranked_brands),
         "ranked": [
@@ -95,11 +120,26 @@ def conversation_slots_from_dict(value: object) -> ConversationSlots:
             )
         )
     ranked_brands = value.get("ranked_brands")
+    result_ref_value = value.get("result_ref")
+    result_ref = (
+        ResultReference(
+            tool=_optional_text(result_ref_value.get("tool")) or "",
+            source=_optional_text(result_ref_value.get("source")),
+            brand=_optional_text(result_ref_value.get("brand")),
+            market=_optional_text(result_ref_value.get("market")),
+            period=_optional_text(result_ref_value.get("period")),
+        )
+        if isinstance(result_ref_value, dict) and _optional_text(result_ref_value.get("tool"))
+        else None
+    )
     return ConversationSlots(
         anchor_brand=_optional_text(value.get("anchor_brand")),
         market=_optional_text(value.get("market")),
         market_definition=_optional_text(value.get("market_definition")),
         period=_optional_text(value.get("period")),
+        metric=_optional_text(value.get("metric")),
+        view=_optional_text(value.get("view")),
+        result_ref=result_ref,
         denominator=_optional_text(value.get("denominator")),
         ranked_brands=(
             tuple(text for item in ranked_brands if (text := _optional_text(item)))
