@@ -919,6 +919,11 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         for rank, brand, share, sales in P0G_TOP5_GOLDEN_ROWS
     ):
         return False, "incorrect top 5 ranked values"
+    if qid in P0G_TOP5_GOLDEN_QIDS and not re.search(
+        r"\bHHI\s*(?:는|=|:)?\s*253\.62(?!\d)",
+        answer_body,
+    ):
+        return False, "missing HHI 253.62"
     return True, ""
 
 

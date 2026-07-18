@@ -193,7 +193,7 @@ def test_capture_rejects_render_integrity_failures(monkeypatch, tmp_path: Path) 
 
 def test_history_golden_acceptance_requires_live_values() -> None:
     top5_answer = (
-        "상위 5개 합계 시장점유율은 29.52%입니다.\n\n"
+        "상위 5개 합계 시장점유율은 29.52%이고 HHI는 253.62입니다.\n\n"
         "| 순위 | 브랜드 | 점유율 | 매출 |\n"
         "| --- | --- | --- | --- |\n"
         "| 1위 | 로수젯 | 9.13% | 195.24억원 |\n"
@@ -225,6 +225,22 @@ def test_history_golden_acceptance_rejects_top5_aggregate_without_ranked_rows() 
         "F02",
         "상위 5개 합계 시장점유율은 29.52%입니다.",
     ) == (False, "missing top 5 ranked rows")
+
+
+def test_history_golden_acceptance_rejects_top5_without_hhi() -> None:
+    answer = (
+        "상위 5개 합계 시장점유율은 29.52%입니다.\n\n"
+        "| 순위 | 브랜드 | 점유율 | 매출 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1위 | 로수젯 | 9.13% | 195.24억원 |\n"
+        "| 2위 | 리피토 | 6.13% | 131.09억원 |\n"
+        "| 3위 | 리바로젯 | 5.12% | 109.46억원 |\n"
+        "| 4위 | 아토젯 | 4.95% | 105.87억원 |\n"
+        "| 5위 | 로수바미브 | 4.20% | 89.76억원 |"
+    )
+
+    for qid in ("F02", "H03", "M03"):
+        assert _history_golden_acceptance(qid, answer) == (False, "missing HHI 253.62")
 
 
 def test_history_golden_acceptance_rejects_incorrect_top5_ranked_values() -> None:
