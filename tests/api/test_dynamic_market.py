@@ -3775,6 +3775,85 @@ def test_strategic_runtime_has_no_legacy_cache_cause_read() -> None:
     assert "_cached_cause_payload" not in source
 
 
+@pytest.mark.parametrize(
+    ("table", "id_column", "market_id", "specialty_projection"),
+    [
+        ("mart_strategic_ml_brand_metric", "ml_id", "ml_006", "dimension_specialty_data"),
+        (
+            "mart_strategic_cd_brand_metric",
+            "cd_market_id",
+            "cd_006",
+            "NULL AS dimension_specialty_data",
+        ),
+    ],
+)
+def test_strategic_runtime_projects_only_builder_sibling_fields(
+    monkeypatch,
+    table: str,
+    id_column: str,
+    market_id: str,
+    specialty_projection: str,
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict]:
+        calls.append((sql, params))
+        return []
+
+    monkeypatch.setattr(strategic_runtime.db, "fetch_all", fake_fetch_all)
+
+    assert strategic_runtime._fetch_sibling_rows(
+        mart_db="jw_mart",
+        table=table,
+        id_column=id_column,
+        market_id=market_id,
+        source="ubist",
+        measure="sales",
+    ) == []
+
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert "SELECT *" not in sql
+    assert f"FROM `jw_mart`.{table}" in sql
+    assert specialty_projection in sql
+    projection = sql.split("FROM", 1)[0]
+    projected_fields = {
+        line.strip().removesuffix(",").split(" AS ")[-1]
+        for line in projection.splitlines()
+        if line.strip() and line.strip() != "SELECT"
+    }
+    for field in (
+        "id",
+        id_column,
+        "brand_key",
+        "brand_name",
+        "source",
+        "measure",
+        "is_jw",
+        "unit_label",
+        "metric_history",
+        "extended_metric_history",
+        "channel_data",
+        "dimension_data",
+        "dimension_channel_data",
+        "by_dimension",
+        "raw_value_history",
+        "overlay_data",
+    ):
+        assert field in projected_fields
+    for unused_field in (
+        "specialty_data",
+        "ubist_channel_by_display",
+        "ubist_channel_by_code",
+        "payload",
+        "computation_version",
+        "computed_at",
+        "cd_overlay",
+    ):
+        assert unused_field not in projected_fields
+    assert params == [market_id, "ubist", "sales"]
+
+
 def test_strategic_runtime_clears_builder_caches_around_every_mart_build(monkeypatch) -> None:
     events: list[str] = []
 

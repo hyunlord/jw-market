@@ -207,9 +207,31 @@ def _fetch_sibling_rows(
     source: str,
     measure: str,
 ) -> list[JsonRow]:
+    specialty_projection = (
+        "NULL AS dimension_specialty_data"
+        if table == "mart_strategic_cd_brand_metric"
+        else "dimension_specialty_data"
+    )
     return db.fetch_all(
         f"""
-        SELECT *
+        SELECT
+          id,
+          {id_column},
+          brand_key,
+          brand_name,
+          source,
+          measure,
+          is_jw,
+          unit_label,
+          metric_history,
+          extended_metric_history,
+          channel_data,
+          dimension_data,
+          dimension_channel_data,
+          {specialty_projection},
+          by_dimension,
+          raw_value_history,
+          overlay_data
         FROM {quote_identifier(mart_db)}.{table}
         WHERE {id_column} = %s
           AND source = %s
