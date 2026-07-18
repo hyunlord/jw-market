@@ -33,6 +33,9 @@ SI 납품 문서의 대상 시스템은 **3세션 소관의 합**이다.
 | `DOC-4b_사용설명서_jw-data-input.md` | jw market | ✅ 작성완료 | 업로드 사이트 사용법·제출/상태/재실행 |
 | `DOC-5_운영문서.md` | jw market | ✅ 작성완료 | 월간/증분 운영·장애·백업·모니터링·계정 (※ §8은 jw agent 기고 자리) |
 | `G_gates_대조표.md` | jw market | ✅ 작성완료 | 문서↔실체 정합 게이트(G-1~G-5) |
+| `OPEN_QUESTIONS.md` | jw market | ✅ 작성완료 | 조사로 해소 불가한 [확인 필요] 잔여(PL 판단·데이터 대기·타 세션 회신) 분리 등재 |
+| `G_gates_openq_20260718.md` | jw market | ✅ 작성완료 | [확인 필요] 해소 라운드 게이트(G-1~G-5)·항목별 해소/미해소 표 |
+| `evidence/openq_resolution_20260718.md` | jw market | ✅ 작성완료 | [확인 필요] 해소 실측 근거(Q-1~Q-8·코드 grep·in-mesh kubectl·site head) |
 | **`DOC-1b_개발문서_크롤_BA파이프라인.md`** | **jw agent** | ⏳ 기고 대기 | 크롤 tier1/2·brand_activity(Agent1~4)·orchestrator·이미지/배포 |
 | **`DOC-2b_DB_크롤_BA_테이블.md`** | **jw agent** | ⏳ 기고 대기 | 크롤 계열·토픽/BA 계열·staging 테이블·관계 |
 | **`DOC-4c_사용설명서_브랜드활동_데이터맥락.md`** | **jw agent** | ⏳ 기고 대기 | BA 데이터 생성 과정·갱신주기·데이터 없음 사유 |

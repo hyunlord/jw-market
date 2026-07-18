@@ -178,7 +178,7 @@ jw-data-input(사이트) "제출 확정"
 
 - **Gitea 저장소 백업**: CronJob `jw-gitea-dump-daily`(라이브, `40 19 * * *` UTC = 04:40 KST). Gitea org `jw-market`(`jw-data-input.git`, `jw-market.git`)의 일일 덤프. 이 CronJob은 플랫폼 소관이며 이 repo `deploy/`에 매니페스트가 없다(클러스터 실측만 확인).
 - **재적재 staging 백업 규약**: 각 빌더가 apply 전 라이브를 백업 테이블로 복제한다. 관측된 패턴 예: `cache_deep_analysis_bak_d2_prev3_<RUN_ID>`. 백업/작업용 테이블 접두 규약 = `_bak_*`·`_backup_*`·`_stage_*`·`_mig_stg_*`·`_old_*`·`__failed_*`·`_cutover_*`(정본 아님으로 분류).
-- **mart DB(MariaDB Galera) 자체 백업**: `[확인 필요]` — 이 repo/실측 범위에서 DB 스냅샷·PITR·mysqldump 스케줄의 존재를 확인하지 못했다. Galera 3-노드 복제(`galera-mariadb-galera` 3/3)는 고가용이나 백업과는 별개이므로, 정기 논리 백업 정책은 플랫폼팀 확인이 필요하다.
+- **mart DB(MariaDB Galera) 자체 백업**: **PL/플랫폼 판단 사안** — 이 repo/실측 범위(2026-07-18)에서 DB 스냅샷·PITR·mysqldump 스케줄의 존재를 확인하지 못했다(코드·매니페스트 부재). Galera 3-노드 복제(`galera-mariadb-galera` 3/3)는 고가용이나 백업과는 별개이므로, 정기 논리 백업 정책 유무·주기는 플랫폼팀 결정 사안이다 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
 
 ---
 
@@ -191,7 +191,7 @@ jw-data-input(사이트) "제출 확정"
 - **CronJob 성공 여부**: `kubectl -n llmops get cronjob`(LAST SCHEDULE·SUSPEND) / `kubectl -n llmops get jobs`(COMPLETIONS)로 라이브 CronJob(2-3절 False 행)의 성공을 확인. 실패 Job은 `failedJobsHistoryLimit=3`으로 보존된 pod 로그를 확인.
 - **파이프라인 로그**: 오케스트레이터·빌더는 JSON 1줄 1이벤트 로그(stdout + `--log-file`). 게이트 통과/중단이 이벤트로 남는다.
 - **증분 훅(현재 라이브)**: 트리거 서비스 헬스 `GET /healthz`(Deployment `jw-ingest-hook` 1/1), ledger 상태 분포 `SELECT status, COUNT(*) FROM ingest_ledger GROUP BY status`, sweep CronJob `jw-ingest-sweep-daily` 성공 여부. Σ 게이트 로그(`gate=sigma … worst_rel=…`)로 정합 감시. 단 리허설 env가 걸려 있는 동안은 실적재/refresh가 스킵되므로 mart 반영은 없다.
-- 그 외 대시보드/알림(Grafana·Alertmanager 등) 연동 여부: `[확인 필요]`.
+- 그 외 대시보드/알림(Grafana·Alertmanager): 확인 결과(2026-07-18 실측) — 클러스터 전역 kube-prometheus-stack이 `monitoring` 네임스페이스에 상주(`prom-grafana-0` 3/3, `alertmanager-prom-0` 2/2, `prom-prometheus-node-exporter-*`). 단 **jw-market 서비스는 이 스택에 미배선**이다: `llmops` 네임스페이스(backend/cronjob 소재)에 ServiceMonitor·PrometheusRule 0개(전역 ServiceMonitor 9개 중 llmops 소속 없음, CRD 조회 가능 → 부재는 실측 음성). 즉 노드/클러스터 메트릭은 수집되나 **jw-market 서비스별 전용 대시보드·알림룰은 미구성**이며, 앱-레벨 모니터링 추가 여부는 플랫폼 소관이다 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)(근거: `evidence/openq_resolution_20260718.md`).
 
 ---
 

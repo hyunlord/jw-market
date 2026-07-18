@@ -90,8 +90,10 @@ brand_activity:
 
 ---
 
-## [확인 필요] 목록
+## jw market 확인 결과 (2026-07-18 실측)
 
-1. **컬럼 타입·인덱스**: 본 문서는 컬럼명·용도만 실측. 타입/인덱스/제약 원문은 DOC-2(정본) 대조 필요(중복 회피로 미기재).
-2. **km_keyword_event_stage 적재 스크립트 정확 경로**: 소비처(`auto_topic/data_source.py:19`)는 확인. 적재 주체 스크립트 file:line은 미확정 → 확인 필요.
-3. **BA 서빙 계정 grant**: 서빙 backend는 `jw_brand_activity_stage`를 config 기본으로 읽으나(DOC-1 §2.1) 실측 계정(writer)은 권한 부재 → 서빙 실계정의 grant 경로 확인 필요.
+아래 1~2는 jw market 세션이 실측 해소했다(근거: `evidence/openq_resolution_20260718.md` Q-4~Q-5). 3은 정책 사안으로 `OPEN_QUESTIONS.md`에 등재.
+
+1. **컬럼 타입·인덱스 상호참조** → [DOC-2](DOC-2_DB_스키마정의서.md)가 크롤/BA 테이블을 실제로 담고 있어 참조 유효. 앵커: 크롤 계열 `#### news_raw`·`#### events_raw`·`#### events`·`#### event_brand_scores`(DOC-2 §크롤), BA stage는 [DOC-2 §2.11 브랜드활동 stage DB](DOC-2_DB_스키마정의서.md) 하위 `csd_channel_dynamics_stage`·`km_keyword_event_stage`·`mart_brand_activity_topics`·`mart_brand_activity_topic_runs`·`row_topic_assignment`·`row_topic_assignment_status`·`row_topic_assignment_share_view`(VIEW). 타입/인덱스/제약 원문은 해당 소절 `SHOW CREATE`.
+2. **km_keyword_event_stage 적재 스크립트** → 적재 주체 = `pipeline/scripts/etl/brand_activity/ingest_keyword.py`(워크북 파싱, KEYWORD_HEADERS) → `pipeline/scripts/etl/brand_activity/load_raw_staging.py:229-231`(`raw_keyword_events` 적재 + `km_keyword_event_stage` stage 적재). DDL 헬퍼 = `ingest_keyword_stage.py`. ※ 위 §2 표의 `auto_topic/data_source.py:19`는 **소비처**(토픽 생성 읽기)이지 적재 주체가 아니다.
+3. **BA 서빙 계정 grant** → **PL/플랫폼 판단 사안**(권한 정책). 서빙 backend는 `jw_brand_activity_stage`를 config 기본으로 읽으나(DOC-1 §2.1) 실측 계정 `jw_mart_d2_writer`는 권한 부재라 BA CronJob·본 실측은 root(secret `galera-mariadb-galera`/`mariadb-root-password`)로 수행 중. writer grant 부여 vs root 현행 유지 결정 필요 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).

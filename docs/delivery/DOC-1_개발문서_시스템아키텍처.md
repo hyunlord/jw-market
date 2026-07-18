@@ -12,7 +12,7 @@
 > **기준 SHA 갱신 각주.** 의뢰서 기준 SHA(백엔드 `2b38c507`, 사이트 `36aa856b`)는 작성 시점에 다음과 같이 실측 갱신되었다.
 > - 코드 기준 SHA는 `develop 761b4def` → **`7ca98403`**으로 전진했다(12커밋). 전진분은 전부 `pipeline/scripts/ingest_hook/`·`deploy/k8s/{ingest-hook,crawler}/`·`RUNBOOK_MONTHLY.md`·`tests/` 영역이고, **`pipeline/scripts/api/`·`pipeline/etl/`는 무변경**이다(BASELINE §09:54 갱신). 따라서 §2.1 API·DB·시장분석 서술은 `761b4def` 검증 그대로 유효하며, 인입 훅·크롤 cutover 관련 절만 `7ca98403` 기준으로 갱신했다.
 > - 백엔드: 운영 이미지의 `APP_VERSION`은 `ad782bc0...`이며 이는 코드 정본(`develop`)의 조상이 **아니다**. 별도 latency 릴리즈 브랜치 빌드로, 배포 annotation `jw-market/release=f139-brand-activity-general-scope`가 붙어 있다(evidence/backend_deploy_env.txt). 코드 정본은 `develop`, 운영 실행체는 그 위에 latency 계열 커밋이 얹힌 이미지다.
-> - 사이트: 의뢰서의 `36aa856b`는 로컬·Gitea 이력에서 발견되지 않았다([확인 필요]). 본 문서는 Gitea 정본 HEAD `8ca9d987`을 기준으로 기술한다.
+> - 사이트: 의뢰서의 `36aa856b`는 로컬·Gitea 이력에서 발견되지 않았음을 재확인(2026-07-18). 본 문서는 Gitea 정본 HEAD `8ca9d987`을 기준으로 기술한다.
 > 본 문서의 모든 서술은 위 워크트리의 실코드와 evidence 디렉토리의 실측 리소스명에 근거하며, 각 사실 옆에 근거 파일 경로 또는 실 리소스명을 병기했다.
 
 ---
@@ -119,7 +119,7 @@
 | 이름 | `dynamic-market-cache-warm`(+`-test2`) | evidence/k8s_cron_svc.txt |
 | 스케줄 | `7,37 * * * *` (매시 07·37분) | `deploy/k8s/jw-market/dynamic-market-cache-warm-prod-cronjob.yaml` |
 | 실행 | `python -m pipeline.scripts.api.dynamic_market.cache_maintenance` → `... warm_cache` | 동 manifest |
-| 이미지 | manifest에 placeholder `JW_MARKET_API_IMAGE`(배포 시 envsubst 치환) [확인 필요: 치환 실이미지] | 동 manifest |
+| 이미지 | manifest placeholder `JW_MARKET_API_IMAGE`(배포 시 envsubst 치환) → 치환 실이미지 = `jw-market-backend-api@sha256:8e2501cd…`(2026-07-18 in-mesh kubectl 실측; backend API 이미지 계열, cronjob이 `cache_maintenance` 모듈 실행). 단 live backend deploy(`@sha256:aec14a90…`)와 digest 드리프트 상태 | 동 manifest · `evidence/openq_resolution_20260718.md` Q-7 |
 | DB | `galera-mariadb-galera` secret 사용, `jw_mart_d2_stage_20260630_r2` | 동 manifest |
 
 역할: 동적 시장 조회의 무거운 집계를 미리 계산해 `dynamic_market_*` 캐시에 적재(cold latency 완화). SUSPEND=False로 상시 가동.
@@ -327,7 +327,7 @@ web/
 
 ### 5.2 백엔드 API 배포 흐름
 
-메모리 기록 기준 관행: ops VM amd64 빌드 → AR push → test2(`jw-market-backend-api-test`)에서 검증 → 운영 승격은 generation CAS(gen 번호 확인 후 교체). 실 승격은 GenOS 운영 관리 경로로 이뤄지며, 본 문서 워크트리에 자동화 스크립트 실체가 확인되지 않았다 → **[확인 필요]** (승격 커맨드/스크립트 경로).
+메모리 기록 기준 관행: ops VM amd64 빌드 → AR push → test2(`jw-market-backend-api-test`)에서 검증 → 운영 승격은 generation CAS(gen 번호 확인 후 교체). **repo 워크트리에 백엔드 이미지 승격 자동화 스크립트는 없음이 확인됐다**(2026-07-18 grep; `pipeline/scripts/deploy/`의 스크립트는 캐시 blue-green `analysis_cache_blue_green.py`·mart dimension 승격 `filter_dimension_promote.py` 등 **데이터/캐시** 승격 전용이지 백엔드 이미지 승격이 아니다). 즉 백엔드 이미지 승격은 **GenOS 운영 UI/플랫폼 경로**(코드 밖)로 수행된다. GenOS 측 정확한 승격 커맨드·절차는 플랫폼 소관 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)(근거: `evidence/openq_resolution_20260718.md` Q-6).
 
 ### 5.3 mart DB 세대 교체(RUNBOOK §4)
 
@@ -339,7 +339,7 @@ web/
 
 - `web/deploy.sh`: `docker build --platform linux/amd64` → AR push → `kubectl apply -f k8s-manifests/{jw-data-portal,jw-data-portal-worker,jw-data-portal-vs}.yaml`. AR는 stg 프로젝트(`prj-jw-agn-stg-ai`), 배포는 dev 클러스터(`kcl-jw-agn-dev-genos`)로 권한 분리. 컨텍스트 불일치 시 확인 프롬프트.
 - `web/cloudbuild.yaml`: Cloud Build로 `$SHORT_SHA`·`_VERSION` 두 태그 빌드·push.
-- ★ 버전 불일치: `deploy.sh`/`cloudbuild.yaml`의 기본 `VERSION`은 `v0.2.9`인데 운영 실배포는 `v0.6.0-8ca9d98`(직전 `v0.5.2`)이다(evidence/dataportal_env_v060.txt) → **[확인 필요]** (배포 스크립트 기본값과 운영 태그 괴리, 최근 배포는 커밋 SHA 접미사를 붙이는 스크립트 밖 경로로 추정).
+- ★ 버전 불일치: `deploy.sh`/`cloudbuild.yaml`의 기본 `VERSION`은 `v0.2.9`인데 운영 실배포는 `v0.6.0-8ca9d98`(직전 `v0.5.2`)이다(evidence/dataportal_env_v060.txt). 확인 결과 — **`web/` 배포 스크립트는 이 pipeline repo가 아니라 별도 사이트 repo(Gitea `jw-data-input`/`jw-market`) 소관**이다(2026-07-18 본 워크트리 `web/` 부재 실측). 운영 태그 `v0.6.0-8ca9d98` = `v0.6.0` + 커밋 SHA(`8ca9d98`) 접미. 스크립트 기본 `VERSION=v0.2.9`↔운영 태그 괴리의 갱신 책임은 사이트 repo 소관이므로 그쪽 배포 관행 확인이 정본(근거: `evidence/openq_resolution_20260718.md` Q-8).
 
 ### 5.5 머지 금지(BRANCH_POLICY.md, RUNBOOK §7)
 
@@ -350,11 +350,13 @@ web/
 
 ---
 
-## [확인 필요] 항목
+## 확인 결과 · 잔여 항목
 
-1. 의뢰서 사이트 기준 SHA `36aa856b` — 로컬·Gitea 이력 미발견. 본 문서는 실측 HEAD `8ca9d987` 사용(BASELINE §문서 머리).
-2. `dynamic-market-cache-warm` manifest 이미지 placeholder `JW_MARKET_API_IMAGE`의 배포 시 치환 실이미지(§2.2).
-3. 백엔드 운영 승격 자동화 스크립트/커맨드 경로 — 워크트리 내 실체 미확인, gen CAS 관행만 기술(§5.2).
-4. 사이트 배포 스크립트 기본 `VERSION=v0.2.9` vs 운영 실배포 `v0.6.0-8ca9d98` 괴리 — 최근 배포 경로 확인 필요(§5.4).
-5. shortlong(Agent2) 실전 비용 — RUNBOOK §6 비용표 기입란 미기입(첫 staging 실행 시 wf217 호출량 기록 예정).
-6. 인입 훅 리허설→실적재 전환 시점 — 현재 `INGEST_REHEARSAL_ROOT` 설정으로 격리 모드 기동 중이며, 실 mart 적재 전환(변수 해제)은 남은 PL 게이트다(§2.8).
+2026-07-18 jw market 실측(근거: `evidence/openq_resolution_20260718.md`). ✅=해소, ⏳=PL/데이터 대기(→ [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)).
+
+1. ✅ 의뢰서 사이트 기준 SHA `36aa856b` — 로컬·Gitea 이력 미발견 확인. 본 문서는 실측 HEAD `8ca9d987` 사용(BASELINE §문서 머리).
+2. ✅ `dynamic-market-cache-warm` 치환 실이미지 = `jw-market-backend-api@sha256:8e2501cd…`(§2.2, Q-7). backend API 이미지 계열이며 live deploy(`@aec14a90…`)와 digest 드리프트.
+3. ✅ 백엔드 운영 승격 — repo에 이미지 승격 자동화 스크립트 없음 확인(§5.2, Q-6). GenOS 운영 UI/gen CAS(플랫폼 경로). GenOS 정확 커맨드는 ⏳ PL.
+4. ✅ 사이트 배포 `VERSION` 괴리 — `web/` 배포 스크립트는 별도 사이트 repo(Gitea) 소관 확인(§5.4, Q-8). 운영 태그 = `v0.6.0` + 커밋 SHA 접미.
+5. ⏳ shortlong(Agent2) 실전 비용 — 첫 staging 실행 전 데이터 미생성(측정 대기). → OPEN_QUESTIONS.
+6. ⏳ 인입 훅 리허설→실적재 전환 시점 — `INGEST_REHEARSAL_ROOT` 격리 모드 기동 중, 실 mart 적재 전환(변수 해제)은 남은 PL 게이트(§2.8). → OPEN_QUESTIONS.

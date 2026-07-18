@@ -47,22 +47,24 @@ CSD·토픽 데이터는 별도 원천(ChannelDynamics·Keyword 파일)에서 �
 
 ## 4. 유저가 오해하기 쉬운 지점
 
-> **소관 주의.** 아래 정렬·lookback 정책은 이벤트 선택 모듈 `pipeline/scripts/etl/phase29_events.py`에서 실측 확인했다. 이 모듈은 **jw market 소관**이므로, 서빙 화면 최종 표시와의 end-to-end 배선은 jw market 확인이 정본이다(불확실 지점은 [확인 필요]).
+> **소관 주의.** 아래 정렬·lookback 정책은 이벤트 선택 모듈 `pipeline/scripts/etl/phase29_events.py`에서 실측 확인했다. 이 모듈은 **jw market 소관**이므로, 서빙 화면 최종 표시와의 end-to-end 배선은 jw market 확인이 정본이다(확인 결과: 이 cut-A 경로는 **심층분석 이벤트 카드** 전용 — 아래 §jw market 확인 결과 1).
 
 1. **정렬은 최신순이 아니다 — 점수 우선, 날짜는 동점 tie-breaker.** 이벤트는 `ORDER BY s.score DESC, n.published_date DESC, s.id DESC`로 정렬된다(`phase29_events.py:311`). 즉 **점수가 높은 기사가 먼저**, 점수가 같을 때만 최신순이다. 최신 기사가 위에 없다고 누락이 아니다.
 2. **recency decay(시간 감쇠) 없음.** 점수에 "오래될수록 깎는" 감쇠가 없다(`_query_events` SQL에 감쇠 항 없음). lookback은 감쇠가 아니라 **기간 하드 컷**(그 기간 밖은 아예 제외)이다.
 3. **브랜드마다 보이는 기간이 다르다(adaptive lookback).** 이벤트가 부족하면 조회 창을 6개월→12→24→전체로 넓힌다(`phase29_events.py:328` `[6, 12, 24, None]`). 뉴스가 적은 브랜드는 창이 넓어져 **오래된 기사가 상위에 보일 수 있다**(위 1·2와 결합된 정상 동작).
 4. **2026-07-18 카테고리 재분류.** category refresh가 처음 실행되며 그동안 폴백 "기타(external)"에 몰려 있던 이벤트가 세부 카테고리(신약/R&D·정책/규제 등)로 재분류됐다. **카테고리별 건수가 이 시점에 변동**한 것은 회귀가 아니라 결손 해소의 정상 효과다(DOC-1b §1.4).
 5. **활동 지표 ≠ 판매.** CSD(ChannelDynamics)는 영업 활동(콜/미팅 등) 지표이지 매출이 아니다(DOC-2b §2, `product_details`는 활동 건수 성격). 판매 데이터(UBIST/IQVIA)와 혼동하지 말 것.
-6. **상위 N 절삭.** 토픽·활동은 상위 N개만 표출될 수 있어 일부만 보인다(원천에는 더 있음). 정확한 절삭 기준(브랜드당 top-N)은 서빙 배선 확인 필요 → [확인 필요].
+6. **상위 N 절삭.** 토픽·활동은 상위 N개만 표출될 수 있어 일부만 보인다(원천에는 더 있음). 정확한 절삭 기준은 **서빙단 토픽매트릭스 `top_n`(기본 5·최대 10)**이며, 저장단 브랜드 캡은 기본 무제한이다(아래 §jw market 확인 결과 2).
 
 ---
 
-## [확인 필요] 목록
+## jw market 확인 결과 (2026-07-18 실측)
 
-1. **정렬/lookback 정책의 화면 end-to-end 배선**: 정책 코드는 `phase29_events.py`(jw market 소관)에서 확인. 브랜드활동 탭 최종 표시가 이 cut-A 경로를 그대로 쓰는지(vs 심층분석 이벤트 카드 전용인지) jw market 확인 요청.
-2. **상위 N 절삭 기준**(§4-6): 브랜드당 표출 상한 값·위치 미확정.
-3. **CSD 활동 지표 정의**: `product_details`가 정확히 무엇을 세는지(콜 수/미팅 수 등) 원천 계약 확인 필요.
+아래 3건은 jw market 세션이 서빙 코드·원천 스크립트에서 실측 확인했다(근거: `evidence/openq_resolution_20260718.md` Q-1~Q-3).
+
+1. **정렬/lookback 정책의 화면 end-to-end 배선** → **심층분석 이벤트 카드 전용**(브랜드활동 탭 아님). `phase29_events.py`의 cut-A 정렬/adaptive lookback은 `build_cache_deep_analysis.py:36,181-192`를 거쳐 심층분석 캐시(`deep_analysis_runtime.py`)와 동적시장 응답 캐시(`dynamic_market/response_cache.py`)가 소비한다. 브랜드활동 탭 라우트 `routes/brand_activity.py`에는 이벤트/뉴스 리스트 엔드포인트가 없고 토픽(`mart_brand_activity_topics`)·CSD·토픽매트릭스만 서빙한다. 즉 §4의 점수우선 정렬·기간 하드컷 설명은 **심층분석 이벤트 카드**에 적용된다.
+2. **상위 N 절삭 기준** → **서빙단 토픽매트릭스 `top_n`(기본 5·1~10 클램프)**가 주 절삭점이다(`brand_activity_topic_matrix.py:149,161,257`). 저장(빌드)단 브랜드 캡 `brands_per_market`는 기본 무제한(`sampling.py:25` `DEFAULT_BRANDS_PER_MARKET=None`; 라이브 월간잡 env 기본 10000=사실상 전량). 토픽 카드 리스트는 저장된 `brand_specific_topics`를 그대로 서빙한다.
+3. **CSD 활동 지표 정의** → `product_details`는 CSD 원천 워크북 **"Product Details"** 열의 정수 측정값이다(`csd_core.py:13` EXPECTED_HEADERS, `:62` `CsdRow.product_details`, `:111` `parse_product_details`). 적재는 Region=="TOTAL" 행만 선별(`:161`)하므로, (월×시장×채널×제품×대행사) grain의 **제품 디테일링 활동 건수**(콜/디테일 성격, 매출 아님)다.
 
 ## 스크린샷 캡처 리스트
 
