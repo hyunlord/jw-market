@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _answer_contract_required_calls, _sales_delta_calls
@@ -1450,6 +1452,144 @@ def test_quantitative_questions_suppress_background_news_context() -> None:
 def test_simple_share_rank_question_uses_agent_loop_for_market_scope_consistency() -> None:
     assert should_use_agent_loop("리바로 점유율 순위")
     assert should_use_agent_loop("리바로 순위 알려줘")
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로가 속한 시장 매출",
+        "리바로 시장 규모",
+        "리바로가 소속된 시장 전체 매출",
+        "리바로가 포함된 시장 총매출",
+        "리바로 시장의 전체 규모",
+    ),
+)
+def test_heuristic_planner_uses_market_scope_for_semantic_paraphrases(question: str) -> None:
+    decision = HeuristicToolPlanner().decide(
+        question,
+        (),
+        (
+            {"function": {"name": "get_market_scope"}},
+            {"function": {"name": "get_metric"}},
+        ),
+        allowed_brands=("리바로",),
+        allowed_periods=("2026-05",),
+    )
+
+    assert decision.tool_calls
+    assert decision.tool_calls[0].name == "get_market_scope"
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로가 속한 시장 매출",
+        "리바로 시장 규모",
+        "리바로가 소속된 시장 전체 매출",
+        "리바로가 포함된 시장 총매출",
+        "리바로 시장의 전체 규모",
+    ),
+)
+def test_candidate_tool_filter_keeps_market_scope_for_semantic_paraphrases(question: str) -> None:
+    schemas = (
+        {"type": "function", "function": {"name": "get_market_scope"}},
+        {"type": "function", "function": {"name": "get_metric"}},
+        {"type": "function", "function": {"name": "search_news"}},
+    )
+
+    selected = select_candidate_tools(question, schemas, ())
+    selected_names = {item["function"]["name"] for item in selected}
+
+    assert "get_market_scope" in selected_names
+
+
+def test_candidate_tool_filter_keeps_market_scope_for_top_n_question() -> None:
+    schemas = (
+        {"type": "function", "function": {"name": "get_market_scope"}},
+        {"type": "function", "function": {"name": "get_metric"}},
+        {"type": "function", "function": {"name": "search_news"}},
+    )
+
+    selected = select_candidate_tools("고지혈증 top5", schemas, ())
+    selected_names = {item["function"]["name"] for item in selected}
+
+    assert "get_market_scope" in selected_names
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_limit"),
+    (
+        ("리바로 top5", "5"),
+        ("LIVALO top5", "5"),
+        ("리바로 시장 top3", "3"),
+        ("리바로 시장 상위 7개", "7"),
+    ),
+)
+def test_heuristic_planner_calls_top_brand_tool_for_top_n_expressions(
+    question: str,
+    expected_limit: str,
+) -> None:
+    decision = HeuristicToolPlanner().decide(
+        question,
+        (),
+        ({"function": {"name": "get_top_brands"}},),
+        allowed_brands=("리바로",),
+        allowed_periods=("2026-05",),
+    )
+
+    assert decision.tool_calls
+    assert decision.tool_calls[0].name == "get_top_brands"
+    assert decision.tool_calls[0].arguments["limit"] == expected_limit
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "영화 top5 추천",
+        "영화 시장 top5",
+        "서울 부동산 시장 top5",
+        "오늘 주식시장 top5",
+        "화장품 브랜드 top5",
+        "패션 브랜드 top5",
+        "자동차 브랜드 top5",
+    ),
+)
+def test_heuristic_planner_does_not_treat_off_domain_top_n_as_market_intent(question: str) -> None:
+    decision = HeuristicToolPlanner().decide(
+        question,
+        (),
+        ({"function": {"name": "get_top_brands"}},),
+        allowed_brands=(),
+        allowed_periods=("2026-05",),
+    )
+
+    assert decision.tool_calls == ()
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_measure"),
+    (
+        ("리바로 HHI는?", "hhi"),
+        ("리바로 상급종병 M/S", "market_share"),
+        ("리바로 Momentum", "momentum"),
+        ("리바로 EI", "ei"),
+    ),
+)
+def test_heuristic_planner_calls_metric_tool_for_explicit_metrics(
+    question: str,
+    expected_measure: str,
+) -> None:
+    decision = HeuristicToolPlanner().decide(
+        question,
+        (),
+        ({"function": {"name": "get_metric"}},),
+        allowed_brands=("리바로",),
+        allowed_periods=("2026-05",),
+    )
+
+    assert decision.tool_calls
+    assert decision.tool_calls[0].name == "get_metric"
+    assert decision.tool_calls[0].arguments["measure"] == expected_measure
 
 
 def test_single_brand_sales_trend_suppresses_top_brand_context() -> None:

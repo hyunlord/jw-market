@@ -423,6 +423,24 @@ def test_chat_agent_filters_metrics_to_channel_market_share() -> None:
     assert data["applied_filters"]["channel"] == "상급종병"
 
 
+def test_chat_agent_preserves_channel_filters_for_share_expression_variants() -> None:
+    reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    tool = MetricsTool(mode="cache", cache_reader=reader, cause_reader=CAUSE_READER)
+
+    for question, expected_channel in (
+        ("상급종합병원에서 리바로 M/S", "상급종병"),
+        ("리바로 의원 점유율", "의원"),
+    ):
+        result = ChatAgent(metrics=tool).answer(question)
+        metric_call = next(
+            call
+            for call in result["tool_calls"]
+            if call["tool"] in {"get_brand_metric", "unsupported_metric"}
+        )
+
+        assert metric_call["render_data"]["applied_filters"]["channel"] == expected_channel
+
+
 def test_chat_agent_filters_metrics_to_analysis_level_segments() -> None:
     reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
     tool = MetricsTool(mode="cache", cache_reader=reader, cause_reader=CAUSE_READER)

@@ -62,7 +62,10 @@ def _properties(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...
         brand_schema["enum"] = list(allowed_brands)
     return {
         "brand": brand_schema,
-        "measure": {"type": "string", "enum": ["sales", "market_share", "rank", "hhi", "series", "trend"]},
+        "measure": {
+            "type": "string",
+            "enum": ["sales", "market_share", "rank", "hhi", "series", "trend", "momentum", "ei", "growth"],
+        },
         "period": {
             "type": "string",
             "enum": list(allowed_periods),

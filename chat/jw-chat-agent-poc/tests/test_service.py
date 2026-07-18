@@ -2742,6 +2742,105 @@ def test_stream_endpoint_handles_same_market_default_before_agent_fallback() -> 
     assert FakeAgent.calls == []
 
 
+@pytest.mark.parametrize(
+    ("baseline", "paraphrase"),
+    (
+        ("리바로랑 같은 시장 매출", "리바로가 속한 시장 매출"),
+        ("리바로랑 같은 시장 규모", "리바로 시장 규모"),
+        ("리바로와 같은 시장 전체 매출", "리바로가 소속된 시장 전체 매출"),
+        ("리바로랑 같은 시장 총매출", "리바로가 포함된 시장 총매출"),
+        ("리바로랑 같은 시장 전체 규모", "리바로 시장의 전체 규모"),
+    ),
+)
+def test_stream_endpoint_market_scope_paraphrases_share_one_fast_path(
+    baseline: str,
+    paraphrase: str,
+) -> None:
+    FakeAgent.calls = []
+    app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())
+    client = TestClient(app)
+
+    answers = []
+    for index, question in enumerate((baseline, paraphrase), start=1):
+        response = client.get(
+            "/chat/stream",
+            params={"conversation_id": f"conv-market-paraphrase-{index}", "question": question},
+        )
+        assert response.status_code == 200
+        answers.append(_reconstruct_answer_from_sse(response.text))
+
+    assert all("2,256.77억원" in answer for answer in answers)
+    assert FakeAgent.calls == []
+
+
+def test_stream_endpoint_unanchored_market_size_falls_through_to_general_path() -> None:
+    FakeAgent.calls = []
+    app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())
+    client = TestClient(app)
+
+    response = client.get(
+        "/chat/stream",
+        params={"conversation_id": "conv-unanchored-market", "question": "당뇨병 시장 규모"},
+    )
+
+    assert response.status_code == 200
+    assert FakeAgent.calls == [("당뇨병 시장 규모", "live")]
+    assert "2,256.77억원" not in response.text
+
+
+def test_stream_endpoint_normalizes_top5_expression_before_general_path() -> None:
+    FakeAgent.calls = []
+    app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())
+    client = TestClient(app)
+
+    response = client.get(
+        "/chat/stream",
+        params={"conversation_id": "conv-top5", "question": "고지혈증 top5"},
+    )
+
+    assert response.status_code == 200
+    assert FakeAgent.calls == [("리바로 시장 상위 5개와 HHI, CR5를 알려줘", "live")]
+
+
+def test_stream_endpoint_uses_dynamic_brand_anchor_for_top_n_expression() -> None:
+    FakeAgent.calls = []
+    app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())
+    client = TestClient(app)
+
+    response = client.get(
+        "/chat/stream",
+        params={"conversation_id": "conv-brand-top3", "question": "리바로 top3"},
+    )
+
+    assert response.status_code == 200
+    assert FakeAgent.calls == [("리바로 top3", "live")]
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "영화 시장 top5",
+        "서울 부동산 시장 top5",
+        "오늘 주식시장 top5",
+        "화장품 브랜드 top5",
+        "패션 브랜드 top5",
+        "자동차 브랜드 top5",
+    ),
+)
+def test_stream_endpoint_off_domain_market_top_n_falls_through_to_general_path(question: str) -> None:
+    FakeAgent.calls = []
+    app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())
+    client = TestClient(app)
+
+    response = client.get(
+        "/chat/stream",
+        params={"conversation_id": f"conv-off-domain-{question}", "question": question},
+    )
+
+    assert response.status_code == 200
+    assert FakeAgent.calls == [(question, "live")]
+
+
 def test_stream_endpoint_routes_complex_market_vs_brand_question_to_agent_loop() -> None:
     FakeAgent.calls = []
     app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())

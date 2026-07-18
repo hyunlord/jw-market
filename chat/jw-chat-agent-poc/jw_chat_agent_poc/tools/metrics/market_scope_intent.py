@@ -8,6 +8,20 @@ from typing import Literal
 MarketView = Literal["market_landscape", "competitive_dynamics", "general_view"]
 
 
+_MARKET_SCOPE_RE = re.compile(
+    r"(?:"
+    r"같은\s*시장|"
+    r"동일(?:한)?\s*시장|"
+    r"해당\s*시장|"
+    r"(?:속한|소속(?:된)?|포함(?:된)?)\s*시장|"
+    r"시장\s*(?:의\s*)?(?:전체\s*)?(?:규모|총\s*매출|전체\s*매출)"
+    r")",
+    re.IGNORECASE,
+)
+_BRAND_TOKEN_RE = re.compile(r"([가-힣A-Za-z0-9+_-]{2,80})\s*$")
+_BRAND_PARTICLES = ("이랑", "랑", "와", "과", "은", "는", "이", "가", "의")
+
+
 @dataclass(frozen=True, slots=True)
 class MarketScopeIntent:
     brand_hint: str
@@ -17,12 +31,13 @@ class MarketScopeIntent:
 
 
 def detect_market_scope_intent(question: str) -> MarketScopeIntent | None:
-    normalized = _normalize(question)
-    if not any(token in normalized for token in ("같은시장", "시장전체", "해당시장")):
+    scope_match = _MARKET_SCOPE_RE.search(question)
+    if scope_match is None:
         return None
+    normalized = _normalize(question)
     view_type = _explicit_view(normalized)
     return MarketScopeIntent(
-        brand_hint=_brand_hint(question),
+        brand_hint=_brand_hint(question, scope_match),
         metric="sales",
         view_type=view_type or "market_landscape",
         requires_clarification=False,
@@ -50,11 +65,16 @@ def _explicit_view(normalized: str) -> MarketView | None:
     return None
 
 
-def _brand_hint(question: str) -> str:
-    match = re.search(r"([가-힣A-Za-z0-9+]+?)(?:이랑|랑|와|과)?\s*같은\s*시장", question)
-    if match:
-        return match.group(1)
-    return ""
+def _brand_hint(question: str, scope_match: re.Match[str]) -> str:
+    prefix = question[: scope_match.start()].rstrip()
+    match = _BRAND_TOKEN_RE.search(prefix)
+    if match is None:
+        return ""
+    token = match.group(1)
+    for particle in _BRAND_PARTICLES:
+        if token.endswith(particle) and len(token) > len(particle) + 1:
+            return token[: -len(particle)]
+    return token
 
 
 def _normalize(text: str) -> str:

@@ -184,7 +184,7 @@ class ChatAgent:
         if source_trap is not None and not docs:
             return finish(self._requested_source_unavailable(question, resolution, routes, source_trap))
 
-        if not docs and should_use_agent_loop(question):
+        if not docs and should_use_agent_loop(question, has_brand_anchor=True):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
             return finish(loop.answer(question))
 

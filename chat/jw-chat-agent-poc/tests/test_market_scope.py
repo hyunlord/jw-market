@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.cd_mart import CdBrandLink, StaticCdMartReader
 from jw_chat_agent_poc.tools.metrics.market_scope import (
@@ -56,6 +58,24 @@ def test_detect_market_scope_intent_defaults_to_market_landscape() -> None:
     assert intent.brand_hint == "리바로"
     assert intent.view_type == "market_landscape"
     assert intent.requires_clarification is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로가 속한 시장 매출",
+        "리바로 시장 규모",
+        "리바로가 소속된 시장 전체 매출",
+        "리바로가 포함된 시장 총매출",
+        "리바로 시장의 전체 규모",
+    ),
+)
+def test_detect_market_scope_intent_handles_semantic_paraphrases(question: str) -> None:
+    intent = detect_market_scope_intent(question)
+
+    assert intent is not None
+    assert intent.brand_hint == "리바로"
+    assert intent.view_type == "market_landscape"
 
 
 def test_detect_market_scope_intent_answers_strong_view_question_with_default_view() -> None:

@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass
 from typing import TypeAlias
 
+import pytest
+
 from jw_chat_agent_poc.agent_loop.population_specs import StrictQueryPlan, strict_query_plan
 from jw_chat_agent_poc.agent_loop.routing import should_use_agent_loop
 from jw_chat_agent_poc.service.charts import _chart_intent
@@ -127,6 +129,70 @@ def test_news_sales_impact_is_not_rejected_before_fact_backfill() -> None:
 
 def test_market_concentration_uses_deterministic_agent_loop() -> None:
     assert should_use_agent_loop("리바로 시장 집중도는 어때?") is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 MS 몇%야?",
+        "의약품 시장 top5",
+        "리바로 momentum 알려줘",
+        "리바로 EI 알려줘",
+    ),
+)
+def test_supported_metric_expressions_do_not_depend_on_legacy_token_whitelist(question: str) -> None:
+    assert should_use_agent_loop(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로와 같이 이야기해줘",
+        "한번에 답해줘",
+        "간단히 알려줄래",
+    ),
+)
+def test_coordination_words_without_analysis_intent_stay_on_general_path(question: str) -> None:
+    assert should_use_agent_loop(question) is False
+
+
+def test_coordination_word_keeps_genuine_multi_intent_question_on_agent_loop() -> None:
+    assert should_use_agent_loop("리바로 특허와 매출을 같이 알려줘") is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "오늘 날씨 변화 알려줘",
+        "가장 큰 행성은 뭐야?",
+        "두 도시를 비교해줘",
+    ),
+)
+def test_generic_change_or_ranking_phrases_stay_on_general_path(question: str) -> None:
+    assert should_use_agent_loop(question) is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "영화 top5 추천",
+        "오늘 top5 노래 추천",
+        "laptop5 추천",
+        "영화 시장 top5",
+        "서울 부동산 시장 top5",
+        "오늘 주식시장 top5",
+        "화장품 브랜드 top5",
+        "패션 브랜드 top5",
+        "자동차 브랜드 top5",
+        "오늘 top5 브랜드 추천",
+    ),
+)
+def test_off_domain_top_n_phrases_stay_on_general_path(question: str) -> None:
+    assert should_use_agent_loop(question) is False
+
+
+def test_top_n_uses_pre_resolved_dynamic_brand_anchor() -> None:
+    assert should_use_agent_loop("리바로 top5", has_brand_anchor=True) is True
 
 
 def _snapshot(

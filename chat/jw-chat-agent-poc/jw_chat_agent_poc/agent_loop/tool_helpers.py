@@ -27,8 +27,8 @@ def ground_news_query(raw_query: str, brand: str) -> str:
 def metric_measure(value: str) -> str:
     if value in {"share", "market_share", "ms", "rank"}:
         return "market_share"
-    if value == "hhi":
-        return "hhi"
+    if value in {"hhi", "momentum", "ei", "growth"}:
+        return value
     if value in {"series", "trend", "trajectory", "추이"}:
         return "series"
     return "sales"

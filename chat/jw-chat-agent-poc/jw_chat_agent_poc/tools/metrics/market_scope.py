@@ -86,6 +86,9 @@ class MarketScopeResolver:
             return True
         return self._resolver.has_explicit_alias(question)
 
+    def has_explicit_brand_anchor(self, question: str) -> bool:
+        return self._resolver.has_explicit_alias(question)
+
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)
 

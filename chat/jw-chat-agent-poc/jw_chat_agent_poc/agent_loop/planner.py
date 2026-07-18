@@ -3,13 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+import re
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.news_query import normalize_news_query
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
+from jw_chat_agent_poc.orchestrator.question_intent import metric_from_question
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
+from jw_chat_agent_poc.tools.metrics.market_scope_intent import detect_market_scope_intent
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,15 +95,30 @@ class HeuristicToolPlanner:
         allowed_brands: tuple[str, ...] = (),
         allowed_periods: tuple[str, ...] = (),
     ) -> AgentDecision:
-        if not observations and "상위" in question and _has_tool(schemas, "get_top_brands"):
-            return AgentDecision(tool_calls=(ToolCallPlan("get_top_brands", {"brand": _brand(question, allowed_brands), "limit": "5"}, "시장 상위 브랜드 확인"),))
+        top_n = _top_n_limit(question)
+        if (
+            not observations
+            and top_n is not None
+            and _top_n_has_market_context(question, allowed_brands)
+            and _has_tool(schemas, "get_top_brands")
+        ):
+            return AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        "get_top_brands",
+                        {"brand": _brand(question, allowed_brands), "limit": top_n},
+                        "시장 상위 브랜드 확인",
+                    ),
+                )
+            )
         if not observations and _needs_expanded_tools(question):
             return AgentDecision(tool_calls=_expanded_tool_calls(question, allowed_brands, allowed_periods))
-        if not observations and "같은 시장" in question:
+        market_scope_intent = detect_market_scope_intent(question)
+        if not observations and market_scope_intent is not None and _has_tool(schemas, "get_market_scope"):
             return AgentDecision(tool_calls=(ToolCallPlan("get_market_scope", {"brand": _brand(question, allowed_brands), "view": "market_landscape"}, "시장 scope 확인"),))
         if not observations and "대비" in question:
             return AgentDecision(tool_calls=(ToolCallPlan("resolve_relative_date", {"expression": _relative_expression(question)}, "비교 기간 해석"),))
-        if "같은 시장" in question and not _has_metric_observation(observations):
+        if market_scope_intent is not None and not _has_metric_observation(observations):
             brands = _observed_members(observations) or (_brand(question, allowed_brands),)
             return AgentDecision(
                 tool_calls=tuple(ToolCallPlan("get_metric", {"brand": brand, "measure": "sales", "period": "previous_year"}, "같은 시장 브랜드 작년 매출") for brand in brands)
@@ -111,6 +129,19 @@ class HeuristicToolPlanner:
                 tool_calls=(
                     ToolCallPlan("get_metric", {"brand": _brand(question, allowed_brands), "measure": "market_share", "period": period}, "비교 시점 점유율"),
                     ToolCallPlan("get_metric", {"brand": _brand(question, allowed_brands), "measure": "market_share", "period": _latest_period(allowed_periods)}, "최신 점유율"),
+                )
+            )
+        if not observations and _asks_explicit_metric(question) and _has_tool(schemas, "get_metric"):
+            return AgentDecision(
+                tool_calls=(
+                    ToolCallPlan(
+                        "get_metric",
+                        {
+                            "brand": _brand(question, allowed_brands),
+                            "measure": metric_from_question(question),
+                        },
+                        "명시 지표 조회",
+                    ),
                 )
             )
         return AgentDecision(final_answer="도구 결과로 답변하세요.")
@@ -429,7 +460,32 @@ def _asks_metric_or_analysis(question: str) -> bool:
 
 
 def _asks_explicit_metric(question: str) -> bool:
-    return any(token in question for token in ("매출", "점유율", "MS", "순위", "시장규모", "시장 규모"))
+    return bool(
+        re.search(
+            r"(?:매출|판매|점유율|순위|시장\s*규모|시계열|추이|HHI|CAGR|momentum|모멘텀|(?<![A-Za-z])M\s*/?\s*S(?![A-Za-z])|(?<![A-Za-z])EI(?![A-Za-z]))",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _top_n_limit(question: str) -> str | None:
+    match = re.search(
+        r"(?:상위\s*(\d+)|(?<![A-Za-z0-9_])top\s*(\d+)(?![A-Za-z0-9_]))",
+        question,
+        re.IGNORECASE,
+    )
+    if match is not None:
+        return match.group(1) or match.group(2)
+    if "상위" in question:
+        return "5"
+    return None
+
+
+def _top_n_has_market_context(question: str, allowed_brands: tuple[str, ...]) -> bool:
+    return bool(allowed_brands) or bool(
+        re.search(r"(?:의약품|약물|성분|제형|ATC|처방)", question, re.IGNORECASE)
+    )
 
 
 def _asks_csd_activity(question: str) -> bool:
@@ -460,7 +516,13 @@ def _asks_patent(question: str) -> bool:
 
 
 def _asks_market_scope(question: str) -> bool:
-    return any(token in question for token in ("같은 시장", "경쟁제품", "경쟁 제품", "경쟁품", "경쟁 구도", "상위"))
+    return detect_market_scope_intent(question) is not None or bool(
+        re.search(
+            r"(?:경쟁\s*(?:제품|품|구도)|상위\s*\d*|(?<![A-Za-z0-9_])top\s*\d+(?![A-Za-z0-9_]))",
+            question,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _asks_relative_date(question: str) -> bool:

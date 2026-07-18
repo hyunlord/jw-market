@@ -564,7 +564,10 @@ def _answer_question(
             else effective_question
         )
         routing_question = grounded_market_question
-        has_market_intent = deep_request.enabled or _has_market_intent(routing_question)
+        has_market_intent = deep_request.enabled or _has_market_intent(
+            routing_question,
+            has_brand_anchor=has_explicit_market_anchor,
+        )
         has_market_anchor = (
             market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
         )
@@ -1097,13 +1100,17 @@ def _has_file_signal(documents: list[Path] | None, file_context: str | None) -> 
     return bool(documents) or bool((file_context or "").strip())
 
 
-def _has_market_intent(question: str) -> bool:
+def _has_market_intent(question: str, *, has_brand_anchor: bool = False) -> bool:
     metric_signal = re.search(
         r"(?:시장|매출|실적|점유율|MS|순위|HHI|CR\d*|환자수|특허|영업활동|최근\s*\d*\s*(?:개월|년)?\s*추이)",
         question,
         re.IGNORECASE,
     )
-    return bool(metric_signal) or detect_market_scope_intent(question) is not None or should_use_agent_loop(question)
+    return (
+        bool(metric_signal)
+        or detect_market_scope_intent(question) is not None
+        or should_use_agent_loop(question, has_brand_anchor=has_brand_anchor)
+    )
 
 
 def _ground_unanchored_market_golden(
@@ -1117,11 +1124,15 @@ def _ground_unanchored_market_golden(
         return question
     top_n = re.fullmatch(
         r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*상위\s*(\d+)\s*개?"
+        r"(?:\s*브랜드)?(?:\s*(?:알려줘|보여줘))?[?!.]?|"
+        r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*top\s*(\d+)"
         r"(?:\s*브랜드)?(?:\s*(?:알려줘|보여줘))?[?!.]?",
         question.strip(),
+        re.IGNORECASE,
     )
     if top_n:
-        return f"리바로 시장 상위 {top_n.group(1)}개와 HHI, CR5를 알려줘"
+        limit = top_n.group(1) or top_n.group(2)
+        return f"리바로 시장 상위 {limit}개와 HHI, CR5를 알려줘"
     return question
 
 
@@ -1473,19 +1484,26 @@ def _answer_existing_without_pending(
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
+    agent_loop_required = should_use_agent_loop(question)
+    has_brand_anchor = False
+    if not agent_loop_required and should_use_agent_loop(question, has_brand_anchor=True):
+        has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
+        agent_loop_required = has_brand_anchor
     if (
         use_direct_agent_loop
-        and should_use_agent_loop(question)
+        and agent_loop_required
         and not documents
         and not tool_use_requirements(question)
     ):
         return _answer_direct_agent_loop(question, external_mode)
-    if should_use_agent_loop(question):
+    if agent_loop_required:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
     intent = detect_market_scope_intent(question)
-    if intent is not None:
+    if intent is not None and not has_brand_anchor:
+        has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
+    if intent is not None and has_brand_anchor:
         if intent.requires_clarification:
             brand = intent.brand_hint or "해당 브랜드"
             expires_at = store.conversations.pending_expiry()

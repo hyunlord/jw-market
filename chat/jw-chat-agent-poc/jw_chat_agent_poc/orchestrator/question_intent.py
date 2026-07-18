@@ -34,7 +34,7 @@ def metric_from_question(question: str) -> str:
     lower = question.lower()
     if "hhi" in lower:
         return "hhi"
-    if any(keyword in question for keyword in ("시장규모", "시장 규모", "cagr")):
+    if any(keyword in question for keyword in ("시장규모", "시장 규모")) or "cagr" in lower:
         return "growth"
     if "momentum" in lower or "모멘텀" in question:
         return "momentum"
