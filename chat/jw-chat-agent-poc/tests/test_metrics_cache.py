@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agentic import MetricFilterPlan
@@ -10,11 +11,23 @@ from jw_chat_agent_poc.tools.metrics.cache_live import (
     CausePayloadKey,
     CsdActivityTarget,
     CsdActivityTargetLoadError,
+    MariaDbMetricsCacheReader,
     StaticCausePayloadReader,
     StaticCsdActivityReader,
     StaticCsdActivityTargetReader,
     StaticMetricsCacheReader,
 )
+
+
+def test_brands_reader_uses_query_database_without_changing_cache_database(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
+    monkeypatch.setenv("CHAT_QUERY_DB_NAME", "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.delenv("CHAT_BRANDS_DB_NAME", raising=False)
+
+    reader = MariaDbMetricsCacheReader()
+
+    assert reader.database == "jw_mart_d2_stage_20260630_r2"
+    assert os.environ["CHAT_CACHE_DB_NAME"] == "jw_mart"
 from jw_chat_agent_poc.tools.metrics.sales_filtering import filtered_metric_result
 
 
@@ -672,6 +685,42 @@ def test_csd_activity_target_catalog_supports_guardlet() -> None:
     assert result["render_data"]["market"] == "GUARDLET Market"
     assert result["render_data"]["master_product"] == "GUARDLET"
     assert result["render_data"]["series"][-1] == {"period": "2026-05", "product_details": 601}
+
+
+def test_csd_activity_exposes_seller_axis_and_target_company_anchors() -> None:
+    reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
+    target_reader = StaticCsdActivityTargetReader(
+        (CsdActivityTarget("리바로", "LIVALO Market", "LIVALO"),)
+    )
+    activity_reader = StaticCsdActivityReader(
+        {("LIVALO Market", "LIVALO"): (("2026-01", 12), ("2026-03", 37))},
+        seller_rows_by_market={
+            "LIVALO Market": (
+                ("2026-01", "JW PHARM", 12),
+                ("2026-01", "COMPETITOR", 18),
+                ("2026-03", "JW PHARM", 37),
+                ("2026-03", "COMPETITOR", 63),
+            )
+        },
+        anchor_companies_by_target={
+            ("LIVALO Market", "LIVALO"): ("JW PHARM",)
+        },
+    )
+    tool = MetricsTool(
+        mode="cache",
+        cache_reader=reader,
+        csd_activity_reader=activity_reader,
+        csd_activity_target_reader=target_reader,
+    )
+
+    result = tool.get_csd_activity_trend("리바로", limit=3)
+
+    assert result["render_data"]["anchor_companies"] == ["JW PHARM"]
+    assert result["render_data"]["seller_series"][-1] == {
+        "period": "2026-03",
+        "company": "COMPETITOR",
+        "product_details": 63,
+    }
 
 
 def test_csd_activity_legacy_livalo_targets_still_work() -> None:

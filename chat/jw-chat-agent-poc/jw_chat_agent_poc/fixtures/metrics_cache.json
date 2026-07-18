@@ -13,24 +13,18 @@
         "2026-03": 228838670570,
         "2026-04": 225646489397
       }
-    },
-    "mock_market": {
-      "label": "POC mock market",
-      "latest_period": "2026-04",
-      "market_size_krw": 1000000000,
-      "cagr_5y_pct": 8.5,
-      "hhi": 350.0,
-      "market_size_series": {"2026-04": 1000000000}
     }
   },
   "brands": {
     "리바로": {
+      "market_id": "ml_006",
       "market_share": 3.33,
       "sales_krw": 8493234217,
       "rank": 7,
       "period": "2026-04"
     },
     "리바로젯": {
+      "market_id": "ml_006",
       "market_share": 5.32,
       "sales_krw": 12009054193,
       "rank": 4,
@@ -38,4 +32,3 @@
     }
   }
 }
-

@@ -4,6 +4,7 @@ from pytest import MonkeyPatch, approx
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.tools.metrics import relative_periods
+from jw_chat_agent_poc.agentic.sales_filter_extraction import extract_metric_filter_entries
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 
@@ -173,6 +174,10 @@ def test_chat_agent_resolves_recent_month_range_from_current_month_with_latest_c
             "basis": "현재 2026-06 기준 요청구간 2025-12~2026-05 중 최신 2026-04까지 제공",
         }
     ]
+
+
+def test_recent_year_is_extracted_as_relative_range() -> None:
+    assert ("relative_range", "최근 1년") in extract_metric_filter_entries("리바로 최근 1년 매출 추이")
 
 
 def test_chat_agent_reports_latest_after_current_relative_month_as_unavailable(monkeypatch: MonkeyPatch) -> None:

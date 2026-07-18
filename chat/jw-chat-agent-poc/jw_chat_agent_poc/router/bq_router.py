@@ -5,6 +5,7 @@ from typing import Iterable
 
 from jw_chat_agent_poc.portfolio_scope import portfolio_scope_for_question
 from jw_chat_agent_poc.agentic import FilterEntry, extract_metric_filter_entries, extract_news_filter_entries
+from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
 
 
 BQ_SYSTEM_PROMPT = """\
@@ -106,7 +107,7 @@ class BQRouter:
                     bq="Q1",
                     question="관련 뉴스·소식·이슈",
                     sources=("deep_analysis_events",),
-                    reason="Related news questions use curated cache_deep_analysis.data.events.",
+                    reason="Related news questions use the events/event_brand_scores corpus.",
                     filters=extract_news_filter_entries(question),
                 )
             )
@@ -141,8 +142,10 @@ class BQRouter:
                 )
             )
 
-        if any(k in question for k in ("시장 규모", "시장규모", "성장", "성장 추이", "전망", "매출", "판매", "시계열", "월별", "모멘텀")) or any(
-            k in lower for k in ("hhi", "momentum", "monthly", "ei")
+        if (
+            any(k in question for k in ("시장 규모", "시장규모", "성장", "성장 추이", "전망", "매출", "판매", "시계열", "월별", "모멘텀"))
+            or any(k in lower for k in ("hhi", "momentum", "monthly", "ei"))
+            or (not has_documents and wants_market_narrative(question))
         ):
             sources = ["metrics"]
             if has_documents or "업로드" in question:

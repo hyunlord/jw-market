@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
+from jw_chat_agent_poc.orchestrator.answer_completeness import completeness_intent
 
 
 _CSD_ACTIVITY_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
-_METRIC_TOKENS = ("매출", "점유율", "순위", "시장", "경쟁사", "경쟁", "상위", "위협", *_CSD_ACTIVITY_TOKENS)
+_METRIC_TOKENS = (
+    "매출",
+    "점유율",
+    "순위",
+    "시장",
+    "집중",
+    "경쟁사",
+    "경쟁",
+    "상위",
+    "위협",
+    *_CSD_ACTIVITY_TOKENS,
+)
 _EXTERNAL_TOKENS = (
     "뉴스",
     "이슈",
@@ -53,13 +65,17 @@ _COMPLEX_TOKENS = (
     "오르는",
     "동안",
     "상위",
+    "집중",
+    "분산",
 )
 
 
 def should_use_agent_loop(question: str) -> bool:
     if is_portfolio_decline_question(question):
         return True
-    if strict_query_plan(question, "리바로") is not None:
+    if completeness_intent(question) == "brand_compare":
+        return True
+    if strict_query_plan(question, "") is not None:
         return True
     if not any(token in question for token in (*_METRIC_TOKENS, *_EXTERNAL_TOKENS, *_DRUG_INFO_TOKENS)):
         return False
@@ -68,6 +84,8 @@ def should_use_agent_loop(question: str) -> bool:
     if _external_question_needs_agent_loop(question):
         return True
     if _issue_question_needs_quant_context(question):
+        return True
+    if _news_sales_impact_question(question):
         return True
     if _patient_sales_question(question):
         return True
@@ -82,6 +100,14 @@ def should_use_agent_loop(question: str) -> bool:
 
 def _issue_question_needs_quant_context(question: str) -> bool:
     return any(token in question for token in ("최근 이슈", "관련 이슈", "이슈 뭐", "이슈 알려"))
+
+
+def _news_sales_impact_question(question: str) -> bool:
+    return (
+        "매출" in question
+        and any(token in question for token in ("뉴스", "이슈"))
+        and any(token in question for token in ("영향", "원인", "왜"))
+    )
 
 
 def _patient_sales_question(question: str) -> bool:

@@ -13,6 +13,27 @@ from jw_chat_agent_poc.tools.general_view_backend import (
     GeneralViewBrandMismatchError,
     GeneralViewBackendError,
 )
+from jw_chat_agent_poc.tools.general_view_membership import (
+    GeneralMembershipLoadError,
+    MariaDbGeneralMembershipReader,
+    TtlGeneralMembershipCache,
+)
+from jw_chat_agent_poc.tools.general_view_mart import GeneralViewMartBackend, MariaDbGeneralMartReader
+
+
+_ATC4_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z]\d{2}[A-Za-z]\d)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_IQVIA_SOURCE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:IQVIA|NSA)(?![A-Za-z0-9])|아이큐비아",
+    re.IGNORECASE,
+)
+_SOURCE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:IQVIA|NSA|UBIST)(?![A-Za-z0-9])|아이큐비아|유비스트",
+    re.IGNORECASE,
+)
+_STRATEGIC_MARKET_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9_])ml_\d+(?![A-Za-z0-9_])", re.IGNORECASE)
 
 
 class GeneralRoute(Enum):
@@ -30,16 +51,31 @@ class _StrategicMembership(Protocol):
     def resolve(self, question: str, allow_default: bool = False): ...
 
 
+class _GeneralMembership(Protocol):
+    def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]: ...
+
+
 class GeneralViewService:
-    def __init__(self, backend: _Backend, strategic_membership: _StrategicMembership, *, enabled: bool) -> None:
+    def __init__(
+        self,
+        backend: _Backend,
+        strategic_membership: _StrategicMembership,
+        *,
+        enabled: bool,
+        general_membership: _GeneralMembership | None = None,
+    ) -> None:
         self._backend = backend
         self._strategic_membership = strategic_membership
+        self._general_membership = general_membership
         self.enabled = enabled
 
     @classmethod
     def from_env(cls, strategic_membership: _StrategicMembership) -> "GeneralViewService":
         enabled = os.environ.get("GENERAL_VIEW_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-        return cls(GeneralViewBackend(), strategic_membership, enabled=enabled)
+        ttl_seconds = float(os.environ.get("GENERAL_VIEW_MEMBERSHIP_TTL_SECONDS", "300"))
+        membership = TtlGeneralMembershipCache(MariaDbGeneralMembershipReader(), ttl_seconds=ttl_seconds)
+        backend = GeneralViewMartBackend(MariaDbGeneralMartReader(), GeneralViewBackend())
+        return cls(backend, strategic_membership, enabled=enabled, general_membership=membership)
 
     def route(self, question: str) -> GeneralRoute:
         if not self.enabled:
@@ -60,7 +96,8 @@ class GeneralViewService:
         return GeneralRoute.DUAL
 
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
-        source = _source(question)
+        requested_source = _requested_source(question)
+        source = requested_source or "ubist"
         measure = "sales"
         brand = _brand_hint(question)
         explicit_atc4 = _atc4_code(question)
@@ -68,7 +105,12 @@ class GeneralViewService:
             if explicit_atc4:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
             elif brand:
-                candidates = self._backend.candidates(brand, source)
+                candidates = self._membership_candidates(brand, source)
+                if not candidates and requested_source is None:
+                    alternate_source = "iqvia" if source == "ubist" else "ubist"
+                    candidates = self._membership_candidates(brand, alternate_source)
+                    if candidates:
+                        source = alternate_source
             else:
                 candidates = ()
             if not candidates:
@@ -81,10 +123,20 @@ class GeneralViewService:
                 for candidate in candidates
                 if candidate.code != selected.atc4_code
             ]
-            contract = _contract(selected, other_candidates=others, compact=compact, dual=dual)
+            contract = _contract(selected, other_candidates=others, compact=compact, dual=dual, question=question)
             return _result(question, selected, contract)
         except GeneralViewBackendError as exc:
             return _unavailable_result(question, str(exc), dual=dual)
+
+    def _membership_candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+        if self._general_membership is not None:
+            try:
+                candidates = self._general_membership.candidates(brand, source)
+            except GeneralMembershipLoadError:
+                candidates = ()
+            if candidates:
+                return candidates
+        return self._backend.candidates(brand, source)
 
     def _fetch_candidates(
         self,
@@ -119,8 +171,10 @@ def _contract(
     other_candidates: list[str],
     compact: bool,
     dual: bool,
+    question: str,
 ) -> dict[str, Any]:
-    section = _render_section(market, other_candidates=other_candidates, compact=compact)
+    window = _requested_market_window(question, market)
+    section = _render_section(market, other_candidates=other_candidates, compact=compact, window=window)
     return {
         "mode": "dual" if dual else "general_only",
         "view_type": "general_view",
@@ -130,7 +184,7 @@ def _contract(
         "source": market.source,
         "measure": market.measure,
         "unit": market.unit,
-        "period": market.period,
+        "period": window[0] if window else market.period,
         "share_denominator": f"ATC4 {market.atc4_code} 시장 전체 {market.measure}",
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
@@ -188,10 +242,19 @@ def _unavailable_result(question: str, reason: str, *, dual: bool) -> dict[str, 
     }
 
 
-def _render_section(market: GeneralMarket, *, other_candidates: list[str], compact: bool) -> str:
+def _render_section(
+    market: GeneralMarket,
+    *,
+    other_candidates: list[str],
+    compact: bool,
+    window: tuple[str, float] | None,
+) -> str:
     lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {market.atc4_description}"]
-    if market.market_size is not None:
-        lines.append(f"- 시장 규모: {_format_value(market.market_size, market.unit)}")
+    if window is not None:
+        label, value = window
+        lines.append(f"- 시장 규모 ({label}): {_format_value(value, market.unit)}")
+    elif market.market_size is not None:
+        lines.append(f"- 시장 규모 ({market.period}): {_format_value(market.market_size, market.unit)}")
     if market.brand:
         metrics = []
         if market.brand_share_pct is not None:
@@ -215,6 +278,16 @@ def _render_section(market: GeneralMarket, *, other_candidates: list[str], compa
     return "\n".join(lines)
 
 
+def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str, float] | None:
+    if not re.search(r"최근\s*(?:1년|12\s*개월)", question):
+        return None
+    points = tuple((period, value) for period, value in market.market_size_series if re.fullmatch(r"\d{4}-\d{2}", period))
+    if len(points) < 12:
+        raise GeneralViewBackendError("최근 12개월 시장 규모를 계산할 월별 데이터가 부족합니다")
+    selected = points[-12:]
+    return f"최근 12개월 합계 {selected[0][0]}~{selected[-1][0]}", sum(value for _, value in selected)
+
+
 def _format_value(value: float, unit: str) -> str:
     if unit.upper() == "KRW":
         return f"{value / 100_000_000:,.1f}억원"
@@ -226,13 +299,13 @@ def _normalize(question: str) -> str:
 
 
 def _has_explicit_general_signal(normalized: str) -> bool:
-    return bool(re.search(r"[a-z]\d{2}[a-z]\d", normalized)) or any(
+    return bool(_ATC4_PATTERN.search(normalized)) or any(
         token in normalized for token in ("일반뷰", "일반view", "atc4", "atc기준")
     )
 
 
 def _has_explicit_strategic_signal(normalized: str) -> bool:
-    return any(
+    return bool(_STRATEGIC_MARKET_ID_PATTERN.search(normalized)) or any(
         token in normalized
         for token in ("전략뷰", "전략view", "시장조망", "market_landscape", "경쟁군", "경쟁시장", "competitive_dynamics", "cd기준")
     )
@@ -268,17 +341,26 @@ def _has_existing_analytic_signal(normalized: str) -> bool:
 
 
 def _source(question: str) -> str:
-    return "iqvia" if "iqvia" in question.lower() else "ubist"
+    return _requested_source(question) or "ubist"
+
+
+def _requested_source(question: str) -> str | None:
+    if _IQVIA_SOURCE_PATTERN.search(question):
+        return "iqvia"
+    if _SOURCE_PATTERN.search(question):
+        return "ubist"
+    return None
 
 
 def _atc4_code(question: str) -> str | None:
-    match = re.search(r"\b([A-Za-z]\d{2}[A-Za-z]\d)\b", question)
+    match = _ATC4_PATTERN.search(question)
     return match.group(1).upper() if match else None
 
 
 def _brand_hint(question: str) -> str:
-    text = re.sub(r"(?i)\b(?:IQVIA|UBIST)\b", " ", question)
-    text = re.sub(r"\b[A-Za-z]\d{2}[A-Za-z]\d\b", " ", text)
+    text = _SOURCE_PATTERN.sub(" ", question)
+    text = _ATC4_PATTERN.sub(" ", text)
     text = re.split(r"시장|점유율|매출|순위|규모|top\s*\d*", text, maxsplit=1, flags=re.IGNORECASE)[0]
     text = re.sub(r"일반뷰|전략뷰|ATC4?|기준|으로|에서|의", " ", text, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", text).strip(" ?은는이가을를")
+    hint = re.sub(r"\s+", " ", text).strip(" ?")
+    return re.sub(r"(?:은|는|이|가|을|를)$", "", hint)

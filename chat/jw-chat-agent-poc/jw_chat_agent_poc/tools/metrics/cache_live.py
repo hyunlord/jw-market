@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 import re
@@ -51,7 +51,14 @@ class CsdActivityTarget:
 @dataclass(frozen=True, slots=True)
 class CsdActivityRow:
     period_ym: str
-    product_details: int
+    product_details: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CsdSellerActivityRow:
+    period_ym: str
+    representing_company: str
+    product_details: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +66,8 @@ class CsdActivityPayload:
     target: CsdActivityTarget
     rows: tuple[CsdActivityRow, ...]
     loaded_at: float
+    seller_rows: tuple[CsdSellerActivityRow, ...] = ()
+    anchor_companies: tuple[str, ...] = ()
 
 
 class CsdActivityReader(Protocol):
@@ -123,21 +132,34 @@ class StaticCausePayloadReader:
     def load(self, key: CausePayloadKey) -> CausePayload:
         payload = self.payloads.get((key.brand, key.view_type, key.source, key.measure, key.market_id))
         if payload is None:
-            raise LookupError(f"cache_cause fixture is missing: {key}")
+            raise LookupError(f"legacy payload fixture is missing: {key}")
         return CausePayload(key=key, payload=payload, loaded_at=time.monotonic())
 
 
 @dataclass(frozen=True, slots=True)
 class StaticCsdActivityReader:
-    rows_by_target: dict[tuple[str, str], tuple[tuple[str, int], ...]]
+    rows_by_target: dict[tuple[str, str], tuple[tuple[str, int | None], ...]]
+    seller_rows_by_market: dict[str, tuple[tuple[str, str, int | None], ...]] = field(default_factory=dict)
+    anchor_companies_by_target: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
 
     def load(self, target: CsdActivityTarget, limit: int) -> CsdActivityPayload:
         rows = self.rows_by_target.get((target.market, target.master_product), ())
         selected = rows[-limit:] if limit > 0 else rows
+        periods = {str(period) for period, _value in selected}
+        seller_rows = self.seller_rows_by_market.get(target.market, ())
         return CsdActivityPayload(
             target=target,
-            rows=tuple(CsdActivityRow(str(period), int(value)) for period, value in selected),
+            rows=tuple(CsdActivityRow(str(period), int(value) if value is not None else None) for period, value in selected),
             loaded_at=time.monotonic(),
+            seller_rows=tuple(
+                CsdSellerActivityRow(str(period), str(company), int(value) if value is not None else None)
+                for period, company, value in seller_rows
+                if str(period) in periods
+            ),
+            anchor_companies=self.anchor_companies_by_target.get(
+                (target.market, target.master_product),
+                (),
+            ),
         )
 
 
@@ -186,7 +208,7 @@ class MariaDbCsdActivityTargetReader:
                     cursor.execute(
                         f"""
                         SELECT market, master_product,
-                               SUM(COALESCE(product_details, 0)) AS total_activity
+                               SUM(product_details) AS total_activity
                         FROM {schema}.`csd_channel_dynamics_stage`
                         WHERE jw_channel = 'TOTAL'
                         GROUP BY market, master_product
@@ -223,13 +245,13 @@ class MariaDbCsdActivityTargetReader:
 
 @dataclass(frozen=True, slots=True)
 class MariaDbMetricsCacheReader:
-    host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
-    port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
-    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
-    user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
-    password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
-    connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))
-    read_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_READ_TIMEOUT_S", "5"))
+    host: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_HOST") or os.environ.get("CHAT_QUERY_DB_HOST") or os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local"))
+    port: int = field(default_factory=lambda: int(os.environ.get("CHAT_BRANDS_DB_PORT") or os.environ.get("CHAT_QUERY_DB_PORT") or os.environ.get("CHAT_CACHE_DB_PORT", "3306")))
+    database: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_NAME") or os.environ.get("CHAT_QUERY_DB_NAME") or os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart"))
+    user: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_USER") or os.environ.get("CHAT_QUERY_DB_USER") or os.environ.get("CHAT_CACHE_DB_USER", "llmops"))
+    password: str = field(default_factory=lambda: os.environ.get("CHAT_BRANDS_DB_PASSWORD") or os.environ.get("CHAT_QUERY_DB_PASSWORD") or os.environ.get("CHAT_CACHE_DB_PASSWORD", ""))
+    connect_timeout_s: int = field(default_factory=lambda: int(os.environ.get("CHAT_BRANDS_DB_CONNECT_TIMEOUT_S") or os.environ.get("CHAT_QUERY_DB_CONNECT_TIMEOUT_S") or os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3")))
+    read_timeout_s: int = field(default_factory=lambda: int(os.environ.get("CHAT_BRANDS_DB_READ_TIMEOUT_S") or os.environ.get("CHAT_QUERY_DB_READ_TIMEOUT_S") or os.environ.get("CHAT_CACHE_DB_READ_TIMEOUT_S", "5")))
 
     def load(self) -> CacheSnapshot:
         import pymysql
@@ -250,71 +272,23 @@ class MariaDbMetricsCacheReader:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT response_json FROM cache_brands WHERE query_key=%s LIMIT 1", ("default",))
                 brands_row = cursor.fetchone()
-                cursor.execute("SELECT response_json FROM cache_market_status WHERE query_key=%s LIMIT 1", ("default",))
-                status_row = cursor.fetchone()
 
-        if not brands_row or not status_row:
-            raise LookupError("cache_brands/cache_market_status default rows are missing")
+        if not brands_row:
+            raise LookupError("cache_brands default row is missing")
 
         brands = json.loads(str(brands_row["response_json"]))
-        status = json.loads(str(status_row["response_json"]))
         if not isinstance(brands, list):
             raise TypeError("cache_brands.response_json must be a JSON list")
-        if not isinstance(status, dict):
-            raise TypeError("cache_market_status.response_json must be a JSON object")
 
-        return CacheSnapshot(cache_brands=brands, market_status=status, loaded_at=time.monotonic())
+        return CacheSnapshot(cache_brands=brands, market_status={}, loaded_at=time.monotonic())
 
 
 @dataclass(frozen=True, slots=True)
-class MariaDbCausePayloadReader:
-    host: str = os.environ.get("CHAT_CACHE_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local")
-    port: int = int(os.environ.get("CHAT_CACHE_DB_PORT", "3306"))
-    database: str = os.environ.get("CHAT_CACHE_DB_NAME", "jw_mart")
-    user: str = os.environ.get("CHAT_CACHE_DB_USER", "llmops")
-    password: str = os.environ.get("CHAT_CACHE_DB_PASSWORD", "")
-    connect_timeout_s: int = int(os.environ.get("CHAT_CACHE_DB_CONNECT_TIMEOUT_S", "3"))
-    read_timeout_s: int = int(os.environ.get("CHAT_CAUSE_DB_READ_TIMEOUT_S", "15"))
+class UnavailableCausePayloadReader:
+    """Compatibility reader that prevents legacy cause payload SQL reads."""
 
     def load(self, key: CausePayloadKey) -> CausePayload:
-        import pymysql
-
-        with pymysql.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.database,
-            connect_timeout=self.connect_timeout_s,
-            read_timeout=self.read_timeout_s,
-            write_timeout=self.read_timeout_s,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-        ) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT response_json
-                    FROM cache_cause
-                    WHERE brand=%s
-                      AND view_type=%s
-                      AND source=%s
-                      AND measure=%s
-                      AND market_id=%s
-                    LIMIT 1
-                    """,
-                    (key.brand, key.view_type, key.source, key.measure, key.market_id),
-                )
-                row = cursor.fetchone()
-
-        if not row:
-            raise LookupError(f"cache_cause row is missing: {key}")
-
-        payload = json.loads(str(row["response_json"]))
-        if not isinstance(payload, dict):
-            raise TypeError("cache_cause.response_json must be a JSON object")
-        return CausePayload(key=key, payload=payload, loaded_at=time.monotonic())
+        raise LookupError(f"legacy cause payloads are disabled: {key}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +306,8 @@ class MariaDbCsdActivityReader:
         import pymysql
 
         schema = _quote_identifier(self.schema)
+        seller_rows: tuple[dict[str, Any], ...] = ()
+        anchor_rows: tuple[dict[str, Any], ...] = ()
         with pymysql.connect(
             host=self.host,
             port=self.port,
@@ -361,11 +337,68 @@ class MariaDbCsdActivityReader:
                 )
                 rows = cursor.fetchall()
 
+                periods = tuple(str(row["period_ym"]) for row in rows)
+                if periods:
+                    placeholders = ", ".join("%s" for _period in periods)
+                    cursor.execute(
+                        f"""
+                        SELECT period_ym, representing_company,
+                               SUM(product_details) AS product_details
+                        FROM {schema}.`csd_channel_dynamics_stage`
+                        WHERE market = %s
+                          AND jw_channel = 'TOTAL'
+                          AND period_ym IN ({placeholders})
+                          AND NULLIF(TRIM(representing_company), '') IS NOT NULL
+                        GROUP BY period_ym, representing_company
+                        ORDER BY period_ym, representing_company
+                        """,
+                        (target.market, *periods),
+                    )
+                    seller_rows = tuple(cursor.fetchall())
+                    cursor.execute(
+                        f"""
+                        SELECT representing_company,
+                               SUM(product_details) AS product_details
+                        FROM {schema}.`csd_channel_dynamics_stage`
+                        WHERE market = %s
+                          AND master_product = %s
+                          AND jw_channel = 'TOTAL'
+                          AND period_ym IN ({placeholders})
+                          AND NULLIF(TRIM(representing_company), '') IS NOT NULL
+                        GROUP BY representing_company
+                        ORDER BY product_details DESC, representing_company
+                        """,
+                        (target.market, target.master_product, *periods),
+                    )
+                    anchor_rows = tuple(cursor.fetchall())
+
         parsed = tuple(
-            CsdActivityRow(str(row["period_ym"]), int(row["product_details"] or 0))
+            CsdActivityRow(
+                str(row["period_ym"]),
+                int(row["product_details"]) if row.get("product_details") is not None else None,
+            )
             for row in reversed(rows)
         )
-        return CsdActivityPayload(target=target, rows=parsed, loaded_at=time.monotonic())
+        parsed_sellers = tuple(
+            CsdSellerActivityRow(
+                str(row["period_ym"]),
+                str(row["representing_company"]),
+                int(row["product_details"]) if row.get("product_details") is not None else None,
+            )
+            for row in seller_rows
+        )
+        anchors = tuple(
+            str(row["representing_company"])
+            for row in anchor_rows
+            if row.get("representing_company")
+        )
+        return CsdActivityPayload(
+            target=target,
+            rows=parsed,
+            loaded_at=time.monotonic(),
+            seller_rows=parsed_sellers,
+            anchor_companies=anchors,
+        )
 
 
 PAYLOAD_CACHE_MAX_KEYS_ENV = "PAYLOAD_CACHE_MAX_KEYS"
@@ -508,11 +541,11 @@ def shared_metrics_cache(ttl_seconds: int) -> TtlMetricsCache:
 
 
 def shared_cause_payload_cache(ttl_seconds: int) -> TtlCausePayloadCache:
-    """Process-wide cause payload cache: single-flight loads plus bounded LRU retention."""
+    """Compatibility cache that fails closed instead of querying legacy payloads."""
     with _SHARED_CACHE_LOCK:
         cache = _SHARED_CAUSE_PAYLOAD_CACHES.get(ttl_seconds)
         if cache is None:
-            cache = TtlCausePayloadCache(MariaDbCausePayloadReader(), ttl_seconds=ttl_seconds)
+            cache = TtlCausePayloadCache(UnavailableCausePayloadReader(), ttl_seconds=ttl_seconds)
             _SHARED_CAUSE_PAYLOAD_CACHES[ttl_seconds] = cache
         return cache
 
@@ -536,6 +569,17 @@ def _normalise_master_product(value: Any) -> str:
 
 
 def _best_csd_activity_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    if not candidates:
+    known = [(row, _numeric_or_none(row.get("total_activity"))) for row in candidates]
+    known = [(row, value) for row, value in known if value is not None]
+    if not known:
         return None
-    return max(candidates, key=lambda row: int(row.get("total_activity") or 0))
+    return max(known, key=lambda item: item[1])[0]
+
+
+def _numeric_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

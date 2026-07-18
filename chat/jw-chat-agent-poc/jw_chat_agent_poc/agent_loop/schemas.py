@@ -17,6 +17,7 @@ def tool_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ..
         _schema("search_clinical", "브랜드 성분 기준 국내외 임상 근거를 조회하고 성분 범위 고지를 포함합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema("search_patent", "브랜드 또는 확인된 성분 기준 특허/Orange Book 근거를 조회합니다. 브랜드가 없고 ingredient가 있으면 ingredient를 사용합니다.", ("query",), allowed_brands, allowed_periods),
         _schema("search_drug_info", "브랜드 기준 국내 식약처/MFDS 허가 품목 정보를 조회합니다. e약은요 경로는 사용하지 않습니다.", ("brand",), allowed_brands, allowed_periods),
+        _schema("search_safety", "브랜드의 확정 성분 기준 FDA 라벨 안전성·이상반응 근거를 조회합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema(
             "csd_activity_trend",
             "CSD ChannelDynamics stage에서 월별 TOTAL 채널 aggregate 콜수/활동량(product_details 합계)을 조회합니다. impact level, HCP/의사별, 기관별 세부는 포함하지 않습니다.",
@@ -88,15 +89,36 @@ def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, 
         {
             "comparison_brand": {"type": "string", "description": "Market member brand from the same strategic mart market; validated by code."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            "history_points": {"type": "integer", "minimum": 2, "maximum": 60},
             "spec": _query_spec_schema(catalog),
         }
     )
     return (
-        _schema_with_props("get_brand_sales", "query layer로 전략뷰 브랜드 매출을 조회합니다.", ("brand",), props),
-        _schema_with_props("get_brand_share", "query layer로 전략뷰 브랜드 점유율·순위를 조회합니다.", ("brand",), props),
-        _schema_with_props("get_brand_series", "query layer로 전략뷰 브랜드 월별 매출·점유율 시계열을 조회합니다.", ("brand",), props),
+        _schema_with_props(
+            "get_brand_sales",
+            "전략뷰 브랜드 매출을 조회합니다. 매출 변화의 시장 맥락을 위해 점유율·시장규모·성장률 근거와 함께 사용합니다.",
+            ("brand",),
+            props,
+        ),
+        _schema_with_props(
+            "get_brand_share",
+            "전략뷰 브랜드 점유율·순위를 조회합니다. 점유율만으로 매출 증감을 판단하지 말고 매출·시장규모·순위 근거와 함께 사용합니다.",
+            ("brand",),
+            props,
+        ),
+        _schema_with_props(
+            "get_brand_series",
+            "전략뷰 브랜드 월별 매출·점유율 시계열과 시장규모 맥락을 조회합니다. 성장률과 변곡은 원시 시계열에서 계산합니다.",
+            ("brand",),
+            props,
+        ),
         _schema_with_props("compare_brands_series", "query layer로 두 브랜드의 월별 매출·점유율 시계열을 비교합니다.", ("brand", "comparison_brand"), props),
-        _schema_with_props("get_top_brands", "query layer로 전략뷰 시장 상위 브랜드를 조회합니다.", ("brand",), props),
+        _schema_with_props(
+            "get_top_brands",
+            "전략뷰 시장 상위 브랜드·순위·분모를 조회합니다. 시장규모·HHI·CR5 근거와 함께 사용합니다.",
+            ("brand",),
+            props,
+        ),
         _schema_with_props("get_brand_channel_breakdown", "query layer로 브랜드의 채널별 매출 구성을 조회합니다.", ("brand",), props),
         _schema_with_props("get_brand_specialty_breakdown", "query layer로 브랜드의 진료과별 매출 구성을 조회합니다.", ("brand",), props),
         _schema_with_props("query", "catalog enum에 맞는 query(spec)를 전략 mart에 실행합니다.", ("spec",), props),

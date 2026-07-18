@@ -1,6 +1,108 @@
 from __future__ import annotations
 
 import re
+from typing import Final
+
+from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
+
+
+# --- P0-B: single internal-terminology scrub gate ------------------------------
+# Rules live here as constants (설정), never hardcoded across renderers, and apply
+# to every market. They map internal agent/tool wording to user-facing phrasing so
+# no tool name, query id, internal fact heading, verifier jargon or "agent loop"
+# reaches the user. All patterns are distinctive snake_case identifiers or exact
+# internal phrases → false-positive risk on brand/market names and ordinary prose
+# (e.g. the bare word 주의) is nil.
+_INTERNAL_TOOL_LABELS: Final[dict[str, str]] = {
+    "get_brand_metric": "시장 지표 조회",
+    "get_metric": "시장 지표 조회",
+    "get_market_scope": "시장 범위 조회",
+    "resolve_relative_date": "기간 해석",
+    "search_news": "뉴스 검색",
+    "get_disease_stats": "질병 통계 조회",
+    "get_procedure_stats": "진료행위 통계 조회",
+    "search_clinical": "임상 근거 조회",
+    "search_patent": "특허 조회",
+    "search_drug_info": "허가 정보 조회",
+    "csd_activity_trend": "활동량 조회",
+    "get_csd_activity_trend": "활동량 조회",
+    "web_search": "웹 검색",
+    "get_brand_sales": "매출 조회",
+    "get_brand_share": "점유율 조회",
+    "get_brand_series": "시계열 조회",
+    "compare_brands_series": "시계열 비교",
+    "get_top_brands": "상위 브랜드 조회",
+    "get_brand_channel_breakdown": "채널별 조회",
+    "get_brand_specialty_breakdown": "진료과별 조회",
+}
+_INTERNAL_AXIS_LABELS: Final[dict[str, str]] = {
+    "class_1": "Class 1",
+    "class_2": "Class 2",
+}
+# Longest tokens first so get_csd_activity_trend wins over csd_activity_trend, etc.
+_TOOL_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9_])("
+    + "|".join(re.escape(name) for name in sorted(_INTERNAL_TOOL_LABELS, key=len, reverse=True))
+    + r")(?![A-Za-z0-9_])"
+)
+_VERIFIER_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    r"숫자\s*검증\s*[:：]\s*근거[^\n]*?제한했습니다\."
+)
+_INTERNAL_ID_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"(?<![A-Za-z0-9_])TEMP_DOCUMENT_[^\s|,;)]*", re.IGNORECASE), "업로드 문서"),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:temp_document_id|document_id|vdb_id|chunk_id|tool_call_id)"
+            r"(?:\s*[:=]\s*[0-9A-Za-z._:-]+)?(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        ),
+        "",
+    ),
+    (re.compile(r"query_result_id\s*[:：]?\s*[0-9A-Za-z_-]*"), ""),
+    (re.compile(r"(?<![A-Za-z0-9_])qr_\d+(?![A-Za-z0-9_])"), ""),
+    (re.compile(r"query\(spec\)"), "조회"),
+)
+# Internal fact-set section marker. Every internal fact block heading ends in the
+# English word "fact" (### … fact); it is parsed structurally inside the pipeline
+# but must never surface. "fact" is English-only here so removing the standalone
+# word is false-positive-free (word boundary protects factor/artifact/factory).
+_INTERNAL_FACT_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*\bfact\b")
+# Exact internal phrases, longest/most-specific first.
+_INTERNAL_PHRASES: Final[tuple[tuple[str, str], ...]] = (
+    ("확정 데이터 기준으로 정리하면 다음과 같습니다.", ""),
+    ("반드시 반영할 내용", "내용"),
+    ("확정 fact set", "확정 데이터"),
+    ("필수 답변 fact", "핵심 데이터"),
+    ("provenance fact", "출처 요약"),
+    ("fact set", "데이터"),
+    ("agent loop step 예산", "분석 단계 예산"),
+    ("agent loop를", "분석을"),
+    ("agent loop을", "분석을"),
+    ("agent loop", "분석"),
+    ("agent_loop", "분석"),
+)
+
+
+def scrub_internal_terminology(text: str) -> str:
+    """Remove internal agent/tool wording from user-facing text (오탐 0, idempotent).
+
+    This is the single scrub applied at the end of ``cleanup_markdown_answer`` and at
+    any answer path that would otherwise bypass the gate (deterministic relay, post-
+    cleanup notice appends). It only rewrites internal tokens/phrases and never touches
+    numbers, brand/market names, provenance field values, or ordinary Korean prose.
+    """
+    result = _VERIFIER_NOTICE_RE.sub("표에 있는 확정 수치를 기준으로 정리했습니다.", text)
+    for needle, replacement in _INTERNAL_PHRASES:
+        result = result.replace(needle, replacement)
+    for pattern, replacement in _INTERNAL_ID_PATTERNS:
+        result = pattern.sub(replacement, result)
+    result = _TOOL_TOKEN_RE.sub(lambda match: _INTERNAL_TOOL_LABELS[match.group(1)], result)
+    for internal, public in _INTERNAL_AXIS_LABELS.items():
+        result = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(internal)}(?![A-Za-z0-9_])", public, result)
+    result = _INTERNAL_FACT_MARKER_RE.sub("", result)
+    # Tidy only spaces created by removals; never touch line-leading indentation.
+    result = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", result)
+    return re.sub(r"(?<=\S) +(?=[,.)}\]。」])", "", result)
 
 
 def cleanup_markdown_answer(markdown: str) -> str:
@@ -30,11 +132,13 @@ def cleanup_markdown_answer(markdown: str) -> str:
     text = re.sub(r"점(?=양해)", "점 ", text)
     lines = [_normalize_table_row(line) for line in text.splitlines()]
     lines = _remove_empty_headings(lines)
+    lines = _remove_duplicate_bullets(lines)
     lines = _remove_orphaned_news_headings(lines)
     lines = _renumber_section_headings(lines)
     text = "\n".join(lines).strip()
     text = _remove_adjacent_duplicate_sentences(text)
-    return _remove_duplicate_top_brand_rank_prose(text)
+    text = _remove_duplicate_top_brand_rank_prose(text)
+    return scrub_internal_terminology(text)
 
 
 def _normalize_korean_particles(text: str) -> str:
@@ -88,7 +192,8 @@ def _has_jongseong(token: str) -> bool:
 def _replace_internal_source_labels(text: str) -> str:
     result = re.sub(r"(?<![A-Za-z0-9_])deep_analysis_events(?![A-Za-z0-9_])", "뉴스/이슈", text)
     result = re.sub(r"(?<![A-Za-z0-9_])cache(?![A-Za-z0-9_])", "UBIST", result)
-    return result.replace("내부 UBIST", "UBIST").replace("내부 심층분석", "뉴스/이슈")
+    result = result.replace("내부 UBIST", "UBIST").replace("내부 심층분석", "뉴스/이슈")
+    return sanitize_internal_provenance_labels(result)
 
 
 def _normalize_table_row(line: str) -> str:
@@ -104,19 +209,45 @@ def _normalize_table_row(line: str) -> str:
 
 
 def _remove_empty_headings(lines: list[str]) -> list[str]:
-    kept: list[str] = []
+    dropped: set[int] = set()
     for index, line in enumerate(lines):
         if not _is_heading_line(line):
-            kept.append(line)
             continue
         if "웹 검색 결과" in line:
-            kept.append(line)
             continue
         next_index = index + 1
-        while next_index < len(lines) and not lines[next_index].strip():
+        section_indexes: list[int] = []
+        while next_index < len(lines) and not _is_heading_line(lines[next_index]):
+            if _is_non_content_boundary(lines[next_index]):
+                break
+            section_indexes.append(next_index)
             next_index += 1
-        if next_index >= len(lines) or _is_heading_line(lines[next_index]) or _is_non_content_boundary(lines[next_index]):
+        has_content = any(
+            lines[item].strip() and not _is_thematic_break(lines[item])
+            for item in section_indexes
+        )
+        if not has_content:
+            dropped.add(index)
+            dropped.update(item for item in section_indexes if _is_thematic_break(lines[item]))
+    return [line for index, line in enumerate(lines) if index not in dropped]
+
+
+def _is_thematic_break(line: str) -> bool:
+    return bool(re.fullmatch(r"\s*(?:-{3,}|\*{3,}|_{3,})\s*", line))
+
+
+def _remove_duplicate_bullets(lines: list[str]) -> list[str]:
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in lines:
+        match = re.match(r"^\s*[-*]\s+(?P<content>\S.*)$", line)
+        if not match:
+            kept.append(line)
             continue
+        content = match.group("content").strip()
+        if content in seen:
+            continue
+        seen.add(content)
         kept.append(line)
     return kept
 
@@ -227,6 +358,8 @@ def _is_duplicate_top_brand_rank_paragraph(paragraph: str, later: str) -> bool:
     if not stripped or stripped.startswith(("*", "-", "|", "#")):
         return False
     if "점유율" not in stripped:
+        return False
+    if any(token in stripped for token in ("%p", "성장률", "저점 후", "정점 후", "개월 연속")):
         return False
     mentions = _rank_brand_mentions(stripped)
     if len(mentions) >= 2:

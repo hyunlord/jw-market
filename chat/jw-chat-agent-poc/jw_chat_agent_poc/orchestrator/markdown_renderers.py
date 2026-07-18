@@ -14,6 +14,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     rank_value,
     table,
 )
+from jw_chat_agent_poc.orchestrator.external_item_projection import public_external_rows
 from jw_chat_agent_poc.orchestrator.markdown_metric_helpers import metric_filter_rows, metric_level_segments_md
 from jw_chat_agent_poc.orchestrator.markdown_news import news_md
 from jw_chat_agent_poc.orchestrator.surface_policy import can_surface_derived_value, cagr_operands_from_data, surface_year
@@ -52,14 +53,15 @@ def call_data_md(call: dict[str, Any]) -> str:
 
 
 def metrics_md(tool: str, data: dict[str, Any]) -> str:
+    value_header = "수치(단위 포함)" if data.get("_semantic_value_header") else "값"
     if data.get("status") in {"error", "query_failed"}:
-        blocks = [table(f"### {cell(tool)}", ("지표", "값"), (("상태", data.get("message")),))]
+        blocks = [table(f"### {cell(tool)}", ("지표", value_header), (("상태", data.get("message")),))]
         filter_rows = metric_filter_rows(data)
         if filter_rows:
             blocks.append(table("### 지표 필터", ("구분", "값"), filter_rows))
         return "\n\n".join(blocks)
     if data.get("status") == "unsupported":
-        blocks = [table(f"### {cell(tool)}", ("지표", "값"), (("상태", data.get("message")),))]
+        blocks = [table(f"### {cell(tool)}", ("지표", value_header), (("상태", data.get("message")),))]
         filter_rows = metric_filter_rows(data)
         if filter_rows:
             blocks.append(table("### 지표 필터", ("구분", "값"), filter_rows))
@@ -91,7 +93,9 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     if market_size:
         rows.append(("시장규모", market_size))
     rows.extend(_metric_scalar_rows(data))
-    blocks = [table("### 지표", ("지표", "값"), tuple(rows))] if rows else []
+    if isinstance(data.get("series_insight"), dict):
+        value_header = "수치(단위 포함)"
+    blocks = [table("### 지표", ("지표", value_header), tuple(rows))] if rows else []
     series_table = series_md(data)
     if series_table:
         blocks.append(series_table)
@@ -265,12 +269,31 @@ def series_md(data: dict[str, Any]) -> str:
         return table("### HHI 추이", ("기간", "HHI"), rows)
     brand_series = data.get("brand_value_series_10pt")
     if isinstance(brand_series, list):
+        market_series = data.get("market_size_series")
+        market_by_period = {
+            item.get("period"): item
+            for item in (market_series if isinstance(market_series, list) else [])
+            if isinstance(item, dict) and item.get("period")
+        }
         rows = tuple(
-            (item.get("period"), eok_value(item.get("value_억원"), item.get("value_krw")), pct_value(item.get("ms_pct")))
-            for item in brand_series[-TABLE_LIMIT:]
+            (
+                item.get("period"),
+                pct_value(item.get("ms_pct")) or "—",
+                eok_value(item.get("value_억원"), item.get("value_krw")) or "—",
+                eok_value(
+                    market_by_period.get(item.get("period"), {}).get("value_억원"),
+                    market_by_period.get(item.get("period"), {}).get("value_krw"),
+                )
+                or "—",
+            )
+            for item in brand_series[-10:]
             if isinstance(item, dict)
         )
-        return table("### 브랜드 시계열", ("기간", "매출", "MS"), rows)
+        return table(
+            "### 브랜드 시계열",
+            ("기간", "시장점유율(%)", "처방조제액(억원)", "시장규모(억원)"),
+            rows,
+        )
     market_series = data.get("market_size_series")
     if isinstance(market_series, list):
         rows = tuple(
@@ -633,14 +656,8 @@ def _nested_status_message(data: dict[str, Any]) -> str:
 
 
 def generic_external_md(tool: str, data: dict[str, Any]) -> str:
-    rows = []
-    total = data.get("totalCount")
-    if total is not None:
-        rows.append(("totalCount", total))
-    for key, value in list(data.items())[:TABLE_LIMIT]:
-        if key not in {"items", "payload", "totalCount"} and isinstance(value, str | int | float):
-            rows.append((key, value))
-    return table(f"### {cell(tool)}", ("항목", "값"), tuple(rows))
+    rows = public_external_rows(data, limit=TABLE_LIMIT)
+    return table(f"### {cell(tool)}", ("항목", "내용"), rows)
 
 
 def document_md(data: dict[str, Any]) -> str:

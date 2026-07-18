@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
 from collections.abc import Iterable
 from typing import Any, Final
@@ -69,6 +70,29 @@ def eok_value(eok: Any, krw: Any) -> str:
     return ""
 
 
+def precise_eok_value(eok: Any, krw: Any, *, decimal_places: int = 6) -> str:
+    """Render source precision for explicit single-period answers."""
+
+    value: Decimal
+    try:
+        if isinstance(krw, (int, float, Decimal)) and not isinstance(krw, bool):
+            value = Decimal(str(krw)) / Decimal("100000000")
+        elif isinstance(eok, (int, float, Decimal)) and not isinstance(eok, bool):
+            value = Decimal(str(eok))
+        else:
+            return ""
+        value = value.quantize(
+            Decimal(1).scaleb(-decimal_places),
+            rounding=ROUND_HALF_UP,
+        )
+    except InvalidOperation:
+        return ""
+    if not value.is_finite():
+        return ""
+    text = f"{value:,f}".rstrip("0").rstrip(".")
+    return f"{text}억원"
+
+
 def latest_series_eok(series: Any) -> str:
     if not isinstance(series, dict) or not series:
         return ""
@@ -115,6 +139,7 @@ def source_label(source: str | None) -> str:
         "hira_procedure": "HIRA 진료행위정보서비스",
         "web_search": "웹 검색 결과(미검증)",
         "deep_analysis_events": "뉴스/이슈",
+        "nedrug_mcp": "식약처 의약품 정보",
         "document": "업로드 문서",
         "none": "데이터 없음",
         "unsupported_brand": "지원 범위 밖",
@@ -137,6 +162,9 @@ def source_description(source: str | None) -> str:
         "웹 검색 결과(미검증)": "URL/snippet 기반 미검증 웹 검색 결과",
         "deep_analysis_events": "뉴스·이슈 분석 결과",
         "뉴스/이슈": "뉴스·이슈 분석 결과",
+        "nedrug_mcp": "식약처 의약품 허가·성분·임상·특허 조회 결과",
+        "식약처 의약품 정보": "식약처 의약품 허가·성분·임상·특허 조회 결과",
+        "식약처 의약품 특허 정보": "식약처 의약품 특허 정보 조회 결과",
         "document": "사용자가 업로드한 문서 검색 결과",
         "업로드 문서": "사용자가 업로드한 문서 검색 결과",
         "none": "현재 POC가 보유하지 않은 데이터 영역",

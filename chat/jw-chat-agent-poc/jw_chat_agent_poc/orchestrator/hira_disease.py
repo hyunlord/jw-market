@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Protocol, TypeAlias, TypedDict
 
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
@@ -22,6 +23,7 @@ class HiraUnsuitable(TypedDict):
 
 
 HiraMappingEntry: TypeAlias = HiraMapping | tuple[HiraMapping, ...]
+HIRA_TREND_YEARS = tuple(str(year) for year in range(2020, 2025))
 
 
 def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
@@ -94,9 +96,27 @@ HIRA_DISEASE_TEXT_MAPPINGS: dict[str, HiraMappingEntry] = {
     "류마티스": HIRA_DISEASE_MAPPINGS["악템라"],
 }
 
+HIRA_DISEASE_TEXT_BRANDS: dict[str, str] = {
+    "이상지질": "리바로",
+    "고지혈": "리바로",
+    "지질단백질": "리바로",
+    "당뇨": "가드메트",
+    "혈우": "헴리브라",
+    "빈혈": "페린젝트",
+    "류마티스": "악템라",
+}
+
+
+def hira_disease_anchor_brand(question: str) -> str | None:
+    """Resolve a disease-only question through the explicit HIRA mapping."""
+
+    return next((brand for token, brand in HIRA_DISEASE_TEXT_BRANDS.items() if token in question), None)
+
 
 def is_hira_disease_question(question: str) -> bool:
-    return any(
+    normalized = question.strip().rstrip(".?!。？！").strip()
+    disease_identity = normalized.endswith(("질환", "질병"))
+    return disease_identity or any(
         token in question
         for token in (
             "환자수",
@@ -168,15 +188,25 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
                 },
             )
         )
-        for call in (
-            external.hira_disease_name_code(sick_cd),
-            external.hira_disease_hospitalization_outpatient_stats(sick_cd),
-            external.hira_disease_gender_age_stats(sick_cd),
-            external.hira_disease_institution_class_stats(sick_cd),
-            external.hira_disease_area_stats(sick_cd),
-        ):
+        external_calls = _hira_external_calls(question, external, sick_cd)
+        for call in external_calls:
             calls.append(_with_hira_mapping_context(call, resolution.canonical_brand, mapping, index, total))
     return calls
+
+
+def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
+    if "추이" in question:
+        return (
+            external.hira_disease_name_code(sick_cd),
+            *(external.hira_disease_hospitalization_outpatient_stats(sick_cd, year) for year in HIRA_TREND_YEARS),
+        )
+    return (
+        external.hira_disease_name_code(sick_cd),
+        external.hira_disease_hospitalization_outpatient_stats(sick_cd),
+        external.hira_disease_gender_age_stats(sick_cd),
+        external.hira_disease_institution_class_stats(sick_cd),
+        external.hira_disease_area_stats(sick_cd),
+    )
 
 
 def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMapping, ...] | None:
@@ -187,6 +217,19 @@ def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMap
         if token in question:
             return _normalize_hira_mappings(mapping)
     return None
+
+
+def hira_disease_code_for_text(text: str) -> str | None:
+    """Return one authoritative KCD code when the existing mapping is unambiguous."""
+
+    candidate = text.strip().upper()
+    if re.fullmatch(r"[A-Z]\d{2}(?:\.\d{1,2})?", candidate):
+        return candidate
+    mappings = _hira_disease_mappings(text, text.strip())
+    if mappings is None:
+        return None
+    codes = {mapping["sick_cd"] for mapping in mappings}
+    return next(iter(codes)) if len(codes) == 1 else None
 
 
 def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ...]:

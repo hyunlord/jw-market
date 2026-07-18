@@ -10,6 +10,7 @@ class RequestedSource:
     label: str
     tokens: tuple[str, ...]
     alternative_label: str
+    identity_tokens: tuple[str, ...] | None = None
 
 
 REQUESTED_SOURCE_REGISTRY: tuple[RequestedSource, ...] = (
@@ -36,6 +37,7 @@ REQUESTED_SOURCE_REGISTRY: tuple[RequestedSource, ...] = (
         label="NCCN/가이드라인",
         tokens=("nccn", "가이드라인", "치료 지침", "guideline"),
         alternative_label="HIRA/보유 내부 지표",
+        identity_tokens=("nccn",),
     ),
 )
 
@@ -51,10 +53,15 @@ _CORTELLIS_UNSUPPORTED_CLAIM_RE = re.compile(
 _SOURCE_HEADING_RE = re.compile(r"\n##\s*(?:출처|처리\s*시간)\b")
 
 
-def requested_unavailable_source(question: str) -> RequestedSource | None:
+def requested_unavailable_source(
+    question: str,
+    *,
+    identity_only: bool = False,
+) -> RequestedSource | None:
     question_lower = question.lower()
     for source in REQUESTED_SOURCE_REGISTRY:
-        if any(token.lower() in question_lower for token in source.tokens):
+        tokens = source.identity_tokens or source.tokens if identity_only else source.tokens
+        if any(token.lower() in question_lower for token in tokens):
             return source
     return None
 
@@ -68,7 +75,12 @@ def requested_csd_unsupported_detail(question: str) -> bool:
     return any(token.lower() in lowered for token in _CSD_DETAIL_TOKENS)
 
 
-def apply_requested_source_trap_gate(question: str, answer: str) -> str:
+def apply_requested_source_trap_gate(
+    question: str,
+    answer: str,
+    *,
+    identity_only: bool = False,
+) -> str:
     """Keep unavailable requested-source questions from masquerading alternate sources.
 
     The gate is intentionally answer-path only: it does not mutate tool payloads or
@@ -77,7 +89,7 @@ def apply_requested_source_trap_gate(question: str, answer: str) -> str:
     remain an alternate reference and must not inherit the requested source label.
     """
 
-    source = requested_unavailable_source(question)
+    source = requested_unavailable_source(question, identity_only=identity_only)
     if source is None:
         return answer.strip()
     text = _remove_unsupported_cortellis_packaging(answer.strip(), source)
@@ -180,7 +192,9 @@ def _compact_when_unavailable_layer_exists(answer: str, source: RequestedSource)
     if not five_step:
         return answer
     sources = _extract_block(answer, "## 출처", ("\n## 처리 시간",))
+    absence_state = next((line.strip() for line in answer.splitlines() if line.strip().startswith("원천에 없음:")), "")
     parts = [
+        absence_state,
         f"{source.label} 데이터는 현재 운영 데이터에 미보유입니다.",
         five_step,
         _alternative_reference_note(source),

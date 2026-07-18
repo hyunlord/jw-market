@@ -33,7 +33,7 @@ def transparency_fields(plan: NewsFilterPlan, latest_event_date: str) -> dict[st
         "interpretation_notes": [],
         "unparsed_constraints": [],
         "data_basis": {
-            "source": "cache_deep_analysis.data.events",
+            "source": "events/event_brand_scores",
             "date_grain": "event_date",
             "latest_event_date": latest_event_date or "-",
         },

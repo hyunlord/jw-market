@@ -10,6 +10,7 @@ COPY requirements-service.txt /tmp/requirements-service.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements-service.txt
 
 COPY jw_chat_agent_poc /app/jw_chat_agent_poc
+COPY scripts/build_general_view_membership.py /app/scripts/build_general_view_membership.py
 COPY frontend /app/frontend
 
 EXPOSE 8080

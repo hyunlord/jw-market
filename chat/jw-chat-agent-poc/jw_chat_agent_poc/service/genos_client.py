@@ -4,19 +4,33 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 import requests
 
-from jw_chat_agent_poc.genos_config import resolve_final_genos_base_url, resolve_final_genos_token
+from jw_chat_agent_poc.genos_config import (
+    resolve_deep_genos_base_url,
+    resolve_deep_genos_token,
+    resolve_final_genos_base_url,
+    resolve_final_genos_token,
+)
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers as markdown_allowed_numbers
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, source_labels, table
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.orchestrator.answer_completeness import (
+    deterministic_single_period_sales_answer,
+    deterministic_top_n_share_answer,
+)
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+from jw_chat_agent_poc.orchestrator.market_insights import render_market_narrative
+from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
@@ -38,10 +52,12 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_issue_question_quant_analysis,
     ensure_share_delta_line,
     ensure_judgment_insight,
+    ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
     fact_token_allowed,
     fallback_fact_answer,
     finalized_fallback_fact_answer,
+    replace_internal_fact_dump,
     generation_attempts,
     has_mandatory_numeric_mismatch,
     mandatory_fact_block,
@@ -62,23 +78,61 @@ from jw_chat_agent_poc.service.answer_safety import (
 )
 from jw_chat_agent_poc.common.timing import stage
 from jw_chat_agent_poc.service.portfolio_decline_render import ensure_portfolio_decline_summary
-from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section
+from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
 
 POLICY_NOTICE_TOOLS = frozenset({"matching_policy_notice"})
+_DETERMINISTIC_MARKET_NARRATIVE_TOOLS = frozenset(
+    {
+        "agent_calculation",
+        "get_brand_metric",
+        "get_market_landscape",
+        "get_market_scope",
+        "get_top_brands",
+        "query_spec",
+        "resolve_relative_date",
+    }
+)
 LOGGER = logging.getLogger(__name__)
+_FINAL_GENERATION_DEADLINE: ContextVar[float | None] = ContextVar("final_generation_deadline", default=None)
 
 _FILE_QUOTE_INSTRUCTION = (
     "업로드 파일 컨텍스트가 있고 질문이 파일의 값·비율·식별코드·고유 토큰·문구를 요구하면, "
     "컨텍스트에서 확인된 해당 값과 코드·토큰을 원문 표기 그대로 답변 본문에 반드시 포함한다. "
-    "질문이 요구한 대상이 업로드 파일 컨텍스트에 없으면 '업로드 문서에서 해당 정보를 찾을 수 없습니다'처럼 "
-    "찾을 수 없는 대상을 명시해 답하고, 있는 내용만 나열하는 것으로 대체하지 않는다."
+    "컨텍스트에 문서 전체 키워드 검색·지정 페이지 직접 조회·SQL 직접 조회가 명시된 경우에만 "
+    "찾을 수 없는 대상을 명시한다. 부분 검색 컨텍스트만으로 정보가 없다고 단정하지 않는다."
+)
+_FILE_OVERVIEW_QUESTION_RE = re.compile(
+    r"(?:문서|보고서|파일|발표).{0,16}(?:요약|핵심|결론|뭐에\s*관한|무슨\s*내용)"
+    r"|(?:요약|핵심|결론).{0,16}(?:문서|보고서|파일|발표)",
+    re.IGNORECASE,
+)
+_FILE_OVERVIEW_SYNTHESIS_INSTRUCTION = (
+    " 문서 전체를 묻는 질문이면 제공된 문서 전체 수준의 요약·결론·미충족 수요 블록을 모두 검토해 "
+    "공통 결론과 핵심 시장 맥락을 개별 질환 배경이나 단일 표보다 먼저 종합한다. "
+    "서로 다른 개요 블록의 근거를 빠뜨리거나 같은 내용을 반복하지 않는다."
 )
 
 
 def _apply_final_claim_controls(question: str, answer: str, fact_md: str) -> str:
     guarded = apply_claim_guardrails(question, answer, fact_md)
     return apply_claim_policy(question, guarded, fact_md)
+
+
+def _prompt_fact_markdown(fact_md: str) -> str:
+    """Remove prompt-only fact duplication without changing verification facts."""
+
+    unique_blocks: list[str] = []
+    seen: set[str] = set()
+    for raw_block in re.split(r"(?m)(?=^### )", fact_md):
+        block = raw_block.strip()
+        if not block or block.startswith("### 필수 답변 fact"):
+            continue
+        if block in seen:
+            continue
+        seen.add(block)
+        unique_blocks.append(block)
+    return "\n\n".join(unique_blocks)
 
 
 def _repair_answer_with_verified_facts(answer: str, strict_numbers: tuple[str, ...], mandatory_lines: tuple[str, ...]) -> str:
@@ -129,7 +183,7 @@ def _needs_trend_fact_prose(question: str, answer: str, trend_fact_md: str = "")
 
 
 def _question_wants_trend_output(question: str) -> bool:
-    return "추이" in question and any(token in question for token in ("매출", "점유율", "어때"))
+    return wants_market_narrative(question)
 
 
 def _trend_shape_conflicts_with_answer(trend_fact_md: str, answer: str) -> bool:
@@ -207,11 +261,14 @@ def _ensure_trend_prose_fail_closed(question: str, markdown: str, trend_fact_md:
     if not _needs_trend_fact_prose(question, markdown, trend_fact_md):
         return markdown
     candidate_prose = cleanup_markdown_answer(trend_prose)
-    if not candidate_prose or _needs_trend_fact_prose(question, candidate_prose, trend_fact_md):
-        candidate_prose = _trend_fact_fallback_prose(trend_fact_md)
+    fallback_prose = _trend_fact_fallback_prose(trend_fact_md)
+    if candidate_prose and _needs_trend_fact_prose(question, candidate_prose, trend_fact_md) and fallback_prose:
+        candidate_prose = cleanup_markdown_answer(f"{candidate_prose}\n\n{fallback_prose}")
+    elif not candidate_prose:
+        candidate_prose = fallback_prose
     if not candidate_prose or _needs_trend_fact_prose(question, candidate_prose, trend_fact_md):
         return markdown
-    return cleanup_markdown_answer(_insert_before_first_table(markdown, candidate_prose))
+    return cleanup_markdown_answer("\n\n".join((candidate_prose, markdown)))
 
 
 def _ensure_direct_metric_fact_answer(question: str, markdown: str, fact_md: str) -> str:
@@ -473,8 +530,79 @@ def _insert_before_first_table(markdown: str, block: str) -> str:
     lines = markdown.splitlines()
     for idx, line in enumerate(lines):
         if line.strip().startswith("|"):
-            return cleanup_markdown_answer("\n".join((*lines[:idx], "", cleaned_block, "", *lines[idx:])))
+            section_start = _table_section_start(lines, idx)
+            return cleanup_markdown_answer(
+                "\n".join((*lines[:section_start], "", cleaned_block, "", *lines[section_start:]))
+            )
     return cleanup_markdown_answer("\n\n".join((cleaned_block, markdown)))
+
+
+def _table_section_start(lines: list[str], table_start: int) -> int:
+    previous = table_start - 1
+    while previous >= 0 and not lines[previous].strip():
+        previous -= 1
+    if previous < 0:
+        return table_start
+    heading = lines[previous].strip()
+    if re.fullmatch(r"(?:#{1,6}\s+\S.*|\*\*[^*\n]+\*\*)", heading):
+        return previous
+    return table_start
+
+
+def _ensure_mfds_permit_date_answer(question: str, markdown: str, fact_md: str) -> str:
+    if not re.search(r"허가\s*(?:일|날짜)", question):
+        return markdown
+    match = re.search(
+        r"(?m)^-\s*(?P<subject>.+?)\s+\((?P<date>\d{8})\):[^\n]*?허가일\s+(?P=date)(?:\s|·|\[|$)",
+        fact_md,
+    )
+    if match is None:
+        return markdown
+    permit_date = match.group("date")
+    prose_lines: list[str] = []
+    for line in markdown.splitlines():
+        if line.strip().startswith("|"):
+            break
+        prose_lines.append(line)
+    if permit_date in "\n".join(prose_lines):
+        return markdown
+    subject = match.group("subject").strip()
+    return _insert_before_first_table(
+        markdown,
+        f"{subject}의 식약처 허가일은 {permit_date}입니다.",
+    )
+
+
+def _ensure_mfds_clinical_evidence_answer(question: str, markdown: str, fact_md: str) -> str:
+    if not re.search(r"임상|허가", question):
+        return markdown
+    rows = tuple(
+        match.groups()
+        for match in re.finditer(
+            r"(?m)^-\s*(.+?)\s+\((\d{8})\):\s*국내 임상시험\s*=\s*(.+?)\s+"
+            r"\[식약처 의약품 정보\]\s*$",
+            fact_md,
+        )
+    )
+    missing_rows = tuple(row for row in rows if row[2] not in markdown)
+    if not missing_rows:
+        return markdown
+    highlighted = ", ".join(row[2] for row in missing_rows[:3])
+    remainder = " 등" if len(missing_rows) > 3 else ""
+    table = "\n".join(
+        (
+            "**국내 식약처 임상 등록 근거**",
+            "",
+            "| 질환 | 등록일 | 품목·개발 코드 |",
+            "|---|---:|---|",
+            *(f"| {subject} | {period} | {item} |" for subject, period, item in missing_rows),
+        )
+    )
+    lead = (
+        f"국내 식약처 임상 등록에서는 {highlighted}{remainder}가 확인됩니다. "
+        "아래 내용은 등록 품목과 일자를 보여주는 근거이며, 임상 성공이나 현재 개발 단계까지 뜻하지는 않습니다."
+    )
+    return _insert_before_first_table(markdown, f"{lead}\n\n{table}")
 
 
 def _fact_lookup_markdown(markdown_response: dict[str, Any]) -> str:
@@ -528,18 +656,6 @@ def _warn_dropped_file_tokens(question: str, raw_interpretation: str, final_answ
             question[:120],
             dropped,
         )
-
-
-def _append_uploaded_file_source(answer: str, file_context: str) -> str:
-    if not file_context.strip():
-        return answer
-    source_line = "- 업로드 파일: 현재 세션에 저장된 파일 검색 결과"
-    if source_line in answer:
-        return answer
-    if re.search(r"(?m)^##\s*출처\b", answer):
-        return cleanup_markdown_answer("\n".join((answer, source_line)))
-    source_block = f"## 출처\n\n{source_line}"
-    return cleanup_markdown_answer("\n\n".join((answer, source_block)))
 
 
 def _append_blocked_metric_notices(answer: str, fact_md: str) -> str:
@@ -600,36 +716,7 @@ def _ensure_web_search_reference(answer: str) -> str:
 
 
 def _web_search_unverified_section(tool_calls: list[dict[str, Any]] | None) -> str:
-    rows: list[dict[str, Any]] = []
-    for call in tool_calls or []:
-        if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
-            continue
-        data = call.get("render_data")
-        if not isinstance(data, dict):
-            continue
-        for item in _web_search_items(data):
-            rows.append(item)
-    if not rows:
-        return ""
-    return web_search_mi_section(rows[:5])
-
-
-def _web_search_items(data: dict[str, Any]) -> list[dict[str, Any]]:
-    direct = data.get("items")
-    if isinstance(direct, list):
-        return [item for item in direct if isinstance(item, dict)]
-    calls = data.get("calls")
-    if not isinstance(calls, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for call in calls:
-        render_data = call.get("render_data") if isinstance(call, dict) else None
-        if not isinstance(render_data, dict):
-            continue
-        nested = render_data.get("items")
-        if isinstance(nested, list):
-            rows.extend(item for item in nested if isinstance(item, dict))
-    return rows
+    return web_search_mi_section_from_calls(tool_calls or ())
 
 
 def _has_web_search_rows(tool_calls: list[dict[str, Any]] | None) -> bool:
@@ -646,21 +733,192 @@ def _is_web_search_only(tool_calls: list[dict[str, Any]] | None) -> bool:
     return True
 
 
+def _uses_deterministic_market_narrative(
+    tool_calls: list[dict[str, Any]] | None,
+    narrative: str,
+    file_context: str,
+) -> bool:
+    if not narrative or file_context:
+        return False
+    tools = {str(call.get("tool") or "") for call in tool_calls or [] if isinstance(call, dict)}
+    return bool(tools) and tools <= _DETERMINISTIC_MARKET_NARRATIVE_TOOLS
+
+
+def _is_tool_use_agent_result(agent_result: dict[str, Any]) -> bool:
+    diagnostics = agent_result.get("router_diagnostics")
+    return isinstance(diagnostics, dict) and diagnostics.get("mode") == "tool_use_agent"
+
+
+def _has_combined_clinical_registry_evidence(
+    tool_calls: list[dict[str, Any]],
+    markdown_response: dict[str, Any],
+) -> bool:
+    tools = {str(call.get("tool") or "") for call in tool_calls}
+    if not {"clinicaltrials_v2_search", "mfds_clinical_trial_kr"}.issubset(tools):
+        return False
+    fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    return "글로벌 임상시험 = NCT" in fact_md and "국내 임상시험 =" in fact_md
+
+
+def _deterministic_concentration_answer(
+    question: str,
+    tool_calls: list[dict[str, Any]],
+) -> str:
+    if not any(token in question for token in ("집중도", "HHI", "CR")):
+        return ""
+    answer = enforce_market_answer_contract(question, "", tool_calls)
+    if "HHI " not in answer or "CR5 " not in answer:
+        return ""
+    return answer
+
+
+def _verified_tool_use_agent_answer(agent_result: dict[str, Any]) -> str:
+    answer = str(agent_result.get("answer") or "확인 가능한 근거가 없어 답변할 수 없습니다.")
+    markdown_response = agent_result.get("markdown_response")
+    if not isinstance(markdown_response, dict):
+        return FAIL_CLOSED_TEXT
+    fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+    allowed = tuple(str(value) for value in markdown_response.get("allowed_numbers", ()) if value is not None)
+    strict_numbers = strict_allowed_numbers(fact_md, allowed)
+    if not answer_has_only_fact_numbers(answer, strict_numbers):
+        return FAIL_CLOSED_TEXT
+    return cleanup_markdown_answer(answer)
+
+
 @dataclass(frozen=True, slots=True)
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
     token: str | None = field(default_factory=resolve_final_genos_token)
-    timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TIMEOUT_S", "70")))
+    timeout_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TIMEOUT_S", "50")))
+    total_budget_s: int = field(default_factory=lambda: int(os.environ.get("GENOS_FINAL_TOTAL_BUDGET_S", "100")))
+    research_mode: str = "standard"
+    model: str | None = None
     token_usage_calls: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False, compare=False)
+
+    @classmethod
+    def for_deep_research(cls) -> GenosClient:
+        return cls(
+            base_url=resolve_deep_genos_base_url(),
+            token=resolve_deep_genos_token(),
+            timeout_s=int(os.environ.get("GENOS_DEEP_TIMEOUT_S", "180")),
+            total_budget_s=int(os.environ.get("GENOS_DEEP_TOTAL_BUDGET_S", "300")),
+            research_mode="deep",
+            model="gemini-3.1-pro-preview",
+        )
 
     def stream_answer(self, question: str, agent_result: dict[str, Any]) -> Iterator[str]:
         markdown_response = agent_result.get("markdown_response")
         timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
         file_context = _uploaded_file_context(agent_result)
+        diagnostics = agent_result.get("router_diagnostics")
+        fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
+        tool_calls = agent_result.get("tool_calls")
+        verified_calls = tool_calls if isinstance(tool_calls, list) else []
+        if self.research_mode != "deep" and self.token and fallback_code is None and isinstance(markdown_response, dict):
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            single_period_sales_answer = deterministic_single_period_sales_answer(
+                question,
+                fact_md,
+                verified_calls,
+            )
+            if single_period_sales_answer:
+                with stage(
+                    timing,
+                    "final_deterministic_single_period_sales_path",
+                    "verified single-period sales answer rendering",
+                ):
+                    answer = _apply_final_claim_controls(question, single_period_sales_answer, fact_md)
+                    answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
+                    if not file_context:
+                        answer = apply_common_unavailable_response(
+                            question,
+                            answer,
+                            markdown_response,
+                            tool_calls=verified_calls,
+                        )
+                        answer = apply_requested_source_trap_gate(question, answer)
+                    answer = ensure_file_absence_statement(question, answer, file_context)
+                    if not file_context:
+                        answer = enforce_market_answer_contract(question, answer, verified_calls)
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+        if _is_tool_use_agent_result(agent_result):
+            verified_answer = _verified_tool_use_agent_answer(agent_result)
+            if verified_answer == FAIL_CLOSED_TEXT:
+                yield from chunk_text(verified_answer)
+                return
+            if self.token and fallback_code is None and isinstance(markdown_response, dict):
+                fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+                if fact_md.strip():
+                    if _has_combined_clinical_registry_evidence(verified_calls, markdown_response):
+                        yield from chunk_text(
+                            cleanup_markdown_answer(
+                                finalized_fallback_fact_answer(question, markdown_response)
+                            )
+                        )
+                        return
+                    yield from chunk_text(
+                        cleanup_markdown_answer(
+                            self._markdown_answer(
+                                question,
+                                markdown_response,
+                                timing,
+                                verified_calls,
+                                file_context,
+                            )
+                        )
+                    )
+                    return
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            verified_answer = ensure_natural_fact_lead(question, verified_answer, fact_md)
+            yield from chunk_text(verified_answer)
+            return
         if self.token and isinstance(markdown_response, dict):
-            tool_calls = agent_result.get("tool_calls")
-            if _requires_deterministic_external_relay(tool_calls if isinstance(tool_calls, list) else None):
-                yield from chunk_text(_deterministic_external_relay_answer(markdown_response))
+            if self.research_mode != "deep" and _requires_deterministic_external_relay(verified_calls):
+                answer = _deterministic_external_relay_answer(markdown_response)
+                answer = replace_internal_fact_dump(question, answer, markdown_response)
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            concentration_answer = (
+                _deterministic_concentration_answer(question, verified_calls)
+                if self.research_mode != "deep"
+                else ""
+            )
+            if concentration_answer:
+                with stage(
+                    timing,
+                    "final_deterministic_concentration_path",
+                    "verified HHI and CR5 answer rendering",
+                ):
+                    answer = ensure_file_absence_statement(
+                        question,
+                        concentration_answer,
+                        file_context,
+                    )
+                yield from chunk_text(cleanup_markdown_answer(answer))
+                return
+            fast_answer = (
+                deterministic_top_n_share_answer(question, fact_md, verified_calls)
+                if self.research_mode != "deep"
+                else ""
+            )
+            if fast_answer:
+                with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
+                    answer = _apply_final_claim_controls(question, fast_answer, fact_md)
+                    answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
+                    if not file_context:
+                        answer = apply_common_unavailable_response(
+                            question,
+                            answer,
+                            markdown_response,
+                            tool_calls=verified_calls,
+                        )
+                        answer = apply_requested_source_trap_gate(question, answer)
+                    answer = ensure_file_absence_statement(question, answer, file_context)
+                    if not file_context:
+                        answer = enforce_market_answer_contract(question, answer, verified_calls)
+                yield from chunk_text(cleanup_markdown_answer(answer))
                 return
             yield from chunk_text(
                 cleanup_markdown_answer(
@@ -668,14 +926,17 @@ class GenosClient:
                         question,
                         markdown_response,
                         timing,
-                        tool_calls if isinstance(tool_calls, list) else None,
+                        verified_calls,
                         file_context,
                     )
                 )
             )
             return
         if self._is_cache_only(agent_result) or not self.token:
-            yield from chunk_text(cleanup_markdown_answer(str(agent_result["answer"])))
+            answer = str(agent_result["answer"])
+            if isinstance(markdown_response, dict):
+                answer = replace_internal_fact_dump(question, answer, markdown_response)
+            yield from chunk_text(cleanup_markdown_answer(answer))
             return
         policy_notice = self._policy_notice_block(agent_result)
         messages = [
@@ -689,6 +950,7 @@ class GenosClient:
                     "uploaded_file_context가 있으면 내부 mart fact와 구분해 업로드 파일 기준으로 답하라. "
                     "notice_count가 1 이상이어도 주의/면책 문구를 작성하지 말라. "
                     "사용자에게 필요한 결론만 남기고 내부 처리 기준은 숨겨라. "
+                    "get_brand_metric·search_news·csd_activity_trend 같은 도구 이름, query id, 'fact set', 'agent loop' 등 내부 식별자·처리용어는 답변에 쓰지 말라. "
                     "출처 섹션이나 출처 줄은 작성하지 말라. 출처는 시스템이 별도로 붙인다."
                 )
                 + (f" {_FILE_QUOTE_INSTRUCTION}" if file_context else ""),
@@ -717,20 +979,29 @@ class GenosClient:
         strict_numbers = strict_allowed_numbers(fact_for_safety, allowed_numbers)
         if file_context:
             strict_numbers = tuple(sorted({*strict_numbers, *uploaded_file_fact_tokens(file_context)}))
-        messages = self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
-        try:
-            with stage(timing, "final_llm_expression", "GenOS markdown generation"):
-                raw_interpretation = self._chat_text(messages)
-        except requests.RequestException:
-            fallback = finalized_fallback_fact_answer(question, markdown_response)
-            return _apply_final_claim_controls(question, fallback, fact_md)
+        trend_prose_candidate = render_market_narrative(tool_calls or [])
+        if trend_prose_candidate and not answer_has_only_fact_numbers(trend_prose_candidate, strict_numbers):
+            trend_prose_candidate = ""
+        if self.research_mode != "deep" and _uses_deterministic_market_narrative(tool_calls, trend_prose_candidate, file_context):
+            with stage(timing, "final_deterministic_market_narrative", "verified market narrative"):
+                raw_interpretation = str(markdown_response.get("data_md") or fact_md)
+        else:
+            messages = (
+                self._deep_markdown_messages(question, markdown_response, trend_fact_md, file_context)
+                if self.research_mode == "deep"
+                else self._markdown_messages(question, markdown_response, trend_fact_md, file_context)
+            )
+            try:
+                with stage(timing, "final_llm_expression", "GenOS markdown generation"):
+                    raw_interpretation = self._chat_text(messages)
+            except requests.RequestException:
+                fallback = finalized_fallback_fact_answer(question, markdown_response)
+                fallback = _apply_final_claim_controls(question, fallback, fact_md)
+                return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
         if not raw_interpretation:
             fallback = finalized_fallback_fact_answer(question, markdown_response)
-            return _apply_final_claim_controls(question, fallback, fact_md)
-        # Fast final path: the primary markdown prompt already receives trend_fact_md
-        # and explicitly asks for trend prose. Avoid a second pre-safety LLM call;
-        # deterministic guards below keep verified facts and numeric safety.
-        trend_prose_candidate = ""
+            fallback = _apply_final_claim_controls(question, fallback, fact_md)
+            return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
         mandatory_lines = mandatory_fact_lines(fact_md)
         raw_has_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
         missing_mandatory = missing_mandatory_lines(raw_interpretation, mandatory_lines)
@@ -799,16 +1070,23 @@ class GenosClient:
         answer = ensure_top_brand_trend_table(answer, fact_md)
         answer = ensure_portfolio_decline_summary(answer, fact_md)
         answer = dedupe_brand_metric_sentence(answer, fact_md)
-        answer = _apply_final_claim_controls(question, answer, fact_md)
+        answer = replace_internal_fact_dump(question, answer, markdown_response)
+        if not file_context:
+            answer = _apply_final_claim_controls(question, answer, fact_md)
+        answer = ensure_natural_fact_lead(question, answer, fact_md)
+        answer = _ensure_mfds_permit_date_answer(question, answer, fact_md)
+        answer = _ensure_mfds_clinical_evidence_answer(question, answer, fact_md)
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
-        answer = append_deterministic_source_block(answer, fact_md)
-        answer = _append_uploaded_file_source(answer, file_context)
-        answer = apply_common_unavailable_response(question, answer, markdown_response)
-        answer = apply_requested_source_trap_gate(question, answer)
+        if self.research_mode == "deep":
+            answer = _append_web_search_section(answer, tool_calls)
+        answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
+        if not file_context:
+            answer = apply_common_unavailable_response(question, answer, markdown_response)
+            answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
-        return _append_web_search_section(answer, tool_calls)
+        return answer if self.research_mode == "deep" else _append_web_search_section(answer, tool_calls)
 
     @staticmethod
     def _markdown_messages(
@@ -818,15 +1096,26 @@ class GenosClient:
         file_context: str = "",
     ) -> list[dict[str, str]]:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+        prompt_fact_md = _prompt_fact_markdown(fact_md)
         mandatory_md = mandatory_fact_block(fact_md)
         uploaded_md = file_context.strip() or "- 없음"
         file_instruction = f" {_FILE_QUOTE_INSTRUCTION}" if file_context.strip() else ""
+        overview_instruction = (
+            _FILE_OVERVIEW_SYNTHESIS_INSTRUCTION
+            if file_context.strip() and _FILE_OVERVIEW_QUESTION_RE.search(question) is not None
+            else ""
+        )
         return [
             {
                 "role": "system",
                 "content": (
                     "너는 JW 시장분석 채팅 에이전트다. 제공된 확정 fact만 근거로 답변 전체를 자연스러운 한국어 Markdown으로 작성한다. "
+                    "값이나 표를 먼저 나열하지 않는다. 데이터는 사람에게 설명하듯 자연스러운 문단으로 핵심을 한두 문장으로 먼저 말한다. "
+                    "그런 다음 확정 fact의 수치·기간·출처를 근거로 붙여 설명한다. 자연어 본문을 추가하되, 기존 표·차트·뉴스·출처를 삭제하거나 축소하지 않는다. "
+                    "표·차트·뉴스는 자연어 본문 뒤에 근거 자료로 그대로 유지한다. "
+                    "서술을 부드럽게 만들더라도 확정 fact에 없는 수치·사실·원인은 덧붙이지 않는다. "
                     "업로드 파일 컨텍스트가 있으면 내부 mart fact와 구분해 '업로드 파일 기준'이라고 밝히고, 그 내용은 현재 세션 첨부 파일 근거로만 사용한다. "
+                    "업로드 파일 컨텍스트에 파일이 여러 개 있으면 각 업로드 파일의 근거를 최소 1개씩 본문에 반영하고 파일명과 함께 파일별로 구분한다. "
                     "확정 fact set 안에 '필수 답변 fact'가 있으면 각 행을 답변 본문에 반드시 반영한다. "
                     "특히 데이터 미보유/미지원 행과 조회 실패 행은 별도 문장으로 명확히 쓰고, 비교 브랜드가 있으면 그 한계를 생략하지 않는다. "
                     "반대로 상위 브랜드 월별 MS fact에 있는 브랜드는 시계열 데이터가 있는 것이므로 미지원, 확인 안 됨, 데이터 없음이라고 쓰지 않는다. "
@@ -853,14 +1142,15 @@ class GenosClient:
                     "추이 산문에는 trend fact에 없는 기간·값·원인을 만들지 않는다. "
                     "비자명 신호가 없으면 억지 결론을 만들지 말고, 신호가 있으면 근거 기반 추론임을 밝히며 적극 분석한다. "
                     "뉴스 기준, 필터명, date_grain, on_list, impact_score, 내부 cache, fact_id 같은 내부 메타를 노출하지 않는다. "
-                    "내부 저장소명이나 내부 식별자를 쓰지 않는다. "
+                    "내부 저장소명이나 내부 식별자를 쓰지 않는다. get_brand_metric·search_news·csd_activity_trend 같은 도구 이름, query id, 'fact set', 'agent loop' 같은 내부 처리용어도 출력에 쓰지 않는다. "
                     "출처 섹션이나 출처 줄은 작성하지 말라. 출처는 시스템이 검증 fact에서 구조화해 맨 뒤에 붙인다. "
-                    "표는 꼭 필요한 경우에만 쓰고, 모든 표와 시계열 제목에는 브랜드명과 기간을 명시한다. 익명 '브랜드 시계열'은 쓰지 않는다. "
+                    "확정 fact로 제공된 표·시계열·뉴스는 누락하지 않고, 모든 표와 시계열 제목에는 브랜드명과 기간을 명시한다. 익명 '브랜드 시계열'은 쓰지 않는다. "
                     "같은 지표를 반복하지 않는다. 근거는 본문 분석에 녹이고 출처 표기는 생성하지 않는다. "
                     "숫자, 비율, 순위, 기간, 질병코드는 fact set에 있는 값만 사용하고 새 값을 만들지 않는다. "
                     "검은 별표 같은 장식 기호를 쓰지 말고, 간결한 한국어로 답한다."
                 )
-                + file_instruction,
+                + file_instruction
+                + overview_instruction,
             },
             {
                 "role": "user",
@@ -870,27 +1160,76 @@ class GenosClient:
                     f"단일 브랜드 추이 산문용 trend fact:\n{trend_fact_md or '- 없음'}\n\n"
                     f"업로드 파일 컨텍스트 (현재 세션 첨부 파일 검색 결과, 내부 mart fact와 별도):\n{uploaded_md}\n\n"
                     "확정 fact set:\n"
-                    f"{fact_md}\n\n"
-                    "작성 형식: 결론을 먼저 쓰고, 질문 의도별 핵심 근거와 시사점/한계를 fact 범위 안에서 설명한 뒤 필요한 표를 최소화한다. "
+                    f"{prompt_fact_md or '- 없음'}\n\n"
+                    "작성 형식: 자연어 문단을 먼저 쓰고, 결론과 질문 의도별 핵심 근거·시사점·한계를 fact 범위 안에서 설명한다. 기존 표·차트·뉴스는 그대로 유지하고 자연어 본문 뒤에 보조 근거로 둔다. "
+                    "여러 업로드 파일을 사용하라는 질문이면 한 파일만 요약하지 말고 각 업로드 파일의 근거를 최소 1개씩 파일별로 구분해 답한다. "
                     "질문이 특정 지표값을 직접 물으면 그 지표의 브랜드명·기간·값을 첫 단락에 먼저 쓴다. "
                     "출처 섹션이나 출처 줄은 쓰지 않는다."
                 ),
             },
         ]
 
+    @staticmethod
+    def _deep_markdown_messages(
+        question: str,
+        markdown_response: dict[str, Any],
+        trend_fact_md: str = "",
+        file_context: str = "",
+    ) -> list[dict[str, str]]:
+        messages = GenosClient._markdown_messages(
+            question,
+            markdown_response,
+            trend_fact_md,
+            file_context,
+        )
+        system = dict(messages[0])
+        system["content"] = (
+            "명시적으로 요청된 딥리서치 모드다. 일반 답변보다 충분히 상세하게 작성하되, "
+            "제공된 확정 fact와 실제 도구·웹 근거 밖의 수치, URL, 기사, 인과, 전망을 만들지 않는다. "
+            "업로드 파일과 시장·외부 도구·웹 근거를 함께 종합하고, 업로드 파일이 여러 개면 각 파일의 실제 근거를 빠짐없이 파일명과 함께 구분한다. "
+            "서로 다른 출처를 교차 확인하고, 근거가 충돌하거나 비어 있으면 그 한계를 명시한다. "
+            "도구별·출처별 섹션 나열을 금지하고, 시장·경쟁 구도와 임상·허가·안전성·환자 맥락을 질문에 대한 하나의 종합 서사로 작성한다. "
+            "구조는 핵심 요약 → 종합 분석 → 뒷받침 표 순으로 고정하며, 출처는 시스템이 맨 마지막에 한 번만 붙인다. "
+            "핵심 요약은 3~5줄로 결론을 먼저 말하고, 종합 분석에서는 시장 수치와 뉴스·임상·허가 근거를 서로 연결한다. "
+            "같은 사실이나 같은 기사를 여러 섹션에서 반복하지 않는다. 내부 미보유 처리 정책이나 단계 표를 노출하지 않는다. "
+            "각 본문 섹션은 반드시 '## '로 시작하는 명시적 제목을 붙이고, 최소 두 개의 본문 섹션을 만든다. "
+            "표·차트·뉴스·출처 근거는 유지하고, 확인된 근거가 없는 섹션은 억지로 채우지 않는다. "
+            + str(system["content"])
+        )
+        user = dict(messages[1])
+        user["content"] = (
+            str(user["content"])
+            + "\n\n딥리서치 작성 요구: 먼저 결론을 요약하고, 서로 다른 근거가 정합하거나 반대 방향인지 연결해 설명한 뒤 "
+            "실무적 시사점과 한계를 정리한다. 근거가 함께 움직여도 '때문이다'라고 단정하지 않는다. "
+            "모든 구체 주장은 제공된 fact로 검증 가능해야 하며, 출처별 결과 목록을 반복하지 않는다."
+        )
+        return [system, user]
+
     def _chat_text(self, messages: list[dict[str, str]]) -> str:
         last_error: requests.RequestException | None = None
-        for _attempt in range(generation_attempts()):
-            try:
-                text = "".join(self._stream_chat(messages)).strip()
-            except requests.RequestException as exc:
-                last_error = exc
-                continue
-            if text:
-                return text
+        deadline = time.monotonic() + max(1, self.total_budget_s)
+        token = _FINAL_GENERATION_DEADLINE.set(deadline)
+        try:
+            for _attempt in range(generation_attempts()):
+                if deadline - time.monotonic() <= 0:
+                    break
+                try:
+                    text = "".join(self._stream_chat(messages)).strip()
+                except requests.RequestException as exc:
+                    last_error = exc
+                    continue
+                if text:
+                    return text
+        finally:
+            _FINAL_GENERATION_DEADLINE.reset(token)
         if last_error is not None:
             raise last_error
         return ""
+
+    def uploaded_file_brief(self, messages: list[dict[str, str]]) -> str:
+        """Generate one batched exploratory brief from observed upload metadata."""
+
+        return self._chat_text(messages)
 
     @staticmethod
     def _trend_prose_messages(question: str, trend_fact_md: str, previous_answer: str) -> list[dict[str, str]]:
@@ -921,16 +1260,31 @@ class GenosClient:
         ]
 
     def _stream_chat(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        deadline = _FINAL_GENERATION_DEADLINE.get()
+        remaining = deadline - time.monotonic() if deadline is not None else float(self.timeout_s)
+        if remaining <= 0:
+            raise requests.Timeout("final generation deadline exceeded")
+        payload: dict[str, Any] = {
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.0,
+            "stream_options": {"include_usage": True},
+        }
+        if self.model:
+            payload["model"] = self.model
         response = requests.post(
             f"{self.base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.token}"},
-            json={"messages": messages, "stream": True, "temperature": 0.0, "stream_options": {"include_usage": True}},
+            json=payload,
             stream=True,
-            timeout=self.timeout_s,
+            timeout=min(float(self.timeout_s), remaining),
         )
         response.raise_for_status()
         usage_call: dict[str, Any] | None = None
         for raw_line in response.iter_lines(decode_unicode=True):
+            if deadline is not None and time.monotonic() >= deadline:
+                response.close()
+                raise requests.Timeout("final generation deadline exceeded")
             if not raw_line or not raw_line.startswith("data:"):
                 continue
             payload = raw_line.removeprefix("data:").strip()

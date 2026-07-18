@@ -7,7 +7,13 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
-from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
+from jw_chat_agent_poc.service.general_view_routing import (
+    GeneralRoute,
+    GeneralViewService,
+    _atc4_code,
+    _brand_hint,
+    _source,
+)
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
@@ -15,6 +21,18 @@ from jw_chat_agent_poc.tools.general_view_backend import (
     GeneralViewBackendError,
     parse_general_market_response,
 )
+from jw_chat_agent_poc.tools.general_view_membership import (
+    GeneralBrandMembership,
+    GeneralMembershipLoadError,
+    StaticGeneralMembershipReader,
+    TtlGeneralMembershipCache,
+)
+from jw_chat_agent_poc.resolver.catalog_membership import (
+    StaticCatalogMembershipReader,
+    TtlCatalogMembershipReader,
+)
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
 
 def _payload(*, atc4: str = "C10A1", source: str = "ubist", measure: str = "sales") -> dict:
@@ -174,11 +192,13 @@ class FakeBackend:
         self.candidate_map: dict[tuple[str, str], tuple[AtcCandidate, ...]] = {}
         self.market_map: dict[str, GeneralMarket] = {}
         self.market_errors: dict[str, GeneralViewBackendError] = {}
+        self.market_calls: list[tuple[str, str | None, str, str]] = []
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         return self.candidate_map.get((brand, source), ())
 
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket:
+        self.market_calls.append((atc4, brand, source, measure))
         if atc4 in self.market_errors:
             raise self.market_errors[atc4]
         return self.market_map[atc4]
@@ -195,6 +215,61 @@ class StrategicMembership:
         raise LookupError(question)
 
 
+def test_membership_cache_preserves_all_atc4_sources_and_avoids_backend_candidate_scan() -> None:
+    memberships = (
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+    backend.market_map["A10S0"] = _market("A10S0", 10.0)
+
+    result = service.answer("IQVIA 마운자로 시장 점유율", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "A10S0"
+    assert backend.candidate_map == {}
+    assert cache.candidates("마운자로", "iqvia") == (AtcCandidate("A10S0", "GLP-1"),)
+
+
+def test_membership_cache_exact_lookup_does_not_silently_match_unknown_brand() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),)
+        ),
+        ttl_seconds=300,
+    )
+
+    assert cache.candidates("마운자로", "iqvia")
+    assert cache.candidates("마운", "iqvia") == ()
+
+
+class FailingGeneralMembership:
+    def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+        raise GeneralMembershipLoadError("membership unavailable")
+
+
+def test_membership_load_failure_falls_back_to_existing_candidate_api() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("마운자로", "iqvia")] = (AtcCandidate("A10S0", "GLP-1"),)
+    backend.market_map["A10S0"] = _market("A10S0", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=FailingGeneralMembership(),
+    )
+
+    result = service.answer("IQVIA 마운자로 시장 점유율", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "A10S0"
+
+
 def _market(atc4: str, brand_value: float) -> GeneralMarket:
     parsed = parse_general_market_response(
         _payload(atc4=atc4), requested_atc4=atc4, requested_source="ubist", requested_measure="sales"
@@ -202,13 +277,142 @@ def _market(atc4: str, brand_value: float) -> GeneralMarket:
     return replace(parsed, brand_value=brand_value)
 
 
+def test_recent_one_year_market_size_uses_twelve_month_sum_and_names_window() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("리바로", "ubist")] = (AtcCandidate("C10A1", "지질조절제"),)
+    market = _market("C10A1", 8_000_000_000.0)
+    monthly = tuple((f"2025-{month:02d}", float(month) * 100_000_000) for month in range(1, 13))
+    backend.market_map["C10A1"] = replace(
+        market,
+        period="2025-12",
+        market_size=1_200_000_000.0,
+        market_size_series=monthly,
+    )
+    service = GeneralViewService(backend, StrategicMembership(set()), enabled=True)
+
+    result = service.answer("리바로 C10A1 시장의 최근 1년 규모", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["period"] == "최근 12개월 합계 2025-01~2025-12"
+    assert "78.0억원" in result["answer"]
+    assert "1.2억원" not in result["answer"]
+
+
+def test_unspecified_market_period_keeps_latest_single_period() -> None:
+    backend = FakeBackend()
+    backend.candidate_map[("리바로", "ubist")] = (AtcCandidate("C10A1", "지질조절제"),)
+    backend.market_map["C10A1"] = _market("C10A1", 8_000_000_000.0)
+    service = GeneralViewService(backend, StrategicMembership(set()), enabled=True)
+
+    result = service.answer("리바로 C10A1 시장 규모", compact=False, dual=False)
+
+    assert "시장 규모 (2026-04)" in result["answer"]
+
+
 def test_route_matrix_has_no_human_loop() -> None:
     service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
 
     assert service.route("리바로 ATC4 기준 점유율") is GeneralRoute.GENERAL_ONLY
     assert service.route("리바로 전략뷰 시장 점유율") is GeneralRoute.EXISTING
+    assert service.route("ml_006 2025-04 시장규모") is GeneralRoute.EXISTING
     assert service.route("리바로 시장 점유율은?") is GeneralRoute.DUAL
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
+
+
+@pytest.mark.parametrize("brand", ("가나톤", "가나릴", "가나텍", "가네골드"))
+def test_brand_hint_preserves_brand_names_starting_with_korean_particle_characters(brand: str) -> None:
+    assert _brand_hint(f"일반뷰 ATC4 기준 {brand} 시장점유율") == brand
+
+
+@pytest.mark.parametrize("particle", ("은", "는", "이", "가", "을", "를"))
+def test_brand_hint_removes_only_a_trailing_korean_particle(particle: str) -> None:
+    assert _brand_hint(f"일반뷰 기준 리바로{particle} 시장점유율") == "리바로"
+
+
+def test_unqualified_brand_uses_its_only_available_membership_source() -> None:
+    memberships = (
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["A10S0"] = _market("A10S0", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembership({"마운자로"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("마운자로 시장점유율은?", compact=True, dual=True)
+
+    assert backend.market_calls == [("A10S0", "마운자로", "iqvia", "sales")]
+    assert result["general_view_contract"]["atc4_code"] == "A10S0"
+
+
+def test_explicit_source_does_not_fallback_to_another_membership_source() -> None:
+    memberships = (
+        GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        StrategicMembership({"마운자로"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("UBIST 마운자로 시장점유율은?", compact=True, dual=True)
+
+    assert backend.market_calls == []
+    assert result["general_view_contract"]["unavailable"] is True
+
+
+def test_market_scope_dual_route_uses_catalog_membership_beyond_jw25(monkeypatch) -> None:
+    monkeypatch.setenv("GENERAL_VIEW_ENABLED", "true")
+    memberships = TtlCatalogMembershipReader(
+        StaticCatalogMembershipReader(
+            ({"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨 시장"},)
+        ),
+        ttl_seconds=300,
+    )
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        membership_reader=memberships,
+    )
+
+    assert resolver.general_route("마운자로 시장점유율은?") is GeneralRoute.DUAL
+
+
+@pytest.mark.parametrize("suffix", ("에서", "의", "는", "를", "시장", "기준"))
+def test_atc4_code_accepts_korean_suffixes(suffix: str) -> None:
+    assert _atc4_code(f"C10A1{suffix} 리바로 매출") == "C10A1"
+
+
+@pytest.mark.parametrize("question", ("NSA 기준 C10A1 시장", "nsa 기준 C10A1 시장", "IQVIA 기준 C10A1"))
+def test_source_recognizes_iqvia_aliases(question: str) -> None:
+    assert _source(question) == "iqvia"
+
+
+@pytest.mark.parametrize("question", ("XC10A1", "C10A11", "C10A1X", "ABC123", "문서A10B20값"))
+def test_atc4_code_rejects_alphanumeric_false_positives(question: str) -> None:
+    assert _atc4_code(question) is None
+
+
+def test_nsa_and_korean_suffix_reach_backend_with_clean_scope() -> None:
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = _market("C10A1", 8_000_000_000)
+    service = GeneralViewService(backend, StrategicMembership({"리바로"}), enabled=True)
+
+    service.answer("NSA 기준 C10A1에서 리바로 매출 알려줘", compact=True, dual=False)
+
+    assert backend.market_calls == [("C10A1", "리바로", "iqvia", "sales")]
+
+
+def test_general_view_fix_does_not_change_strategic_route_precedence() -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route("리바로 경쟁역학 CD 시장점유율") is GeneralRoute.EXISTING
 
 
 def test_disabled_route_is_existing_for_byte_compatible_behavior() -> None:

@@ -17,7 +17,10 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     source_label,
     table,
 )
+from jw_chat_agent_poc.orchestrator.call_normalization import dedupe_blocked_metric_messages
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
+from jw_chat_agent_poc.orchestrator.market_insights import render_market_insights
+from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_fact_markdown
 from jw_chat_agent_poc.orchestrator.surface_policy import (
     DeltaOperands,
     can_surface_derived_value,
@@ -39,10 +42,6 @@ CONFIRMED_MARKET_VIEW_BY_ID: Final[dict[str, str]] = {
 CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_BY_ID: Final[dict[str, str]] = {
     **{f"strategy_{idx:03d}": f"ml_{idx:03d}" for idx in range(1, 17)},
     **{f"ml_{idx:03d}": f"strategy_{idx:03d}" for idx in range(1, 17)},
-}
-CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID: Final[dict[str, int]] = {
-    "strategy_006": 470,
-    "ml_006": 516,
 }
 VIEW_NAME_BY_INTERNAL_LABEL: Final[dict[str, str]] = {
     "market_landscape": "market_landscape",
@@ -133,16 +132,27 @@ _REQUIRED_METRIC_AXES: Final[dict[str, tuple[RequiredAxis, ...]]] = {
 
 
 def answer_fact_markdown(calls: list[dict[str, Any]], sources: list[str]) -> str:
+    calls = dedupe_blocked_metric_messages(calls)
     blocks: list[str] = ["## 확정 fact set"]
+    seen_blocks: set[str] = set()
     required = _required_fact_block(calls)
     if required:
         blocks.append(required)
+        seen_blocks.add(required)
+    insight_lines = render_market_insights(calls)
+    if insight_lines:
+        insight_block = "### 파생 시장 해석 fact\n" + "\n".join(
+            f"- {cell(line)}" for line in insight_lines
+        )
+        blocks.append(insight_block)
+        seen_blocks.add(insight_block)
     for call in calls:
         if _is_fact_only_completion_call(call):
             continue
         block = _call_fact_block(call, detail=_metric_fact_detail(call, calls))
-        if block:
+        if block and block not in seen_blocks:
             blocks.append(block)
+            seen_blocks.add(block)
     if len(blocks) == 1:
         blocks.append("- 표시할 확정 fact가 없습니다.")
     source_block = _source_block(calls, sources)
@@ -565,6 +575,7 @@ def _required_yoy_growth(data: dict[str, Any], brand: str) -> str:
         f"비교 매출 {eok_value(data.get('to_sales_억원'), data.get('to_sales_krw'))}",
         f"매출 변화 {eok_value(data.get('sales_delta_억원'), data.get('sales_delta_krw'))}",
         f"성장률 {pct_value(data.get('growth_pct'))}",
+        str(data.get("data_availability_note") or ""),
     ]
     return " ".join(part for part in parts if part)
 
@@ -575,6 +586,8 @@ def _required_average_share(data: dict[str, Any], brand: str) -> str:
         f"{brand} 평균 점유율",
         period,
         pct_value(data.get("avg_ms_pct")),
+        str(data.get("data_availability_note") or ""),
+        str(data.get("ratio_availability_note") or ""),
     ]
     return " ".join(part for part in parts if part)
 
@@ -1140,6 +1153,8 @@ def _call_fact_block(
     tool = str(call.get("tool") or "")
     if tool == "deep_analysis_related_news":
         return _news_facts(data)
+    if tool == "bq_analysis":
+        return _bq_analysis_facts(data)
     if tool == "portfolio_decline_analysis":
         return _portfolio_decline_facts(data)
     if tool in {"get_brand_metric", "get_market_landscape", "agent_calculation", "unsupported_metric"}:
@@ -1174,6 +1189,14 @@ def _news_facts(data: dict[str, Any]) -> str:
         message = data.get("message") or "관련 뉴스 없음"
         return table("### 인사이트 근거 fact - 뉴스/이슈", ("항목", "값"), (("상태", message),))
     return table("### 인사이트 근거 fact - 뉴스/이슈", ("날짜", "제목", "출처", "URL", "요약", "매칭 발췌"), tuple(rows))
+
+
+def _bq_analysis_facts(data: dict[str, Any]) -> str:
+    blocks = [_generic_facts("bq_analysis", data)]
+    news_refs = data.get("news_refs")
+    if isinstance(news_refs, list) and news_refs:
+        blocks.append(_news_facts({"items": news_refs}))
+    return "\n\n".join(block for block in blocks if block)
 
 
 def _portfolio_decline_facts(data: dict[str, Any]) -> str:
@@ -1245,6 +1268,8 @@ def _metric_facts(
     _append(rows, "비교 브랜드 매출 변화율", pct_value(data.get("comparison_sales_delta_pct")))
     _append(rows, "YoY 성장률", pct_value(data.get("growth_pct")))
     _append(rows, "평균 점유율", pct_value(data.get("avg_ms_pct")))
+    _append(rows, "데이터 상태", data.get("data_availability_note"))
+    _append(rows, "비율 상태", data.get("ratio_availability_note"))
     _append(rows, "기준 점유율", pct_value(data.get("from_ms_pct")))
     _append(rows, "비교 점유율", pct_value(data.get("to_ms_pct")))
     _append(rows, "점유율 변화", pct_value(data.get("ms_delta_pct")))
@@ -1972,7 +1997,7 @@ def _generic_facts(tool: str, data: dict[str, Any]) -> str:
 
 
 def _source_block(calls: list[dict[str, Any]], sources: list[str]) -> str:
-    blocks: list[str] = []
+    blocks: list[str] = [provenance_fact_markdown(calls, sources)]
     value_rows = _value_provenance_rows(calls)
     if value_rows:
         blocks.append(
@@ -2240,13 +2265,7 @@ def _market_landscape_denominator_note(
         if not rank or denominator in (None, "") or str(denominator) == str(primary_denominator):
             continue
         return f"참고: {market} 기준 순위는 {rank}/{denominator}으로 표시될 수 있음"
-    fallback_denominator = CONFIRMED_MARKET_LANDSCAPE_COUNTERPART_DENOMINATOR_BY_ID.get(primary_market)
-    if fallback_denominator in (None, "") or str(fallback_denominator) == str(primary_denominator):
-        return ""
-    rank = next((_rank_position(spec.get("rank")) for spec in query_specs if str(spec.get("market") or spec.get("market_id") or "") == primary_market and spec.get("rank")), "")
-    if not rank:
-        return ""
-    return f"참고: {counterpart_market} 기준 순위는 {rank}/{fallback_denominator}으로 표시될 수 있음"
+    return ""
 
 
 def _rank_position(rank: Any) -> str:

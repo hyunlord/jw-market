@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOO
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
+from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers as _ungrounded_numbers
 
 
 _UNKNOWN = "unknown"
@@ -94,6 +95,7 @@ def trace_envelope(
         "trace_id": uuid4().hex,
         "conversation_id": conversation_id,
         "question": question,
+        "scope": str(result.get("context_scope") or _UNKNOWN),
         "version": version_payload(),
         "intent": _intent(result),
         "route": _route(result),
@@ -111,11 +113,25 @@ def trace_envelope(
         "claim_policy_blocks": claim_report["forbidden_claims_remaining"],
         "surface_policy_blocks": _surface_policy_blocks(result),
         "render_status": _render_status(answer),
-        "ungrounded_numeric_spans": _ungrounded_numbers(answer, markdown_response),
+        "ungrounded_numeric_spans": _ungrounded_numbers(
+            answer,
+            _numeric_grounding_response(result, markdown_response),
+            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        ),
         "token_usage": _token_usage(timing),
         "chart_count": len(charts),
         "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
     }
+
+
+def _numeric_grounding_response(
+    result: Mapping[str, Any],
+    markdown_response: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    grounding_text = result.get("file_brief_grounding_text")
+    if result.get("file_only_ready") is True and isinstance(grounding_text, str):
+        return {"fact_md": grounding_text}
+    return markdown_response
 
 
 
@@ -129,7 +145,12 @@ def _quality_taxonomy(
     facts_surfaced: Mapping[str, Any],
     answer_contract_status: Mapping[str, Any],
 ) -> dict[str, Any]:
-    source = requested_unavailable_source(question)
+    diagnostics = result.get("router_diagnostics")
+    source = requested_unavailable_source(
+        question,
+        identity_only=isinstance(diagnostics, Mapping)
+        and diagnostics.get("mode") == "tool_use_agent",
+    )
     if source is not None:
         return {
             "label": "not_connected",
@@ -171,16 +192,6 @@ def _quality_taxonomy(
                 "source_label": "CSD 영업활동",
                 "reason": "requested_unconnected_csd_source",
             }
-
-    required_tools = _required_tools(answer_contract_status)
-    missing_tools = tuple(tool for tool in required_tools if tool not in tools_called)
-    if required_tools and len(missing_tools) == len(required_tools):
-        return {
-            "label": "not_invoked",
-            "required_tools": required_tools,
-            "tools_called": tuple(tools_called),
-            "reason": "detected_contract_without_related_tool",
-        }
 
     empty_calls = _empty_result_calls(result)
     if empty_calls:
@@ -248,13 +259,29 @@ def _empty_result_calls(result: Mapping[str, Any]) -> tuple[dict[str, str], ...]
     tool_calls = result.get("tool_calls")
     if not isinstance(tool_calls, list):
         return ()
+    recovered_tools = {
+        str(call.get("tool") or "")
+        for call in tool_calls
+        if isinstance(call, Mapping) and _call_has_evidence(call)
+    }
     for call in tool_calls:
         if not isinstance(call, Mapping):
             continue
         status = call.get("status")
-        if isinstance(status, str) and status in _EMPTY_TOOL_STATUSES:
+        tool = str(call.get("tool") or "")
+        if isinstance(status, str) and status in _EMPTY_TOOL_STATUSES and tool not in recovered_tools:
             calls.append({"tool": str(call.get("tool") or ""), "status": status})
     return tuple(calls)
+
+
+def _call_has_evidence(call: Mapping[str, Any]) -> bool:
+    if call.get("status") != "ok":
+        return False
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping) or render_data.get("ok") is False:
+        return False
+    evidence = render_data.get("evidence")
+    return isinstance(evidence, Sequence) and not isinstance(evidence, (str, bytes)) and bool(evidence)
 
 
 def _assembly_gap_reason(
@@ -350,6 +377,10 @@ def _route(result: Mapping[str, Any]) -> dict[str, Any]:
     }
     if diagnostics.get("route") is not None:
         route["route"] = diagnostics.get("route")
+    if diagnostics.get("tool_execution_mode") is not None:
+        route["tool_execution_mode"] = diagnostics.get("tool_execution_mode")
+    if diagnostics.get("parallel_tool_count") is not None:
+        route["parallel_tool_count"] = diagnostics.get("parallel_tool_count")
     return route
 
 
@@ -459,14 +490,6 @@ def _cell_count(line: str) -> int:
     if not stripped:
         return 0
     return len(stripped.split("|"))
-
-
-def _ungrounded_numbers(answer: str, markdown_response: Mapping[str, Any]) -> tuple[str, ...]:
-    allowed = markdown_response.get("allowed_numbers")
-    if not isinstance(allowed, (list, tuple)):
-        return ()
-    allowed_set = {str(item) for item in allowed}
-    return tuple(sorted(token for token in number_tokens(answer) if token not in allowed_set))
 
 
 def _markdown_field(markdown_response: Mapping[str, Any], field: str) -> str:

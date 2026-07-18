@@ -137,6 +137,18 @@ def list_session_documents(
                 "file_size_bytes": int(description.get("file_size_bytes") or 0),
                 "chunk_count": int(row.get("chunk_count") or 0),
                 "is_expired": expired,
+                "storage_route": str(description.get("storage_route") or "vdb"),
+                "route_reason": str(description.get("route_reason") or ""),
+                "file_card": (
+                    description.get("file_card")
+                    if isinstance(description.get("file_card"), dict)
+                    else None
+                ),
+                "sql_tables": (
+                    description.get("sql_tables")
+                    if isinstance(description.get("sql_tables"), list)
+                    else []
+                ),
             }
         )
     return documents

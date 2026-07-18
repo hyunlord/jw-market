@@ -5,6 +5,7 @@ import pytest
 from jw_chat_agent_poc.orchestrator.claim_policy import (
     FORBIDDEN_BY_FACT_TYPE,
     apply_claim_policy,
+    claim_policy_report,
 )
 
 
@@ -18,6 +19,160 @@ CHANNEL_FACT_MD = "\n".join(
         "| channel 상위 | 3위 상급종합병원 시장점유율 4.49% 매출 17.64억원 |",
     ]
 )
+
+CLINICAL_REGISTRY_FACT_MD = "\n".join(
+    [
+        "- pitavastatin: 글로벌 임상시험 = NCT00257686 · Study to Compare the Efficacy and Safety of Pitavastatin and Pravastatin in Elderly Patients · https://clinicaltrials.gov/study/NCT00257686 [ClinicalTrials.gov 임상시험 정보]",
+        "- 고지혈증 (20120928): 국내 임상시험 = YH14700 [식약처 의약품 정보]",
+    ]
+)
+
+CLINICAL_REGISTRY_TABLE_FACT_MD = "\n".join(
+    [
+        "## 확정 fact set",
+        "### 임상시험 fact",
+        "| 출처 | 시험/식별자 | 제목/제품 | 상태 | 단계 |",
+        "| --- | --- | --- | --- | --- |",
+        "| clinicaltrials_v2_search | NCT07626840 | Livalozet Versus High-intensity Statin | NOT_YET_RECRUITING | PHASE4 |",
+        "| clinicaltrials_v2_search | NCT02250976 | Fixed-dose Combination of Pitavastatin and Ezetimibe | COMPLETED | PHASE1 |",
+    ]
+)
+
+DOMESTIC_CLINICAL_REGISTRY_TABLE_FACT_MD = "\n".join(
+    [
+        "## 확정 fact set",
+        "### 임상시험 fact",
+        "| 출처 | 시험/식별자 | 제목/제품 | 상태 | 단계 |",
+        "| --- | --- | --- | --- | --- |",
+        "| mfds_clinical_trial_kr | 2026071501 | 리바로 안전성 연구 | 진행 중 | 3상 |",
+        "| mfds_clinical_trial_kr | 2026071502 | 피타바스타틴 병용 연구 | 종료 | 2상 |",
+    ]
+)
+
+ADVERSE_EVENT_FACT_MD = (
+    "- pitavastatin (2026-03-31): FAERS 자발보고 내 이상반응 = "
+    "FAERS 보고 26558911 · 2026-03-31 · 보고 반응: Acute kidney injury, "
+    "Diabetic ketoacidosis, Lactic acidosis [FDA 이상반응 보고 정보]"
+)
+
+
+def test_clinical_registry_policy_removes_outcome_and_market_elevation_but_keeps_evidence() -> None:
+    answer = "\n".join(
+        [
+            "리바로는 폭넓은 환자군에서 임상적 근거를 확보했고 장기적인 혈관 보호 효과를 입증했습니다.",
+            "이 결과는 안전성 프로파일을 강화하고 향후 시장 선점 경쟁을 주도할 가능성을 시사합니다.",
+            "글로벌 임상시험을 통해 안전성을 확보하고 약제 특성을 검증해 왔으며 임상적 유용성을 확인했습니다.",
+            "경동맥 연구는 혈관 건강 개선 가능성과 적응증 확대를 보여주며 신뢰할 수 있는 치료 옵션임을 시사합니다.",
+            "고지혈증 치료제는 복합 처방 효율성을 극대화하는 방향으로 진화하고 있습니다.",
+            "| 임상시험 번호 | 연구 제목 |",
+            "| --- | --- |",
+            "| NCT00257686 | Study to Compare the Efficacy and Safety of Pitavastatin and Pravastatin in Elderly Patients |",
+        ]
+    )
+
+    revised = apply_claim_policy("리바로 임상시험", answer, CLINICAL_REGISTRY_FACT_MD)
+
+    for forbidden in (
+        "임상적 근거",
+        "입증",
+        "혈관 보호 효과",
+        "안전성 프로파일",
+        "시장 선점",
+        "가능성을 시사",
+        "안전성을 확보",
+        "약제 특성을 검증",
+        "임상적 유용성을 확인",
+        "혈관 건강 개선 가능성",
+        "적응증 확대",
+        "신뢰할 수 있는 치료 옵션",
+        "효율성을 극대화",
+        "방향으로 진화",
+    ):
+        assert forbidden not in revised
+    assert "ClinicalTrials.gov 등록정보에서 글로벌 임상시험 1건" in revised
+    assert "식약처 등록정보에서 국내 임상시험 1건" in revised
+    assert "연구 등록과 제목을 보여주는 근거" in revised
+    assert "결과·효과·안전성 확정이나 개발 성공을 뜻하지는 않습니다" in revised
+    assert "NCT00257686" in revised
+    assert "Study to Compare the Efficacy and Safety" in revised
+
+    report = claim_policy_report(revised, CLINICAL_REGISTRY_FACT_MD)
+    assert "external_clinical_registry" in report["active_fact_types"]
+    assert report["forbidden_claims_remaining"] == ()
+
+
+def test_clinical_registry_policy_covers_current_fact_table_and_removes_live_overclaims() -> None:
+    answer = "\n".join(
+        [
+            "리바로는 다양한 임상시험을 통해 안전성과 유효성을 지속적으로 검증하고 있습니다.",
+            "이 연구들은 환자에게 최적의 치료 옵션을 제공하는 폭넓은 임상 포트폴리오를 보여줍니다.",
+            "| 임상시험 번호 | 연구 제목 |",
+            "| --- | --- |",
+            "| NCT07626840 | Livalozet Versus High-intensity Statin |",
+            "| NCT02250976 | Fixed-dose Combination of Pitavastatin and Ezetimibe |",
+        ]
+    )
+
+    revised = apply_claim_policy("리바로 임상시험", answer, CLINICAL_REGISTRY_TABLE_FACT_MD)
+
+    assert "안전성과 유효성을 지속적으로 검증" not in revised
+    assert "최적의 치료 옵션" not in revised
+    assert "폭넓은 임상 포트폴리오" not in revised
+    assert "ClinicalTrials.gov 등록정보에서 글로벌 임상시험 2건" in revised
+    assert "결과·효과·안전성 확정이나 개발 성공을 뜻하지는 않습니다" in revised
+    assert "NCT07626840" in revised
+    assert "NCT02250976" in revised
+
+    report = claim_policy_report(revised, CLINICAL_REGISTRY_TABLE_FACT_MD)
+    assert "external_clinical_registry" in report["active_fact_types"]
+    assert report["forbidden_claims_remaining"] == ()
+
+
+def test_clinical_registry_policy_covers_domestic_only_current_fact_table() -> None:
+    answer = "\n".join(
+        [
+            "리바로는 임상시험을 통해 안전성과 유효성을 지속적으로 검증하고 있습니다.",
+            "환자에게 최적의 치료 옵션을 제공하는 폭넓은 임상 포트폴리오를 보여줍니다.",
+            "| 시험 식별자 | 연구 제목 |",
+            "| --- | --- |",
+            "| 2026071501 | 리바로 안전성 연구 |",
+            "| 2026071502 | 피타바스타틴 병용 연구 |",
+        ]
+    )
+
+    revised = apply_claim_policy(
+        "리바로 국내 임상시험",
+        answer,
+        DOMESTIC_CLINICAL_REGISTRY_TABLE_FACT_MD,
+    )
+
+    assert "안전성과 유효성을 지속적으로 검증" not in revised
+    assert "최적의 치료 옵션" not in revised
+    assert "폭넓은 임상 포트폴리오" not in revised
+    assert "식약처 등록정보에서 국내 임상시험 2건" in revised
+    assert "ClinicalTrials.gov 등록정보" not in revised
+    assert "2026071501" in revised
+    assert "2026071502" in revised
+
+    report = claim_policy_report(revised, DOMESTIC_CLINICAL_REGISTRY_TABLE_FACT_MD)
+    assert "external_clinical_registry" in report["active_fact_types"]
+    assert report["forbidden_claims_remaining"] == ()
+
+
+def test_adverse_event_policy_never_presents_report_id_as_report_count() -> None:
+    answer = """Pitavastatin의 FAERS 보고 건수는 26,558,911건입니다.
+| 기준일 | 대상 성분 | FAERS 보고 건수 | 보고된 주요 이상반응 |
+| --- | --- | --- | --- |
+| 2026-03-31 | pitavastatin | 26,558,911 | Acute kidney injury, Diabetic ketoacidosis, Lactic acidosis |
+"""
+
+    revised = apply_claim_policy("pitavastatin 부작용", answer, ADVERSE_EVENT_FACT_MD)
+
+    assert "26,558,911건" not in revised
+    assert "FAERS 보고 건수" not in revised
+    assert "보고 ID이며 건수가 아닙니다" in revised
+    assert "| pitavastatin | 26558911 | 2026-03-31 | Acute kidney injury, Diabetic ketoacidosis, Lactic acidosis |" in revised
+    assert "자발보고는 약물과 반응의 인과관계를 입증하지 않습니다" in revised
 
 
 @pytest.mark.parametrize(
@@ -255,3 +410,45 @@ def test_news_context_policy_blocks_claim_elevation_language() -> None:
 
     assert "입증" not in revised
     assert "기사 제목과 요약은 시장 동향 참고 자료입니다" in revised
+
+
+def test_news_context_policy_scans_narrative_with_url_without_damaging_link() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "뉴스에서 리바로의 시장 확대가 입증됐습니다. "
+        "참고 링크: https://example.test/news/market-update"
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+
+    assert "입증" not in revised
+    assert "https://example.test/news/market-update" in revised
+
+
+def test_news_context_policy_preserves_url_sentence_before_forbidden_claim() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "참고 링크: https://example.test/news. "
+        "뉴스에서 리바로의 시장 확대가 입증됐습니다."
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+
+    assert "https://example.test/news" in revised
+    assert "입증" not in revised
+
+
+def test_claim_policy_report_does_not_treat_news_evidence_table_as_model_claim() -> None:
+    fact_md = "### 인사이트 근거 fact - 뉴스/이슈\n| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |"
+    answer = (
+        "기사 제목과 요약은 시장 동향 참고 자료입니다.\n\n"
+        "| 구분 | 원문 제목 |\n"
+        "| --- | --- |\n"
+        "| 뉴스 | 임상 효과 입증 기사 |"
+    )
+
+    revised = apply_claim_policy("리바로 관련 최근 뉴스", answer, fact_md)
+    report = claim_policy_report(revised, fact_md)
+
+    assert "임상 효과 입증 기사" in revised
+    assert report["forbidden_claims_remaining"] == ()

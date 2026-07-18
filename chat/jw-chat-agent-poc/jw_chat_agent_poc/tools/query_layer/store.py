@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -13,6 +14,7 @@ from jw_chat_agent_poc.agentic.sales_filter_aliases import normalise_channel_dat
 
 
 logger = logging.getLogger(__name__)
+startup_timing_logger = logging.getLogger("uvicorn.error")
 
 FAILED_VALUE_STATUSES: Final[frozenset[str]] = frozenset(
     {"query_failed", "mapping_failed", "incomplete_split", "missing", "error"}
@@ -78,12 +80,19 @@ class MartSnapshot:
 
     records: tuple[MartRecord, ...]
     loaded_at: float
+    derived: Any = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        from jw_chat_agent_poc.tools.query_layer.derived import DerivedSnapshotIndex
+
+        object.__setattr__(self, "derived", DerivedSnapshotIndex.build(self))
 
     def market_id_for_brand(self, brand: str) -> str | None:
-        for record in self.records:
-            if record.brand_name == brand:
-                return record.ml_id
-        return None
+        markets = self.market_ids_for_brand(brand)
+        return markets[0] if len(markets) == 1 else None
+
+    def market_ids_for_brand(self, brand: str) -> tuple[str, ...]:
+        return tuple(sorted({record.ml_id for record in self.records if record.brand_name == brand}))
 
     def source_for_market(self, market_id: str) -> str:
         sources = self.sources_for_market(market_id)
@@ -93,6 +102,17 @@ class MartSnapshot:
 
     def sources_for_market(self, market_id: str) -> tuple[str, ...]:
         return tuple(sorted({record.source for record in self.records if record.ml_id == market_id}))
+
+    def sources_for_brand(self, market_id: str, brand: str) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    record.source
+                    for record in self.records
+                    if record.ml_id == market_id and record.brand_name == brand and record.measure == "sales"
+                }
+            )
+        )
 
     def market_records(self, market_id: str, source: str = "ubist", measure: str = "sales") -> tuple[MartRecord, ...]:
         source_key = _source_key(source)
@@ -136,62 +156,70 @@ class MartSnapshot:
             if any(status in FAILED_VALUE_STATUSES for status in statuses):
                 return next(status for status in statuses if status in FAILED_VALUE_STATUSES)
             return "OK"
+        quarter_months = _quarter_months(period)
+        if quarter_months and period not in record.metric_history:
+            statuses = tuple(self.value_status(record, month) for month in quarter_months)
+            if any(status in FAILED_VALUE_STATUSES for status in statuses):
+                return next(status for status in statuses if status in FAILED_VALUE_STATUSES)
+            return "OK"
         row = record.metric_history.get(period)
         if not isinstance(row, dict):
+            return "missing"
+        raw_value = row.get("raw_value")
+        if isinstance(raw_value, int | float) and not math.isfinite(float(raw_value)):
             return "missing"
         return _row_status(row)
 
     def value_or_none(self, record: MartRecord, period: str) -> float | None:
         if len(period) == 4 and period.isdigit():
-            values = [
-                value
-                for key in sorted(record.metric_history)
-                if key.startswith(f"{period}-")
-                for value in (self.value_or_none(record, key),)
-                if value is not None
-            ]
-            return sum(values) if values else None
+            matching_periods = [key for key in sorted(record.metric_history) if key.startswith(f"{period}-")]
+            values = [self.value_or_none(record, key) for key in matching_periods]
+            return sum(value for value in values if value is not None) if values and all(value is not None for value in values) else None
+        quarter_months = _quarter_months(period)
+        if quarter_months and period not in record.metric_history:
+            values = tuple(self.value_or_none(record, month) for month in quarter_months)
+            return sum(value for value in values if value is not None) if all(value is not None for value in values) else None
         row = record.metric_history.get(period)
         if not isinstance(row, dict) or _row_status(row) in FAILED_VALUE_STATUSES:
             return None
         value = row.get("raw_value")
-        return float(value) if isinstance(value, int | float) else None
+        if not isinstance(value, int | float):
+            return None
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
 
-    def value(self, record: MartRecord, period: str) -> float:
-        value = self.value_or_none(record, period)
-        return value if value is not None else 0.0
+    def value(self, record: MartRecord, period: str) -> float | None:
+        return self.value_or_none(record, period)
 
     def market_value_or_none(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
-        values = [
-            value
-            for record in self.market_records(market_id, source, measure)
-            for value in (self.value_or_none(record, period),)
-            if value is not None
-        ]
-        return sum(values) if values else None
+        records = self.market_records(market_id, source, measure)
+        values = [self.value_or_none(record, period) for record in records]
+        return sum(value for value in values if value is not None) if values and all(value is not None for value in values) else None
 
-    def market_value(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        value = self.market_value_or_none(market_id, period, source, measure)
-        return value if value is not None else 0.0
+    def market_value(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        return self.market_value_or_none(market_id, period, source, measure)
 
     def share_or_none(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
         value = self.value_or_none(record, period)
         if value is None:
             return None
-        if len(period) == 4 and period.isdigit():
-            total = self.market_value_or_none(market_id, period, source, measure)
-            return value / total * 100 if total else 0.0
-        row = record.metric_history.get(period)
-        if isinstance(row, dict):
-            share = row.get("ms")
-            if isinstance(share, int | float):
-                return float(share)
+        stored_share = None
+        if not (len(period) == 4 and period.isdigit()):
+            row = record.metric_history.get(period)
+            if isinstance(row, dict):
+                share = row.get("ms")
+                if isinstance(share, int | float):
+                    numeric_share = float(share)
+                    stored_share = numeric_share if math.isfinite(numeric_share) else None
         total = self.market_value_or_none(market_id, period, source, measure)
-        return value / total * 100 if total else 0.0
+        if total is None or total == 0:
+            return None
+        if stored_share is not None:
+            return stored_share
+        return value / total * 100
 
-    def share(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        value = self.share_or_none(market_id, record, period, source, measure)
-        return value if value is not None else 0.0
+    def share(self, market_id: str, record: MartRecord, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        return self.share_or_none(market_id, record, period, source, measure)
 
     def rank(self, market_id: str, brand: str, period: str, source: str = "ubist", measure: str = "sales") -> int | None:
         rows = self.ranked_brands(market_id, period, source, measure)
@@ -208,12 +236,21 @@ class MartSnapshot:
             value = self.value_or_none(record, period)
             if value is None:
                 continue
+            share = None
+            if total is not None and total != 0:
+                if not (len(period) == 4 and period.isdigit()):
+                    period_row = record.metric_history.get(period)
+                    if isinstance(period_row, dict) and isinstance(period_row.get("ms"), int | float):
+                        numeric_share = float(period_row["ms"])
+                        share = numeric_share if math.isfinite(numeric_share) else None
+                if share is None:
+                    share = value / total * 100
             rows.append(
                 {
                     "brand": record.brand_name,
                     "value": value,
                     "source_status": self.value_status(record, period),
-                    "ms_recent_pct": self.share(market_id, record, period, source, measure) if total is not None else 0.0,
+                    "ms_recent_pct": share,
                     "company": record.company(),
                     "molecule": record.molecule(),
                 }
@@ -228,33 +265,51 @@ class MartSnapshot:
         rows: list[dict[str, Any]] = []
         for period in periods:
             value = self.value_or_none(record, period)
-            if value is None:
-                continue
+            ranked_row = None
+            if value is not None:
+                ranked_row = next(
+                    (
+                        row
+                        for row in self.ranked_brands(market_id, period, source, measure)
+                        if row["brand"] == brand
+                    ),
+                    None,
+                )
             rows.append(
                 {
                     "period": period,
                     "value_krw": value,
-                    "value_억원": round(value / 100_000_000, 2),
-                    "ms_pct": self.share(market_id, record, period, source, measure),
-                    "rank": self.rank(market_id, brand, period, source, measure),
+                    "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                    "ms_pct": ranked_row["ms_recent_pct"] if ranked_row is not None else None,
+                    "rank": int(ranked_row["rank"]) if ranked_row is not None else None,
                     "source_status": self.value_status(record, period),
                 }
             )
         return rows
 
     def market_series(self, market_id: str, periods: Iterable[str], source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
-        return [
-            {
-                "period": period,
-                "value_krw": self.market_value(market_id, period, source, measure),
-                "value_억원": round(self.market_value(market_id, period, source, measure) / 100_000_000, 2),
-            }
-            for period in periods
-        ]
+        rows: list[dict[str, Any]] = []
+        for period in periods:
+            value = self.market_value_or_none(market_id, period, source, measure)
+            rows.append(
+                {
+                    "period": period,
+                    "value_krw": value,
+                    "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                }
+            )
+        return rows
 
-    def hhi(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float:
-        shares = [row["ms_recent_pct"] for row in self.ranked_brands(market_id, period, source, measure)]
-        return sum(float(share) ** 2 for share in shares)
+    def hhi(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
+        shares = [row["ms_recent_pct"] for row in self.ranked_brands(market_id, period, source, measure) if row["ms_recent_pct"] is not None]
+        return sum(float(share) ** 2 for share in shares) if shares else None
+
+
+def _quarter_months(period: str) -> tuple[str, ...]:
+    if len(period) != 7 or period[4:6] != "-Q" or period[-1] not in "1234" or not period[:4].isdigit():
+        return ()
+    first_month = (int(period[-1]) - 1) * 3 + 1
+    return tuple(f"{period[:4]}-{month:02d}" for month in range(first_month, first_month + 3))
 
 
 class StrategicMartReader(Protocol):
@@ -283,6 +338,7 @@ class MariaDbStrategicMartReader:
     def load(self) -> MartSnapshot:
         import pymysql
 
+        started_at = time.monotonic()
         sql = f"""
             SELECT ml_id, brand_name, source, measure,
                    metric_history, channel_data, specialty_data, dimension_data, by_dimension
@@ -306,7 +362,21 @@ class MariaDbStrategicMartReader:
             with connection.cursor() as cursor:
                 cursor.execute(sql)
                 rows = cursor.fetchall()
-        return MartSnapshot(tuple(MartRecord.from_row(dict(row)) for row in rows), time.monotonic())
+        query_completed_at = time.monotonic()
+        records = tuple(MartRecord.from_row(dict(row)) for row in rows)
+        deserialization_completed_at = time.monotonic()
+        snapshot = MartSnapshot(records, time.monotonic())
+        completed_at = time.monotonic()
+        startup_timing_logger.info(
+            "strategic mart snapshot load stages snapshot_query_s=%.3f "
+            "deserialization_s=%.3f build_s=%.3f total_s=%.3f records=%d",
+            query_completed_at - started_at,
+            deserialization_completed_at - query_completed_at,
+            completed_at - deserialization_completed_at,
+            completed_at - started_at,
+            len(records),
+        )
+        return snapshot
 
 
 class TtlStrategicMartStore:
@@ -320,6 +390,8 @@ class TtlStrategicMartStore:
         self._ttl_seconds = ttl_seconds
         self._snapshot: MartSnapshot | None = None
         self._snapshot_lock = threading.Lock()
+        self._load_lock = threading.Lock()
+        self._refreshing = False
         if prewarm:
             self.prewarm()
 
@@ -333,17 +405,11 @@ class TtlStrategicMartStore:
 
     def _prewarm_snapshot(self) -> None:
         started_at = time.monotonic()
-        with self._snapshot_lock:
-            current = self._snapshot
-            now = time.monotonic()
-            if current is not None and now - current.loaded_at <= self._ttl_seconds:
-                return
-            try:
-                snapshot = self._reader.load()
-            except Exception:  # noqa: BLE001 - background prewarm must not break requests
-                logger.exception("strategic mart snapshot prewarm failed")
-                return
-            self._snapshot = snapshot
+        try:
+            snapshot = self._load_cold_snapshot()
+        except Exception:  # noqa: BLE001 - background prewarm must not break requests
+            logger.exception("strategic mart snapshot prewarm failed")
+            return
         logger.info(
             "strategic mart snapshot prewarmed",
             extra={
@@ -356,10 +422,69 @@ class TtlStrategicMartStore:
         with self._snapshot_lock:
             current = self._snapshot
             now = time.monotonic()
-            if current is None or now - current.loaded_at > self._ttl_seconds:
-                current = self._reader.load()
+            if current is not None:
+                if now - current.loaded_at > self._ttl_seconds:
+                    self._start_refresh_locked()
+                return current
+        return self._load_cold_snapshot()
+
+    def _load_cold_snapshot(self) -> MartSnapshot:
+        with self._load_lock:
+            with self._snapshot_lock:
+                current = self._snapshot
+                if current is not None:
+                    return current
+            current = self._reader.load()
+            with self._snapshot_lock:
                 self._snapshot = current
             return current
+
+    def _start_refresh_locked(self) -> None:
+        if self._refreshing:
+            return
+        self._refreshing = True
+        thread = threading.Thread(
+            target=self._refresh_snapshot,
+            name="strategic-mart-ttl-refresh",
+            daemon=True,
+        )
+        thread.start()
+
+    def _refresh_snapshot(self) -> None:
+        started_at = time.monotonic()
+        startup_timing_logger.info("strategic mart TTL refresh started")
+        try:
+            snapshot = self._reader.load()
+        except Exception:  # noqa: BLE001 - refresh failure must preserve the serving snapshot
+            with self._snapshot_lock:
+                self._refreshing = False
+            logger.exception("strategic mart TTL refresh failed")
+            return
+        with self._snapshot_lock:
+            self._snapshot = snapshot
+            self._refreshing = False
+        startup_timing_logger.info(
+            "strategic mart TTL refresh completed elapsed_s=%.3f records=%d",
+            time.monotonic() - started_at,
+            len(snapshot.records),
+        )
+
+
+_SHARED_STORE_LOCK = threading.Lock()
+_SHARED_MART_STORES: dict[int, TtlStrategicMartStore] = {}
+
+
+def shared_strategic_mart_store(ttl_seconds: int = 300) -> TtlStrategicMartStore:
+    """Return the process-wide mart snapshot store for the requested TTL."""
+    with _SHARED_STORE_LOCK:
+        store = _SHARED_MART_STORES.get(ttl_seconds)
+        if store is None:
+            store = TtlStrategicMartStore(
+                MariaDbStrategicMartReader(),
+                ttl_seconds=ttl_seconds,
+            )
+            _SHARED_MART_STORES[ttl_seconds] = store
+        return store
 
 
 def _loads(value: Any) -> dict[str, Any]:

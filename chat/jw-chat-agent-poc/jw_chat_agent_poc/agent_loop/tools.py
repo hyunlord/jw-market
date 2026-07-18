@@ -5,9 +5,25 @@ from dataclasses import asdict, dataclass
 import logging
 from typing import Any, Mapping
 
-from jw_chat_agent_poc.agent_loop.external_tools import clinical_call, disease_stats_call, drug_info_call, patent_call, patent_ingredient_call, procedure_stats_call, search_news_call, web_search_call
-from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding, display_period, require_available_period, resolve_relative_expression
-from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, query_spec, top_brands
+from jw_chat_agent_poc.agent_loop.external_tools import (
+    clinical_call,
+    disease_stats_call,
+    drug_info_call,
+    patent_call,
+    patent_ingredient_call,
+    procedure_stats_call,
+    safety_call,
+    search_news_call,
+    web_search_call,
+)
+from jw_chat_agent_poc.agent_loop.periods import (
+    AgentPeriodGrounding,
+    build_period_grounding,
+    display_period,
+    require_available_period,
+    resolve_relative_expression,
+)
+from jw_chat_agent_poc.agent_loop.query_tools import BRAND_TOOLS, PERIOD_TOOLS, brand_metric, catalog_for, compare_series, dimension_breakdown, int_arg, query_spec, top_brands
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.tool_helpers import closest_allowed_brand, ground_news_query, market_members, metric_measure, period_filters, system_current_month
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -30,6 +46,9 @@ class ToolExecution:
     call: dict[str, Any]
     arguments: Mapping[str, str]
 
+    def __post_init__(self) -> None:
+        self.call.setdefault("status", self.status)
+
 
 class AgentToolFacade:
     def __init__(
@@ -43,6 +62,7 @@ class AgentToolFacade:
         news: DeepAnalysisNewsTool | None = None,
         external: ExternalApiClient | None = None,
         query_layer: StrategicQueryLayer | None = None,
+        market_by_brand: Mapping[str, str] | None = None,
     ) -> None:
         self._metrics = metrics
         self._resolver = resolver
@@ -52,9 +72,15 @@ class AgentToolFacade:
         self._news = news or DeepAnalysisNewsTool()
         self._external = external or ExternalApiClient()
         self._query_layer = query_layer
+        self._market_by_brand = dict(market_by_brand or {})
 
-    def schemas(self) -> tuple[dict[str, Any], ...]:
-        return tool_schemas(self._allowed_brands, self._periods.schema_periods, self._query_catalog())
+    def schemas(self, planner_allowed_brands: tuple[str, ...] | None = None) -> tuple[dict[str, Any], ...]:
+        schema_brands = self._allowed_brands if planner_allowed_brands is None else planner_allowed_brands
+        return tool_schemas(schema_brands, self._periods.schema_periods, self._query_catalog())
+
+    def available_sources(self) -> tuple[str, ...] | None:
+        catalog = self._query_catalog()
+        return catalog.sources if catalog is not None else None
 
     def execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
         try:
@@ -80,6 +106,8 @@ class AgentToolFacade:
                 return self._patent(grounded_arguments)
             if name == "search_drug_info":
                 return self._drug_info(grounded_arguments)
+            if name == "search_safety":
+                return self._safety(grounded_arguments)
             if name == "csd_activity_trend":
                 return self._csd_activity_trend(grounded_arguments)
             if name == "web_search":
@@ -135,8 +163,6 @@ class AgentToolFacade:
             period = require_available_period(grounded.get("period"), self._periods)
             if period is not None:
                 grounded["period"] = period
-        if name == "query" and "brand" not in grounded and self._allowed_brands:
-            grounded["brand"] = self._allowed_brands[0]
         return grounded
 
     def _metric(self, arguments: Mapping[str, str]) -> ToolExecution:
@@ -145,9 +171,15 @@ class AgentToolFacade:
         period_arg = arguments.get("period")
         if self._query_layer is not None:
             try:
-                call = self._query_layer.brand_metric(brand, measure, display_period(period_arg, self._periods))
-            except (LookupError, TypeError, ValueError):
-                pass
+                call = self._query_layer.brand_metric(brand, measure, period_arg or "latest", market=self._market(brand))
+            except (LookupError, TypeError, ValueError) as exc:
+                return _tool_error(
+                    "get_metric",
+                    arguments,
+                    _query_failed_message(),
+                    status=QUERY_FAILED_STATUS,
+                    error=exc,
+                )
             else:
                 return ToolExecution("ok", f"{brand} {measure} query-layer", call, arguments)
         call = self._metrics.get_brand_metric(brand, metric=measure, period=display_period(period_arg, self._periods), filter_entries=period_filters(period_arg))
@@ -164,9 +196,15 @@ class AgentToolFacade:
         brand = self._brand(arguments)
         if self._query_layer is not None:
             try:
-                call = self._query_layer.market_scope(brand)
-            except (LookupError, TypeError, ValueError):
-                pass
+                call = self._query_layer.market_scope(brand, market=self._market(brand))
+            except (LookupError, TypeError, ValueError) as exc:
+                return _tool_error(
+                    "get_market_scope",
+                    arguments,
+                    _query_failed_message(),
+                    status=QUERY_FAILED_STATUS,
+                    error=exc,
+                )
             else:
                 data = call.setdefault("render_data", {})
                 if isinstance(data, dict):
@@ -174,18 +212,29 @@ class AgentToolFacade:
                 return ToolExecution("ok", f"{brand} query-layer market scope", call, arguments)
         if self._metrics._mode != "cache":
             return self._fixture_market_scope(brand, arguments)
-        snapshot = self._metrics._cache.snapshot()
-        bridge = self._metrics._find_brand_bridge(snapshot.cache_brands, brand)
-        market_id = str(bridge.get("market_id") or "")
-        call = self._metrics.get_market_landscape(market_id, view_type=arguments.get("view", "market_landscape"))
-        members = market_members(snapshot.cache_brands, market_id)
-        data = call.setdefault("render_data", {})
-        data["anchor_brand"] = brand
-        data["member_brands"] = members
-        return ToolExecution("ok", f"{brand} market={market_id} members={','.join(members)}", call, arguments)
+        if self._metrics._legacy_cache_injected:
+            snapshot = self._metrics._cache.snapshot()
+            bridge = self._metrics._find_brand_bridge(snapshot.cache_brands, brand)
+            market_id = str(bridge.get("market_id") or "")
+            call = self._metrics.get_market_landscape(market_id, view_type=arguments.get("view", "market_landscape"))
+            members = market_members(snapshot.cache_brands, market_id)
+            data = call.setdefault("render_data", {})
+            data["anchor_brand"] = brand
+            data["member_brands"] = members
+            return ToolExecution("ok", f"{brand} market={market_id} members={','.join(members)}", call, arguments)
+        return _tool_error(
+            "get_market_scope",
+            arguments,
+            _query_failed_message(),
+            status=QUERY_FAILED_STATUS,
+            error=LookupError("d2 query-layer is unavailable"),
+        )
 
     def _fixture_market_scope(self, brand: str, arguments: Mapping[str, str]) -> ToolExecution:
-        market_id = "ml_006" if brand in {"리바로", "리바로젯"} else "mock_market"
+        resolution = self._resolver.resolve(brand, allow_default=False)
+        market_id = resolution.market_id
+        if market_id is None:
+            raise LookupError(f"market is unresolved for {brand}")
         call = self._metrics.get_market_landscape(market_id, view_type=arguments.get("view", "market_landscape"))
         data = call.setdefault("render_data", {})
         data["anchor_brand"] = brand
@@ -260,6 +309,13 @@ class AgentToolFacade:
         call["render_data"]["brand"] = brand
         return ToolExecution("ok", f"{brand} MFDS permission", call, arguments)
 
+    def _safety(self, arguments: Mapping[str, str]) -> ToolExecution:
+        brand = self._brand(arguments)
+        resolution = self._resolver.resolve(brand, allow_default=False)
+        call = safety_call(resolution, self._external)
+        call["render_data"]["brand"] = brand
+        return ToolExecution(call.get("status", "ok"), f"{brand} FDA safety", call, arguments)
+
     def _csd_activity_trend(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
         call = self._metrics.get_csd_activity_trend(brand)
@@ -278,29 +334,51 @@ class AgentToolFacade:
 
     def _query_metric(self, arguments: Mapping[str, str], metric: str) -> ToolExecution:
         brand = self._brand(arguments)
-        period = display_period(arguments.get("period"), self._periods)
-        result = brand_metric(self._query_layer, brand, metric, period)
+        period = arguments.get("period") or "latest"
+        result = brand_metric(
+            self._query_layer,
+            brand,
+            metric,
+            period,
+            self._market(brand),
+            arguments.get("source", ""),
+            int_arg(arguments.get("history_points"), 10),
+        )
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _compare_brands_series(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        result = compare_series(self._query_layer, brand, arguments.get("comparison_brand", ""))
+        result = compare_series(self._query_layer, brand, arguments.get("comparison_brand", ""), self._market(brand))
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _top_brands(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        result = top_brands(self._query_layer, brand, arguments.get("limit"))
+        result = top_brands(
+            self._query_layer,
+            brand,
+            arguments.get("limit"),
+            self._market(brand),
+            arguments.get("source", ""),
+        )
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _dimension_breakdown(self, arguments: Mapping[str, str], dimension: str) -> ToolExecution:
         brand = self._brand(arguments)
-        result = dimension_breakdown(self._query_layer, brand, dimension, arguments)
+        result = dimension_breakdown(self._query_layer, brand, dimension, arguments, self._market(brand))
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _query_spec(self, arguments: Mapping[str, str]) -> ToolExecution:
-        fallback_brand = arguments.get("brand") or (self._allowed_brands[0] if self._allowed_brands else "")
-        result = query_spec(self._query_layer, arguments, fallback_brand)
+        fallback_brand = arguments.get("brand", "")
+        query_arguments = dict(arguments)
+        if fallback_brand and self._market(fallback_brand):
+            spec = parse_spec(arguments.get("spec", ""))
+            spec.setdefault("market", self._market(fallback_brand))
+            query_arguments["spec"] = spec
+        result = query_spec(self._query_layer, query_arguments, fallback_brand)
         return ToolExecution("ok", result.preview, result.call, arguments)
+
+    def _market(self, brand: str) -> str | None:
+        return self._market_by_brand.get(brand)
 
     def _brand(self, arguments: Mapping[str, str]) -> str:
         raw = arguments.get("brand", "")
@@ -318,8 +396,8 @@ class AgentToolFacade:
         raise UnsupportedBrandError(f"Brand argument '{canonical}' is outside the allowed canonical brand enum: {', '.join(self._allowed_brands)}.")
 
     def _query_catalog(self):
-        brand = self._allowed_brands[0] if self._allowed_brands else None
-        return catalog_for(self._query_layer, brand)
+        brand = next(iter(self._allowed_brands)) if len(self._allowed_brands) == 1 else None
+        return catalog_for(self._query_layer, brand, self._market(brand) if brand else None)
 
     def _error_render_context(self, name: str, arguments: Mapping[str, str]) -> dict[str, Any]:
         if name != "query":

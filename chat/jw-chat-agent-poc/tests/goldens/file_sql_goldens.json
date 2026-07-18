@@ -1,0 +1,253 @@
+{
+  "owner": "chat file SQL contract",
+  "rule": "A golden requires an exact request, source identity, calculation method, and independent source-of-truth evidence. Mock output is never a truth basis.",
+  "contracts": [
+    {
+      "id": "chso_sell_out_total_2026_01",
+      "gate_enabled": true,
+      "request": {
+        "kind": "file_sql",
+        "exact": "2026년 1월 총 sell-out 금액은?"
+      },
+      "source": {
+        "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01",
+        "sheet_name": "Sell Out  Standard",
+        "data_row_count": 12268,
+        "column_count": 252,
+        "measure_column": "VALUES LC SI PRICE\n1/2026"
+      },
+      "generation_method": {
+        "description": "Sum the measure column over all 12,268 source data rows.",
+        "canonicalization": "XLSX numeric cells are summed as integers; no display-text parsing or rounding is applied.",
+        "environment": "Independent direct-XLSX reproduction"
+      },
+      "calculation": {
+        "filters": {},
+        "aggregate": "SUM(VALUES LC SI PRICE 1/2026)"
+      },
+      "expected": {
+        "value": 386933825518,
+        "applied_rows": 12268
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "source_reproduction",
+        "evidence": "The original XLSX measure column was independently summed, rather than copied from an API response or mock.",
+        "evidence_paths": ["audit://8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T20:54:13+09:00",
+        "database": "not_applicable: direct XLSX calculation",
+        "build_sha": "not_applicable: direct XLSX calculation",
+        "runtime_digest": "not_applicable: direct XLSX calculation",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01"
+      }
+    },
+    {
+      "id": "chso_donga_sell_out_total_2026_01",
+      "gate_enabled": true,
+      "request": {
+        "kind": "file_sql",
+        "exact": "동아제약의 sell-out 합계는?"
+      },
+      "source": {
+        "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01",
+        "sheet_name": "Sell Out  Standard",
+        "data_row_count": 12268,
+        "column_count": 252,
+        "measure_column": "VALUES LC SI PRICE\n1/2026"
+      },
+      "generation_method": {
+        "description": "Filter the original sheet to MFR NAME KOR=동아제약 and sum the measure column.",
+        "canonicalization": "Exact manufacturer equality and integer summation; no rounding.",
+        "environment": "Independent direct-XLSX reproduction"
+      },
+      "calculation": {
+        "filters": {"MFR NAME KOR": "동아제약"},
+        "aggregate": "SUM(VALUES LC SI PRICE 1/2026)"
+      },
+      "expected": {
+        "value": 21978584141,
+        "applied_rows": 348
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "source_reproduction",
+        "evidence": "The original XLSX rows for the exact manufacturer label were independently filtered and summed.",
+        "evidence_paths": ["audit://8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T20:54:13+09:00",
+        "database": "not_applicable: direct XLSX calculation",
+        "build_sha": "not_applicable: direct XLSX calculation",
+        "runtime_digest": "not_applicable: direct XLSX calculation",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01"
+      }
+    },
+    {
+      "id": "chso_dongwha_sell_out_total_2026_01",
+      "gate_enabled": true,
+      "request": {
+        "kind": "file_sql",
+        "exact": "동화약품의 합계는?"
+      },
+      "source": {
+        "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01",
+        "sheet_name": "Sell Out  Standard",
+        "data_row_count": 12268,
+        "column_count": 252,
+        "measure_column": "VALUES LC SI PRICE\n1/2026"
+      },
+      "generation_method": {
+        "description": "Filter the original sheet to MFR NAME KOR=동화약품 and sum the measure column.",
+        "canonicalization": "Exact manufacturer equality and integer summation; no rounding.",
+        "environment": "Independent direct-XLSX reproduction"
+      },
+      "calculation": {
+        "filters": {"MFR NAME KOR": "동화약품"},
+        "aggregate": "SUM(VALUES LC SI PRICE 1/2026)"
+      },
+      "expected": {
+        "value": 15188575523,
+        "applied_rows": 208
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "source_reproduction",
+        "evidence": "The original XLSX rows for the exact manufacturer label were independently filtered and summed.",
+        "evidence_paths": ["audit://8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T20:54:13+09:00",
+        "database": "not_applicable: direct XLSX calculation",
+        "build_sha": "not_applicable: direct XLSX calculation",
+        "runtime_digest": "not_applicable: direct XLSX calculation",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01"
+      }
+    },
+    {
+      "id": "chso_donga_dongwha_sell_out_difference_2026_01",
+      "gate_enabled": true,
+      "request": {
+        "kind": "calculation",
+        "exact": "동아제약과 동화약품 비교"
+      },
+      "generation_method": {
+        "description": "Subtract the independently reproduced 동화약품 total from the independently reproduced 동아제약 total.",
+        "canonicalization": "Integer subtraction: 21,978,584,141 - 15,188,575,523; no rounding.",
+        "environment": "Independent arithmetic over two source-reproduced XLSX totals"
+      },
+      "expected": {
+        "value": 6790008618,
+        "left_value": 21978584141,
+        "right_value": 15188575523
+      },
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "derived_from_source_reproductions",
+        "evidence": "The difference is derived only from the two independently reproduced original-XLSX totals.",
+        "evidence_paths": ["audit://8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T20:54:13+09:00",
+        "database": "not_applicable: direct XLSX calculation",
+        "build_sha": "not_applicable: direct XLSX calculation",
+        "runtime_digest": "not_applicable: direct XLSX calculation",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01"
+      }
+    },
+    {
+      "id": "chso_r05a0_manufacturer_sell_out_compare_2026_01",
+      "gate_enabled": true,
+      "request": {
+        "kind": "file_sql",
+        "exact": "ATC4 R05A0에서 동아제약과 동화약품의 sell-out 금액 비교"
+      },
+      "source": {
+        "file_name": "CHSO_KOR_SellOut_Basic_Feb-19-2026(2026년 1월까지).xlsx",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01",
+        "sheet_name": "Sell Out  Standard",
+        "data_row_count": 12268,
+        "column_count": 252,
+        "measure_column": "VALUES LC SI PRICE\n1/2026"
+      },
+      "generation_method": {
+        "description": "Filter ATC 4=R05A0_COLD PREPARATIONS, group by the two exact manufacturer labels, and sum the measure column.",
+        "canonicalization": "Exact text filters and integer sums; all 60 amount columns and 148 ATC4 values were exhaustively checked for label/value uniqueness.",
+        "environment": "Independent direct-XLSX reproduction"
+      },
+      "calculation": {
+        "filters": {
+          "ATC 4": "R05A0_COLD PREPARATIONS",
+          "MFR NAME KOR": ["동화약품", "동아제약"]
+        },
+        "aggregate": "SUM(VALUES LC SI PRICE 1/2026) GROUP BY MFR NAME KOR"
+      },
+      "expected": [
+        {"manufacturer": "동화약품", "value": 3853883875, "applied_rows": 22},
+        {"manufacturer": "동아제약", "value": 3315233364, "applied_rows": 17}
+      ],
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "source_reproduction",
+        "evidence": "Original XLSX direct reproduction; exhaustive comparison across 60 amount columns and 148 ATC4 values found this value pair only for R05A0.",
+        "evidence_paths": ["audit://8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T20:54:13+09:00",
+        "database": "not_applicable: direct XLSX calculation",
+        "build_sha": "not_applicable: direct XLSX calculation",
+        "runtime_digest": "not_applicable: direct XLSX calculation",
+        "file_sha256": "f27675732be492c5815bf28abb0472e864d490d21e39fd3d4f598e236c204d01"
+      }
+    },
+    {
+      "id": "bpi_q1_no_reference_pairs",
+      "gate_enabled": true,
+      "request": {
+        "kind": "file_sql",
+        "exact": "BPI 파일에서 q1=690 및 q1=910에 대응하는 no 값을 조회"
+      },
+      "source": {
+        "file_name": "BPI source workbook",
+        "file_sha256": "48e1b638e54424e121f75eed1919d06a182150d103778ba07b2411177dcf58f9",
+        "sheet_name": "numeric",
+        "data_row_count": 1600,
+        "column_count": 1711,
+        "lookup_column": "q1",
+        "value_column": "no"
+      },
+      "generation_method": {
+        "description": "Read the original workbook numeric sheet and perform exact q1 lookups for 690 and 910.",
+        "canonicalization": "Numeric equality on q1; return the corresponding integer no cell without formatting conversion.",
+        "environment": "Independent direct-XLSX reproduction"
+      },
+      "expected": [
+        {"q1": 690, "no": 2679529},
+        {"q1": 910, "no": 2555501}
+      ],
+      "truth_basis_status": "confirmed",
+      "truth_basis": {
+        "type": "source_reproduction",
+        "evidence": "The q1/no pairs were independently read from the original XLSX rather than copied from planner or renderer output.",
+        "evidence_paths": ["audit://8ed569124d4138a8675a24be40b02e684cea610e4cb8424006ef3dfc8e570044"],
+        "independent_of_observation": true
+      },
+      "measurement_context": {
+        "measured_at": "2026-07-14T20:54:13+09:00",
+        "database": "not_applicable: direct XLSX calculation",
+        "build_sha": "not_applicable: direct XLSX calculation",
+        "runtime_digest": "not_applicable: direct XLSX calculation",
+        "file_sha256": "48e1b638e54424e121f75eed1919d06a182150d103778ba07b2411177dcf58f9"
+      }
+    }
+  ]
+}

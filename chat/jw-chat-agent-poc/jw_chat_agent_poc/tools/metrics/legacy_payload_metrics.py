@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from jw_chat_agent_poc.agentic import FilterEntry, validate_metric_filters
-from jw_chat_agent_poc.tools.metrics.cache_cause_series import brand_series_10pt, market_size_series, top_brand_trend_series
+from jw_chat_agent_poc.tools.metrics.legacy_payload_series import brand_series_10pt, market_size_series, top_brand_trend_series
 from jw_chat_agent_poc.tools.metrics.cache_live import CausePayloadKey
 from jw_chat_agent_poc.tools.metrics.sales_filtering import filtered_metric_result, unsupported_metric
 
@@ -30,7 +30,7 @@ class CauseMetricMixin:
         try:
             payload = self._cause_cache.payload(key).payload
         except (LookupError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            LOGGER.warning("cache_cause filtered metric lookup failed", exc_info=exc)
+            LOGGER.warning("legacy payload filtered metric lookup failed", exc_info=exc)
             return unsupported_metric(
                 brand,
                 metric,
@@ -53,7 +53,7 @@ class CauseMetricMixin:
         try:
             payload = self._cause_cache.payload(key).payload
         except (LookupError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            LOGGER.warning("cache_cause metric lookup failed", exc_info=exc)
+            LOGGER.warning("legacy payload metric lookup failed", exc_info=exc)
             return self._unsupported(
                 brand=brand,
                 metric=metric,

@@ -6,6 +6,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
 )
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.router import BQRouter
+from jw_chat_agent_poc.tools.external.cached_client import CachedExternalApiClient
 
 
 def test_agent_loop_factory_preserves_external_mode_and_default_query_layer(monkeypatch) -> None:
@@ -31,6 +32,25 @@ def test_agent_loop_factory_preserves_disabled_query_layer(monkeypatch) -> None:
 
     # Then: the query layer remains absent, matching the old ChatAgent private helper.
     assert deps.query_layer is None
+
+
+def test_live_agent_factories_share_external_result_cache(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_EXTERNAL_RESULT_CACHE_TTL_SECONDS", "90")
+    monkeypatch.setenv("CHAT_EXTERNAL_RESULT_CACHE_MAX_ENTRIES", "32")
+
+    first = build_agent_loop_dependencies(external_mode="live")
+    second = build_agent_loop_dependencies(external_mode="live")
+
+    assert first.external is not second.external
+    assert first.external._result_cache is second.external._result_cache
+
+
+def test_fixture_agent_factories_do_not_share_external_result_cache() -> None:
+    first = build_agent_loop_dependencies(external_mode="fixture")
+    second = build_agent_loop_dependencies(external_mode="fixture")
+
+    assert not isinstance(first.external, CachedExternalApiClient)
+    assert not isinstance(second.external, CachedExternalApiClient)
 
 
 def test_unsupported_brand_result_matches_chat_agent_contract() -> None:

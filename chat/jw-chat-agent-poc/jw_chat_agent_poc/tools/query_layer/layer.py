@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.tools.query_layer.catalog import QueryCatalog, default_catalog
 from jw_chat_agent_poc.tools.query_layer.compute import (
     brand_average_share_data,
     brand_yoy_data,
+    derived_metric_render_data,
     grouped_rows,
     grouped_trends,
     metric_render_data,
     top_trend,
 )
 from jw_chat_agent_poc.tools.query_layer.render import (
+    format_eok,
+    format_pct,
     level_segments,
     metric_name,
     metric_summary,
@@ -22,11 +26,11 @@ from jw_chat_agent_poc.tools.query_layer.render import (
 from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, bounded_limit, level_name, parse_spec, validate_spec
 from jw_chat_agent_poc.tools.query_layer.store import (
-    MariaDbStrategicMartReader,
     MartRecord,
     MartSnapshot,
     StrategicMartReader,
     TtlStrategicMartStore,
+    shared_strategic_mart_store,
 )
 
 
@@ -36,15 +40,18 @@ class QueryResultStore:
 
     _items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     _counter: int = 0
+    _lock: Lock = field(default_factory=Lock, repr=False)
 
     def put(self, rows: list[dict[str, Any]]) -> str:
-        self._counter += 1
-        result_id = f"qr_{self._counter:04d}"
-        self._items[result_id] = rows
-        return result_id
+        with self._lock:
+            self._counter += 1
+            result_id = f"qr_{self._counter:04d}"
+            self._items[result_id] = rows
+            return result_id
 
     def get(self, result_id: str) -> list[dict[str, Any]]:
-        return self._items[result_id]
+        with self._lock:
+            return self._items[result_id]
 
 
 class StrategicQueryLayer:
@@ -54,24 +61,53 @@ class StrategicQueryLayer:
         self,
         *,
         reader: StrategicMartReader | None = None,
+        store: TtlStrategicMartStore | None = None,
         result_store: QueryResultStore | None = None,
         ttl_seconds: int = 300,
     ) -> None:
-        self._store = TtlStrategicMartStore(reader or MariaDbStrategicMartReader(), ttl_seconds=ttl_seconds)
+        if store is not None:
+            self._store = store
+        elif reader is not None:
+            self._store = TtlStrategicMartStore(reader, ttl_seconds=ttl_seconds)
+        else:
+            self._store = shared_strategic_mart_store(ttl_seconds)
         self._results = result_store or QueryResultStore()
 
-    def catalog_for_brand(self, brand: str | None) -> QueryCatalog:
+    def catalog_for_brand(self, brand: str | None, market: str | None = None) -> QueryCatalog:
         snapshot = self._snapshot()
-        market = snapshot.market_id_for_brand(brand or "")
-        if market is None:
+        selected_market = _required_market(snapshot, brand or "", market) if brand else market
+        if selected_market is None:
             return default_catalog()
-        return QueryCatalog.from_snapshot(snapshot, market, snapshot.source_for_market(market))
+        return QueryCatalog.from_snapshot(snapshot, selected_market, snapshot.source_for_market(selected_market))
 
-    def brand_metric(self, brand: str, metric: str, period: str) -> dict[str, Any]:
+    def brand_memberships(self) -> tuple[dict[str, str], ...]:
+        """Return exact brand-market memberships from the shared mart snapshot."""
+
+        memberships = {
+            (record.brand_name, record.ml_id)
+            for record in self._snapshot().records
+            if record.brand_name and record.ml_id
+        }
+        return tuple(
+            {"brand": brand, "market_id": market_id, "market_name": market_id}
+            for brand, market_id in sorted(memberships)
+        )
+
+    def brand_metric(
+        self,
+        brand: str,
+        metric: str,
+        period: str,
+        market: str | None = None,
+        source: str = "",
+        history_points: int = 10,
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
-        source = _default_source_for_metric(snapshot, market, period)
+        market = _required_market(snapshot, brand, market)
+        source = source or _default_source_for_metric(snapshot, market, brand, period)
         record = snapshot.record(market, brand, source)
+        if metric.casefold() in {"hhi", "momentum", "ei", "growth_contribution"}:
+            return self.brand_derived_metric(brand, metric, market=market, source=source)
         requested_period = _actual_period(snapshot, market, source, period)
         actual_period = _display_period(snapshot, record, requested_period, period)
         structure = market_structure(snapshot, market, source)
@@ -87,7 +123,15 @@ class StrategicQueryLayer:
                 market=market,
                 market_structure=structure,
             )
-        render_data = metric_render_data(snapshot, market, source, record, metric, actual_period)
+        render_data = metric_render_data(
+            snapshot,
+            market,
+            source,
+            record,
+            metric,
+            actual_period,
+            series_points=history_points,
+        )
         if structure:
             render_data["market_structure"] = structure
         if actual_period != requested_period:
@@ -112,31 +156,68 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
-    def market_scope(self, brand: str) -> dict[str, Any]:
+    def brand_derived_metric(
+        self,
+        brand: str,
+        metric: str,
+        market: str | None = None,
+        source: str = "",
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
-        source = snapshot.source_for_market(market)
+        market = _required_market(snapshot, brand, market)
+        source = source or _default_source_for_metric(snapshot, market, brand, "latest")
+        record = snapshot.record(market, brand, source)
+        data = derived_metric_render_data(snapshot, market, source, record, metric)
+        data["query_result_id"] = self._results.put(result_rows_from_render_data(data))
+        data["query_spec"] = {
+            "source": source,
+            "view": "market_landscape",
+            "market": market,
+            "filters": {"brand": brand},
+            "metrics": [metric],
+        }
+        label = source_label(source)
+        return {
+            "source": label,
+            "tool": "get_brand_metric",
+            "summary_text": metric_summary(brand, data, label),
+            "render_data": data,
+        }
+
+    def market_scope(self, brand: str, market: str | None = None) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        market = _required_market(snapshot, brand, market)
+        brand_sources = snapshot.sources_for_brand(market, brand)
+        source = brand_sources[0] if len(brand_sources) == 1 else snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         ranked = snapshot.ranked_brands(market, latest, source)
         rows = ranked[:10]
         result_id = self._results.put(rows)
         structure = market_structure(snapshot, market, source)
+        hhi = snapshot.hhi(market, latest, source)
         render_data: dict[str, Any] = {
             "market": market,
             "market_id": market,
             "market_name": market,
+            "scope": "market",
+            "scope_label": "시장 전체",
             "level": "Brand",
             "view_type": "market_landscape",
             "period": latest,
             "anchor_brand": brand,
             "member_brands": tuple(row["brand"] for row in ranked),
-            "market_size_recent_krw": snapshot.market_value(market, latest, source),
-            "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
+            "total_brands_in_market": len(ranked),
+            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, source),
+            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, source)),
+            "hhi_recent": round(hhi, 4) if hhi is not None else None,
             "level_segments": level_segments(rows),
             "source_label": source_label(source),
             "query_result_id": result_id,
             "query_spec": {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc"},
         }
+        anchor_row = next((row for row in ranked if row.get("brand") == brand), None)
+        if anchor_row is not None:
+            render_data["brand_sales_krw"] = anchor_row.get("value")
         if structure:
             render_data["market_structure"] = structure
         return {
@@ -146,9 +227,57 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
-    def market_member_metric(self, anchor_brand: str, member_brand: str) -> dict[str, Any]:
+    def market_scope_by_id(self, market: str, period: str = "latest") -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, anchor_brand)
+        if market not in {record.ml_id for record in snapshot.records}:
+            raise LookupError(f"mart market not found: market={market}")
+        source = snapshot.source_for_market(market)
+        selected_period = _actual_period(snapshot, market, source, period)
+        ranked = snapshot.ranked_brands(market, selected_period, source)
+        if not ranked:
+            raise LookupError(f"mart market period not found: market={market} period={selected_period}")
+        rows = ranked[:10]
+        market_value = snapshot.market_value_or_none(market, selected_period, source)
+        if market_value is None:
+            raise LookupError(f"mart market period value missing: market={market} period={selected_period}")
+        structure = market_structure(snapshot, market, source)
+        render_data: dict[str, Any] = {
+            "market": market,
+            "market_id": market,
+            "market_name": "해당 전략 시장",
+            "scope": "market",
+            "scope_label": "시장 전체",
+            "level": "Brand",
+            "view_type": "market_landscape",
+            "period": selected_period,
+            "member_brands": tuple(row["brand"] for row in ranked),
+            "market_size_recent_krw": market_value,
+            "market_size_억원": market_value / 100_000_000,
+            "hhi_recent": snapshot.hhi(market, selected_period, source),
+            "level_segments": level_segments(rows),
+            "source_label": source_label(source),
+            "query_result_id": self._results.put(rows),
+            "query_spec": {
+                "source": source,
+                "view": "market_landscape",
+                "market": market,
+                "filters": {"period": selected_period},
+                "group_by": ["product"],
+                "sort": "sales_desc",
+            },
+        }
+        if structure:
+            render_data["market_structure"] = structure
+        return {
+            "source": source_label(source),
+            "tool": "get_market_landscape",
+            "summary_text": f"요청한 전략 시장의 {selected_period} 규모를 전략 mart에서 조회했습니다.",
+            "render_data": render_data,
+        }
+
+    def market_member_metric(self, anchor_brand: str, member_brand: str, market: str | None = None) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        market = _required_market(snapshot, anchor_brand, market)
         source = snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         record = snapshot.record(market, member_brand, source)
@@ -165,35 +294,50 @@ class StrategicQueryLayer:
             "render_data": data,
         }
 
-    def top_brands(self, brand: str, limit: int = 5) -> dict[str, Any]:
+    def top_brands(
+        self,
+        brand: str,
+        limit: int = 5,
+        market: str | None = None,
+        source: str = "",
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
-        source = snapshot.source_for_market(market)
-        latest = snapshot.latest_period(market, source)
-        ranked = snapshot.ranked_brands(market, latest, source)[: max(1, min(limit, 20))]
-        structure = market_structure(snapshot, market, source)
+        market = _required_market(snapshot, brand, market)
+        selected_source = source or snapshot.source_for_market(market)
+        latest = snapshot.latest_period(market, selected_source)
+        ranked = snapshot.ranked_brands(market, latest, selected_source)[: max(1, min(limit, 20))]
+        structure = market_structure(snapshot, market, selected_source)
         data = {
             "brand": brand,
             "metric": "market_top_brands",
             "period": latest,
             "market_id": market,
             "market_name": market,
-            "source_label": source_label(source),
+            "source_label": source_label(selected_source),
             "level": "Brand",
             "level_segments": level_segments(ranked),
-            "level_top5_trend_series": top_trend(snapshot, market, source, latest, brand, limit=max(limit, 5)),
-            "market_size_recent_krw": snapshot.market_value(market, latest, source),
-            "market_size_억원": round(snapshot.market_value(market, latest, source) / 100_000_000, 2),
+            "level_top5_trend_series": top_trend(snapshot, market, selected_source, latest, brand, limit=max(limit, 5)),
+            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, selected_source),
+            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, selected_source)),
         }
         if structure:
             data["market_structure"] = structure
         data["query_result_id"] = self._results.put(ranked)
-        data["query_spec"] = {"source": source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
-        return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
+        data["query_spec"] = {"source": selected_source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
+        return {"source": source_label(selected_source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
-    def dimension_breakdown(self, brand: str, dimension: str, *, source: str = "", period: str = "latest", limit: int = 10) -> dict[str, Any]:
+    def dimension_breakdown(
+        self,
+        brand: str,
+        dimension: str,
+        *,
+        source: str = "",
+        period: str = "latest",
+        limit: int = 10,
+        market: str | None = None,
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
-        market = _required_market(snapshot, brand)
+        market = _required_market(snapshot, brand, market)
         selected_source = source or snapshot.source_for_market(market)
         selected_period = _actual_period(snapshot, market, selected_source, period)
         spec = {
@@ -236,8 +380,8 @@ class StrategicQueryLayer:
                     "source": source_label(source),
                     "market": market,
                     "period": latest,
-                    "sales": f"{float(row.get('value') or 0.0) / 100_000_000:,.2f}억원",
-                    "market_share": f"{float(row.get('ms_recent_pct') or 0.0):.2f}%",
+                    "sales": format_eok(_eok_or_none(row.get("value"))),
+                    "market_share": format_pct(row.get("ms_recent_pct")),
                 }
             )
             if len(rows) >= max(1, min(limit, 10)):
@@ -256,7 +400,7 @@ class StrategicQueryLayer:
             row = _portfolio_decline_row(snapshot, brand, str(item.get("market_id") or ""), str(item.get("market_name") or ""), lookback_points)
             if row is not None:
                 rows.append(row)
-        rows.sort(key=lambda row: float(row.get("share_delta_pctp") or 0.0))
+        rows.sort(key=lambda row: float(row["share_delta_pctp"]))
         result_id = self._results.put(rows)
         sources = tuple(dict.fromkeys(str(row.get("source") or "") for row in rows if row.get("source")))
         source = "/".join(source_label(source) for source in sources) if sources else "UBIST/IQVIA NSA"
@@ -283,8 +427,10 @@ class StrategicQueryLayer:
     def query(self, raw_spec: str | Mapping[str, Any], fallback_brand: str) -> dict[str, Any]:
         spec = parse_spec(raw_spec)
         snapshot = self._snapshot()
-        market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or default_catalog().market)
-        source = _default_source_for_query(snapshot, market, spec)
+        market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or "")
+        if not market:
+            raise LookupError(f"market is unresolved for {fallback_brand}")
+        source = _default_source_for_query(snapshot, market, spec, fallback_brand)
         catalog = QueryCatalog.from_snapshot(snapshot, market, source)
         validate_spec(spec, catalog)
         limit = bounded_limit(spec.get("limit"), 10)
@@ -329,8 +475,16 @@ class StrategicQueryLayer:
         if kind == "yoy":
             data = brand_yoy_data(snapshot, market, source, brand)
         else:
-            count = bounded_limit(filters.get("periods"), 6)
-            data = brand_average_share_data(snapshot, market, source, brand, count)
+            requested_months = bounded_limit(filters.get("periods"), 6)
+            observation_count = max(1, (requested_months + 2) // 3) if source == "iqvia_nsa" else requested_months
+            data = brand_average_share_data(snapshot, market, source, brand, observation_count)
+            data.update(
+                {
+                    "requested_window_months": requested_months,
+                    "observation_count": observation_count,
+                    "window_grain": "quarter" if source == "iqvia_nsa" else "month",
+                }
+            )
         data.update(
             {
                 "market_id": market,
@@ -354,8 +508,8 @@ def _actual_period(snapshot: MartSnapshot, market: str, source: str, period: str
     return period
 
 
-def _default_source_for_metric(snapshot: MartSnapshot, market: str, period: str) -> str:
-    sources = snapshot.sources_for_market(market)
+def _default_source_for_metric(snapshot: MartSnapshot, market: str, brand: str, period: str) -> str:
+    sources = snapshot.sources_for_brand(market, brand) or snapshot.sources_for_market(market)
     if _single_source(sources):
         return sources[0]
     if _is_quarter_period(period) and "iqvia_nsa" in sources:
@@ -363,11 +517,13 @@ def _default_source_for_metric(snapshot: MartSnapshot, market: str, period: str)
     return snapshot.source_for_market(market)
 
 
-def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any]) -> str:
+def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any], fallback_brand: str) -> str:
     explicit_source = str(spec.get("source") or "").strip()
     if explicit_source:
         return explicit_source
-    sources = snapshot.sources_for_market(market)
+    filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
+    subject_brand = str(filters.get("brand") or fallback_brand)
+    sources = snapshot.sources_for_brand(market, subject_brand) or snapshot.sources_for_market(market)
     if _single_source(sources):
         return sources[0]
     if _query_uses_ubist_axes(spec) and "ubist" in sources:
@@ -400,6 +556,8 @@ def _display_period(snapshot: MartSnapshot, record: MartRecord, requested_period
         return snapshot.latest_valid_period(record)
     if snapshot.value_or_none(record, requested_period) is not None:
         return requested_period
+    if _is_quarter_period(raw_period):
+        return None
     previous = tuple(
         period
         for period in sorted(record.metric_history)
@@ -448,11 +606,17 @@ def _failed_metric_call(
     }
 
 
-def _required_market(snapshot: MartSnapshot, brand: str) -> str:
-    market = snapshot.market_id_for_brand(brand)
-    if market is None:
+def _required_market(snapshot: MartSnapshot, brand: str, requested_market: str | None = None) -> str:
+    markets = snapshot.market_ids_for_brand(brand)
+    if requested_market:
+        if requested_market not in markets:
+            raise LookupError(f"brand is not a member of requested market: brand={brand} market={requested_market}")
+        return requested_market
+    if not markets:
         raise LookupError(f"strategic mart has no market for brand: {brand}")
-    return market
+    if len(markets) > 1:
+        raise LookupError(f"brand belongs to multiple markets: brand={brand} markets={','.join(markets)}")
+    return markets[0]
 
 
 def _portfolio_decline_row(
@@ -472,8 +636,10 @@ def _portfolio_decline_row(
             if len(periods) < 2:
                 continue
             start, end = _portfolio_period_pair(periods, lookback_points)
-            start_ms = snapshot.share(market, record, start, source)
-            end_ms = snapshot.share(market, record, end, source)
+            start_ms = snapshot.share_or_none(market, record, start, source)
+            end_ms = snapshot.share_or_none(market, record, end, source)
+            if start_ms is None or end_ms is None:
+                continue
             delta = round(end_ms - start_ms, 4)
             if delta >= 0:
                 return None
@@ -487,8 +653,8 @@ def _portfolio_decline_row(
                 "from_ms_pct": start_ms,
                 "to_ms_pct": end_ms,
                 "share_delta_pctp": delta,
-                "from_sales_krw": snapshot.value(record, start),
-                "to_sales_krw": snapshot.value(record, end),
+                "from_sales_krw": snapshot.value_or_none(record, start),
+                "to_sales_krw": snapshot.value_or_none(record, end),
                 "rank": snapshot.rank(market, brand, end, source),
                 "top_gainers": _portfolio_gainers(snapshot, market, source, start, end, brand),
             }
@@ -534,8 +700,10 @@ def _portfolio_gainers(
     for record in snapshot.market_records(market, source):
         if record.brand_name == declined_brand or start not in record.metric_history or end not in record.metric_history:
             continue
-        start_ms = snapshot.share(market, record, start, source)
-        end_ms = snapshot.share(market, record, end, source)
+        start_ms = snapshot.share_or_none(market, record, start, source)
+        end_ms = snapshot.share_or_none(market, record, end, source)
+        if start_ms is None or end_ms is None:
+            continue
         delta = round(end_ms - start_ms, 4)
         if delta <= 0:
             continue
@@ -545,12 +713,12 @@ def _portfolio_gainers(
                 "from_ms_pct": start_ms,
                 "to_ms_pct": end_ms,
                 "share_delta_pctp": delta,
-                "from_sales_krw": snapshot.value(record, start),
-                "to_sales_krw": snapshot.value(record, end),
+                "from_sales_krw": snapshot.value_or_none(record, start),
+                "to_sales_krw": snapshot.value_or_none(record, end),
                 "rank": snapshot.rank(market, record.brand_name, end, source),
             }
         )
-    gainers.sort(key=lambda row: float(row.get("share_delta_pctp") or 0.0), reverse=True)
+    gainers.sort(key=lambda row: float(row["share_delta_pctp"]), reverse=True)
     return gainers[:3]
 
 
@@ -562,6 +730,10 @@ def _portfolio_period_label(rows: list[dict[str, Any]]) -> str:
     if len(starts) == 1 and len(ends) == 1:
         return f"{starts[0]}→{ends[0]}"
     return "최근 관측기간"
+
+
+def _eok_or_none(value: Any) -> float | None:
+    return round(float(value) / 100_000_000, 2) if isinstance(value, int | float) else None
 
 
 def _portfolio_summary(rows: list[dict[str, Any]], period: str) -> str:

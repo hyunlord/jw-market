@@ -7,6 +7,7 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
     detect_market_scope_intent,
     map_market_view_reply,
 )
+from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
 
@@ -71,9 +72,42 @@ def test_market_scope_default_answer_uses_market_total_not_brand_sales() -> None
     assert data["brand_sales_krw"] == 8_493_234_217.11
     assert "전략뷰 기준" in result["answer"]
     assert "competitive_dynamics" not in result["answer"]
-    assert "market_landscape" not in result["answer"]
+    assert "전략뷰 (market_landscape)" in result["answer"]
     assert "## 주의" not in result["answer"]
     assert "84.93억원" not in result["answer"]
+
+
+def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:
+    def record(brand: str, value: float) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={"2026-05": {"raw_value": value}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    records = (
+        record("리바로", 8_038_598_800.0),
+        record("로수젯", 19_523_856_200.0),
+    )
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(records)),
+    )
+
+    result = resolver.answer("리바로랑 같은 시장 매출", view_type="market_landscape")
+
+    call = result["tool_calls"][0]
+    assert call["source"] == "UBIST"
+    assert call["render_data"]["period"] == "2026-05"
+    assert call["render_data"]["brand_sales_krw"] == 8_038_598_800.0
+    assert call["render_data"]["market_size_recent_krw"] == 27_562_455_000.0
+    assert result["sources"] == ["UBIST"]
 
 
 def test_market_scope_clarification_does_not_show_internal_view_enums() -> None:
