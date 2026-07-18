@@ -455,7 +455,7 @@ def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() ->
 
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
     calls: list[tuple[Path, str | None, str | None, tuple[tuple[str, str], ...], str | None]] = []
-    upload_tokens: list[str] = []
+    upload_tokens: list[tuple[str, str]] = []
     upload_file = tmp_path / "history.xlsx"
     upload_file.write_bytes(b"xlsx fixture")
 
@@ -518,12 +518,22 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         lambda base_url, conversation_id, workflow_id: (True, 2, ""),
     )
     monkeypatch.setattr(
-        "scripts.parity_harness._fetch_portal_file_access_token",
-        lambda auth_url: ("bootstrapped-token", ""),
+        "scripts.parity_harness._fetch_portal_file_tokens",
+        lambda auth_url, method="GET": (
+            "bootstrapped-portal-token",
+            "bootstrapped-access-token",
+            "",
+        ),
     )
 
-    def seed_upload(base_url, conversation_id, upload_path, access_token):
-        upload_tokens.append(access_token)
+    def seed_upload(
+        base_url,
+        conversation_id,
+        upload_path,
+        portal_token,
+        access_token,
+    ):
+        upload_tokens.append((portal_token, access_token))
         return True, 2, (101,), ""
 
     monkeypatch.setattr(
@@ -532,7 +542,7 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
     )
     monkeypatch.setattr(
         "scripts.parity_harness._cleanup_portal_uploaded_file_session",
-        lambda base_url, conversation_id, document_ids, access_token: (),
+        lambda base_url, conversation_id, document_ids, portal_token, access_token: (),
     )
 
     status = capture_p0g_suite(
@@ -549,7 +559,9 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
     )
 
     assert status == 0
-    assert upload_tokens == ["bootstrapped-token"]
+    assert upload_tokens == [
+        ("bootstrapped-portal-token", "bootstrapped-access-token")
+    ]
     assert [call[0].name for call in calls] == ["fresh", "history", "mode-transition"]
     assert [call[3] for call in calls] == [
         FRESH_GOLDEN_QUESTIONS,
@@ -565,6 +577,8 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         "attempted": True,
         "passed": True,
         "source": "portal-login",
+        "portal_token_present": True,
+        "access_token_present": True,
         "error": "",
     }
     assert report["evidence_context"]["portal_file_probe"] == {
@@ -692,19 +706,39 @@ def test_seed_portal_uploaded_file_session_uses_browser_bff_contract(
         "https://portal.example/stream-lab-api/",
         "conv-file",
         upload_file,
-        "secret-token",
+        "portal-secret",
+        "access-secret",
     ) == (True, 1, (101,), "")
     endpoint = (
         "https://portal.example/stream-lab-api/api/v1/market/socket-lab/market/files"
     )
     assert captured["get_calls"] == [
-        (endpoint, {"sessionId": "conv-file"}, {"Authorization-Access-Token": "secret-token"}, 30),
-        (endpoint, {"sessionId": "conv-file"}, {"Authorization-Access-Token": "secret-token"}, 30),
+        (
+            endpoint,
+            {"sessionId": "conv-file"},
+            {
+                "Authorization": "Bearer portal-secret",
+                "Authorization-Access-Token": "access-secret",
+            },
+            30,
+        ),
+        (
+            endpoint,
+            {"sessionId": "conv-file"},
+            {
+                "Authorization": "Bearer portal-secret",
+                "Authorization-Access-Token": "access-secret",
+            },
+            30,
+        ),
     ]
     assert captured["post"] == (
         endpoint,
         {"sessionId": "conv-file"},
-        {"Authorization-Access-Token": "secret-token"},
+        {
+            "Authorization": "Bearer portal-secret",
+            "Authorization-Access-Token": "access-secret",
+        },
         "history.xlsx",
         b"xlsx fixture",
         180,
@@ -769,7 +803,8 @@ def test_p0g_suite_rejects_invalid_history_conversation_before_network_calls(
         file_base_url="http://code-serving-235",
         entry_kind="portal-market-sse",
         history_upload_file=upload_file,
-        portal_file_access_token="test-token",
+        portal_file_portal_token="portal-token",
+        portal_file_access_token="access-token",
     ) == 1
     report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert report["qualification_failures"] == [
@@ -812,7 +847,8 @@ def test_p0g_suite_reports_bff_upload_and_235_probe_failures_together(
         file_base_url="http://code-serving-235",
         entry_kind="portal-market-sse",
         history_upload_file=upload_file,
-        portal_file_access_token="test-token",
+        portal_file_portal_token="portal-token",
+        portal_file_access_token="access-token",
     ) == 1
     report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert report["qualification_failures"] == [
@@ -864,7 +900,7 @@ def test_p0g_suite_rejects_csv_before_portal_upload(monkeypatch, tmp_path: Path)
     ]
 
 
-def test_fetch_portal_file_access_token_uses_official_login_without_exposing_value(
+def test_fetch_portal_file_tokens_uses_official_login_without_exposing_values(
     monkeypatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -891,13 +927,14 @@ def test_fetch_portal_file_access_token_uses_official_login_without_exposing_val
 
     monkeypatch.setattr("scripts.parity_harness.requests.get", get)
 
-    from scripts.parity_harness import _fetch_portal_file_access_token
+    from scripts.parity_harness import _fetch_portal_file_tokens
 
-    token, error = _fetch_portal_file_access_token(
+    portal_token, access_token, error = _fetch_portal_file_tokens(
         "https://portal.example/stream-lab-api/api/v1/auth/genos/login"
     )
 
-    assert token == "access-secret"
+    assert portal_token == "portal-secret"
+    assert access_token == "access-secret"
     assert error == ""
     assert captured == {
         "url": "https://portal.example/stream-lab-api/api/v1/auth/genos/login",
@@ -905,7 +942,7 @@ def test_fetch_portal_file_access_token_uses_official_login_without_exposing_val
     }
 
 
-def test_fetch_portal_file_access_token_accepts_genos_snake_case(monkeypatch) -> None:
+def test_fetch_portal_file_tokens_fails_closed_without_portal_token(monkeypatch) -> None:
     class Response:
         @staticmethod
         def raise_for_status() -> None:
@@ -920,15 +957,18 @@ def test_fetch_portal_file_access_token_accepts_genos_snake_case(monkeypatch) ->
         lambda *_args, **_kwargs: Response(),
     )
 
-    from scripts.parity_harness import _fetch_portal_file_access_token
+    from scripts.parity_harness import _fetch_portal_file_tokens
 
-    token, error = _fetch_portal_file_access_token("https://portal.example/login")
+    portal_token, access_token, error = _fetch_portal_file_tokens(
+        "https://portal.example/login"
+    )
 
-    assert token == "genos-access-secret"
-    assert error == ""
+    assert portal_token is None
+    assert access_token == "genos-access-secret"
+    assert error == "portal login response has no portalToken"
 
 
-def test_fetch_portal_file_access_token_fails_closed_without_access_token(monkeypatch) -> None:
+def test_fetch_portal_file_tokens_fails_closed_without_access_token(monkeypatch) -> None:
     class Response:
         @staticmethod
         def raise_for_status() -> None:
@@ -943,12 +983,57 @@ def test_fetch_portal_file_access_token_fails_closed_without_access_token(monkey
         lambda *_args, **_kwargs: Response(),
     )
 
-    from scripts.parity_harness import _fetch_portal_file_access_token
+    from scripts.parity_harness import _fetch_portal_file_tokens
 
-    token, error = _fetch_portal_file_access_token("https://portal.example/login")
+    portal_token, access_token, error = _fetch_portal_file_tokens(
+        "https://portal.example/login"
+    )
 
-    assert token is None
+    assert portal_token == "portal-only"
+    assert access_token is None
     assert error == "portal login response has no accessToken"
+
+
+def test_fetch_portal_file_tokens_can_post_to_test_login(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "data": {
+                    "portalToken": "portal-secret",
+                    "accessToken": "access-secret",
+                }
+            }
+
+    def post(url, *, json, timeout):
+        captured.update(url=url, json=json, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.post", post)
+
+    from scripts.parity_harness import _fetch_portal_file_tokens
+
+    portal_token, access_token, error = _fetch_portal_file_tokens(
+        "https://portal.example/test-login",
+        method="POST",
+    )
+
+    assert (portal_token, access_token, error) == (
+        "portal-secret",
+        "access-secret",
+        "",
+    )
+    assert captured == {
+        "url": "https://portal.example/test-login",
+        "json": {},
+        "timeout": 30,
+    }
 
 
 def test_cleanup_portal_uploaded_file_session_uses_browser_bff_contract(monkeypatch) -> None:
@@ -971,13 +1056,17 @@ def test_cleanup_portal_uploaded_file_session_uses_browser_bff_contract(monkeypa
         "https://portal.example/stream-lab-api/",
         "conv-file",
         (101,),
-        "secret-token",
+        "portal-secret",
+        "access-secret",
     ) == ()
     assert captured == [
         (
             "https://portal.example/stream-lab-api/api/v1/market/socket-lab/market/files/101",
             {"sessionId": "conv-file"},
-            {"Authorization-Access-Token": "secret-token"},
+            {
+                "Authorization": "Bearer portal-secret",
+                "Authorization-Access-Token": "access-secret",
+            },
             30,
         )
     ]
@@ -1042,6 +1131,8 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
             "attempted": False,
             "passed": False,
             "source": "none",
+            "portal_token_present": False,
+            "access_token_present": False,
             "error": "",
         },
         "portal_file_probe": {
@@ -1208,11 +1299,16 @@ def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeyp
     )
     monkeypatch.setattr(
         "scripts.parity_harness._seed_portal_uploaded_file_session",
-        lambda base_url, conversation_id, upload_path, access_token: (True, 1, (101,), ""),
+        lambda base_url, conversation_id, upload_path, portal_token, access_token: (
+            True,
+            1,
+            (101,),
+            "",
+        ),
     )
     monkeypatch.setattr(
         "scripts.parity_harness._cleanup_portal_uploaded_file_session",
-        lambda base_url, conversation_id, document_ids, access_token: (),
+        lambda base_url, conversation_id, document_ids, portal_token, access_token: (),
     )
 
     assert capture_p0g_suite(
@@ -1224,7 +1320,8 @@ def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeyp
         file_base_url="http://code-serving-235",
         entry_kind="portal-market-sse",
         history_upload_file=upload_file,
-        portal_file_access_token="test-token",
+        portal_file_portal_token="portal-token",
+        portal_file_access_token="access-token",
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["qualification_failures"] == []

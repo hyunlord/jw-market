@@ -301,8 +301,10 @@ def capture_p0g_suite(
     file_base_url: str | None = None,
     file_workflow_id: int = 301,
     history_upload_file: Path | None = None,
+    portal_file_portal_token: str | None = None,
     portal_file_access_token: str | None = None,
     portal_file_auth_url: str | None = None,
+    portal_file_auth_method: str = "GET",
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     history_upload_error = (
@@ -315,11 +317,21 @@ def capture_p0g_suite(
         if history_conversation_id
         else ""
     )
+    resolved_portal_file_portal_token = portal_file_portal_token
     resolved_portal_file_access_token = portal_file_access_token
+    portal_file_tokens_present = bool(
+        resolved_portal_file_portal_token and resolved_portal_file_access_token
+    )
     portal_file_auth = {
         "attempted": False,
-        "passed": bool(resolved_portal_file_access_token),
-        "source": "environment" if resolved_portal_file_access_token else "none",
+        "passed": portal_file_tokens_present,
+        "source": (
+            "environment"
+            if resolved_portal_file_portal_token or resolved_portal_file_access_token
+            else "none"
+        ),
+        "portal_token_present": bool(resolved_portal_file_portal_token),
+        "access_token_present": bool(resolved_portal_file_access_token),
         "error": "",
     }
     if (
@@ -328,16 +340,28 @@ def capture_p0g_suite(
         and history_upload_file
         and not history_upload_error
         and not history_conversation_error
-        and not resolved_portal_file_access_token
+        and not portal_file_tokens_present
         and portal_file_auth_url
     ):
-        resolved_portal_file_access_token, auth_error = _fetch_portal_file_access_token(
-            portal_file_auth_url
+        fetched_portal_token, fetched_access_token, auth_error = _fetch_portal_file_tokens(
+            portal_file_auth_url,
+            method=portal_file_auth_method,
+        )
+        resolved_portal_file_portal_token = (
+            resolved_portal_file_portal_token or fetched_portal_token
+        )
+        resolved_portal_file_access_token = (
+            resolved_portal_file_access_token or fetched_access_token
+        )
+        portal_file_tokens_present = bool(
+            resolved_portal_file_portal_token and resolved_portal_file_access_token
         )
         portal_file_auth.update(
             attempted=True,
-            passed=bool(resolved_portal_file_access_token),
+            passed=portal_file_tokens_present,
             source="portal-login",
+            portal_token_present=bool(resolved_portal_file_portal_token),
+            access_token_present=bool(resolved_portal_file_access_token),
             error=auth_error,
         )
     portal_file_probe = {
@@ -355,12 +379,14 @@ def capture_p0g_suite(
         and history_upload_file
         and not history_upload_error
         and not history_conversation_error
+        and resolved_portal_file_portal_token
         and resolved_portal_file_access_token
     ):
         passed, document_count, document_ids, error = _seed_portal_uploaded_file_session(
             base_url,
             history_conversation_id,
             history_upload_file,
+            resolved_portal_file_portal_token,
             resolved_portal_file_access_token,
         )
         portal_file_probe.update(
@@ -454,6 +480,7 @@ def capture_p0g_suite(
         if (
             base_url
             and history_conversation_id
+            and resolved_portal_file_portal_token
             and resolved_portal_file_access_token
             and document_ids
         ):
@@ -462,6 +489,7 @@ def capture_p0g_suite(
                     base_url,
                     history_conversation_id,
                     document_ids,
+                    resolved_portal_file_portal_token,
                     resolved_portal_file_access_token,
                 )
             )
@@ -1022,32 +1050,56 @@ def _portal_documents(body: Any) -> list[dict[str, Any]]:
     return [document for document in documents if isinstance(document, dict)]
 
 
-def _fetch_portal_file_access_token(auth_url: str) -> tuple[str | None, str]:
+def _fetch_portal_file_tokens(
+    auth_url: str,
+    *,
+    method: str = "GET",
+) -> tuple[str | None, str | None, str]:
     try:
-        response = requests.get(auth_url, timeout=30)
+        normalized_method = method.strip().upper()
+        if normalized_method == "GET":
+            response = requests.get(auth_url, timeout=30)
+        elif normalized_method == "POST":
+            response = requests.post(auth_url, json={}, timeout=30)
+        else:
+            return None, None, f"unsupported portal login method: {method}"
         response.raise_for_status()
         body = response.json()
     except (requests.RequestException, ValueError) as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        return None, None, f"{type(exc).__name__}: {exc}"
     data = body.get("data") if isinstance(body, dict) else None
     token_source = data if isinstance(data, dict) else body
+    portal_token = None
     access_token = None
     if isinstance(token_source, dict):
+        portal_token = token_source.get("portal_token") or token_source.get("portalToken")
         access_token = token_source.get("access_token") or token_source.get("accessToken")
-    if not isinstance(access_token, str) or not access_token.strip():
-        return None, "portal login response has no accessToken"
-    return access_token.strip(), ""
+    normalized_portal_token = (
+        portal_token.strip() if isinstance(portal_token, str) and portal_token.strip() else None
+    )
+    normalized_access_token = (
+        access_token.strip() if isinstance(access_token, str) and access_token.strip() else None
+    )
+    if normalized_portal_token is None:
+        return None, normalized_access_token, "portal login response has no portalToken"
+    if normalized_access_token is None:
+        return normalized_portal_token, None, "portal login response has no accessToken"
+    return normalized_portal_token, normalized_access_token, ""
 
 
 def _seed_portal_uploaded_file_session(
     base_url: str,
     conversation_id: str,
     upload_path: Path,
+    portal_token: str,
     access_token: str,
 ) -> tuple[bool, int, tuple[int, ...], str]:
     endpoint = base_url.rstrip("/") + "/api/v1/market/socket-lab/market/files"
     params = {"sessionId": conversation_id}
-    headers = {"Authorization-Access-Token": access_token}
+    headers = {
+        "Authorization": f"Bearer {portal_token}",
+        "Authorization-Access-Token": access_token,
+    }
     try:
         before_response = requests.get(endpoint, params=params, headers=headers, timeout=30)
         before_response.raise_for_status()
@@ -1090,10 +1142,14 @@ def _cleanup_portal_uploaded_file_session(
     base_url: str,
     conversation_id: str,
     document_ids: tuple[int, ...],
+    portal_token: str,
     access_token: str,
 ) -> tuple[str, ...]:
     endpoint = base_url.rstrip("/") + "/api/v1/market/socket-lab/market/files"
-    headers = {"Authorization-Access-Token": access_token}
+    headers = {
+        "Authorization": f"Bearer {portal_token}",
+        "Authorization-Access-Token": access_token,
+    }
     errors: list[str] = []
     for document_id in document_ids:
         try:
@@ -1510,11 +1566,22 @@ def main() -> int:
     p0g_parser.add_argument(
         "--portal-file-token-env",
         default="P0G_PORTAL_ACCESS_TOKEN",
-        help="Environment variable containing the portal file API access token.",
+        help="Environment variable containing the GenOS access token for portal file APIs.",
+    )
+    p0g_parser.add_argument(
+        "--portal-file-portal-token-env",
+        default="P0G_PORTAL_JWT",
+        help="Environment variable containing the portal JWT for portal file APIs.",
     )
     p0g_parser.add_argument(
         "--portal-file-auth-url",
-        help="Official portal login URL used to obtain an in-memory file API access token when the token environment variable is empty.",
+        help="Official portal login URL used to obtain in-memory portal and GenOS tokens when either token environment variable is empty.",
+    )
+    p0g_parser.add_argument(
+        "--portal-file-auth-method",
+        choices=("GET", "POST"),
+        default="GET",
+        help="HTTP method for the portal login URL (default: GET).",
     )
     p0g_parser.add_argument(
         "--max-general-elapsed-ms",
@@ -1559,8 +1626,10 @@ def main() -> int:
             file_base_url=args.file_base_url,
             file_workflow_id=args.file_workflow_id,
             history_upload_file=args.history_upload_file,
+            portal_file_portal_token=os.getenv(args.portal_file_portal_token_env),
             portal_file_access_token=os.getenv(args.portal_file_token_env),
             portal_file_auth_url=args.portal_file_auth_url,
+            portal_file_auth_method=args.portal_file_auth_method,
         )
     if args.command == "diff":
         return diff_captures(
