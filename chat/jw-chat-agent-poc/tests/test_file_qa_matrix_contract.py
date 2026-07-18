@@ -19,7 +19,7 @@ def test_file_qa_matrix_has_the_declared_nonempty_population() -> None:
     assert matrix["population"] == 28
     assert len(rows) == matrix["population"]
     assert len({row["id"] for row in rows}) == matrix["population"]
-    assert {row["status"] for row in rows} == {"implemented_unmeasured", "red"}
+    assert {row["status"] for row in rows} == {"green"}
 
 
 def test_file_qa_matrix_keeps_all_user_acceptance_aliases() -> None:
@@ -44,21 +44,23 @@ def _direct_test_exists(node_id: str) -> bool:
     )
 
 
-def test_implemented_rows_name_existing_direct_tests_and_red_rows_are_explicit() -> None:
+def test_green_rows_name_existing_direct_tests() -> None:
     rows = _matrix()["rows"]
-    implemented = [row for row in rows if row["status"] == "implemented_unmeasured"]
-    red = [row for row in rows if row["status"] == "red"]
 
-    assert len(implemented) == 14
-    assert len(red) == 14
-    assert all("::test_" in row["direct_test"] for row in implemented)
-    assert all(_direct_test_exists(row["direct_test"]) for row in implemented)
-    assert all(row["direct_test"] is None for row in red)
+    assert all("::test_" in row["direct_test"] for row in rows)
+    assert all(_direct_test_exists(row["direct_test"]) for row in rows)
     assert _matrix()["silent_fallback"] == "fail"
 
 
-def test_file_qa_rows_cannot_claim_green_before_live_235_observation() -> None:
-    rows = _matrix()["rows"]
+def test_green_rows_are_backed_by_the_exact_live_235_observation() -> None:
+    matrix = _matrix()
+    rows = matrix["rows"]
+    evidence = matrix["live_evidence"]
 
-    assert all(row.get("live_status") == "unmeasured" for row in rows)
-    assert all(row["status"] != "green" for row in rows)
+    assert all(row.get("live_status") == "measured_pass" for row in rows)
+    assert evidence["checked"] == evidence["population"] == 28
+    assert evidence["semantic_passed"] == 28
+    assert evidence["cleanup_residual"] == 0
+    assert evidence["secret_scan"] == "NO_MATCH"
+    assert evidence["git_sha"] == "da3fc1534deabbd6c0a135e4ad3f5fa63e59cde0"
+    assert len(evidence["audit_sha256"]) == 64
