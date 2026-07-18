@@ -105,7 +105,6 @@ def test_strategy_identifier_keeps_strategy_view_and_public_name() -> None:
             "view_type": "market_landscape",
             "period": "2025-04",
             "market_size_억원": 2106.71557456,
-            "total_brands_in_market": 470,
         },
     }
 
@@ -133,7 +132,6 @@ def test_strategy_market_size_precision_is_grounded_by_raw_market_fact() -> None
             "view_type": "market_landscape",
             "period": "2025-04",
             "market_size_억원": 2106.71557456,
-            "total_brands_in_market": 470,
         },
     }
     question = "ml_006 2025-04 시장규모"
@@ -169,28 +167,29 @@ def test_strategy_market_size_golden_postcheck_blocks_wrong_value() -> None:
     assert "2,139" not in answer
 
 
-def test_strategy_market_size_golden_postcheck_blocks_wrong_denominator() -> None:
-    call = {
-        "tool": "get_market_landscape",
-        "source": "UBIST",
-        "render_data": {
-            "status": "ok",
-            "metric": "market_size",
-            "market_id": "ml_006",
-            "view_type": "market_landscape",
-            "period": "2025-04",
-            "market_size_억원": 2106.71557456,
-            "total_brands_in_market": 555,
-        },
-    }
+def test_strategy_market_size_golden_postcheck_blocks_inapplicable_denominator() -> None:
+    for denominator in (470, 555):
+        call = {
+            "tool": "get_market_landscape",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "metric": "market_size",
+                "market_id": "ml_006",
+                "view_type": "market_landscape",
+                "period": "2025-04",
+                "market_size_억원": 2106.71557456,
+                "total_brands_in_market": denominator,
+            },
+        }
 
-    answer = enforce_market_answer_contract(
-        question="ml_006 2025-04 시장규모",
-        answer="2,106.715575억원입니다.",
-        tool_calls=[call],
-    )
+        answer = enforce_market_answer_contract(
+            question="ml_006 2025-04 시장규모",
+            answer="2,106.715575억원입니다.",
+            tool_calls=[call],
+        )
 
-    assert answer == "승인된 2025-04 전략 시장 기준값과 일치하지 않아 수치를 표시하지 않습니다."
+        assert answer == "승인된 2025-04 전략 시장 기준값과 일치하지 않아 수치를 표시하지 않습니다."
 
 
 def test_strategy_market_size_golden_postcheck_ignores_unrelated_market_calls() -> None:
@@ -217,7 +216,6 @@ def test_strategy_market_size_golden_postcheck_ignores_unrelated_market_calls() 
             "view_type": "market_landscape",
             "period": "2025-04",
             "market_size_억원": 2106.71557456,
-            "total_brands_in_market": 470,
         },
     }
 

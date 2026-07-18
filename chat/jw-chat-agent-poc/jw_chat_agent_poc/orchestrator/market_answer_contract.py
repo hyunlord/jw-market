@@ -24,8 +24,8 @@ _YEAR_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 _CAUSAL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?P<claim>[^\n.!?]*(?:때문|이므로|따라서)[^\n.!?]*[.!?]?)"
 )
-_STRATEGY_MARKET_SIZE_GOLDENS: Final[dict[tuple[str, str], tuple[Decimal, int]]] = {
-    ("ml_006", "2025-04"): (Decimal("2106.71557456"), 470),
+_STRATEGY_MARKET_SIZE_GOLDENS: Final[dict[tuple[str, str], tuple[Decimal, int | None]]] = {
+    ("ml_006", "2025-04"): (Decimal("2106.71557456"), None),
 }
 
 
