@@ -31,6 +31,9 @@ spec:
                 - -m
                 - pipeline.scripts.ingest_hook.sweep
               env:
+                # J5: sweep-launched Jobs stage real-load output here (refresh skipped).
+                - name: INGEST_LOAD_STAGING_ROOT
+                  value: /tmp/ingest-load-staging
                 - name: INGEST_S3_BUCKET
                   valueFrom:
                     secretKeyRef:

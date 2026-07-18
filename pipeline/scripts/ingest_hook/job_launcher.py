@@ -26,6 +26,8 @@ _PASSTHROUGH_VALUES = (
     "MINIO_ENDPOINT", "MINIO_REGION",
     "AGENT3_WORKFLOW_REV", "AGENT3_EXPECTED_WORKFLOW_REV",
     "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
+    "INGEST_LOAD_STAGING_ROOT",  # J5 real-loader staging output (mart refresh skipped)
+    "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
 )
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)

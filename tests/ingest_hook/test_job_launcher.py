@@ -74,3 +74,10 @@ def test_rendered_job_env_minimal_without_s3(monkeypatch):
     body = render_job(category="ubist", manifest_sha=SHA, manifest_path="/m.json", namespace="llmops")
     names = [e["name"] for e in body["spec"]["template"]["spec"]["containers"][0]["env"]]
     assert "INGEST_S3_BUCKET" not in names and "MARIADB_USER" in names
+
+
+def test_rendered_job_passes_load_staging_root(monkeypatch):
+    monkeypatch.setenv("INGEST_LOAD_STAGING_ROOT", "/tmp/ingest-load-staging")
+    body = render_job(category="ubist", manifest_sha=SHA, manifest_path="_manifests/m.json", namespace="llmops")
+    env = {e["name"]: e for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"

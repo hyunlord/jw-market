@@ -12,7 +12,15 @@ def test_real_job_checks_sigma_only_after_refresh(
     manifest_path = write_submission(bucket)
     events: list[str] = []
 
-    monkeypatch.setattr(job_runner, "_build_load_argv", lambda *_args: ("load",))
+    monkeypatch.setattr(
+        job_runner,
+        "_real_load",
+        lambda *_args: events.append("load") or {
+            "target_dir": "/tmp/isolated",
+            "epoch_rows": 6,
+            "staging_verify": False,
+        },
+    )
     monkeypatch.setattr(
         job_runner,
         "_run_commands",
@@ -41,7 +49,15 @@ def test_real_job_does_not_check_sigma_or_complete_after_refresh_failure(
     manifest_path = write_submission(bucket)
     events: list[str] = []
 
-    monkeypatch.setattr(job_runner, "_build_load_argv", lambda *_args: ("load",))
+    monkeypatch.setattr(
+        job_runner,
+        "_real_load",
+        lambda *_args: events.append("load") or {
+            "target_dir": "/tmp/isolated",
+            "epoch_rows": 6,
+            "staging_verify": False,
+        },
+    )
 
     def run_command(label: str, _argv: tuple[str, ...]) -> None:
         events.append(label)

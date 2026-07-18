@@ -26,6 +26,7 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 | `job_launcher.py` | batch/v1 Job 렌더+제출 (SA 토큰, transport 주입 가능) |
 | `job_runner.py` | Job 내부 실행 순서 강제 (rehearsal 모드 = 격리 검증) |
 | `sigma_gate.py` | Σ부분=전체 게이트 (staging 대상) |
+| `load_verify.py` | ★M-2 게이트: 업로드 epoch 이 로더 출력에 실제 적재됐나(조용한 실패 차단) |
 | `sweep.py` | 유실 감시 CronJob 본체 (정상 시 no-op) |
 
 ## 멱등·직렬화
@@ -43,7 +44,9 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 | `INGEST_JOB_IMAGE` | Job 이미지 (기본 = 운영 orchestrator digest pin) |
 | `INGEST_JOB_NAMESPACE` | 기본 `llmops` |
 | `INGEST_REHEARSAL_ROOT` | 설정 시 job_runner 격리 모드 (sqlite staging, orchestrator 미호출) |
-| `INGEST_UBIST_TARGET_DIR` | UBIST 실증분이 append될 기존 full parquet 루트 (실 load 필수) |
+| `INGEST_UBIST_TARGET_DIR` | R-2 격리 실증에서 증분을 append할 full parquet 루트 |
+| `INGEST_LOAD_STAGING_ROOT` | ★J5 실 로더 격리 출력 루트 (설정 시 mart refresh skip = staging-verify) |
+| `INGEST_LOAD_TARGET_ROOT` | J5 프로덕션 출력 루트 (D-3; refresh 실행). staging 미설정 시 필수 |
 
 ## 격리 리허설 (운영 무접촉 E2E)
 

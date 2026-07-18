@@ -80,7 +80,7 @@ def _run_commands(label: str, argv: tuple[str, ...]) -> None:
 
 
 def _build_load_argv(spec, manifest, input_root: Path) -> tuple[str, ...]:
-    """Bind a validated submission to the exact files consumed by s1."""
+    """Bind R-2's validated UBIST submission to its isolated full input."""
     if not spec.load_argv:
         return ()
     if manifest.category != "ubist":
@@ -104,7 +104,7 @@ def _validate_and_load(
     previous_total_rows: int | None,
     rehearsal_root: Path | None,
 ) -> G3Report:
-    """Run the mandatory G3 boundary and only then consume its exact files."""
+    """Run R-2's mandatory G3 boundary, then consume its exact files."""
     report = validate(
         manifest,
         spec,
@@ -138,6 +138,61 @@ def _check_market_sigma(spec, report: G3Report) -> None:
     )
 
 
+_EMPTY_UBIST_MANIFEST = '{"schema_version": "1.0", "partitions": []}'
+
+
+def _seed_empty_manifest(target_dir: Path, verify_kind: str | None) -> None:
+    """A fresh staging target needs a baseline manifest so the incremental loader
+    treats every uploaded period as new (the loader reads _manifest.json first)."""
+    if verify_kind == "ubist_parquet_manifest":
+        target_dir.mkdir(parents=True, exist_ok=True)
+        manifest = target_dir / "_manifest.json"
+        if not manifest.exists():
+            manifest.write_text(_EMPTY_UBIST_MANIFEST, encoding="utf-8")
+
+
+def _real_load(manifest, spec, input_root: Path) -> dict:
+    """Wire the materialized upload into the loader, run it, and prove the epoch
+    landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
+
+    Fail-closed rules:
+      * a category with a load_argv but no load_input_flag is UNWIRED — refuse
+        to run it in real mode (it would load unrelated defaults = silent failure).
+      * the epoch must appear in the loader's own output with rows > 0.
+    """
+    from pipeline.scripts.ingest_hook.load_verify import verify_epoch_loaded
+
+    if not spec.load_argv:
+        return {"target_dir": None, "epoch_rows": None, "staging_verify": None}  # e.g. skeleton
+
+    if not spec.load_input_flag:
+        raise RuntimeError(
+            f"category {manifest.category!r} has a load command but no upload wiring "
+            "(load_input_flag); refusing to load unrelated defaults (silent-failure guard)"
+        )
+
+    target_root, staging_verify = config.load_output_root()
+    target_dir = target_root / manifest.category / manifest.epoch
+    _seed_empty_manifest(target_dir, spec.load_verify)
+
+    read_files = [str((input_root / entry.path).resolve()) for entry in manifest.files]
+    for source in read_files:
+        argv = list(spec.load_argv)
+        argv.extend([spec.load_input_flag, source])
+        if spec.load_target_flag:
+            argv.extend([spec.load_target_flag, str(target_dir)])
+        print(f"phase=load reading={source} target={target_dir} staging_verify={staging_verify}")
+        _run_commands("load", tuple(argv))
+
+    # M-2: the uploaded epoch must be present in the loader's output.
+    epoch_rows = None
+    if spec.load_verify:
+        epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
+        print(f"gate=load_verify status=pass epoch={manifest.epoch} rows={epoch_rows} target={target_dir}")
+
+    return {"target_dir": target_dir, "epoch_rows": epoch_rows, "staging_verify": staging_verify}
+
+
 def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root: Path | None) -> int:
     run_id = _run_id()
     try:
@@ -163,21 +218,29 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
 
-        # 1) G3 + 2) exact load. A G3 failure has zero DB effect.
-        report = _validate_and_load(
-            manifest,
-            spec,
-            input_root,
-            previous_total_rows=previous_total,
-            rehearsal_root=rehearsal_root,
-        )
+        # 1) G3 — always first; a failure here has zero DB effect.
+        report = validate(manifest, spec, input_root, previous_total_rows=previous_total)
+        print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
 
+        # 2) load; rehearsal gates staging directly, production refreshes before Σ.
         if rehearsal_root is not None:
+            table = _rehearsal_load(manifest, input_root, rehearsal_root)
+            print(f"gate=sigma status=pass table={table} (rehearsal staging)")
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
-            # 3) refresh + 4) Σ gate. Sigma must observe the refreshed mart.
-            _run_commands("refresh", spec.refresh_argv)
-            _check_market_sigma(spec, report)
+            # 2) real load — wire the materialized upload in, prove the epoch landed (M-2).
+            load_result = _real_load(manifest, spec, input_root)
+            staging_verify = load_result["staging_verify"]
+            if staging_verify:
+                # Isolated J5 verification: real loader exercised, zero mart write.
+                print("gate=sigma status=skipped reason=staging-verify (mart untouched)")
+                print("phase=refresh status=skipped reason=staging-verify (orchestrator untouched)")
+            else:
+                # The sigma gate must observe the refreshed mart, not its prior state.
+                _run_commands("refresh", spec.refresh_argv)
+                _check_market_sigma(spec, report)
+            if load_result["epoch_rows"] is not None:
+                report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
 
         ledger.mark_complete(*identity, row_counts=report.file_rows)
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
