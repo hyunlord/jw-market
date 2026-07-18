@@ -37,6 +37,7 @@ from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.answer_contract import (
     enforce_answer_contract,
     evaluate_answer_contract,
+    positioning_markdown_response,
 )
 from jw_chat_agent_poc.orchestrator.bq_mixed_analysis import build_file_market_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import (
@@ -2015,6 +2016,13 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         return _compute_mixed_final_answer(question, result, conversation_id)
     deep_mode = result.get("research_mode") == "deep"
     active_question = str(result.get("effective_question") or question)
+    enriched_markdown_response = positioning_markdown_response(
+        active_question,
+        result.get("markdown_response"),
+        result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else [],
+    )
+    if enriched_markdown_response is not result.get("markdown_response"):
+        result = {**result, "markdown_response": enriched_markdown_response}
     timing = ensure_timing(result)
     if result.get("conversation_fallback_ready"):
         timing_payload = finish(timing)

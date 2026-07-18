@@ -225,7 +225,8 @@ def _completed_answer_contract(question: str, answer: str, fact_md: str) -> bool
     from jw_chat_agent_poc.orchestrator.answer_contract import evaluate_answer_contract
 
     status = evaluate_answer_contract(question, answer, {"fact_md": fact_md})
-    return isinstance(status.get("intent"), str) and status.get("status") == "pass"
+    contract = status.get("intent") or status.get("structural_contract")
+    return isinstance(contract, str) and bool(contract) and status.get("status") == "pass"
 
 
 def _four_stage_unavailable_gate(

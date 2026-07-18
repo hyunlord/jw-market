@@ -173,6 +173,52 @@ def answer_contract_backfill_tool_calls(question: str, brand: str, calls: list[d
     )
 
 
+def positioning_markdown_response(
+    question: str,
+    markdown_response: Mapping[str, Any] | None,
+    calls: list[dict[str, Any]],
+) -> Mapping[str, Any] | None:
+    """Restore an omitted own-position fact from this turn's verified tool result."""
+
+    if _structural_contract_type(question) != "positioning" or not isinstance(markdown_response, Mapping):
+        return markdown_response
+    fact_md = _fact_markdown(markdown_response)
+    if _positioning_fact(fact_md) is not None:
+        return markdown_response
+    brand = _brand_from_question(question)
+    if not brand:
+        return markdown_response
+    for call in calls:
+        if call.get("tool") != "get_brand_metric":
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict) or data.get("brand") != brand:
+            continue
+        if data.get("status") in {"error", "query_failed", "mapping_failed", "missing", "incomplete_split"}:
+            continue
+        rank = _positioning_tool_rank(data)
+        share = _positioning_tool_share(data)
+        if not rank or not share:
+            continue
+        period = str(data.get("period") or "").strip()
+        section = "\n".join(
+            (
+                f"### {brand} 지표 fact",
+                "| 항목 | 값 |",
+                "| --- | --- |",
+                f"| 브랜드/시장 | {brand} |",
+                "| 지표 | market_share |",
+                *((f"| 기간 | {period} |",) if period else ()),
+                f"| 시장점유율 | {share} |",
+                f"| 순위 | {rank} |",
+            )
+        )
+        enriched = dict(markdown_response)
+        enriched["fact_md"] = _join_blocks(fact_md, section)
+        return enriched
+    return markdown_response
+
+
 def enforce_answer_contract(
     question: str,
     answer: str,
@@ -408,6 +454,32 @@ def _has_positioning_fact(calls: list[dict[str, Any]], brand: str) -> bool:
         if data.get("rank") is not None and share is not None:
             return True
     return False
+
+
+def _positioning_tool_rank(data: Mapping[str, Any]) -> str:
+    rank = str(data.get("rank") or "").strip()
+    if not re.fullmatch(r"\d+(?:/\d+)?", rank):
+        return ""
+    denominator = str(data.get("rank_denominator") or "").strip()
+    if "/" not in rank and re.fullmatch(r"\d+", denominator):
+        return f"{rank}/{denominator}"
+    return rank
+
+
+def _positioning_tool_share(data: Mapping[str, Any]) -> str:
+    value = data.get("ms_recent_pct")
+    if value is None:
+        value = data.get("market_share")
+    text = str(value or "").strip()
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    try:
+        share = Decimal(text)
+    except InvalidOperation:
+        return ""
+    if not share.is_finite() or share < 0 or share > 100:
+        return ""
+    return f"{format(share.normalize(), 'f')}%"
 
 
 def _has_csd_activity_fact(calls: list[dict[str, Any]], brand: str) -> bool:

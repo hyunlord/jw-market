@@ -8,6 +8,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import (
     answer_contract_backfill_tool_calls,
     enforce_answer_contract,
     evaluate_answer_contract,
+    positioning_markdown_response,
 )
 from jw_chat_agent_poc.service.runtime_provenance import _required_tools
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
@@ -1199,6 +1200,62 @@ def test_positioning_status_accepts_rank_and_share_without_sales() -> None:
     # Then: the contract is applicable and reports the missing answer surface.
     assert status["structural_contract"] == "positioning"
     assert status["status"] == "surface_missing"
+
+
+def test_positioning_tool_fact_does_not_cross_brand_scope() -> None:
+    markdown_response = {"fact_md": "### 상위 브랜드 점유율 추이 fact\n| 최신 순위 | 브랜드 | 최신 MS |"}
+
+    revised = positioning_markdown_response(
+        "경쟁사 대비 리바로 위치",
+        markdown_response,
+        [
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로젯",
+                    "rank": 3,
+                    "ms_recent_pct": 5.12,
+                },
+            }
+        ],
+    )
+
+    assert revised is markdown_response
+
+
+def test_unavailable_gate_preserves_completed_positioning_contract() -> None:
+    # Given: the structural positioning contract is complete even though it has no generic intent.
+    fact_md = POSITIONING_COMPLETE_FACT_MD + "\n\n### 추가 축\n- 환자수 데이터 미보유"
+    answer = enforce_answer_contract(
+        "경쟁사 대비 리바로 위치",
+        "상위 경쟁 브랜드를 확인했습니다.",
+        {"fact_md": fact_md},
+    )
+
+    # When: the shared unavailable-state gate evaluates the final response.
+    revised = apply_common_unavailable_response(
+        "경쟁사 대비 리바로 위치",
+        answer,
+        {"fact_md": fact_md},
+        tool_calls=[
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "rank": 6,
+                    "ms_recent_pct": 3.76,
+                },
+            }
+        ],
+    )
+
+    # Then: it must not replace the complete structural answer with a generic fallback.
+    assert revised == answer
+    assert "## 포지셔닝 축" in revised
+    assert "직상위 5위 로수바미브" in revised
+    assert "격차 0.44%p" in revised
 
 
 def test_positioning_contract_names_missing_superior_gap_without_inventing_it() -> None:
