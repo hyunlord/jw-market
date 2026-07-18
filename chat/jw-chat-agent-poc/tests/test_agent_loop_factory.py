@@ -4,6 +4,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_agent_loop_dependencies,
     unsupported_brand_result,
 )
+from jw_chat_agent_poc.orchestrator.markdown_formatting import source_description
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.router import BQRouter
 from jw_chat_agent_poc.tools.external.cached_client import CachedExternalApiClient
@@ -53,7 +54,7 @@ def test_fixture_agent_factories_do_not_share_external_result_cache() -> None:
     assert not isinstance(second.external, CachedExternalApiClient)
 
 
-def test_unsupported_brand_result_matches_chat_agent_contract() -> None:
+def test_unsupported_brand_result_reports_absence_from_strategic_mart() -> None:
     # Given: a route from the existing router surface.
     router = BQRouter()
     routes = router.route("타이레놀 매출 알려줘", has_documents=False)
@@ -61,11 +62,15 @@ def test_unsupported_brand_result_matches_chat_agent_contract() -> None:
     # When: the shared unsupported-brand helper builds the response.
     result = unsupported_brand_result("타이레놀 매출 알려줘", routes, router_diagnostics(router))
 
-    # Then: the response preserves ChatAgent's current unsupported contract.
+    # Then: the response distinguishes source absence from resolver blocking.
     assert result["question"] == "타이레놀 매출 알려줘"
     assert result["resolution"] is None
     assert result["tool_calls"] == []
     assert result["sources"] == ["unsupported_brand"]
     assert result["router_diagnostics"] == router_diagnostics(router)
-    assert "지원하지 않는 브랜드" in result["answer"]
+    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "지원하지 않는 브랜드" not in result["answer"]
     assert result["markdown_response"]["sources_md"].startswith("## 출처")
+    assert "전략 마트 원천 미확인" in result["markdown_response"]["sources_md"]
+    assert "지원 범위 밖" not in result["markdown_response"]["sources_md"]
+    assert source_description("unsupported_brand") == "현재 전략 마트 원천에서 브랜드 미확인"

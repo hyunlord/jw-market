@@ -536,7 +536,7 @@ def test_chat_agent_keeps_sidecar_combo_decomposition_with_cache_brand_source() 
     assert tools.count("mfds_patent") == 2
 
 
-def test_chat_agent_returns_graceful_unsupported_for_non_canonical_brand() -> None:
+def test_chat_agent_reports_mart_absence_for_unknown_brand() -> None:
     reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
     resolver = BrandResolver(mode="cache", brand_reader=reader)
     tool = MetricsTool(mode="cache", cache_reader=reader)
@@ -545,7 +545,8 @@ def test_chat_agent_returns_graceful_unsupported_for_non_canonical_brand() -> No
 
     assert result["sources"] == ["unsupported_brand"]
     assert result["tool_calls"] == []
-    assert "지원하지 않는 브랜드" in result["answer"]
+    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "지원하지 않는 브랜드" not in result["answer"]
 
 
 def test_chat_agent_uses_sidecar_molecule_for_new_cache_brand_external_api() -> None:

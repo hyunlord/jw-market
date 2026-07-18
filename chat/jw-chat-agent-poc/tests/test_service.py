@@ -1802,7 +1802,7 @@ def test_genos_markdown_file_kol_skips_market_source_trap(monkeypatch) -> None:
     assert "운영 데이터에 미보유" not in answer
 
 
-def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(monkeypatch) -> None:
+def test_answer_question_direct_agent_loop_reports_mart_absence(monkeypatch) -> None:
     class Resolver:
         def resolve(self, _question: str, *, allow_default: bool = False):
             raise UnsupportedBrandError("unsupported")
@@ -1830,7 +1830,8 @@ def test_answer_question_direct_agent_loop_preserves_unsupported_brand_contract(
     assert result["sources"] == ["unsupported_brand"]
     assert result["tool_calls"] == []
     assert result["router_diagnostics"] == service_app.router_diagnostics(Dependencies.router)
-    assert "지원하지 않는 브랜드" in result["answer"]
+    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "지원하지 않는 브랜드" not in result["answer"]
 
 
 def test_answer_question_direct_agent_loop_allows_portfolio_scope_without_single_brand_resolution(monkeypatch) -> None:

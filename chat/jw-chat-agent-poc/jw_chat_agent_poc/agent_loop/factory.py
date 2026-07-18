@@ -150,7 +150,7 @@ def unsupported_brand_result(
     diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
     markdown = MarkdownResponseBuilder().unsupported_brand(
-        "지원하지 않는 브랜드입니다. 현재 채팅 에이전트는 운영에 연결된 지원 브랜드 목록 기준으로만 답변합니다."
+        "요청한 브랜드는 현재 전략 마트 원천에서 확인되지 않습니다. 브랜드명을 확인해 주세요."
     )
     return {
         "question": question,
