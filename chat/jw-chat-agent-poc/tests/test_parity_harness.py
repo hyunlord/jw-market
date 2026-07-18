@@ -133,6 +133,111 @@ def test_http_sse_forwards_shared_conversation_id(monkeypatch) -> None:
     assert captured["headers"] == {"X-Portal-User-Id": "85"}
 
 
+def test_http_sse_replays_portal_market_bff_contract(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        text = "event: done\ndata: ok\n\n"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    def post(url, *, json, headers, timeout):
+        captured.update(url=url, json=json, headers=headers, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.post", post)
+
+    payload = _http_sse(
+        "https://portal.example/stream-lab-api",
+        "2025년 2분기 매출 얼마야",
+        "live",
+        conversation_id="dirty-session",
+        entry_kind="portal-market-sse",
+        portal_access_token="portal-token",
+    )
+
+    assert payload == "event: done\ndata: ok\n\n"
+    assert captured == {
+        "url": "https://portal.example/stream-lab-api/api/v1/market/socket-lab/stream",
+        "json": {
+            "question": "2025년 2분기 매출 얼마야",
+            "conversationId": "dirty-session",
+        },
+        "headers": {
+            "Accept": "text/event-stream",
+            "Authorization-Access-Token": "portal-token",
+        },
+        "timeout": 180,
+    }
+
+
+def test_http_sse_portal_market_bff_allows_server_side_user_fallback(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        text = "event: done\ndata: ok\n\n"
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    def post(url, *, json, headers, timeout):
+        captured.update(url=url, json=json, headers=headers, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.post", post)
+
+    _http_sse(
+        "https://portal.example/stream-lab-api/",
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        conversation_id="fresh-session",
+        entry_kind="portal-market-sse",
+    )
+
+    assert captured["headers"] == {"Accept": "text/event-stream"}
+    assert captured["json"] == {
+        "question": "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "conversationId": "fresh-session",
+    }
+
+
+def test_capture_p0g_cli_reads_portal_token_from_environment(monkeypatch, tmp_path: Path) -> None:
+    import scripts.parity_harness as harness
+
+    captured: dict[str, object] = {}
+
+    def fake_capture_p0g_suite(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return 0
+
+    monkeypatch.setenv("P0G_PORTAL_ACCESS_TOKEN", "environment-token")
+    monkeypatch.setattr(harness, "capture_p0g_suite", fake_capture_p0g_suite)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "parity_harness.py",
+            "capture-p0g",
+            "--out-dir",
+            str(tmp_path),
+            "--base-url",
+            "https://portal.example/stream-lab-api",
+            "--portal-equivalent",
+            "--entry-kind",
+            "portal-market-sse",
+            "--history-conversation-id",
+            "history-session",
+            "--file-base-url",
+            "http://code-serving-235",
+        ],
+    )
+
+    assert harness.main() == 0
+    assert captured["kwargs"]["portal_access_token"] == "environment-token"
+
+
 def test_capture_rejects_render_integrity_failures(monkeypatch, tmp_path: Path) -> None:
     raw_sse = (
         "event: markdown_block\n"
@@ -286,7 +391,7 @@ def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() ->
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
     calls: list[tuple[Path, str | None, str | None, tuple[tuple[str, str], ...], str | None]] = []
 
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         calls.append((out_dir, external_mode, base_url, questions, conversation_id))
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
@@ -351,6 +456,7 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         portal_equivalent=True,
         portal_user_id="85",
         file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
     )
 
     assert status == 0
@@ -360,13 +466,14 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         HISTORY_GOLDEN_QUESTIONS,
         MODE_TRANSITION_GOLDEN_QUESTIONS,
     ]
-    assert calls[0][4] is None
+    assert calls[0][4] is not None
+    assert calls[0][4].startswith("parity-fresh-")
     assert calls[1][4] == "uploaded-file-session"
     assert calls[2][4] is not None
 
 
 def test_p0g_suite_requires_nonempty_file_bridge_documents(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
             json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
@@ -388,6 +495,7 @@ def test_p0g_suite_requires_nonempty_file_bridge_documents(monkeypatch, tmp_path
         portal_equivalent=True,
         portal_user_id="85",
         file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["evidence_context"]["file_probe"] == {
@@ -430,7 +538,7 @@ def test_probe_uploaded_file_session_uses_235_documents_contract(monkeypatch) ->
 
 
 def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
             json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
@@ -444,7 +552,9 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["evidence_context"] == {
         "transport": "direct-chat-sse",
+        "entry_kind": "direct-chat",
         "portal_equivalent_declared": False,
+        "portal_access_token_supplied": False,
         "portal_user_id_supplied": False,
         "history_conversation_id_supplied": False,
         "file_probe": {
@@ -460,8 +570,42 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
     ]
 
 
+def test_p0g_suite_rejects_direct_chat_even_when_declared_portal_equivalent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 1, ""),
+    )
+
+    assert capture_p0g_suite(
+        tmp_path,
+        "live",
+        "http://direct-chat",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        portal_user_id="85",
+        file_base_url="http://code-serving-235",
+        entry_kind="direct-chat",
+    ) == 1
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert summary["qualification_failures"] == [
+        "portal-equivalent evidence requires portal-market-sse entry",
+    ]
+
+
 def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
             json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
@@ -478,6 +622,7 @@ def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypat
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         portal_user_id="85",
+        entry_kind="portal-market-sse",
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["qualification_failures"] == [
@@ -486,8 +631,8 @@ def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypat
     ]
 
 
-def test_p0g_suite_requires_portal_user_header_for_release_evidence(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {
@@ -514,17 +659,16 @@ def test_p0g_suite_requires_portal_user_header_for_release_evidence(monkeypatch,
         history_conversation_id="uploaded-file-session",
         portal_equivalent=True,
         file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
-    assert summary["qualification_failures"] == [
-        "portal-equivalent evidence requires X-Portal-User-Id",
-    ]
+    assert summary["qualification_failures"] == []
 
 
 def test_p0g_suite_fails_when_any_scenario_fails(monkeypatch, tmp_path: Path) -> None:
     statuses = iter((0, 1, 0))
 
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
             json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
@@ -538,7 +682,7 @@ def test_p0g_suite_fails_when_any_scenario_fails(monkeypatch, tmp_path: Path) ->
 
 
 def test_p0g_suite_fails_when_general_golden_exceeds_fast_path_budget(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {"qid": qid, "elapsed_ms": 10_001.0 if qid == "H02" else 100.0}
@@ -555,7 +699,7 @@ def test_p0g_suite_fails_when_general_golden_exceeds_fast_path_budget(monkeypatc
 
 
 def test_p0g_suite_fails_when_general_golden_runs_contaminated_routes(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = []
         for qid, _ in questions:
@@ -587,7 +731,7 @@ def test_p0g_suite_fails_when_general_step_text_leaks_prior_turn_or_internal_met
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {
@@ -624,7 +768,7 @@ def test_p0g_suite_fails_when_general_step_text_leaks_prior_turn_or_internal_met
 
 
 def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         (out_dir / "summary.json").write_text(
             json.dumps(
@@ -708,7 +852,7 @@ def test_p0g_suite_rejects_portal_evidence_without_progress_steps(monkeypatch, t
 
 
 def test_p0g_suite_rejects_history_response_from_a_different_session(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = []
         for qid, _ in questions:
@@ -746,7 +890,7 @@ def test_p0g_suite_rejects_history_response_from_a_different_session(monkeypatch
 
 
 def test_p0g_suite_requires_history_and_deep_seed_execution(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {
@@ -787,7 +931,7 @@ def test_p0g_suite_requires_history_and_deep_seed_execution(monkeypatch, tmp_pat
 
 
 def test_p0g_suite_requires_completed_fast_path_stage_for_general_goldens(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {
@@ -834,7 +978,7 @@ def test_p0g_suite_requires_completed_fast_path_stage_for_general_goldens(monkey
 
 
 def test_p0g_suite_requires_completed_market_tool_stage_for_general_goldens(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {
@@ -931,7 +1075,7 @@ def test_p0g_market_tool_stage_requires_plan_before_tool_completion() -> None:
 
 
 def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {
@@ -996,7 +1140,7 @@ def test_p0g_suite_requires_ubist_source_evidence_for_general_goldens(monkeypatc
 
 
 def test_p0g_suite_rejects_ubist_event_when_rendered_source_section_is_empty(monkeypatch, tmp_path: Path) -> None:
-    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None):
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
             {

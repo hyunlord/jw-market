@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import re
 import shutil
 import sys
@@ -164,6 +165,8 @@ def capture(
     conversation_id: str | None = None,
     *,
     portal_user_id: str | None = None,
+    entry_kind: str = "direct-chat",
+    portal_access_token: str | None = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("sse", "markdown", "traces"):
@@ -186,6 +189,8 @@ def capture(
                         external_mode,
                         conversation_id=conversation_id,
                         portal_user_id=portal_user_id,
+                        entry_kind=entry_kind,
+                        portal_access_token=portal_access_token,
                     )
                 ]
                 result = {"capture_mode": "http", "trace_available": False}
@@ -289,12 +294,14 @@ def capture_p0g_suite(
     max_general_elapsed_ms: float = 10_000.0,
     portal_equivalent: bool = False,
     portal_user_id: str | None = None,
+    entry_kind: str = "direct-chat",
+    portal_access_token: str | None = None,
     file_base_url: str | None = None,
     file_workflow_id: int = 301,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenarios = (
-        ("fresh", FRESH_GOLDEN_QUESTIONS, None),
+        ("fresh", FRESH_GOLDEN_QUESTIONS, f"parity-fresh-{uuid4().hex}"),
         (
             "history",
             HISTORY_GOLDEN_QUESTIONS,
@@ -315,6 +322,8 @@ def capture_p0g_suite(
             questions,
             conversation_id,
             portal_user_id=portal_user_id,
+            entry_kind=entry_kind,
+            portal_access_token=portal_access_token,
         )
         rows = json.loads((out_dir / name / "summary.json").read_text(encoding="utf-8"))
         latency_failures = [
@@ -351,10 +360,10 @@ def capture_p0g_suite(
     qualification_failures: list[str] = []
     if not portal_equivalent:
         qualification_failures.append("portal-equivalent entry path was not declared")
+    if portal_equivalent and entry_kind != "portal-market-sse":
+        qualification_failures.append("portal-equivalent evidence requires portal-market-sse entry")
     if portal_equivalent and not base_url:
         qualification_failures.append("portal-equivalent evidence requires a deployed base URL")
-    if portal_equivalent and not str(portal_user_id or "").strip():
-        qualification_failures.append("portal-equivalent evidence requires X-Portal-User-Id")
     if not history_conversation_id:
         qualification_failures.append("uploaded-file history conversation ID was not supplied")
     file_probe = {
@@ -382,8 +391,16 @@ def capture_p0g_suite(
             qualification_failures.append(f"uploaded-file history session probe failed: {error}")
     report = {
         "evidence_context": {
-            "transport": "direct-chat-sse" if base_url else "local-inprocess",
+            "transport": (
+                "portal-market-sse"
+                if base_url and entry_kind == "portal-market-sse"
+                else "direct-chat-sse"
+                if base_url
+                else "local-inprocess"
+            ),
+            "entry_kind": entry_kind,
             "portal_equivalent_declared": portal_equivalent,
+            "portal_access_token_supplied": bool(str(portal_access_token or "").strip()),
             "portal_user_id_supplied": bool(str(portal_user_id or "").strip()),
             "history_conversation_id_supplied": bool(history_conversation_id),
             "file_probe": file_probe,
@@ -783,7 +800,23 @@ def _http_sse(
     *,
     conversation_id: str | None = None,
     portal_user_id: str | None = None,
+    entry_kind: str = "direct-chat",
+    portal_access_token: str | None = None,
 ) -> str:
+    if entry_kind == "portal-market-sse":
+        url = base_url.rstrip("/") + "/api/v1/market/socket-lab/stream"
+        body = {
+            "question": question,
+            "conversationId": conversation_id,
+        }
+        headers = {"Accept": "text/event-stream"}
+        if portal_access_token:
+            headers["Authorization-Access-Token"] = portal_access_token
+        response = requests.post(url, json=body, headers=headers, timeout=180)
+        response.raise_for_status()
+        return response.text
+    if entry_kind != "direct-chat":
+        raise ValueError(f"unsupported HTTP entry kind: {entry_kind}")
     url = base_url.rstrip("/") + "/chat/stream"
     params = {"question": question, "external_mode": external_mode}
     if conversation_id:
@@ -1144,18 +1177,33 @@ def main() -> int:
         "--conversation-id",
         help="Reuse one session across capture questions. Required to reproduce history contamination against an existing uploaded-file session.",
     )
-    p0g_parser = sub.add_parser("capture-p0g")
+    p0g_parser = sub.add_parser(
+        "capture-p0g",
+        description=(
+            "Capture P-0G release evidence. Set P0G_PORTAL_ACCESS_TOKEN in the environment "
+            "when the portal BFF requires an access token."
+        ),
+    )
     p0g_parser.add_argument("--out-dir", type=Path, required=True)
     p0g_parser.add_argument("--external-mode", default="live")
-    p0g_parser.add_argument("--base-url", help="Deployed /chat/stream base URL.")
+    p0g_parser.add_argument(
+        "--base-url",
+        help="Deployed base URL for the selected P-0G entry adapter.",
+    )
     p0g_parser.add_argument(
         "--portal-equivalent",
         action="store_true",
         help="Declare that the supplied endpoint and payload path match the portal path under release review.",
     )
     p0g_parser.add_argument(
+        "--entry-kind",
+        choices=("direct-chat", "portal-market-sse"),
+        default="direct-chat",
+        help="HTTP entry adapter. Only portal-market-sse qualifies as portal-equivalent release evidence.",
+    )
+    p0g_parser.add_argument(
         "--portal-user-id",
-        help="Portal user ID forwarded as X-Portal-User-Id for portal-equivalent evidence.",
+        help="Portal user ID forwarded only by the direct-chat diagnostic adapter.",
     )
     p0g_parser.add_argument(
         "--history-conversation-id",
@@ -1205,6 +1253,8 @@ def main() -> int:
             max_general_elapsed_ms=args.max_general_elapsed_ms,
             portal_equivalent=args.portal_equivalent,
             portal_user_id=args.portal_user_id,
+            entry_kind=args.entry_kind,
+            portal_access_token=os.getenv("P0G_PORTAL_ACCESS_TOKEN"),
             file_base_url=args.file_base_url,
             file_workflow_id=args.file_workflow_id,
         )
