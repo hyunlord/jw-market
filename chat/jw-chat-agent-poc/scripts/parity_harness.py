@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
-import os
 import re
 import shutil
 import sys
@@ -167,7 +166,6 @@ def capture(
     *,
     portal_user_id: str | None = None,
     entry_kind: str = "direct-chat",
-    portal_access_token: str | None = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     for name in ("sse", "markdown", "traces"):
@@ -191,7 +189,6 @@ def capture(
                         conversation_id=conversation_id,
                         portal_user_id=portal_user_id,
                         entry_kind=entry_kind,
-                        portal_access_token=portal_access_token,
                     )
                 ]
                 result = {"capture_mode": "http", "trace_available": False}
@@ -296,7 +293,6 @@ def capture_p0g_suite(
     portal_equivalent: bool = False,
     portal_user_id: str | None = None,
     entry_kind: str = "direct-chat",
-    portal_access_token: str | None = None,
     file_base_url: str | None = None,
     file_workflow_id: int = 301,
 ) -> int:
@@ -324,7 +320,6 @@ def capture_p0g_suite(
             conversation_id,
             portal_user_id=portal_user_id,
             entry_kind=entry_kind,
-            portal_access_token=portal_access_token,
         )
         rows = json.loads((out_dir / name / "summary.json").read_text(encoding="utf-8"))
         latency_failures = [
@@ -413,7 +408,6 @@ def capture_p0g_suite(
             ),
             "entry_kind": entry_kind,
             "portal_equivalent_declared": portal_equivalent,
-            "portal_access_token_supplied": bool(str(portal_access_token or "").strip()),
             "portal_user_id_supplied": bool(str(portal_user_id or "").strip()),
             "history_conversation_id_supplied": bool(history_conversation_id),
             "file_probe": file_probe,
@@ -814,7 +808,6 @@ def _http_sse(
     conversation_id: str | None = None,
     portal_user_id: str | None = None,
     entry_kind: str = "direct-chat",
-    portal_access_token: str | None = None,
 ) -> str:
     if entry_kind == "portal-market-sse":
         url = base_url.rstrip("/") + "/api/v1/market/socket-lab/stream"
@@ -822,9 +815,10 @@ def _http_sse(
             "question": question,
             "conversationId": conversation_id,
         }
-        headers = {"Accept": "text/event-stream"}
-        if portal_access_token:
-            headers["Authorization-Access-Token"] = portal_access_token
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
         response = requests.post(url, json=body, headers=headers, timeout=180)
         response.raise_for_status()
         return response.text
@@ -1201,13 +1195,7 @@ def main() -> int:
         "--conversation-id",
         help="Reuse one session across capture questions. Required to reproduce history contamination against an existing uploaded-file session.",
     )
-    p0g_parser = sub.add_parser(
-        "capture-p0g",
-        description=(
-            "Capture P-0G release evidence. Set P0G_PORTAL_ACCESS_TOKEN in the environment "
-            "when the portal BFF requires an access token."
-        ),
-    )
+    p0g_parser = sub.add_parser("capture-p0g")
     p0g_parser.add_argument("--out-dir", type=Path, required=True)
     p0g_parser.add_argument("--external-mode", default="live")
     p0g_parser.add_argument(
@@ -1278,7 +1266,6 @@ def main() -> int:
             portal_equivalent=args.portal_equivalent,
             portal_user_id=args.portal_user_id,
             entry_kind=args.entry_kind,
-            portal_access_token=os.getenv("P0G_PORTAL_ACCESS_TOKEN"),
             file_base_url=args.file_base_url,
             file_workflow_id=args.file_workflow_id,
         )

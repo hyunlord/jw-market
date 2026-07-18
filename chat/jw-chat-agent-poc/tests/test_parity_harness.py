@@ -155,7 +155,6 @@ def test_http_sse_replays_portal_market_bff_contract(monkeypatch) -> None:
         "live",
         conversation_id="dirty-session",
         entry_kind="portal-market-sse",
-        portal_access_token="portal-token",
     )
 
     assert payload == "event: done\ndata: ok\n\n"
@@ -166,76 +165,11 @@ def test_http_sse_replays_portal_market_bff_contract(monkeypatch) -> None:
             "conversationId": "dirty-session",
         },
         "headers": {
+            "Content-Type": "application/json",
             "Accept": "text/event-stream",
-            "Authorization-Access-Token": "portal-token",
         },
         "timeout": 180,
     }
-
-
-def test_http_sse_portal_market_bff_allows_server_side_user_fallback(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class Response:
-        text = "event: done\ndata: ok\n\n"
-
-        @staticmethod
-        def raise_for_status() -> None:
-            return None
-
-    def post(url, *, json, headers, timeout):
-        captured.update(url=url, json=json, headers=headers, timeout=timeout)
-        return Response()
-
-    monkeypatch.setattr("scripts.parity_harness.requests.post", post)
-
-    _http_sse(
-        "https://portal.example/stream-lab-api/",
-        "고지혈증 시장 상위 5개 브랜드 알려줘",
-        "live",
-        conversation_id="fresh-session",
-        entry_kind="portal-market-sse",
-    )
-
-    assert captured["headers"] == {"Accept": "text/event-stream"}
-    assert captured["json"] == {
-        "question": "고지혈증 시장 상위 5개 브랜드 알려줘",
-        "conversationId": "fresh-session",
-    }
-
-
-def test_capture_p0g_cli_reads_portal_token_from_environment(monkeypatch, tmp_path: Path) -> None:
-    import scripts.parity_harness as harness
-
-    captured: dict[str, object] = {}
-
-    def fake_capture_p0g_suite(*args, **kwargs):
-        captured.update(args=args, kwargs=kwargs)
-        return 0
-
-    monkeypatch.setenv("P0G_PORTAL_ACCESS_TOKEN", "environment-token")
-    monkeypatch.setattr(harness, "capture_p0g_suite", fake_capture_p0g_suite)
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "parity_harness.py",
-            "capture-p0g",
-            "--out-dir",
-            str(tmp_path),
-            "--base-url",
-            "https://portal.example/stream-lab-api",
-            "--portal-equivalent",
-            "--entry-kind",
-            "portal-market-sse",
-            "--history-conversation-id",
-            "history-session",
-            "--file-base-url",
-            "http://code-serving-235",
-        ],
-    )
-
-    assert harness.main() == 0
-    assert captured["kwargs"]["portal_access_token"] == "environment-token"
 
 
 def test_capture_rejects_render_integrity_failures(monkeypatch, tmp_path: Path) -> None:
@@ -555,7 +489,6 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
         "transport": "direct-chat-sse",
         "entry_kind": "direct-chat",
         "portal_equivalent_declared": False,
-        "portal_access_token_supplied": False,
         "portal_user_id_supplied": False,
         "history_conversation_id_supplied": False,
         "file_probe": {
