@@ -58,6 +58,7 @@ MODE_TRANSITION_GOLDEN_QUESTIONS: tuple[tuple[str, str], ...] = (
     ("M03", "고지혈증 시장 상위 5개 브랜드 알려줘"),
 )
 P0G_GENERAL_GOLDEN_QIDS = frozenset({"F01", "F02", "H02", "H03", "M02", "M03"})
+P0G_SALES_GOLDEN_QIDS = frozenset({"F01", "H02", "M02"})
 P0G_TOP5_GOLDEN_QIDS = frozenset({"F02", "H03", "M03"})
 P0G_TOP5_GOLDEN_ROWS = (
     (1, "로수젯", "9.13", "195.24"),
@@ -644,6 +645,11 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     pattern, error = requirement
     if not pattern.search(answer):
         return False, error
+    if qid in P0G_SALES_GOLDEN_QIDS and not re.search(
+        r"2025-Q2\s+리바로\s+매출은\s+242\.72\s*억원",
+        answer,
+    ):
+        return False, "incorrect 2025-Q2 리바로 sales context"
     if qid in P0G_TOP5_GOLDEN_QIDS and not all(
         re.search(rf"(?m)^\|\s*{rank}(?:위)?\s*\|", answer)
         for rank in range(1, 6)

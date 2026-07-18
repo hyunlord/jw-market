@@ -179,6 +179,13 @@ def test_history_golden_acceptance_rejects_incorrect_top5_ranked_values() -> Non
     )
 
 
+def test_history_golden_acceptance_rejects_sales_value_in_wrong_context() -> None:
+    assert _history_golden_acceptance(
+        "H02",
+        "2026-Q2 로수젯 매출은 242.72억원입니다.",
+    ) == (False, "incorrect 2025-Q2 리바로 sales context")
+
+
 def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() -> None:
     assert _history_golden_acceptance(
         "H02",
