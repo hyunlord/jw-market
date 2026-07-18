@@ -120,6 +120,7 @@ from jw_chat_agent_poc.service.startup_warmup import (
 )
 from jw_chat_agent_poc.common.timing import (
     StageEventSink,
+    emit_completed_stage,
     ensure_timing,
     finish,
     public_stage_summary,
@@ -515,14 +516,16 @@ def _answer_question(
         effective_question = deep_request.question
         state = store.conversations.get_or_create(conversation_id)
         provided_file = _has_file_signal(documents, file_context)
-        with stage(None, "file_session_probe", "active uploaded file check"):
-            has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
-        with stage(None, "file_schema_probe", "active uploaded file schema check"):
-            file_schema_columns = (
-                fetch_uploaded_file_schema_columns(state.conversation_id)
-                if has_file and not provided_file
-                else ()
-            )
+        file_probe_started = time.perf_counter()
+        has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
+        file_probe_elapsed_ms = (time.perf_counter() - file_probe_started) * 1000
+        schema_probe_started = time.perf_counter()
+        file_schema_columns = (
+            fetch_uploaded_file_schema_columns(state.conversation_id)
+            if has_file and not provided_file
+            else ()
+        )
+        schema_probe_elapsed_ms = (time.perf_counter() - schema_probe_started) * 1000
         file_overviews = (
             fetch_uploaded_file_overviews(state.conversation_id)
             if has_file and not effective_question.strip()
@@ -563,6 +566,19 @@ def _answer_question(
             has_market_anchor=has_market_anchor,
             file_schema_columns=file_schema_columns,
         )
+        if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
+            emit_completed_stage(
+                None,
+                "file_session_probe",
+                file_probe_elapsed_ms,
+                "active uploaded file check",
+            )
+            emit_completed_stage(
+                None,
+                "file_schema_probe",
+                schema_probe_elapsed_ms,
+                "active uploaded file schema check",
+            )
         file_schema_match = matches_file_schema(file_question, file_schema_columns)
         needs_scope_clarification = (
             has_file

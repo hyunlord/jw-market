@@ -588,6 +588,82 @@ def test_unanchored_quarter_golden_ignores_stale_file_and_external_turn(
     assert "242.72억원" in item["result"]["answer"]
 
 
+def test_unanchored_quarter_golden_hides_stale_file_progress_steps(
+    monkeypatch,
+) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "golden-dirty-progress-session",
+        "뇌경색 임상·허가 경쟁약물",
+        "외부 도구 결과",
+    )
+    events: list[dict] = []
+
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_schema_columns",
+        lambda _conversation_id: ("질환", "임상"),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_answer_direct_agent_loop",
+        lambda _question, _external_mode: {
+            "answer": "2025-Q2 리바로 매출은 242.72억원입니다.",
+            "sources": ["UBIST"],
+            "tool_calls": [],
+        },
+    )
+
+    item = service_app._answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "2025년 2분기 매출 얼마야",
+        "live",
+        "golden-dirty-progress-session",
+        use_direct_agent_loop=True,
+        timing_sink=events.append,
+    )
+
+    public_steps = {str(event.get("name") or "") for event in events}
+    assert item["result"]["context_scope"] == "MARKET"
+    assert "242.72억원" in item["result"]["answer"]
+    assert "첨부 파일 확인" not in public_steps
+    assert "첨부 파일 구조 분석" not in public_steps
+
+
+def test_uploaded_file_question_keeps_file_progress_steps(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(service_app, "has_active_uploaded_file", lambda _conversation_id: True)
+    monkeypatch.setattr(
+        service_app,
+        "fetch_uploaded_file_schema_columns",
+        lambda _conversation_id: ("제조사", "매출"),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "_delegated_file_context",
+        lambda *_args, **_kwargs: ("제조사별 매출 근거", (), True, "", ()),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "첨부 파일의 제조사별 매출을 알려줘",
+        "live",
+        "file-progress-session",
+        use_direct_agent_loop=True,
+        timing_sink=events.append,
+    )
+
+    public_steps = {str(event.get("name") or "") for event in events}
+    assert item["result"]["context_scope"] == "FILE"
+    assert "첨부 파일 확인" in public_steps
+    assert "첨부 파일 구조 분석" in public_steps
+
+
 def test_unanchored_top_five_golden_ignores_stale_file_and_external_turn(
     monkeypatch,
 ) -> None:
