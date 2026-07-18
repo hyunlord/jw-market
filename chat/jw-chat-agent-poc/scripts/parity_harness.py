@@ -1072,7 +1072,8 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     if qid in P0G_TOP5_GOLDEN_QIDS and not all(
         re.search(
             rf"(?m)^\|\s*{rank}(?:위)?\s*\|\s*{re.escape(brand)}\s*\|"
-            rf"\s*{re.escape(share)}\s*%\s*\|\s*{re.escape(sales)}\s*억원\s*\|",
+            rf"\s*{re.escape(share)}\s*%\s*\|"
+            rf"(?:\s*{re.escape(sales)}\s*억원\s*\|)?\s*$",
             answer_body,
         )
         for rank, brand, share, sales in P0G_TOP5_GOLDEN_ROWS

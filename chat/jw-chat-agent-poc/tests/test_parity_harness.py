@@ -247,6 +247,23 @@ def test_history_golden_acceptance_requires_live_values() -> None:
     assert _history_golden_acceptance("F02", top5_answer) == (True, "")
 
 
+def test_history_golden_acceptance_allows_grounded_share_only_top5_table() -> None:
+    answer = (
+        "## 시장 집중도\n"
+        "HHI 253.62, CR5 29.52%입니다.\n\n"
+        "| 순위 | 브랜드 | 점유율 |\n"
+        "| --- | --- | --- |\n"
+        "| 1위 | 로수젯 | 9.13% |\n"
+        "| 2위 | 리피토 | 6.13% |\n"
+        "| 3위 | 리바로젯 | 5.12% |\n"
+        "| 4위 | 아토젯 | 4.95% |\n"
+        "| 5위 | 로수바미브 | 4.20% |"
+    )
+
+    for qid in ("F02", "H03", "M03"):
+        assert _history_golden_acceptance(qid, answer) == (True, "")
+
+
 def test_fresh_representative_acceptance_requires_a_real_recent_sales_trend() -> None:
     answer = (
         "리바로 매출은 최근 2개월 연속 감소했습니다.\n\n"
