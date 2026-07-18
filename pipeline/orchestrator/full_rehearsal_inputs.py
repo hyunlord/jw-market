@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Protocol
 import unicodedata
 
-from pipeline.etl.lib.storage import MI_MASTER_FILE_NAME
+from pipeline.etl.lib.storage import (
+    MI_MASTER_DIR_NAME,
+    MI_MASTER_FILE_NAME,
+    PROJECT_ROOT,
+)
 from pipeline.scripts.ingest_hook.s3_input import S3Input
 
 
@@ -25,6 +29,8 @@ class ReadOnlyObjectStore(Protocol):
 
 
 ClientFactory = Callable[[str], ReadOnlyObjectStore]
+DEFAULT_MI_MASTER_SOURCE_DIR = PROJECT_ROOT / "data" / MI_MASTER_DIR_NAME
+SOURCE_PINS_FILE_NAME = "SOURCE_PINS.sha256"
 
 
 def materialize_full_inputs(
@@ -32,10 +38,10 @@ def materialize_full_inputs(
     output_root: Path,
     ubist_bucket: str,
     iqvia_bucket: str,
-    mi_master_bucket: str,
+    mi_master_source_dir: Path | None = None,
     client_factory: ClientFactory | None = None,
 ) -> Path:
-    """Download all supported raw objects and return the generated manifest."""
+    """Materialize object-store raws plus the repository-pinned MI workbook."""
     root = output_root.resolve()
     if root.exists():
         raise InputMaterializationError(f"output root already exists: {root}")
@@ -63,15 +69,11 @@ def materialize_full_inputs(
         client=factory(iqvia_bucket),
         inventory=inventory,
     )
-    master_paths = _download_population(
-        label="MI Master",
-        bucket=mi_master_bucket,
+    master = _materialize_repository_mi_master(
+        source_dir=mi_master_source_dir or DEFAULT_MI_MASTER_SOURCE_DIR,
         destination=master_dir,
-        suffixes=frozenset({".xlsx"}),
-        client=factory(mi_master_bucket),
         inventory=inventory,
     )
-    master = _select_mi_master(master_paths)
 
     manifest_path = root / "input_manifest.json"
     manifest_path.write_text(
@@ -151,6 +153,66 @@ def _safe_target(root: Path, key: str) -> Path:
     if root.resolve() not in target.parents:
         raise InputMaterializationError(f"object key escapes output root: {key!r}")
     return target
+
+
+def _materialize_repository_mi_master(
+    *,
+    source_dir: Path,
+    destination: Path,
+    inventory: list[dict[str, str | int]],
+) -> Path:
+    source_root = source_dir.resolve()
+    if not source_root.is_dir():
+        raise InputMaterializationError(
+            f"MI Master repository source directory is missing: {source_root}"
+        )
+
+    master = _select_mi_master(sorted(source_root.glob("*.xlsx")))
+    expected_sha = _read_pinned_sha(source_root / SOURCE_PINS_FILE_NAME, master.name)
+    payload = master.read_bytes()
+    actual_sha = hashlib.sha256(payload).hexdigest()
+    if actual_sha != expected_sha:
+        raise InputMaterializationError(
+            f"MI Master SHA256 mismatch: expected {expected_sha}, got {actual_sha}"
+        )
+
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / MI_MASTER_FILE_NAME
+    target.write_bytes(payload)
+    inventory.append(
+        {
+            "bucket": "repository",
+            "key": MI_MASTER_FILE_NAME,
+            "sha256": actual_sha,
+            "size": len(payload),
+        }
+    )
+    return target
+
+
+def _read_pinned_sha(pin_path: Path, master_name: str) -> str:
+    if not pin_path.is_file():
+        raise InputMaterializationError(f"MI Master source pin is missing: {pin_path}")
+
+    expected_name = unicodedata.normalize("NFC", master_name)
+    matches: list[str] = []
+    for line in pin_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts
+        if unicodedata.normalize("NFC", name.strip()) == expected_name:
+            matches.append(digest.lower())
+    if len(matches) != 1 or len(matches[0]) != 64 or any(
+        char not in "0123456789abcdef" for char in matches[0]
+    ):
+        raise InputMaterializationError(
+            f"MI Master source pin population must be exactly 1 valid SHA256; found {len(matches)}"
+        )
+    return matches[0]
 
 
 def _select_mi_master(paths: list[Path]) -> Path:
