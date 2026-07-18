@@ -68,7 +68,12 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         description="UBIST monthly submission (incremental append; dedup in frame loader)",
         required_columns=("period", "brand", "value"),
         period_column="period",
-        load_argv=_etl("--source", "ubist", "--incremental"),
+        # --stage s1 loads the uploaded file's parquet in isolation: it bypasses
+        # s0 verify (which requires the full four-source tree) and honors --file
+        # (discover_xlsx adds the exact file). The upstream parquet->mart_general_*
+        # propagation (s2..s7 / mounted source tree) is a separate stage-orchestration
+        # decision flagged to jw agent for D-3; M-2 here proves the staging landing.
+        load_argv=_etl("--stage", "s1", "--source", "ubist", "--incremental"),
         refresh_argv=_orchestrator(),
         sigma_source="ubist",
         load_input_flag="--file",
