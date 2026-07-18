@@ -455,6 +455,7 @@ def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() ->
 
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
     calls: list[tuple[Path, str | None, str | None, tuple[tuple[str, str], ...], str | None]] = []
+    upload_tokens: list[str] = []
     upload_file = tmp_path / "history.txt"
     upload_file.write_text("history", encoding="utf-8")
 
@@ -517,8 +518,17 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         lambda base_url, conversation_id, workflow_id: (True, 2, ""),
     )
     monkeypatch.setattr(
+        "scripts.parity_harness._fetch_portal_file_access_token",
+        lambda auth_url: ("bootstrapped-token", ""),
+    )
+
+    def seed_upload(base_url, conversation_id, upload_path, access_token):
+        upload_tokens.append(access_token)
+        return True, 2, (101,), ""
+
+    monkeypatch.setattr(
         "scripts.parity_harness._seed_portal_uploaded_file_session",
-        lambda base_url, conversation_id, upload_path, access_token: (True, 2, (101,), ""),
+        seed_upload,
     )
     monkeypatch.setattr(
         "scripts.parity_harness._cleanup_portal_uploaded_file_session",
@@ -535,10 +545,11 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         file_base_url="http://code-serving-235",
         entry_kind="portal-market-sse",
         history_upload_file=upload_file,
-        portal_file_access_token="test-token",
+        portal_file_auth_url="https://portal.example/stream-lab-api/api/v1/auth/genos/login",
     )
 
     assert status == 0
+    assert upload_tokens == ["bootstrapped-token"]
     assert [call[0].name for call in calls] == ["fresh", "history", "mode-transition"]
     assert [call[3] for call in calls] == [
         FRESH_GOLDEN_QUESTIONS,
@@ -550,6 +561,12 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
     assert calls[1][4] == "uploaded-file-session"
     assert calls[2][4] is not None
     report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert report["evidence_context"]["portal_file_auth"] == {
+        "attempted": True,
+        "passed": True,
+        "source": "portal-login",
+        "error": "",
+    }
     assert report["evidence_context"]["portal_file_probe"] == {
         "attempted": True,
         "document_count": 2,
@@ -694,6 +711,70 @@ def test_seed_portal_uploaded_file_session_uses_browser_bff_contract(
     )
 
 
+def test_fetch_portal_file_access_token_uses_official_login_without_exposing_value(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "code": 0,
+                "data": {
+                    "portalToken": "portal-secret",
+                    "accessToken": "access-secret",
+                    "refreshToken": "refresh-secret",
+                },
+            }
+
+    def get(url, *, timeout):
+        captured.update(url=url, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.get", get)
+
+    from scripts.parity_harness import _fetch_portal_file_access_token
+
+    token, error = _fetch_portal_file_access_token(
+        "https://portal.example/stream-lab-api/api/v1/auth/genos/login"
+    )
+
+    assert token == "access-secret"
+    assert error == ""
+    assert captured == {
+        "url": "https://portal.example/stream-lab-api/api/v1/auth/genos/login",
+        "timeout": 30,
+    }
+
+
+def test_fetch_portal_file_access_token_fails_closed_without_access_token(monkeypatch) -> None:
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"code": 0, "data": {"portalToken": "portal-only"}}
+
+    monkeypatch.setattr(
+        "scripts.parity_harness.requests.get",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    from scripts.parity_harness import _fetch_portal_file_access_token
+
+    token, error = _fetch_portal_file_access_token("https://portal.example/login")
+
+    assert token is None
+    assert error == "portal login response has no accessToken"
+
+
 def test_cleanup_portal_uploaded_file_session_uses_browser_bff_contract(monkeypatch) -> None:
     captured: list[tuple[str, dict[str, str], dict[str, str], int]] = []
 
@@ -779,6 +860,12 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
             "attempted": False,
             "document_count": 0,
             "passed": False,
+            "error": "",
+        },
+        "portal_file_auth": {
+            "attempted": False,
+            "passed": False,
+            "source": "none",
             "error": "",
         },
         "portal_file_probe": {
