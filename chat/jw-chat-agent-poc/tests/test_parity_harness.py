@@ -323,6 +323,25 @@ def test_history_golden_acceptance_rejects_duplicate_top5_ranks() -> None:
     )
 
 
+def test_history_golden_acceptance_rejects_conflicting_top5_summary_claims() -> None:
+    answer = (
+        "상위 5개 합계 시장점유율은 29.52%이고 HHI는 253.62입니다.\n"
+        "다른 요약에는 CR5가 88.88%이고 HHI는 999.99라고 표시됩니다.\n\n"
+        "| 순위 | 브랜드 | 점유율 | 매출 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 1위 | 로수젯 | 9.13% | 195.24억원 |\n"
+        "| 2위 | 리피토 | 6.13% | 131.09억원 |\n"
+        "| 3위 | 리바로젯 | 5.12% | 109.46억원 |\n"
+        "| 4위 | 아토젯 | 4.95% | 105.87억원 |\n"
+        "| 5위 | 로수바미브 | 4.20% | 89.76억원 |"
+    )
+
+    assert _history_golden_acceptance("F02", answer) == (
+        False,
+        "conflicting top 5 summary values",
+    )
+
+
 def test_history_golden_acceptance_ignores_correct_rows_after_sources() -> None:
     answer = (
         "상위 5개 합계 시장점유율은 29.52%입니다.\n\n"

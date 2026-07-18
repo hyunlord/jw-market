@@ -1068,6 +1068,22 @@ def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
         for rank, brand, share, sales in P0G_TOP5_GOLDEN_ROWS
     ):
         return False, "incorrect top 5 ranked values"
+    if qid in P0G_TOP5_GOLDEN_QIDS:
+        cr5_claims = re.findall(
+            r"(?:상위\s*5개\s*합계\s*시장점유율|CR5)\s*(?:은|는|가|=|:)?\s*"
+            r"([0-9][0-9,.]*)\s*%",
+            answer_body,
+            flags=re.IGNORECASE,
+        )
+        hhi_claims = re.findall(
+            r"\bHHI\s*(?:은|는|가|=|:)?\s*([0-9][0-9,.]*)",
+            answer_body,
+            flags=re.IGNORECASE,
+        )
+        if any(value.replace(",", "") != "29.52" for value in cr5_claims) or any(
+            value.replace(",", "") != "253.62" for value in hhi_claims
+        ):
+            return False, "conflicting top 5 summary values"
     if qid in P0G_TOP5_GOLDEN_QIDS and not re.search(
         r"\bHHI\s*(?:는|=|:)?\s*253\.62(?!\d)",
         answer_body,
