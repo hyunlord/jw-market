@@ -7,6 +7,7 @@ mart, and creates caches in a second isolated schema.  It never publishes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,10 +29,18 @@ class RehearsalContractError(ValueError):
 
 
 @dataclass(frozen=True)
+class UbistParquetSidecar:
+    path: Path
+    relative_path: Path
+    sha256: str
+
+
+@dataclass(frozen=True)
 class FullInputManifest:
     ubist_source_dir: Path
     iqvia_source_dir: Path
     mi_master: Path
+    ubist_parquet_sidecars: tuple[UbistParquetSidecar, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,8 +108,8 @@ def load_input_manifest(path: Path) -> FullInputManifest:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RehearsalContractError(f"cannot read input manifest {path}: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise RehearsalContractError("input manifest schema_version must be 1")
+    if not isinstance(payload, dict) or payload.get("schema_version") not in {1, 2}:
+        raise RehearsalContractError("input manifest schema_version must be 1 or 2")
 
     base = path.resolve().parent
     ubist = _required_path(payload, "ubist_source_dir", base)
@@ -112,7 +121,62 @@ def load_input_manifest(path: Path) -> FullInputManifest:
         raise RehearsalContractError(f"no IQVIA source files under {iqvia}")
     if not master.is_file() or master.suffix.lower() != ".xlsx":
         raise RehearsalContractError(f"MI Master workbook is missing or not xlsx: {master}")
-    return FullInputManifest(ubist, iqvia, master)
+    sidecars = _parse_ubist_parquet_sidecars(payload, base)
+    if payload["schema_version"] == 1 and sidecars:
+        raise RehearsalContractError("input manifest schema_version 1 cannot contain sidecars")
+    return FullInputManifest(ubist, iqvia, master, sidecars)
+
+
+def _parse_ubist_parquet_sidecars(
+    payload: dict[str, object], base: Path
+) -> tuple[UbistParquetSidecar, ...]:
+    raw_rows = payload.get("ubist_parquet_sidecars", [])
+    if not isinstance(raw_rows, list):
+        raise RehearsalContractError("ubist_parquet_sidecars must be a list")
+    rows: list[UbistParquetSidecar] = []
+    destinations: set[Path] = set()
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            raise RehearsalContractError(f"ubist_parquet_sidecars[{index}] must be an object")
+        source = _required_path(raw, "path", base)
+        relative_raw = raw.get("relative_path")
+        sha = raw.get("sha256")
+        if not isinstance(relative_raw, str) or not relative_raw.strip():
+            raise RehearsalContractError(
+                f"ubist_parquet_sidecars[{index}] requires relative_path"
+            )
+        relative = Path(relative_raw)
+        if (
+            relative.is_absolute()
+            or relative.suffix.lower() != ".parquet"
+            or not relative.parts
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise RehearsalContractError(f"unsafe UBIST sidecar relative_path: {relative_raw!r}")
+        if relative in destinations:
+            raise RehearsalContractError(f"duplicate UBIST sidecar relative_path: {relative}")
+        destinations.add(relative)
+        if not isinstance(sha, str) or len(sha) != 64 or any(
+            char not in "0123456789abcdef" for char in sha.lower()
+        ):
+            raise RehearsalContractError(f"invalid UBIST sidecar SHA256 at index {index}")
+        if not source.is_file() or source.suffix.lower() != ".parquet":
+            raise RehearsalContractError(f"UBIST sidecar is missing or not parquet: {source}")
+        actual_sha = _sha256_file(source)
+        if actual_sha != sha.lower():
+            raise RehearsalContractError(
+                f"UBIST sidecar SHA256 mismatch: expected {sha.lower()}, got {actual_sha}"
+            )
+        rows.append(UbistParquetSidecar(source, relative, actual_sha))
+    return tuple(rows)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -141,6 +205,25 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
         ("MARIADB_DATABASE", config.cache_db),
     )
 
+    sidecar_steps = (
+        (
+            RehearsalStep(
+                "install_ubist_sidecars",
+                (
+                    PY,
+                    "-m",
+                    "pipeline.orchestrator.full_rehearsal_ubist_sidecars",
+                    "--manifest",
+                    str(config.input_manifest.resolve()),
+                    "--target-dir",
+                    str(ubist_parquet),
+                ),
+            ),
+        )
+        if inputs.ubist_parquet_sidecars
+        else ()
+    )
+
     return (
         RehearsalStep(
             "load_ubist",
@@ -151,6 +234,7 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
                 "--ubist-mode", "replace",
             ),
         ),
+        *sidecar_steps,
         RehearsalStep(
             "load_iqvia",
             _etl(
