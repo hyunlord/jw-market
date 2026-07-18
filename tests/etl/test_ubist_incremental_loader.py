@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import duckdb
 import openpyxl
 import pandas as pd
 import pyarrow as pa
@@ -14,8 +15,11 @@ from pipeline.etl.io.ubist_loader import (
     BUSINESS_GRAIN_COLUMNS,
     COLUMNS,
     SCHEMA,
+    build_generic_lookup,
     deduplicate_business_grain,
+    deduplicate_partition_file,
     incremental_plan,
+    iter_xlsx_rows,
     run_incremental_ubist_load,
 )
 
@@ -97,6 +101,63 @@ def _ubist_row(**overrides):
     return row
 
 
+class _ReadOnlyWorksheet:
+    def iter_rows(self, *, values_only: bool):
+        assert values_only is True
+        return iter(
+            [
+                (None, None, "처방조제액(원)"),
+                ("제품", "Generic", "2025년 7월"),
+                ("테스트제품", "Original", 1),
+            ]
+        )
+
+
+class _ReadOnlyWorkbook:
+    sheetnames = ["Sheet1"]
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __getitem__(self, sheet_name: str) -> _ReadOnlyWorksheet:
+        assert sheet_name == "Sheet1"
+        return _ReadOnlyWorksheet()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_generic_lookup_closes_each_read_only_workbook(monkeypatch, tmp_path):
+    workbook = _ReadOnlyWorkbook()
+    monkeypatch.setattr(openpyxl, "load_workbook", lambda *_args, **_kwargs: workbook)
+
+    lookup = build_generic_lookup([tmp_path / "source.xlsx"])
+
+    assert lookup["product:테스트제품"] == "Original"
+    assert workbook.closed is True
+
+
+def test_row_iterator_closes_read_only_workbook_after_full_consumption(monkeypatch, tmp_path):
+    workbook = _ReadOnlyWorkbook()
+    monkeypatch.setattr(openpyxl, "load_workbook", lambda *_args, **_kwargs: workbook)
+
+    rows = list(iter_xlsx_rows(tmp_path / "source.xlsx"))
+
+    assert len(rows) == 1
+    assert workbook.closed is True
+
+
+def test_row_iterator_closes_read_only_workbook_when_consumer_stops_early(monkeypatch, tmp_path):
+    workbook = _ReadOnlyWorkbook()
+    monkeypatch.setattr(openpyxl, "load_workbook", lambda *_args, **_kwargs: workbook)
+    rows = iter_xlsx_rows(tmp_path / "source.xlsx")
+
+    next(rows)
+    rows.close()
+
+    assert workbook.closed is True
+
+
 def _write_partition(target: Path, period: str, rows: list[dict[str, object]]) -> None:
     year, month = period.split("-")
     path = target / f"year={year}" / f"month={month}" / "data.parquet"
@@ -146,6 +207,71 @@ def test_business_grain_dedup_preserves_non_patent_canonical_differences():
     assert len(deduped) == 2
     assert report.duplicate_rows_removed == 0
     assert set(deduped["제조사"]) == {"제조사A", "제조사B"}
+
+
+def test_partition_dedup_spills_without_materializing_full_table(monkeypatch, tmp_path):
+    _write_partition(
+        tmp_path,
+        "2026-02",
+        [
+            _ubist_row(source_file="a.xlsx", source_row_no=4),
+            _ubist_row(source_file="b.xlsx", source_row_no=3, PMS만료일="2030-01-01", Generic="Original"),
+            _ubist_row(source_file="c.xlsx", source_row_no=5, 제품="충돌제품", 약품코드="P002"),
+            _ubist_row(source_file="d.xlsx", source_row_no=6, 제품="충돌제품", 약품코드="P002", rx_amt=101.0),
+        ],
+    )
+    partition = tmp_path / "year=2026" / "month=02" / "data.parquet"
+
+    def fail_full_table_read(*_args, **_kwargs):
+        raise AssertionError("partition dedup must not materialize the full Parquet table")
+
+    monkeypatch.setattr(pq, "read_table", fail_full_table_read)
+
+    report = deduplicate_partition_file(partition, "2026-02")
+    assert pq.ParquetFile(partition).schema_arrow == SCHEMA
+    with duckdb.connect() as connection:
+        rows = connection.execute(
+            "SELECT source_file, rx_amt, PMS만료일, Generic FROM read_parquet(?) ORDER BY source_file",
+            [str(partition)],
+        ).fetchall()
+
+    assert report.rows_before == 4
+    assert report.rows_after == 3
+    assert report.duplicate_rows_removed == 1
+    assert report.conflict_groups == 1
+    assert report.conflict_rows == 2
+    assert rows == [
+        ("b.xlsx", 100.0, "2030-01-01", "Original"),
+        ("c.xlsx", 100.0, None, None),
+        ("d.xlsx", 101.0, None, None),
+    ]
+
+
+def test_partition_dedup_matches_in_memory_contract(tmp_path):
+    rows = [
+        _ubist_row(source_file="a.xlsx", source_row_no=4),
+        _ubist_row(source_file="b.xlsx", source_row_no=3, PMS만료일="2030-01-01", Generic="Original"),
+        _ubist_row(source_file="c.xlsx", source_row_no=5, 제품="충돌제품", 약품코드="P002"),
+        _ubist_row(source_file="d.xlsx", source_row_no=6, 제품="충돌제품", 약품코드="P002", rx_amt=101.0),
+        _ubist_row(source_file="e.xlsx", source_row_no=7, 제품="고유제품", 약품코드="P003", rx_amt=None),
+    ]
+    expected_frame, expected_report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+    _write_partition(tmp_path, "2026-02", rows)
+    partition = tmp_path / "year=2026" / "month=02" / "data.parquet"
+
+    actual_report = deduplicate_partition_file(partition, "2026-02")
+    with duckdb.connect() as connection:
+        actual_frame = connection.execute(
+            f"SELECT {', '.join(f'\"{column}\"' for column in COLUMNS)} FROM read_parquet(?)",
+            [str(partition)],
+        ).df()
+
+    assert actual_report == expected_report
+    pd.testing.assert_frame_equal(
+        actual_frame.reset_index(drop=True),
+        expected_frame.reset_index(drop=True),
+        check_dtype=False,
+    )
 
 
 def test_incremental_plan_skips_manifest_source_files_and_adds_new_ones(tmp_path):
