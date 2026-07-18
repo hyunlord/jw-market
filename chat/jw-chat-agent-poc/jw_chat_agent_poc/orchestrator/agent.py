@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from jw_chat_agent_poc.agent_loop import ToolUseAgent, should_use_agent_loop
+from jw_chat_agent_poc.agent_loop.routing import is_top_n_intent
 from jw_chat_agent_poc.agent_loop.factory import (
     ChatAgentDependencyOverrides,
     build_chat_agent_dependencies,
@@ -110,7 +111,7 @@ class ChatAgent:
 
         if external_tool_agent_enabled() and agent_source_trap is None:
             tool_pack_routes = BQRouter().route(question, has_documents=bool(docs))
-            if _is_external_tool_agent_candidate(tool_pack_routes, docs):
+            if _is_external_tool_agent_candidate(tool_pack_routes, docs, question=question):
                 tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
                     question,
                     pre_resolved,
@@ -141,7 +142,7 @@ class ChatAgent:
         if (
             external_tool_agent_enabled()
             and external_fallback_code is None
-            and _is_external_tool_agent_candidate(routes, docs)
+            and _is_external_tool_agent_candidate(routes, docs, question=question)
             and agent_source_trap is None
         ):
             tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
@@ -783,8 +784,15 @@ def _conversation_fallback(question: str) -> dict[str, Any] | None:
     }
 
 
-def _is_external_tool_agent_candidate(routes: list[Any], documents: list[Path]) -> bool:
+def _is_external_tool_agent_candidate(
+    routes: list[Any],
+    documents: list[Path],
+    *,
+    question: str,
+) -> bool:
     if documents:
+        return False
+    if is_top_n_intent(question):
         return False
     sources = {source for route in routes for source in route.sources}
     if "external_api" in sources:

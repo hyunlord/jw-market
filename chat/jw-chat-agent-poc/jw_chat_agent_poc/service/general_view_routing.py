@@ -19,6 +19,7 @@ from jw_chat_agent_poc.tools.general_view_membership import (
     TtlGeneralMembershipCache,
 )
 from jw_chat_agent_poc.tools.general_view_mart import GeneralViewMartBackend, MariaDbGeneralMartReader
+from jw_chat_agent_poc.tools.metrics.market_scope_intent import detect_market_scope_intent
 
 
 _ATC4_PATTERN = re.compile(
@@ -86,6 +87,12 @@ class GeneralViewService:
         if _has_explicit_general_signal(normalized):
             return GeneralRoute.GENERAL_ONLY
         if _has_existing_analytic_signal(normalized):
+            return GeneralRoute.EXISTING
+        if detect_market_scope_intent(question) is not None:
+            try:
+                self._strategic_membership.resolve(question, allow_default=False)
+            except LookupError:
+                return GeneralRoute.GENERAL_ONLY
             return GeneralRoute.EXISTING
         if not _asks_market_metric(normalized):
             return GeneralRoute.EXISTING
@@ -366,6 +373,9 @@ def _atc4_code(question: str) -> str | None:
 
 
 def _brand_hint(question: str) -> str:
+    market_scope = detect_market_scope_intent(question)
+    if market_scope is not None and market_scope.brand_hint:
+        return market_scope.brand_hint
     text = _SOURCE_PATTERN.sub(" ", question)
     text = _ATC4_PATTERN.sub(" ", text)
     text = re.split(r"시장|점유율|매출|순위|규모|top\s*\d*", text, maxsplit=1, flags=re.IGNORECASE)[0]

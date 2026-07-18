@@ -386,6 +386,79 @@ def test_route_matrix_has_no_human_loop() -> None:
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로랑 같은 시장 매출",
+        "리바로가 속한 시장 매출",
+        "리바로랑 같은 시장 규모",
+        "리바로 시장 규모",
+        "리바로와 같은 시장 전체 매출",
+        "리바로가 소속된 시장 전체 매출",
+        "리바로랑 같은 시장 총매출",
+        "리바로가 포함된 시장 총매출",
+        "리바로랑 같은 시장 전체 규모",
+        "리바로 시장의 전체 규모",
+    ),
+)
+def test_market_scope_intent_keeps_strategic_route_precedence(question: str) -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route(question) is GeneralRoute.EXISTING
+
+
+@pytest.mark.parametrize(
+    "question",
+    ("일반뷰 리바로랑 같은 시장 매출", "ATC4 기준 리바로가 속한 시장 매출"),
+)
+def test_explicit_general_view_signal_precedes_market_scope_intent(question: str) -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route(question) is GeneralRoute.GENERAL_ONLY
+
+
+def test_market_scope_intent_does_not_hide_general_only_membership() -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route("포도당이 속한 시장 매출") is GeneralRoute.GENERAL_ONLY
+
+
+def test_general_only_market_scope_resolves_canonical_brand_end_to_end() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (GeneralBrandMembership("포도당", "포도당", "B05X0", "정맥주사액", "ubist"),)
+        ),
+        ttl_seconds=300,
+    )
+    backend = FakeBackend()
+    backend.market_map["B05X0"] = _market("B05X0", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("포도당이 속한 시장 매출", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "B05X0"
+    assert backend.market_calls == [("B05X0", "포도당", "ubist", "sales")]
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "포도당 시장 규모 추이",
+        "포도당 시장 규모 비교",
+        "포도당이 속한 시장 최신 뉴스",
+    ),
+)
+def test_general_only_market_scope_keeps_analytic_questions_on_existing_path(question: str) -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership(set()), enabled=True)
+
+    assert service.route(question) is GeneralRoute.EXISTING
+
+
 @pytest.mark.parametrize("brand", ("가나톤", "가나릴", "가나텍", "가네골드"))
 def test_brand_hint_preserves_brand_names_starting_with_korean_particle_characters(brand: str) -> None:
     assert _brand_hint(f"일반뷰 ATC4 기준 {brand} 시장점유율") == brand

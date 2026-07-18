@@ -11,7 +11,16 @@ _CSD_ACTIVITY_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수"
 _DRUG_INFO_TOKENS = ("허가", "품목", "식약처", "MFDS", "의약품정보", "의약품 정보")
 _SHARE_OR_RANK_RE = re.compile(r"(?:점유율|순위|(?<![A-Za-z])M\s*/?\s*S(?![A-Za-z]))", re.IGNORECASE)
 _TOP_N_RE = re.compile(
-    r"(?:상위\s*\d+|(?<![A-Za-z0-9_])top\s*\d+(?![A-Za-z0-9_]))",
+    r"(?:상위\s*\d+(?!\d)(?!\.\d)|(?<![A-Za-z0-9_])top\s*\d+(?!\d)(?!\.\d))",
+    re.IGNORECASE,
+)
+_PERCENT_SUFFIX_RE = re.compile(r"^\s*(?:%|퍼센트\b|percent\b)", re.IGNORECASE)
+_DOSAGE_UNIT_SUFFIX_RE = re.compile(
+    r"^\s*(?:[-–—]\s*)?(?:kg|mg|g|ng|pg|mcg|ug|μg|µg|ml|mL|l|L|iu|IU)\b",
+)
+_DOSAGE_CONTEXT_SUFFIX_RE = re.compile(
+    r"^\s*(?:(?:/|per\s+)\s*(?:kg|g|ml|l|day|d|hour|hr|h|일|시간)\s*){0,2}"
+    r"(?:용량|투여량?|복용량?|dose\b|dosage\b)",
     re.IGNORECASE,
 )
 _QUALITATIVE_RANK_RE = re.compile(r"(?:상위(?!\s*\d)|제일\s*(?:큰|높은)|가장\s*(?:큰|높은))", re.IGNORECASE)
@@ -29,6 +38,18 @@ _PATENT_RE = re.compile(r"(?:특허|독점권|patent|Orange)", re.IGNORECASE)
 _HIRA_RE = re.compile(r"(?:HIRA|환자|질병|질환|진료행위|행위코드|수가코드)", re.IGNORECASE)
 _PHARMA_DOMAIN_RE = re.compile(r"(?:브랜드|제품|의약품|약물|성분|제형|ATC|처방)", re.IGNORECASE)
 _TOP_N_DOMAIN_RE = re.compile(r"(?:의약품|약물|성분|제형|ATC|처방)", re.IGNORECASE)
+
+
+def is_top_n_intent(question: str) -> bool:
+    for match in _TOP_N_RE.finditer(question):
+        suffix = question[match.end() :]
+        if _PERCENT_SUFFIX_RE.match(suffix):
+            continue
+        unit = _DOSAGE_UNIT_SUFFIX_RE.match(suffix)
+        if unit is not None and _DOSAGE_CONTEXT_SUFFIX_RE.match(suffix[unit.end() :]):
+            continue
+        return True
+    return False
 
 
 def should_use_agent_loop(question: str, *, has_brand_anchor: bool = False) -> bool:
@@ -52,7 +73,7 @@ def should_use_agent_loop(question: str, *, has_brand_anchor: bool = False) -> b
         return True
     if _SHARE_OR_RANK_RE.search(question) and not _segment_metric_question(question):
         return True
-    if _TOP_N_RE.search(question) and (has_brand_anchor or _TOP_N_DOMAIN_RE.search(question)):
+    if is_top_n_intent(question) and (has_brand_anchor or _TOP_N_DOMAIN_RE.search(question)):
         return True
     if _DERIVED_METRIC_RE.search(question):
         return True

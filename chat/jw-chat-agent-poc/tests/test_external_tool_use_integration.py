@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import jw_chat_agent_poc.orchestrator.agent as agent_module
+import pytest
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 from jw_chat_agent_poc.orchestrator.agent import _is_external_tool_agent_candidate
 from jw_chat_agent_poc.resolver import BrandResolution
@@ -183,10 +184,110 @@ def test_attached_document_does_not_enter_external_tool_agent() -> None:
     routes = BQRouter().route("이 문서를 요약해줘", has_documents=True)
 
     # When: the external tool-pack boundary is evaluated.
-    is_candidate = _is_external_tool_agent_candidate(routes, [Path("report.pdf")])
+    is_candidate = _is_external_tool_agent_candidate(
+        routes,
+        [Path("report.pdf")],
+        question="이 문서를 요약해줘",
+    )
 
     # Then: file evidence remains outside the external MCP strangler path.
     assert is_candidate is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 top3",
+        "영화 시장 top5",
+        "화장품 브랜드 top5",
+        "자동차 브랜드 상위 5개",
+    ),
+)
+def test_top_n_intent_does_not_enter_external_web_agent(question: str) -> None:
+    routes = BQRouter().route(question)
+
+    assert _is_external_tool_agent_candidate(routes, [], question=question) is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "최신 임상 연구에서 상위 5% 환자군 결과를 검색해줘",
+        "최신 임상 연구에서 상위 2.5% 환자군 결과를 검색해줘",
+        "Top 2.5 mg dose clinical evidence",
+        "Top 10 mg 용량의 최신 임상 근거를 찾아줘",
+        "Top 10-mg dose clinical evidence",
+        "Top 10 mg/day dosage clinical evidence",
+        "Top 10 ng 용량의 최신 임상 근거를 찾아줘",
+        "Top 10 µg dosage clinical evidence",
+        "Top 10 IU 투여량의 최신 임상 근거를 찾아줘",
+    ),
+)
+def test_non_ranking_numeric_research_can_enter_external_tool_agent(question: str) -> None:
+    routes = BQRouter().route(question)
+
+    assert _is_external_tool_agent_candidate(routes, [], question=question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "top 5 ML models",
+        "top 10 MG cars",
+        "latest top 5 ML models for dosage prediction",
+        "latest top 5 ML dose prediction models",
+    ),
+)
+def test_uppercase_ranking_nouns_remain_top_n_and_fail_closed(question: str) -> None:
+    routes = BQRouter().route(question)
+
+    assert _is_external_tool_agent_candidate(routes, [], question=question) is False
+
+
+@pytest.mark.parametrize("question", ("리바로 top3", "화장품 브랜드 top5"))
+def test_top_n_request_never_calls_external_web_agent(monkeypatch, question: str) -> None:
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Top-N intent must stay on the grounded market boundary")
+        ),
+    )
+
+    result = ChatAgent(router=BQRouter()).answer(question)
+
+    assert result["answer"].strip()
+    assert result["router_diagnostics"].get("mode") != "tool_use_agent"
+
+
+@pytest.mark.parametrize("misclassified_tool", ("external_api", "document"))
+def test_llm_first_top_n_misclassification_never_calls_external_web_agent(
+    monkeypatch,
+    misclassified_tool: str,
+) -> None:
+    class ExternalMisclassification:
+        def decompose(self, _question: str, _has_documents: bool) -> str:
+            return (
+                f'{{"bq_ids":["Q1"],"tools":["{misclassified_tool}"],"brands":[],'
+                '"no_data_flag":false,"confidence":0.99,"reason":"misclassified research"}'
+            )
+
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("LLM decomposition must not override the Top-N scope lock")
+        ),
+    )
+
+    result = ChatAgent(router=LLMFirstBQRouter(decomposer=ExternalMisclassification())).answer(
+        "화장품 브랜드 top5"
+    )
+
+    assert result["answer"].strip()
+    assert result["router_diagnostics"].get("mode") != "tool_use_agent"
 
 
 def test_unattached_guideline_research_can_enter_external_tool_agent(monkeypatch) -> None:
