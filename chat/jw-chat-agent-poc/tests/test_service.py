@@ -1182,6 +1182,45 @@ def test_compute_final_answer_applies_positioning_contract_to_tool_use_agent(mon
     assert "격차 0.44%p" in final.text
 
 
+def test_compute_final_answer_preserves_dual_general_view_for_tool_use_agent(monkeypatch) -> None:
+    contract = {
+        "mode": "dual",
+        "view_type": "general_view",
+        "market_basis": "ATC4",
+        "atc4_code": "C10A1",
+        "atc4_description": "지질조절제",
+        "source": "UBIST",
+        "measure": "sales",
+        "unit": "KRW",
+        "period": "2026-05",
+        "share_denominator": "ATC4 C10A1 시장 전체 매출",
+        "section_markdown": "## 일반뷰 (ATC4)\n\n- 시장: 지질조절제\n- 리바로 점유율: 3.50%",
+        "other_atc4_candidates": [],
+    }
+
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter(("전략 답변",)))
+    final = compute_final_answer(
+        "리바로 시장 점유율",
+        {
+            "answer": "",
+            "markdown_response": {"fact_md": "", "allowed_numbers": ()},
+            "tool_calls": [
+                {"tool": "get_brand_metric", "source": "UBIST", "render_data": {"status": "ok"}},
+                {"tool": "general_view_dynamic_market", "source": "UBIST", "render_data": contract},
+            ],
+            "sources": ["UBIST"],
+            "router_diagnostics": {"mode": "tool_use_agent", "general_view_mode": "dual"},
+            "general_view_contract": contract,
+        },
+        "dual-tool-use-agent",
+    )
+
+    assert final.text.startswith("## 전략뷰 (market_landscape)")
+    assert "## 일반뷰 (ATC4)" in final.text
+    assert "리바로 점유율: 3.50%" in final.text
+    assert "시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다" in final.text
+
+
 def test_compute_final_answer_applies_positioning_contract_from_metric_fact(monkeypatch) -> None:
     fact_md = """## 확정 fact set
 

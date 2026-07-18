@@ -100,22 +100,23 @@ class GeneralViewService:
         source = requested_source or "ubist"
         measure = "sales"
         brand = _brand_hint(question)
+        resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
         try:
             if explicit_atc4:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
             elif brand:
-                candidates = self._membership_candidates(brand, source)
+                candidates, resolved_brand = self._membership_resolution(brand, source)
                 if not candidates and requested_source is None:
                     alternate_source = "iqvia" if source == "ubist" else "ubist"
-                    candidates = self._membership_candidates(brand, alternate_source)
+                    candidates, resolved_brand = self._membership_resolution(brand, alternate_source)
                     if candidates:
                         source = alternate_source
             else:
                 candidates = ()
             if not candidates:
                 raise GeneralViewBackendError("ATC4 후보를 찾지 못했습니다")
-            markets = self._fetch_candidates(candidates, brand or None, source, measure)
+            markets = self._fetch_candidates(candidates, resolved_brand or None, source, measure)
             selected = max(markets, key=lambda item: item.brand_value if item.brand_value is not None else float("-inf"))
             descriptions = {market.atc4_code: market.atc4_description for market in markets}
             others = [
@@ -128,15 +129,22 @@ class GeneralViewService:
         except GeneralViewBackendError as exc:
             return _unavailable_result(question, str(exc), dual=dual)
 
-    def _membership_candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+    def _membership_resolution(self, brand: str, source: str) -> tuple[tuple[AtcCandidate, ...], str]:
         if self._general_membership is not None:
             try:
-                candidates = self._general_membership.candidates(brand, source)
+                resolve = getattr(self._general_membership, "resolve", None)
+                if callable(resolve):
+                    resolution = resolve(brand, source)
+                    candidates = ()
+                    if resolution is not None:
+                        return resolution.candidates, resolution.brand_key
+                else:
+                    candidates = self._general_membership.candidates(brand, source)
             except GeneralMembershipLoadError:
                 candidates = ()
             if candidates:
-                return candidates
-        return self._backend.candidates(brand, source)
+                return candidates, brand
+        return self._backend.candidates(brand, source), brand
 
     def _fetch_candidates(
         self,

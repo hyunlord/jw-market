@@ -249,6 +249,73 @@ def test_membership_cache_exact_lookup_does_not_silently_match_unknown_brand() -
     assert cache.candidates("마운", "iqvia") == ()
 
 
+def test_membership_cache_resolves_unique_shorthand_to_canonical_brand_key() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (
+                GeneralBrandMembership(
+                    "중외5포도당생리식염액",
+                    "중외5%포도당생리식염액",
+                    "K01B3",
+                    "혈액대용제",
+                    "iqvia",
+                ),
+            )
+        ),
+        ttl_seconds=300,
+    )
+
+    resolution = cache.resolve("생리식염", "iqvia")
+
+    assert resolution is not None
+    assert resolution.brand_key == "중외5포도당생리식염액"
+    assert resolution.candidates == (AtcCandidate("K01B3", "혈액대용제"),)
+
+
+def test_membership_cache_fails_closed_for_ambiguous_shorthand() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (
+                GeneralBrandMembership("생리식염액A", "생리식염액 A", "K01B3", "혈액대용제", "iqvia"),
+                GeneralBrandMembership("생리식염액B", "생리식염액 B", "K01C1", "관류액", "iqvia"),
+            )
+        ),
+        ttl_seconds=300,
+    )
+
+    assert cache.resolve("생리식염", "iqvia") is None
+
+
+def test_general_view_queries_mart_with_resolved_canonical_brand_key() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (
+                GeneralBrandMembership(
+                    "중외5포도당생리식염액",
+                    "중외5%포도당생리식염액",
+                    "K01B3",
+                    "혈액대용제",
+                    "iqvia",
+                ),
+            )
+        ),
+        ttl_seconds=300,
+    )
+    backend = FakeBackend()
+    backend.market_map["K01B3"] = _market("K01B3", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("IQVIA 생리식염 시장 점유율", compact=False, dual=False)
+
+    assert result["tool_calls"][0]["tool"] == "general_view_dynamic_market"
+    assert backend.market_calls == [("K01B3", "중외5포도당생리식염액", "iqvia", "sales")]
+
+
 class FailingGeneralMembership:
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         raise GeneralMembershipLoadError("membership unavailable")

@@ -11,6 +11,7 @@ from jw_chat_agent_poc.tools.general_view_backend import AtcCandidate
 
 
 _BRAND_NORMALIZER = re.compile(r"[^0-9A-Za-zㄱ-힝]+")
+_SHORTHAND_GRAM_SIZE = 4
 
 
 class GeneralMembershipLoadError(RuntimeError):
@@ -24,6 +25,26 @@ class GeneralBrandMembership:
     atc4_code: str
     atc4_description: str
     source: str
+
+
+@dataclass(frozen=True, slots=True)
+class GeneralMembershipResolution:
+    brand_key: str
+    brand_name: str
+    candidates: tuple[AtcCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _MembershipIndex:
+    candidates: dict[str, dict[str, tuple[AtcCandidate, ...]]]
+    aliases: dict[str, dict[str, tuple[str, ...]]]
+    brand_keys: dict[str, dict[str, str]]
+    brand_names: dict[str, dict[str, str]]
+    terms: dict[str, dict[str, tuple[str, ...]]]
+    grams: dict[str, dict[str, tuple[str, ...]]]
+
+
+_EMPTY_INDEX = _MembershipIndex({}, {}, {}, {}, {}, {})
 
 
 class GeneralMembershipReader(Protocol):
@@ -92,23 +113,52 @@ class MariaDbGeneralMembershipReader:
 
 
 class TtlGeneralMembershipCache:
-    """Replace-only exact membership snapshot; mutation is confined to TTL refresh."""
+    """Replace-only membership snapshot with indexed, fail-closed shorthand lookup."""
 
     def __init__(self, reader: GeneralMembershipReader, *, ttl_seconds: float) -> None:
         self._reader = reader
         self._ttl_seconds = ttl_seconds
         self._expires_at = 0.0
-        self._snapshot: dict[str, dict[str, tuple[AtcCandidate, ...]]] = {}
-        self._aliases: dict[str, dict[str, str]] = {}
+        self._index = _EMPTY_INDEX
         self._lock = threading.Lock()
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+        resolution = self.resolve(brand, source)
+        return resolution.candidates if resolution is not None else ()
+
+    def resolve(self, brand: str, source: str) -> GeneralMembershipResolution | None:
         self._refresh_if_expired()
         normalized = normalize_general_brand(brand)
         normalized_source = normalize_general_source(source)
-        source_aliases = self._aliases.get(normalized_source, {})
-        canonical = source_aliases.get(normalized, normalized)
-        return self._snapshot.get(normalized_source, {}).get(canonical, ())
+        source_candidates = self._index.candidates.get(normalized_source, {})
+        canonical = normalized if normalized in source_candidates else None
+        if canonical is None:
+            exact_aliases = self._index.aliases.get(normalized_source, {}).get(normalized, ())
+            if len(exact_aliases) == 1:
+                canonical = exact_aliases[0]
+        if canonical is None and len(normalized) >= _SHORTHAND_GRAM_SIZE:
+            gram = normalized[:_SHORTHAND_GRAM_SIZE]
+            possible = self._index.grams.get(normalized_source, {}).get(gram, ())
+            matches = {
+                candidate
+                for candidate in possible
+                if any(
+                    normalized in term
+                    for term in self._index.terms.get(normalized_source, {}).get(candidate, ())
+                )
+            }
+            if len(matches) == 1:
+                canonical = next(iter(matches))
+        if canonical is None:
+            return None
+        candidates = source_candidates.get(canonical, ())
+        if not candidates:
+            return None
+        return GeneralMembershipResolution(
+            brand_key=self._index.brand_keys[normalized_source][canonical],
+            brand_name=self._index.brand_names[normalized_source][canonical],
+            candidates=candidates,
+        )
 
     def _refresh_if_expired(self) -> None:
         now = time.monotonic()
@@ -118,15 +168,16 @@ class TtlGeneralMembershipCache:
             now = time.monotonic()
             if now < self._expires_at:
                 return
-            self._snapshot, self._aliases = _build_snapshot(self._reader.load())
+            self._index = _build_index(self._reader.load())
             self._expires_at = now + self._ttl_seconds
 
 
-def _build_snapshot(
-    memberships: tuple[GeneralBrandMembership, ...],
-) -> tuple[dict[str, dict[str, tuple[AtcCandidate, ...]]], dict[str, dict[str, str]]]:
+def _build_index(memberships: tuple[GeneralBrandMembership, ...]) -> _MembershipIndex:
     candidates_by_source: dict[str, dict[str, dict[str, AtcCandidate]]] = {}
-    aliases: dict[str, dict[str, str]] = {}
+    alias_sets: dict[str, dict[str, set[str]]] = {}
+    brand_keys: dict[str, dict[str, str]] = {}
+    brand_names: dict[str, dict[str, str]] = {}
+    term_sets: dict[str, dict[str, set[str]]] = {}
     for membership in memberships:
         source = normalize_general_source(membership.source)
         canonical = normalize_general_brand(membership.brand_key)
@@ -135,17 +186,47 @@ def _build_snapshot(
         candidate = AtcCandidate(membership.atc4_code.upper(), membership.atc4_description)
         source_candidates = candidates_by_source.setdefault(source, {})
         source_candidates.setdefault(canonical, {})[candidate.code] = candidate
+        brand_keys.setdefault(source, {}).setdefault(canonical, membership.brand_key)
+        brand_names.setdefault(source, {}).setdefault(canonical, membership.brand_name)
+        terms = term_sets.setdefault(source, {}).setdefault(canonical, set())
+        terms.add(canonical)
         normalized_name = normalize_general_brand(membership.brand_name)
-        if normalized_name and normalized_name != canonical:
-            aliases.setdefault(source, {})[normalized_name] = canonical
-    snapshot = {
+        if normalized_name:
+            terms.add(normalized_name)
+            if normalized_name != canonical:
+                alias_sets.setdefault(source, {}).setdefault(normalized_name, set()).add(canonical)
+    candidates = {
         source: {
             canonical: tuple(candidates[code] for code in sorted(candidates))
             for canonical, candidates in source_candidates.items()
         }
         for source, source_candidates in candidates_by_source.items()
     }
-    return snapshot, aliases
+    terms = {
+        source: {canonical: tuple(sorted(values)) for canonical, values in by_canonical.items()}
+        for source, by_canonical in term_sets.items()
+    }
+    gram_sets: dict[str, dict[str, set[str]]] = {}
+    for source, by_canonical in terms.items():
+        for canonical, values in by_canonical.items():
+            for value in values:
+                for offset in range(len(value) - _SHORTHAND_GRAM_SIZE + 1):
+                    gram = value[offset : offset + _SHORTHAND_GRAM_SIZE]
+                    gram_sets.setdefault(source, {}).setdefault(gram, set()).add(canonical)
+    return _MembershipIndex(
+        candidates=candidates,
+        aliases={
+            source: {alias: tuple(sorted(values)) for alias, values in by_alias.items()}
+            for source, by_alias in alias_sets.items()
+        },
+        brand_keys=brand_keys,
+        brand_names=brand_names,
+        terms=terms,
+        grams={
+            source: {gram: tuple(sorted(values)) for gram, values in by_gram.items()}
+            for source, by_gram in gram_sets.items()
+        },
+    )
 
 
 def normalize_general_brand(value: str) -> str:

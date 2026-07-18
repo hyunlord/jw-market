@@ -49,6 +49,7 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
     DeepResearchToolPlanner,
     parse_deep_research_request,
 )
+from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
@@ -2336,6 +2337,8 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
     )
     safe_answer = scrub_internal_terminology(safe_answer)
+    if not deep_mode and not file_context_fact and market_contract_allowed:
+        safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
     safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
     trace = trace_envelope(
         question=question,
