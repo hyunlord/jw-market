@@ -987,9 +987,9 @@ def _fetch_portal_file_access_token(auth_url: str) -> tuple[str | None, str]:
         return None, f"{type(exc).__name__}: {exc}"
     data = body.get("data") if isinstance(body, dict) else None
     token_source = data if isinstance(data, dict) else body
-    access_token = (
-        token_source.get("accessToken") if isinstance(token_source, dict) else None
-    )
+    access_token = None
+    if isinstance(token_source, dict):
+        access_token = token_source.get("access_token") or token_source.get("accessToken")
     if not isinstance(access_token, str) or not access_token.strip():
         return None, "portal login response has no accessToken"
     return access_token.strip(), ""

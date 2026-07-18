@@ -752,6 +752,29 @@ def test_fetch_portal_file_access_token_uses_official_login_without_exposing_val
     }
 
 
+def test_fetch_portal_file_access_token_accepts_genos_snake_case(monkeypatch) -> None:
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"code": 0, "data": {"access_token": "genos-access-secret"}}
+
+    monkeypatch.setattr(
+        "scripts.parity_harness.requests.get",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    from scripts.parity_harness import _fetch_portal_file_access_token
+
+    token, error = _fetch_portal_file_access_token("https://portal.example/login")
+
+    assert token == "genos-access-secret"
+    assert error == ""
+
+
 def test_fetch_portal_file_access_token_fails_closed_without_access_token(monkeypatch) -> None:
     class Response:
         @staticmethod
