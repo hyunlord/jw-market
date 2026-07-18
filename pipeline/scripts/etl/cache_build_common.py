@@ -391,6 +391,11 @@ def decode_json(value: Any) -> Any:
         return {}
     if isinstance(value, (dict, list)):
         return value
+    if orjson is not None:
+        try:
+            return orjson.loads(value)
+        except (TypeError, orjson.JSONDecodeError):
+            pass
     try:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
