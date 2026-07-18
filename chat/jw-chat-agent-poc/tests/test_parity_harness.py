@@ -340,6 +340,8 @@ def test_history_golden_acceptance_rejects_fail_closed_text_even_with_value() ->
 
 def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: Path) -> None:
     calls: list[tuple[Path, str | None, str | None, tuple[tuple[str, str], ...], str | None]] = []
+    upload_file = tmp_path / "history.txt"
+    upload_file.write_text("history", encoding="utf-8")
 
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         calls.append((out_dir, external_mode, base_url, questions, conversation_id))
@@ -397,6 +399,14 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         "scripts.parity_harness._probe_uploaded_file_session",
         lambda base_url, conversation_id, workflow_id: (True, 2, ""),
     )
+    monkeypatch.setattr(
+        "scripts.parity_harness._seed_portal_uploaded_file_session",
+        lambda base_url, conversation_id, upload_path, access_token: (True, 2, (101,), ""),
+    )
+    monkeypatch.setattr(
+        "scripts.parity_harness._cleanup_portal_uploaded_file_session",
+        lambda base_url, conversation_id, document_ids, access_token: (),
+    )
 
     status = capture_p0g_suite(
         tmp_path,
@@ -407,6 +417,8 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
         portal_user_id="85",
         file_base_url="http://code-serving-235",
         entry_kind="portal-market-sse",
+        history_upload_file=upload_file,
+        portal_file_access_token="test-token",
     )
 
     assert status == 0
@@ -420,6 +432,15 @@ def test_p0g_suite_runs_all_portal_equivalent_scenarios(monkeypatch, tmp_path: P
     assert calls[0][4].startswith("parity-fresh-")
     assert calls[1][4] == "uploaded-file-session"
     assert calls[2][4] is not None
+    report = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert report["evidence_context"]["portal_file_probe"] == {
+        "attempted": True,
+        "document_count": 2,
+        "uploaded_document_ids": [101],
+        "passed": True,
+        "error": "",
+        "cleanup_errors": [],
+    }
 
 
 def test_p0g_suite_requires_nonempty_file_bridge_documents(monkeypatch, tmp_path: Path) -> None:
@@ -487,6 +508,136 @@ def test_probe_uploaded_file_session_uses_235_documents_contract(monkeypatch) ->
     }
 
 
+def test_seed_portal_uploaded_file_session_uses_browser_bff_contract(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    upload_file = tmp_path / "history.txt"
+    upload_file.write_text("history", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __init__(self, body: dict[str, object]) -> None:
+            self.body = body
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self.body
+
+    responses = iter(
+        (
+            Response({"documents": []}),
+            Response(
+                {
+                    "documents": [
+                        {"document_id": 101, "file_name": "history.txt"},
+                    ]
+                }
+            ),
+        )
+    )
+
+    def get(url, *, params, headers, timeout):
+        captured.setdefault("get_calls", []).append((url, params, headers, timeout))
+        return next(responses)
+
+    def post(url, *, params, headers, files, timeout):
+        file_name, file_handle = files["files"]
+        captured["post"] = (url, params, headers, file_name, file_handle.read(), timeout)
+        return Response({"documents": [{"document_id": 101}]})
+
+    monkeypatch.setattr("scripts.parity_harness.requests.get", get)
+    monkeypatch.setattr("scripts.parity_harness.requests.post", post)
+
+    from scripts.parity_harness import _seed_portal_uploaded_file_session
+
+    assert _seed_portal_uploaded_file_session(
+        "https://portal.example/stream-lab-api/",
+        "conv-file",
+        upload_file,
+        "secret-token",
+    ) == (True, 1, (101,), "")
+    endpoint = (
+        "https://portal.example/stream-lab-api/api/v1/market/socket-lab/market/files"
+    )
+    assert captured["get_calls"] == [
+        (endpoint, {"sessionId": "conv-file"}, {"Authorization-Access-Token": "secret-token"}, 30),
+        (endpoint, {"sessionId": "conv-file"}, {"Authorization-Access-Token": "secret-token"}, 30),
+    ]
+    assert captured["post"] == (
+        endpoint,
+        {"sessionId": "conv-file"},
+        {"Authorization-Access-Token": "secret-token"},
+        "history.txt",
+        b"history",
+        180,
+    )
+
+
+def test_cleanup_portal_uploaded_file_session_uses_browser_bff_contract(monkeypatch) -> None:
+    captured: list[tuple[str, dict[str, str], dict[str, str], int]] = []
+
+    class Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    def delete(url, *, params, headers, timeout):
+        captured.append((url, params, headers, timeout))
+        return Response()
+
+    monkeypatch.setattr("scripts.parity_harness.requests.delete", delete)
+
+    from scripts.parity_harness import _cleanup_portal_uploaded_file_session
+
+    assert _cleanup_portal_uploaded_file_session(
+        "https://portal.example/stream-lab-api/",
+        "conv-file",
+        (101,),
+        "secret-token",
+    ) == ()
+    assert captured == [
+        (
+            "https://portal.example/stream-lab-api/api/v1/market/socket-lab/market/files/101",
+            {"sessionId": "conv-file"},
+            {"Authorization-Access-Token": "secret-token"},
+            30,
+        )
+    ]
+
+
+def test_p0g_suite_rejects_raw_235_probe_without_portal_upload(monkeypatch, tmp_path: Path) -> None:
+    def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, **_kwargs):
+        out_dir.mkdir(parents=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps([{"qid": qid, "elapsed_ms": 100.0} for qid, _ in questions]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr("scripts.parity_harness.capture", fake_capture)
+    monkeypatch.setattr(
+        "scripts.parity_harness._probe_uploaded_file_session",
+        lambda base_url, conversation_id, workflow_id: (True, 1, ""),
+    )
+
+    capture_p0g_suite(
+        tmp_path,
+        "live",
+        "https://portal.example/stream-lab-api",
+        history_conversation_id="uploaded-file-session",
+        portal_equivalent=True,
+        file_base_url="http://code-serving-235",
+        entry_kind="portal-market-sse",
+    )
+
+    summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
+    assert "portal BFF history upload was not supplied" in summary["qualification_failures"]
+
+
 def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypatch, tmp_path: Path) -> None:
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
@@ -512,6 +663,14 @@ def test_p0g_suite_rejects_diagnostic_only_capture_as_release_evidence(monkeypat
             "document_count": 0,
             "passed": False,
             "error": "",
+        },
+        "portal_file_probe": {
+            "attempted": False,
+            "document_count": 0,
+            "uploaded_document_ids": [],
+            "passed": False,
+            "error": "",
+            "cleanup_errors": [],
         },
     }
     assert summary["qualification_failures"] == [
@@ -645,6 +804,9 @@ def test_p0g_suite_rejects_local_capture_declared_as_portal_equivalent(monkeypat
 
 
 def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeypatch, tmp_path: Path) -> None:
+    upload_file = tmp_path / "history.txt"
+    upload_file.write_text("history", encoding="utf-8")
+
     def fake_capture(out_dir, external_mode, base_url, questions, conversation_id, *, portal_user_id=None, **_kwargs):
         out_dir.mkdir(parents=True)
         rows = [
@@ -664,6 +826,14 @@ def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeyp
         "scripts.parity_harness._probe_uploaded_file_session",
         lambda base_url, conversation_id, workflow_id: (True, 1, ""),
     )
+    monkeypatch.setattr(
+        "scripts.parity_harness._seed_portal_uploaded_file_session",
+        lambda base_url, conversation_id, upload_path, access_token: (True, 1, (101,), ""),
+    )
+    monkeypatch.setattr(
+        "scripts.parity_harness._cleanup_portal_uploaded_file_session",
+        lambda base_url, conversation_id, document_ids, access_token: (),
+    )
 
     assert capture_p0g_suite(
         tmp_path,
@@ -673,6 +843,8 @@ def test_p0g_suite_portal_bff_does_not_require_client_portal_user_header(monkeyp
         portal_equivalent=True,
         file_base_url="http://code-serving-235",
         entry_kind="portal-market-sse",
+        history_upload_file=upload_file,
+        portal_file_access_token="test-token",
     ) == 1
     summary = json.loads((tmp_path / "p0g_summary.json").read_text(encoding="utf-8"))
     assert summary["qualification_failures"] == []

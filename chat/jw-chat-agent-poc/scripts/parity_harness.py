@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import re
 import shutil
 import sys
@@ -295,8 +296,58 @@ def capture_p0g_suite(
     entry_kind: str = "direct-chat",
     file_base_url: str | None = None,
     file_workflow_id: int = 301,
+    history_upload_file: Path | None = None,
+    portal_file_access_token: str | None = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
+    portal_file_probe = {
+        "attempted": False,
+        "document_count": 0,
+        "uploaded_document_ids": [],
+        "passed": False,
+        "error": "",
+        "cleanup_errors": [],
+    }
+    if (
+        portal_equivalent
+        and base_url
+        and history_conversation_id
+        and history_upload_file
+        and portal_file_access_token
+    ):
+        passed, document_count, document_ids, error = _seed_portal_uploaded_file_session(
+            base_url,
+            history_conversation_id,
+            history_upload_file,
+            portal_file_access_token,
+        )
+        portal_file_probe.update(
+            attempted=True,
+            document_count=document_count,
+            uploaded_document_ids=list(document_ids),
+            passed=passed,
+            error=error,
+        )
+    file_probe = {
+        "attempted": False,
+        "document_count": 0,
+        "passed": False,
+        "error": "",
+    }
+    if history_conversation_id and not file_base_url:
+        file_probe["error"] = "file bridge base URL was not supplied"
+    elif history_conversation_id and file_base_url:
+        passed, document_count, error = _probe_uploaded_file_session(
+            file_base_url,
+            history_conversation_id,
+            file_workflow_id,
+        )
+        file_probe.update(
+            attempted=True,
+            document_count=document_count,
+            passed=passed,
+            error=error,
+        )
     scenarios = (
         ("fresh", FRESH_GOLDEN_QUESTIONS, f"parity-fresh-{uuid4().hex}"),
         (
@@ -311,48 +362,60 @@ def capture_p0g_suite(
         ),
     )
     summary: list[dict[str, Any]] = []
-    for name, questions, conversation_id in scenarios:
-        status = capture(
-            out_dir / name,
-            external_mode,
-            base_url,
-            questions,
-            conversation_id,
-            portal_user_id=portal_user_id,
-            entry_kind=entry_kind,
-        )
-        rows = json.loads((out_dir / name / "summary.json").read_text(encoding="utf-8"))
-        latency_failures = [
-            str(row["qid"])
-            for row in rows
-            if row.get("qid") in P0G_GENERAL_GOLDEN_QIDS
-            and float(row.get("elapsed_ms", float("inf"))) > max_general_elapsed_ms
-        ]
-        route_contamination_failures = _p0g_route_contamination_failures(rows)
-        step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
-        fast_path_stage_failures = _p0g_fast_path_stage_failures(rows) if portal_equivalent else []
-        market_tool_stage_failures = _p0g_market_tool_stage_failures(rows) if portal_equivalent else {}
-        source_evidence_failures = _p0g_source_evidence_failures(rows) if portal_equivalent else {}
-        seed_execution_failures = _p0g_seed_execution_failures(name, rows) if portal_equivalent else []
-        session_continuity_failures = (
-            _p0g_session_continuity_failures(rows, conversation_id)
-            if portal_equivalent and conversation_id
-            else {}
-        )
-        summary.append(
-            {
-                "scenario": name,
-                "status": status,
-                "latency_failures": latency_failures,
-                "route_contamination_failures": route_contamination_failures,
-                "step_evidence_failures": step_evidence_failures,
-                "fast_path_stage_failures": fast_path_stage_failures,
-                "market_tool_stage_failures": market_tool_stage_failures,
-                "source_evidence_failures": source_evidence_failures,
-                "seed_execution_failures": seed_execution_failures,
-                "session_continuity_failures": session_continuity_failures,
-            }
-        )
+    try:
+        for name, questions, conversation_id in scenarios:
+            status = capture(
+                out_dir / name,
+                external_mode,
+                base_url,
+                questions,
+                conversation_id,
+                portal_user_id=portal_user_id,
+                entry_kind=entry_kind,
+            )
+            rows = json.loads((out_dir / name / "summary.json").read_text(encoding="utf-8"))
+            latency_failures = [
+                str(row["qid"])
+                for row in rows
+                if row.get("qid") in P0G_GENERAL_GOLDEN_QIDS
+                and float(row.get("elapsed_ms", float("inf"))) > max_general_elapsed_ms
+            ]
+            route_contamination_failures = _p0g_route_contamination_failures(rows)
+            step_evidence_failures = _p0g_missing_step_evidence(rows) if portal_equivalent else []
+            fast_path_stage_failures = _p0g_fast_path_stage_failures(rows) if portal_equivalent else []
+            market_tool_stage_failures = _p0g_market_tool_stage_failures(rows) if portal_equivalent else {}
+            source_evidence_failures = _p0g_source_evidence_failures(rows) if portal_equivalent else {}
+            seed_execution_failures = _p0g_seed_execution_failures(name, rows) if portal_equivalent else []
+            session_continuity_failures = (
+                _p0g_session_continuity_failures(rows, conversation_id)
+                if portal_equivalent and conversation_id
+                else {}
+            )
+            summary.append(
+                {
+                    "scenario": name,
+                    "status": status,
+                    "latency_failures": latency_failures,
+                    "route_contamination_failures": route_contamination_failures,
+                    "step_evidence_failures": step_evidence_failures,
+                    "fast_path_stage_failures": fast_path_stage_failures,
+                    "market_tool_stage_failures": market_tool_stage_failures,
+                    "source_evidence_failures": source_evidence_failures,
+                    "seed_execution_failures": seed_execution_failures,
+                    "session_continuity_failures": session_continuity_failures,
+                }
+            )
+    finally:
+        document_ids = tuple(portal_file_probe["uploaded_document_ids"])
+        if base_url and history_conversation_id and portal_file_access_token and document_ids:
+            portal_file_probe["cleanup_errors"] = list(
+                _cleanup_portal_uploaded_file_session(
+                    base_url,
+                    history_conversation_id,
+                    document_ids,
+                    portal_file_access_token,
+                )
+            )
     qualification_failures: list[str] = []
     if external_mode != "live":
         qualification_failures.append("P-0G release evidence requires external_mode=live")
@@ -373,29 +436,21 @@ def capture_p0g_suite(
         )
     if not history_conversation_id:
         qualification_failures.append("uploaded-file history conversation ID was not supplied")
-    file_probe = {
-        "attempted": False,
-        "document_count": 0,
-        "passed": False,
-        "error": "",
-    }
     if history_conversation_id and not file_base_url:
         qualification_failures.append("file bridge base URL was not supplied")
-        file_probe["error"] = "file bridge base URL was not supplied"
-    elif history_conversation_id and file_base_url:
-        passed, document_count, error = _probe_uploaded_file_session(
-            file_base_url,
-            history_conversation_id,
-            file_workflow_id,
+    elif history_conversation_id and file_base_url and not file_probe["passed"]:
+        qualification_failures.append(
+            f"uploaded-file history session probe failed: {file_probe['error']}"
         )
-        file_probe.update(
-            attempted=True,
-            document_count=document_count,
-            passed=passed,
-            error=error,
-        )
-        if not passed:
-            qualification_failures.append(f"uploaded-file history session probe failed: {error}")
+    if portal_equivalent and not qualification_failures:
+        if not portal_file_probe["attempted"]:
+            qualification_failures.append("portal BFF history upload was not supplied")
+        elif not portal_file_probe["passed"]:
+            qualification_failures.append(
+                f"portal BFF history upload failed: {portal_file_probe['error']}"
+            )
+        elif portal_file_probe["cleanup_errors"]:
+            qualification_failures.append("portal BFF history upload cleanup failed")
     report = {
         "evidence_context": {
             "external_mode": external_mode,
@@ -411,6 +466,7 @@ def capture_p0g_suite(
             "portal_user_id_supplied": bool(str(portal_user_id or "").strip()),
             "history_conversation_id_supplied": bool(history_conversation_id),
             "file_probe": file_probe,
+            "portal_file_probe": portal_file_probe,
         },
         "qualification_failures": qualification_failures,
         "scenarios": summary,
@@ -870,6 +926,83 @@ def _probe_uploaded_file_session(
     return True, len(documents), ""
 
 
+def _portal_documents(body: Any) -> list[dict[str, Any]]:
+    documents = body.get("documents") if isinstance(body, dict) else None
+    if not isinstance(documents, list):
+        return []
+    return [document for document in documents if isinstance(document, dict)]
+
+
+def _seed_portal_uploaded_file_session(
+    base_url: str,
+    conversation_id: str,
+    upload_path: Path,
+    access_token: str,
+) -> tuple[bool, int, tuple[int, ...], str]:
+    endpoint = base_url.rstrip("/") + "/api/v1/market/socket-lab/market/files"
+    params = {"sessionId": conversation_id}
+    headers = {"Authorization-Access-Token": access_token}
+    try:
+        before_response = requests.get(endpoint, params=params, headers=headers, timeout=30)
+        before_response.raise_for_status()
+        before_documents = _portal_documents(before_response.json())
+        before_ids = {
+            document_id
+            for document in before_documents
+            if isinstance((document_id := document.get("document_id")), int)
+            and document_id > 0
+        }
+        with upload_path.open("rb") as upload_file:
+            upload_response = requests.post(
+                endpoint,
+                params=params,
+                headers=headers,
+                files={"files": (upload_path.name, upload_file)},
+                timeout=180,
+            )
+            upload_response.raise_for_status()
+            upload_response.json()
+        after_response = requests.get(endpoint, params=params, headers=headers, timeout=30)
+        after_response.raise_for_status()
+        after_documents = _portal_documents(after_response.json())
+    except (OSError, requests.RequestException, ValueError) as exc:
+        return False, 0, (), f"{type(exc).__name__}: {exc}"
+    uploaded_ids = tuple(
+        document_id
+        for document in after_documents
+        if document.get("file_name") == upload_path.name
+        and isinstance((document_id := document.get("document_id")), int)
+        and document_id > 0
+        and document_id not in before_ids
+    )
+    if not uploaded_ids:
+        return False, len(after_documents), (), "uploaded document is not visible in portal list"
+    return True, len(after_documents), uploaded_ids, ""
+
+
+def _cleanup_portal_uploaded_file_session(
+    base_url: str,
+    conversation_id: str,
+    document_ids: tuple[int, ...],
+    access_token: str,
+) -> tuple[str, ...]:
+    endpoint = base_url.rstrip("/") + "/api/v1/market/socket-lab/market/files"
+    headers = {"Authorization-Access-Token": access_token}
+    errors: list[str] = []
+    for document_id in document_ids:
+        try:
+            response = requests.delete(
+                f"{endpoint}/{document_id}",
+                params={"sessionId": conversation_id},
+                headers=headers,
+                timeout=30,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            errors.append(f"document {document_id}: {type(exc).__name__}: {exc}")
+    return tuple(errors)
+
+
 def _history_golden_acceptance(qid: str, answer: str) -> tuple[bool, str]:
     requirements = {
         "F01": (re.compile(r"242\.72\s*억원"), "missing 242.72억원"),
@@ -1232,6 +1365,16 @@ def main() -> int:
     )
     p0g_parser.add_argument("--file-workflow-id", type=int, default=301)
     p0g_parser.add_argument(
+        "--history-upload-file",
+        type=Path,
+        help="Fixture uploaded through the portal BFF before the contaminated-history scenario.",
+    )
+    p0g_parser.add_argument(
+        "--portal-file-token-env",
+        default="P0G_PORTAL_ACCESS_TOKEN",
+        help="Environment variable containing the portal file API access token.",
+    )
+    p0g_parser.add_argument(
         "--max-general-elapsed-ms",
         type=float,
         default=10_000.0,
@@ -1273,6 +1416,8 @@ def main() -> int:
             entry_kind=args.entry_kind,
             file_base_url=args.file_base_url,
             file_workflow_id=args.file_workflow_id,
+            history_upload_file=args.history_upload_file,
+            portal_file_access_token=os.getenv(args.portal_file_token_env),
         )
     if args.command == "diff":
         return diff_captures(
