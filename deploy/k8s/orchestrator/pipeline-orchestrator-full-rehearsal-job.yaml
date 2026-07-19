@@ -33,7 +33,7 @@ spec:
         fsGroup: 3000
       containers:
         - name: rehearsal
-          image: REPLACE_WITH_V029_IMAGE  # jw-pipeline-orchestrator@sha256:<v0.2.9 digest>; set at pin-sync (never a stale r1-* image)
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:2e7943ca232ffe8d040df22297dec791595e62222e60200311408c8d7f0520ae
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-lc"]
           args:
