@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.multiturn_matrix_gate import evaluate_turn, load_matrix
+from scripts.multiturn_matrix_gate import evaluate_turn, load_matrix, portal_tokens
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "multiturn_matrix.json"
@@ -61,3 +61,28 @@ def test_matrix_fixture_is_json_serializable_without_runtime_secrets() -> None:
 
     assert "token" not in encoded.casefold()
     assert "password" not in encoded.casefold()
+
+
+def test_portal_tokens_are_loaded_in_memory_from_v2_login(monkeypatch) -> None:
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {"portalToken": "portal-secret", "accessToken": "access-secret"}
+
+    seen: list[tuple[str, object, float]] = []
+
+    def post(url: str, *, json: object, timeout: float):
+        seen.append((url, json, timeout))
+        return Response()
+
+    monkeypatch.setattr("scripts.multiturn_matrix_gate.requests.post", post)
+
+    assert portal_tokens("https://portal.example/test2-api/api/v1/auth/test-login", 17.0) == (
+        "portal-secret",
+        "access-secret",
+    )
+    assert seen == [("https://portal.example/test2-api/api/v1/auth/test-login", {}, 17.0)]

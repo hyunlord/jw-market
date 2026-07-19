@@ -149,6 +149,23 @@ def _strings(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def portal_tokens(auth_url: str, timeout_s: float) -> tuple[str, str]:
+    response = requests.post(auth_url, json={}, timeout=timeout_s)
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    token_source = data if isinstance(data, dict) else payload
+    if not isinstance(token_source, dict):
+        raise RuntimeError("portal login response is not an object")
+    portal_token = token_source.get("portal_token") or token_source.get("portalToken")
+    access_token = token_source.get("access_token") or token_source.get("accessToken")
+    if not isinstance(portal_token, str) or not portal_token.strip():
+        raise RuntimeError("portal login response has no portalToken")
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise RuntimeError("portal login response has no accessToken")
+    return portal_token.strip(), access_token.strip()
+
+
 class PortalClient:
     def __init__(
         self,
@@ -401,6 +418,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-commit", default="")
     parser.add_argument("--expected-digest", default="")
     parser.add_argument("--timeout-s", type=float, default=360.0)
+    parser.add_argument("--auth-url", default="")
     parser.add_argument("--portal-token", default="")
     parser.add_argument("--access-token", default="")
     return parser.parse_args()
@@ -414,12 +432,16 @@ def main() -> int:
         raise SystemExit("at least three repeats are required")
     if args.fixture is not None and not args.fixture.is_file():
         raise SystemExit(f"file fixture not found: {args.fixture}")
+    portal_token = args.portal_token
+    access_token = args.access_token
+    if args.auth_url:
+        portal_token, access_token = portal_tokens(args.auth_url, min(args.timeout_s, 60.0))
     client = PortalClient(
         stream_url=args.stream_url,
         portal_base=args.portal_base,
         timeout_s=args.timeout_s,
-        portal_token=args.portal_token,
-        access_token=args.access_token,
+        portal_token=portal_token,
+        access_token=access_token,
     )
     summary = run_matrix(
         matrix,
