@@ -26,6 +26,44 @@ spec:
       restartPolicy: Never
       securityContext:
         fsGroup: 3000
+      initContainers:
+        - name: provision-isolated-databases
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:15d90db7fc1d3d225d04fe289042b700ba295f8589fa596af0af5c3e5547f75f
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+              cd /app
+              exec python -m pipeline.orchestrator provision-full-rehearsal \
+                --target-db "${R1_TARGET_DB}" \
+                --cache-db "${R1_CACHE_DB}"
+          env:
+            - name: R1_TARGET_DB
+              value: REPLACE_WITH_NEW_ISOLATED_DB
+            - name: R1_CACHE_DB
+              value: REPLACE_WITH_NEW_ISOLATED_CACHE_DB
+            - name: R1_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: MARIADB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: "3306"
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: galera-mariadb-galera
+                  key: mariadb-root-password
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+            limits:
+              cpu: "500m"
+              memory: 256Mi
       containers:
         - name: rehearsal
           image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:15d90db7fc1d3d225d04fe289042b700ba295f8589fa596af0af5c3e5547f75f
