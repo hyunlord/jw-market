@@ -43,6 +43,11 @@ from pipeline.etl.io.mart.general_iqvia import load_iqvia_base_frame
 from pipeline.etl.io.mart.general_ubist import load_ubist_base_frame
 from pipeline.etl.io.mart.general_ubist import iter_ubist_base_frames
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
+from pipeline.scripts.rollback.recording import (
+    add_promotion_identity_args,
+    identity_from_args,
+    record_mysql_component,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,6 +101,12 @@ def parse_args() -> argparse.Namespace:
         help="Compute the approved ubist/molecule slice fully before bounded direct promotion; creates no staging schema.",
     )
     parser.add_argument("--build-sha", default=os.environ.get("BUILD_GIT_SHA"), help="Code SHA recorded in provenance.")
+    parser.add_argument(
+        "--promotion-run-id",
+        default=os.environ.get("PROMOTION_RUN_ID"),
+        help="Run id used for the mandatory pre-promotion FDM backup.",
+    )
+    add_promotion_identity_args(parser)
     return parser.parse_args()
 
 
@@ -111,8 +122,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("shared promotion requires --dimension-type molecule and explicit approval")
     if args.promote_to and not args.build_sha:
         raise ValueError("--build-sha is required for shared promotion provenance")
+    if args.promote_to and not args.promotion_run_id:
+        raise ValueError("--promotion-run-id is required for shared promotion rollback wiring")
     if args.direct_shared_promotion and not args.promote_to:
         raise ValueError("--direct-shared-promotion requires --promote-to")
+    promotion_identity = None
+    if args.promote_to:
+        promotion_identity = identity_from_args(
+            args,
+            promotion_run_id=str(args.promotion_run_id),
+            serving_db=str(args.promote_to),
+        )
 
     started = time.perf_counter()
     conn = _connect_admin()
@@ -215,6 +235,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         else:
             manifest["target"] = _target_summary(conn, args.target_db)
         if args.promote_to:
+            promotion_run_id = getattr(args, "promotion_run_id", None)
+            if not promotion_run_id:
+                raise ValueError("--promotion-run-id is required with --promote-to")
             build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
             if args.direct_shared_promotion:
                 manifest["promotion"] = promote_filter_dimension_rows(
@@ -226,6 +249,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     build_marker=build_marker,
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
+                    promotion_run_id=promotion_run_id,
                 )
             else:
                 manifest["promotion"] = promote_filter_dimension_slice(
@@ -237,6 +261,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     build_marker=build_marker,
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
+                    promotion_run_id=promotion_run_id,
+                )
+            if promotion_identity is not None:
+                backup = manifest["promotion"]["backup"]
+                record_mysql_component(
+                    conn,
+                    identity=promotion_identity,
+                    component="fdm",
+                    table_pairs=((FILTER_DIMENSION_TABLE, str(backup["table"])),),
                 )
         manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]

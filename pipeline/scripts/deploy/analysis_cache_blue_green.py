@@ -29,6 +29,11 @@ from pipeline.scripts.deploy.analysis_cache_blue_green_validation import (
     validate_staging_tables,
 )
 from pipeline.scripts.deploy.mart_load_verify import quote_id, table_exists
+from pipeline.scripts.rollback.recording import (
+    add_promotion_identity_args,
+    identity_from_args,
+    record_mysql_component,
+)
 
 
 BLUE_GREEN_PUBLISH_TABLES: Final[tuple[str, str]] = (
@@ -221,6 +226,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
         if action == "switch":
             command.add_argument("--run-id", required=True)
+            add_promotion_identity_args(command)
 
     rollback = subparsers.add_parser("rollback")
     rollback.add_argument("--run-id", required=True)
@@ -250,8 +256,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         elif args.action == "switch":
-            payload = asdict(
-                switch_blue_green_tables(
+            identity = identity_from_args(
+                args,
+                promotion_run_id=args.run_id,
+                serving_db=args.target_db,
+            )
+            summary = switch_blue_green_tables(
                     conn,
                     target_db=args.target_db,
                     run_id=args.run_id,
@@ -261,7 +271,17 @@ def main(argv: list[str] | None = None) -> int:
                     expected_source_epoch=args.expected_source_epoch,
                     expected_build_version=args.expected_build_version,
                 )
-            )
+            if identity is not None:
+                old_tables = _versioned_tables("old", args.run_id)
+                record_mysql_component(
+                    conn,
+                    identity=identity,
+                    component="analysis_cache",
+                    table_pairs=tuple(
+                        (live_table, old_tables[live_table]) for live_table in LIVE_TABLES
+                    ),
+                )
+            payload = asdict(summary)
         else:
             payload = asdict(
                 rollback_blue_green_tables(

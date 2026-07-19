@@ -32,7 +32,9 @@ class _Cursor:
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
-        if "SELECT COUNT(*) AS n" in sql:
+        if "AS table_count" in sql:
+            self.rows = [{"table_count": 0}]
+        elif "SELECT COUNT(*) AS n" in sql:
             self.rows = [{"n": self._next_expected_rows()}]
         elif "SELECT id," in sql:
             self.rows = [
@@ -108,6 +110,7 @@ def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:
         build_marker="2026-07-13 22:30:00",
         batch_size=10,
         allow_shared_serving_target=True,
+        promotion_run_id="fdm_run_slice_1",
     )
 
     sql = "\n".join(call[0] for call in conn.cursor_instance.calls)
@@ -130,6 +133,7 @@ def test_promote_filter_dimension_slice_rejects_any_other_slice() -> None:
             dimension_type="form",
             build_marker="2026-07-13 22:30:00",
             allow_shared_serving_target=True,
+            promotion_run_id="fdm_run_slice_2",
         )
     except ValueError as exc:
         assert "ubist/molecule" in str(exc)
@@ -149,6 +153,7 @@ def test_promote_filter_dimension_slice_refuses_empty_stage_before_delete() -> N
             dimension_type="molecule",
             build_marker="2026-07-13 22:30:00",
             allow_shared_serving_target=True,
+            promotion_run_id="fdm_run_slice_3",
         )
     except RuntimeError as exc:
         assert "empty staged slice" in str(exc)
@@ -184,11 +189,14 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
         build_marker="2026-07-13 22:30:00",
         batch_size=10,
         allow_shared_serving_target=True,
+        promotion_run_id="fdm_run_1",
     )
 
     sql = "\n".join(call[0] for call in conn.cursor_instance.calls)
     assert "CREATE DATABASE" not in sql
     assert "ON DUPLICATE KEY UPDATE" in sql
+    assert "CREATE TABLE `jw_mart_d2_stage_20260630_r2`.`mart_general_filter_dimension_metric__old_fdm_run_1`" in sql
+    assert sql.index("CREATE TABLE") < sql.index("ON DUPLICATE KEY UPDATE")
     assert "source=%s AND dimension_type=%s" in sql
     assert result["expected_rows"] == 1
     assert result["promoted_rows"] == 1
@@ -197,7 +205,7 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
 def test_promote_filter_dimension_rows_waits_for_committed_marker_visibility(monkeypatch) -> None:
     from pipeline.etl.io.mart import filter_dimension_promote as promotion
 
-    conn = _Connection(expected_rows=[0, 1])
+    conn = _Connection(expected_rows=[1, 1, 0, 1])
     monkeypatch.setattr(promotion.time, "sleep", lambda _seconds: None)
     rows = [
         {
@@ -223,6 +231,7 @@ def test_promote_filter_dimension_rows_waits_for_committed_marker_visibility(mon
         build_marker="2026-07-13 22:30:00",
         batch_size=10,
         allow_shared_serving_target=True,
+        promotion_run_id="fdm_run_2",
     )
 
     marker_checks = [
@@ -259,6 +268,7 @@ def test_promote_filter_dimension_rows_refuses_mixed_slice_before_write() -> Non
             dimension_type="molecule",
             build_marker="2026-07-13 22:30:00",
             allow_shared_serving_target=True,
+            promotion_run_id="fdm_run_3",
         )
     except ValueError as exc:
         assert "mixed or out-of-scope" in str(exc)

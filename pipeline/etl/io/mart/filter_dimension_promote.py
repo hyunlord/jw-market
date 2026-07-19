@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import hashlib
+import re
 import time
 from typing import Any
 
@@ -26,6 +27,7 @@ _PROMOTION_COLUMNS = (
     "dimension_value_hash",
     "raw_value_history",
 )
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def promote_filter_dimension_rows(
@@ -38,6 +40,7 @@ def promote_filter_dimension_rows(
     build_marker: str,
     batch_size: int = 200,
     allow_shared_serving_target: bool = False,
+    promotion_run_id: str,
 ) -> dict[str, Any]:
     """Promote a fully computed in-memory slice when staging DDL is unavailable."""
 
@@ -69,6 +72,7 @@ def promote_filter_dimension_rows(
     if len(unique_keys) != len(payloads):
         raise ValueError("computed ubist/molecule slice contains duplicate serving keys")
 
+    backup = create_filter_dimension_backup(conn, target_db, promotion_run_id)
     target_table = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
     promoted = _upsert_payloads(
         conn,
@@ -104,6 +108,7 @@ def promote_filter_dimension_rows(
         "promoted_rows": promoted,
         "stale_rows_deleted": stale_deleted,
         "mode": "computed_rows_direct",
+        "backup": backup,
     }
 
 
@@ -117,6 +122,7 @@ def promote_filter_dimension_slice(
     build_marker: str,
     batch_size: int = 200,
     allow_shared_serving_target: bool = False,
+    promotion_run_id: str,
 ) -> dict[str, Any]:
     """Promote one verified sidecar slice without touching adjacent dimensions."""
 
@@ -140,6 +146,7 @@ def promote_filter_dimension_slice(
     if expected < 1:
         raise RuntimeError("refusing to replace ubist/molecule with an empty staged slice")
 
+    backup = create_filter_dimension_backup(conn, target_db, promotion_run_id)
     promoted = _upsert_slice(
         conn,
         source_table=source_table,
@@ -175,7 +182,51 @@ def promote_filter_dimension_slice(
         "expected_rows": expected,
         "promoted_rows": promoted,
         "stale_rows_deleted": stale_deleted,
+        "backup": backup,
     }
+
+
+def create_filter_dimension_backup(
+    conn: pymysql.connections.Connection,
+    target_db: str,
+    promotion_run_id: str,
+) -> dict[str, Any]:
+    if not _RUN_ID_RE.fullmatch(promotion_run_id):
+        raise ValueError("promotion_run_id must contain only letters, numbers, and underscores")
+    backup_table = f"{FILTER_DIMENSION_TABLE}__old_{promotion_run_id}"
+    if len(backup_table) > 64:
+        raise ValueError(f"FDM backup identifier exceeds 64 characters: {backup_table}")
+    if _table_exists(conn, target_db, backup_table):
+        raise RuntimeError(f"FDM backup already exists: {target_db}.{backup_table}")
+    live = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
+    backup = f"{quote_id(target_db)}.{quote_id(backup_table)}"
+    live_rows = _table_count(conn, live)
+    if live_rows < 1:
+        raise RuntimeError(f"refusing to back up empty FDM table: {target_db}.{FILTER_DIMENSION_TABLE}")
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE TABLE {backup} LIKE {live}")
+        cur.execute(f"INSERT INTO {backup} SELECT * FROM {live}")
+    conn.commit()
+    backup_rows = _table_count(conn, backup)
+    if backup_rows != live_rows:
+        raise RuntimeError(f"FDM backup row count mismatch: {backup_rows} != {live_rows}")
+    return {"table": backup_table, "row_count": backup_rows, "promotion_run_id": promotion_run_id}
+
+
+def _table_exists(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS table_count FROM information_schema.tables "
+            "WHERE table_schema=%s AND table_name=%s",
+            (db_name, table_name),
+        )
+        return int(cur.fetchone()["table_count"]) > 0
+
+
+def _table_count(conn: pymysql.connections.Connection, qualified_table: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS n FROM {qualified_table}")
+        return int(cur.fetchone()["n"])
 
 
 def _upsert_slice(
