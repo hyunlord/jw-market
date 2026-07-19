@@ -170,6 +170,7 @@ def _qa_trace(
             "gate_reason": gate_reason,
         },
         "tools": _qa_tool_calls(result),
+        "spans": _qa_spans(result),
         "claims": {
             "blocked_count": int(claim_items.get("blocked_claim_count") or 0),
             "blocked_reasons": tuple(str(item) for item in claim_items.get("blocked_reasons", ()) if str(item)),
@@ -179,6 +180,27 @@ def _qa_trace(
             "body_empty": not bool(answer.strip()),
         },
     }
+
+
+def _qa_spans(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    spans = result.get("_qa_spans")
+    if not isinstance(spans, list):
+        return ()
+    public_keys = (
+        "name",
+        "category",
+        "detail",
+        "started_at",
+        "ended_at",
+        "elapsed_ms",
+        "status",
+    )
+    projected: list[dict[str, Any]] = []
+    for span in spans:
+        if not isinstance(span, Mapping):
+            continue
+        projected.append({key: span.get(key) for key in public_keys})
+    return tuple(projected)
 
 
 def _qa_tool_calls(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:

@@ -218,6 +218,46 @@ def test_trace_envelope_preserves_explicit_typed_gate_decision(monkeypatch) -> N
     assert routing["gate_reason"] == "explicit_market_outside_brand_memberships"
 
 
+def test_trace_envelope_projects_request_child_spans() -> None:
+    result = {
+        "router_diagnostics": {"mode": "tool_use_agent"},
+        "tool_calls": [],
+        "markdown_response": {"fact_md": "", "data_md": ""},
+        "_qa_spans": [
+            {
+                "name": "structured_preflight",
+                "category": "boundary",
+                "detail": "deterministic structured question preflight",
+                "started_at": "2026-07-20T00:00:00+00:00",
+                "ended_at": "2026-07-20T00:00:01+00:00",
+                "elapsed_ms": 1000.0,
+                "status": "ok",
+            }
+        ],
+    }
+
+    trace = trace_envelope(
+        question="리바로 2025년 2분기 매출",
+        result=result,
+        answer="2025-Q2 리바로 매출은 242.72억원입니다.",
+        charts=(),
+        timing={"stages": []},
+        conversation_id="qa-boundary-session",
+    )
+
+    assert trace["qa_trace"]["spans"] == (
+        {
+            "name": "structured_preflight",
+            "category": "boundary",
+            "detail": "deterministic structured question preflight",
+            "started_at": "2026-07-20T00:00:00+00:00",
+            "ended_at": "2026-07-20T00:00:01+00:00",
+            "elapsed_ms": 1000.0,
+            "status": "ok",
+        },
+    )
+
+
 def test_number_absent_from_rendered_facts_remains_ungrounded() -> None:
     markdown_response = {
         "allowed_numbers": (),

@@ -7,6 +7,7 @@ from typing import Final
 
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding
+from jw_chat_agent_poc.common.timing import trace_span
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 
 
@@ -167,10 +168,14 @@ def preflight_structured_market_question(question: str, resolver: BrandResolver)
     from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
     from jw_chat_agent_poc.tools.query_layer.catalog import default_catalog
 
-    grounding = build_period_grounding(question)
-    brands = _resolved_brands(question, resolver)
-    schemas = tool_schemas(brands, grounding.schema_periods, default_catalog())
-    return plan_structured_market_question(question, resolver, grounding, schemas)
+    with trace_span("period_grounding", "structured preflight period normalization", category="planner"):
+        grounding = build_period_grounding(question)
+    with trace_span("preflight_brand_resolution", "structured preflight brand resolution", category="planner"):
+        brands = _resolved_brands(question, resolver)
+    with trace_span("tool_schema_catalog", "structured preflight tool schema and query catalog", category="planner"):
+        schemas = tool_schemas(brands, grounding.schema_periods, default_catalog())
+    with trace_span("structured_plan_assembly", "structured preflight plan assembly", category="planner"):
+        return plan_structured_market_question(question, resolver, grounding, schemas)
 
 
 def _resolved_brands(question: str, resolver: BrandResolver) -> tuple[str, ...]:
