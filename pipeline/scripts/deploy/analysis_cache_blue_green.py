@@ -260,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 args,
                 promotion_run_id=args.run_id,
                 serving_db=args.target_db,
+                required=True,
             )
             summary = switch_blue_green_tables(
                     conn,
@@ -271,16 +272,15 @@ def main(argv: list[str] | None = None) -> int:
                     expected_source_epoch=args.expected_source_epoch,
                     expected_build_version=args.expected_build_version,
                 )
-            if identity is not None:
-                old_tables = _versioned_tables("old", args.run_id)
-                record_mysql_component(
-                    conn,
-                    identity=identity,
-                    component="analysis_cache",
-                    table_pairs=tuple(
-                        (live_table, old_tables[live_table]) for live_table in LIVE_TABLES
-                    ),
-                )
+            old_tables = _versioned_tables("old", args.run_id)
+            record_mysql_component(
+                conn,
+                identity=identity,
+                component="analysis_cache",
+                table_pairs=tuple(
+                    (live_table, old_tables[live_table]) for live_table in LIVE_TABLES
+                ),
+            )
             payload = asdict(summary)
         else:
             payload = asdict(

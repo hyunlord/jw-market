@@ -132,6 +132,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             args,
             promotion_run_id=str(args.promotion_run_id),
             serving_db=str(args.promote_to),
+            required=True,
         )
 
     started = time.perf_counter()
@@ -263,14 +264,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     allow_shared_serving_target=args.allow_shared_serving_target,
                     promotion_run_id=promotion_run_id,
                 )
-            if promotion_identity is not None:
-                backup = manifest["promotion"]["backup"]
-                record_mysql_component(
-                    conn,
-                    identity=promotion_identity,
-                    component="fdm",
-                    table_pairs=((FILTER_DIMENSION_TABLE, str(backup["table"])),),
-                )
+            backup = manifest["promotion"]["backup"]
+            record_mysql_component(
+                conn,
+                identity=promotion_identity,
+                component="fdm",
+                table_pairs=((FILTER_DIMENSION_TABLE, str(backup["table"])),),
+            )
         manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)

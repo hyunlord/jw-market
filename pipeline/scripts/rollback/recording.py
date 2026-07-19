@@ -35,12 +35,18 @@ def identity_from_args(
     *,
     promotion_run_id: str,
     serving_db: str,
+    required: bool = False,
 ) -> PromotionIdentity | None:
     values = (
         getattr(args, "promotion_epoch", None),
         getattr(args, "ingest_run_id", None),
         getattr(args, "generation_db", None),
     )
+    if not any(values) and required:
+        raise ValueError(
+            "promotion ledger identity is required: provide --promotion-epoch, "
+            "--ingest-run-id, and --generation-db"
+        )
     if not any(values):
         return None
     if not all(values):

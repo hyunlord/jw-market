@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 import sqlite3
 
 import pytest
@@ -7,7 +8,11 @@ import pytest
 from pipeline.scripts.rollback.ledger import PromotionLedger
 from pipeline.scripts.rollback.models import REQUIRED_COMPONENTS, TableBackup
 from pipeline.scripts.rollback.planner import build_retention_plan, build_rollback_plan
-from pipeline.scripts.rollback.recording import PromotionIdentity, record_component_backups
+from pipeline.scripts.rollback.recording import (
+    PromotionIdentity,
+    identity_from_args,
+    record_component_backups,
+)
 from pipeline.scripts.rollback.service import execute_rollback
 
 
@@ -215,6 +220,22 @@ def test_publish_backup_identity_drift_is_rejected() -> None:
             identity=identity,
             component="general",
             table_pairs=(("general_live", "general_old"),),
+        )
+
+
+def test_mutating_promotion_requires_ledger_identity() -> None:
+    args = Namespace(
+        promotion_epoch=None,
+        ingest_run_id=None,
+        generation_db=None,
+    )
+
+    with pytest.raises(ValueError, match="promotion ledger identity is required"):
+        identity_from_args(
+            args,
+            promotion_run_id="run-new",
+            serving_db="serving_stage_named_db",
+            required=True,
         )
 
 

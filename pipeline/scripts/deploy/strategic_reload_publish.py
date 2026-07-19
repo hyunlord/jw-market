@@ -206,11 +206,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     conn = connect_admin()
     try:
-        identity = identity_from_args(
-            args,
-            promotion_run_id=str(args.run_id),
-            serving_db=str(args.target_db),
-        )
+        identity = None
+        if not args.dry_run:
+            identity = identity_from_args(
+                args,
+                promotion_run_id=str(args.run_id),
+                serving_db=str(args.target_db),
+                required=True,
+            )
         summary = publish_strategic_reload_tables(
             conn,
             build_db=str(args.build_db),
@@ -220,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_operating_target=bool(args.allow_operating_target),
             dry_run=bool(args.dry_run),
         )
-        if identity is not None and not summary.dry_run:
+        if identity is not None:
             record_mysql_component(
                 conn,
                 identity=identity,
