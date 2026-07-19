@@ -19,6 +19,7 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
         "/api/brand-activity/interest-rx-matrix",
         "/api/brand-activity/topics",
         "/api/brands",
+        "/api/capabilities",
         "/api/cause/{brand_name}",
         "/api/deep-analysis/{brand_name}",
         "/api/dynamic-market",
