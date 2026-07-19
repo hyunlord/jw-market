@@ -145,7 +145,11 @@ def copy_inputs(
     event_db: str = "jw_mart",
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for table in ("mart_general_brand_metric", "mart_general_market_metric"):
+    for table in (
+        "mart_general_brand_metric",
+        "mart_general_market_metric",
+        "mart_general_filter_dimension_metric",
+    ):
         counts[table] = copy_table(general_db, target_db, table)
     for table in (
         "mart_strategic_ml_brand_metric",

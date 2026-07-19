@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 ENV_INPUT_ROOT = "INGEST_INPUT_ROOT"            # submission bucket/NFS mount root
+ENV_INPUT_BACKEND = "INGEST_INPUT_BACKEND"      # explicit source: s3 | local
 ENV_LEDGER_SQLITE = "INGEST_LEDGER_SQLITE"      # set => sqlite ledger (rehearsal/tests)
 ENV_JOB_IMAGE = "INGEST_JOB_IMAGE"
 ENV_JOB_NAMESPACE = "INGEST_JOB_NAMESPACE"
@@ -21,7 +22,7 @@ ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output roo
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
-    "jw-pipeline-orchestrator@sha256:a362ceb8a60f04688917d8c73dddf63c29e22b295c6e45f1c4036424240d703a"
+    "jw-pipeline-orchestrator@sha256:6577ae5c8dafd594f111d9488679719d9a2ac53c779e4ecc848cef6f3ca9fefb"
 )
 
 
@@ -92,10 +93,28 @@ def open_mart_connection():
 
 
 def open_input_source():
-    """S3Input when INGEST_S3_BUCKET is set (MinIO submissions), else None (local root)."""
+    """Return the configured remote input source, or ``None`` for local/NFS.
+
+    An explicit backend wins over legacy environment discovery so stale MinIO
+    variables cannot redirect a deployment armed for the NFS input contract.
+    When the selector is absent, retain the legacy behavior for compatibility.
+    """
     from pipeline.scripts.ingest_hook.s3_input import S3Input
 
-    return S3Input.from_env()
+    backend = os.environ.get(ENV_INPUT_BACKEND, "").strip().lower()
+    if not backend:
+        return S3Input.from_env()
+    if backend == "local":
+        input_root()
+        return None
+    if backend == "s3":
+        source = S3Input.from_env()
+        if source is None:
+            raise RuntimeError("INGEST_INPUT_BACKEND=s3 requires INGEST_S3_BUCKET")
+        return source
+    raise RuntimeError(
+        f"unsupported {ENV_INPUT_BACKEND}={backend!r}; expected 's3' or 'local'"
+    )
 
 
 def load_output_root() -> tuple[Path, bool]:

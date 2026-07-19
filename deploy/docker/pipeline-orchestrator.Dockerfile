@@ -49,6 +49,7 @@ RUN python -c "import urllib.request; urllib.request.urlretrieve('https://dl.k8s
 
 COPY pipeline /app/pipeline
 COPY docs/crawl /app/docs/crawl
+COPY ["data/JW 주요 약품 수동 매핑", "/app/data/JW 주요 약품 수동 매핑"]
 
 RUN mkdir -p /var/lib/jw-pipeline && chown -R app:app /app /var/lib/jw-pipeline
 

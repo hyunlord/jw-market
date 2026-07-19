@@ -27,6 +27,7 @@ from pipeline.etl.io.mart.general_config import load_env
 
 
 SAFE_STAGE_RE = re.compile(r"^jw_mart_d2_strategic_dim_stage_[0-9]{8}_[0-9]{6}$")
+REHEARSAL_STAGE_RE = re.compile(r"^jw_mart_rehearsal_[A-Za-z0-9_]+$")
 LOCAL_SERVING_TARGET = "jw_mart"
 
 
@@ -49,7 +50,7 @@ def main() -> None:
     target_db = args.target_db or f"jw_mart_d2_strategic_dim_stage_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     if target_db == LOCAL_SERVING_TARGET and args.allow_local_serving_target:
         _guard_local_serving_target(target_db)
-    elif not SAFE_STAGE_RE.fullmatch(target_db):
+    elif not (SAFE_STAGE_RE.fullmatch(target_db) or REHEARSAL_STAGE_RE.fullmatch(target_db)):
         raise SystemExit(f"Refusing non-isolated target schema: {target_db}")
     manifest = build_strategic_sidecar(source_db=args.source_db, target_db=target_db, replace_table=args.replace_table)
     manifest_path = args.manifest or Path("/tmp") / f"{target_db}_manifest.json"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,73 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--log-file", type=Path, default=None)
     run.add_argument("--run-id", default=None)
 
+    inputs = sub.add_parser(
+        "materialize-full-inputs",
+        help="materialize canonical raw inputs and write an R-1 manifest",
+    )
+    inputs.add_argument("--output-root", required=True, type=Path)
+    inputs.add_argument(
+        "--ubist-bucket",
+        default=os.environ.get("MINIO_BUCKET_RAW_UBIST", "jw-market-raw-ubist"),
+    )
+    inputs.add_argument(
+        "--iqvia-bucket",
+        default=os.environ.get("MINIO_BUCKET_RAW_IQVIA", "jw-market-raw-iqvia"),
+    )
+    inputs.add_argument(
+        "--mi-master-source-dir",
+        type=Path,
+        default=None,
+        help="repository-pinned MI Master directory (defaults to the canonical data path)",
+    )
+    inputs.add_argument(
+        "--ubist-parquet-sidecar",
+        action="append",
+        nargs=3,
+        default=[],
+        metavar=("SOURCE", "RELATIVE_PATH", "SHA256"),
+        help="repeatable SHA-pinned UBIST parquet sidecar",
+    )
+    inputs.add_argument(
+        "--source-backend",
+        choices=["local", "minio"],
+        default="local",
+        help="raw UBIST/IQVIA source: local/NFS tree (default, canonical) or minio (archive)",
+    )
+    inputs.add_argument(
+        "--ubist-source-dir",
+        type=Path,
+        default=None,
+        help="UBIST source dir when --source-backend=local (default: repo data/UBIST)",
+    )
+    inputs.add_argument(
+        "--iqvia-source-dir",
+        type=Path,
+        default=None,
+        help="IQVIA source dir when --source-backend=local (default: repo data/IQVIA)",
+    )
+
+    rehearsal = sub.add_parser(
+        "rehearse-full",
+        help="rebuild explicit raw inputs into isolated mart/cache schemas (never publish)",
+    )
+    rehearsal.add_argument("--input-manifest", required=True, type=Path)
+    rehearsal.add_argument("--target-db", required=True)
+    rehearsal.add_argument("--cache-db", required=True)
+    rehearsal.add_argument("--source-db", required=True)
+    rehearsal.add_argument("--work-dir", required=True, type=Path)
+    rehearsal.add_argument("--dry-run", action="store_true")
+
+    comparison = sub.add_parser(
+        "compare-full",
+        help="read-only census comparison of isolated full-rehearsal outputs",
+    )
+    comparison.add_argument("--reference-db", required=True)
+    comparison.add_argument("--target-db", required=True)
+    comparison.add_argument("--reference-cache-db", required=True)
+    comparison.add_argument("--target-cache-db", required=True)
+    comparison.add_argument("--output", required=True, type=Path)
+
     sub.add_parser("stages", help="print the stage registry and incremental capability table")
     return parser
 
@@ -60,6 +128,75 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "stages":
         print(json.dumps(_stages_table(), ensure_ascii=False, indent=2))
         return 0
+
+    if args.command == "materialize-full-inputs":
+        from pipeline.orchestrator.full_rehearsal_inputs import (
+            InputMaterializationError,
+            UbistParquetSidecarSource,
+            materialize_full_inputs,
+        )
+
+        try:
+            manifest = materialize_full_inputs(
+                output_root=args.output_root,
+                ubist_bucket=args.ubist_bucket,
+                iqvia_bucket=args.iqvia_bucket,
+                mi_master_source_dir=args.mi_master_source_dir,
+                ubist_parquet_sidecars=tuple(
+                    UbistParquetSidecarSource(Path(source), Path(relative), sha256)
+                    for source, relative, sha256 in args.ubist_parquet_sidecar
+                ),
+                source_backend=args.source_backend,
+                ubist_source_dir=args.ubist_source_dir,
+                iqvia_source_dir=args.iqvia_source_dir,
+            )
+        except InputMaterializationError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(manifest)
+        return 0
+
+    if args.command == "rehearse-full":
+        from pipeline.orchestrator.full_rehearsal import (
+            FullRehearsalConfig,
+            RehearsalContractError,
+            execute_full_rehearsal,
+        )
+
+        try:
+            return execute_full_rehearsal(
+                FullRehearsalConfig(
+                    input_manifest=args.input_manifest,
+                    target_db=args.target_db,
+                    cache_db=args.cache_db,
+                    source_db=args.source_db,
+                    work_dir=args.work_dir,
+                ),
+                dry_run=args.dry_run,
+            )
+        except RehearsalContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.command == "compare-full":
+        from pipeline.orchestrator.full_rehearsal_compare import (
+            ComparisonConfig,
+            run_comparison,
+        )
+
+        try:
+            return run_comparison(
+                ComparisonConfig(
+                    reference_db=args.reference_db,
+                    target_db=args.target_db,
+                    reference_cache_db=args.reference_cache_db,
+                    target_cache_db=args.target_cache_db,
+                ),
+                args.output,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     state = StateStore(args.state_file or default_state_path())

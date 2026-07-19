@@ -19,6 +19,48 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+# pymysql lives only in the production (mysql) image; sqlite rehearsals and unit
+# tests must import this module without it. Guard the import so the sqlite path
+# stays dependency-free, and only reference these types on the mysql code path.
+try:  # pragma: no cover - trivial import guard
+    from pymysql.err import (
+        InterfaceError as _MySQLInterfaceError,
+        OperationalError as _MySQLOperationalError,
+    )
+
+    _STALE_CONN_ERRORS = (_MySQLOperationalError, _MySQLInterfaceError)
+except Exception:  # pragma: no cover - sqlite-only environments have no pymysql
+    _MySQLInterfaceError = None
+    _MySQLOperationalError = None
+    _STALE_CONN_ERRORS = ()
+
+# MySQL error codes meaning "the connection is dead; the statement did not run":
+#   2006 = server has gone away (Galera closed an idle wait_timeout connection)
+#   2013 = lost connection during query
+_MYSQL_GONE_AWAY_CODES = (2006, 2013)
+
+
+class LedgerConnectionError(RuntimeError):
+    """The mysql ledger connection could not be revived (ping + reconnect + one
+    retry all failed).
+
+    Raised instead of leaking a raw driver error or — worse — failing silently.
+    The trigger service maps it to a clear HTTP 5xx body; batch callers let it
+    propagate to their logs. Only genuine connection loss maps here: real SQL
+    errors (syntax, integrity, lock timeout) propagate unchanged.
+    """
+
+
+def _is_stale_connection_error(exc: BaseException) -> bool:
+    """True only for a dead/closed connection — never for a real SQL error."""
+    if _MySQLInterfaceError is not None and isinstance(exc, _MySQLInterfaceError):
+        return True
+    if _MySQLOperationalError is not None and isinstance(exc, _MySQLOperationalError):
+        code = exc.args[0] if exc.args else None
+        return code in _MYSQL_GONE_AWAY_CODES
+    return False
+
+
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
@@ -114,10 +156,71 @@ class Ledger:
 
     # -- helpers -----------------------------------------------------------
     def _execute(self, sql: str, params: tuple = ()):
+        statement = sql.replace("?", self._mark) if self._dialect == "mysql" else sql
+        if self._dialect != "mysql":
+            # sqlite (tests/rehearsals): connection is local and never idle-closed,
+            # and has no .ping(); run directly.
+            return self._run(statement, params)
+        return self._execute_resilient(statement, params)
+
+    def _run(self, statement: str, params: tuple):
         cursor = self._conn.cursor()
-        cursor.execute(sql.replace("?", self._mark) if self._dialect == "mysql" else sql, params)
+        cursor.execute(statement, params)
         self._conn.commit()
         return cursor
+
+    def _execute_resilient(self, statement: str, params: tuple):
+        """mysql only: survive a Galera ``wait_timeout`` idle-closed connection.
+
+        The production ledger holds one long-lived connection; Galera silently
+        drops it after ``wait_timeout`` of idle, so the next webhook/status request
+        would surface as ``OperationalError(2006)`` / ``InterfaceError`` → HTTP 500.
+
+        Two complementary layers (one alone is insufficient):
+          * W-1 — ``ping(reconnect=True)`` revives an idle-closed socket in place
+            before the statement, preserving ``self._conn`` identity and its
+            autocommit/charset settings.
+          * W-2 — if the socket still dies between the ping and the statement
+            (TOCTOU), reconnect and retry exactly once; a second consecutive
+            death is a real outage and raises ``LedgerConnectionError`` (a clear
+            5xx body, never a silent success).
+
+        A per-request connection is deliberately NOT used — the injected
+        long-lived-connection contract and Galera connection cost are respected.
+        ``wait_timeout`` itself is a DB/platform setting and is never touched here;
+        the code adapts to it. Real SQL errors are never retried or masked.
+        """
+        # W-1: revive an idle wait_timeout-closed socket before use.
+        try:
+            self._conn.ping(reconnect=True)
+        except Exception as exc:  # server unreachable at ping time
+            raise LedgerConnectionError(
+                f"ingest ledger DB unreachable (ping/reconnect failed): {exc}"
+            ) from exc
+
+        try:
+            return self._run(statement, params)
+        except _STALE_CONN_ERRORS as exc:
+            if not _is_stale_connection_error(exc):
+                raise  # a real SQL/operational error — surface it unchanged
+
+        # W-2: the connection died between the ping and the statement. Reconnect
+        # and retry exactly once (never an unbounded retry loop).
+        try:
+            self._conn.ping(reconnect=True)
+        except Exception as exc:
+            raise LedgerConnectionError(
+                f"ingest ledger DB unreachable on reconnect: {exc}"
+            ) from exc
+        try:
+            return self._run(statement, params)
+        except _STALE_CONN_ERRORS as exc:
+            if not _is_stale_connection_error(exc):
+                raise  # a real SQL error on retry — surface it unchanged
+            raise LedgerConnectionError(
+                "ingest ledger DB connection unavailable after reconnect and one "
+                f"retry: {exc}"
+            ) from exc
 
     def _fetch_row(self, epoch: str, category: str, manifest_sha: str):
         cursor = self._execute(

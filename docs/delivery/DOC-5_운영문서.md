@@ -17,7 +17,7 @@
 
 - **서빙(backend)**: `jw-market-backend-api` (ns `llmops`, HPA min 2 / max 8, ClusterIP svc `jw-market-backend-api-service` :80 → :8000). 사용자 요청은 여기로만 들어온다. 데이터 적재/배치는 서빙과 **프로세스·Pod·엔드포인트를 공유하지 않는다**(설계 원칙).
 - **데이터 파이프라인(배치)**: ns `llmops`의 CronJob·Job 군. mart DB `jw_mart_d2_stage_20260630_r2`(MariaDB Galera `galera-mariadb-galera`)에 적재한다.
-- **월간 체인**: `cache → forecast → strength → shortlong → events → elements`. 단일 진입점 `python -m pipeline.orchestrator run --mode full`. 상세 절차는 `RUNBOOK_MONTHLY.md`가 정본.
+- **월간 post-mart 체인**: `cache → forecast → strength → shortlong → events → elements`. 단일 진입점 `python -m pipeline.orchestrator run --mode full`. 이 명령은 raw source를 mart로 재적재하지 않으며, mart 갱신 뒤 후처리만 수행한다. 상세 절차는 `RUNBOOK_MONTHLY.md`가 정본.
 - **사이트(입력)**: `jw-data-portal`(입력·업로드, `v0.6.0-8ca9d98`), 별도 Deployment. 증분 훅(3절)이 이 사이트의 제출 확정(webhook)을 받는다 — **배포·기동됨(리허설 격리 모드), 실적재 미전환**.
 
 운영자가 알아야 할 두 축: **(A) 정기 전체 재적재(월간/분기, 2절)**와 **(B) 증분 적재 훅(3절, 배포·기동됨 — 리허설 격리 모드로 실 mart 미반영)**. 라이브로 도는 것은 (A)와 그 부속 CronJob들, 그리고 (B)의 트리거 서비스(`jw-ingest-hook`)·sweep CronJob이다. (B)의 실적재 전환(리허설 env 해제)은 PL 게이트로 남아 있다(3-5절).
@@ -54,6 +54,25 @@
 - **증분(신규 브랜드 N개)**: `python -m pipeline.orchestrator run --mode incremental --dry-run` → 확인 후 `--dry-run` 없이. cache·elements는 커버리지 차집합으로 신규 brand_key만, strength·shortlong은 hash로 무변경 skip. forecast·events는 브랜드 단위 증분 없음(epoch 변경 시 전량).
 - **부분 재생성(특정 계열)**: `python -m pipeline.orchestrator run --stages strength`. 선행 산출이 stale이면 경고 후 중단하며, 우회는 `--force`(로그·state에 기록됨).
 - **mart 세대(DB) 교체**: `pipeline/scripts/utils/mart_config.py`의 `DEFAULT_MART_DB_NAME` 수정 → `pytest tests/deploy/test_mart_db_single_source.py`가 남은 고정 사본을 파일:줄로 열거 → 같은 커밋에서 일괄 갱신. manifest의 `test "$VAR" = "..."` guard는 의도된 fail-closed 이중기입이므로 삭제 금지.
+
+### 2-2-1. raw source → mart 전체 재현 리허설 (운영 무접촉)
+
+`run --mode full`과 전체 재적재를 혼동하지 않는다. 전자는 post-mart 체인이고, raw source부터의 R-1 재현은 별도 진입점이다.
+
+```bash
+python -m pipeline.orchestrator rehearse-full \
+  --input-manifest /path/to/r1-inputs.json \
+  --target-db jw_mart_rehearsal_<run-id> \
+  --cache-db jw_mart_s6_rehearsal_<run-id> \
+  --source-db jw_mart_d2_stage_20260630_r2 \
+  --work-dir /tmp/r1-<run-id> \
+  --dry-run
+```
+
+- input manifest v1은 `ubist_source_dir`, `iqvia_source_dir`, `mi_master`를 모두 명시한다. 누락·빈 디렉터리·지원하지 않는 파일 형식은 DB 연결 전에 실패한다.
+- mart schema는 `jw_mart_rehearsal_`, cache schema는 `jw_mart_s6_rehearsal_` 접두만 허용한다. 두 schema는 분리되며 publish/RENAME 단계가 없다.
+- `--dry-run`은 명령 계획만 JSON으로 출력하고 work directory와 DB를 만들지 않는다.
+- dry-run 이후 실제 실행은 격리 DB write다. 운영 mart와의 전수 대조 및 R-1 게이트가 통과하기 전에는 "전체 재적재 재현 완료"로 보고하지 않는다.
 
 ### 2-3. 상시 CronJob 운영 표 (ns `llmops`, 실측 2026-07-17)
 

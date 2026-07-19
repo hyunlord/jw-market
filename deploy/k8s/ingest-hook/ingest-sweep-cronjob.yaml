@@ -26,7 +26,7 @@ spec:
             cloud.google.com/gke-nodepool: knp-jw-agn-dev-genos-api-01
           containers:
             - name: sweep
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:717014ae78bf3091e182ed0158fc9ff3618233b60fd76afc15457d4eba3b189d
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6577ae5c8dafd594f111d9488679719d9a2ac53c779e4ecc848cef6f3ca9fefb
               imagePullPolicy: IfNotPresent
               command:
                 - python
@@ -36,25 +36,12 @@ spec:
                 # J5: sweep-launched Jobs stage real-load output here (refresh skipped).
                 - name: INGEST_LOAD_STAGING_ROOT
                   value: /tmp/ingest-load-staging
-                - name: INGEST_S3_BUCKET
-                  valueFrom:
-                    secretKeyRef:
-                      name: jw-data-portal-secrets
-                      key: MINIO_MARKET_BUCKET
-                - name: MINIO_ENDPOINT
-                  value: "http://minio.llmops.svc.cluster.local:9000"
-                - name: MINIO_REGION
-                  value: "us-east-1"
-                - name: MINIO_ACCESS_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: jw-ingest-hook-minio   # read-only user; portal creds are write-only
-                      key: MINIO_ACCESS_KEY
-                - name: MINIO_SECRET_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: jw-ingest-hook-minio
-                      key: MINIO_SECRET_KEY
+                - name: INGEST_INPUT_BACKEND
+                  value: local
+                - name: INGEST_INPUT_ROOT
+                  value: /nfs-root/autoIngestion
+                - name: INGEST_JOB_IMAGE
+                  value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:6577ae5c8dafd594f111d9488679719d9a2ac53c779e4ecc848cef6f3ca9fefb
                 - name: MARIADB_HOST
                   value: llmops-mariadb-service.llmops.svc.cluster.local
                 - name: MARIADB_PORT
@@ -78,3 +65,12 @@ spec:
                 limits:
                   cpu: 500m
                   memory: 512Mi
+              volumeMounts:
+                - name: ingest-input
+                  mountPath: /nfs-root/autoIngestion
+                  subPath: autoIngestion
+                  readOnly: true
+          volumes:
+            - name: ingest-input
+              persistentVolumeClaim:
+                claimName: llmops-nfs-root

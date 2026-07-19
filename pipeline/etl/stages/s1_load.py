@@ -24,6 +24,7 @@ def _run_ubist(params: dict[str, Any]) -> int:
     dry = bool(params.get("dry_run"))
     incremental = bool(params.get("incremental"))
     file_arg = params.get("file")
+    source_dir = Path(str(params["ubist_source_dir"])) if params.get("ubist_source_dir") else None
     try:
         if incremental:
             stats = run_incremental_ubist_load(
@@ -53,15 +54,26 @@ def _run_ubist(params: dict[str, Any]) -> int:
             print(f"[{STAGE}] UBIST dry-run 완료 files={len(paths)}")
             return 0
 
-        if not file_arg:
+        if not file_arg and source_dir is None:
             print(f"[{STAGE}] UBIST 실패: non-dry UBIST requires --file to avoid full reload")
             return 2
+
+        paths = None
+        if source_dir is not None:
+            paths = sorted(
+                path.resolve()
+                for path in source_dir.rglob("*.xlsx")
+                if path.is_file() and not path.name.startswith("~$")
+            )
+            if not paths:
+                raise FileNotFoundError(f"no UBIST xlsx files under {source_dir}")
 
         stats = run_ubist_load(
             target=target,
             mode=mode,
-            truncate=False,
-            file=Path(str(file_arg)),
+            truncate=True,
+            paths=paths,
+            file=Path(str(file_arg)) if file_arg else None,
             all_sources=False,
         )
     except Exception as exc:
@@ -80,10 +92,22 @@ def _run_iqvia(params: dict[str, Any]) -> int:
     dry = bool(params.get("dry_run"))
     batch_size = int(params.get("batch_size") or 10000)
     record_parquet_dir = Path(params["record_parquet_dir"]) if params.get("record_parquet_dir") else Path("/tmp/iqvia_record_parquet_s1")
+    nsa_parquet_dir = Path(params["iqvia_nsa_dir"]) if params.get("iqvia_nsa_dir") else None
     source_db = params.get("source_db") or "jw_mart"
     file_arg = params.get("file")
+    source_dir = Path(str(params["iqvia_source_dir"])) if params.get("iqvia_source_dir") else None
     try:
-        if file_arg and (params.get("source") == "iqvia" or "IQVIA" in Path(str(file_arg)).parts):
+        if source_dir is not None:
+            files = sorted(
+                path.resolve()
+                for path in source_dir.rglob("*")
+                if path.is_file()
+                and not path.name.startswith(("~$", "._"))
+                and path.suffix.lower() in {".csv", ".xls", ".xlsx"}
+            )
+            if not files:
+                raise FileNotFoundError(f"no IQVIA source files under {source_dir}")
+        elif file_arg and (params.get("source") == "iqvia" or "IQVIA" in Path(str(file_arg)).parts):
             files = [Path(str(file_arg)).resolve()]
         else:
             files = iqvia_loader.discover_files()
@@ -96,6 +120,8 @@ def _run_iqvia(params: dict[str, Any]) -> int:
             return 2
 
         iqvia_loader.init_target_schema(str(target_db), str(source_db))
+        if nsa_parquet_dir is not None:
+            iqvia_loader.materialize_iqvia_nsa_parquet(files, nsa_parquet_dir)
         written = iqvia_loader.materialize_record_parquet(
             files,
             record_parquet_dir,
@@ -128,6 +154,7 @@ def run(params: dict[str, Any]) -> int:
         source in {"ubist", "all"}
         and not params.get("dry_run")
         and not params.get("file")
+        and not params.get("ubist_source_dir")
         and not params.get("incremental")
     ):
         print(f"[{STAGE}] 실패: non-dry UBIST requires --file to avoid full reload")

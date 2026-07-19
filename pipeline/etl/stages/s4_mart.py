@@ -6,6 +6,7 @@ from typing import Any
 
 import pymysql
 
+from pipeline.etl.isolation import validate_mart_schema_pair
 from pipeline.etl.lib.ops_utils import find_project_root, first_existing
 
 
@@ -101,9 +102,11 @@ def _admin_connect(env: dict[str, str]) -> pymysql.connections.Connection:
     )
 
 
+_validate_schema_pair = validate_mart_schema_pair
+
+
 def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
-    if target_db in {"jw_mart", source_db}:
-        raise ValueError(f"refusing to write s4 mart into operating/source DB: {target_db}")
+    _validate_schema_pair(target_db, source_db)
     env = _env()
     conn = _admin_connect(env)
     try:
