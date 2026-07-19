@@ -105,6 +105,8 @@ def test_cache_cronjobs_maintain_then_warm_the_expected_service() -> None:
         assert "key: mariadb-password" in manifest
         assert "name: DB_NAME" in manifest
         assert "jw_mart_d2_stage_20260630_r2" in manifest
+        assert "pipeline.scripts.deploy.backend_image_rollout" in manifest
+        assert "same immutable digest" in manifest
 
 
 def test_catalog_warm_set_covers_all_25_brands_and_168_strategic_variants() -> None:

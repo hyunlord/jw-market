@@ -327,7 +327,7 @@ web/
 
 ### 5.2 백엔드 API 배포 흐름
 
-메모리 기록 기준 관행: ops VM amd64 빌드 → AR push → test2(`jw-market-backend-api-test`)에서 검증 → 운영 승격은 generation CAS(gen 번호 확인 후 교체). **repo 워크트리에 백엔드 이미지 승격 자동화 스크립트는 없음이 확인됐다**(2026-07-18 grep; `pipeline/scripts/deploy/`의 스크립트는 캐시 blue-green `analysis_cache_blue_green.py`·mart dimension 승격 `filter_dimension_promote.py` 등 **데이터/캐시** 승격 전용이지 백엔드 이미지 승격이 아니다). 즉 백엔드 이미지 승격은 **GenOS 운영 UI/플랫폼 경로**(코드 밖)로 수행된다. GenOS 측 정확한 승격 커맨드·절차는 플랫폼 소관 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)(근거: `evidence/openq_resolution_20260718.md` Q-6).
+백엔드 이미지는 ops VM amd64 빌드 → AR push → test2(`jw-market-backend-api-test`) 검증 → 운영 generation CAS 순으로 승격한다. 승격 정본은 `python3 -m pipeline.scripts.deploy.backend_image_rollout`이며, Deployment와 대응 `dynamic-market-cache-warm` CronJob을 동일 불변 digest로 갱신하고 실제 Ready pod `status.containerStatuses[].imageID`·git blob byte hash·annotated ops tag까지 검증한다. 직접 `kubectl set image`나 가변 태그 배포는 금지한다. 상세 절차는 [market_backend_release.md](../runbooks/market_backend_release.md) 참조.
 
 ### 5.3 mart DB 세대 교체(RUNBOOK §4)
 

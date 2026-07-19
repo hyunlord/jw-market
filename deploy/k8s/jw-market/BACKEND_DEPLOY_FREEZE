@@ -1,0 +1,8 @@
+Market backend deployment freeze is active.
+
+Do not deploy prod, test2, dynamic-market-cache-warm, or any workload that uses
+the jw-market backend image. The canonical backend_image_rollout entry point
+refuses to run while this marker exists.
+
+Remove this marker only in a reviewed commit after an explicit jw market resume
+notice confirms that cache drift investigation and the new baseline are complete.

@@ -168,8 +168,11 @@ jw-data-input(사이트) "제출 확정"
 ### 4-4. backend 롤백 (이미지 digest 교체)
 
 - backend는 digest-pin 이미지로 배포된다(운영 gen 302, 이미지 `jw-market-backend-api@sha256:d5e2…cd66`(deployment 실측); APP_VERSION `ad782bc0`).
-- 롤백은 배포 매니페스트의 이미지 digest를 이전 정상 digest로 교체 → `kubectl -n llmops set image deployment/jw-market-backend-api ...` 또는 `kubectl rollout undo deployment/jw-market-backend-api`.
-- 검증: `GET /api/health`의 `version` 필드가 목표 커밋(APP_VERSION)과 일치하는지 대조(§6).
+- backend Deployment와 `dynamic-market-cache-warm` CronJob은 **항상 하나의 release set**으로 같은 불변 digest를 배포한다. test2도 `jw-market-backend-api-test` + `dynamic-market-cache-warm-test2`를 같은 방식으로 묶는다.
+- 직접 `kubectl set image`/`rollout undo`를 실행하지 않는다. 정본 엔트리포인트 `python3 -m pipeline.scripts.deploy.backend_image_rollout`만 사용하며, 실패 시 두 리소스의 직전 digest를 각각 복구한다([market_backend_release.md](../runbooks/market_backend_release.md)).
+- 검증: 최종 rollout 후 `generation == observedGeneration`, Ready/available 전수, restart0을 확인하고 **pod `status.containerStatuses[].imageID`**가 목표 digest인지 대조한다. `spec.image`는 선언일 뿐 실행체 증거가 아니다.
+- 커밋 정체성은 env `APP_VERSION`을 신뢰하지 않고, 변경된 서빙 파일의 pod 내부 sha256을 `git <commit>` blob sha256과 전 pod에서 대조한다.
+- 성공 배포마다 annotated tag `ops/market-<gen>-<sha>-<YYYYMMDD>`를 만들고 메시지에 전체 image digest를 기록·push한다. 태그 실패도 배포 실패로 처리한다.
 - ★ `api/Dockerfile` 및 보호 blob은 수정 금지(계약 테스트가 sha256 pin). agent3 Job도 같은 backend 이미지 계보를 쓰므로 롤백 시 rev pin(`AGENT3_WORKFLOW_REV=5692`) 정합을 함께 확인한다.
 
 ---
