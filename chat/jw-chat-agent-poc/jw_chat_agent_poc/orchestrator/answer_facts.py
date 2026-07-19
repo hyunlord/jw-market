@@ -540,12 +540,16 @@ def _is_direct_brand_metric(data: dict[str, Any]) -> bool:
     """Return whether direct metric facts must be echoed in the answer."""
 
     metric = str(data.get("metric") or "")
-    if metric not in {"sales", "market_share", "share", "rank"}:
-        return False
-    return any(
-        data.get(key) not in (None, "")
-        for key in ("sales_억원", "sales_krw", "ms_recent_pct", "market_share", "rank")
-    )
+    fields_by_metric = {
+        "sales": ("sales_억원", "sales_krw"),
+        "market_share": ("ms_recent_pct", "market_share"),
+        "share": ("ms_recent_pct", "market_share"),
+        "rank": ("rank",),
+        "momentum": ("momentum_score",),
+        "ei": ("ei",),
+    }
+    fields = fields_by_metric.get(metric, ())
+    return bool(fields) and any(data.get(key) not in (None, "") for key in fields)
 
 
 def _required_market_member_metric(data: dict[str, Any], brand: str) -> str:
@@ -668,7 +672,10 @@ def _required_single_brand_focus_metric(data: dict[str, Any], brand: str) -> str
     share = pct_value(data.get("ms_recent_pct") or data.get("market_share"))
     rank = rank_value(data.get("rank"), data.get("total_brands_in_market"))
     rank_label = f"{rank}위" if rank and "/" not in rank else rank
-    if not any((sales, share, rank_label)):
+    metric = str(data.get("metric") or "")
+    momentum = number_value(data.get("momentum_score")) if metric == "momentum" else ""
+    ei = number_value(data.get("ei")) if metric == "ei" else ""
+    if not any((sales, share, rank_label, momentum, ei)):
         return ""
     period_label = _metric_period_label(data, period)
     parts = [
@@ -676,6 +683,8 @@ def _required_single_brand_focus_metric(data: dict[str, Any], brand: str) -> str
         f"매출 {sales}" if sales else "",
         f"시장점유율 {share}" if share else "",
         f"순위 {rank_label}" if rank_label else "",
+        f"Momentum {momentum}" if momentum else "",
+        f"EI {ei}" if ei else "",
     ]
     return " ".join(part for part in parts if part)
 
@@ -1254,6 +1263,8 @@ def _metric_facts(
     _append_surfaceable_cagr(rows, "시장 CAGR", "market_cagr_5y_pct", data)
     _append_surfaceable_cagr(rows, "Excess growth", "excess_growth_pct", data)
     _append(rows, "HHI", number_value(data.get("hhi_recent", data.get("hhi"))))
+    _append(rows, "Momentum", number_value(data.get("momentum_score")))
+    _append(rows, "EI", number_value(data.get("ei")))
     _append(rows, "기준 매출", eok_value(data.get("from_sales_억원"), data.get("from_sales_krw")))
     _append(rows, "비교 매출", eok_value(data.get("to_sales_억원"), data.get("to_sales_krw")))
     _append(rows, "매출 변화", eok_value(data.get("sales_delta_억원"), data.get("sales_delta_krw")))

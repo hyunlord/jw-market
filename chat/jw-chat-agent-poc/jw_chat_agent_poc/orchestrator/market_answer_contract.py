@@ -87,6 +87,14 @@ def market_ambiguity_message(brand: str, markets: Sequence[str]) -> str:
     return f"{brand}는 {labels} 여러 시장에 속합니다. 어느 시장 기준으로 볼지 지정해 주세요."
 
 
+def render_same_market_sales_answer(tool_calls: Sequence[Mapping[str, Any]]) -> str:
+    """Render a verified same-market total from structured market-scope evidence."""
+
+    return _brand_market_size_from_calls(
+        tuple(call for call in tool_calls if isinstance(call, Mapping))
+    )
+
+
 def _strategy_market_size_postcheck(
     question: str,
     calls: Sequence[Mapping[str, Any]],
@@ -261,6 +269,10 @@ def _brand_market_size_answer(question: str, calls: Sequence[Mapping[str, Any]])
         r"\bml_\d+\b", question, re.IGNORECASE
     ):
         return ""
+    return _brand_market_size_from_calls(calls)
+
+
+def _brand_market_size_from_calls(calls: Sequence[Mapping[str, Any]]) -> str:
     for call in calls:
         data = _render_data(call)
         view = str(data.get("view_type") or data.get("view") or "").lower()

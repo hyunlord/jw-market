@@ -272,8 +272,13 @@ def _ensure_trend_prose_fail_closed(question: str, markdown: str, trend_fact_md:
 
 
 def _ensure_direct_metric_fact_answer(question: str, markdown: str, fact_md: str) -> str:
-    """Keep direct share/rank questions from drifting into adjacent trend commentary."""
-    if not any(token in question for token in ("점유율", "순위", "시장규모", "시장 규모")):
+    """Keep direct metric questions from drifting into adjacent trend commentary."""
+    compact_question = question.casefold()
+    wants_momentum = "momentum" in compact_question or "모멘텀" in question
+    wants_ei = re.search(r"(?<![a-z0-9_])ei(?![a-z0-9_])", compact_question) is not None
+    if not any(token in question for token in ("점유율", "순위", "시장규모", "시장 규모")) and not (
+        wants_momentum or wants_ei
+    ):
         return markdown
     fact = _direct_metric_fact(fact_md)
     if not fact:
@@ -281,13 +286,17 @@ def _ensure_direct_metric_fact_answer(question: str, markdown: str, fact_md: str
     share = fact.get("시장점유율", "")
     rank = fact.get("순위", "")
     market_size = fact.get("시장규모", "")
+    momentum = fact.get("Momentum", "")
+    ei = fact.get("EI", "")
     needs_share = "점유율" in question and bool(share) and share not in markdown
     needs_rank = "순위" in question and bool(rank) and rank not in markdown
     needs_market_size = any(token in question for token in ("시장규모", "시장 규모")) and bool(market_size) and market_size not in markdown
-    if not (needs_share or needs_rank or needs_market_size):
+    needs_momentum = wants_momentum and bool(momentum) and not ("Momentum" in markdown and momentum in markdown)
+    needs_ei = wants_ei and bool(ei) and not ("EI" in markdown and ei in markdown)
+    if not (needs_share or needs_rank or needs_market_size or needs_momentum or needs_ei):
         return markdown
     brand = fact.get("브랜드/시장", "해당 브랜드")
-    period = fact.get("기간", "최신")
+    period = fact.get("기간") or fact.get("사용 가능한 최신 기준") or "최신"
     if needs_market_size:
         line = f"시장 전체는 {period} 기준 시장규모 {market_size}입니다."
         return cleanup_markdown_answer(_insert_before_first_table(markdown, line))
@@ -297,6 +306,10 @@ def _ensure_direct_metric_fact_answer(question: str, markdown: str, fact_md: str
         metrics.append(f"시장점유율 {share}")
     if rank:
         metrics.append(f"순위 {rank}")
+    if wants_momentum and momentum:
+        metrics.append(f"Momentum {momentum}")
+    if wants_ei and ei:
+        metrics.append(f"EI {ei}")
     if not metrics:
         return markdown
     line = f"{parts[0]} {', '.join(metrics)}입니다."
@@ -318,7 +331,7 @@ def _direct_metric_fact(fact_md: str) -> dict[str, str]:
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
         if len(cells) >= 2 and cells[0] and cells[1] and cells[0] != "항목":
             rows[cells[0]] = cells[1]
-    if rows.get("시장점유율") or rows.get("순위") or rows.get("시장규모"):
+    if any(rows.get(label) for label in ("시장점유율", "순위", "시장규모", "Momentum", "EI")):
         return rows
     return {}
 

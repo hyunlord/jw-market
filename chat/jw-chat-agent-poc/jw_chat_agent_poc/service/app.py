@@ -50,7 +50,10 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
     parse_deep_research_request,
 )
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
-from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+from jw_chat_agent_poc.orchestrator.market_answer_contract import (
+    enforce_market_answer_contract,
+    render_same_market_sales_answer,
+)
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
@@ -2494,7 +2497,12 @@ def _compute_mixed_final_answer(
 
 def _deterministic_simple_market_answer(question: str, result: dict) -> str:
     normalized = re.sub(r"\s+", " ", question).strip()
-    if not re.search(r"시장\s*규모", normalized):
+    decomposition = result.get("decomposition")
+    same_market_sales = isinstance(decomposition, list) and any(
+        isinstance(item, dict) and item.get("intent") == "same_market_sales"
+        for item in decomposition
+    )
+    if not same_market_sales and not re.search(r"시장\s*규모", normalized):
         return ""
     if any(
         token in normalized
@@ -2504,7 +2512,17 @@ def _deterministic_simple_market_answer(question: str, result: dict) -> str:
     calls = result.get("tool_calls")
     if not isinstance(calls, list):
         return ""
-    contracted = enforce_market_answer_contract(normalized, "", calls).strip()
+    if same_market_sales:
+        markdown_response = result.get("markdown_response")
+        deterministic_markdown = (
+            str(markdown_response.get("markdown") or "")
+            if isinstance(markdown_response, dict)
+            else ""
+        )
+        contracted = deterministic_markdown or render_same_market_sales_answer(calls)
+    else:
+        contracted = enforce_market_answer_contract(normalized, "", calls)
+    contracted = contracted.strip()
     if "시장규모" not in contracted and "지원되지 않는 시장 매핑" not in contracted:
         return ""
     return contracted

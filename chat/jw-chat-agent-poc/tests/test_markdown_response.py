@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from decimal import Decimal
 
+import pytest
 import requests
 
 from jw_chat_agent_poc import ChatAgent
@@ -2413,6 +2414,49 @@ def test_direct_market_size_question_preserves_market_total() -> None:
     revised = _ensure_direct_metric_fact_answer("리바로젯 시장 규모 얼마나 돼", answer, fact_md)
 
     assert "시장 전체는 2026-04 기준 시장규모 2,256.77억원입니다." in revised
+
+
+@pytest.mark.parametrize(
+    ("question", "metric", "field", "value", "label", "rendered"),
+    (
+        ("리바로 Momentum", "momentum", "momentum_score", 1.2345, "Momentum", "1.2345"),
+        ("리바로 EI", "ei", "ei", 0.8765, "EI", "0.8765"),
+    ),
+)
+def test_direct_derived_metric_answer_preserves_requested_scalar(
+    question: str,
+    metric: str,
+    field: str,
+    value: float,
+    label: str,
+    rendered: str,
+) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="리바로",
+        calls=[
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "리바로",
+                    "metric": metric,
+                    "period": "2026-05",
+                    field: value,
+                },
+            }
+        ],
+        sources=["UBIST"],
+    )
+
+    assert f"| {label} | {rendered} |" in response.fact_md
+
+    revised = _ensure_direct_metric_fact_answer(
+        question,
+        "리바로의 경쟁 구도를 확인했습니다.",
+        response.fact_md,
+    )
+
+    assert revised.startswith(f"리바로는 2026-05 기준 {label} {rendered}입니다.")
 
 
 def test_ensure_trend_key_period_table_when_prose_mentions_periods_without_table() -> None:

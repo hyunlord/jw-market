@@ -2773,6 +2773,42 @@ def test_stream_endpoint_market_scope_paraphrases_share_one_fast_path(
     assert FakeAgent.calls == []
 
 
+def test_structured_same_market_sales_intent_closes_without_llm() -> None:
+    result = {
+        "decomposition": [
+            {
+                "intent": "same_market_sales",
+                "view_type": "market_landscape",
+            }
+        ],
+        "tool_calls": [
+            {
+                "tool": "market_scope",
+                "source": "UBIST",
+                "render_data": {
+                    "anchor_brand": "리바로",
+                    "brand": "리바로",
+                    "market_id": "ml_006",
+                    "view_type": "market_landscape",
+                    "view_label": "전략뷰",
+                    "period": "2026-05",
+                    "market_size_억원": 2_139.250433,
+                    "market_size_recent_krw": 213_925_043_300,
+                },
+            }
+        ],
+    }
+
+    answer = service_app._deterministic_simple_market_answer(
+        "리바로와 같은 시장 전체 매출",
+        result,
+    )
+
+    assert "리바로가 속한 전략 시장" in answer
+    assert "2026-05" in answer
+    assert "2,139.25억원" in answer
+
+
 def test_stream_endpoint_unanchored_market_size_falls_through_to_general_path() -> None:
     FakeAgent.calls = []
     app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())
