@@ -258,6 +258,46 @@ def test_trace_envelope_projects_request_child_spans() -> None:
     )
 
 
+def test_trace_envelope_projects_deterministic_conversation_resolution() -> None:
+    result = {
+        "router_diagnostics": {"mode": "tool_use_agent"},
+        "tool_calls": [],
+        "markdown_response": {"fact_md": "", "data_md": ""},
+        "_qa_conversation": {
+            "requested_question": "2024년은?",
+            "resolved_question": "리바로 2024년 매출은?",
+            "execution_question": "리바로 2024년 매출은?",
+            "history_source": "persisted",
+            "previous_slots": {
+                "anchor_brand": "리바로",
+                "metric": "매출",
+                "period": "2025",
+            },
+            "resolved_slots": {
+                "anchor_brand": "리바로",
+                "metric": "매출",
+                "period": "2024",
+            },
+            "resolution": {
+                "brand": "리바로",
+                "unresolved_reference": False,
+                "reused_ranked_brand": None,
+            },
+        },
+    }
+
+    trace = trace_envelope(
+        question="2024년은?",
+        result=result,
+        answer="리바로의 2024년 매출입니다.",
+        charts=(),
+        timing={"stages": []},
+        conversation_id="qa-multiturn-session",
+    )
+
+    assert trace["qa_trace"]["conversation"] == result["_qa_conversation"]
+
+
 def test_number_absent_from_rendered_facts_remains_ungrounded() -> None:
     markdown_response = {
         "allowed_numbers": (),

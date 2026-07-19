@@ -169,6 +169,7 @@ def _qa_trace(
             "gate": gate,
             "gate_reason": gate_reason,
         },
+        "conversation": _qa_conversation(result),
         "tools": _qa_tool_calls(result),
         "spans": _qa_spans(result),
         "claims": {
@@ -179,6 +180,25 @@ def _qa_trace(
             "disposition": disposition,
             "body_empty": not bool(answer.strip()),
         },
+    }
+
+
+def _qa_conversation(result: Mapping[str, Any]) -> dict[str, Any]:
+    value = result.get("_qa_conversation")
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if key in {
+            "requested_question",
+            "resolved_question",
+            "execution_question",
+            "history_source",
+            "previous_slots",
+            "resolved_slots",
+            "resolution",
+        }
     }
 
 

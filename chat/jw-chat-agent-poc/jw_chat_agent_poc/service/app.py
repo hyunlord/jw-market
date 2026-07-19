@@ -82,7 +82,13 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
-from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationStore, ConversationTurn, PendingClarification
+from jw_chat_agent_poc.service.conversation import (
+    ConversationSlots,
+    ConversationStore,
+    ConversationTurn,
+    PendingClarification,
+    conversation_slots_to_dict,
+)
 from jw_chat_agent_poc.service.conversation_context import (
     extract_conversation_slots,
     requires_previous_turn,
@@ -549,8 +555,10 @@ def _answer_question(
         effective_question = deep_request.question
         with trace_span("conversation_state_load", "in-memory conversation state lookup"):
             state = store.conversations.get_or_create(conversation_id)
+        history_source = "memory" if state.turns else "none"
         if conversation_id and not state.turns and requires_previous_turn(effective_question):
-            _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id)
+            if _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id):
+                history_source = "persisted"
             with trace_span("conversation_state_reload", "state lookup after persisted history hydration"):
                 state = store.conversations.get_or_create(state.conversation_id)
         provided_file = _has_file_signal(documents, file_context)
@@ -795,13 +803,31 @@ def _answer_question(
             result = {**result, "router_diagnostics": diagnostics}
         result = _attach_file_context(result, delegated_file_context, file_source_items)
         result = _annotate_context_scope(result, context_scope)
+        resolved_slots = extract_conversation_slots(result)
+        result["_qa_conversation"] = {
+            "requested_question": effective_question,
+            "resolved_question": routing_question,
+            "execution_question": str(result.get("effective_question") or routing_question),
+            "history_source": history_source,
+            "previous_slots": _conversation_trace_slots(previous_turn.slots if previous_turn else None),
+            "resolved_slots": _conversation_trace_slots(resolved_slots),
+            "resolution": {
+                "brand": routing_resolution.brand,
+                "unresolved_reference": routing_resolution.unresolved_reference,
+                "reused_ranked_brand": (
+                    routing_resolution.reusable_ranked.brand
+                    if routing_resolution.reusable_ranked is not None
+                    else None
+                ),
+            },
+        }
         with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
             store.conversations.record_exchange(
                 state.conversation_id,
                 question,
                 str(result.get("answer") or ""),
                 _applied_filters(result),
-                slots=extract_conversation_slots(result),
+                slots=resolved_slots,
             )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
 
@@ -810,18 +836,18 @@ def _hydrate_latest_conversation_turn(
     store: SessionStore,
     history_store: ConversationHistoryStore | None,
     conversation_id: str,
-) -> None:
+) -> bool:
     latest_turn = getattr(history_store, "latest_turn", None)
     if not callable(latest_turn):
-        return
+        return False
     try:
         with trace_span("conversation_history_fetch", "fetch latest persisted conversation turn"):
             turn = latest_turn(conversation_id)
     except Exception as exc:
         LOGGER.warning("conversation history hydration failed error_type=%s", type(exc).__name__)
-        return
+        return False
     if not isinstance(turn, ConversationTurn):
-        return
+        return False
     with trace_span("conversation_history_replay", "restore persisted turn into request state"):
         store.conversations.record_exchange(
             conversation_id,
@@ -830,6 +856,31 @@ def _hydrate_latest_conversation_turn(
             turn.applied_filters,
             slots=turn.slots,
         )
+    return True
+
+
+def _conversation_trace_slots(slots: ConversationSlots | None) -> dict[str, Any]:
+    if slots is None:
+        return {}
+    payload = conversation_slots_to_dict(slots)
+    return {
+        key: payload.get(key)
+        for key in (
+            "anchor_brand",
+            "market",
+            "market_definition",
+            "period",
+            "metric",
+            "view",
+            "result_ref",
+            "ranked_brands",
+            "file_name",
+            "file_measure",
+            "file_manufacturer",
+            "file_sheet",
+        )
+        if payload.get(key) not in (None, "", [], {})
+    }
 
 
 def _answer_mixed_parallel(

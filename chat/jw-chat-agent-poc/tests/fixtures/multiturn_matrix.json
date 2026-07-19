@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "repeats": 3,
+  "scenarios": [
+    {
+      "id": "MT-01",
+      "name": "period_inheritance",
+      "turns": [
+        {
+          "question": "리바로 분기 매출",
+          "expected": {
+            "slots": {"anchor_brand": ["리바로"], "metric": ["매출", "sales", "raw_value"]},
+            "answer_contains": ["리바로"],
+            "disposition": "answered"
+          }
+        },
+        {
+          "question": "2024년은?",
+          "expected": {
+            "resolved_question_contains": ["리바로", "2024년", "매출"],
+            "slots": {"anchor_brand": ["리바로"], "metric": ["매출", "sales", "raw_value"], "period": ["2024"]},
+            "answer_contains": ["리바로", "2024"],
+            "answer_excludes": ["알츠하이머", "펩타이드", "IPO"],
+            "disposition": "answered"
+          }
+        },
+        {
+          "question": "그 전 해는?",
+          "expected": {
+            "resolved_question_contains": ["리바로", "2023년", "매출"],
+            "slots": {"anchor_brand": ["리바로"], "metric": ["매출", "sales", "raw_value"], "period": ["2023"]},
+            "answer_contains": ["리바로", "2023"],
+            "answer_excludes": ["알츠하이머", "펩타이드", "IPO"],
+            "disposition": "answered"
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-02",
+      "name": "ranked_anaphora",
+      "turns": [
+        {
+          "question": "고지혈증 시장 상위 5개",
+          "expected": {"answer_contains": ["로수젯"], "disposition": "answered"}
+        },
+        {
+          "question": "그중 1위 점유율은?",
+          "expected": {
+            "resolved_question_contains": ["로수젯", "점유율"],
+            "slots": {"anchor_brand": ["로수젯"], "metric": ["점유율", "share", "series"]},
+            "answer_contains": ["로수젯"],
+            "disposition": "answered"
+          }
+        },
+        {
+          "question": "걔 최근 추세는?",
+          "expected": {
+            "resolved_question_contains": ["로수젯", "추세"],
+            "slots": {"anchor_brand": ["로수젯"]},
+            "answer_contains": ["로수젯"],
+            "disposition": "answered"
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-03",
+      "name": "brand_switch",
+      "turns": [
+        {
+          "question": "리바로 매출",
+          "expected": {"slots": {"anchor_brand": ["리바로"], "metric": ["매출", "sales", "raw_value"]}, "answer_contains": ["리바로"], "disposition": "answered"}
+        },
+        {
+          "question": "리바로젯은?",
+          "expected": {
+            "resolved_question_contains": ["리바로젯", "매출"],
+            "slots": {"anchor_brand": ["리바로젯"], "metric": ["매출", "sales", "raw_value"]},
+            "answer_contains": ["리바로젯"],
+            "disposition": "answered"
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-04",
+      "name": "market_context",
+      "turns": [
+        {
+          "question": "고지혈증 시장 HHI",
+          "expected": {"slots": {"market": ["고지혈증", "ml_006", "strategy_006"]}, "answer_contains": ["HHI"], "disposition": "answered"}
+        },
+        {
+          "question": "시장 규모는?",
+          "expected": {
+            "resolved_question_contains": ["고지혈증", "시장 규모"],
+            "slots": {"market": ["고지혈증", "ml_006", "strategy_006"]},
+            "answer_excludes": ["어느 시장"],
+            "disposition": "answered"
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-05",
+      "name": "view_switch",
+      "turns": [
+        {
+          "question": "리바로 시장 규모를 전략뷰로 알려줘",
+          "expected": {"slots": {"anchor_brand": ["리바로"], "view": ["strategic", "market_landscape", "ml_006"]}, "answer_contains": ["전략"], "disposition": "answered"}
+        },
+        {
+          "question": "일반뷰로는?",
+          "expected": {
+            "resolved_question_contains": ["리바로", "시장 규모", "일반뷰"],
+            "slots": {"anchor_brand": ["리바로"], "view": ["general", "일반", "ATC4"]},
+            "answer_contains": ["일반뷰"],
+            "disposition": "answered"
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-06",
+      "name": "file_inheritance",
+      "file_fixture": true,
+      "turns": [
+        {
+          "question": "이 파일의 전체 매출 합계는?",
+          "expected": {"slots": {"file_name": ["small_channel.xlsx"]}, "disposition": "answered"}
+        },
+        {
+          "question": "제조사별로는?",
+          "expected": {"slots": {"file_name": ["small_channel.xlsx"]}, "answer_excludes": ["파일을 업로드"], "disposition": "answered"}
+        }
+      ]
+    },
+    {
+      "id": "MT-07",
+      "name": "membership_correction",
+      "turns": [
+        {
+          "question": "고지혈증 시장에서 마운자로 점유율",
+          "expected": {"answer_contains": ["마운자로", "고지혈증"], "disposition": "answered"}
+        },
+        {
+          "question": "비만 시장에서는?",
+          "expected": {
+            "resolved_question_contains": ["마운자로", "비만", "점유율"],
+            "slots": {"anchor_brand": ["마운자로"], "market": ["비만", "ml_003", "strategy_003"]},
+            "answer_contains": ["마운자로"],
+            "answer_excludes": ["고지혈증 시장에 속하지"],
+            "disposition": "answered"
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-08",
+      "name": "topic_switch",
+      "turns": [
+        {
+          "question": "리바로 매출",
+          "expected": {"answer_contains": ["리바로"], "disposition": "answered"}
+        },
+        {
+          "question": "안녕",
+          "expected": {"resolved_question_equals": "안녕", "answer_excludes": ["리바로 매출", "점유율"], "disposition": "answered"}
+        }
+      ]
+    },
+    {
+      "id": "MT-09",
+      "name": "failure_then_normal",
+      "turns": [
+        {
+          "question": "리바로 Cortellis 매출 알려줘",
+          "expected": {"answer_contains_any": ["확인 불가", "연결되어 있지", "조회할 수"], "answer_excludes": ["연속 상승", "연속 하락"], "disposition_any": ["unavailable", "answered"]}
+        },
+        {
+          "question": "리바로 매출 알려줘",
+          "expected": {"slots": {"anchor_brand": ["리바로"], "metric": ["매출", "sales", "raw_value"]}, "answer_contains": ["리바로"], "answer_excludes": ["Cortellis", "확인 불가"], "disposition": "answered"}
+        }
+      ]
+    }
+  ]
+}

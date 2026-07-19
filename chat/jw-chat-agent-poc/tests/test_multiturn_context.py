@@ -359,6 +359,19 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
 
     assert captured == ["가드렛 매출 추이는?"]
     assert item["result"]["conversation_interpretation"] == "가드렛의 매출 추이로 이해했어요."
+    assert item["result"]["_qa_conversation"] == {
+        "requested_question": "그럼 가드렛은?",
+        "resolved_question": "가드렛 매출 추이는?",
+        "execution_question": "가드렛 매출 추이는?",
+        "history_source": "persisted",
+        "previous_slots": {"anchor_brand": "리바로"},
+        "resolved_slots": {},
+        "resolution": {
+            "brand": "가드렛",
+            "unresolved_reference": False,
+            "reused_ranked_brand": None,
+        },
+    }
     span_names = [span["name"] for span in item["result"]["_qa_spans"]]
     assert "conversation_history_fetch" in span_names
     assert "conversation_history_replay" in span_names
