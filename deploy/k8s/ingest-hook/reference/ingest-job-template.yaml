@@ -26,7 +26,7 @@ spec:
       containers:
         - name: ingest
           # Same digest pin as the orchestrator poll CronJob — one code identity.
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:a362ceb8a60f04688917d8c73dddf63c29e22b295c6e45f1c4036424240d703a
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:fb606f176280a32437f1731b73e1e2f2c196fd9f0feddf74a2bc63bb29bed8ca
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -42,26 +42,10 @@ spec:
             # INGEST_LOAD_TARGET_ROOT under PL gate). Injected by job_launcher.
             - name: INGEST_LOAD_STAGING_ROOT
               value: /tmp/ingest-load-staging
-            # Submission set is fetched from the MinIO market bucket (S3 mode).
-            - name: INGEST_S3_BUCKET
-              valueFrom:
-                secretKeyRef:
-                  name: jw-data-portal-secrets
-                  key: MINIO_MARKET_BUCKET
-            - name: MINIO_ENDPOINT
-              value: "http://minio.llmops.svc.cluster.local:9000"
-            - name: MINIO_REGION
-              value: "us-east-1"
-            - name: MINIO_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: jw-ingest-hook-minio   # read-only user; portal creds are write-only
-                  key: MINIO_ACCESS_KEY
-            - name: MINIO_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: jw-ingest-hook-minio
-                  key: MINIO_SECRET_KEY
+            - name: INGEST_INPUT_BACKEND
+              value: local
+            - name: INGEST_INPUT_ROOT
+              value: /nfs-root/autoIngestion
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT
@@ -92,3 +76,12 @@ spec:
             limits:
               cpu: "2"
               memory: 4Gi
+          volumeMounts:
+            - name: ingest-input
+              mountPath: /nfs-root/autoIngestion
+              subPath: autoIngestion
+              readOnly: true
+      volumes:
+        - name: ingest-input
+          persistentVolumeClaim:
+            claimName: llmops-nfs-root
