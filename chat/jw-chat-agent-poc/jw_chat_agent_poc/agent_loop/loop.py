@@ -33,6 +33,7 @@ from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import add_stage, emit_completed_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.common.periods import canonical_periods
+from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.metrics import MetricsTool
@@ -403,12 +404,23 @@ class ToolUseAgent:
                     )
                 )
             with stage(timing, "compute", "deterministic deltas and comparisons"):
-                calls.extend(_calculation_calls(question, calls, brand))
+                calculation_started_at = qa_trace_started_at()
+                calculation_calls = _calculation_calls(question, calls, brand)
+                for calculation_call in calculation_calls:
+                    attach_tool_qa_trace(
+                        calculation_call,
+                        started_at=calculation_started_at,
+                        status="ok",
+                        row_count=1,
+                        cache_hit=False,
+                    )
+                calls.extend(calculation_calls)
         _mark_answer_scope(question, calls, brand)
         with stage(timing, "context_retrieval", "background issue material"):
             calls.extend(_background_context_calls(question, calls, brand, self.news))
         if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
             with stage(timing, "bq_analysis", "deterministic cross-source calculations"):
+                bq_started_at = qa_trace_started_at()
                 analysis_call = None
                 if bq_missing_sources:
                     status = "source_unavailable"
@@ -435,6 +447,13 @@ class ToolUseAgent:
                         )
                     else:
                         bq_analysis_validation = "passed"
+                        attach_tool_qa_trace(
+                            analysis_call,
+                            started_at=bq_started_at,
+                            status="ok",
+                            row_count=1,
+                            cache_hit=False,
+                        )
                         calls.append(analysis_call)
         sources = _sources(calls)
         selection = _tool_selection(question, calls)
@@ -626,8 +645,11 @@ def _background_context_calls(
     if any(call.get("tool") == "deep_analysis_related_news" for call in calls):
         return []
     try:
+        started_at = qa_trace_started_at()
         relevance_brands = () if _asks_change_driver_context(question) else _background_news_relevance_brands(calls, anchor_brand)
-        return [background_news_context_call(news, anchor_brand, relevance_brands)]
+        call = background_news_context_call(news, anchor_brand, relevance_brands)
+        attach_tool_qa_trace(call, started_at=started_at)
+        return [call]
     except Exception:
         return []
 

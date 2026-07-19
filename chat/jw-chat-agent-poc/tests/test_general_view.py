@@ -313,7 +313,24 @@ def test_general_view_queries_mart_with_resolved_canonical_brand_key() -> None:
     result = service.answer("IQVIA 생리식염 시장 점유율", compact=False, dual=False)
 
     assert result["tool_calls"][0]["tool"] == "general_view_dynamic_market"
+    assert result["tool_calls"][0]["qa_trace"]["status"] == "ok"
+    assert result["tool_calls"][0]["qa_trace"]["row_count"] > 0
+    assert result["tool_calls"][0]["qa_trace"]["started_at"]
+    assert result["tool_calls"][0]["qa_trace"]["ended_at"]
     assert backend.market_calls == [("K01B3", "중외5포도당생리식염액", "iqvia", "sales")]
+
+
+def test_general_view_unavailable_call_records_no_data_trace() -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership(set()), enabled=True)
+
+    result = service.answer("C10AA ATC4 시장 규모", compact=False, dual=False)
+
+    call = result["tool_calls"][0]
+    assert call["tool"] == "general_view_unavailable"
+    assert call["qa_trace"]["status"] == "no_data"
+    assert call["qa_trace"]["row_count"] == 0
+    assert call["qa_trace"]["started_at"]
+    assert call["qa_trace"]["ended_at"]
 
 
 class FailingGeneralMembership:

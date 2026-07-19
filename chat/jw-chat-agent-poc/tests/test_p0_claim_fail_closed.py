@@ -57,6 +57,26 @@ def _failed_call(*, brand: str = "마운자로", status: str = "query_failed", m
     }
 
 
+def _rank_series_call(
+    *,
+    brand: str = "마운자로",
+    ranks: tuple[int, ...] = (7, 5, 3),
+) -> dict[str, object]:
+    return {
+        "tool": "get_top_brands",
+        "status": "ok",
+        "render_data": {
+            "status": "ok",
+            "brand": brand,
+            "metric": "rank",
+            "brand_value_series_10pt": [
+                {"period": f"2025-Q{index}", "rank": rank}
+                for index, rank in enumerate(ranks, start=1)
+            ],
+        },
+    }
+
+
 @pytest.mark.parametrize("status", ("query_failed", "error", "timeout", "no_data"))
 def test_all_failed_metric_blocks_relation_and_returns_nonempty_typed_fallback(status: str) -> None:
     revised = enforce_relational_numeric_claims(
@@ -120,6 +140,74 @@ def test_partial_tool_failure_keeps_sales_claim_and_blocks_failed_share_claim() 
     assert "마운자로 매출은 최근 3분기 연속 상승했습니다" in revised
     assert "마운자로 점유율은 최근 3분기 연속 상승했습니다" not in revised
     assert "점유율" in revised and "확인 불가" in revised
+
+
+@pytest.mark.parametrize("connector", ("했고", "이며", "그리고"))
+def test_same_sentence_partial_failure_preserves_grounded_sales_clause(connector: str) -> None:
+    revised = enforce_relational_numeric_claims(
+        "마운자로 매출과 점유율 추이",
+        f"마운자로 매출은 최근 3분기 연속 상승{connector} 점유율은 최근 3분기 연속 상승했습니다.",
+        [_series_call(), _failed_call(metric="market_share")],
+    )
+
+    assert "매출은 최근 3분기 연속 상승" in revised
+    assert "점유율은 최근 3분기 연속 상승" not in revised
+    assert "점유율" in revised and "확인 불가" in revised
+
+
+def test_successful_share_series_does_not_ground_failed_sales_trend() -> None:
+    successful_share = _series_call(metric="market_share")
+
+    revised = enforce_relational_numeric_claims(
+        "마운자로 매출 추이와 점유율",
+        (
+            "마운자로 매출은 최근 3분기 연속 상승했습니다.\n\n"
+            "마운자로 점유율은 최근 3분기 연속 상승했습니다."
+        ),
+        [_failed_call(metric="sales"), successful_share],
+    )
+
+    assert "매출은 최근 3분기 연속 상승" not in revised
+    assert "점유율은 최근 3분기 연속 상승" in revised
+    assert "매출" in revised and "확인 불가" in revised
+
+
+def test_same_metric_success_preserves_grounded_trend_despite_failed_sibling_call() -> None:
+    answer = "마운자로 매출은 최근 3분기 연속 상승했습니다."
+
+    revised = enforce_relational_numeric_claims(
+        "마운자로 매출 추이",
+        answer,
+        [_failed_call(metric="sales"), _series_call(metric="sales")],
+    )
+
+    assert revised == answer
+
+
+def test_rank_only_success_preserves_grounded_rank_change() -> None:
+    answer = "마운자로 순위는 7위에서 3위로 변했습니다."
+
+    revised = enforce_relational_numeric_claims(
+        "마운자로 순위 추이",
+        answer,
+        [_rank_series_call()],
+    )
+
+    assert revised == answer
+
+
+def test_failed_top_brands_returns_nonempty_typed_fallback() -> None:
+    failed = {
+        "tool": "get_top_brands",
+        "status": "query_failed",
+        "render_data": {"status": "query_failed", "metric": "rank", "error": "injected failure"},
+    }
+
+    revised = enforce_relational_numeric_claims("마운자로는 몇 위", "", [failed])
+
+    assert revised.strip()
+    assert "상태: 확인 불가" in revised
+    assert "순위" in revised
 
 
 def test_market_contract_does_not_promote_one_failed_tool_to_whole_answer_failure() -> None:

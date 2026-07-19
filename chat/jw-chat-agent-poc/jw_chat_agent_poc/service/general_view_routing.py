@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
+from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
@@ -103,6 +105,7 @@ class GeneralViewService:
         return GeneralRoute.DUAL
 
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
+        started_at = qa_trace_started_at()
         requested_source = _requested_source(question)
         source = requested_source or "ubist"
         measure = "sales"
@@ -132,9 +135,9 @@ class GeneralViewService:
                 if candidate.code != selected.atc4_code
             ]
             contract = _contract(selected, other_candidates=others, compact=compact, dual=dual, question=question)
-            return _result(question, selected, contract)
+            return _result(question, selected, contract, started_at=started_at)
         except GeneralViewBackendError as exc:
-            return _unavailable_result(question, str(exc), dual=dual)
+            return _unavailable_result(question, str(exc), dual=dual, started_at=started_at)
 
     def _membership_resolution(self, brand: str, source: str) -> tuple[tuple[AtcCandidate, ...], str]:
         if self._general_membership is not None:
@@ -206,18 +209,37 @@ def _contract(
     }
 
 
-def _result(question: str, market: GeneralMarket, contract: dict[str, Any]) -> dict[str, Any]:
+def _result(
+    question: str,
+    market: GeneralMarket,
+    contract: dict[str, Any],
+    *,
+    started_at: datetime,
+) -> dict[str, Any]:
     call = {
         "source": "jw-market-backend-api",
         "tool": "general_view_dynamic_market",
         "summary_text": f"ATC4 {market.atc4_code} 일반뷰를 조회했습니다.",
         "render_data": dict(contract),
     }
+    attach_tool_qa_trace(
+        call,
+        started_at=started_at,
+        status="ok",
+        row_count=max(1, len(market.top_brands)),
+        data_as_of=str(contract.get("period") or "") or None,
+        cache_hit=False,
+    )
     return {
         "question": question,
         "resolution": {"canonical_brand": market.brand, "atc4_code": market.atc4_code},
         "decomposition": [{"intent": "general_view_market_metric", "view_type": "general_view"}],
-        "router_diagnostics": {"deterministic": True, "general_view": True},
+        "router_diagnostics": {
+            "mode": "general_view",
+            "reason": "general_view_dynamic_market",
+            "deterministic": True,
+            "general_view": True,
+        },
         "tool_calls": [call],
         "answer": contract["section_markdown"],
         "markdown_response": None,
@@ -227,7 +249,13 @@ def _result(question: str, market: GeneralMarket, contract: dict[str, Any]) -> d
     }
 
 
-def _unavailable_result(question: str, reason: str, *, dual: bool) -> dict[str, Any]:
+def _unavailable_result(
+    question: str,
+    reason: str,
+    *,
+    dual: bool,
+    started_at: datetime,
+) -> dict[str, Any]:
     text = f"## 일반뷰 (ATC4)\n\n일반뷰 데이터를 현재 조회할 수 없습니다. ({reason})"
     contract = {
         "mode": "dual" if dual else "general_only",
@@ -244,11 +272,25 @@ def _unavailable_result(question: str, reason: str, *, dual: bool) -> dict[str, 
         "section_markdown": text,
         "unavailable": True,
     }
+    call = {"source": "jw-market-backend-api", "tool": "general_view_unavailable", "render_data": contract}
+    attach_tool_qa_trace(
+        call,
+        started_at=started_at,
+        status="no_data",
+        row_count=0,
+        cache_hit=False,
+    )
     return {
         "question": question,
         "decomposition": [{"intent": "general_view_unavailable", "view_type": "general_view"}],
-        "router_diagnostics": {"deterministic": True, "general_view": True, "unavailable": True},
-        "tool_calls": [{"source": "jw-market-backend-api", "tool": "general_view_unavailable", "render_data": contract}],
+        "router_diagnostics": {
+            "mode": "general_view",
+            "reason": "general_view_unavailable",
+            "deterministic": True,
+            "general_view": True,
+            "unavailable": True,
+        },
+        "tool_calls": [call],
         "answer": text,
         "markdown_response": None,
         "sources": [],

@@ -42,6 +42,7 @@ _RELATIONAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
         "get_brand_sales",
         "get_brand_series",
         "get_brand_share",
+        "get_top_brands",
         "general_view_unavailable",
         "query_failed",
     }
@@ -2071,7 +2072,7 @@ def _block_unsupported_relation_claims(
                 continue
             unsupported: list[tuple[re.Match[str], str]] = []
             for match in matches:
-                metric = _relation_claim_metric(sentence, question)
+                metric = _relation_claim_metric(sentence, question, match=match)
                 reason = _unsupported_relation_reason(
                     match.group(0),
                     metric,
@@ -2136,7 +2137,27 @@ def _unsupported_relation_reason(
     return "" if len(points) >= 2 else f"insufficient_{metric}_observations"
 
 
-def _relation_claim_metric(sentence: str, question: str) -> str:
+def _relation_claim_metric(
+    sentence: str,
+    question: str,
+    *,
+    match: re.Match[str] | None = None,
+) -> str:
+    if match is not None:
+        prefix = sentence[: match.start()]
+        markers: list[tuple[int, str]] = []
+        for metric, pattern in (
+            ("share", r"점유율|\bMS\b"),
+            ("rank", r"순위|몇\s*위|랭킹|Top\s*\d*|상위\s*\d*"),
+            ("market", r"시장\s*(?:대비|성장률)|시장보다"),
+            ("sales", r"매출|처방조제액|실적"),
+        ):
+            markers.extend(
+                (marker.end(), metric)
+                for marker in re.finditer(pattern, prefix, re.IGNORECASE)
+            )
+        if markers:
+            return max(markers, key=lambda item: item[0])[1]
     if re.search(r"점유율|\bMS\b", sentence, re.IGNORECASE):
         return "share"
     if re.search(r"순위|몇\s*위|랭킹|추월|우위|Top\s*\d*|상위\s*\d*", sentence, re.IGNORECASE):
@@ -2173,6 +2194,17 @@ def _remove_unsupported_relation_spans(
     for match in reversed(matches):
         prefix = revised[: match.start()]
         suffix = revised[match.end() :]
+        prefix_connectors = list(
+            re.finditer(r"\s*(?:했고|이며|이고|그리고|;|,)\s*", prefix)
+        )
+        if prefix_connectors:
+            connector = prefix_connectors[-1]
+            revised = f"{prefix[: connector.start()].rstrip()}{suffix}".strip()
+            continue
+        suffix_connector = re.match(r"\s*(?:했고|이며|이고|그리고|;|,)\s*", suffix)
+        if suffix_connector:
+            revised = suffix[suffix_connector.end() :].lstrip()
+            continue
         if re.search(r"\d", prefix) and re.search(r"(?:억원|원|%|위|건|명)", prefix):
             prefix = re.sub(r"(?:이며|이고|지만|,|·)\s*$", "", prefix).rstrip()
             revised = f"{prefix}{suffix}".strip()
@@ -2199,14 +2231,17 @@ def _call_relational_metrics(call: dict[str, Any]) -> frozenset[str]:
     metric = str(data.get("metric") or "").strip().lower()
     tool = str(call.get("tool") or "").strip().lower()
     metrics: set[str] = set()
+    owner = ""
     if metric in {"sales", "revenue"} or tool == "get_brand_sales":
-        metrics.add("sales")
-    if metric in {"market_share", "share", "ms"} or tool == "get_brand_share":
-        metrics.add("share")
-    if metric in {"rank", "ranking", "market_top_brands"} or tool == "get_top_brands":
-        metrics.add("rank")
+        owner = "sales"
+    elif metric in {"market_share", "share", "ms"} or tool == "get_brand_share":
+        owner = "share"
+    elif metric in {"rank", "ranking", "market_top_brands"} or tool == "get_top_brands":
+        owner = "rank"
+    if owner:
+        metrics.add(owner)
     series = data.get("brand_value_series_10pt")
-    if isinstance(series, list):
+    if not owner and isinstance(series, list):
         if any(isinstance(item, dict) and any(key in item for key in ("value_억원", "value_krw")) for item in series):
             metrics.add("sales")
         if any(isinstance(item, dict) and "ms_pct" in item for item in series):
@@ -2310,7 +2345,7 @@ def _relational_series_fact(
     question: str,
     calls: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
 ) -> _RelationalSeriesFact | None:
-    candidates: list[tuple[str, dict[str, Any]]] = []
+    candidates: list[tuple[str, dict[str, Any], frozenset[str]]] = []
     for call in calls or ():
         if _relational_call_failed(call):
             continue
@@ -2319,33 +2354,68 @@ def _relational_series_fact(
             continue
         raw_series = data.get("brand_value_series_10pt")
         if isinstance(raw_series, list) and len(raw_series) >= 2:
-            candidates.append((str(data.get("brand") or "").strip(), data))
+            candidates.append(
+                (
+                    str(data.get("brand") or "").strip(),
+                    data,
+                    _call_relational_metrics(call),
+                )
+            )
     if not candidates:
         return None
-    matching = [(brand, data) for brand, data in candidates if brand and brand in question]
+    matching = [brand for brand, _data, _metrics in candidates if brand and brand in question]
     if matching:
-        _brand, selected = matching[0]
+        selected_brand = matching[0]
     else:
-        candidate_brands = {brand for brand, _data in candidates if brand}
+        candidate_brands = {brand for brand, _data, _metrics in candidates if brand}
         if len(candidate_brands) > 1:
             return None
-        _brand, selected = candidates[0]
-    raw_series = selected.get("brand_value_series_10pt")
-    sales = _relation_points(raw_series, "sales")
-    shares = _relation_points(raw_series, "share")
-    ranks = _relation_points(raw_series, "rank")
-    market = _relation_points(selected.get("market_size_series"), "sales")
-    if len(sales) < 2 and len(shares) < 2:
+        selected_brand = next(iter(candidate_brands), "")
+    selected = [
+        (data, metrics)
+        for brand, data, metrics in candidates
+        if brand == selected_brand
+    ]
+    sales = _longest_relational_points(selected, "sales")
+    shares = _longest_relational_points(selected, "share")
+    ranks = _longest_relational_points(selected, "rank")
+    market = _longest_market_points(selected)
+    if len(sales) < 2 and len(shares) < 2 and len(ranks) < 2:
         return None
-    other_brands = tuple(sorted({brand for brand, _data in candidates if brand and brand != _brand}))
+    other_brands = tuple(
+        sorted({brand for brand, _data, _metrics in candidates if brand and brand != selected_brand})
+    )
     return _RelationalSeriesFact(
-        brand=_brand,
+        brand=selected_brand,
         other_brands=other_brands,
         sales=sales,
         shares=shares,
         market=market,
         ranks=ranks,
     )
+
+
+def _longest_relational_points(
+    candidates: list[tuple[dict[str, Any], frozenset[str]]],
+    metric: str,
+) -> tuple[_RelationPoint, ...]:
+    options = [
+        _relation_points(data.get("brand_value_series_10pt"), metric)
+        for data, metrics in candidates
+        if metric in metrics
+    ]
+    return max(options, key=len, default=())
+
+
+def _longest_market_points(
+    candidates: list[tuple[dict[str, Any], frozenset[str]]],
+) -> tuple[_RelationPoint, ...]:
+    options = [
+        _relation_points(data.get("market_size_series"), "sales")
+        for data, metrics in candidates
+        if "market" in metrics
+    ]
+    return max(options, key=len, default=())
 
 
 def _relational_call_failed(call: dict[str, Any]) -> bool:

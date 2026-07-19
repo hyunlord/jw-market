@@ -389,7 +389,11 @@ def test_chat_agent_routes_sales_question_to_cache_metrics() -> None:
     result = ChatAgent(metrics=tool).answer("리바로 매출 알려줘")
 
     assert "cache" in result["sources"]
-    assert any(call["tool"] == "get_brand_metric" for call in result["tool_calls"])
+    metric_call = next(call for call in result["tool_calls"] if call["tool"] == "get_brand_metric")
+    assert metric_call["qa_trace"]["status"] == "ok"
+    assert metric_call["qa_trace"]["row_count"] > 0
+    assert metric_call["qa_trace"]["started_at"]
+    assert metric_call["qa_trace"]["ended_at"]
     assert "84.93억원" in result["answer"]
 
 

@@ -37,6 +37,10 @@ def test_bq_plan_executes_both_market_sources_without_llm() -> None:
     ]
     analysis = next(call for call in result["tool_calls"] if call.get("tool") == "bq_analysis")
     assert analysis["render_data"]["never_aggregate_sources"] is True
+    assert analysis["qa_trace"]["started_at"]
+    assert analysis["qa_trace"]["ended_at"]
+    assert analysis["qa_trace"]["status"] == "ok"
+    assert analysis["qa_trace"]["row_count"] > 0
     assert "합산하지" in result["answer"]
 
 

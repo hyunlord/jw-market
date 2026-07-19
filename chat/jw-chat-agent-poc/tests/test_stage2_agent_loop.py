@@ -111,7 +111,11 @@ def test_agent_loop_combines_market_scope_and_metric_tools_for_largest_competito
     assert result["decomposition"][0]["intent"] == "agent_loop"
     assert [call["tool"] for call in result["tool_calls"]].count("get_market_landscape") == 1
     assert [call["render_data"].get("brand") for call in result["tool_calls"] if call["tool"] == "get_brand_metric"] == ["리바로", "리바로젯"]
-    assert any(call["tool"] == "agent_calculation" for call in result["tool_calls"])
+    calculation = next(call for call in result["tool_calls"] if call["tool"] == "agent_calculation")
+    assert calculation["qa_trace"]["started_at"]
+    assert calculation["qa_trace"]["ended_at"]
+    assert calculation["qa_trace"]["status"] == "ok"
+    assert calculation["qa_trace"]["row_count"] > 0
     assert "리바로젯" in result["answer"]
     assert "200.00억원" in result["answer"]
     assert "## 근거" in result["answer"]

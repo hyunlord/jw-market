@@ -796,6 +796,38 @@ def test_unanchored_market_top_five_asks_for_market_not_brand(monkeypatch) -> No
     assert item["result"]["router_diagnostics"]["mode"] == "market_clarification"
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "상위 5개 브랜드 점유율",
+        "시장 상위 5개 브랜드 점유율",
+        "상위 5개 브랜드 시장점유율",
+        "top 5 브랜드 점유율",
+        "Top 5 브랜드 점유율",
+        "시장 top 5 브랜드 점유율",
+    ),
+)
+def test_unanchored_market_top_share_asks_for_market_not_brand(monkeypatch, question: str) -> None:
+    def direct_loop(_question: str, _external_mode: str) -> dict:
+        raise AssertionError("an unanchored market metric must not execute tools")
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        question,
+        "live",
+        f"ambiguous-market-top-share-{question}",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["answer"] == "어느 시장의 상위 브랜드인지 알려주세요."
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["router_diagnostics"]["mode"] == "market_clarification"
+
+
 def test_unanchored_quarter_sales_clarification_bypasses_final_llm(monkeypatch) -> None:
     def unexpected_stream(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("clarification must not enter final LLM synthesis")

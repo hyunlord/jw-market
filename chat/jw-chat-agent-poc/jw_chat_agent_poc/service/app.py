@@ -1169,7 +1169,8 @@ def _is_entity_free_brand_metric_question(question: str) -> bool:
 def _is_entity_free_market_metric_question(question: str) -> bool:
     normalized = re.sub(r"\s+", " ", question.strip()).rstrip("?!. ")
     patterns = (
-        r"(?:시장\s*)?상위\s*\d*\s*개?\s*브랜드(?:\s*(?:알려줘|보여줘))?",
+        r"(?:시장\s*)?(?:상위\s*\d*\s*개?|top\s*\d+)\s*브랜드"
+        r"(?:\s*(?:시장\s*)?점유율)?(?:\s*(?:알려줘|보여줘))?",
         r"(?:시장\s*)?(?:HHI|CR5|집중도)(?:\s*(?:알려줘|보여줘))?",
         r"시장\s*규모(?:\s*(?:알려줘|보여줘))?",
     )

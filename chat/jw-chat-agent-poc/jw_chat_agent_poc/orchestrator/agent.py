@@ -37,6 +37,7 @@ from jw_chat_agent_poc.orchestrator.question_intent import (
     requires_brand,
 )
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
+from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
@@ -196,7 +197,9 @@ class ChatAgent:
             news_filters = tuple(entry for route in routes if "deep_analysis_events" in route.sources for entry in route.filters)
             news_brands = self._news_brands(question, routes, resolution.canonical_brand)
             news_filters = (*news_filters, *relevance_filter_entries(news_brands, question))
+            news_started_at = qa_trace_started_at()
             call = self.news.related_news(news_brands[0], filter_entries=news_filters)
+            attach_tool_qa_trace(call, started_at=news_started_at)
             calls.append(call)
             sources.append(call["source"])
 
@@ -206,6 +209,7 @@ class ChatAgent:
             metric_filters = tuple(entry for route in routes if "metrics" in route.sources for entry in route.filters)
             filter_plan = validate_metric_filters(metric_filters)
             effective_filters = metric_filters if filter_plan.has_effective_filter else ()
+            metric_started_at = qa_trace_started_at()
             with stage(timing, "tool:get_brand_metric", f"metric={metric}"):
                 brand_metric_call = self._metric_call(
                     resolution.canonical_brand,
@@ -214,6 +218,7 @@ class ChatAgent:
                     market=market,
                     prefer_mart=_prefer_mart_metric(resolution.support_source),
                 )
+            attach_tool_qa_trace(brand_metric_call, started_at=metric_started_at)
             metric_calls = [brand_metric_call]
             scope = _answer_scope(question)
             if scope is not None:
@@ -230,19 +235,23 @@ class ChatAgent:
                 and not effective_filters
                 and metric not in {"hhi", "series", "trend", "momentum", "ei"}
             ):
+                landscape_started_at = qa_trace_started_at()
                 with stage(timing, "tool:get_market_landscape", f"market={market}"):
                     market_landscape_call = self.metrics.get_market_landscape(market)
+                attach_tool_qa_trace(market_landscape_call, started_at=landscape_started_at)
                 metric_calls.insert(0, market_landscape_call)
             for call in metric_calls:
                 calls.append(call)
                 sources.append(call["source"])
 
         if self._should_attach_background_news(question, calls):
+            background_started_at = qa_trace_started_at()
             call = self.news.related_news(resolution.canonical_brand, limit=3)
             data = call.setdefault("render_data", {})
             data["facade_tool"] = "background_news_context"
             data["context_role"] = "background_insight"
             data["provenance"] = {"source": "events/event_brand_scores", "mode": "full_corpus_or_cache_fallback"}
+            attach_tool_qa_trace(call, started_at=background_started_at)
             calls.append(call)
             sources.append(call["source"])
 
@@ -255,8 +264,11 @@ class ChatAgent:
                 sources.append(call.source)
 
         if docs and any("document" in route.sources for route in routes):
+            document_started_at = qa_trace_started_at()
             rag_result = self.rag.search(question, docs)
-            calls.append({"tool": "document_rag", **rag_result.__dict__})
+            document_call = {"tool": "document_rag", **rag_result.__dict__}
+            attach_tool_qa_trace(document_call, started_at=document_started_at, status="ok")
+            calls.append(document_call)
             sources.append(rag_result.source)
 
         with stage(timing, "fact_assembly", "markdown fact set build"):

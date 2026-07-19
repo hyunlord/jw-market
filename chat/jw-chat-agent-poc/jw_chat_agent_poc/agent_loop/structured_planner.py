@@ -43,6 +43,12 @@ class AnswerModeSpec:
 
 _METRICS: Final[tuple[MetricSpec, ...]] = (
     MetricSpec(
+        "market_top",
+        "market",
+        re.compile(r"상위\s*\d*|top\s*\d*", re.IGNORECASE),
+        ("get_top_brands", "get_brand_series"),
+    ),
+    MetricSpec(
         "brand_share",
         "brand",
         re.compile(r"점유율|시장점유율|\bMS\b", re.IGNORECASE),
@@ -65,12 +71,6 @@ _METRICS: Final[tuple[MetricSpec, ...]] = (
         "brand",
         re.compile(r"순위|몇\s*위|랭킹|rank", re.IGNORECASE),
         ("get_brand_share", "get_brand_series", "get_top_brands"),
-    ),
-    MetricSpec(
-        "market_top",
-        "market",
-        re.compile(r"상위\s*\d*|top\s*\d*", re.IGNORECASE),
-        ("get_top_brands", "get_brand_series"),
     ),
     MetricSpec(
         "market_structure",
