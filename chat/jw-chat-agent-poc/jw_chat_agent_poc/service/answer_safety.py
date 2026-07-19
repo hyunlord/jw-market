@@ -2013,7 +2013,8 @@ def enforce_relational_numeric_claims_with_trace(
         revised = _repair_endpoint_direction_claims(question, revised, fact)
         revised = _repair_rank_claims(revised, fact)
         revised = _repair_growth_relation_claims(revised, fact)
-        revised = _ensure_terminal_relation_summary(question, revised, fact)
+        if not cached_as_of:
+            revised = _ensure_terminal_relation_summary(question, revised, fact)
 
     failed_metrics = _failed_relational_metrics(question, call_items)
     successful_metrics = _successful_relational_metrics(call_items)
@@ -2295,6 +2296,8 @@ def _cached_fallback_as_of(calls: tuple[dict[str, Any], ...]) -> str:
 
 
 def _prepend_disclosure(disclosure: str, answer: str) -> str:
+    if disclosure in answer:
+        return answer
     if answer.strip():
         return cleanup_markdown_answer(f"{disclosure}\n\n{answer}")
     return cleanup_markdown_answer(
@@ -2398,7 +2401,7 @@ def _relational_series_fact(
 def _longest_relational_points(
     candidates: list[tuple[dict[str, Any], frozenset[str]]],
     metric: str,
-) -> tuple[_RelationPoint, ...]:
+) -> tuple[_TrendPoint, ...]:
     options = [
         _relation_points(data.get("brand_value_series_10pt"), metric)
         for data, metrics in candidates
@@ -2409,7 +2412,7 @@ def _longest_relational_points(
 
 def _longest_market_points(
     candidates: list[tuple[dict[str, Any], frozenset[str]]],
-) -> tuple[_RelationPoint, ...]:
+) -> tuple[_TrendPoint, ...]:
     options = [
         _relation_points(data.get("market_size_series"), "sales")
         for data, metrics in candidates

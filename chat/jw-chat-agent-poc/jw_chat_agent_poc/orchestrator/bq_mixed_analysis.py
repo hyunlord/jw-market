@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from jw_chat_agent_poc.common.qa_trace import (
+    attach_tool_qa_trace,
+    qa_trace_started_at,
+    tool_cache_hit,
+)
 from jw_chat_agent_poc.orchestrator.bq_evidence_ledger import build_evidence_ledger
 
 
@@ -15,6 +20,7 @@ def build_file_market_analysis_call(
     market_calls: list[Call],
     deterministic_file_answer: str,
 ) -> Call | None:
+    started_at = qa_trace_started_at()
     file_answer = deterministic_file_answer.strip()
     market_ledger = build_evidence_ledger(market_calls)
     market_sources = list(
@@ -46,7 +52,8 @@ def build_file_market_analysis_call(
         "value": file_answer,
         "references": [_FILE_EVIDENCE_REF],
     }
-    return {
+    evidence_ledger = [file_row, *market_ledger]
+    call = {
         "source": "BQ deterministic evidence",
         "tool": "bq_analysis",
         "summary_text": insight,
@@ -59,6 +66,19 @@ def build_file_market_analysis_call(
             "never_aggregate_sources": True,
             "fusion_mode": "side_by_side",
             "evidence_refs": [_FILE_EVIDENCE_REF, *market_references],
-            "evidence_ledger": [file_row, *market_ledger],
+            "evidence_ledger": evidence_ledger,
         },
     }
+    periods = sorted(
+        str(row.get("period") or "").strip()
+        for row in market_ledger
+        if str(row.get("period") or "").strip()
+    )
+    return attach_tool_qa_trace(
+        call,
+        started_at=started_at,
+        status="ok",
+        row_count=len(evidence_ledger),
+        data_as_of=periods[-1] if periods else "not_applicable",
+        cache_hit=any(tool_cache_hit(item) for item in market_calls),
+    )

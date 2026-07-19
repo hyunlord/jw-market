@@ -257,6 +257,62 @@ def test_compute_final_answer_reports_blocked_failed_trend_in_qa_trace() -> None
     assert qa_trace["final"] == {"disposition": "unavailable", "body_empty": False}
 
 
+def test_compute_final_answer_does_not_recreate_recent_trend_from_cached_fallback() -> None:
+    final = compute_final_answer(
+        "마운자로 최근 매출 추이",
+        {
+            "general_view_ready": True,
+            "answer": (
+                "마운자로 2025-Q4 매출은 130.00억원입니다.\n\n"
+                "마운자로 매출은 최근 3분기 연속 상승했습니다."
+            ),
+            "tool_calls": [
+                {
+                    "tool": "get_brand_series",
+                    "status": "query_failed",
+                    "render_data": {
+                        "status": "query_failed",
+                        "brand": "마운자로",
+                        "metric": "sales",
+                        "error": "injected live failure",
+                    },
+                },
+                {
+                    "tool": "get_brand_series",
+                    "status": "ok",
+                    "cache_hit": True,
+                    "data_as_of": "2025-Q4",
+                    "render_data": {
+                        "status": "ok",
+                        "brand": "마운자로",
+                        "metric": "sales",
+                        "cache_hit": True,
+                        "data_as_of": "2025-Q4",
+                        "brand_value_series_10pt": [
+                            {"period": "2025-Q1", "value_억원": 100.0},
+                            {"period": "2025-Q2", "value_억원": 110.0},
+                            {"period": "2025-Q3", "value_억원": 120.0},
+                            {"period": "2025-Q4", "value_억원": 130.0},
+                        ],
+                    },
+                },
+            ],
+            "sources": ["UBIST cache"],
+        },
+        "cached-relational-final",
+    )
+
+    assert "2025-Q4 기준 저장 결과" in final.text
+    assert final.text.count("실시간 조회 실패") == 1
+    assert "130.00억원" in final.text
+    assert "최근 3분기 연속 상승" not in final.text
+    assert "cached_result_not_current" in final.trace["qa_trace"]["claims"]["blocked_reasons"]
+    assert final.trace["qa_trace"]["final"] == {
+        "disposition": "cached_partial",
+        "body_empty": False,
+    }
+
+
 def test_compute_final_answer_checks_trend_relations_after_llm_synthesis(monkeypatch) -> None:
     generated = "리바로 매출은 최근 2개월 연속 상승했습니다."
     monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))

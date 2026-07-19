@@ -235,6 +235,26 @@ def test_named_chso_and_ubist_question_attaches_source_bound_fusion(monkeypatch)
     assert data["source_labels"] == ["FILE", "UBIST"]
     assert data["never_aggregate_sources"] is True
     assert data["fusion_mode"] == "side_by_side"
+    qa_trace = analysis["qa_trace"]
+    assert qa_trace["started_at"]
+    assert qa_trace["ended_at"]
+    assert qa_trace["status"] == "ok"
+    assert qa_trace["row_count"] == len(data["evidence_ledger"])
+    assert qa_trace["data_as_of"] == "2026-05"
+    assert qa_trace["cache_hit"] is False
+
+    envelope = trace_envelope(
+        question=question,
+        result=item["result"],
+        answer=str(item["result"]["answer"]),
+        charts=[],
+        timing={},
+        conversation_id=item["conversation_id"],
+    )
+    projected = next(tool for tool in envelope["qa_trace"]["tools"] if tool["name"] == "bq_analysis")
+    assert all(projected[key] is not None for key in ("started_at", "ended_at", "row_count", "data_as_of"))
+    assert projected["status"] == "ok"
+    assert projected["cache_hit"] is False
 
 
 def test_mixed_file_leg_uses_inherited_file_slots(monkeypatch) -> None:
