@@ -1,6 +1,11 @@
 # Canonical suspended template for an isolated R-1 full-pipeline rehearsal.
-# Copy this manifest, give the Job a unique name, replace both isolated database
-# placeholders, and set spec.suspend=false only after recording the input pins.
+# Copy this manifest, give the Job a unique name, set image to the v0.2.9 digest,
+# replace both isolated database placeholders, and set spec.suspend=false only after
+# recording the input pins.
+# Isolated DB naming (rehearse-full contract): R1_TARGET_DB=jw_mart_rehearsal_r1_<date>,
+# R1_CACHE_DB=jw_mart_s6_rehearsal_r1_<date> (jw_mart / *_r2 are PROTECTED). Pre-create
+# both with root before unsuspend (the d2-writer cannot CREATE DATABASE).
+# Source = local/NFS (--source-backend local); no MinIO ingest (PL: MinIO=archive).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -28,7 +33,7 @@ spec:
         fsGroup: 3000
       containers:
         - name: rehearsal
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:15d90db7fc1d3d225d04fe289042b700ba295f8589fa596af0af5c3e5547f75f
+          image: REPLACE_WITH_V029_IMAGE  # jw-pipeline-orchestrator@sha256:<v0.2.9 digest>; set at pin-sync (never a stale r1-* image)
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-lc"]
           args:
@@ -41,8 +46,9 @@ spec:
               test "${R1_CACHE_DB}" != "REPLACE_WITH_NEW_ISOLATED_CACHE_DB"
               python -m pipeline.orchestrator materialize-full-inputs \
                 --output-root /work/inputs \
-                --ubist-bucket jw-market-raw-ubist \
-                --iqvia-bucket jw-market-raw-iqvia \
+                --source-backend local \
+                --ubist-source-dir /r1-source/UBIST \
+                --iqvia-source-dir /r1-source/IQVIA \
                 --ubist-parquet-sidecar \
                   /canonical-ubist/f046-c927ac9d/raw/ubist/year=2026/month=05/data.parquet \
                   year=2026/month=05/data.parquet \
@@ -69,20 +75,7 @@ spec:
               value: REPLACE_WITH_NEW_ISOLATED_CACHE_DB
             - name: R1_SOURCE_DB
               value: jw_mart_d2_stage_20260630_r2
-            - name: MINIO_ENDPOINT
-              value: http://minio.llmops.svc.cluster.local:9000
-            - name: MINIO_REGION
-              value: us-east-1
-            - name: MINIO_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: minio
-                  key: root-user
-            - name: MINIO_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: minio
-                  key: root-password
+            # MinIO env intentionally removed: R-1 source is local/NFS (MinIO=archive).
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT
@@ -125,6 +118,9 @@ spec:
           volumeMounts:
             - name: work
               mountPath: /work
+            - name: r1-source
+              mountPath: /r1-source
+              readOnly: true
             - name: canonical-ubist
               mountPath: /canonical-ubist
               readOnly: true
@@ -132,6 +128,14 @@ spec:
         - name: work
           emptyDir:
             sizeLimit: 50Gi
+        # Canonical R-1 source = local/NFS tree (PL: 인입 정본=NFS/local, MinIO=archive).
+        # Before unsuspend: stage /home/GCP/jw-market/data/{UBIST,IQVIA} onto this
+        # nfs-client PVC (RWX, same Filestore backend as the ingest hook's
+        # llmops-nfs-root), then mount RO here as /r1-source/{UBIST,IQVIA}.
+        - name: r1-source
+          persistentVolumeClaim:
+            claimName: r1-source-nfs
+            readOnly: true
         - name: canonical-ubist
           persistentVolumeClaim:
             claimName: codespace-volume-19

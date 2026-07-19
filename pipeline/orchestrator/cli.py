@@ -62,6 +62,24 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar=("SOURCE", "RELATIVE_PATH", "SHA256"),
         help="repeatable SHA-pinned UBIST parquet sidecar",
     )
+    inputs.add_argument(
+        "--source-backend",
+        choices=["local", "minio"],
+        default="local",
+        help="raw UBIST/IQVIA source: local/NFS tree (default, canonical) or minio (archive)",
+    )
+    inputs.add_argument(
+        "--ubist-source-dir",
+        type=Path,
+        default=None,
+        help="UBIST source dir when --source-backend=local (default: repo data/UBIST)",
+    )
+    inputs.add_argument(
+        "--iqvia-source-dir",
+        type=Path,
+        default=None,
+        help="IQVIA source dir when --source-backend=local (default: repo data/IQVIA)",
+    )
 
     rehearsal = sub.add_parser(
         "rehearse-full",
@@ -128,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
                     UbistParquetSidecarSource(Path(source), Path(relative), sha256)
                     for source, relative, sha256 in args.ubist_parquet_sidecar
                 ),
+                source_backend=args.source_backend,
+                ubist_source_dir=args.ubist_source_dir,
+                iqvia_source_dir=args.iqvia_source_dir,
             )
         except InputMaterializationError as exc:
             print(f"error: {exc}", file=sys.stderr)

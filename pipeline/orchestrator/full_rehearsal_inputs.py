@@ -32,7 +32,51 @@ class ReadOnlyObjectStore(Protocol):
 
 ClientFactory = Callable[[str], ReadOnlyObjectStore]
 DEFAULT_MI_MASTER_SOURCE_DIR = PROJECT_ROOT / "data" / MI_MASTER_DIR_NAME
+DEFAULT_UBIST_SOURCE_DIR = PROJECT_ROOT / "data" / "UBIST"
+DEFAULT_IQVIA_SOURCE_DIR = PROJECT_ROOT / "data" / "IQVIA"
 SOURCE_PINS_FILE_NAME = "SOURCE_PINS.sha256"
+VALID_SOURCE_BACKENDS = frozenset({"local", "minio"})
+
+
+class LocalDirObjectStore:
+    """Read-only object store backed by a local directory tree.
+
+    R-1 canonical source = the local/NFS repository tree (PL: 인입 정본=NFS/local,
+    MinIO=archive). This lets ``materialize_full_inputs`` read UBIST/IQVIA raws
+    from a mounted directory instead of MinIO without changing the download,
+    census, or manifest logic (``_download_population`` is store-agnostic).
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root).resolve()
+
+    def list_keys(self, prefix: str) -> list[str]:
+        if not self._root.is_dir():
+            raise InputMaterializationError(
+                f"local source directory is missing: {self._root}"
+            )
+        base = (self._root / prefix).resolve() if prefix else self._root
+        return [
+            str(path.relative_to(self._root))
+            for path in sorted(self._root.rglob("*"))
+            if path.is_file() and (not prefix or str(path).startswith(str(base)))
+        ]
+
+    def read(self, key: str) -> bytes:
+        target = (self._root / key).resolve()
+        if target != self._root and self._root not in target.parents:
+            raise InputMaterializationError(f"local source key escapes root: {key!r}")
+        return target.read_bytes()
+
+
+def _local_factory(source_dirs: dict[str, Path]) -> ClientFactory:
+    def factory(bucket: str) -> ReadOnlyObjectStore:
+        root = source_dirs.get(bucket)
+        if root is None:
+            raise InputMaterializationError(f"no local source directory for {bucket!r}")
+        return LocalDirObjectStore(root)
+
+    return factory
 
 
 @dataclass(frozen=True)
@@ -50,14 +94,36 @@ def materialize_full_inputs(
     mi_master_source_dir: Path | None = None,
     ubist_parquet_sidecars: tuple[UbistParquetSidecarSource, ...] = (),
     client_factory: ClientFactory | None = None,
+    source_backend: str = "local",
+    ubist_source_dir: Path | None = None,
+    iqvia_source_dir: Path | None = None,
 ) -> Path:
-    """Materialize object-store raws plus the repository-pinned MI workbook."""
+    """Materialize raw inputs plus the repository-pinned MI workbook.
+
+    ``source_backend`` selects where UBIST/IQVIA raws come from: ``local`` reads
+    the canonical local/NFS source tree (default), ``minio`` keeps the archival
+    object-store path. MI Master and UBIST parquet sidecars are always local.
+    """
+    if source_backend not in VALID_SOURCE_BACKENDS:
+        raise InputMaterializationError(
+            f"unknown source_backend {source_backend!r}; expected {sorted(VALID_SOURCE_BACKENDS)}"
+        )
     root = output_root.resolve()
     if root.exists():
         raise InputMaterializationError(f"output root already exists: {root}")
     root.mkdir(parents=True)
 
-    factory = client_factory or _client_from_env
+    if client_factory is not None:
+        factory = client_factory
+    elif source_backend == "local":
+        factory = _local_factory(
+            {
+                ubist_bucket: (ubist_source_dir or DEFAULT_UBIST_SOURCE_DIR),
+                iqvia_bucket: (iqvia_source_dir or DEFAULT_IQVIA_SOURCE_DIR),
+            }
+        )
+    else:
+        factory = _client_from_env
     inventory: list[dict[str, str | int]] = []
     ubist_dir = root / "ubist"
     iqvia_dir = root / "iqvia"
