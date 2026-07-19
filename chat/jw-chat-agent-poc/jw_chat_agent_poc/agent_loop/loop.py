@@ -44,8 +44,15 @@ from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 logger = logging.getLogger(__name__)
 
-_DEEP_PARALLEL_MARKET_TOOLS = frozenset(
-    {"get_metric", "get_market_scope", "get_brand_series", "get_top_brands"}
+_PARALLEL_MARKET_TOOLS = frozenset(
+    {
+        "get_metric",
+        "get_market_scope",
+        "get_brand_sales",
+        "get_brand_share",
+        "get_brand_series",
+        "get_top_brands",
+    }
 )
 _DEEP_TOOL_GROUP_BY_NAME = {
     "get_metric": "시장",
@@ -263,12 +270,14 @@ class ToolUseAgent:
             is_bq_batch = bool(
                 deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:")
             )
-            deep_parallel_tools = (
-                _DEEP_PARALLEL_MARKET_TOOLS if self.progress_namespace == "deep" else ()
+            parallel_market_tools = (
+                _PARALLEL_MARKET_TOOLS
+                if self.progress_namespace == "deep" or structured_plan is not None
+                else ()
             )
             deep_batch_detail = _deep_batch_progress_detail(
                 decision.tool_calls,
-                deep_parallel_tools,
+                parallel_market_tools,
             )
 
             def record_tool_completion(timed_execution: TimedExecution[ToolExecution]) -> None:
@@ -298,7 +307,7 @@ class ToolUseAgent:
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
-                        additional_parallel_tools=deep_parallel_tools,
+                        additional_parallel_tools=parallel_market_tools,
                         on_complete=record_tool_completion,
                     )
                     if self.progress_namespace == "deep":
@@ -317,7 +326,7 @@ class ToolUseAgent:
                     execution_batch = execute_tool_batch(
                         decision.tool_calls,
                         lambda plan: _execute_grounded(facade, plan),
-                        additional_parallel_tools=deep_parallel_tools,
+                        additional_parallel_tools=parallel_market_tools,
                         on_complete=record_tool_completion,
                     )
                     if self.progress_namespace == "deep":

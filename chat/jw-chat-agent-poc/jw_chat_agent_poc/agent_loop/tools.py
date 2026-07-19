@@ -86,7 +86,17 @@ class AgentToolFacade:
 
     def execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
         started_at = datetime.now(UTC)
-        execution = self._execute(name, arguments)
+        try:
+            execution = self._execute(name, arguments)
+        except Exception as exc:
+            execution = _tool_error(
+                name,
+                arguments,
+                _query_failed_message(),
+                status=QUERY_FAILED_STATUS,
+                error=exc,
+                render_data_extra=self._error_render_context(name, arguments),
+            )
         attach_tool_qa_trace(
             execution.call,
             started_at=started_at,
