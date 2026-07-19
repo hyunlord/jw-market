@@ -130,6 +130,26 @@ def test_partial_component_set_is_rejected() -> None:
         build_rollback_plan(ledger, mart, target="run2", serving_db="serving_stage_named_db")
 
 
+def test_partial_generation_cannot_replace_latest_good() -> None:
+    ledger = _ledger()
+    mart = IsolatedMart()
+    _record_complete_generation(ledger, mart, run_id="complete-run")
+    ledger.record_component(
+        promotion_run_id="newer-partial-run",
+        component="general",
+        epoch="2026-04",
+        ingest_run_id="job-202604",
+        target_db="serving_stage_named_db",
+        generation_db="generation-3",
+        tables=(TableBackup("general_live", "general_old", 1, "digest"),),
+    )
+
+    latest = ledger.generation("latest-good")
+
+    assert latest is not None
+    assert latest.promotion_run_id == "complete-run"
+
+
 @pytest.mark.parametrize("serving_db", ["jw_mart_stage", "jw_mart_bak", "old_stage_bak"])
 def test_retention_never_selects_runtime_serving_db_by_name(serving_db: str) -> None:
     ledger = _ledger()
@@ -179,7 +199,7 @@ def test_publish_backups_are_recorded_with_reverse_epoch_mapping() -> None:
         table_pairs=(("general_live", "general_live__old_run2"),),
     )
 
-    assert ledger.generation_for_epoch("2026-03").promotion_run_id == "run2"
+    assert ledger.generation("run2").status == "building"
     backup = ledger.components("run2")["general"][0]
     assert backup.expected_rows == 17
     assert backup.expected_digest == "old-general"
@@ -197,6 +217,18 @@ def test_publish_backups_are_recorded_with_reverse_epoch_mapping() -> None:
         component="general",
         table_pairs=(("general_live", "general_live__old_run2"),),
     )
+    for component in REQUIRED_COMPONENTS - {"general"}:
+        ledger.record_component(
+            promotion_run_id="run2",
+            component=component,
+            epoch="2026-03",
+            ingest_run_id="job-202603",
+            target_db="serving_stage_named_db",
+            generation_db="generation-2",
+            tables=(TableBackup(f"{component}_live", f"{component}_old", 1, "digest"),),
+        )
+
+    assert ledger.generation_for_epoch("2026-03").promotion_run_id == "run2"
 
 
 def test_publish_backup_identity_drift_is_rejected() -> None:

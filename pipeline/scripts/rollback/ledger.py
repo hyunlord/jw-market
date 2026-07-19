@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 import json
 from typing import Any
 
-from pipeline.scripts.rollback.models import PromotionGeneration, RollbackEvent, TableBackup
+from pipeline.scripts.rollback.models import (
+    REQUIRED_COMPONENTS,
+    PromotionGeneration,
+    RollbackEvent,
+    TableBackup,
+)
 
 
 _GENERATION_DDL = """
@@ -74,6 +79,8 @@ class PromotionLedger:
         ingest_run_id: str,
         serving_db: str,
         generation_db: str,
+        *,
+        status: str = "good",
     ) -> None:
         existing = self._execute(
             "SELECT epoch, ingest_run_id, serving_db, generation_db FROM promotion_generation "
@@ -90,7 +97,7 @@ class PromotionLedger:
             "INSERT INTO promotion_generation "
             "(promotion_run_id, epoch, ingest_run_id, serving_db, generation_db, status, promoted_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (*((promotion_run_id,) + identity), "good", _now()),
+            (*((promotion_run_id,) + identity), status, _now()),
         )
         self._conn.commit()
 
@@ -107,7 +114,14 @@ class PromotionLedger:
     ) -> None:
         if not tables:
             raise ValueError("promotion component requires at least one backup table")
-        self.record_generation(promotion_run_id, epoch, ingest_run_id, target_db, generation_db)
+        self.record_generation(
+            promotion_run_id,
+            epoch,
+            ingest_run_id,
+            target_db,
+            generation_db,
+            status="building",
+        )
         payload = json.dumps([asdict(table) for table in tables], sort_keys=True, separators=(",", ":"))
         existing = self._execute(
             "SELECT tables_json FROM promotion_component "
@@ -120,12 +134,29 @@ class PromotionLedger:
                 raise RuntimeError(
                     f"promotion component identity conflict: {promotion_run_id}/{component}"
                 )
+            self._mark_good_when_complete(promotion_run_id)
             return
         self._execute(
             "INSERT INTO promotion_component (promotion_run_id, component, tables_json) VALUES (?, ?, ?)",
             (promotion_run_id, component, payload),
         )
+        self._mark_good_when_complete(promotion_run_id)
         self._conn.commit()
+
+    def _mark_good_when_complete(self, promotion_run_id: str) -> None:
+        rows = self._execute(
+            "SELECT component FROM promotion_component WHERE promotion_run_id=?",
+            (promotion_run_id,),
+        ).fetchall()
+        components = {
+            str(next(iter(row.values())) if isinstance(row, dict) else row[0])
+            for row in rows
+        }
+        if components == REQUIRED_COMPONENTS:
+            self._execute(
+                "UPDATE promotion_generation SET status=? WHERE promotion_run_id=?",
+                ("good", promotion_run_id),
+            )
 
     def generation(self, target: str) -> PromotionGeneration | None:
         if target == "latest-good":
