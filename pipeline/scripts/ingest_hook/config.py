@@ -22,7 +22,7 @@ ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output roo
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
-    "jw-pipeline-orchestrator@sha256:fb606f176280a32437f1731b73e1e2f2c196fd9f0feddf74a2bc63bb29bed8ca"
+    "jw-pipeline-orchestrator@sha256:292609a301aed55d9bebcff537dd805debfc9277dc84ff2ba13416016704a0cf"
 )
 
 
