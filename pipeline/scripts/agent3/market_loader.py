@@ -16,6 +16,50 @@ from .source_loader import Agent3Source
 MARKET_DDL_PATH = Path(__file__).resolve().parent / "sql" / "005_create_agent3_brand_strength_market.sql"
 
 
+def _strip_market_id_keys(value: Any) -> Any:
+    """Recursively drop every ``market_id`` key from a JSON-like structure.
+
+    market_id is forbidden in serving payloads (brand + view type suffice), so it must
+    not appear inside the stored profile/candidate/summary blobs. Nested dicts and dicts
+    inside lists are cleaned; all other keys, values, and order are preserved so that a
+    canonical re-serialization differs from the original only by the removed key.
+    """
+    if isinstance(value, dict):
+        return {key: _strip_market_id_keys(item) for key, item in value.items() if key != "market_id"}
+    if isinstance(value, list):
+        return [_strip_market_id_keys(item) for item in value]
+    return value
+
+
+def _count_market_id_keys(value: Any) -> int:
+    """Return how many ``market_id`` keys exist at any depth (dicts and lists)."""
+    if isinstance(value, dict):
+        return sum((1 if key == "market_id" else 0) + _count_market_id_keys(item) for key, item in value.items())
+    if isinstance(value, list):
+        return sum(_count_market_id_keys(item) for item in value)
+    return 0
+
+
+def _reject_market_id_contamination(records: list["MarketStrengthRecord"]) -> None:
+    """Pre-write gate: refuse to persist any record whose payloads still carry market_id.
+
+    make_market_record strips market_id, so a non-zero count here means a caller built a
+    record bypassing the sanitizer. Failing closed keeps the forbidden key out of serving.
+    """
+    for record in records:
+        residual = (
+            _count_market_id_keys(record.profile_json)
+            + _count_market_id_keys(record.strength_candidates_json)
+            + _count_market_id_keys(record.strength_summary_json)
+        )
+        if residual:
+            raise ValueError(
+                "refusing market_id-contaminated write: "
+                f"{record.brand_key}/{record.source}/{record.market_id} has {residual} "
+                "market_id key(s) in stored payloads"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class ExistingMarketState:
     view_kind: MarketViewKind
@@ -83,6 +127,22 @@ def make_market_record(
     hash_candidates: list[dict[str, Any]] | None = None,
 ) -> MarketStrengthRecord:
     input_candidates = candidates if hash_candidates is None else hash_candidates
+    # Compute input_hash from the ORIGINAL (pre-strip) profile/candidates so existing
+    # stored input_hash values are unchanged and the same-hash skip path keeps working
+    # (no mass rewrite). Realigning the hash to the stripped payload is a later A-round.
+    input_hash = compute_market_input_hash(
+        view_kind=view_kind,
+        market_id=market_id,
+        brand_key=brand_key,
+        source=source,
+        profile=profile,
+        candidates=input_candidates,
+        workflow_rev=workflow_rev,
+    )
+    # Design B (boundary sanitize): strip market_id from the STORED payloads only, after
+    # hashing. Generation never reads market_id back from these dicts (it uses
+    # unit.market_id), and content-match compares these stripped payloads, so clean rows
+    # stay clean across regen instead of being re-contaminated.
     return MarketStrengthRecord(
         brand_key=brand_key,
         source=source,
@@ -90,20 +150,12 @@ def make_market_record(
         view_kind=view_kind,
         brand_name=brand_name,
         serving_brand_name=serving_brand_name,
-        profile_json=profile,
-        strength_candidates_json=candidates,
-        strength_summary_json=summary,
+        profile_json=_strip_market_id_keys(profile),
+        strength_candidates_json=_strip_market_id_keys(candidates),
+        strength_summary_json=_strip_market_id_keys(summary),
         workflow_id=workflow_id,
         workflow_rev=workflow_rev,
-        input_hash=compute_market_input_hash(
-            view_kind=view_kind,
-            market_id=market_id,
-            brand_key=brand_key,
-            source=source,
-            profile=profile,
-            candidates=input_candidates,
-            workflow_rev=workflow_rev,
-        ),
+        input_hash=input_hash,
         generation_status=generation_status,
         generated_at=datetime.now(timezone.utc),
     )
@@ -166,6 +218,7 @@ class Agent3MarketLoader:
     def upsert_many(self, records: list[MarketStrengthRecord]) -> int:
         if not records:
             return 0
+        _reject_market_id_contamination(records)
         sql = """
             INSERT INTO agent3_brand_strength_market
               (brand_key, source, market_id, view_kind, brand_name, serving_brand_name,

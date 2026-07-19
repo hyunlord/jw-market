@@ -11,6 +11,11 @@ import pymysql
 
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
 from pipeline.scripts.deploy.mart_load_ops import PROTECTED_TARGETS, PublishAction, _publish_one, connect_admin
+from pipeline.scripts.rollback.recording import (
+    add_promotion_identity_args,
+    identity_from_args,
+    record_mysql_component,
+)
 from pipeline.scripts.deploy.mart_load_ops import validate_schema_name
 from pipeline.scripts.deploy.mart_load_verify import quote_id, table_digest, table_exists
 
@@ -193,6 +198,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--catalog-root", type=Path, default=PROJECT_ROOT / "output" / "catalog")
     parser.add_argument("--allow-operating-target", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    add_promotion_identity_args(parser)
     return parser.parse_args(argv)
 
 
@@ -200,6 +206,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     conn = connect_admin()
     try:
+        identity = None
+        if not args.dry_run:
+            identity = identity_from_args(
+                args,
+                promotion_run_id=str(args.run_id),
+                serving_db=str(args.target_db),
+                required=True,
+            )
         summary = publish_strategic_reload_tables(
             conn,
             build_db=str(args.build_db),
@@ -209,6 +223,17 @@ def main(argv: list[str] | None = None) -> int:
             allow_operating_target=bool(args.allow_operating_target),
             dry_run=bool(args.dry_run),
         )
+        if identity is not None:
+            record_mysql_component(
+                conn,
+                identity=identity,
+                component="strategic",
+                table_pairs=tuple(
+                    (action.table, action.backup_table)
+                    for action in summary.actions
+                    if action.backup_table is not None
+                ),
+            )
     finally:
         conn.close()
     print(json.dumps(_summary_payload(summary), ensure_ascii=False, indent=2))

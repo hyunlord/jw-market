@@ -36,6 +36,11 @@ from pipeline.scripts.deploy.mart_load_verify import (  # noqa: E402
     find_bridge_reference_db,
     verify_loaded_tables,
 )
+from pipeline.scripts.rollback.recording import (  # noqa: E402
+    add_promotion_identity_args,
+    identity_from_args,
+    record_mysql_component,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -85,6 +90,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--general-cache-workers", type=int, default=4)
     parser.add_argument("--general-cache-group-batch-size", type=int, default=100)
+    add_promotion_identity_args(parser)
     return parser.parse_args(argv)
 
 
@@ -140,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
             summary["general_cache_refresh"] = _refresh_general_cache_after_mart_update(args, run_id)
             print(json.dumps({"event": "complete", **summary}, ensure_ascii=False, default=str))
             return 0
+        promotion_identity = identity_from_args(
+            args,
+            promotion_run_id=run_id,
+            serving_db=args.target_db,
+            required=True,
+        )
         guard_run(
             source_db=args.source_db,
             target_db=args.target_db,
@@ -190,6 +202,16 @@ def main(argv: list[str] | None = None) -> int:
                 source_db=args.source_db,
                 bridge_reference_db=bridge_reference_db,
                 include_strategic_ml_market=include_strategic,
+            )
+            record_mysql_component(
+                conn,
+                identity=promotion_identity,
+                component="general",
+                table_pairs=tuple(
+                    (action.table, action.backup_table)
+                    for action in actions
+                    if action.backup_table is not None
+                ),
             )
         finally:
             conn.close()
