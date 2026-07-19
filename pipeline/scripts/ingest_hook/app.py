@@ -17,12 +17,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from pipeline.scripts.ingest_hook import config, job_launcher
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
-from pipeline.scripts.ingest_hook.ledger import Ledger
+from pipeline.scripts.ingest_hook.ledger import Ledger, LedgerConnectionError
 
 
 class WebhookPayload(BaseModel):
@@ -95,6 +96,17 @@ class IngestService:
 
 def create_app(service: IngestService) -> FastAPI:
     app = FastAPI(title="jw-ingest-hook", docs_url=None, redoc_url=None)
+
+    @app.exception_handler(LedgerConnectionError)
+    def _ledger_connection_error(request: Request, exc: LedgerConnectionError) -> JSONResponse:
+        # The ingest ledger's mysql connection could not be revived (ping +
+        # reconnect + one retry all failed). Fail loud with a clear body so the
+        # caller/site sees the cause — never a silent success. The webhook is
+        # safely retriable: a stale-connection failure writes no ledger row.
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"ingest ledger database unavailable: {exc}"},
+        )
 
     @app.get("/healthz")
     def healthz() -> dict:
