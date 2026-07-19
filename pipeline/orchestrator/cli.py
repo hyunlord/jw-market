@@ -92,6 +92,13 @@ def _build_parser() -> argparse.ArgumentParser:
     incremental_rehearsal.add_argument("--comparison-output", required=True, type=Path)
     incremental_rehearsal.add_argument("--dry-run", action="store_true")
 
+    provision = sub.add_parser(
+        "provision-rehearsal",
+        help="create and grant only prefix-constrained isolated rehearsal schemas",
+    )
+    provision.add_argument("--target-db", required=True)
+    provision.add_argument("--cache-db", required=True)
+
     comparison = sub.add_parser(
         "compare-full",
         help="read-only census comparison of isolated full-rehearsal outputs",
@@ -203,6 +210,29 @@ def main(argv: list[str] | None = None) -> int:
         except RehearsalContractError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+
+    if args.command == "provision-rehearsal":
+        from pipeline.orchestrator.rehearsal_provision import (
+            ProvisionContractError,
+            RehearsalProvisionConfig,
+            provision_rehearsal_databases,
+        )
+
+        try:
+            provision_rehearsal_databases(
+                RehearsalProvisionConfig(
+                    host=os.environ.get("MARIADB_HOST", ""),
+                    port=int(os.environ.get("MARIADB_PORT", "3306")),
+                    root_password=os.environ.get("MARIADB_ROOT_PASSWORD", ""),
+                    writer_user=os.environ.get("REHEARSAL_WRITER_USER", ""),
+                    target_db=args.target_db,
+                    cache_db=args.cache_db,
+                )
+            )
+        except (ProvisionContractError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.command == "compare-full":
         from pipeline.orchestrator.full_rehearsal_compare import (
