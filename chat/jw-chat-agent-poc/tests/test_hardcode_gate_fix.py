@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.agent_loop.planner import _brand
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent, _catalog_dimension_for_level
@@ -40,6 +41,23 @@ def _resolver() -> BrandResolver:
     )
 
 
+def _mixed_market_resolver() -> BrandResolver:
+    return BrandResolver(
+        mode="cache",
+        brand_reader=StaticMetricsCacheReader(cache_brands=[], market_status=[]),
+        membership_reader=StaticMembershipReader(
+            (
+                {"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨병 시장"},
+                {
+                    "brand": "리바로",
+                    "market_id": "ml_006",
+                    "market_name": "고지혈증 치료제 시장",
+                },
+            )
+        ),
+    )
+
+
 def test_resolver_preserves_all_brand_market_memberships() -> None:
     resolution = _resolver().resolve("리바로 매출", allow_default=False)
 
@@ -61,6 +79,50 @@ def test_explicit_market_name_selects_matching_membership() -> None:
 
     assert resolution.market_id == "ml_008"
     assert resolution.requires_market_clarification is False
+
+
+def test_resolver_rejects_explicit_market_outside_brand_membership() -> None:
+    resolution = _mixed_market_resolver().resolve(
+        "고지혈증 시장에서 마운자로 점유율",
+        allow_default=False,
+    )
+
+    assert resolution.market_id is None
+    assert resolution.requested_market_id == "ml_006"
+    assert resolution.requested_market_name == "고지혈증 치료제 시장"
+    assert resolution.has_market_membership_mismatch is True
+
+
+def test_resolver_accepts_data_derived_market_name_alias_for_own_membership() -> None:
+    resolution = _mixed_market_resolver().resolve(
+        "당뇨병 시장에서 마운자로 점유율",
+        allow_default=False,
+    )
+
+    assert resolution.market_id == "ml_003"
+    assert resolution.requested_market_id == "ml_003"
+    assert resolution.has_market_membership_mismatch is False
+
+
+def test_chat_rejects_explicit_market_outside_brand_membership_before_tools() -> None:
+    result = ChatAgent(resolver=_mixed_market_resolver()).answer(
+        "고지혈증 시장에서 마운자로 점유율"
+    )
+
+    assert result["tool_calls"] == []
+    assert "마운자로는 요청한 고지혈증 치료제 시장에 포함되지 않습니다" in result["answer"]
+    assert "당뇨병 시장" in result["answer"]
+
+
+def test_agent_loop_rejects_explicit_market_outside_brand_membership_before_tools() -> None:
+    result = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture"),
+        resolver=_mixed_market_resolver(),
+    ).answer("고지혈증 시장에서 마운자로 점유율")
+
+    assert result["tool_calls"] == []
+    assert result["router_diagnostics"]["scope"] == "market_membership_mismatch"
+    assert "마운자로는 요청한 고지혈증 치료제 시장에 포함되지 않습니다" in result["answer"]
 
 
 def test_chat_returns_shared_market_clarification_instead_of_first_market() -> None:

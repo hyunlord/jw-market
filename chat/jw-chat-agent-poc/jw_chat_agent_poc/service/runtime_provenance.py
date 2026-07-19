@@ -143,8 +143,10 @@ def _qa_trace(
 ) -> dict[str, Any]:
     diagnostics = result.get("router_diagnostics")
     diagnostic_items = diagnostics if isinstance(diagnostics, Mapping) else {}
-    gate = str(diagnostic_items.get("mode") or "none")
-    gate_reason = str(diagnostic_items.get("reason") or "") or None
+    gate = str(diagnostic_items.get("gate") or diagnostic_items.get("mode") or "none")
+    gate_reason = str(
+        diagnostic_items.get("gate_reason") or diagnostic_items.get("reason") or ""
+    ) or None
     claim_gate = result.get("_qa_claim_gate")
     claim_items = claim_gate if isinstance(claim_gate, Mapping) else {}
     disposition = str(claim_items.get("disposition") or "")
@@ -158,7 +160,11 @@ def _qa_trace(
             "image_revision": str(version.get("git_sha") or version.get("release_id") or _UNKNOWN),
         },
         "routing": {
-            "scope": str(result.get("context_scope") or _UNKNOWN),
+            "scope": str(
+                result.get("context_scope")
+                or diagnostic_items.get("scope")
+                or _UNKNOWN
+            ),
             "route": _route(result),
             "gate": gate,
             "gate_reason": gate_reason,

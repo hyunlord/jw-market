@@ -28,7 +28,10 @@ from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidation
 from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
+from jw_chat_agent_poc.orchestrator.market_answer_contract import (
+    market_ambiguity_message,
+    market_membership_mismatch_message,
+)
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import add_stage, emit_completed_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
@@ -116,6 +119,35 @@ class ToolUseAgent:
                 "answer": markdown.markdown,
                 "markdown_response": markdown.to_dict(),
                 "sources": [portfolio_call.get("source") or "cache"],
+                "timing": timing,
+            }
+        mismatched = next(
+            (item for item in resolutions if item.has_market_membership_mismatch),
+            None,
+        )
+        if mismatched is not None:
+            message = market_membership_mismatch_message(
+                mismatched.canonical_brand,
+                mismatched.requested_market_name or mismatched.requested_market_id or "요청 시장",
+                mismatched.market_names or mismatched.market_ids,
+            )
+            return {
+                "question": question,
+                "resolution": asdict(mismatched),
+                "decomposition": [{"intent": "market_membership_validation", "status": "unsupported", "max_steps": 0}],
+                "router_diagnostics": {
+                    "mode": "agent_loop",
+                    "deterministic_execution": True,
+                    "scope": "market_membership_mismatch",
+                    "gate": "brand_market_membership",
+                    "gate_reason": "explicit_market_outside_brand_memberships",
+                },
+                "agent_trace": [],
+                "agent_loop_metrics": {"status": "unsupported", "steps": 0, "tool_calls": 0, "selected_tools": []},
+                "tool_calls": [],
+                "answer": message,
+                "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+                "sources": [],
                 "timing": timing,
             }
         ambiguous = next((item for item in resolutions if item.requires_market_clarification), None)

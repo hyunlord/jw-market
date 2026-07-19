@@ -180,6 +180,35 @@ def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(mo
     assert qa_trace["final"] == {"disposition": "unavailable", "body_empty": False}
 
 
+def test_trace_envelope_preserves_explicit_typed_gate_decision(monkeypatch) -> None:
+    monkeypatch.setenv("HOSTNAME", "chat-pod-fixture")
+    monkeypatch.setenv("JW_CHAT_GIT_SHA", "candidate-sha")
+    result = {
+        "router_diagnostics": {
+            "mode": "deterministic",
+            "scope": "market_membership_mismatch",
+            "gate": "brand_market_membership",
+            "gate_reason": "explicit_market_outside_brand_memberships",
+        },
+        "tool_calls": [],
+        "markdown_response": {"fact_md": "", "data_md": ""},
+    }
+
+    trace = trace_envelope(
+        question="고지혈증 시장에서 마운자로 점유율",
+        result=result,
+        answer="마운자로는 요청한 고지혈증 시장에 포함되지 않습니다.",
+        charts=(),
+        timing={"stages": []},
+        conversation_id="qa-membership-session",
+    )
+
+    routing = trace["qa_trace"]["routing"]
+    assert routing["scope"] == "market_membership_mismatch"
+    assert routing["gate"] == "brand_market_membership"
+    assert routing["gate_reason"] == "explicit_market_outside_brand_memberships"
+
+
 def test_number_absent_from_rendered_facts_remains_ungrounded() -> None:
     markdown_response = {
         "allowed_numbers": (),

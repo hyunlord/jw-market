@@ -89,6 +89,21 @@ def market_ambiguity_message(brand: str, markets: Sequence[str]) -> str:
     return f"{brand}는 {labels} 여러 시장에 속합니다. 어느 시장 기준으로 볼지 지정해 주세요."
 
 
+def market_membership_mismatch_message(
+    brand: str,
+    requested_market: str,
+    markets: Sequence[str],
+) -> str:
+    """Render the fail-closed response for an explicit brand-market mismatch."""
+
+    labels = "·".join(dict.fromkeys(str(market) for market in markets if market))
+    available = f" 확인된 소속 시장: {labels}." if labels else ""
+    return (
+        f"{brand}는 요청한 {requested_market}에 포함되지 않습니다."
+        f"{available} 브랜드 또는 시장을 확인해 주세요."
+    )
+
+
 def render_same_market_sales_answer(tool_calls: Sequence[Mapping[str, Any]]) -> str:
     """Render a verified same-market total from structured market-scope evidence."""
 

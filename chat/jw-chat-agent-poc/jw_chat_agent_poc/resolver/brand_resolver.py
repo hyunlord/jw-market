@@ -28,11 +28,20 @@ class BrandResolution:
     market_name: str | None = None
     market_ids: tuple[str, ...] = ()
     market_names: tuple[str, ...] = ()
+    requested_market_id: str | None = None
+    requested_market_name: str | None = None
     support_source: str = "fixture"
 
     @property
     def requires_market_clarification(self) -> bool:
         return len(self.market_ids) > 1 and self.market_id is None
+
+    @property
+    def has_market_membership_mismatch(self) -> bool:
+        return (
+            self.requested_market_id is not None
+            and self.requested_market_id not in self.market_ids
+        )
 
 
 class UnsupportedBrandError(LookupError):
@@ -69,21 +78,29 @@ class BrandResolver:
 
     def resolve(self, question_or_brand: str, allow_default: bool = False) -> BrandResolution:
         normalized = self._normalize(question_or_brand)
+        raw_items = self._items()
+        market_universe = self._market_universe(raw_items)
         items = sorted(
-            self._items(),
+            raw_items,
             key=lambda item: max(len(self._normalize(alias)) for alias in [item["canonical_brand"], *item.get("aliases", [])]),
             reverse=True,
         )
         for item in items:
             aliases = [item["canonical_brand"], *item.get("aliases", [])]
             if any(self._normalize(alias) in normalized for alias in aliases):
-                return self._to_resolution(item, question_or_brand)
+                return self._to_resolution(
+                    item,
+                    question_or_brand,
+                    market_universe=market_universe,
+                )
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brand}")
 
     def resolve_many(self, question_or_brands: str, allow_default: bool = False) -> tuple[BrandResolution, ...]:
         normalized = self._normalize(question_or_brands)
+        items = self._items()
+        market_universe = self._market_universe(items)
         spans: list[tuple[int, int, dict[str, Any]]] = []
-        for item in self._items():
+        for item in items:
             aliases = [item["canonical_brand"], *item.get("aliases", [])]
             for alias in aliases:
                 normalized_alias = self._normalize(str(alias))
@@ -105,7 +122,13 @@ class BrandResolver:
             if canonical in seen:
                 continue
             seen.add(canonical)
-            out.append(self._to_resolution(item, question_or_brands))
+            out.append(
+                self._to_resolution(
+                    item,
+                    question_or_brands,
+                    market_universe=market_universe,
+                )
+            )
         if out:
             return tuple(out)
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brands}")
@@ -229,27 +252,31 @@ class BrandResolver:
         return list(merged.values())
 
     @staticmethod
-    def _to_resolution(item: dict[str, Any], question: str = "") -> BrandResolution:
+    def _to_resolution(
+        item: dict[str, Any],
+        question: str = "",
+        *,
+        market_universe: tuple[tuple[str, str], ...] = (),
+    ) -> BrandResolution:
         molecule_en = tuple(str(value) for value in item.get("molecule_en", []))
-        memberships = tuple(
-            (str(market_id), str(market_name or market_id))
-            for market_id, market_name in item.get("market_memberships", ())
-            if market_id
-        )
-        if not memberships and item.get("market_id"):
-            memberships = ((str(item["market_id"]), str(item.get("market_name") or item["market_id"])),)
+        memberships = BrandResolver._item_memberships(item)
         market_ids = tuple(dict.fromkeys(market_id for market_id, _ in memberships))
-        normalized_question = BrandResolver._normalize(question)
-        explicit_market = next(
-            (
-                market_id
-                for market_id, market_name in memberships
-                if market_id.casefold() in question.casefold()
-                or (market_name and BrandResolver._normalize(market_name) in normalized_question)
-            ),
-            None,
+        requested_market = BrandResolver._explicit_market(
+            question,
+            market_universe or memberships,
         )
-        selected_market = explicit_market or (market_ids[0] if len(market_ids) == 1 else None)
+        requested_market_id = requested_market[0] if requested_market is not None else None
+        requested_market_name = requested_market[1] if requested_market is not None else None
+        explicit_membership = (
+            requested_market_id
+            if requested_market_id in market_ids
+            else None
+        )
+        has_mismatch = requested_market_id is not None and explicit_membership is None
+        selected_market = (
+            explicit_membership
+            or (market_ids[0] if len(market_ids) == 1 and not has_mismatch else None)
+        )
         selected_name = next((name for market_id, name in memberships if market_id == selected_market), None)
         return BrandResolution(
             canonical_brand=str(item["canonical_brand"]),
@@ -263,8 +290,70 @@ class BrandResolver:
             market_name=selected_name,
             market_ids=market_ids,
             market_names=tuple(name for _, name in memberships),
+            requested_market_id=requested_market_id,
+            requested_market_name=requested_market_name,
             support_source=str(item.get("support_source") or "fixture"),
         )
+
+    @staticmethod
+    def _item_memberships(item: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+        memberships = tuple(
+            (str(market_id), str(market_name or market_id))
+            for market_id, market_name in item.get("market_memberships", ())
+            if market_id
+        )
+        if memberships or not item.get("market_id"):
+            return memberships
+        market_id = str(item["market_id"])
+        return ((market_id, str(item.get("market_name") or market_id)),)
+
+    @staticmethod
+    def _market_universe(items: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
+        markets: dict[str, str] = {}
+        for item in items:
+            for market_id, market_name in BrandResolver._item_memberships(item):
+                markets.setdefault(market_id, market_name)
+        return tuple(markets.items())
+
+    @staticmethod
+    def _explicit_market(
+        question: str,
+        markets: tuple[tuple[str, str], ...],
+    ) -> tuple[str, str] | None:
+        question_casefold = question.casefold()
+        normalized_question = BrandResolver._normalize(question)
+        for market_id, market_name in markets:
+            if market_id.casefold() in question_casefold:
+                return market_id, market_name
+        candidates = sorted(
+            markets,
+            key=lambda item: len(BrandResolver._normalize(item[1])),
+            reverse=True,
+        )
+        for market_id, market_name in candidates:
+            normalized_name = BrandResolver._normalize(market_name)
+            if normalized_name and normalized_name in normalized_question:
+                return market_id, market_name
+        alias_matches: dict[str, tuple[str, str]] = {}
+        for market_id, market_name in candidates:
+            for alias in BrandResolver._market_query_aliases(market_name):
+                if alias in normalized_question:
+                    alias_matches.setdefault(market_id, (market_id, market_name))
+                    break
+        if len(alias_matches) == 1:
+            return next(iter(alias_matches.values()))
+        return None
+
+    @staticmethod
+    def _market_query_aliases(market_name: str) -> tuple[str, ...]:
+        """Derive only conservative query forms from the canonical market name."""
+
+        normalized_name = BrandResolver._normalize(market_name)
+        base_name = re.sub(r"시장$", "", normalized_name)
+        base_name = re.sub(r"치료제$", "", base_name)
+        if base_name == normalized_name or len(base_name) < 3:
+            return ()
+        return (f"{base_name}시장",)
 
     @staticmethod
     def _normalize(text: str) -> str:

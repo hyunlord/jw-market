@@ -29,7 +29,10 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     is_hira_disease_question,
 )
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.orchestrator.market_answer_contract import market_ambiguity_message
+from jw_chat_agent_poc.orchestrator.market_answer_contract import (
+    market_ambiguity_message,
+    market_membership_mismatch_message,
+)
 from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.orchestrator.question_intent import (
     allows_background_news_context,
@@ -176,6 +179,8 @@ class ChatAgent:
                 resolution = _document_resolution()
             else:
                 return finish(self._unsupported_brand(question, routes))
+        if resolution.has_market_membership_mismatch and not docs:
+            return finish(_market_membership_mismatch_result(question, resolution))
         if resolution.requires_market_clarification and not docs:
             return finish(_market_ambiguity_result(question, resolution))
         if resolution.support_source == "document_context" and any("metrics" in route.sources for route in routes):
@@ -420,6 +425,8 @@ class ChatAgent:
                 pre_resolved = self.resolver.resolve(question, allow_default=False)
             except UnsupportedBrandError:
                 pre_resolved = None
+        if pre_resolved is not None and pre_resolved.has_market_membership_mismatch:
+            return _market_membership_mismatch_result(question, pre_resolved), pre_resolved, None
         if pre_resolved is not None and pre_resolved.requires_market_clarification:
             return _market_ambiguity_result(question, pre_resolved), pre_resolved, None
         tool_result = run_external_tool_agent(
@@ -725,6 +732,29 @@ def _market_ambiguity_result(question: str, resolution: Any) -> dict[str, Any]:
         "resolution": asdict(resolution),
         "decomposition": [{"intent": "market_clarification", "status": "needs_clarification"}],
         "router_diagnostics": {"mode": "deterministic", "scope": "market_ambiguity"},
+        "tool_calls": [],
+        "answer": message,
+        "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+        "sources": [],
+    }
+
+
+def _market_membership_mismatch_result(question: str, resolution: Any) -> dict[str, Any]:
+    message = market_membership_mismatch_message(
+        resolution.canonical_brand,
+        resolution.requested_market_name or resolution.requested_market_id or "요청 시장",
+        resolution.market_names or resolution.market_ids,
+    )
+    return {
+        "question": question,
+        "resolution": asdict(resolution),
+        "decomposition": [{"intent": "market_membership_validation", "status": "unsupported"}],
+        "router_diagnostics": {
+            "mode": "deterministic",
+            "scope": "market_membership_mismatch",
+            "gate": "brand_market_membership",
+            "gate_reason": "explicit_market_outside_brand_memberships",
+        },
         "tool_calls": [],
         "answer": message,
         "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
