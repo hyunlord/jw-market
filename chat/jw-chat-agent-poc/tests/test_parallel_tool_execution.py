@@ -4,7 +4,10 @@ from threading import Lock
 import time
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
-from jw_chat_agent_poc.agent_loop.parallel_execution import execute_tool_batch
+from jw_chat_agent_poc.agent_loop.parallel_execution import (
+    PARALLEL_TOOL_WORKERS_FILE_ENV,
+    execute_tool_batch,
+)
 
 
 def test_parallel_support_tools_overlap_but_results_keep_plan_order() -> None:
@@ -95,6 +98,41 @@ def test_deep_read_only_market_tools_can_join_the_parallel_batch() -> None:
 
     assert state["peak"] == 4
     assert {item.mode for item in results} == {"parallel"}
+
+
+def test_worker_file_override_is_reloaded_without_restarting_process(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "parallel-workers"
+    monkeypatch.setenv(PARALLEL_TOOL_WORKERS_FILE_ENV, str(config))
+    plans = (
+        ToolCallPlan("search_news", {"brand": "리바로"}),
+        ToolCallPlan("get_disease_stats", {"brand": "리바로"}),
+        ToolCallPlan("search_clinical", {"brand": "리바로"}),
+    )
+
+    config.write_text("2\n", encoding="utf-8")
+    first_peak = _peak_parallelism(plans)
+    config.write_text("1\n", encoding="utf-8")
+    second_peak = _peak_parallelism(plans)
+
+    assert first_peak == 2
+    assert second_peak == 1
+
+
+def _peak_parallelism(plans: tuple[ToolCallPlan, ...]) -> int:
+    state = {"active": 0, "peak": 0}
+    lock = Lock()
+
+    def execute(plan: ToolCallPlan) -> str:
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.02)
+        with lock:
+            state["active"] -= 1
+        return plan.name
+
+    execute_tool_batch(plans, execute)
+    return state["peak"]
 
 
 def _delayed_name(plan: ToolCallPlan, delay: float) -> str:

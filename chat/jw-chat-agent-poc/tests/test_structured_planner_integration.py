@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from time import perf_counter
+from datetime import datetime
+from threading import Lock
+from time import perf_counter, sleep
 
 import pytest
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
+from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.orchestrator.insight_acceptance import verify_insight_answer
 from jw_chat_agent_poc.orchestrator.market_insights import forbidden_claims
 from jw_chat_agent_poc.orchestrator.provenance import evidence_from_calls
@@ -39,6 +42,68 @@ def test_default_agent_executes_structured_plan_without_llm() -> None:
         "get_brand_series",
         "get_top_brands",
     }
+
+
+def test_standard_structured_market_batch_overlaps_three_tools_and_records_trace(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_BQ_PARALLEL_TOOL_WORKERS", "3")
+    layer = _layer()
+    original = AgentToolFacade._execute
+    independent = {"get_brand_share", "get_brand_sales", "get_brand_series", "get_top_brands"}
+    state = {"active": 0, "peak": 0}
+    lock = Lock()
+
+    def tracked(self, name, arguments):
+        if name not in independent:
+            return original(self, name, arguments)
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        try:
+            sleep(0.04)
+            return original(self, name, arguments)
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr(AgentToolFacade, "_execute", tracked)
+    result = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    ).answer("리바로 최근 시장점유율 추이")
+
+    traces = [call["qa_trace"] for call in result["tool_calls"] if isinstance(call.get("qa_trace"), dict)]
+    assert state["peak"] == 3
+    assert len(traces) == 4
+    assert _trace_peak(traces) == 3
+
+
+def test_standard_structured_parallel_batch_isolates_one_tool_exception(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_BQ_PARALLEL_TOOL_WORKERS", "3")
+    layer = _layer()
+    original = AgentToolFacade._execute
+
+    def fail_sales(self, name, arguments):
+        if name == "get_brand_sales":
+            raise TimeoutError("injected sales timeout")
+        return original(self, name, arguments)
+
+    monkeypatch.setattr(AgentToolFacade, "_execute", fail_sales)
+    result = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    ).answer("리바로 최근 시장점유율 추이")
+
+    observations = result["agent_trace"][0]["observations"]
+    failed = [item for item in observations if item["tool_name"] == "get_brand_sales"]
+    succeeded = [item for item in observations if item["tool_name"] != "get_brand_sales"]
+    assert len(failed) == 1
+    assert failed[0]["call"]["render_data"]["status"] == "query_failed"
+    assert failed[0]["call"]["qa_trace"]["status"] == "query_failed"
+    assert len(succeeded) == 3
+    assert all(item["status"] == "ok" for item in succeeded)
+    assert result["answer"].strip()
 
 
 def test_explicit_quarter_sales_bypasses_injected_llm_planner() -> None:
@@ -222,6 +287,19 @@ def _layer() -> StrategicQueryLayer:
     totals = tuple(sum(series[index] for series in values.values()) for index in range(len(periods)))
     records = tuple(_record(brand, series, periods, totals) for brand, series in values.items())
     return StrategicQueryLayer(reader=StaticStrategicMartReader(records))
+
+
+def _trace_peak(traces: list[dict[str, object]]) -> int:
+    events: list[tuple[datetime, int]] = []
+    for trace in traces:
+        events.append((datetime.fromisoformat(str(trace["started_at"])), 1))
+        events.append((datetime.fromisoformat(str(trace["ended_at"])), -1))
+    active = 0
+    peak = 0
+    for _, delta in sorted(events, key=lambda item: (item[0], -item[1])):
+        active += delta
+        peak = max(peak, active)
+    return peak
 
 
 def _record(

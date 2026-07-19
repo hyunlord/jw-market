@@ -4,6 +4,7 @@ from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import time
 from typing import Generic, Literal, TypeVar
 
@@ -13,6 +14,8 @@ from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
 T = TypeVar("T")
 ExecutionMode = Literal["serial", "parallel"]
 PARALLEL_TOOL_WORKERS_ENV = "CHAT_BQ_PARALLEL_TOOL_WORKERS"
+PARALLEL_TOOL_WORKERS_FILE_ENV = "CHAT_BQ_PARALLEL_TOOL_WORKERS_FILE"
+DEFAULT_PARALLEL_TOOL_WORKERS_FILE = "/etc/jw-chat/runtime/parallel_tool_workers"
 _PARALLEL_SAFE_TOOLS = frozenset(
     {
         "search_news",
@@ -129,8 +132,24 @@ def _timed(
 def _worker_count(value: int | None) -> int:
     if value is not None:
         return max(1, min(int(value), 8))
+    configured = _worker_file_value()
+    if configured is not None:
+        return max(1, min(configured, 8))
     try:
         configured = int(os.environ.get(PARALLEL_TOOL_WORKERS_ENV, "3"))
     except ValueError:
         configured = 3
     return max(1, min(configured, 8))
+
+
+def _worker_file_value() -> int | None:
+    path = Path(
+        os.environ.get(
+            PARALLEL_TOOL_WORKERS_FILE_ENV,
+            DEFAULT_PARALLEL_TOOL_WORKERS_FILE,
+        )
+    )
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
