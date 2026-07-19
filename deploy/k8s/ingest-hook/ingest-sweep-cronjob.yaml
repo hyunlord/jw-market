@@ -22,6 +22,8 @@ spec:
         spec:
           restartPolicy: Never
           serviceAccountName: jw-ingest-hook
+          nodeSelector:
+            cloud.google.com/gke-nodepool: knp-jw-agn-dev-genos-api-01
           containers:
             - name: sweep
               image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:717014ae78bf3091e182ed0158fc9ff3618233b60fd76afc15457d4eba3b189d
