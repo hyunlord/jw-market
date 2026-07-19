@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from html import unescape
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
@@ -18,6 +18,52 @@ from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 GENERATION_ATTEMPTS = int(os.environ.get("GENOS_GENERATION_ATTEMPTS", "2"))
 FAIL_CLOSED_TEXT = "- 표에 포함된 확정 데이터만 기준으로 해석합니다."
+_RELATIONAL_FAILURE_STATUSES: Final[frozenset[str]] = frozenset(
+    {
+        "empty",
+        "error",
+        "failed",
+        "incomplete_split",
+        "mapping_failed",
+        "missing",
+        "no_data",
+        "not_found",
+        "query_failed",
+        "timeout",
+        "unsupported",
+    }
+)
+_RELATIONAL_FAILURE_TOOLS: Final[frozenset[str]] = frozenset(
+    {"general_view_unavailable", "query_failed"}
+)
+_RELATIONAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "get_brand_metric",
+        "get_brand_sales",
+        "get_brand_series",
+        "get_brand_share",
+        "general_view_unavailable",
+        "query_failed",
+    }
+)
+_QUERY_FAILURE_DECLARATION_RE = re.compile(
+    r"(?:현재\s*확인\s*불가|조회(?:를|가)?\s*(?:완료하지|하지)?\s*못|조회\s*(?:오류|실패)|"
+    r"도구\s*조회.{0,40}실패|조회할\s*수\s*없)",
+    re.IGNORECASE,
+)
+_RELATIONAL_ASSERTION_RE = re.compile(
+    r"(?:최근\s*\d+\s*(?:개월|분기|주|년)\s*연속\s*(?:상승|하락|증가|감소)|"
+    r"20\d{2}-(?:\d{2}|Q[1-4])\s*(?:정점|최고점|저점|최저점)\s*후\s*(?:하락|감소|반등|상승)|"
+    r"(?:20\d{2}-(?:\d{2}|Q[1-4])(?:가|이)?\s*)?"
+    r"(?:정점|최고점|저점|최저점)(?:입니다|이었습니다|을\s*기록|으로\s*(?:나타|확인))|"
+    r"(?:반등|재상승)(?:했|하였|세|입니다|으로\s*(?:전환|나타))|"
+    r"추월(?:했|하였|한|입니다)|"
+    r"우위(?:입니다|에\s*있|를\s*(?:보|차지|유지)|로\s*(?:전환|나타))|"
+    r"순위는\s*\d+위에서\s*\d+위로\s*변|"
+    r"시장보다.{0,12}(?:빠르게|느리게)\s*성장|"
+    r"성장률이.{0,30}성장률보다.{0,30}(?:빠르게|느리게)\s*성장)",
+    re.IGNORECASE,
+)
 _UNSUPPORTED_SERIES_RE = re.compile(r"(미지원|미보유|확인\s*안\s*됨|확인되지|데이터\s*없음|지원하지)")
 _NEGATED_UNSUPPORTED_RE = re.compile(r"(아니|아님|아닙)")
 _EMPTY_NEWS_SHELL_RE = re.compile(r"관련\s*기사에서.*언급이\s*확인|언급이\s*확인됐습니다|언급이\s*확인되었습니다")
@@ -125,6 +171,14 @@ class _RelationalSeriesFact:
     shares: tuple[_TrendPoint, ...]
     market: tuple[_TrendPoint, ...]
     ranks: tuple[_TrendPoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RelationalClaimGateResult:
+    answer: str
+    blocked_claim_count: int
+    blocked_reasons: tuple[str, ...]
+    disposition: str
 
 
 def generation_attempts() -> int:
@@ -1176,7 +1230,10 @@ def single_brand_trend_fact_markdown(
 ) -> str:
     """Return structured trend facts for LLM prose generation without fixed narrative templates."""
 
-    trend = _single_brand_trend_fact_from_calls(calls) or _single_brand_trend_fact_from_fact_md(fact_md)
+    trend = _single_brand_trend_fact_from_calls(calls)
+    if trend is None and _has_failed_relational_call(calls):
+        return ""
+    trend = trend or _single_brand_trend_fact_from_fact_md(fact_md)
     if trend is None:
         return ""
     rows = [
@@ -1930,15 +1987,323 @@ def enforce_relational_numeric_claims(
 ) -> str:
     """Recompute trend relations from raw series before releasing prose."""
 
-    fact = _relational_series_fact(question, calls)
-    if fact is None or not answer.strip():
+    return enforce_relational_numeric_claims_with_trace(question, answer, calls).answer
+
+
+def enforce_relational_numeric_claims_with_trace(
+    question: str,
+    answer: str,
+    calls: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+) -> RelationalClaimGateResult:
+    """Release only relation claims backed by successful, contiguous observations."""
+
+    call_items = tuple(call for call in calls or () if isinstance(call, dict))
+    fact = _relational_series_fact(question, call_items)
+    cached_as_of = _cached_fallback_as_of(call_items)
+    revised, blocked_count, blocked_reasons = _block_unsupported_relation_claims(
+        question,
+        answer,
+        fact,
+        cached_fallback=bool(cached_as_of),
+    )
+    if fact is not None and revised.strip():
+        revised = _repair_streak_claims(question, revised, fact)
+        revised = _repair_turning_claims(question, revised, fact)
+        revised = _repair_endpoint_direction_claims(question, revised, fact)
+        revised = _repair_rank_claims(revised, fact)
+        revised = _repair_growth_relation_claims(revised, fact)
+        revised = _ensure_terminal_relation_summary(question, revised, fact)
+
+    failed_metrics = _failed_relational_metrics(question, call_items)
+    successful_metrics = _successful_relational_metrics(call_items)
+    if cached_as_of:
+        disclosure = f"실시간 조회 실패. 아래는 {cached_as_of} 기준 저장 결과입니다."
+        revised = _prepend_disclosure(disclosure, revised)
+    elif failed_metrics and successful_metrics:
+        revised = _append_partial_failure_notice(revised, failed_metrics, successful_metrics)
+
+    blocked_to_empty = blocked_count > 0 and not _has_substantive_answer(revised)
+    failed_to_empty = _has_failed_relational_call(call_items) and not _has_substantive_answer(revised)
+    if blocked_to_empty or failed_to_empty:
+        revised = _typed_relational_failure_fallback(question, call_items)
+        disposition = "unavailable"
+    elif cached_as_of:
+        disposition = "cached_partial"
+    elif failed_metrics:
+        disposition = "partial" if successful_metrics else "unavailable"
+    else:
+        disposition = "answered"
+    return RelationalClaimGateResult(
+        answer=revised.strip(),
+        blocked_claim_count=blocked_count,
+        blocked_reasons=tuple(dict.fromkeys(blocked_reasons)),
+        disposition=disposition,
+    )
+
+
+def _block_unsupported_relation_claims(
+    question: str,
+    answer: str,
+    fact: _RelationalSeriesFact | None,
+    *,
+    cached_fallback: bool,
+) -> tuple[str, int, list[str]]:
+    if not answer.strip():
+        return "", 0, []
+    kept: list[str] = []
+    blocked_count = 0
+    blocked_reasons: list[str] = []
+    requested_metrics = _requested_relational_metrics(question)
+    for raw_line in answer.splitlines():
+        if raw_line.lstrip().startswith("|") or raw_line.lstrip().startswith("#"):
+            kept.append(raw_line)
+            continue
+        sentences = [
+            item
+            for item in re.split(r"(?<=[.!?])\s+", raw_line)
+            if item
+        ]
+        revised_sentences: list[str] = []
+        for sentence in sentences:
+            matches = list(_RELATIONAL_ASSERTION_RE.finditer(sentence))
+            if not matches:
+                revised_sentences.append(sentence)
+                continue
+            unsupported: list[tuple[re.Match[str], str]] = []
+            for match in matches:
+                metric = _relation_claim_metric(sentence, question)
+                reason = _unsupported_relation_reason(
+                    match.group(0),
+                    metric,
+                    requested_metrics,
+                    fact,
+                    cached_fallback=cached_fallback,
+                )
+                if reason:
+                    unsupported.append((match, reason))
+            if not unsupported:
+                revised_sentences.append(sentence)
+                continue
+            blocked_count += len(unsupported)
+            blocked_reasons.extend(reason for _match, reason in unsupported)
+            replacement = _remove_unsupported_relation_spans(sentence, tuple(match for match, _reason in unsupported))
+            if replacement:
+                revised_sentences.append(replacement)
+        if revised_sentences:
+            kept.append(" ".join(revised_sentences))
+        elif not raw_line.strip():
+            kept.append("")
+    if blocked_count == 0:
+        return answer.strip(), 0, []
+    return cleanup_markdown_answer("\n".join(kept)), blocked_count, blocked_reasons
+
+
+def _unsupported_relation_reason(
+    claim: str,
+    metric: str,
+    requested_metrics: frozenset[str],
+    fact: _RelationalSeriesFact | None,
+    *,
+    cached_fallback: bool,
+) -> str:
+    if cached_fallback and re.search(r"최근|현재|최신|연속", claim):
+        return "cached_result_not_current"
+    if requested_metrics and metric not in requested_metrics and "generic" not in requested_metrics:
+        return f"unrequested_{metric}_relation"
+    if fact is None:
+        return f"missing_{metric}_evidence"
+    if metric == "share":
+        points = fact.shares
+    elif metric == "rank":
+        points = fact.ranks
+    elif metric == "market":
+        points = fact.market
+    else:
+        points = fact.sales
+    if re.search(r"성장률.{0,40}시장\s*성장률|시장보다|시장\s*대비", claim):
+        if len(fact.sales) < 2 or len(fact.market) < 2:
+            return "missing_brand_market_evidence"
+        return ""
+    if re.search(r"연속", claim):
+        direction, count = _terminal_relation_streak(points)
+        if direction is None or count < 1:
+            return f"insufficient_contiguous_{metric}_observations"
+        return ""
+    if re.search(r"정점|최고점|저점|최저점|반등|순위|추월|우위", claim):
+        if len(points) < 2:
+            return f"insufficient_{metric}_observations"
+        return ""
+    return "" if len(points) >= 2 else f"insufficient_{metric}_observations"
+
+
+def _relation_claim_metric(sentence: str, question: str) -> str:
+    if re.search(r"점유율|\bMS\b", sentence, re.IGNORECASE):
+        return "share"
+    if re.search(r"순위|몇\s*위|랭킹|추월|우위|Top\s*\d*|상위\s*\d*", sentence, re.IGNORECASE):
+        return "rank"
+    if re.search(r"시장\s*(?:대비|성장률)|시장보다", sentence):
+        return "market"
+    if re.search(r"매출|처방조제액|실적", sentence):
+        return "sales"
+    requested = _requested_relational_metrics(question)
+    concrete = tuple(metric for metric in requested if metric != "generic")
+    return concrete[0] if len(concrete) == 1 else "sales"
+
+
+def _requested_relational_metrics(question: str) -> frozenset[str]:
+    metrics: set[str] = set()
+    if re.search(r"점유율|\bMS\b", question, re.IGNORECASE):
+        metrics.add("share")
+    if re.search(r"매출|처방조제액|실적", question):
+        metrics.add("sales")
+    if re.search(r"순위|몇\s*위|위치|랭킹|상위\s*\d*|Top\s*\d*", question, re.IGNORECASE):
+        metrics.add("rank")
+    if re.search(r"시장\s*(?:대비|성장률)|시장보다", question):
+        metrics.add("market")
+    if not metrics and re.search(r"추이|변화|성장|흐름|어때", question):
+        metrics.add("generic")
+    return frozenset(metrics)
+
+
+def _remove_unsupported_relation_spans(
+    sentence: str,
+    matches: tuple[re.Match[str], ...],
+) -> str:
+    revised = sentence
+    for match in reversed(matches):
+        prefix = revised[: match.start()]
+        suffix = revised[match.end() :]
+        if re.search(r"\d", prefix) and re.search(r"(?:억원|원|%|위|건|명)", prefix):
+            prefix = re.sub(r"(?:이며|이고|지만|,|·)\s*$", "", prefix).rstrip()
+            revised = f"{prefix}{suffix}".strip()
+        else:
+            return ""
+    revised = re.sub(r"\s{2,}", " ", revised).strip()
+    revised = re.sub(r"\s+([.!?])", r"\1", revised)
+    if revised and not revised.endswith((".", "!", "?")):
+        revised += "."
+    return revised
+
+
+def _call_status(call: dict[str, Any]) -> str:
+    data = call.get("render_data")
+    top_level = str(call.get("status") or "").strip().lower()
+    nested = str(data.get("status") or "").strip().lower() if isinstance(data, dict) else ""
+    return top_level or nested
+
+
+def _call_relational_metrics(call: dict[str, Any]) -> frozenset[str]:
+    data = call.get("render_data")
+    if not isinstance(data, dict):
+        return frozenset()
+    metric = str(data.get("metric") or "").strip().lower()
+    tool = str(call.get("tool") or "").strip().lower()
+    metrics: set[str] = set()
+    if metric in {"sales", "revenue"} or tool == "get_brand_sales":
+        metrics.add("sales")
+    if metric in {"market_share", "share", "ms"} or tool == "get_brand_share":
+        metrics.add("share")
+    if metric in {"rank", "ranking", "market_top_brands"} or tool == "get_top_brands":
+        metrics.add("rank")
+    series = data.get("brand_value_series_10pt")
+    if isinstance(series, list):
+        if any(isinstance(item, dict) and any(key in item for key in ("value_억원", "value_krw")) for item in series):
+            metrics.add("sales")
+        if any(isinstance(item, dict) and "ms_pct" in item for item in series):
+            metrics.add("share")
+        if any(isinstance(item, dict) and "rank" in item for item in series):
+            metrics.add("rank")
+    market_series = data.get("market_size_series")
+    if isinstance(market_series, list) and market_series:
+        metrics.add("market")
+    return frozenset(metrics)
+
+
+def _failed_relational_metrics(question: str, calls: tuple[dict[str, Any], ...]) -> frozenset[str]:
+    failed: set[str] = set()
+    requested = _requested_relational_metrics(question)
+    for call in calls:
+        if not _relational_call_failed(call):
+            continue
+        metrics = _call_relational_metrics(call)
+        failed.update(metrics or (requested - {"generic"}) or {"sales"})
+    return frozenset(failed)
+
+
+def _successful_relational_metrics(calls: tuple[dict[str, Any], ...]) -> frozenset[str]:
+    successful: set[str] = set()
+    for call in calls:
+        if not _relational_call_failed(call):
+            successful.update(_call_relational_metrics(call))
+    return frozenset(successful)
+
+
+def _cached_fallback_as_of(calls: tuple[dict[str, Any], ...]) -> str:
+    if not any(_relational_call_failed(call) for call in calls):
+        return ""
+    for call in calls:
+        if _relational_call_failed(call):
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        cache_hit = bool(call.get("cache_hit") or data.get("cache_hit"))
+        if not cache_hit:
+            continue
+        return str(
+            call.get("data_as_of")
+            or data.get("data_as_of")
+            or data.get("period")
+            or "기준시점 미확인"
+        )
+    return ""
+
+
+def _prepend_disclosure(disclosure: str, answer: str) -> str:
+    if answer.strip():
+        return cleanup_markdown_answer(f"{disclosure}\n\n{answer}")
+    return cleanup_markdown_answer(
+        f"{disclosure}\n\n확인된 범위: 저장된 수치만 확인할 수 있습니다.\n\n"
+        "대안: 조회 조건을 확인해 재조회하거나 기간을 지정해 주세요."
+    )
+
+
+def _append_partial_failure_notice(
+    answer: str,
+    failed_metrics: frozenset[str],
+    successful_metrics: frozenset[str],
+) -> str:
+    labels = {"sales": "매출", "share": "점유율", "rank": "순위", "market": "시장 비교"}
+    failed = "·".join(labels.get(metric, metric) for metric in sorted(failed_metrics - successful_metrics))
+    if not failed:
         return answer
-    revised = _repair_streak_claims(question, answer, fact)
-    revised = _repair_turning_claims(question, revised, fact)
-    revised = _repair_endpoint_direction_claims(question, revised, fact)
-    revised = _repair_rank_claims(revised, fact)
-    revised = _repair_growth_relation_claims(revised, fact)
-    return _ensure_terminal_relation_summary(question, revised, fact)
+    notice = f"확인 불가 범위: {failed} 조회에 실패했습니다. 확인된 성공 데이터만 표시합니다."
+    return cleanup_markdown_answer(f"{answer}\n\n{notice}" if answer.strip() else notice)
+
+
+def _has_substantive_answer(answer: str) -> bool:
+    text = re.sub(r"(?m)^#{1,6}\s+.*$", "", answer)
+    text = re.sub(r"(?m)^\|.*\|$", "", text)
+    return bool(text.strip())
+
+
+def _typed_relational_failure_fallback(question: str, calls: tuple[dict[str, Any], ...]) -> str:
+    statuses = tuple(dict.fromkeys(_call_status(call) or "failed" for call in calls if _relational_call_failed(call)))
+    reason = "·".join(statuses) if statuses else "관계 근거 부족"
+    metric_labels = {
+        "sales": "매출",
+        "share": "점유율",
+        "rank": "순위",
+        "market": "시장 비교",
+        "generic": "요청 지표",
+    }
+    requested = _requested_relational_metrics(question)
+    requested_label = "·".join(metric_labels.get(metric, metric) for metric in sorted(requested)) or "요청 지표"
+    return cleanup_markdown_answer(
+        "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.\n\n"
+        f"상태: 확인 불가\n\n사유: {requested_label} 도구 상태 {reason}\n\n"
+        "확인된 범위: 없음\n\n대안: 조회 조건을 확인해 재조회하거나 브랜드와 기간을 지정해 주세요."
+    )
 
 
 def _relational_series_fact(
@@ -1947,6 +2312,8 @@ def _relational_series_fact(
 ) -> _RelationalSeriesFact | None:
     candidates: list[tuple[str, dict[str, Any]]] = []
     for call in calls or ():
+        if _relational_call_failed(call):
+            continue
         data = call.get("render_data")
         if not isinstance(data, dict):
             continue
@@ -1979,6 +2346,68 @@ def _relational_series_fact(
         market=market,
         ranks=ranks,
     )
+
+
+def _relational_call_failed(call: dict[str, Any]) -> bool:
+    tool = str(call.get("tool") or "").strip().lower()
+    if tool in _RELATIONAL_FAILURE_TOOLS:
+        return True
+    containers: list[dict[str, Any]] = [call]
+    render_data = call.get("render_data")
+    if isinstance(render_data, dict):
+        containers.append(render_data)
+        for key in ("brand_value_series_10pt", "market_size_series"):
+            series = render_data.get(key)
+            if isinstance(series, list):
+                containers.extend(item for item in series if isinstance(item, dict))
+    for container in containers:
+        if container.get("ok") is False:
+            return True
+        for key in ("status", "source_status", "tool_status"):
+            if key not in container:
+                continue
+            status = str(container.get(key) or "").strip().lower()
+            if status in _RELATIONAL_FAILURE_STATUSES:
+                return True
+    return False
+
+
+def _has_failed_relational_call(
+    calls: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+) -> bool:
+    for call in calls or ():
+        if not _relational_call_failed(call):
+            continue
+        tool = str(call.get("tool") or "").strip().lower()
+        render_data = call.get("render_data")
+        has_series = isinstance(render_data, dict) and any(
+            key in render_data for key in ("brand_value_series_10pt", "market_size_series")
+        )
+        if tool in _RELATIONAL_TOOL_NAMES or has_series:
+            return True
+    return False
+
+
+def _question_requests_relation_summary(question: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:추이|변화|성장|증가|감소|상승|하락|흐름|어때|최근\s*월\s*매출)",
+            question,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _drop_relational_assertions(answer: str) -> str:
+    kept_lines: list[str] = []
+    for line in answer.splitlines():
+        sentences = re.split(r"(?<=[.!?])\s+", line)
+        kept_sentences = [sentence for sentence in sentences if not _RELATIONAL_ASSERTION_RE.search(sentence)]
+        if kept_sentences:
+            kept_lines.append(" ".join(kept_sentences))
+        elif not line.strip():
+            kept_lines.append("")
+    return cleanup_markdown_answer("\n".join(kept_lines))
 
 
 def _relation_points(raw_series: Any, metric: str) -> tuple[_TrendPoint, ...]:
@@ -2034,6 +2463,9 @@ def _ensure_terminal_relation_summary(
     answer: str,
     fact: _RelationalSeriesFact,
 ) -> str:
+    requested_metrics = _requested_relational_metrics(question)
+    if requested_metrics and "generic" not in requested_metrics and not requested_metrics.intersection({"sales", "share"}):
+        return answer
     share_question = "점유율" in question or re.search(r"\bMS\b", question, re.IGNORECASE)
     points = fact.shares if share_question else fact.sales
     metric = "점유율" if points is fact.shares else "매출"
@@ -2176,10 +2608,30 @@ def _terminal_relation_streak(points: tuple[_TrendPoint, ...]) -> tuple[str | No
         return None, 0
     count = 0
     for previous, current in zip(reversed(points[:-1]), reversed(points[1:]), strict=True):
+        if not _adjacent_periods(previous.period, current.period):
+            break
         if _relation_direction(previous.value, current.value) != latest_direction:
             break
         count += 1
     return latest_direction, count
+
+
+def _adjacent_periods(previous: str, current: str) -> bool:
+    previous_key = _period_sort_key(previous)
+    current_key = _period_sort_key(current)
+    if re.fullmatch(r"20\d{2}-Q[1-4]", previous, re.IGNORECASE) and re.fullmatch(
+        r"20\d{2}-Q[1-4]", current, re.IGNORECASE
+    ):
+        previous_index = previous_key[0] * 4 + (previous_key[1] - 1) // 3
+        current_index = current_key[0] * 4 + (current_key[1] - 1) // 3
+        return current_index - previous_index == 1
+    if re.fullmatch(r"20\d{2}-\d{2}", previous) and re.fullmatch(r"20\d{2}-\d{2}", current):
+        previous_index = previous_key[0] * 12 + previous_key[1]
+        current_index = current_key[0] * 12 + current_key[1]
+        return current_index - previous_index == 1
+    if re.fullmatch(r"20\d{2}", previous) and re.fullmatch(r"20\d{2}", current):
+        return current_key[0] - previous_key[0] == 1
+    return False
 
 
 def _relation_direction(previous: float, current: float) -> str | None:
@@ -2869,6 +3321,8 @@ def _single_brand_trend_fact_from_calls(
     calls: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
 ) -> _SingleBrandTrendFact | None:
     for call in calls or ():
+        if _relational_call_failed(call):
+            continue
         data = call.get("render_data")
         if not isinstance(data, dict):
             continue

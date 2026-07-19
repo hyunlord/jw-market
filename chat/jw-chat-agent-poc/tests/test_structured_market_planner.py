@@ -4,7 +4,10 @@ import pytest
 
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
-from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
+from jw_chat_agent_poc.agent_loop.structured_planner import (
+    plan_structured_market_question,
+    structured_metric_owner,
+)
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.query_layer.catalog import default_catalog
 
@@ -31,6 +34,26 @@ STRUCTURED_QUESTIONS = (
     "악템라 채널 구성",
     "헴리브라 진료과 구성",
 )
+
+
+@pytest.mark.parametrize(
+    ("question", "owner"),
+    (
+        ("고지혈증 시장 HHI", "market"),
+        ("고지혈증 시장 CR5", "market"),
+        ("리바로 시장 규모", "market"),
+        ("고지혈증 시장 상위 5개 브랜드", "market"),
+        ("리바로 시장점유율", "brand"),
+        ("리바로 매출", "brand"),
+        ("리바로는 몇 위야", "brand"),
+        ("고지혈증 시장에서 없는브랜드ABC 점유율", "brand"),
+    ),
+)
+def test_structured_metric_owner_uses_metric_semantics_not_market_token(
+    question: str,
+    owner: str,
+) -> None:
+    assert structured_metric_owner(question) == owner
 
 
 def test_structured_slot_planner_hits_at_least_seventy_percent_without_llm() -> None:

@@ -75,6 +75,8 @@ def trace_envelope(
 ) -> dict[str, Any]:
     """Build request-local trace metadata without changing the public answer body."""
 
+    trace_id = uuid4().hex
+    version = version_payload()
     markdown_response = result.get("markdown_response") if isinstance(result.get("markdown_response"), Mapping) else {}
     fact_md = _markdown_field(markdown_response, "fact_md") or _markdown_field(markdown_response, "data_md")
     claim_report = claim_policy_report(answer, fact_md)
@@ -92,11 +94,11 @@ def trace_envelope(
         answer_contract_status=answer_contract_status,
     )
     return {
-        "trace_id": uuid4().hex,
+        "trace_id": trace_id,
         "conversation_id": conversation_id,
         "question": question,
         "scope": str(result.get("context_scope") or _UNKNOWN),
-        "version": version_payload(),
+        "version": version,
         "intent": _intent(result),
         "route": _route(result),
         "model_stages": {
@@ -121,7 +123,82 @@ def trace_envelope(
         "token_usage": _token_usage(timing),
         "chart_count": len(charts),
         "timing_stage_count": len(timing.get("stages", ())) if isinstance(timing.get("stages"), list) else 0,
+        "qa_trace": _qa_trace(
+            trace_id=trace_id,
+            conversation_id=conversation_id,
+            result=result,
+            answer=answer,
+            version=version,
+        ),
     }
+
+
+def _qa_trace(
+    *,
+    trace_id: str,
+    conversation_id: str | None,
+    result: Mapping[str, Any],
+    answer: str,
+    version: Mapping[str, Any],
+) -> dict[str, Any]:
+    diagnostics = result.get("router_diagnostics")
+    diagnostic_items = diagnostics if isinstance(diagnostics, Mapping) else {}
+    gate = str(diagnostic_items.get("mode") or "none")
+    gate_reason = str(diagnostic_items.get("reason") or "") or None
+    claim_gate = result.get("_qa_claim_gate")
+    claim_items = claim_gate if isinstance(claim_gate, Mapping) else {}
+    disposition = str(claim_items.get("disposition") or "")
+    if not disposition:
+        disposition = "empty" if not answer.strip() else "answered"
+    return {
+        "request": {
+            "request_id": trace_id,
+            "session_id": conversation_id,
+            "pod": os.environ.get("HOSTNAME") or _UNKNOWN,
+            "image_revision": str(version.get("git_sha") or version.get("release_id") or _UNKNOWN),
+        },
+        "routing": {
+            "scope": str(result.get("context_scope") or _UNKNOWN),
+            "route": _route(result),
+            "gate": gate,
+            "gate_reason": gate_reason,
+        },
+        "tools": _qa_tool_calls(result),
+        "claims": {
+            "blocked_count": int(claim_items.get("blocked_claim_count") or 0),
+            "blocked_reasons": tuple(str(item) for item in claim_items.get("blocked_reasons", ()) if str(item)),
+        },
+        "final": {
+            "disposition": disposition,
+            "body_empty": not bool(answer.strip()),
+        },
+    }
+
+
+def _qa_tool_calls(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    calls = result.get("tool_calls")
+    if not isinstance(calls, list):
+        return ()
+    projected: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, Mapping):
+            continue
+        trace = call.get("qa_trace")
+        trace_items = trace if isinstance(trace, Mapping) else {}
+        render_data = call.get("render_data")
+        render_items = render_data if isinstance(render_data, Mapping) else {}
+        projected.append(
+            {
+                "name": _public_tool_name(call) if isinstance(call.get("tool"), str) else _UNKNOWN,
+                "started_at": trace_items.get("started_at"),
+                "ended_at": trace_items.get("ended_at"),
+                "status": trace_items.get("status") or call.get("status") or render_items.get("status") or _UNKNOWN,
+                "row_count": trace_items.get("row_count"),
+                "data_as_of": trace_items.get("data_as_of"),
+                "cache_hit": bool(trace_items.get("cache_hit")),
+            }
+        )
+    return tuple(projected)
 
 
 def _numeric_grounding_response(

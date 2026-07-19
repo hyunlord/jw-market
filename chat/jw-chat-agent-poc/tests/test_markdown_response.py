@@ -84,6 +84,97 @@ def _relational_series_call(brand: str = "리바로") -> dict[str, object]:
     }
 
 
+def _failed_relational_series_call(
+    brand: str,
+    *,
+    status: str = "query_failed",
+) -> dict[str, object]:
+    call = _relational_series_call(brand)
+    call["status"] = status
+    render_data = call["render_data"]
+    assert isinstance(render_data, dict)
+    render_data["status"] = status
+    return call
+
+
+@pytest.mark.parametrize(
+    ("question", "brand", "status", "invented_claim"),
+    (
+        ("마운자로 매출 추이", "마운자로", "query_failed", "마운자로 매출은 최근 3분기 연속 상승했습니다."),
+        ("자누비아 점유율", "자누비아", "error", "자누비아 점유율은 최근 9분기 연속 하락했습니다."),
+    ),
+)
+def test_relational_numeric_gate_drops_trend_claims_after_query_failure(
+    question: str,
+    brand: str,
+    status: str,
+    invented_claim: str,
+) -> None:
+    failure = "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다."
+
+    revised = enforce_relational_numeric_claims(
+        question,
+        f"{failure}\n\n{invented_claim}",
+        [_failed_relational_series_call(brand, status=status)],
+    )
+
+    assert failure in revised
+    assert invented_claim not in revised
+    assert "연속 상승" not in revised
+    assert "연속 하락" not in revised
+
+
+@pytest.mark.parametrize("question", ("경쟁사 대비 리바로 위치", "리바로는 몇 위야"))
+def test_relational_numeric_gate_drops_unrelated_trend_after_partial_failure(question: str) -> None:
+    answer = (
+        "현재 확인 불가: 일반뷰 도구 조회 실패입니다.\n\n"
+        "리바로 매출은 최근 2개월 연속 하락했습니다."
+    )
+    failed_general = {
+        "tool": "general_view_unavailable",
+        "status": "error",
+        "render_data": {"status": "error"},
+    }
+
+    revised = enforce_relational_numeric_claims(
+        question,
+        answer,
+        [_relational_series_call(), failed_general],
+    )
+
+    assert "현재 확인 불가" in revised
+    assert "최근 2개월 연속 하락" not in revised
+
+
+def test_single_brand_trend_fact_is_blocked_when_relational_tool_failed() -> None:
+    fact_md = """### 매출 시계열 fact
+| 브랜드 | 기간 | 매출 | MS |
+| --- | --- | ---: | ---: |
+| 마운자로 | 2026-04 | 100.00억원 | 10.00% |
+| 마운자로 | 2026-05 | 110.00억원 | 11.00% |
+"""
+
+    trend_fact = single_brand_trend_fact_markdown(
+        fact_md,
+        [_failed_relational_series_call("마운자로")],
+    )
+
+    assert trend_fact == ""
+
+
+def test_relational_numeric_gate_uses_successful_series_when_an_unrelated_call_failed() -> None:
+    successful = _relational_series_call()
+    failed_news = {"tool": "search_news", "status": "error", "render_data": {"status": "error"}}
+
+    revised = enforce_relational_numeric_claims(
+        "리바로 최근 월 매출",
+        "리바로 매출은 최근 2개월 연속 상승했습니다.",
+        [failed_news, successful],
+    )
+
+    assert "리바로 매출은 최근 2개월 연속 하락했습니다" in revised
+
+
 def test_relational_numeric_gate_corrects_recent_sales_direction_from_raw_series() -> None:
     answer = "리바로 매출은 최근 2개월 연속 상승했습니다."
 
@@ -205,11 +296,15 @@ def test_relational_numeric_gate_replays_captured_relation_failures() -> None:
 def test_relational_numeric_gate_fails_closed_for_ambiguous_brand_series() -> None:
     answer = "최근 2개월 연속 상승했습니다."
 
-    assert enforce_relational_numeric_claims(
+    revised = enforce_relational_numeric_claims(
         "시장 점유율 변화 설명해줘",
         answer,
         [_relational_series_call("리바로"), _relational_series_call("리바로젯")],
-    ) == answer
+    )
+
+    assert "최근 2개월 연속 상승" not in revised
+    assert "상태: 확인 불가" in revised
+    assert "대안:" in revised
 
 
 def test_relational_numeric_gate_does_not_rewrite_competitor_relations() -> None:

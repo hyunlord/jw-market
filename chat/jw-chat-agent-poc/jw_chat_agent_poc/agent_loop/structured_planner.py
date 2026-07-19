@@ -30,6 +30,7 @@ class StructuredPlan:
 @dataclass(frozen=True, slots=True)
 class MetricSpec:
     name: str
+    owner: str
     pattern: re.Pattern[str]
     tools: tuple[str, ...]
 
@@ -43,35 +44,41 @@ class AnswerModeSpec:
 _METRICS: Final[tuple[MetricSpec, ...]] = (
     MetricSpec(
         "brand_share",
+        "brand",
         re.compile(r"점유율|시장점유율|\bMS\b", re.IGNORECASE),
         ("get_brand_share", "get_brand_sales", "get_brand_series", "get_top_brands"),
     ),
     MetricSpec(
         "brand_sales",
+        "brand",
         re.compile(r"매출|처방조제액|실적"),
         ("get_brand_sales", "get_brand_share", "get_brand_series", "get_top_brands"),
     ),
     MetricSpec(
         "brand_growth",
+        "brand",
         re.compile(r"성장률|증감률|성장"),
         ("get_brand_series", "get_brand_sales", "get_top_brands"),
     ),
     MetricSpec(
         "brand_rank",
-        re.compile(r"순위|랭킹|rank", re.IGNORECASE),
+        "brand",
+        re.compile(r"순위|몇\s*위|랭킹|rank", re.IGNORECASE),
         ("get_brand_share", "get_brand_series", "get_top_brands"),
     ),
     MetricSpec(
         "market_top",
+        "market",
         re.compile(r"상위\s*\d*|top\s*\d*", re.IGNORECASE),
         ("get_top_brands", "get_brand_series"),
     ),
     MetricSpec(
         "market_structure",
+        "market",
         re.compile(r"HHI|CR5|시장\s*구조|집중도", re.IGNORECASE),
         ("get_top_brands", "get_brand_series"),
     ),
-    MetricSpec("market_size", re.compile(r"시장\s*규모|시장규모"), ("get_brand_series", "get_top_brands")),
+    MetricSpec("market_size", "market", re.compile(r"시장\s*규모|시장규모"), ("get_brand_series", "get_top_brands")),
 )
 _AXES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("channel", re.compile(r"채널|channel", re.IGNORECASE), "get_brand_channel_breakdown"),
@@ -94,6 +101,13 @@ _TOOL_ARGUMENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
 
 def deterministic_market_planner_enabled() -> bool:
     return os.environ.get("CHAT_DETERMINISTIC_MARKET_PLANNER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def structured_metric_owner(question: str) -> str | None:
+    """Return the owner of the first metric selected by the canonical planner."""
+
+    metric = next((item for item in _METRICS if item.pattern.search(question)), None)
+    return metric.owner if metric is not None else None
 
 
 def plan_structured_market_question(

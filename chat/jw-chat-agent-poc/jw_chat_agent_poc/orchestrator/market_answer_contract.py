@@ -40,42 +40,44 @@ def enforce_market_answer_contract(
     if calls and all(_is_file_tool(call) for call in calls):
         return answer
     relevant_calls = _calls_matching_question(question, calls)
+    successful_relevant_calls = tuple(call for call in relevant_calls if not _call_failed(call))
+    contract_calls = successful_relevant_calls or relevant_calls
     postcheck_answer = _strategy_market_size_postcheck(question, relevant_calls)
     if postcheck_answer:
         return _public_language(question, postcheck_answer)
-    status_answer = _status_answer(question, calls)
+    status_answer = _status_answer(question, relevant_calls or calls)
     contracted = status_answer
     unresolved_answer = ""
     if not contracted:
         unresolved_answer = _unresolved_entity_answer(question, answer, calls)
         contracted = unresolved_answer
     if not contracted:
-        contracted = _restrained_interpretation_answer(question, relevant_calls)
+        contracted = _restrained_interpretation_answer(question, contract_calls)
     if not contracted:
-        contracted = _strategy_market_answer(question, relevant_calls)
+        contracted = _strategy_market_answer(question, contract_calls)
     if not contracted:
-        contracted = _brand_market_size_answer(question, relevant_calls)
+        contracted = _brand_market_size_answer(question, contract_calls)
     if not contracted:
-        contracted = _concentration_answer(question, relevant_calls)
+        contracted = _concentration_answer(question, contract_calls)
     if not contracted:
-        contracted = _channel_ranking_answer(question, relevant_calls)
+        contracted = _channel_ranking_answer(question, contract_calls)
     if not contracted:
-        contracted = _dimension_answer(question, relevant_calls)
+        contracted = _dimension_answer(question, contract_calls)
     if not contracted:
-        contracted = _brand_comparison_answer(question, relevant_calls)
+        contracted = _brand_comparison_answer(question, contract_calls)
     if not contracted:
-        contracted = _historical_brand_metric_answer(question, relevant_calls)
+        contracted = _historical_brand_metric_answer(question, contract_calls)
     if not contracted:
-        contracted = _hira_trend_answer(question, relevant_calls)
+        contracted = _hira_trend_answer(question, contract_calls)
     if not contracted:
-        contracted = _trend_answer(question, relevant_calls)
+        contracted = _trend_answer(question, contract_calls)
     if not contracted:
         contracted = answer
     contracted = _public_language(question, contracted)
     return _replace_provenance(
         question,
         contracted,
-        relevant_calls,
+        contract_calls,
         status_only=bool(status_answer or unresolved_answer),
     )
 
@@ -147,13 +149,12 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if re.fullmatch(r"매출\s*(?:알려\s*줘|알려주세요)?[?.!]?", compact):
         return "브랜드·시장·기간을 지정해 주세요."
 
-    statuses = {
-        str(_render_data(call).get("status") or "").lower()
-        for call in calls
-    }
-    if statuses & {"error", "query_failed", "timeout", "failed"}:
+    statuses = {_call_status(call) for call in calls}
+    failed = tuple(call for call in calls if _call_failed(call))
+    successful = tuple(call for call in calls if not _call_failed(call) and _has_usable_call_data(call))
+    if failed and not successful and statuses & {"error", "query_failed", "timeout", "failed"}:
         return "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다."
-    if statuses & {"not_found", "mapping_failed"}:
+    if failed and not successful and statuses & {"not_found", "mapping_failed"}:
         return "브랜드 목록에서 일치 항목을 찾지 못했습니다."
 
     requested_years = [int(value) for value in _YEAR_RE.findall(compact)]
@@ -167,6 +168,36 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
         requested = max(requested_years)
         return f"보유 데이터는 {available_to}까지이며 {requested}년 실적은 없습니다."
     return ""
+
+
+def _call_status(call: Mapping[str, Any]) -> str:
+    return str(call.get("status") or _render_data(call).get("status") or "").strip().lower()
+
+
+def _call_failed(call: Mapping[str, Any]) -> bool:
+    return _call_status(call) in {
+        "empty",
+        "error",
+        "failed",
+        "mapping_failed",
+        "missing",
+        "no_data",
+        "not_found",
+        "query_failed",
+        "timeout",
+        "unsupported",
+    }
+
+
+def _has_usable_call_data(call: Mapping[str, Any]) -> bool:
+    data = _render_data(call)
+    if not data:
+        return False
+    return any(
+        value not in (None, "", (), [], {})
+        for key, value in data.items()
+        if key not in {"status", "error", "message"}
+    )
 
 
 def _unresolved_entity_answer(

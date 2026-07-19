@@ -26,7 +26,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
-from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
+from jw_chat_agent_poc.agent_loop.structured_planner import (
+    preflight_structured_market_question,
+    structured_metric_owner,
+)
 from jw_chat_agent_poc.common.periods import (
     canonical_periods,
     first_explicit_period_cue,
@@ -72,7 +75,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_hira_patient_summary,
     ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
-    enforce_relational_numeric_claims,
+    enforce_relational_numeric_claims_with_trace,
     finalized_fallback_fact_answer,
     replace_internal_fact_dump,
 )
@@ -552,10 +555,12 @@ def _answer_question(
         routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
+        metric_owner = structured_metric_owner(routing_question)
         needs_brand_clarification = (
-            is_explicit_quarter_sales_question(routing_question)
+            metric_owner == "brand"
             and not has_explicit_market_anchor
             and not has_file_reference(routing_question)
+            and _is_entity_free_brand_metric_question(routing_question)
         )
         grounded_market_question = _ground_unanchored_market_golden(
             routing_question,
@@ -567,6 +572,13 @@ def _answer_question(
             else effective_question
         )
         routing_question = grounded_market_question
+        has_grounded_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
+        needs_market_clarification = (
+            structured_metric_owner(routing_question) == "market"
+            and not has_grounded_market_anchor
+            and not has_file_reference(routing_question)
+            and _is_entity_free_market_metric_question(routing_question)
+        )
         has_market_intent = deep_request.enabled or _has_market_intent(
             routing_question,
             has_brand_anchor=has_explicit_market_anchor,
@@ -592,7 +604,7 @@ def _answer_question(
             has_market_anchor=has_market_anchor,
             file_schema_columns=file_schema_columns,
         )
-        if needs_brand_clarification:
+        if needs_brand_clarification or needs_market_clarification:
             context_scope = ContextScope.MARKET
         if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
             emit_completed_stage(
@@ -637,6 +649,8 @@ def _answer_question(
                 ),
             )
             result = _brand_metric_clarification_result(effective_question)
+        elif needs_market_clarification:
+            result = _market_metric_clarification_result(effective_question)
         elif deep_request.enabled:
             context_scope = ContextScope.MARKET
             if has_file:
@@ -951,12 +965,18 @@ def _scope_clarification_result(question: str) -> dict:
 
 def _brand_metric_clarification_result(question: str) -> dict:
     period_match = re.search(r"(20\d{2})년?\s*([1-4])분기", question)
-    period = (
-        f"{period_match.group(1)}년 {period_match.group(2)}분기"
-        if period_match is not None
-        else "해당 기간"
-    )
-    answer = f"어느 브랜드의 {period} 매출인지 알려주세요."
+    month_match = re.search(r"(20\d{2})년?\s*(1[0-2]|0?[1-9])월", question)
+    if period_match is not None:
+        metric_label = f"{period_match.group(1)}년 {period_match.group(2)}분기 매출"
+    elif month_match is not None:
+        metric_label = f"{month_match.group(1)}년 {int(month_match.group(2))}월 매출"
+    elif re.search(r"가장\s*최근\s*월\s*매출", question):
+        metric_label = "가장 최근 월 매출"
+    elif re.search(r"점유율", question):
+        metric_label = "시장 점유율 변화" if re.search(r"변화|추이", question) else "시장 점유율"
+    else:
+        metric_label = "해당 기간 매출"
+    answer = f"어느 브랜드의 {metric_label}인지 알려주세요."
     return {
         "question": question,
         "answer": answer,
@@ -965,6 +985,25 @@ def _brand_metric_clarification_result(question: str) -> dict:
         "decomposition": [{"intent": "market_clarification", "status": "needs_clarification"}],
         "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
         "router_diagnostics": {"mode": "brand_clarification", "deterministic_execution": True},
+    }
+
+
+def _market_metric_clarification_result(question: str) -> dict:
+    if re.search(r"상위\s*\d*|top\s*\d*", question, re.IGNORECASE):
+        metric_label = "상위 브랜드"
+    elif re.search(r"HHI|CR5|집중도", question, re.IGNORECASE):
+        metric_label = "시장 집중도"
+    else:
+        metric_label = "시장 규모"
+    answer = f"어느 시장의 {metric_label}인지 알려주세요."
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [],
+        "tool_calls": [],
+        "decomposition": [{"intent": "market_clarification", "status": "needs_clarification"}],
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "router_diagnostics": {"mode": "market_clarification", "deterministic_execution": True},
     }
 
 
@@ -1116,6 +1155,27 @@ def _has_market_intent(question: str, *, has_brand_anchor: bool = False) -> bool
     )
 
 
+def _is_entity_free_brand_metric_question(question: str) -> bool:
+    normalized = re.sub(r"\s+", " ", question.strip()).rstrip("?!. ")
+    patterns = (
+        r"20\d{2}년?\s*(?:1[0-2]|0?[1-9])월\s*매출(?:\s*(?:얼마(?:야|인가요)?|알려줘))?",
+        r"20\d{2}년?\s*[1-4]분기\s*매출(?:\s*(?:얼마(?:야|인가요)?|알려줘))?",
+        r"(?:가장\s*)?최근\s*월\s*매출(?:\s*(?:얼마(?:야|인가요)?|알려줘))?",
+        r"시장\s*점유율(?:\s*(?:변화|추이))?(?:\s*(?:설명해줘|알려줘))?",
+    )
+    return any(re.fullmatch(pattern, normalized, re.IGNORECASE) for pattern in patterns)
+
+
+def _is_entity_free_market_metric_question(question: str) -> bool:
+    normalized = re.sub(r"\s+", " ", question.strip()).rstrip("?!. ")
+    patterns = (
+        r"(?:시장\s*)?상위\s*\d*\s*개?\s*브랜드(?:\s*(?:알려줘|보여줘))?",
+        r"(?:시장\s*)?(?:HHI|CR5|집중도)(?:\s*(?:알려줘|보여줘))?",
+        r"시장\s*규모(?:\s*(?:알려줘|보여줘))?",
+    )
+    return any(re.fullmatch(pattern, normalized, re.IGNORECASE) for pattern in patterns)
+
+
 def _ground_unanchored_market_golden(
     question: str,
     *,
@@ -1136,6 +1196,18 @@ def _ground_unanchored_market_golden(
     if top_n:
         limit = top_n.group(1) or top_n.group(2)
         return f"리바로 시장 상위 {limit}개와 HHI, CR5를 알려줘"
+    if re.fullmatch(
+        r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*(?:HHI|집중도)(?:\s*(?:알려줘|보여줘))?[?!.]?",
+        question.strip(),
+        re.IGNORECASE,
+    ):
+        return "리바로 시장 HHI와 CR5를 알려줘"
+    if re.fullmatch(
+        r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*최근\s*이슈와\s*시장\s*변화[?!.]?",
+        question.strip(),
+        re.IGNORECASE,
+    ):
+        return "리바로 시장 최근 이슈와 시장 변화"
     return question
 
 
@@ -1540,7 +1612,13 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     ):
         with stage(None, "question_decomposition", "BQ and tool routing"):
             routes = dependencies.router.route(question, has_documents=False)
-    if not is_portfolio_decline_question(question, routes) and not _is_known_ingredient_patent_question(question):
+    metric_owner = structured_metric_owner(question)
+    skip_single_brand_resolution = metric_owner == "market" and structured_plan is None
+    if (
+        not skip_single_brand_resolution
+        and not is_portfolio_decline_question(question, routes)
+        and not _is_known_ingredient_patent_question(question)
+    ):
         try:
             dependencies.resolver.resolve(question, allow_default=False)
         except UnsupportedBrandError:
@@ -2169,15 +2247,20 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             markdown_response,
             result.get("general_view_contract"),
         )
+        answer = _apply_relational_claim_gate(
+            active_question,
+            answer,
+            result,
+        )
         answer = enforce_market_answer_contract(
             question,
             answer,
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         )
-        answer = enforce_relational_numeric_claims(
+        answer = _apply_relational_claim_gate(
             active_question,
             answer,
-            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+            result,
         )
         trace = trace_envelope(
             question=question,
@@ -2341,6 +2424,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     safe_answer = ensure_natural_fact_lead(active_question, safe_answer, fact_md)
     if not file_context_fact and market_contract_allowed and not deep_mode:
+        safe_answer = _apply_relational_claim_gate(
+            active_question,
+            safe_answer,
+            result,
+        )
         safe_answer = enforce_market_answer_contract(
             active_question,
             safe_answer,
@@ -2352,10 +2440,10 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if deep_mode:
         safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
         safe_answer = ensure_deep_research_structure(safe_answer)
-    safe_answer = enforce_relational_numeric_claims(
+    safe_answer = _apply_relational_claim_gate(
         active_question,
         safe_answer,
-        result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+        result,
     )
     safe_answer = scrub_internal_terminology(safe_answer)
     if not deep_mode and not file_context_fact and market_contract_allowed:
@@ -2378,6 +2466,44 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         conversation_id=conversation_id,
         file_sources=_file_source_items(result),
     )
+
+
+def _apply_relational_claim_gate(question: str, answer: str, result: dict[str, Any]) -> str:
+    gate = enforce_relational_numeric_claims_with_trace(
+        question,
+        answer,
+        result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+    )
+    previous = result.get("_qa_claim_gate")
+    previous_items = previous if isinstance(previous, dict) else {}
+    previous_reasons = previous_items.get("blocked_reasons")
+    combined_reasons = tuple(
+        dict.fromkeys(
+            str(item)
+            for item in (
+                *(previous_reasons if isinstance(previous_reasons, (list, tuple)) else ()),
+                *gate.blocked_reasons,
+            )
+            if str(item)
+        )
+    )
+    disposition_priority = {
+        "answered": 0,
+        "partial": 1,
+        "cached_partial": 2,
+        "unavailable": 3,
+    }
+    previous_disposition = str(previous_items.get("disposition") or "")
+    disposition = max(
+        (previous_disposition, gate.disposition),
+        key=lambda item: disposition_priority.get(item, -1),
+    )
+    result["_qa_claim_gate"] = {
+        "blocked_claim_count": int(previous_items.get("blocked_claim_count") or 0) + gate.blocked_claim_count,
+        "blocked_reasons": combined_reasons,
+        "disposition": disposition,
+    }
+    return gate.answer
 
 
 def _requires_cross_file_synthesis(question: str, result: dict) -> bool:

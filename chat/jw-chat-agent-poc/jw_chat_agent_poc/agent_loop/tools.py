@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 import logging
 from typing import Any, Mapping
 
@@ -83,6 +84,20 @@ class AgentToolFacade:
         return catalog.sources if catalog is not None else None
 
     def execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
+        started_at = datetime.now(UTC)
+        execution = self._execute(name, arguments)
+        ended_at = datetime.now(UTC)
+        execution.call["qa_trace"] = {
+            "started_at": started_at.isoformat(),
+            "ended_at": ended_at.isoformat(),
+            "status": _tool_qa_status(execution),
+            "row_count": _tool_row_count(execution.call),
+            "data_as_of": _tool_data_as_of(execution.call),
+            "cache_hit": _tool_cache_hit(execution.call),
+        }
+        return execution
+
+    def _execute(self, name: str, arguments: Mapping[str, str]) -> ToolExecution:
         try:
             grounded_arguments = self.ground_arguments(name, arguments)
         except (LookupError, TypeError, ValueError, UnsupportedBrandError) as exc:
@@ -419,6 +434,47 @@ class AgentToolFacade:
             "source_label": catalog.source,
             "market_structure": catalog.market_structure,
         }
+
+
+def _tool_qa_status(execution: ToolExecution) -> str:
+    render_data = execution.call.get("render_data")
+    nested = str(render_data.get("status") or "").strip() if isinstance(render_data, dict) else ""
+    return nested or str(execution.call.get("status") or execution.status or "unknown")
+
+
+def _tool_row_count(call: Mapping[str, Any]) -> int:
+    render_data = call.get("render_data")
+    containers = (call, render_data) if isinstance(render_data, Mapping) else (call,)
+    for container in containers:
+        for key in ("row_count", "rows_count", "total_count", "count"):
+            value = container.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+    if isinstance(render_data, Mapping):
+        for key in ("rows", "items", "series", "brand_value_series_10pt", "evidence"):
+            value = render_data.get(key)
+            if isinstance(value, list | tuple):
+                return len(value)
+    return 0
+
+
+def _tool_data_as_of(call: Mapping[str, Any]) -> str | None:
+    render_data = call.get("render_data")
+    containers = (call, render_data) if isinstance(render_data, Mapping) else (call,)
+    for container in containers:
+        for key in ("data_as_of", "period_recent", "period"):
+            value = str(container.get(key) or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _tool_cache_hit(call: Mapping[str, Any]) -> bool:
+    render_data = call.get("render_data")
+    return bool(
+        call.get("cache_hit")
+        or (render_data.get("cache_hit") if isinstance(render_data, Mapping) else False)
+    )
 
 
 def _tool_error(

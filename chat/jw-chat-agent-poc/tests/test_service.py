@@ -219,6 +219,44 @@ def test_compute_final_answer_checks_trend_relations_on_general_view_fast_path()
     assert "최근 2개월 연속 상승" not in final.text
 
 
+def test_compute_final_answer_reports_blocked_failed_trend_in_qa_trace() -> None:
+    final = compute_final_answer(
+        "마운자로 매출 추이",
+        {
+            "general_view_ready": True,
+            "answer": (
+                "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.\n\n"
+                "마운자로 매출은 최근 3분기 연속 상승했습니다."
+            ),
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "status": "query_failed",
+                    "render_data": {
+                        "status": "query_failed",
+                        "brand": "마운자로",
+                        "brand_value_series_10pt": [
+                            {"period": "2025-Q3", "value_억원": 10.0},
+                            {"period": "2025-Q4", "value_억원": 11.0},
+                            {"period": "2026-Q1", "value_억원": 12.0},
+                            {"period": "2026-Q2", "value_억원": 13.0},
+                        ],
+                    },
+                }
+            ],
+            "sources": [],
+        },
+        "qa-trace-failed-trend",
+    )
+
+    qa_trace = final.trace["qa_trace"]
+    assert "최근 3분기 연속 상승" not in final.text
+    assert final.text.strip()
+    assert qa_trace["claims"]["blocked_count"] >= 1
+    assert qa_trace["claims"]["blocked_reasons"]
+    assert qa_trace["final"] == {"disposition": "unavailable", "body_empty": False}
+
+
 def test_compute_final_answer_checks_trend_relations_after_llm_synthesis(monkeypatch) -> None:
     generated = "리바로 매출은 최근 2개월 연속 상승했습니다."
     monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((generated,)))
@@ -563,6 +601,75 @@ def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monk
     assert captured["loop_question"] == "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
 
 
+def test_direct_agent_loop_market_scope_bypasses_single_brand_resolution(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Resolver:
+        def resolve(self, _question: str, *, allow_default: bool = False):
+            raise UnsupportedBrandError("market-scope questions do not require a brand slot")
+
+    class Router:
+        def route(self, question: str, *, has_documents: bool = False):
+            captured["routed"] = (question, has_documents)
+            return ()
+
+    class Dependencies:
+        router = Router()
+        resolver = Resolver()
+
+        def agent_loop_dependencies(self):
+            return "market-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            captured["loop_question"] = question
+            return {"answer": "HHI 253.62", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+
+    result = service_app._answer_direct_agent_loop("고지혈증 시장 HHI", "live")
+
+    assert result["answer"] == "HHI 253.62"
+    assert captured["loop_question"] == "고지혈증 시장 HHI"
+
+
+def test_direct_agent_loop_mixed_brand_metric_keeps_unknown_brand_validation(monkeypatch) -> None:
+    class Resolver:
+        def resolve(self, _question: str, *, allow_default: bool = False):
+            raise UnsupportedBrandError("missing canonical brand")
+
+    class Router:
+        def route(self, _question: str, *, has_documents: bool = False):
+            return ()
+
+    class Dependencies:
+        router = Router()
+        resolver = Resolver()
+
+        def agent_loop_dependencies(self):
+            raise AssertionError("unknown mixed brand must fail before tools")
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+
+    result = service_app._answer_direct_agent_loop(
+        "고지혈증 시장에서 없는브랜드ABC 점유율",
+        "live",
+    )
+
+    assert result["sources"] == ["unsupported_brand"]
+    assert result["tool_calls"] == []
+    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+
+
 @pytest.mark.parametrize(
     ("question", "grounded_question"),
     (
@@ -573,6 +680,14 @@ def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monk
         (
             "고지혈증 상위 5개",
             "리바로 시장 상위 5개와 HHI, CR5를 알려줘",
+        ),
+        (
+            "고지혈증 시장 HHI",
+            "리바로 시장 HHI와 CR5를 알려줘",
+        ),
+        (
+            "고지혈증 시장 최근 이슈와 시장 변화",
+            "리바로 시장 최근 이슈와 시장 변화",
         ),
     ),
 )
@@ -625,6 +740,60 @@ def test_unanchored_quarter_sales_asks_for_brand_before_tool_execution(monkeypat
         {"intent": "market_clarification", "status": "needs_clarification"}
     ]
     assert item["result"]["answer"] == "어느 브랜드의 2025년 2분기 매출인지 알려주세요."
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_answer"),
+    (
+        ("2026년 5월 매출", "어느 브랜드의 2026년 5월 매출인지 알려주세요."),
+        ("가장 최근 월 매출", "어느 브랜드의 가장 최근 월 매출인지 알려주세요."),
+        ("시장 점유율 변화 설명해줘", "어느 브랜드의 시장 점유율 변화인지 알려주세요."),
+    ),
+)
+def test_unanchored_brand_metrics_ask_for_brand_instead_of_reporting_source_absence(
+    monkeypatch,
+    question: str,
+    expected_answer: str,
+) -> None:
+    def direct_loop(_question: str, _external_mode: str) -> dict:
+        raise AssertionError("an ambiguous brand-level metric must not execute tools")
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        question,
+        "live",
+        f"ambiguous-{question}",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["answer"] == expected_answer
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["router_diagnostics"]["mode"] == "brand_clarification"
+
+
+def test_unanchored_market_top_five_asks_for_market_not_brand(monkeypatch) -> None:
+    def direct_loop(_question: str, _external_mode: str) -> dict:
+        raise AssertionError("an unanchored market metric must not execute tools")
+
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "상위 5개 브랜드",
+        "live",
+        "ambiguous-market-top-five",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["answer"] == "어느 시장의 상위 브랜드인지 알려주세요."
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["router_diagnostics"]["mode"] == "market_clarification"
 
 
 def test_unanchored_quarter_sales_clarification_bypasses_final_llm(monkeypatch) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from jw_chat_agent_poc.agent_loop.tools import ToolExecution
+from datetime import datetime
+
+from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 from jw_chat_agent_poc.service.runtime_provenance import _empty_result_calls, _ungrounded_numbers, trace_envelope
@@ -104,6 +106,78 @@ def test_successful_execution_preserves_status_for_runtime_numeric_grounding() -
         )
         == ()
     )
+
+
+def test_tool_execution_records_minimal_qa_timestamps_and_status() -> None:
+    facade = object.__new__(AgentToolFacade)
+
+    execution = facade.execute("unsupported_fixture_tool", {})
+
+    qa_trace = execution.call["qa_trace"]
+    started = datetime.fromisoformat(qa_trace["started_at"])
+    ended = datetime.fromisoformat(qa_trace["ended_at"])
+    assert started.tzinfo is not None
+    assert ended >= started
+    assert qa_trace["status"] == "unsupported"
+    assert qa_trace["row_count"] == 0
+    assert qa_trace["data_as_of"] is None
+    assert qa_trace["cache_hit"] is False
+
+
+def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(monkeypatch) -> None:
+    monkeypatch.setenv("HOSTNAME", "chat-pod-fixture")
+    monkeypatch.setenv("JW_CHAT_GIT_SHA", "candidate-sha")
+    result = {
+        "context_scope": "MARKET",
+        "router_diagnostics": {"mode": "tool_use_agent", "reason": "structured_metric_owner"},
+        "tool_calls": [
+            {
+                "tool": "get_brand_share",
+                "status": "query_failed",
+                "qa_trace": {
+                    "started_at": "2026-07-19T00:00:00+00:00",
+                    "ended_at": "2026-07-19T00:00:01+00:00",
+                    "status": "query_failed",
+                    "row_count": 0,
+                    "data_as_of": None,
+                    "cache_hit": False,
+                },
+            }
+        ],
+        "_qa_claim_gate": {
+            "blocked_claim_count": 1,
+            "blocked_reasons": ["missing_share_evidence"],
+            "disposition": "unavailable",
+        },
+        "markdown_response": {"fact_md": "", "data_md": ""},
+    }
+
+    trace = trace_envelope(
+        question="자누비아 점유율",
+        result=result,
+        answer="상태: 확인 불가",
+        charts=(),
+        timing={"stages": []},
+        conversation_id="qa-session",
+    )
+
+    qa_trace = trace["qa_trace"]
+    assert qa_trace["request"] == {
+        "request_id": trace["trace_id"],
+        "session_id": "qa-session",
+        "pod": "chat-pod-fixture",
+        "image_revision": "candidate-sha",
+    }
+    assert qa_trace["routing"]["scope"] == "MARKET"
+    assert qa_trace["routing"]["gate"] == "tool_use_agent"
+    assert qa_trace["routing"]["gate_reason"] == "structured_metric_owner"
+    assert qa_trace["tools"][0]["name"] == "get_brand_share"
+    assert qa_trace["tools"][0]["status"] == "query_failed"
+    assert qa_trace["claims"] == {
+        "blocked_count": 1,
+        "blocked_reasons": ("missing_share_evidence",),
+    }
+    assert qa_trace["final"] == {"disposition": "unavailable", "body_empty": False}
 
 
 def test_number_absent_from_rendered_facts_remains_ungrounded() -> None:
