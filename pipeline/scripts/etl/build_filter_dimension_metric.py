@@ -47,6 +47,7 @@ from pipeline.scripts.rollback.recording import (
     add_promotion_identity_args,
     identity_from_args,
     record_mysql_component,
+    require_ingest_post_gate,
 )
 
 
@@ -239,6 +240,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             promotion_run_id = getattr(args, "promotion_run_id", None)
             if not promotion_run_id:
                 raise ValueError("--promotion-run-id is required with --promote-to")
+            if promotion_identity is None:
+                raise RuntimeError("promotion identity is required before post-gate preflight")
+            require_ingest_post_gate(conn, promotion_identity)
             build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
             if args.direct_shared_promotion:
                 manifest["promotion"] = promote_filter_dimension_rows(

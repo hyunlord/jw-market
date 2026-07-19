@@ -40,6 +40,7 @@ from pipeline.scripts.rollback.recording import (  # noqa: E402
     add_promotion_identity_args,
     identity_from_args,
     record_mysql_component,
+    require_ingest_post_gate,
 )
 
 
@@ -186,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
 
         conn = connect_admin()
         try:
+            require_ingest_post_gate(conn, promotion_identity)
             bridge_reference_db = args.bridge_reference_db or find_bridge_reference_db(conn)
             publish_start = time.perf_counter()
             actions = publish_tables(

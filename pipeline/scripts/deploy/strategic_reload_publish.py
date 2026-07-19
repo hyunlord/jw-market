@@ -15,6 +15,7 @@ from pipeline.scripts.rollback.recording import (
     add_promotion_identity_args,
     identity_from_args,
     record_mysql_component,
+    require_ingest_post_gate,
 )
 from pipeline.scripts.deploy.mart_load_ops import validate_schema_name
 from pipeline.scripts.deploy.mart_load_verify import quote_id, table_digest, table_exists
@@ -214,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 serving_db=str(args.target_db),
                 required=True,
             )
+            require_ingest_post_gate(conn, identity)
         summary = publish_strategic_reload_tables(
             conn,
             build_db=str(args.build_db),

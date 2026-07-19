@@ -33,6 +33,7 @@ from pipeline.scripts.rollback.recording import (
     add_promotion_identity_args,
     identity_from_args,
     record_mysql_component,
+    require_ingest_post_gate,
 )
 
 
@@ -262,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                 serving_db=args.target_db,
                 required=True,
             )
+            require_ingest_post_gate(conn, identity)
             summary = switch_blue_green_tables(
                     conn,
                     target_db=args.target_db,
