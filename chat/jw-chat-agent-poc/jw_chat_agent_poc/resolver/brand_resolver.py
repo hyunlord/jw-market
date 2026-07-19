@@ -79,7 +79,7 @@ class BrandResolver:
     def resolve(self, question_or_brand: str, allow_default: bool = False) -> BrandResolution:
         normalized = self._normalize(question_or_brand)
         raw_items = self._items()
-        market_universe = self._market_universe(raw_items)
+        market_universe = self._market_universe(raw_items, self._fixture_items)
         items = sorted(
             raw_items,
             key=lambda item: max(len(self._normalize(alias)) for alias in [item["canonical_brand"], *item.get("aliases", [])]),
@@ -98,7 +98,7 @@ class BrandResolver:
     def resolve_many(self, question_or_brands: str, allow_default: bool = False) -> tuple[BrandResolution, ...]:
         normalized = self._normalize(question_or_brands)
         items = self._items()
-        market_universe = self._market_universe(items)
+        market_universe = self._market_universe(items, self._fixture_items)
         spans: list[tuple[int, int, dict[str, Any]]] = []
         for item in items:
             aliases = [item["canonical_brand"], *item.get("aliases", [])]
@@ -132,6 +132,13 @@ class BrandResolver:
         if out:
             return tuple(out)
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brands}")
+
+    def explicit_market(self, question: str) -> tuple[str, str] | None:
+        runtime_items = self._items()
+        return self._explicit_market(
+            question,
+            self._market_universe(runtime_items, self._fixture_items),
+        )
 
     def supported_brand_count(self) -> int:
         return len(self._items())
@@ -308,12 +315,26 @@ class BrandResolver:
         return ((market_id, str(item.get("market_name") or market_id)),)
 
     @staticmethod
-    def _market_universe(items: list[dict[str, Any]]) -> tuple[tuple[str, str], ...]:
-        markets: dict[str, str] = {}
+    def _market_universe(
+        items: list[dict[str, Any]],
+        alias_items: list[dict[str, Any]] | None = None,
+    ) -> tuple[tuple[str, str], ...]:
+        markets: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
         for item in items:
             for market_id, market_name in BrandResolver._item_memberships(item):
-                markets.setdefault(market_id, market_name)
-        return tuple(markets.items())
+                pair = (market_id, market_name)
+                if pair not in seen:
+                    markets.append(pair)
+                    seen.add(pair)
+        runtime_ids = {market_id for market_id, _ in markets}
+        for item in alias_items or ():
+            for market_id, market_name in BrandResolver._item_memberships(item):
+                pair = (market_id, market_name)
+                if market_id in runtime_ids and pair not in seen:
+                    markets.append(pair)
+                    seen.add(pair)
+        return tuple(markets)
 
     @staticmethod
     def _explicit_market(

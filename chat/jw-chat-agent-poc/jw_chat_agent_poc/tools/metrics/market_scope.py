@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime
 from typing import Any
 
+from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -93,12 +95,18 @@ class MarketScopeResolver:
         return self._general_view.answer(question, compact=compact, dual=dual)
 
     def answer(self, question: str, *, view_type: MarketView) -> dict[str, Any]:
+        started_at = qa_trace_started_at()
         if view_type == "general_view":
             return self.answer_general(question, compact=False, dual=False)
         try:
             resolution = self._resolver.resolve(question, allow_default=False)
             if self._query_layer is not None:
-                return self._query_layer_answer(question, resolution.canonical_brand, view_type)
+                return self._query_layer_answer(
+                    question,
+                    resolution.canonical_brand,
+                    view_type,
+                    started_at=started_at,
+                )
             snapshot = self._cache.snapshot()
             card = find_brand_card(snapshot.market_status, resolution.canonical_brand)
         except (LookupError, UnsupportedBrandError) as exc:
@@ -134,6 +142,7 @@ class MarketScopeResolver:
             ),
             "render_data": data,
         }
+        attach_tool_qa_trace(call, started_at=started_at, cache_hit=True)
         markdown = MarkdownResponseBuilder().build(
             brand=resolution.canonical_brand,
             calls=[call],
@@ -144,7 +153,13 @@ class MarketScopeResolver:
             "question": question,
             "resolution": {"canonical_brand": resolution.canonical_brand, "market_id": market_id},
             "decomposition": [{"intent": "same_market_sales", "view_type": view_type}],
-            "router_diagnostics": {"deterministic": True},
+            "router_diagnostics": {
+                "deterministic": True,
+                "mode": "market_scope",
+                "scope": view_type,
+                "gate": "metric_owner",
+                "gate_reason": "market_scope",
+            },
             "tool_calls": [call],
             "answer": markdown.markdown,
             "markdown_response": markdown.to_dict(),
@@ -152,6 +167,7 @@ class MarketScopeResolver:
         }
 
     def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
+        started_at = qa_trace_started_at()
         if self._query_layer is None:
             return self._unsupported("전략 시장 조회 계층을 사용할 수 없습니다.", question, "market_id", market_id)
         try:
@@ -162,6 +178,7 @@ class MarketScopeResolver:
         if not isinstance(data, dict):
             return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "market_id", market_id)
         source = str(data.get("source_label") or call.get("source") or "")
+        attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
         markdown = MarkdownResponseBuilder().build(
             brand="해당 전략 시장",
             calls=[call],
@@ -172,14 +189,28 @@ class MarketScopeResolver:
             "question": question,
             "resolution": {"market_id": market_id},
             "decomposition": [{"intent": "market_size", "view_type": "market_landscape", "period": period}],
-            "router_diagnostics": {"deterministic": True, "explicit_market_id": True},
+            "router_diagnostics": {
+                "deterministic": True,
+                "mode": "market_scope",
+                "scope": "market_landscape",
+                "gate": "metric_owner",
+                "gate_reason": "explicit_market_id",
+                "explicit_market_id": True,
+            },
             "tool_calls": [call],
             "answer": markdown.markdown,
             "markdown_response": markdown.to_dict(),
             "sources": [source],
         }
 
-    def _query_layer_answer(self, question: str, brand: str, view_type: MarketView) -> dict[str, Any]:
+    def _query_layer_answer(
+        self,
+        question: str,
+        brand: str,
+        view_type: MarketView,
+        *,
+        started_at: datetime,
+    ) -> dict[str, Any]:
         assert self._query_layer is not None
         try:
             call = self._query_layer.market_scope(brand)
@@ -221,6 +252,7 @@ class MarketScopeResolver:
             f"{brand} 기준 같은 시장 전체 매출은 {view_label(view_type)} 기준 "
             f"{eok_value(None, data.get('market_size_recent_krw'))}입니다."
         )
+        attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
         markdown = MarkdownResponseBuilder().build(
             brand=brand,
             calls=[call],
@@ -231,7 +263,13 @@ class MarketScopeResolver:
             "question": question,
             "resolution": {"canonical_brand": brand, "market_id": market_id},
             "decomposition": [{"intent": "same_market_sales", "view_type": view_type}],
-            "router_diagnostics": {"deterministic": True},
+            "router_diagnostics": {
+                "deterministic": True,
+                "mode": "market_scope",
+                "scope": view_type,
+                "gate": "metric_owner",
+                "gate_reason": "market_scope",
+            },
             "tool_calls": [call],
             "answer": markdown.markdown,
             "markdown_response": markdown.to_dict(),

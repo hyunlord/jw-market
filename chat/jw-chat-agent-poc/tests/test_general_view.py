@@ -215,6 +215,13 @@ class StrategicMembership:
         raise LookupError(question)
 
 
+class StrategicMembershipWithExplicitMarket(StrategicMembership):
+    def explicit_market(self, question: str) -> tuple[str, str] | None:
+        if "고지혈증 시장" in question:
+            return "ml_006", "고지혈증 치료제 시장"
+        return None
+
+
 def test_membership_cache_preserves_all_atc4_sources_and_avoids_backend_candidate_scan() -> None:
     memberships = (
         GeneralBrandMembership("마운자로", "마운자로", "A10S0", "GLP-1", "iqvia"),
@@ -401,6 +408,19 @@ def test_route_matrix_has_no_human_loop() -> None:
     assert service.route("ml_006 2025-04 시장규모") is GeneralRoute.EXISTING
     assert service.route("리바로 시장 점유율은?") is GeneralRoute.DUAL
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
+
+
+def test_unknown_brand_in_explicit_strategic_market_stays_on_typed_brand_path() -> None:
+    service = GeneralViewService(
+        FakeBackend(),
+        StrategicMembershipWithExplicitMarket(set()),
+        enabled=True,
+    )
+
+    assert (
+        service.route("고지혈증 시장에서 없는브랜드ABC 점유율")
+        is GeneralRoute.EXISTING
+    )
 
 
 @pytest.mark.parametrize(

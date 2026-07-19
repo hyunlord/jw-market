@@ -109,6 +109,12 @@ def test_market_scope_default_answer_uses_market_total_not_brand_sales() -> None
     assert "전략뷰 (market_landscape)" in result["answer"]
     assert "## 주의" not in result["answer"]
     assert "84.93억원" not in result["answer"]
+    assert call["qa_trace"]["status"] == "ok"
+    assert call["qa_trace"]["started_at"]
+    assert call["qa_trace"]["ended_at"]
+    assert call["qa_trace"]["row_count"] > 0
+    assert call["qa_trace"]["data_as_of"] == "2026-04"
+    assert call["qa_trace"]["cache_hit"] is True
 
 
 def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:
@@ -142,6 +148,12 @@ def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:
     assert call["render_data"]["brand_sales_krw"] == 8_038_598_800.0
     assert call["render_data"]["market_size_recent_krw"] == 27_562_455_000.0
     assert result["sources"] == ["UBIST"]
+    assert call["qa_trace"]["status"] == "ok"
+    assert call["qa_trace"]["started_at"]
+    assert call["qa_trace"]["ended_at"]
+    assert call["qa_trace"]["row_count"] > 0
+    assert call["qa_trace"]["data_as_of"] == "2026-05"
+    assert call["qa_trace"]["cache_hit"] is False
 
 
 def test_market_scope_clarification_does_not_show_internal_view_enums() -> None:

@@ -51,7 +51,7 @@ def _mixed_market_resolver() -> BrandResolver:
                 {
                     "brand": "리바로",
                     "market_id": "ml_006",
-                    "market_name": "고지혈증 치료제 시장",
+                    "market_name": "리바로 리바로젯",
                 },
             )
         ),
@@ -91,6 +91,28 @@ def test_resolver_rejects_explicit_market_outside_brand_membership() -> None:
     assert resolution.requested_market_id == "ml_006"
     assert resolution.requested_market_name == "고지혈증 치료제 시장"
     assert resolution.has_market_membership_mismatch is True
+
+
+def test_resolver_exposes_fixture_market_alias_only_for_runtime_market_id() -> None:
+    market = _mixed_market_resolver().explicit_market(
+        "고지혈증 시장에서 없는브랜드ABC 점유율"
+    )
+
+    assert market == ("ml_006", "고지혈증 치료제 시장")
+
+
+def test_resolver_does_not_revive_fixture_market_missing_from_runtime() -> None:
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=StaticMetricsCacheReader(cache_brands=[], market_status=[]),
+        membership_reader=StaticMembershipReader(
+            (
+                {"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨병 시장"},
+            )
+        ),
+    )
+
+    assert resolver.explicit_market("고지혈증 시장에서 점유율") is None
 
 
 def test_resolver_accepts_data_derived_market_name_alias_for_own_membership() -> None:

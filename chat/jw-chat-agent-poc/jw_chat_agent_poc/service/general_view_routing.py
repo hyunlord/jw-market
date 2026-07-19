@@ -7,6 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
+from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_owner
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
@@ -90,6 +91,8 @@ class GeneralViewService:
             return GeneralRoute.GENERAL_ONLY
         if _has_existing_analytic_signal(normalized):
             return GeneralRoute.EXISTING
+        if structured_metric_owner(question) == "brand" and self._explicit_strategic_market(question):
+            return GeneralRoute.EXISTING
         if detect_market_scope_intent(question) is not None:
             try:
                 self._strategic_membership.resolve(question, allow_default=False)
@@ -103,6 +106,15 @@ class GeneralViewService:
         except LookupError:
             return GeneralRoute.GENERAL_ONLY
         return GeneralRoute.DUAL
+
+    def _explicit_strategic_market(self, question: str) -> bool:
+        resolve_market = getattr(self._strategic_membership, "explicit_market", None)
+        if not callable(resolve_market):
+            return False
+        try:
+            return resolve_market(question) is not None
+        except (LookupError, OSError, TypeError, ValueError):
+            return False
 
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         started_at = qa_trace_started_at()
