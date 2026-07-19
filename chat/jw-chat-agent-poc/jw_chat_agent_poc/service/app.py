@@ -566,6 +566,10 @@ def _answer_question(
             routing_question,
             has_explicit_anchor=has_explicit_market_anchor,
         )
+        uses_monthly_market_golden = _uses_monthly_market_golden(
+            routing_question,
+            grounded_market_question,
+        )
         execution_question = (
             grounded_market_question
             if grounded_market_question != routing_question
@@ -651,6 +655,11 @@ def _answer_question(
             result = _brand_metric_clarification_result(effective_question)
         elif needs_market_clarification:
             result = _market_metric_clarification_result(effective_question)
+        elif uses_monthly_market_golden:
+            result = market_scope_resolver.answer_monthly_market_golden(
+                effective_question,
+                anchor_brand="리바로",
+            )
         elif deep_request.enabled:
             context_scope = ContextScope.MARKET
             if has_file:
@@ -1210,6 +1219,15 @@ def _ground_unanchored_market_golden(
     ):
         return "리바로 시장 최근 이슈와 시장 변화"
     return question
+
+
+def _uses_monthly_market_golden(question: str, grounded_question: str) -> bool:
+    """Identify the approved monthly HHI/top-brand contracts behind a synthetic anchor."""
+
+    return grounded_question != question and (
+        grounded_question.startswith("리바로 시장 상위 ")
+        or grounded_question == "리바로 시장 HHI와 CR5를 알려줘"
+    )
 
 
 def _file_scoped_result(question: str) -> dict:

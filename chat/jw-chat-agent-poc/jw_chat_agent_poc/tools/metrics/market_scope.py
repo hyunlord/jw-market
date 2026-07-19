@@ -166,6 +166,34 @@ class MarketScopeResolver:
             "sources": ["cache"],
         }
 
+    def answer_monthly_market_golden(
+        self,
+        question: str,
+        *,
+        anchor_brand: str,
+    ) -> dict[str, Any]:
+        """Preserve the approved monthly P0-2 truth for synthetic market anchors."""
+
+        started_at = qa_trace_started_at()
+        if self._query_layer is None:
+            return self._unsupported(
+                "전략 시장 조회 계층을 사용할 수 없습니다.",
+                question,
+                "brand",
+                anchor_brand,
+            )
+        try:
+            resolution = self._resolver.resolve(anchor_brand, allow_default=False)
+        except (LookupError, UnsupportedBrandError) as exc:
+            return self._unsupported(str(exc), question, "brand", anchor_brand)
+        return self._query_layer_answer(
+            question,
+            resolution.canonical_brand,
+            "market_landscape",
+            started_at=started_at,
+            use_mart=True,
+        )
+
     def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
         started_at = qa_trace_started_at()
         if self._query_layer is None:
@@ -210,12 +238,13 @@ class MarketScopeResolver:
         view_type: MarketView,
         *,
         started_at: datetime,
+        use_mart: bool = False,
     ) -> dict[str, Any]:
         assert self._query_layer is not None
         try:
             call = (
                 self._query_layer.market_scope_from_mart(brand)
-                if view_type == "competitive_dynamics"
+                if view_type == "competitive_dynamics" or use_mart
                 else self._query_layer.market_scope(brand)
             )
         except (LookupError, TypeError, ValueError) as exc:
@@ -260,7 +289,7 @@ class MarketScopeResolver:
         attach_tool_qa_trace(
             call,
             started_at=started_at,
-            cache_hit=False if view_type == "competitive_dynamics" else None,
+            cache_hit=False if view_type == "competitive_dynamics" or use_mart else None,
         )
         markdown = MarkdownResponseBuilder().build(
             brand=brand,
@@ -280,7 +309,7 @@ class MarketScopeResolver:
                 "mode": "market_scope",
                 "scope": view_type,
                 "gate": "metric_owner",
-                "gate_reason": "market_scope",
+                "gate_reason": "monthly_market_golden" if use_mart else "market_scope",
             },
             "tool_calls": [call],
             "answer": markdown.markdown,

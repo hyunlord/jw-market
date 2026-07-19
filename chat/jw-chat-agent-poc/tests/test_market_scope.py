@@ -200,6 +200,99 @@ def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:
     assert call["qa_trace"]["cache_hit"] is False
 
 
+def test_monthly_market_golden_uses_mart_without_touching_backend() -> None:
+    class DualTruthQueryLayer(StrategicQueryLayer):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def market_scope(self, brand: str) -> dict:
+            self.calls.append(("backend", brand))
+            return _scope_call(hhi=262.4174, source="backend_api")
+
+        def market_scope_from_mart(self, brand: str) -> dict:
+            self.calls.append(("mart", brand))
+            return _scope_call(hhi=253.6207, source="UBIST")
+
+    query_layer = DualTruthQueryLayer()
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        query_layer=query_layer,
+    )
+
+    result = resolver.answer_monthly_market_golden(
+        "고지혈증 시장 HHI",
+        anchor_brand="리바로",
+    )
+
+    data = result["tool_calls"][0]["render_data"]
+    assert query_layer.calls == [("mart", "리바로")]
+    assert data["hhi_recent"] == pytest.approx(253.6207)
+    assert "262.42" not in result["answer"]
+    assert "연속 상승" not in result["answer"]
+    assert "연속 하락" not in result["answer"]
+    assert result["router_diagnostics"]["gate_reason"] == "monthly_market_golden"
+
+
+def test_explicit_brand_market_scope_keeps_backend_truth() -> None:
+    class DualTruthQueryLayer(StrategicQueryLayer):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def market_scope(self, brand: str) -> dict:
+            self.calls.append(("backend", brand))
+            return _scope_call(hhi=262.4174, source="backend_api")
+
+        def market_scope_from_mart(self, brand: str) -> dict:
+            self.calls.append(("mart", brand))
+            return _scope_call(hhi=253.6207, source="UBIST")
+
+    query_layer = DualTruthQueryLayer()
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        query_layer=query_layer,
+    )
+
+    result = resolver.answer("리바로가 속한 시장 HHI", view_type="market_landscape")
+
+    assert query_layer.calls == [("backend", "리바로")]
+    assert result["tool_calls"][0]["render_data"]["hhi_recent"] == pytest.approx(262.4174)
+
+
+def _scope_call(*, hhi: float, source: str) -> dict:
+    return {
+        "source": source,
+        "tool": "get_market_landscape",
+        "summary_text": "리바로 시장 범위를 조회했습니다.",
+        "render_data": {
+            "market": "ml_006",
+            "market_name": "고지혈증 시장",
+            "scope": "market",
+            "scope_label": "시장 전체",
+            "period": "2026-05",
+            "anchor_brand": "리바로",
+            "total_brands_in_market": 555,
+            "market_size_recent_krw": 213_925_043_319.36,
+            "market_size_억원": 2_139.2504331936,
+            "hhi_recent": hhi,
+            "level_segments": [
+                {
+                    "rank": 1,
+                    "brand": "로수젯",
+                    "ms_recent_pct": 9.12649,
+                    "value": 19_523_856_225.95,
+                },
+                {
+                    "rank": 2,
+                    "brand": "리피토",
+                    "ms_recent_pct": 6.12777,
+                    "value": 13_108_840_203.03,
+                },
+            ],
+            "source_label": source,
+        },
+    }
+
+
 def test_market_scope_clarification_does_not_show_internal_view_enums() -> None:
     result = _resolver().clarification("리바로랑 같은 시장 매출은 어느 기준?", brand="리바로")
 
