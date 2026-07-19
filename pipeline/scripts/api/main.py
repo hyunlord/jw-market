@@ -18,7 +18,7 @@ if __package__ in {None, ""}:
 from pipeline.scripts.api.config import config  # noqa: E402
 from pipeline.scripts.api.db import close_pool, init_pool  # noqa: E402
 from pipeline.scripts.api.openapi_docs import install_openapi_overrides  # noqa: E402
-from pipeline.scripts.api.routes import brand_activity, brands, cause, deep_analysis, dynamic_market, health, market_filter, market_scope, market_status  # noqa: E402
+from pipeline.scripts.api.routes import brand_activity, brands, capabilities, cause, deep_analysis, dynamic_market, health, market_filter, market_scope, market_status  # noqa: E402
 
 
 logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
@@ -78,6 +78,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(capabilities.router)
 app.include_router(brands.router)
 app.include_router(market_status.router)
 app.include_router(cause.router)
