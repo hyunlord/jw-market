@@ -28,7 +28,7 @@ spec:
       containers:
         - name: trigger
           # Keep in lockstep with deploy/k8s/orchestrator/pipeline-orchestrator-poll-cronjob.yaml
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:717014ae78bf3091e182ed0158fc9ff3618233b60fd76afc15457d4eba3b189d
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:fb606f176280a32437f1731b73e1e2f2c196fd9f0feddf74a2bc63bb29bed8ca
           imagePullPolicy: IfNotPresent
           command:
             - python
@@ -52,7 +52,7 @@ spec:
             - name: INGEST_INPUT_ROOT
               value: /nfs-root/autoIngestion
             - name: INGEST_JOB_IMAGE
-              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:717014ae78bf3091e182ed0158fc9ff3618233b60fd76afc15457d4eba3b189d
+              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:fb606f176280a32437f1731b73e1e2f2c196fd9f0feddf74a2bc63bb29bed8ca
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT
