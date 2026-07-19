@@ -37,6 +37,7 @@ _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
 _LOCAL_INPUT_VOLUME = "ingest-input"
 _LOCAL_INPUT_PVC = "llmops-nfs-root"
+_LOCAL_INPUT_SUB_PATH = "autoIngestion"
 
 
 def _job_env() -> list[dict]:
@@ -75,7 +76,14 @@ def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespac
         else None
     )
     volume_mounts = (
-        [{"name": _LOCAL_INPUT_VOLUME, "mountPath": str(local_root), "readOnly": True}]
+        [
+            {
+                "name": _LOCAL_INPUT_VOLUME,
+                "mountPath": str(local_root),
+                "subPath": _LOCAL_INPUT_SUB_PATH,
+                "readOnly": True,
+            }
+        ]
         if local_root is not None
         else []
     )

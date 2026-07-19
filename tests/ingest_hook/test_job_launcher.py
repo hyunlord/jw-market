@@ -57,6 +57,7 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     trigger_mounts = {item["name"]: item for item in trigger["volumeMounts"]}
     assert trigger_mounts["ingest-input"]["mountPath"] == "/nfs-root/autoIngestion"
     assert trigger_mounts["ingest-input"]["readOnly"] is True
+    assert trigger_mounts["ingest-input"]["subPath"] == "autoIngestion"
     trigger_volumes = {
         item["name"]: item for item in deployment[0]["spec"]["template"]["spec"]["volumes"]
     }
@@ -73,6 +74,7 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert sweep_env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
     sweep_mounts = {item["name"]: item for item in sweep_container["volumeMounts"]}
     assert sweep_mounts["ingest-input"]["readOnly"] is True
+    assert sweep_mounts["ingest-input"]["subPath"] == "autoIngestion"
 
     rbac = list(yaml.safe_load_all((base / "ingest-hook-rbac.yaml").read_text(encoding="utf-8")))
     role = next(doc for doc in rbac if doc["kind"] == "Role")
@@ -127,7 +129,12 @@ def test_rendered_local_job_inherits_backend_root_and_read_only_nfs(monkeypatch)
     assert env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
     assert "INGEST_S3_BUCKET" not in env
     assert container["volumeMounts"] == [
-        {"name": "ingest-input", "mountPath": "/nfs-root/autoIngestion", "readOnly": True}
+        {
+            "name": "ingest-input",
+            "mountPath": "/nfs-root/autoIngestion",
+            "subPath": "autoIngestion",
+            "readOnly": True,
+        }
     ]
     assert pod_spec["volumes"] == [
         {"name": "ingest-input", "persistentVolumeClaim": {"claimName": "llmops-nfs-root"}}

@@ -86,6 +86,7 @@ spec:
           volumeMounts:
             - name: ingest-input
               mountPath: /nfs-root/autoIngestion
+              subPath: autoIngestion
               readOnly: true
       volumes:
         - name: ingest-input
