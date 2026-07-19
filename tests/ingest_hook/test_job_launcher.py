@@ -52,6 +52,15 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert trigger_env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
     assert "INGEST_REHEARSAL_ROOT" not in trigger_env
     assert "INGEST_LOAD_TARGET_ROOT" not in trigger_env
+    assert trigger_env["INGEST_INPUT_BACKEND"]["value"] == "local"
+    assert trigger_env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
+    trigger_mounts = {item["name"]: item for item in trigger["volumeMounts"]}
+    assert trigger_mounts["ingest-input"]["mountPath"] == "/nfs-root/autoIngestion"
+    assert trigger_mounts["ingest-input"]["readOnly"] is True
+    trigger_volumes = {
+        item["name"]: item for item in deployment[0]["spec"]["template"]["spec"]["volumes"]
+    }
+    assert trigger_volumes["ingest-input"]["persistentVolumeClaim"]["claimName"] == "llmops-nfs-root"
 
     sweep = yaml.safe_load((base / "ingest-sweep-cronjob.yaml").read_text(encoding="utf-8"))
     assert sweep["spec"]["suspend"] is True
@@ -60,6 +69,10 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert sweep_env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
     assert "INGEST_REHEARSAL_ROOT" not in sweep_env
     assert "INGEST_LOAD_TARGET_ROOT" not in sweep_env
+    assert sweep_env["INGEST_INPUT_BACKEND"]["value"] == "local"
+    assert sweep_env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
+    sweep_mounts = {item["name"]: item for item in sweep_container["volumeMounts"]}
+    assert sweep_mounts["ingest-input"]["readOnly"] is True
 
     rbac = list(yaml.safe_load_all((base / "ingest-hook-rbac.yaml").read_text(encoding="utf-8")))
     role = next(doc for doc in rbac if doc["kind"] == "Role")
@@ -93,3 +106,29 @@ def test_rendered_job_passes_load_staging_root(monkeypatch):
     body = render_job(category="ubist", manifest_sha=SHA, manifest_path="_manifests/m.json", namespace="llmops")
     env = {e["name"]: e for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
+
+
+def test_rendered_local_job_inherits_backend_root_and_read_only_nfs(monkeypatch):
+    monkeypatch.setenv("INGEST_INPUT_BACKEND", "local")
+    monkeypatch.setenv("INGEST_INPUT_ROOT", "/nfs-root/autoIngestion")
+    monkeypatch.setenv("INGEST_S3_BUCKET", "legacy-bucket-must-not-win")
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/nfs-root/autoIngestion/_manifests/ubist/2026-03/manifest.json",
+        namespace="llmops",
+    )
+    pod_spec = body["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    env = {item["name"]: item for item in container["env"]}
+
+    assert env["INGEST_INPUT_BACKEND"]["value"] == "local"
+    assert env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
+    assert "INGEST_S3_BUCKET" not in env
+    assert container["volumeMounts"] == [
+        {"name": "ingest-input", "mountPath": "/nfs-root/autoIngestion", "readOnly": True}
+    ]
+    assert pod_spec["volumes"] == [
+        {"name": "ingest-input", "persistentVolumeClaim": {"claimName": "llmops-nfs-root"}}
+    ]

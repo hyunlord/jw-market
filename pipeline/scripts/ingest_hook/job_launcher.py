@@ -11,6 +11,7 @@ isolation rehearsals never talk to a real API server.
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import urllib.request
 from collections.abc import Callable
@@ -28,15 +29,17 @@ _PASSTHROUGH_VALUES = (
     "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
     "INGEST_LOAD_STAGING_ROOT",  # J5 real-loader staging output (mart refresh skipped)
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
+    "INGEST_INPUT_BACKEND",
+    "INGEST_INPUT_ROOT",
 )
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
+_LOCAL_INPUT_VOLUME = "ingest-input"
+_LOCAL_INPUT_PVC = "llmops-nfs-root"
 
 
 def _job_env() -> list[dict]:
-    import os
-
     env: list[dict] = [
         {"name": name, "value": os.environ[name]}
         for name in _PASSTHROUGH_VALUES
@@ -48,7 +51,8 @@ def _job_env() -> list[dict]:
 
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
-    if os.environ.get("INGEST_S3_BUCKET"):
+    local_input = os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
+    if not local_input and os.environ.get("INGEST_S3_BUCKET"):
         secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")
         # The portal account is write/list-only by policy; the hook reads with
         # its own read-only MinIO user (GetObject+ListBucket on the bucket).
@@ -65,6 +69,21 @@ def job_name(category: str, manifest_sha: str) -> str:
 
 def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespace: str | None = None) -> dict:
     name = job_name(category, manifest_sha)
+    local_root = (
+        config.input_root()
+        if os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
+        else None
+    )
+    volume_mounts = (
+        [{"name": _LOCAL_INPUT_VOLUME, "mountPath": str(local_root), "readOnly": True}]
+        if local_root is not None
+        else []
+    )
+    volumes = (
+        [{"name": _LOCAL_INPUT_VOLUME, "persistentVolumeClaim": {"claimName": _LOCAL_INPUT_PVC}}]
+        if local_root is not None
+        else []
+    )
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -98,12 +117,14 @@ def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespac
                                 manifest_path,
                             ],
                             "env": _job_env(),
+                            **({"volumeMounts": volume_mounts} if volume_mounts else {}),
                             "resources": {
                                 "requests": {"cpu": "500m", "memory": "1Gi"},
                                 "limits": {"cpu": "2", "memory": "4Gi"},
                             },
                         }
                     ],
+                    **({"volumes": volumes} if volumes else {}),
                 },
             },
         },
