@@ -153,6 +153,7 @@ def test_market_scope_backend_failure_returns_typed_unavailable_without_trend() 
 
     call = result["tool_calls"][0]
     assert call["render_data"]["status"] == "query_failed"
+    assert call["qa_trace"]["status"] == "timeout"
     assert call["qa_trace"]["endpoint"] == "/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C"
     assert result["router_diagnostics"]["gate"] == "typed_unavailable"
     assert "수치를 추정하지 않습니다" in result["answer"]

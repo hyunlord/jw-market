@@ -314,7 +314,8 @@ class MarketScopeResolver:
         }
         if isinstance(error, CauseBackendError):
             call["backend_trace"] = error.trace_fields()
-        attach_tool_qa_trace(call, started_at=started_at, status="query_failed", cache_hit=False)
+        trace_status = error.status if isinstance(error, CauseBackendError) else "query_failed"
+        attach_tool_qa_trace(call, started_at=started_at, status=trace_status, cache_hit=False)
         markdown = MarkdownResponseBuilder().build(brand=brand, calls=[call], sources=["backend_api"])
         return {
             "question": question,
