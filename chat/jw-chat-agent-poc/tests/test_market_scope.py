@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from jw_chat_agent_poc.tools.cause_backend import CauseBackendError
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.cd_mart import CdBrandLink, StaticCdMartReader
 from jw_chat_agent_poc.tools.metrics.market_scope import (
@@ -115,6 +116,48 @@ def test_market_scope_default_answer_uses_market_total_not_brand_sales() -> None
     assert call["qa_trace"]["row_count"] > 0
     assert call["qa_trace"]["data_as_of"] == "2026-04"
     assert call["qa_trace"]["cache_hit"] is True
+
+
+def test_market_scope_fixture_does_not_read_legacy_cause_payload() -> None:
+    class ExplodingCauseReader:
+        def load(self, key):
+            raise AssertionError(f"legacy cause payload must not be read: {key}")
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        cause_reader=ExplodingCauseReader(),
+        cd_mart_reader=_cd_mart_reader(),
+    )
+
+    result = resolver.answer("리바로랑 같은 시장 매출", view_type="market_landscape")
+
+    assert result["tool_calls"][0]["render_data"]["market_size_recent_krw"] == 225_677_368_890.97986
+
+
+def test_market_scope_backend_failure_returns_typed_unavailable_without_trend() -> None:
+    class BrokenQueryLayer:
+        def market_scope(self, brand: str):
+            raise CauseBackendError(
+                "injected timeout",
+                endpoint="/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C",
+                status="timeout",
+                latency_ms=10_000.0,
+            )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        query_layer=BrokenQueryLayer(),  # type: ignore[arg-type]
+    )
+
+    result = resolver.answer("리바로 시장 규모", view_type="market_landscape")
+
+    call = result["tool_calls"][0]
+    assert call["render_data"]["status"] == "query_failed"
+    assert call["qa_trace"]["endpoint"] == "/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C"
+    assert result["router_diagnostics"]["gate"] == "typed_unavailable"
+    assert "수치를 추정하지 않습니다" in result["answer"]
+    assert "연속 상승" not in result["answer"]
+    assert "연속 하락" not in result["answer"]
 
 
 def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:

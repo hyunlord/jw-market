@@ -202,6 +202,10 @@ def _qa_tool_calls(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
                 "row_count": trace_items.get("row_count"),
                 "data_as_of": trace_items.get("data_as_of"),
                 "cache_hit": bool(trace_items.get("cache_hit")),
+                "endpoint": trace_items.get("endpoint"),
+                "latency_ms": trace_items.get("latency_ms"),
+                "source_epoch": trace_items.get("source_epoch"),
+                "built_at": trace_items.get("built_at"),
             }
         )
     return tuple(projected)
@@ -481,6 +485,10 @@ def _tools_called(result: Mapping[str, Any]) -> list[str]:
 def _public_tool_name(call: Mapping[str, Any]) -> str:
     name = str(call["tool"])
     render_data = call.get("render_data")
+    if name in {"query_failed", "unsupported_metric"} and isinstance(render_data, Mapping):
+        actual_name = str(render_data.get("tool_name") or "").strip()
+        if actual_name:
+            return actual_name
     if name == "get_brand_metric" and isinstance(render_data, Mapping) and render_data.get("metric") == "query_spec":
         return "query_spec"
     if name == "get_market_landscape":

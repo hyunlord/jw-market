@@ -12,6 +12,7 @@ from jw_chat_agent_poc.resolver.catalog_membership import TtlCatalogMembershipRe
 from jw_chat_agent_poc.resolver.molecule_reader import TtlBrandMoleculeReader, shared_brand_molecule_reader
 from jw_chat_agent_poc.router import BQRouter, BQSubQuestion, LLMFirstBQRouter
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
+from jw_chat_agent_poc.tools.cause_backend import CauseBackend
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external.cached_client import (
     CachedExternalApiClient,
@@ -127,7 +128,7 @@ def default_query_layer() -> StrategicQueryLayer | None:
         return None
     if os.environ.get("CHAT_METRICS_MODE", "fixture") != "cache":
         return None
-    return StrategicQueryLayer()
+    return StrategicQueryLayer(cause_backend=CauseBackend())
 
 
 def default_catalog_membership_reader() -> TtlCatalogMembershipReader | None:

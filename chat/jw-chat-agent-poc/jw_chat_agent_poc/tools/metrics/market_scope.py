@@ -13,12 +13,8 @@ from jw_chat_agent_poc.resolver.brand_resolver import BrandMembershipReader
 from jw_chat_agent_poc.resolver.catalog_membership import shared_catalog_membership_reader
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
 from jw_chat_agent_poc.tools.metrics.cache_live import (
-    CausePayloadKey,
-    CausePayloadReader,
     MetricsCacheReader,
-    TtlCausePayloadCache,
     TtlMetricsCache,
-    shared_cause_payload_cache,
     shared_metrics_cache,
 )
 from jw_chat_agent_poc.tools.metrics.cd_mart import (
@@ -40,6 +36,7 @@ from jw_chat_agent_poc.tools.metrics.market_scope_helpers import (
     source_label,
     view_label,
 )
+from jw_chat_agent_poc.tools.cause_backend import CauseBackend, CauseBackendError
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 
@@ -48,7 +45,7 @@ class MarketScopeResolver:
         self,
         *,
         cache_reader: MetricsCacheReader | None = None,
-        cause_reader: CausePayloadReader | None = None,
+        cause_reader: object | None = None,
         cd_mart_reader: CdMartReader | None = None,
         ttl_seconds: int | None = None,
         general_view_service: GeneralViewService | None = None,
@@ -57,16 +54,14 @@ class MarketScopeResolver:
     ) -> None:
         ttl = ttl_seconds or int(os.environ.get("CHAT_MARKET_SCOPE_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
-        self._cause_cache = (
-            TtlCausePayloadCache(cause_reader, ttl_seconds=ttl)
-            if cause_reader is not None
-            else shared_cause_payload_cache(ttl)
-        )
         self._cd_mart_cache = TtlCdMartCache(cd_mart_reader or MariaDbCdMartReader(), ttl_seconds=ttl)
         self._query_layer = query_layer
         if self._query_layer is None and cache_reader is None and cause_reader is None:
             if os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
-                self._query_layer = StrategicQueryLayer(ttl_seconds=ttl)
+                self._query_layer = StrategicQueryLayer(
+                    ttl_seconds=ttl,
+                    cause_backend=CauseBackend(ttl_seconds=ttl),
+                )
         catalog_membership = membership_reader
         if catalog_membership is None and os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
             catalog_membership = shared_catalog_membership_reader(ttl)
@@ -114,12 +109,17 @@ class MarketScopeResolver:
 
         market_id = str(card.get("market_id") or resolution.market_id or "")
         source = source_label(card, find_brand_bridge(snapshot.cache_brands, resolution.canonical_brand))
-        period, market_size, yoy = self._view_market_size(
-            brand=resolution.canonical_brand,
-            view_type=view_type,
-            source=source,
-            market_id=market_id,
-        )
+        if view_type == "market_landscape":
+            period = period_recent(snapshot.market_status, card) or str(extended(card).get("period_recent") or "latest")
+            market_size = extended(card).get("market_size_recent")
+            yoy = extended(card).get("yoy_growth_pct")
+        else:
+            period, market_size, yoy = self._view_market_size(
+                brand=resolution.canonical_brand,
+                view_type=view_type,
+                source=source,
+                market_id=market_id,
+            )
         if market_size is None:
             if view_type == "market_landscape":
                 period = period_recent(snapshot.market_status, card) or "latest"
@@ -213,21 +213,26 @@ class MarketScopeResolver:
     ) -> dict[str, Any]:
         assert self._query_layer is not None
         try:
-            call = self._query_layer.market_scope(brand)
+            call = (
+                self._query_layer.market_scope_from_mart(brand)
+                if view_type == "competitive_dynamics"
+                else self._query_layer.market_scope(brand)
+            )
         except (LookupError, TypeError, ValueError) as exc:
-            return self._unsupported(str(exc), question, "brand", brand)
+            return self._query_failed(exc, question, "get_market_scope", brand, started_at=started_at)
 
         data = call.get("render_data")
         if not isinstance(data, dict):
             return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "brand", brand)
-        market_id = str(data.get("market_id") or data.get("market") or "")
+        market_reference = str(data.get("market_id") or data.get("market") or "")
+        market_name = str(data.get("market_name") or market_reference)
         source = str(data.get("source_label") or call.get("source") or "")
         if view_type == "competitive_dynamics":
             period, market_size, yoy = self._view_market_size(
                 brand=brand,
                 view_type=view_type,
                 source=source,
-                market_id=market_id,
+                market_id=market_reference,
             )
             if market_size is None:
                 return self._unsupported(
@@ -252,16 +257,23 @@ class MarketScopeResolver:
             f"{brand} 기준 같은 시장 전체 매출은 {view_label(view_type)} 기준 "
             f"{eok_value(None, data.get('market_size_recent_krw'))}입니다."
         )
-        attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
+        attach_tool_qa_trace(
+            call,
+            started_at=started_at,
+            cache_hit=False if view_type == "competitive_dynamics" else None,
+        )
         markdown = MarkdownResponseBuilder().build(
             brand=brand,
             calls=[call],
             sources=[source],
             notices=market_view_notices(view_type),
         )
+        resolution: dict[str, str] = {"canonical_brand": brand, "market_name": market_name}
+        if view_type == "competitive_dynamics" and market_reference:
+            resolution["market_id"] = market_reference
         return {
             "question": question,
-            "resolution": {"canonical_brand": brand, "market_id": market_id},
+            "resolution": resolution,
             "decomposition": [{"intent": "same_market_sales", "view_type": view_type}],
             "router_diagnostics": {
                 "deterministic": True,
@@ -274,6 +286,51 @@ class MarketScopeResolver:
             "answer": markdown.markdown,
             "markdown_response": markdown.to_dict(),
             "sources": [source],
+        }
+
+    @staticmethod
+    def _query_failed(
+        error: BaseException,
+        question: str,
+        tool_name: str,
+        brand: str,
+        *,
+        started_at: datetime,
+    ) -> dict[str, Any]:
+        message = "요청한 시장 조회 실행이 실패했습니다. 데이터가 없다는 뜻은 아니며, 수치를 추정하지 않습니다."
+        render_data: dict[str, Any] = {
+            "status": "query_failed",
+            "message": message,
+            "tool_name": tool_name,
+            "brand": brand,
+            "error_type": type(error).__name__,
+        }
+        call: dict[str, Any] = {
+            "source": "backend_api",
+            "tool": "query_failed",
+            "status": "query_failed",
+            "summary_text": message,
+            "render_data": render_data,
+        }
+        if isinstance(error, CauseBackendError):
+            call["backend_trace"] = error.trace_fields()
+        attach_tool_qa_trace(call, started_at=started_at, status="query_failed", cache_hit=False)
+        markdown = MarkdownResponseBuilder().build(brand=brand, calls=[call], sources=["backend_api"])
+        return {
+            "question": question,
+            "resolution": {"canonical_brand": brand},
+            "decomposition": [{"intent": "same_market_sales", "status": "query_failed"}],
+            "router_diagnostics": {
+                "deterministic": True,
+                "mode": "market_scope",
+                "scope": "market_landscape",
+                "gate": "typed_unavailable",
+                "gate_reason": "query_failed",
+            },
+            "tool_calls": [call],
+            "answer": markdown.markdown,
+            "markdown_response": markdown.to_dict(),
+            "sources": ["backend_api"],
         }
 
     def clarification(self, question: str, *, brand: str) -> dict[str, Any]:
@@ -303,10 +360,9 @@ class MarketScopeResolver:
         source: str,
         market_id: str,
     ) -> tuple[str | None, float | int | None, float | None]:
-        if view_type == "competitive_dynamics":
-            series = self._cd_market_size_series(brand=brand, source=source, market_id=market_id)
-        else:
-            series = self._cause_market_size_series(brand=brand, view_type=view_type, source=source, market_id=market_id)
+        if view_type != "competitive_dynamics":
+            return None, None, None
+        series = self._cd_market_size_series(brand=brand, source=source, market_id=market_id)
         if not isinstance(series, dict) or not series:
             return None, None, None
         period = sorted(str(key) for key in series)[-1]
@@ -328,22 +384,6 @@ class MarketScopeResolver:
             return self._cd_mart_cache.snapshot().market_size_series(brand=brand, source=source, market_id=market_id)
         except (LookupError, TypeError):
             return None
-
-    def _cause_market_size_series(
-        self,
-        *,
-        brand: str,
-        view_type: str,
-        source: str,
-        market_id: str,
-    ) -> dict[str, Any] | None:
-        key = CausePayloadKey(brand=brand, view_type=view_type, source=source, measure="sales", market_id=market_id)
-        try:
-            payload = self._cause_cache.payload(key).payload
-        except (LookupError, TypeError):
-            return None
-        series = payload.get("data", {}).get("sources_data", {}).get("market_size_series")
-        return series if isinstance(series, dict) else None
 
     @staticmethod
     def _render_data(

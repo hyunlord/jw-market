@@ -51,6 +51,7 @@ BRAND_CARDS = {
             },
             "back": {"cagr_5y_pct": 12.0888},
             "back_extended": {
+                "period_recent": "2026-04",
                 "market_size_recent": 225_677_368_890.97986,
                 "market_cagr_5y_pct": 16.18,
                 "brand_cagr_5y_pct": 12.0888,

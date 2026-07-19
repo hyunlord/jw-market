@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 import jw_chat_agent_poc.service  # noqa: F401  # pre-import: market_scope↔service.app 순환 import 회피(기존 suite와 동일한 로드 순서)
-from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.cd_mart import (
     CdBrandLink,
     StaticCdMartReader,
@@ -15,7 +15,7 @@ from jw_chat_agent_poc.tools.metrics.cd_mart import (
 )
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
-from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
+from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS
 
 
 CD_RAW_SERIES = {
@@ -66,14 +66,8 @@ def _cd_mart_reader(
 
 def _resolver(reader: StaticCdMartReader | None = None) -> MarketScopeResolver:
     cache_reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
-    cause_reader = StaticCausePayloadReader(
-        {
-            ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): CAUSE_PAYLOAD,
-        }
-    )
     return MarketScopeResolver(
         cache_reader=cache_reader,
-        cause_reader=cause_reader,
         cd_mart_reader=reader or _cd_mart_reader(),
     )
 
@@ -163,14 +157,15 @@ def test_strategy_id_from_ml_matches_builder_rule() -> None:
     assert strategy_id_from_ml("") == ""
 
 
-def test_market_landscape_still_uses_cache_cause_payload() -> None:
+def test_market_landscape_fixture_uses_market_status_without_cause_payload() -> None:
     result = _resolver().answer("리바로 같은 시장 전략뷰", view_type="market_landscape")
 
     data = result["tool_calls"][0]["render_data"]
     assert data["view_type"] == "market_landscape"
-    expected = CAUSE_PAYLOAD["data"]["sources_data"]["market_size_series"]
-    latest_period = sorted(expected)[-1]
-    assert data["market_size_recent_krw"] == expected[latest_period]["value"]
+    card = next(item for item in BRAND_CARDS["brand_cards"] if item["brand"] == "리바로")
+    expected = card["back_extended"]
+    assert data["period"] == expected["period_recent"]
+    assert data["market_size_recent_krw"] == expected["market_size_recent"]
 
 
 def test_snapshot_lookup_error_for_missing_series() -> None:

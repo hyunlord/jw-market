@@ -21,6 +21,7 @@ def test_agent_loop_factory_preserves_external_mode_and_default_query_layer(monk
     # Then: the injected dependencies preserve the mode and cache query-layer contract.
     assert deps.external.mode == "live"
     assert deps.query_layer is not None
+    assert deps.query_layer._cause_backend is not None
 
 
 def test_agent_loop_factory_preserves_disabled_query_layer(monkeypatch) -> None:

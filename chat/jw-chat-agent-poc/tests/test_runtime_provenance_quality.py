@@ -132,8 +132,9 @@ def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(mo
         "router_diagnostics": {"mode": "tool_use_agent", "reason": "structured_metric_owner"},
         "tool_calls": [
             {
-                "tool": "get_brand_share",
+                "tool": "query_failed",
                 "status": "query_failed",
+                "render_data": {"tool_name": "get_brand_share", "status": "query_failed"},
                 "qa_trace": {
                     "started_at": "2026-07-19T00:00:00+00:00",
                     "ended_at": "2026-07-19T00:00:01+00:00",
@@ -141,6 +142,10 @@ def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(mo
                     "row_count": 0,
                     "data_as_of": None,
                     "cache_hit": False,
+                    "endpoint": "/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C",
+                    "latency_ms": 1000.0,
+                    "source_epoch": "epoch-20260720",
+                    "built_at": "2026-07-20T00:00:00Z",
                 },
             }
         ],
@@ -173,6 +178,10 @@ def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(mo
     assert qa_trace["routing"]["gate_reason"] == "structured_metric_owner"
     assert qa_trace["tools"][0]["name"] == "get_brand_share"
     assert qa_trace["tools"][0]["status"] == "query_failed"
+    assert qa_trace["tools"][0]["endpoint"] == "/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C"
+    assert qa_trace["tools"][0]["latency_ms"] == 1000.0
+    assert qa_trace["tools"][0]["source_epoch"] == "epoch-20260720"
+    assert qa_trace["tools"][0]["built_at"] == "2026-07-20T00:00:00Z"
     assert qa_trace["claims"] == {
         "blocked_count": 1,
         "blocked_reasons": ("missing_share_evidence",),

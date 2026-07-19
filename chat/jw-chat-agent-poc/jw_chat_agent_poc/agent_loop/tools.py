@@ -467,6 +467,11 @@ def _tool_error(
         "summary_text": message,
         "render_data": render_data,
     }
+    trace_fields = getattr(error, "trace_fields", None)
+    if callable(trace_fields):
+        backend_trace = trace_fields()
+        if isinstance(backend_trace, Mapping):
+            call["backend_trace"] = dict(backend_trace)
     return ToolExecution("error", message, call, arguments)
 
 

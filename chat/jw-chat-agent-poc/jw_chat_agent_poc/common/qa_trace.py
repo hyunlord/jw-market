@@ -20,7 +20,9 @@ def attach_tool_qa_trace(
     cache_hit: bool | None = None,
 ) -> dict[str, Any]:
     resolved_status = status or tool_status(call)
-    call["qa_trace"] = {
+    backend_trace = call.get("backend_trace")
+    backend_items = backend_trace if isinstance(backend_trace, Mapping) else {}
+    trace = {
         "started_at": started_at.isoformat(),
         "ended_at": (ended_at or datetime.now(UTC)).isoformat(),
         "status": resolved_status,
@@ -28,6 +30,10 @@ def attach_tool_qa_trace(
         "data_as_of": tool_data_as_of(call) if data_as_of is None else data_as_of,
         "cache_hit": tool_cache_hit(call) if cache_hit is None else cache_hit,
     }
+    for key in ("endpoint", "latency_ms", "source_epoch", "built_at"):
+        if key in backend_items:
+            trace[key] = backend_items.get(key)
+    call["qa_trace"] = trace
     return call
 
 
@@ -76,7 +82,9 @@ def tool_data_as_of(call: Mapping[str, Any]) -> str | None:
 
 def tool_cache_hit(call: Mapping[str, Any]) -> bool:
     render_data = call.get("render_data")
+    backend_trace = call.get("backend_trace")
     return bool(
         call.get("cache_hit")
         or (render_data.get("cache_hit") if isinstance(render_data, Mapping) else False)
+        or (backend_trace.get("cache_hit") if isinstance(backend_trace, Mapping) else False)
     )
