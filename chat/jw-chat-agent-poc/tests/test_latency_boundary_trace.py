@@ -105,6 +105,7 @@ def test_structured_preflight_exposes_catalog_and_duplicate_resolution_costs() -
     assert plan is not None
     names = [span["name"] for span in spans]
     assert names.count("brand_catalog_load") == 2
+    assert names.count("brand_catalog_assembly") == 1
     assert names.count("brand_alias_match_many") == 2
     assert "period_grounding" in names
     assert "tool_schema_catalog" in names

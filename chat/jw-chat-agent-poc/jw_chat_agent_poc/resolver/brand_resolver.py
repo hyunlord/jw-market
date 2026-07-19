@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import os
 import re
+import threading
 import unicodedata
 from typing import Any, Protocol
 
@@ -74,6 +75,9 @@ class BrandResolver:
         self._mode = mode or os.environ.get("CHAT_RESOLVER_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
         self._membership_reader = membership_reader
         self._molecule_reader = molecule_reader
+        self._catalog_lock = threading.Lock()
+        self._catalog_sources: tuple[object, ...] | None = None
+        self._catalog_items: tuple[dict[str, Any], ...] | None = None
         ttl = ttl_seconds or int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(brand_reader, ttl_seconds=ttl) if brand_reader is not None else shared_metrics_cache(ttl)
 
@@ -187,10 +191,57 @@ class BrandResolver:
 
     def _items(self) -> list[dict[str, Any]]:
         if self._mode != "cache":
+            return self._assembled_items((self._fixture_items,), (), (), ())
+
+        with trace_span("brand_cache_snapshot", "cache_brands snapshot", category="resolver"):
+            snapshot = self._cache.snapshot()
+            cache_brands = tuple(snapshot.cache_brands)
+        memberships: tuple[dict[str, str], ...] = ()
+        if self._membership_reader is not None:
+            with trace_span("brand_membership_load", "mart and catalog membership load", category="resolver"):
+                memberships = self._membership_reader.brand_memberships()
+        brand_molecules: tuple[dict[str, str], ...] = ()
+        if self._molecule_reader is not None:
+            with trace_span("brand_molecule_load", "mart brand molecule load", category="resolver"):
+                brand_molecules = self._molecule_reader.brand_molecules()
+        sources = (snapshot, memberships, brand_molecules)
+        return self._assembled_items(sources, cache_brands, memberships, brand_molecules)
+
+    def _assembled_items(
+        self,
+        sources: tuple[object, ...],
+        cache_brands: tuple[dict[str, Any], ...],
+        memberships: tuple[dict[str, str], ...],
+        brand_molecules: tuple[dict[str, str], ...],
+    ) -> list[dict[str, Any]]:
+        cached = self._catalog_items
+        if cached is not None and self._same_catalog_sources(sources):
+            return list(cached)
+        with self._catalog_lock:
+            cached = self._catalog_items
+            if cached is not None and self._same_catalog_sources(sources):
+                return list(cached)
+            with trace_span("brand_catalog_assembly", f"mode={self._mode}", category="resolver"):
+                items = self._assemble_items(cache_brands, memberships, brand_molecules)
+            self._catalog_items = tuple(items)
+            self._catalog_sources = sources
+            return list(self._catalog_items)
+
+    def _same_catalog_sources(self, sources: tuple[object, ...]) -> bool:
+        current = self._catalog_sources
+        return current is not None and len(current) == len(sources) and all(
+            previous is incoming for previous, incoming in zip(current, sources, strict=True)
+        )
+
+    def _assemble_items(
+        self,
+        cache_brands: tuple[dict[str, Any], ...],
+        memberships: tuple[dict[str, str], ...],
+        brand_molecules: tuple[dict[str, str], ...],
+    ) -> list[dict[str, Any]]:
+        if self._mode != "cache":
             return list(self._fixture_items)
         merged: dict[str, dict[str, Any]] = {}
-        with trace_span("brand_cache_snapshot", "cache_brands snapshot", category="resolver"):
-            cache_brands = tuple(self._cache.snapshot().cache_brands)
         for brand in cache_brands:
             name = str(brand.get("brand") or "")
             if not name:
@@ -209,9 +260,7 @@ class BrandResolver:
                 "market_memberships": [],
                 "support_source": "cache_brands+fixture_sidecar" if sidecar else "cache_brands",
             }
-        if self._membership_reader is not None:
-            with trace_span("brand_membership_load", "mart and catalog membership load", category="resolver"):
-                memberships = self._membership_reader.brand_memberships()
+        if memberships:
             for membership in memberships:
                 name = str(membership.get("brand") or "")
                 if not name:
@@ -242,10 +291,8 @@ class BrandResolver:
                 pair = (str(membership.get("market_id") or ""), str(membership.get("market_name") or ""))
                 if pair[0] and pair not in item["market_memberships"]:
                     item["market_memberships"].append(pair)
-        if self._molecule_reader is not None:
+        if brand_molecules:
             molecule_by_brand: dict[str, list[str]] = {}
-            with trace_span("brand_molecule_load", "mart brand molecule load", category="resolver"):
-                brand_molecules = self._molecule_reader.brand_molecules()
             for row in brand_molecules:
                 molecule = str(row.get("molecule_display") or row.get("molecule_norm") or "").strip()
                 if not molecule:

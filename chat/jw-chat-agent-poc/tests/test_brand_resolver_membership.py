@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
+from jw_chat_agent_poc.common.timing import request_span_scope
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent, _prefer_mart_metric
 from jw_chat_agent_poc.resolver.brand_resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
@@ -107,6 +108,49 @@ def test_cache_resolver_adds_mart_molecule_without_erasing_sidecar() -> None:
     assert mounjaro.molecule_en == ("TIRZEPATIDE",)
     assert "mart_brand_molecule" in rivaro.support_source
     assert "mart_brand_molecule" in mounjaro.support_source
+
+
+def test_cache_resolver_reuses_assembled_catalog_until_source_identity_changes() -> None:
+    memberships = StaticMembershipReader(
+        (
+            {"brand": "리바로", "market_id": "ml_006", "market_name": "스타틴 시장"},
+            {"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨병 시장"},
+        )
+    )
+    molecules = StaticMoleculeReader(
+        (
+            {
+                "brand_name": "리바로",
+                "brand_key": "리바로",
+                "molecule_display": "pitavastatin",
+                "molecule_norm": "pitavastatin",
+            },
+            {
+                "brand_name": "마운자로",
+                "brand_key": "마운자로",
+                "molecule_display": "tirzepatide",
+                "molecule_norm": "tirzepatide",
+            },
+        )
+    )
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=_cache_reader(),
+        membership_reader=memberships,
+        molecule_reader=molecules,
+    )
+
+    with request_span_scope() as spans:
+        assert resolver.resolve("리바로", allow_default=False).canonical_brand == "리바로"
+        assert resolver.resolve_many("리바로와 마운자로", allow_default=False)[1].canonical_brand == "마운자로"
+        assert resolver.supported_brand_count() == 2
+        memberships.rows = (
+            *memberships.rows,
+            {"brand": "자누비아", "market_id": "ml_003", "market_name": "당뇨병 시장"},
+        )
+        assert resolver.resolve("자누비아", allow_default=False).canonical_brand == "자누비아"
+
+    assert [span["name"] for span in spans].count("brand_catalog_assembly") == 2
 
 
 def test_unknown_brand_remains_unsupported_with_catalog_membership() -> None:
