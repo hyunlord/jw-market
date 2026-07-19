@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.news_query import normalize_news_query
+from jw_chat_agent_poc.common.timing import trace_span
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.question_intent import metric_from_question
@@ -60,26 +61,32 @@ class GenosToolPlanner:
     ) -> AgentDecision:
         import requests
 
-        try:
-            response = requests.post(
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {self.token}"},
-                json={
+        with trace_span("planner_request_prepare", "planner messages and tool schema serialization", category="llm"):
+            request_url = f"{self.base_url.rstrip('/')}/chat/completions"
+            request_headers = {"Authorization": f"Bearer {self.token}"}
+            request_json = {
                     "messages": _messages(question, observations, allowed_brands, allowed_periods),
                     "tools": list(_planner_schemas(question, schemas, observations)),
                     "tool_choice": "auto",
                     "stream": False,
                     "temperature": 0.0,
                     "max_tokens": _planner_max_tokens(),
-                },
-                timeout=self.timeout_s,
-            )
-            response.raise_for_status()
+                }
+        try:
+            with trace_span("planner_http_wait", "planner connection, queue, and inference wait", category="llm"):
+                response = requests.post(
+                    request_url,
+                    headers=request_headers,
+                    json=request_json,
+                    timeout=self.timeout_s,
+                )
+                response.raise_for_status()
         except requests.RequestException as exc:
             raise RuntimeError("GenOS tool planner request failed") from exc
-        payload = response.json()
-        object.__setattr__(self, "last_token_usage", usage_call_from_payload(payload, base_url=self.base_url, stream=False))
-        return _decision_from_payload(payload)
+        with trace_span("planner_response_decode", "planner JSON decode and decision assembly", category="llm"):
+            payload = response.json()
+            object.__setattr__(self, "last_token_usage", usage_call_from_payload(payload, base_url=self.base_url, stream=False))
+            return _decision_from_payload(payload)
 
     def _fallback(
         self,

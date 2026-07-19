@@ -359,6 +359,12 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
 
     assert captured == ["가드렛 매출 추이는?"]
     assert item["result"]["conversation_interpretation"] == "가드렛의 매출 추이로 이해했어요."
+    span_names = [span["name"] for span in item["result"]["_qa_spans"]]
+    assert "conversation_history_fetch" in span_names
+    assert "conversation_history_replay" in span_names
+    assert "anaphora_resolution" in span_names
+    assert "context_scope_resolution" in span_names
+    assert "conversation_state_persist" in span_names
 
 
 def test_deep_mode_followup_uses_resolved_state_and_discloses_interpretation(monkeypatch) -> None:

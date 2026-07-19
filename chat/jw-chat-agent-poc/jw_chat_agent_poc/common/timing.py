@@ -4,6 +4,7 @@ from collections.abc import MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import os
 import re
@@ -18,6 +19,10 @@ from jw_chat_agent_poc.common.token_usage import public_token_usage
 Timing = MutableMapping[str, Any]
 StageEventSink = Callable[[dict[str, Any]], None]
 _ACTIVE_STAGE_SINK: ContextVar[StageEventSink | None] = ContextVar("active_stage_sink", default=None)
+_ACTIVE_REQUEST_SPANS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "active_request_spans",
+    default=None,
+)
 STEP_HEARTBEAT_THRESHOLD_S_ENV = "STEP_HEARTBEAT_THRESHOLD_S"
 DEFAULT_STEP_HEARTBEAT_THRESHOLD_S = 3.0
 STEP_HEARTBEAT_INTERVAL_S = 2.5
@@ -202,6 +207,46 @@ def ensure_timing(result: MutableMapping[str, Any]) -> Timing:
 
 
 @contextmanager
+def request_span_scope() -> Iterator[list[dict[str, Any]]]:
+    """Collect request-local child spans for QA diagnostics."""
+
+    spans: list[dict[str, Any]] = []
+    token = _ACTIVE_REQUEST_SPANS.set(spans)
+    try:
+        yield spans
+    finally:
+        _ACTIVE_REQUEST_SPANS.reset(token)
+
+
+@contextmanager
+def trace_span(
+    name: str,
+    detail: str = "",
+    *,
+    category: str = "boundary",
+) -> Iterator[None]:
+    """Record a non-public diagnostic span without changing progress events."""
+
+    started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
+    status = "ok"
+    try:
+        yield
+    except BaseException:
+        status = "error"
+        raise
+    finally:
+        _record_request_span(
+            name=name,
+            category=category,
+            detail=detail,
+            started=started,
+            started_at=started_at,
+            status=status,
+        )
+
+
+@contextmanager
 def stage(
     timing: Timing | None,
     name: str,
@@ -212,12 +257,17 @@ def stage(
 
     effective_sink = sink or _ACTIVE_STAGE_SINK.get()
     started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
     progress = StageProgress()
+    status = "ok"
     heartbeat_stop = threading.Event()
     _emit_stage_event(effective_sink, name, detail, "started")
     _start_heartbeat(effective_sink, name, detail, started, heartbeat_stop)
     try:
         yield progress
+    except BaseException:
+        status = "error"
+        raise
     finally:
         heartbeat_stop.set()
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -229,6 +279,39 @@ def stage(
             elapsed_ms,
         )
         _emit_stage_event(effective_sink, name, detail, "done", elapsed_ms, summary=progress.summary)
+        _record_request_span(
+            name=name,
+            category="stage",
+            detail=detail,
+            started=started,
+            started_at=started_at,
+            status=status,
+        )
+
+
+def _record_request_span(
+    *,
+    name: str,
+    category: str,
+    detail: str,
+    started: float,
+    started_at: datetime,
+    status: str,
+) -> None:
+    spans = _ACTIVE_REQUEST_SPANS.get()
+    if spans is None:
+        return
+    spans.append(
+        {
+            "name": name,
+            "category": category,
+            "detail": detail,
+            "started_at": started_at.isoformat(),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+            "status": status,
+        }
+    )
 
 
 def _start_heartbeat(

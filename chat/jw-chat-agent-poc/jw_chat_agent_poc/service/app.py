@@ -10,7 +10,7 @@ import time
 from collections import OrderedDict
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from functools import lru_cache
+from functools import lru_cache, wraps
 from hmac import compare_digest
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
@@ -137,8 +137,10 @@ from jw_chat_agent_poc.common.timing import (
     ensure_timing,
     finish,
     public_stage_summary,
+    request_span_scope,
     stage,
     stage_event_sink,
+    trace_span,
 )
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
@@ -513,6 +515,20 @@ def _resolve_session(
     raise HTTPException(status_code=400, detail="session_id or question is required")
 
 
+def _capture_request_spans(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with request_span_scope() as spans:
+            item = function(*args, **kwargs)
+        result = item.get("result") if isinstance(item, dict) else None
+        if isinstance(result, dict):
+            result["_qa_spans"] = list(spans)
+        return item
+
+    return wrapped
+
+
+@_capture_request_spans
 def _answer_question(
     store: SessionStore,
     market_scope_resolver: MarketScopeResolver,
@@ -531,10 +547,12 @@ def _answer_question(
     with sink_context:
         deep_request = parse_deep_research_request(question)
         effective_question = deep_request.question
-        state = store.conversations.get_or_create(conversation_id)
+        with trace_span("conversation_state_load", "in-memory conversation state lookup"):
+            state = store.conversations.get_or_create(conversation_id)
         if conversation_id and not state.turns and requires_previous_turn(effective_question):
             _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id)
-            state = store.conversations.get_or_create(state.conversation_id)
+            with trace_span("conversation_state_reload", "state lookup after persisted history hydration"):
+                state = store.conversations.get_or_create(state.conversation_id)
         provided_file = _has_file_signal(documents, file_context)
         file_probe_started = time.perf_counter()
         has_file = provided_file or bool(conversation_id and has_active_uploaded_file(state.conversation_id))
@@ -552,7 +570,8 @@ def _answer_question(
             else ()
         )
         previous_turn = state.turns[-1] if state.turns else None
-        routing_resolution = resolve_anaphora(effective_question, previous_turn)
+        with trace_span("anaphora_resolution", "deterministic previous-turn slot resolution"):
+            routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
         metric_owner = structured_metric_owner(routing_question)
@@ -600,14 +619,15 @@ def _answer_question(
             if inherit_file_context
             else routing_question
         )
-        context_scope = resolve_context_scope(
-            file_question,
-            has_active_file=has_file,
-            is_fresh_upload=bool(documents),
-            has_market_intent=has_market_intent,
-            has_market_anchor=has_market_anchor,
-            file_schema_columns=file_schema_columns,
-        )
+        with trace_span("context_scope_resolution", "market, file, and mixed scope classification"):
+            context_scope = resolve_context_scope(
+                file_question,
+                has_active_file=has_file,
+                is_fresh_upload=bool(documents),
+                has_market_intent=has_market_intent,
+                has_market_anchor=has_market_anchor,
+                file_schema_columns=file_schema_columns,
+            )
         if needs_brand_clarification or needs_market_clarification:
             context_scope = ContextScope.MARKET
         if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
@@ -775,13 +795,14 @@ def _answer_question(
             result = {**result, "router_diagnostics": diagnostics}
         result = _attach_file_context(result, delegated_file_context, file_source_items)
         result = _annotate_context_scope(result, context_scope)
-        store.conversations.record_exchange(
-            state.conversation_id,
-            question,
-            str(result.get("answer") or ""),
-            _applied_filters(result),
-            slots=extract_conversation_slots(result),
-        )
+        with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
+            store.conversations.record_exchange(
+                state.conversation_id,
+                question,
+                str(result.get("answer") or ""),
+                _applied_filters(result),
+                slots=extract_conversation_slots(result),
+            )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
 
 
@@ -794,19 +815,21 @@ def _hydrate_latest_conversation_turn(
     if not callable(latest_turn):
         return
     try:
-        turn = latest_turn(conversation_id)
+        with trace_span("conversation_history_fetch", "fetch latest persisted conversation turn"):
+            turn = latest_turn(conversation_id)
     except Exception as exc:
         LOGGER.warning("conversation history hydration failed error_type=%s", type(exc).__name__)
         return
     if not isinstance(turn, ConversationTurn):
         return
-    store.conversations.record_exchange(
-        conversation_id,
-        turn.question,
-        turn.answer,
-        turn.applied_filters,
-        slots=turn.slots,
-    )
+    with trace_span("conversation_history_replay", "restore persisted turn into request state"):
+        store.conversations.record_exchange(
+            conversation_id,
+            turn.question,
+            turn.answer,
+            turn.applied_filters,
+            slots=turn.slots,
+        )
 
 
 def _answer_mixed_parallel(
@@ -1623,26 +1646,32 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
     routes = ()
     structured_plan = None
-    if callable(getattr(dependencies.resolver, "resolve_many", None)):
-        structured_plan = preflight_structured_market_question(question, dependencies.resolver)
+    with trace_span("structured_preflight", "deterministic structured question preflight"):
+        if callable(getattr(dependencies.resolver, "resolve_many", None)):
+            structured_plan = preflight_structured_market_question(question, dependencies.resolver)
     if (
         not is_explicit_quarter_sales_question(question)
         and structured_plan is None
     ):
         with stage(None, "question_decomposition", "BQ and tool routing"):
             routes = dependencies.router.route(question, has_documents=False)
-    metric_owner = structured_metric_owner(question)
+    with trace_span("metric_owner_resolution", "structured metric owner classification"):
+        metric_owner = structured_metric_owner(question)
     skip_single_brand_resolution = metric_owner == "market" and structured_plan is None
-    if (
-        not skip_single_brand_resolution
-        and not is_portfolio_decline_question(question, routes)
-        and not _is_known_ingredient_patent_question(question)
-    ):
-        try:
-            dependencies.resolver.resolve(question, allow_default=False)
-        except UnsupportedBrandError:
-            return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
-    return build_tool_use_agent(dependencies.agent_loop_dependencies()).answer(question)
+    with trace_span("canonical_brand_resolution", "canonical brand validation"):
+        if (
+            not skip_single_brand_resolution
+            and not is_portfolio_decline_question(question, routes)
+            and not _is_known_ingredient_patent_question(question)
+        ):
+            try:
+                dependencies.resolver.resolve(question, allow_default=False)
+            except UnsupportedBrandError:
+                return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
+    with trace_span("agent_loop_construction", "tool-use agent construction"):
+        agent = build_tool_use_agent(dependencies.agent_loop_dependencies())
+    with trace_span("agent_loop_execution", "tool-use agent execution"):
+        return agent.answer(question)
 
 
 def _answer_deep_research(question: str, external_mode: str) -> dict:

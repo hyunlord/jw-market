@@ -8,6 +8,7 @@ import re
 import unicodedata
 from typing import Any, Protocol
 
+from jw_chat_agent_poc.common.timing import trace_span
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     MetricsCacheReader,
     TtlMetricsCache,
@@ -78,57 +79,61 @@ class BrandResolver:
 
     def resolve(self, question_or_brand: str, allow_default: bool = False) -> BrandResolution:
         normalized = self._normalize(question_or_brand)
-        raw_items = self._items()
-        market_universe = self._market_universe(raw_items, self._fixture_items)
-        items = sorted(
-            raw_items,
-            key=lambda item: max(len(self._normalize(alias)) for alias in [item["canonical_brand"], *item.get("aliases", [])]),
-            reverse=True,
-        )
-        for item in items:
-            aliases = [item["canonical_brand"], *item.get("aliases", [])]
-            if any(self._normalize(alias) in normalized for alias in aliases):
-                return self._to_resolution(
-                    item,
-                    question_or_brand,
-                    market_universe=market_universe,
-                )
+        with trace_span("brand_catalog_load", f"mode={self._mode}; operation=resolve", category="resolver"):
+            raw_items = self._items()
+        with trace_span("brand_alias_match_one", f"catalog_size={len(raw_items)}", category="resolver"):
+            market_universe = self._market_universe(raw_items, self._fixture_items)
+            items = sorted(
+                raw_items,
+                key=lambda item: max(len(self._normalize(alias)) for alias in [item["canonical_brand"], *item.get("aliases", [])]),
+                reverse=True,
+            )
+            for item in items:
+                aliases = [item["canonical_brand"], *item.get("aliases", [])]
+                if any(self._normalize(alias) in normalized for alias in aliases):
+                    return self._to_resolution(
+                        item,
+                        question_or_brand,
+                        market_universe=market_universe,
+                    )
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brand}")
 
     def resolve_many(self, question_or_brands: str, allow_default: bool = False) -> tuple[BrandResolution, ...]:
         normalized = self._normalize(question_or_brands)
-        items = self._items()
-        market_universe = self._market_universe(items, self._fixture_items)
-        spans: list[tuple[int, int, dict[str, Any]]] = []
-        for item in items:
-            aliases = [item["canonical_brand"], *item.get("aliases", [])]
-            for alias in aliases:
-                normalized_alias = self._normalize(str(alias))
-                start = normalized.find(normalized_alias)
-                while normalized_alias and start >= 0:
-                    spans.append((start, start + len(normalized_alias), item))
-                    start = normalized.find(normalized_alias, start + 1)
-        selected: list[tuple[int, dict[str, Any]]] = []
-        occupied: list[tuple[int, int]] = []
-        for start, end, item in sorted(spans, key=lambda span: (-(span[1] - span[0]), span[0])):
-            if any(start < used_end and end > used_start for used_start, used_end in occupied):
-                continue
-            occupied.append((start, end))
-            selected.append((start, item))
-        seen: set[str] = set()
-        out: list[BrandResolution] = []
-        for _, item in sorted(selected, key=lambda pair: pair[0]):
-            canonical = str(item["canonical_brand"])
-            if canonical in seen:
-                continue
-            seen.add(canonical)
-            out.append(
-                self._to_resolution(
-                    item,
-                    question_or_brands,
-                    market_universe=market_universe,
+        with trace_span("brand_catalog_load", f"mode={self._mode}; operation=resolve_many", category="resolver"):
+            items = self._items()
+        with trace_span("brand_alias_match_many", f"catalog_size={len(items)}", category="resolver"):
+            market_universe = self._market_universe(items, self._fixture_items)
+            spans: list[tuple[int, int, dict[str, Any]]] = []
+            for item in items:
+                aliases = [item["canonical_brand"], *item.get("aliases", [])]
+                for alias in aliases:
+                    normalized_alias = self._normalize(str(alias))
+                    start = normalized.find(normalized_alias)
+                    while normalized_alias and start >= 0:
+                        spans.append((start, start + len(normalized_alias), item))
+                        start = normalized.find(normalized_alias, start + 1)
+            selected: list[tuple[int, dict[str, Any]]] = []
+            occupied: list[tuple[int, int]] = []
+            for start, end, item in sorted(spans, key=lambda span: (-(span[1] - span[0]), span[0])):
+                if any(start < used_end and end > used_start for used_start, used_end in occupied):
+                    continue
+                occupied.append((start, end))
+                selected.append((start, item))
+            seen: set[str] = set()
+            out: list[BrandResolution] = []
+            for _, item in sorted(selected, key=lambda pair: pair[0]):
+                canonical = str(item["canonical_brand"])
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                out.append(
+                    self._to_resolution(
+                        item,
+                        question_or_brands,
+                        market_universe=market_universe,
+                    )
                 )
-            )
         if out:
             return tuple(out)
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brands}")
@@ -184,7 +189,9 @@ class BrandResolver:
         if self._mode != "cache":
             return list(self._fixture_items)
         merged: dict[str, dict[str, Any]] = {}
-        for brand in self._cache.snapshot().cache_brands:
+        with trace_span("brand_cache_snapshot", "cache_brands snapshot", category="resolver"):
+            cache_brands = tuple(self._cache.snapshot().cache_brands)
+        for brand in cache_brands:
             name = str(brand.get("brand") or "")
             if not name:
                 continue
@@ -203,7 +210,9 @@ class BrandResolver:
                 "support_source": "cache_brands+fixture_sidecar" if sidecar else "cache_brands",
             }
         if self._membership_reader is not None:
-            for membership in self._membership_reader.brand_memberships():
+            with trace_span("brand_membership_load", "mart and catalog membership load", category="resolver"):
+                memberships = self._membership_reader.brand_memberships()
+            for membership in memberships:
                 name = str(membership.get("brand") or "")
                 if not name:
                     continue
@@ -235,7 +244,9 @@ class BrandResolver:
                     item["market_memberships"].append(pair)
         if self._molecule_reader is not None:
             molecule_by_brand: dict[str, list[str]] = {}
-            for row in self._molecule_reader.brand_molecules():
+            with trace_span("brand_molecule_load", "mart brand molecule load", category="resolver"):
+                brand_molecules = self._molecule_reader.brand_molecules()
+            for row in brand_molecules:
                 molecule = str(row.get("molecule_display") or row.get("molecule_norm") or "").strip()
                 if not molecule:
                     continue
