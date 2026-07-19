@@ -12,6 +12,7 @@ from pipeline.scripts.rollback.recording import (
     PromotionIdentity,
     identity_from_args,
     record_component_backups,
+    require_ingest_post_gate,
 )
 from pipeline.scripts.rollback.service import execute_rollback
 
@@ -48,6 +49,25 @@ class IsolatedMart:
 
     def invalidate_dynamic_cache(self, _db_name: str) -> None:
         self.invalidations += 1
+
+
+def test_gate_failed_ingest_blocks_promotion() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE ingest_ledger (id INTEGER, run_id TEXT, status TEXT, reason TEXT)")
+    conn.execute("INSERT INTO ingest_ledger VALUES (1, 'ingest-1', 'gate_failed', 'PG-2 mismatch')")
+    identity = PromotionIdentity("promote-1", "2026-07", "ingest-1", "serving", "generation")
+
+    with pytest.raises(RuntimeError, match="status=gate_failed"):
+        require_ingest_post_gate(conn, identity, dialect="sqlite")
+
+
+def test_complete_ingest_allows_promotion_preflight() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE ingest_ledger (id INTEGER, run_id TEXT, status TEXT, reason TEXT)")
+    conn.execute("INSERT INTO ingest_ledger VALUES (1, 'ingest-1', 'complete', NULL)")
+    identity = PromotionIdentity("promote-1", "2026-07", "ingest-1", "serving", "generation")
+
+    require_ingest_post_gate(conn, identity, dialect="sqlite")
 
 
 def _ledger() -> PromotionLedger:

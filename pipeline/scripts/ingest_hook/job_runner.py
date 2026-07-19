@@ -4,10 +4,11 @@ Order is enforced in code (STOP ③ — no load without G3):
   1. contract parse (fail-closed on unknown category)
   2. G3 structural validation
   3. load phase        (rehearsal: CSV -> sqlite staging; real: pipeline.etl.run)
-  4. Σ(parts)=whole gate on the staged data
+  4. POST-GATE (Σ, manifest row coverage, untouched-source fingerprint)
   5. downstream refresh (real: pipeline.orchestrator --mode incremental)
   6. ledger complete
-Any failure marks the ledger row failed with the reason and exits non-zero;
+Any post-gate failure marks the ledger row gate_failed and blocks promotion;
+other failures mark it failed. Both exit non-zero;
 nothing is promoted (rehearsal writes staging only; the real loaders keep
 their own staging->promotion discipline).
 
@@ -30,6 +31,16 @@ from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, reso
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
 from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
+from pipeline.scripts.ingest_hook.post_gate import (
+    PostGateError,
+    SigmaEvidence,
+    SourceSnapshot,
+    TableFingerprint,
+    fingerprint_untouched_sources,
+    run_post_gates,
+    sample_existing_periods,
+    staging_row_count,
+)
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 
 
@@ -64,7 +75,6 @@ def _rehearsal_load(manifest, input_root: Path, rehearsal_root: Path) -> str:
                         ),
                     )
         conn.commit()
-        check_staging(conn, table)
     finally:
         conn.close()
     return table
@@ -162,12 +172,42 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         report = validate(manifest, spec, input_root, previous_total_rows=previous_total)
         print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
 
-        # 2) load + 3) Σ gate
+        # 2) load + 3) fail-closed post-gates
         if rehearsal_root is not None:
             table = _rehearsal_load(manifest, input_root, rehearsal_root)
-            print(f"gate=sigma status=pass table={table} (rehearsal staging)")
+            conn = sqlite3.connect(str(rehearsal_root / "staging.db"))
+            try:
+                stable = SourceSnapshot((TableFingerprint("external_mart", 0, "untouched"),))
+
+                def rehearsal_sigma() -> SigmaEvidence:
+                    sigma = check_staging(conn, table)
+                    checked = len(sigma.periods)
+                    return SigmaEvidence(checked, checked, str(sigma.periods))
+
+                post = run_post_gates(
+                    run_id=run_id,
+                    epoch=manifest.epoch,
+                    category=manifest.category,
+                    sigma_check=rehearsal_sigma,
+                    expected_rows=report.total_rows,
+                    actual_rows=staging_row_count(conn, table),
+                    untouched_before=stable,
+                    untouched_after=stable,
+                    report_path=rehearsal_root / "post_gate_report.json",
+                )
+            finally:
+                conn.close()
+            print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
+            mart_conn = None
+            before_snapshot = None
+            _, configured_staging_verify = config.load_output_root()
+            if spec.sigma_source and not configured_staging_verify:
+                mart_conn = config.open_mart_connection()
+                before_snapshot = fingerprint_untouched_sources(
+                    mart_conn, touched_source=spec.sigma_source
+                )
             # 2) real load — wire the materialized upload in, prove the epoch landed (M-2).
             load_result = _real_load(manifest, spec, input_root)
             staging_verify = load_result["staging_verify"]
@@ -180,15 +220,39 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                 if spec.sigma_source:
                     from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
 
-                    periods = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
-                    sigma = check_market_sigma(
-                        config.open_mart_connection(), source=spec.sigma_source, periods=periods
+                    affected = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
+                    sampled = sample_existing_periods(
+                        mart_conn, source=spec.sigma_source, excluded=affected
                     )
-                    print(
-                        f"gate=sigma status=pass source={spec.sigma_source} "
-                        f"markets={sigma.markets_checked} cells={sigma.cells_checked} "
-                        f"worst_rel={sigma.worst_rel:.6%}"
+                    periods = tuple(sorted(set(affected + sampled)))
+
+                    def mart_sigma() -> SigmaEvidence:
+                        sigma = check_market_sigma(
+                            mart_conn, source=spec.sigma_source, periods=periods
+                        )
+                        return SigmaEvidence(
+                            sigma.cells_checked,
+                            sigma.cells_checked,
+                            f"markets={sigma.markets_checked} periods={periods} "
+                            f"worst_rel={sigma.worst_rel:.6%}",
+                        )
+
+                    if mart_conn is None or before_snapshot is None:
+                        raise RuntimeError("live post-gate requires a mart connection and baseline")
+                    post = run_post_gates(
+                        run_id=run_id,
+                        epoch=manifest.epoch,
+                        category=manifest.category,
+                        sigma_check=mart_sigma,
+                        expected_rows=report.total_rows,
+                        actual_rows=int(load_result["epoch_rows"] or 0),
+                        untouched_before=before_snapshot,
+                        untouched_after=fingerprint_untouched_sources(
+                            mart_conn, touched_source=spec.sigma_source
+                        ),
+                        report_path=load_result["target_dir"] / "post_gate_report.json",
                     )
+                    print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
                 _run_commands("refresh", spec.refresh_argv)
             if load_result["epoch_rows"] is not None:
                 report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
@@ -196,6 +260,10 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         ledger.mark_complete(*identity, row_counts=report.file_rows)
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
+    except PostGateError as exc:
+        ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
+        print(f"result=gate_failed reason={exc}", file=sys.stderr)
+        return 1
     except (G3Error, SigmaGateError, UnknownCategoryError, RuntimeError) as exc:
         ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)

@@ -24,7 +24,7 @@ spec:
           serviceAccountName: jw-ingest-hook
           containers:
             - name: sweep
-              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:a362ceb8a60f04688917d8c73dddf63c29e22b295c6e45f1c4036424240d703a
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:717014ae78bf3091e182ed0158fc9ff3618233b60fd76afc15457d4eba3b189d
               imagePullPolicy: IfNotPresent
               command:
                 - python

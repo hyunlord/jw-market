@@ -23,6 +23,7 @@ STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
+STATUS_GATE_FAILED = "gate_failed"
 _HELD_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_COMPLETE)
 
 _DDL_SQLITE = """
@@ -218,6 +219,13 @@ class Ledger:
             "UPDATE ingest_ledger SET status=?, reason=?, finished_at=?"
             " WHERE epoch=? AND category=? AND manifest_sha=?",
             (STATUS_FAILED, reason[:4000], _now(), epoch, category, manifest_sha),
+        )
+
+    def mark_gate_failed(self, epoch: str, category: str, manifest_sha: str, *, reason: str) -> None:
+        self._execute(
+            "UPDATE ingest_ledger SET status=?, reason=?, finished_at=?"
+            " WHERE epoch=? AND category=? AND manifest_sha=?",
+            (STATUS_GATE_FAILED, reason[:4000], _now(), epoch, category, manifest_sha),
         )
 
     # -- reads ----------------------------------------------------------------

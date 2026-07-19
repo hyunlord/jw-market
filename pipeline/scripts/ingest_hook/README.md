@@ -8,8 +8,9 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 
 * **서빙 무접촉** — jw-market-backend-api 에는 어떤 엔드포인트도 추가하지 않는다.
   트리거 서비스는 별도 Deployment (같은 orchestrator 이미지, uvicorn factory).
-* **G3 우회 불가** — `job_runner.py` 가 G3 → 적재 → Σ게이트 → refresh 순서를
-  코드로 강제한다. G3 실패 = 적재 0, ledger `failed`.
+* **G3/POST-GATE 우회 불가** — `job_runner.py` 가 G3 → 적재 → POST-GATE →
+  refresh 순서를 코드로 강제한다. G3 실패는 `failed`, POST-GATE 실패는
+  `gate_failed`이며 promotion preflight가 테이블 변경 전에 거부한다.
 * **D-3a 파일럿 무장** — `deploy/k8s/ingest-hook/` 의 trigger 는 replicas 1,
   `INGEST_LOAD_STAGING_ROOT=/tmp/ingest-load-staging` 상태다. sweep 은
   `suspend: true` 이며 별도 PL 결정 전 resume 하지 않는다.
@@ -28,6 +29,7 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 | `job_launcher.py` | batch/v1 Job 렌더+제출 (SA 토큰, transport 주입 가능) |
 | `job_runner.py` | Job 내부 실행 순서 강제 (rehearsal 모드 = 격리 검증) |
 | `sigma_gate.py` | Σ부분=전체 게이트 (staging 대상) |
+| `post_gate.py` | Σ·row coverage·비대상 source fingerprint JSON 판정 |
 | `load_verify.py` | ★M-2 게이트: 업로드 epoch 이 로더 출력에 실제 적재됐나(조용한 실패 차단) |
 | `sweep.py` | 유실 감시 CronJob 본체 (정상 시 no-op) |
 

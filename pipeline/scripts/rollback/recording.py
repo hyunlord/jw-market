@@ -123,3 +123,28 @@ def record_mysql_component(
         component=component,
         table_pairs=table_pairs,
     )
+
+
+def require_ingest_post_gate(
+    conn: Any, identity: PromotionIdentity, *, dialect: str = "mysql"
+) -> None:
+    """Refuse promotion unless its linked ingest run completed every post-gate."""
+    mark = "?" if dialect == "sqlite" else "%s"
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT status, reason FROM ingest_ledger WHERE run_id={mark} ORDER BY id DESC LIMIT 1",
+        (identity.ingest_run_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"promotion blocked: ingest_run_id={identity.ingest_run_id} is absent from ingest_ledger"
+        )
+    values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+    status, reason = str(values[0]), values[1]
+    if status != "complete":
+        raise RuntimeError(
+            f"promotion blocked: ingest_run_id={identity.ingest_run_id} status={status} "
+            f"reason={reason}; rollback=python -m pipeline.scripts.rollback "
+            "--to latest-good --dry-run"
+        )

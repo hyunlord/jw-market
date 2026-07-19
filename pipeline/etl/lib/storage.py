@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ MI_MASTER_DIR_NAME = "JW 주요 약품 수동 매핑"
 # prototype_12~19의 source_file_version 검증과 같은 기준을 쓰게 한다.
 # 대안으로 시장별 보정표를 두는 방식은 Excel -> ETL 재현성을 깨므로
 # 기각했다.
-MI_MASTER_FILE_NAME = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
+MI_MASTER_FILE_NAME = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 
 
 def get_storage_backend() -> str:
@@ -224,6 +225,17 @@ def get_data_path(
     return local_dir
 
 
+def _nfc_path(path: Path) -> Path:
+    """Return ``path`` with its string normalized to Unicode NFC.
+
+    Korean filenames are stored NFC by git and on Linux filesystems, but a source
+    literal authored in NFD (decomposed jamo) would make ``Path.exists()`` fail on a
+    byte-exact filesystem. Normalizing here keeps the loader working even if an NFD
+    literal regresses in the future.
+    """
+    return Path(unicodedata.normalize("NFC", str(path)))
+
+
 def get_mi_master_path() -> Path:
     """Return the standard MI Master workbook path for local or MinIO ETL runs."""
     path = get_data_path(
@@ -233,10 +245,10 @@ def get_mi_master_path() -> Path:
         work_subdir="mimaster",
     )
     if path.is_dir():
-        expected = path / MI_MASTER_FILE_NAME
+        expected = _nfc_path(path / MI_MASTER_FILE_NAME)
         if expected.exists():
             return expected
         candidates = sorted(file for file in path.rglob("*.xlsx") if not file.name.startswith("~$"))
         if candidates:
-            return candidates[-1]
-    return path
+            return _nfc_path(candidates[-1])
+    return _nfc_path(path)

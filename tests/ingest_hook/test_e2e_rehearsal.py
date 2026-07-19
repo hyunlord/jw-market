@@ -120,8 +120,8 @@ def test_g2_sigma_gate_rejects_broken_totals(sqlite_ledger, bucket, tmp_path):
         entry for entry in (sqlite_ledger.status("2026-07", "ubist", sha) for sha in _all_shas(sqlite_ledger))
         if entry is not None
     )
-    assert entry.status == "failed"
-    assert "SigmaGateError" in entry.reason
+    assert entry.status == "gate_failed"
+    assert "PG-1" in entry.reason
 
 
 def test_g2_unknown_category_fails_closed(sqlite_ledger, bucket, tmp_path):
