@@ -187,7 +187,12 @@ class ExternalToolRegistry:
 
     def _disease_call(self, method: str, metric: str, payload: BaseModel) -> ToolEnvelope:
         request = DiseaseCodeInput.model_validate(payload.model_dump())
-        sick_cd = hira_disease_code_for_text(request.sick_cd) or request.sick_cd.strip()
+        sick_cd = hira_disease_code_for_text(request.sick_cd)
+        if sick_cd is None:
+            return _error(
+                "MAPPING_FAILED",
+                "질병명 또는 KCD 코드 매핑을 확인할 수 없어 HIRA 조회를 실행하지 않았습니다.",
+            )
         function = getattr(self._external, method)
         call = function(sick_cd) if method == "hira_disease_name_code" else function(sick_cd, year=request.year)
         return _external_call_envelope(call, sick_cd, metric)

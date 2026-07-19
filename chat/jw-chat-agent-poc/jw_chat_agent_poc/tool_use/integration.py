@@ -7,7 +7,10 @@ from typing import Any, Final
 
 from jw_chat_agent_poc.common.timing import Timing
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
-from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_text
+from jw_chat_agent_poc.orchestrator.hira_disease import (
+    hira_disease_code_for_resolution,
+    hira_disease_code_for_unbranded_query,
+)
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -76,6 +79,11 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
         else None
     )
     disease_query = _disease_query(question)
+    hira_sick_cd = (
+        hira_disease_code_for_resolution(resolution)
+        if resolution is not None
+        else hira_disease_code_for_unbranded_query(question)
+    )
 
     contract = evaluate_answer_contract(question, "", None)
     contract_key = str(contract.get("structural_contract") or contract.get("intent") or "")
@@ -95,7 +103,14 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
 
     choices: list[ToolChoice] = []
     for tool_name in requested:
-        arguments = _deterministic_arguments(tool_name, question, brand, ingredient, disease_query)
+        arguments = _deterministic_arguments(
+            tool_name,
+            question,
+            brand,
+            ingredient,
+            disease_query,
+            hira_sick_cd,
+        )
         if arguments is None:
             continue
         choices.append(
@@ -134,6 +149,7 @@ def _deterministic_arguments(
     brand: str | None,
     ingredient: str | None,
     disease_query: str | None,
+    hira_sick_cd: str | None,
 ) -> dict[str, Any] | None:
     if tool_name in {"local_molecule_lookup", "get_drug_main_ingredient", "mfds_permission_search"}:
         return {"brand": brand} if brand is not None else None
@@ -158,8 +174,7 @@ def _deterministic_arguments(
     if tool_name == "web_search":
         return {"query": question, "brand": brand, "topic": "general"}
     if tool_name.startswith("hira_disease_"):
-        sick_cd = hira_disease_code_for_text(brand or question)
-        return {"sick_cd": sick_cd, "year": "2024"} if sick_cd is not None else None
+        return {"sick_cd": hira_sick_cd, "year": "2024"} if hira_sick_cd is not None else None
     return None
 
 

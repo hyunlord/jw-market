@@ -8,7 +8,8 @@ import pytest
 import requests
 
 from jw_chat_agent_poc import ChatAgent
-from jw_chat_agent_poc.orchestrator.agent import HIRA_DISEASE_MAPPINGS
+from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_calls
+from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.router import BQRouter
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -102,19 +103,30 @@ def test_brand_related_hira_disease_question_uses_new_verified_kcd_mapping(quest
     for call in result["tool_calls"][1:]:
         request = call.get("render_data", {}).get("request", {})
         assert request.get("sickCd") == expected_sick_cd
-    assert "MFDS 효능효과" in mapping["render_data"]["basis"]
+    assert "성분→KCD 사전" in mapping["render_data"]["basis"]
     assert result["sources"] == ["hira_disease"]
 
 
-def test_hira_confirmed_mapping_coverage_is_nineteen_brands():
-    assert len(HIRA_DISEASE_MAPPINGS) == 19
+def test_hira_confirmed_mapping_coverage_is_nineteen_data_resolved_brands():
+    resolver = BrandResolver()
+    mapped = 0
+    for resolution in resolver.portfolio_brands():
+        calls = hira_disease_calls(
+            f"{resolution.canonical_brand} 관련 질병 환자수",
+            resolution,
+            ExternalApiClient(mode="fixture"),
+        )
+        if calls[0].tool == "hira_disease_mapping":
+            mapped += 1
+
+    assert mapped == 19
 
 
 @pytest.mark.parametrize(
     ("question", "expected_sick_cds"),
     [
-        ("리바로하이 관련 질병 환자수", ["I10", "E78"]),
-        ("리바로하이 이상지질혈증 환자수", ["I10", "E78"]),
+        ("리바로하이 관련 질병 환자수", ["E78", "I10"]),
+        ("리바로하이 이상지질혈증 환자수", ["E78", "I10"]),
         ("리바로브이 관련 질병 환자수", ["E78", "I10"]),
         ("리바로브이 관련 질병", ["E78", "I10"]),
         ("리바로브이 고혈압 환자수", ["E78", "I10"]),
@@ -160,8 +172,17 @@ def test_hira_disease_question_with_unconfirmed_brand_mapping_gracefully_stops()
 
     assert result["sources"] == ["hira_disease"]
     assert result["tool_calls"][0]["tool"] == "hira_disease_mapping_unresolved"
-    assert result["tool_calls"][0]["status"] == "unsupported"
-    assert "대표 질병 KCD 매핑이 아직 확정되지 않아" in result["answer"]
+    assert result["tool_calls"][0]["status"] == "mapping_failed"
+    assert result["tool_calls"][0]["render_data"]["reason"] == "ingredient_to_kcd_mapping_missing"
+    assert "매핑 없음" in result["answer"]
+
+
+def test_unknown_brand_with_disease_term_cannot_bypass_ingredient_mapping():
+    result = ChatAgent().answer("검증신약 고혈압 환자수")
+
+    assert result["sources"] == ["unsupported_brand"]
+    assert result["tool_calls"] == []
+    assert "현재 전략 마트 원천에서 확인되지 않습니다" in result["answer"]
 
 
 def test_sales_question_still_uses_metrics_not_hira():

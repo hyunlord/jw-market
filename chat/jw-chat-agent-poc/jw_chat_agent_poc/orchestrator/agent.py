@@ -23,9 +23,8 @@ from jw_chat_agent_poc.orchestrator.external_notices import (
     seeded_false_positive_notice,
 )
 from jw_chat_agent_poc.orchestrator.hira_disease import (
-    HIRA_DISEASE_MAPPINGS,
-    hira_disease_anchor_brand,
     hira_disease_calls,
+    hira_disease_subject_for_unbranded_query,
     is_hira_disease_question,
 )
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
@@ -168,9 +167,9 @@ class ChatAgent:
                     else self.resolver.resolve(question, allow_default=False)
                 )
         except UnsupportedBrandError:
-            disease_anchor = hira_disease_anchor_brand(question)
-            if disease_anchor is not None:
-                resolution = self.resolver.resolve(disease_anchor, allow_default=False)
+            disease_subject = hira_disease_subject_for_unbranded_query(question)
+            if disease_subject is not None:
+                resolution = _disease_resolution(disease_subject)
             elif docs:
                 resolution = _document_resolution()
             else:
@@ -730,6 +729,19 @@ def _document_resolution() -> BrandResolution:
         item_seq=None,
         is_combo=False,
         support_source="document_context",
+    )
+
+
+def _disease_resolution(disease_name: str) -> BrandResolution:
+    return BrandResolution(
+        canonical_brand=disease_name,
+        audit_code="hira_disease_dictionary",
+        molecule_en=(),
+        atc=(),
+        edi_code=None,
+        item_seq=None,
+        is_combo=False,
+        support_source="hira_disease_dictionary",
     )
 
 

@@ -1,0 +1,181 @@
+[
+  {
+    "sick_cd": "K21",
+    "disease_name": "위-식도역류병",
+    "ingredients": [
+      "rabeprazole",
+      "라베프라졸",
+      "sodium bicarbonate",
+      "탄산수소나트륨"
+    ],
+    "disease_terms": [
+      "위식도역류",
+      "역류성식도염"
+    ],
+    "basis": "성분→KCD 사전 v1; MFDS 효능효과의 위식도역류질환 적응증과 HIRA SICK_CD=K21 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "E11",
+    "disease_name": "2형 당뇨병",
+    "ingredients": [
+      "anagliptin",
+      "아나글립틴",
+      "metformin",
+      "메트포르민",
+      "tirzepatide",
+      "터제파타이드",
+      "sitagliptin",
+      "시타글립틴"
+    ],
+    "disease_terms": [
+      "2형당뇨",
+      "제2형당뇨",
+      "당뇨"
+    ],
+    "basis": "성분→KCD 사전 v1; 2형 당뇨병 적응증과 HIRA SICK_CD=E11 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "D69",
+    "disease_name": "자반 및 기타 출혈성 병태",
+    "ingredients": [
+      "fostamatinib",
+      "포스타마티닙"
+    ],
+    "disease_terms": [
+      "면역혈소판감소",
+      "혈소판감소",
+      "자반"
+    ],
+    "basis": "성분→KCD 사전 v1; 만성 면역 혈소판 감소증 적응증과 HIRA SICK_CD=D69 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "I20",
+    "disease_name": "협심증",
+    "ingredients": [
+      "nicorandil",
+      "니코란딜"
+    ],
+    "disease_terms": [
+      "협심증"
+    ],
+    "basis": "성분→KCD 사전 v1; 협심증 적응증과 HIRA SICK_CD=I20 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "E78",
+    "disease_name": "지질단백질대사장애 및 기타 지질증",
+    "ingredients": [
+      "pitavastatin",
+      "피타바스타틴",
+      "atorvastatin",
+      "atorvastatin calcium",
+      "아토르바스타틴",
+      "rosuvastatin",
+      "rosuvastatin calcium",
+      "로수바스타틴",
+      "ezetimibe",
+      "에제티미브",
+      "fenofibric acid",
+      "페노피브릭산",
+      "fenofibrate",
+      "페노피브레이트"
+    ],
+    "disease_terms": [
+      "이상지질혈증",
+      "고지혈증",
+      "지질단백질대사장애",
+      "이상지질",
+      "고지혈",
+      "지질단백질"
+    ],
+    "basis": "성분→KCD 사전 v1; 이상지질혈증 적응증과 HIRA SICK_CD=E78 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "I10",
+    "disease_name": "본태성 고혈압",
+    "ingredients": [
+      "valsartan",
+      "발사르탄",
+      "amlodipine",
+      "amlodipine besylate",
+      "암로디핀"
+    ],
+    "disease_terms": [
+      "본태성고혈압",
+      "고혈압"
+    ],
+    "basis": "성분→KCD 사전 v1; 본태성 고혈압 적응증과 HIRA SICK_CD=I10 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "N40",
+    "disease_name": "전립선증식증",
+    "ingredients": [
+      "silodosin",
+      "실로도신",
+      "finasteride",
+      "피나스테리드",
+      "dutasteride",
+      "두타스테리드"
+    ],
+    "disease_terms": [
+      "전립선비대",
+      "전립선증식"
+    ],
+    "basis": "성분→KCD 사전 v1; 양성 전립선 비대증 적응증과 HIRA SICK_CD=N40 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "D70",
+    "disease_name": "무과립구증",
+    "ingredients": [
+      "lenograstim",
+      "레노그라스팀"
+    ],
+    "disease_terms": [
+      "호중구감소",
+      "무과립구"
+    ],
+    "basis": "성분→KCD 사전 v1; 항암화학요법 관련 호중구감소증 적응증과 HIRA SICK_CD=D70 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "M05",
+    "disease_name": "혈청검사양성 류마티스관절염",
+    "ingredients": [
+      "tocilizumab",
+      "토실리주맙"
+    ],
+    "disease_terms": [
+      "류마티스관절염",
+      "류마티스"
+    ],
+    "basis": "성분→KCD 사전 v1; 류마티스관절염 적응증과 HIRA SICK_CD=M05 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "D50",
+    "disease_name": "철결핍빈혈",
+    "ingredients": [
+      "ferric carboxymaltose",
+      "카르복시말토오스수산화제이철착염",
+      "iron sucrose",
+      "iron sucrose complex",
+      "수산화제이철수크로오스복염"
+    ],
+    "disease_terms": [
+      "철결핍빈혈",
+      "빈혈"
+    ],
+    "basis": "성분→KCD 사전 v1; 철결핍빈혈 적응증과 HIRA SICK_CD=D50 실호출 검증을 성분 단위로 정본화"
+  },
+  {
+    "sick_cd": "D66",
+    "disease_name": "유전성 제8인자결핍",
+    "ingredients": [
+      "emicizumab",
+      "에미시주맙"
+    ],
+    "disease_terms": [
+      "A형혈우병",
+      "혈우병",
+      "혈우"
+    ],
+    "basis": "성분→KCD 사전 v1; A형 혈우병 적응증과 HIRA SICK_CD=D66 실호출 검증을 성분 단위로 정본화"
+  }
+]

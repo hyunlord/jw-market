@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import re
-from typing import Protocol, TypeAlias, TypedDict
+from typing import Protocol, TypedDict
 
+from jw_chat_agent_poc.orchestrator.hira_disease_catalog import (
+    HiraMapping,
+    ResolvedHiraMapping,
+    hira_disease_code_for_text,
+    hira_disease_code_for_unbranded_query,
+    hira_disease_subject_for_unbranded_query,
+    mapping_for_unbranded_query as _mapping_for_unbranded_query,
+    mappings_for_ingredients as _mappings_for_ingredients,
+)
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 
 
 class HiraResolution(Protocol):
     canonical_brand: str
-
-
-class HiraMapping(TypedDict):
-    sick_cd: str
-    disease_name: str
-    basis: str
+    molecule_en: tuple[str, ...]
+    support_source: str
 
 
 class HiraUnsuitable(TypedDict):
@@ -22,41 +27,7 @@ class HiraUnsuitable(TypedDict):
     basis: str
 
 
-HiraMappingEntry: TypeAlias = HiraMapping | tuple[HiraMapping, ...]
 HIRA_TREND_YEARS = tuple(str(year) for year in range(2020, 2025))
-
-
-def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
-    return {"sick_cd": sick_cd, "disease_name": disease_name, "basis": basis}
-
-
-HIRA_DISEASE_MAPPINGS: dict[str, HiraMappingEntry] = {
-    "라베칸": _hira_mapping("K21", "위-식도역류병", "MFDS 효능효과의 위식도역류질환 적응증 + HIRA getDissNameCodeList1 SICK_CD=K21 실호출 확인"),
-    "라베칸듀오": _hira_mapping("K21", "위-식도역류병", "MFDS 효능효과의 위식도역류질환 적응증 + HIRA getDissNameCodeList1 SICK_CD=K21 실호출 확인"),
-    "가드렛": _hira_mapping("E11", "2형 당뇨병", "MFDS 효능효과의 제2형 당뇨병 적응증 + HIRA getDissNameCodeList1 SICK_CD=E11 실호출 확인"),
-    "타발리스": _hira_mapping("D69", "자반 및 기타 출혈성 병태", "MFDS 효능효과의 만성 면역 혈소판 감소증 적응증 + HIRA SICK_NM 자반/D69 실호출 확인"),
-    "시그마트": _hira_mapping("I20", "협심증", "MFDS 효능효과의 협심증 적응증 + HIRA getDissNameCodeList1 SICK_CD=I20 실호출 확인"),
-    "리바로": _hira_mapping("E78", "지질단백질대사장애 및 기타 지질증", "HIRA getDissNameCodeList1 SICK_CD=E78 실호출 확인"),
-    "리바로젯": _hira_mapping("E78", "지질단백질대사장애 및 기타 지질증", "HIRA getDissNameCodeList1 SICK_CD=E78 실호출 확인"),
-    "리바로페노": _hira_mapping("E78", "지질단백질대사장애 및 기타 지질증", "MFDS 효능효과의 복합형 이상지질혈증 적응증 + HIRA getDissNameCodeList1 SICK_CD=E78 실호출 확인"),
-    "리바로하이": (
-        _hira_mapping("I10", "본태성 고혈압", "MFDS 효능효과의 본태성 고혈압 적응증 + HIRA getDissNameCodeList1 SICK_CD=I10 실호출 확인"),
-        _hira_mapping("E78", "지질단백질대사장애 및 기타 지질증", "MFDS 효능효과의 원발성 고콜레스테롤혈증/혼합형 이상지질혈증 적응증 + HIRA getDissNameCodeList1 SICK_CD=E78 실호출 확인"),
-    ),
-    "리바로브이": (
-        _hira_mapping("E78", "지질단백질대사장애 및 기타 지질증", "MFDS 효능효과의 고콜레스테롤혈증/혼합형 이상지질혈증 적응증 + HIRA getDissNameCodeList1 SICK_CD=E78 실호출 확인"),
-        _hira_mapping("I10", "본태성 고혈압", "MFDS 효능효과의 고혈압 동반 심혈관계 위험 적응증 + HIRA getDissNameCodeList1 SICK_CD=I10 실호출 확인"),
-    ),
-    "트루패스": _hira_mapping("N40", "전립선증식증", "MFDS 효능효과의 전립선 비대증에 수반하는 배뇨장애 적응증 + HIRA getDissNameCodeList1 SICK_CD=N40 실호출 확인"),
-    "피나스타": _hira_mapping("N40", "전립선증식증", "MFDS 효능효과의 양성전립샘비대증 적응증 + HIRA getDissNameCodeList1 SICK_CD=N40 실호출 확인"),
-    "제이다트": _hira_mapping("N40", "전립선증식증", "MFDS 효능효과의 양성 전립선 비대증 적응증 + HIRA getDissNameCodeList1 SICK_CD=N40 실호출 확인"),
-    "뉴트로진": _hira_mapping("D70", "무과립구증", "MFDS 효능효과의 항암화학요법 관련 호중구감소증 등 적응증 + HIRA getDissNameCodeList1 SICK_CD=D70 실호출 확인"),
-    "가드메트": _hira_mapping("E11", "2형 당뇨병", "HIRA getDissNameCodeList1 SICK_CD=E11 실호출 확인"),
-    "악템라": _hira_mapping("M05", "혈청검사양성 류마티스관절염", "HIRA getDissNameCodeList1 SICK_CD=M05 실호출 확인; M06는 보조 후보"),
-    "페린젝트": _hira_mapping("D50", "철결핍빈혈", "HIRA getDissNameCodeList1 SICK_CD=D50 실호출 확인"),
-    "베노훼럼": _hira_mapping("D50", "철결핍빈혈", "HIRA getDissNameCodeList1 SICK_CD=D50 실호출 확인"),
-    "헴리브라": _hira_mapping("D66", "유전성 제8인자결핍", "HIRA getDissNameCodeList1 SICK_CD=D66 실호출 확인"),
-}
 
 HIRA_DISEASE_UNSUITABLE_BRANDS: dict[str, HiraUnsuitable] = {
     "제이클": {
@@ -85,33 +56,6 @@ HIRA_DISEASE_UNSUITABLE_BRANDS: dict[str, HiraUnsuitable] = {
         "basis": "처치 보조 성격의 제품은 특정 질병 유병 통계를 대표하지 않으므로 HIRA KCD 매핑 제외",
     },
 }
-
-HIRA_DISEASE_TEXT_MAPPINGS: dict[str, HiraMappingEntry] = {
-    "이상지질": HIRA_DISEASE_MAPPINGS["리바로"],
-    "고지혈": HIRA_DISEASE_MAPPINGS["리바로"],
-    "지질단백질": HIRA_DISEASE_MAPPINGS["리바로"],
-    "당뇨": HIRA_DISEASE_MAPPINGS["가드메트"],
-    "혈우": HIRA_DISEASE_MAPPINGS["헴리브라"],
-    "빈혈": HIRA_DISEASE_MAPPINGS["페린젝트"],
-    "류마티스": HIRA_DISEASE_MAPPINGS["악템라"],
-}
-
-HIRA_DISEASE_TEXT_BRANDS: dict[str, str] = {
-    "이상지질": "리바로",
-    "고지혈": "리바로",
-    "지질단백질": "리바로",
-    "당뇨": "가드메트",
-    "혈우": "헴리브라",
-    "빈혈": "페린젝트",
-    "류마티스": "악템라",
-}
-
-
-def hira_disease_anchor_brand(question: str) -> str | None:
-    """Resolve a disease-only question through the explicit HIRA mapping."""
-
-    return next((brand for token, brand in HIRA_DISEASE_TEXT_BRANDS.items() if token in question), None)
-
 
 def is_hira_disease_question(question: str) -> bool:
     normalized = question.strip().rstrip(".?!。？！").strip()
@@ -149,26 +93,31 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
                 render_data={"brand": resolution.canonical_brand, **unsuitable},
             )
         ]
-    mappings = _hira_disease_mappings(question, resolution.canonical_brand)
-    if mappings is None:
+    mappings, unmapped_ingredients = _hira_disease_mappings(question, resolution)
+    if not mappings:
+        molecules = list(resolution.molecule_en)
         return [
             ExternalCall(
                 tool="hira_disease_mapping_unresolved",
                 source="hira_disease",
-                status="unsupported",
+                status="mapping_failed",
                 summary_text=(
-                    f"{resolution.canonical_brand}의 대표 질병 KCD 매핑이 아직 확정되지 않아 "
+                    f"매핑 없음: {resolution.canonical_brand}의 성분→질병 KCD 매핑이 확정되지 않아 "
                     "HIRA 질병통계 조회를 실행하지 않았습니다."
                 ),
                 render_data={
                     "brand": resolution.canonical_brand,
-                    "reason": "unconfirmed_brand_to_kcd_mapping",
+                    "reason": "ingredient_to_kcd_mapping_missing",
+                    "mapping_source": "ingredient_disease_dictionary",
+                    "ingredients": molecules,
+                    "unmapped_ingredients": list(unmapped_ingredients or resolution.molecule_en),
                 },
             )
         ]
     calls: list[ExternalCall] = []
     total = len(mappings)
-    for index, mapping in enumerate(mappings, start=1):
+    for index, resolved_mapping in enumerate(mappings, start=1):
+        mapping = resolved_mapping.mapping
         sick_cd = mapping["sick_cd"]
         disease_name = mapping["disease_name"]
         basis = mapping["basis"]
@@ -185,12 +134,22 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
                     "basis": basis,
                     "mapping_index": index,
                     "mapping_total": total,
+                    "mapping_source": resolved_mapping.mapping_source,
+                    "matched_ingredients": list(resolved_mapping.matched_ingredients),
                 },
             )
         )
         external_calls = _hira_external_calls(question, external, sick_cd)
         for call in external_calls:
-            calls.append(_with_hira_mapping_context(call, resolution.canonical_brand, mapping, index, total))
+            calls.append(
+                _with_hira_mapping_context(
+                    call,
+                    resolution.canonical_brand,
+                    resolved_mapping,
+                    index,
+                    total,
+                )
+            )
     return calls
 
 
@@ -209,42 +168,34 @@ def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: st
     )
 
 
-def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMapping, ...] | None:
-    mapping = HIRA_DISEASE_MAPPINGS.get(canonical_brand)
-    if mapping is not None:
-        return _normalize_hira_mappings(mapping)
-    for token, mapping in HIRA_DISEASE_TEXT_MAPPINGS.items():
-        if token in question:
-            return _normalize_hira_mappings(mapping)
-    return None
+def _hira_disease_mappings(
+    question: str,
+    resolution: HiraResolution,
+) -> tuple[tuple[ResolvedHiraMapping, ...], tuple[str, ...]]:
+    if resolution.molecule_en:
+        return _mappings_for_ingredients(resolution.molecule_en)
+    if resolution.support_source != "hira_disease_dictionary":
+        return (), ()
+    mapping = _mapping_for_unbranded_query(question)
+    return ((mapping,), ()) if mapping is not None else ((), ())
 
 
-def hira_disease_code_for_text(text: str) -> str | None:
-    """Return one authoritative KCD code when the existing mapping is unambiguous."""
+def hira_disease_code_for_resolution(resolution: HiraResolution) -> str | None:
+    """Return one KCD code only when every resolved ingredient agrees."""
 
-    candidate = text.strip().upper()
-    if re.fullmatch(r"[A-Z]\d{2}(?:\.\d{1,2})?", candidate):
-        return candidate
-    mappings = _hira_disease_mappings(text, text.strip())
-    if mappings is None:
-        return None
-    codes = {mapping["sick_cd"] for mapping in mappings}
-    return next(iter(codes)) if len(codes) == 1 else None
-
-
-def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ...]:
-    if isinstance(mapping, dict):
-        return (mapping,)
-    return tuple(mapping)
+    mappings, unmapped = _mappings_for_ingredients(resolution.molecule_en)
+    codes = {item.mapping["sick_cd"] for item in mappings}
+    return next(iter(codes)) if not unmapped and len(codes) == 1 else None
 
 
 def _with_hira_mapping_context(
     call: ExternalCall,
     brand: str,
-    mapping: HiraMapping,
+    resolved_mapping: ResolvedHiraMapping,
     index: int,
     total: int,
 ) -> ExternalCall:
+    mapping = resolved_mapping.mapping
     return ExternalCall(
         tool=call.tool,
         source=call.source,
@@ -257,6 +208,8 @@ def _with_hira_mapping_context(
             "mapping_disease_name": mapping["disease_name"],
             "mapping_index": index,
             "mapping_total": total,
+            "mapping_source": resolved_mapping.mapping_source,
+            "matched_ingredients": list(resolved_mapping.matched_ingredients),
         },
         safe_url=call.safe_url,
         elapsed_ms=call.elapsed_ms,

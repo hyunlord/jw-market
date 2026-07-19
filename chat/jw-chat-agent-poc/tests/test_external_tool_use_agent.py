@@ -340,6 +340,36 @@ def test_disease_identity_question_uses_hira_mapping_instead_of_molecule_lookup(
     )
 
 
+def test_disease_identity_tool_choice_uses_resolved_competitor_ingredient() -> None:
+    class _Resolver:
+        @staticmethod
+        def resolve(_question: str, allow_default: bool = False) -> object:
+            del allow_default
+
+            class _Resolution:
+                canonical_brand = "리피토"
+                molecule_en = ("atorvastatin",)
+
+            return _Resolution()
+
+    choices = _deterministic_tool_choices("리피토 관련 질병 환자수", _Resolver())
+
+    assert choices == (
+        ToolChoice(
+            "hira_disease_hospitalization_outpatient_stats",
+            {"sick_cd": "E78", "year": "2024"},
+            "contract requires hira_disease_hospitalization_outpatient_stats",
+            call_id="contract-1",
+        ),
+    )
+
+
+def test_unknown_brand_with_disease_term_does_not_force_hira_tool() -> None:
+    choices = _deterministic_tool_choices("검증신약 고혈압 환자수", BrandResolver())
+
+    assert choices == ()
+
+
 def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug() -> None:
     question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
 
@@ -596,6 +626,30 @@ def test_hira_registry_reuses_authoritative_disease_code_for_korean_label() -> N
     # Then: the existing authoritative mapping supplies E78 before the live adapter call.
     assert envelope.ok is True
     assert external.sick_codes == ["E78"]
+
+
+def test_hira_registry_rejects_brand_prefixed_disease_text_before_external_call() -> None:
+    # Given: a planner payload mixes an unresolved brand with a known disease label.
+    class _CapturingHiraClient(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+            self.sick_codes: list[str] = []
+
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            self.sick_codes.append(sick_cd)
+            return super().hira_disease_name_code(sick_cd)
+
+    external = _CapturingHiraClient()
+    registry = ExternalToolRegistry(resolver=BrandResolver(), external=external)
+    spec = next(spec for spec in registry.list_for_query("검증신약 고혈압 환자수") if spec.name == "hira_disease_name_code")
+
+    # When: the malformed disease payload crosses the registry boundary.
+    envelope = spec.execute(spec.input_model.model_validate({"sick_cd": "검증신약 고혈압"}))
+
+    # Then: the registry fails closed instead of stripping the brand or forwarding raw text.
+    assert envelope.ok is False
+    assert envelope.error_code == "MAPPING_FAILED"
+    assert external.sick_codes == []
 
 
 def test_web_registry_forwards_planner_selected_news_topic() -> None:
