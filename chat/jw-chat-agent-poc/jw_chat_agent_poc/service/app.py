@@ -2307,7 +2307,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             sources=tuple(result.get("sources", ())),
             conversation_id=conversation_id,
         )
-    if _is_market_clarification_result(result) or _is_source_absent_brand_result(result):
+    if (
+        _is_market_clarification_result(result)
+        or _is_market_membership_mismatch_result(result)
+        or _is_source_absent_brand_result(result)
+    ):
         timing_payload = finish(timing)
         answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
         trace = trace_envelope(
@@ -2756,6 +2760,18 @@ def _is_market_clarification_result(result: dict) -> bool:
         isinstance(item, dict)
         and item.get("intent") == "market_clarification"
         and item.get("status") == "needs_clarification"
+        for item in decomposition
+    )
+
+
+def _is_market_membership_mismatch_result(result: dict) -> bool:
+    decomposition = result.get("decomposition")
+    if not isinstance(decomposition, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("intent") == "market_membership_validation"
+        and item.get("status") == "unsupported"
         for item in decomposition
     )
 

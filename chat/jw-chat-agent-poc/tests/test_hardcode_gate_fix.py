@@ -171,6 +171,37 @@ def test_market_clarification_bypasses_final_llm_synthesis(monkeypatch: pytest.M
     assert final.text == "리바로는 스타틴·복합제 Class 여러 시장에 속합니다. 어느 시장 기준으로 볼지 지정해 주세요."
 
 
+def test_market_membership_mismatch_bypasses_final_llm_and_keeps_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = "고지혈증 시장에서 마운자로 점유율"
+    result = ChatAgent(resolver=_mixed_market_resolver()).answer(question)
+    streamed: list[str] = []
+
+    def generic_stream(*args: object, **kwargs: object) -> object:
+        streamed.append("called")
+        return iter(("현재 지원되지 않는 시장 매핑입니다. 브랜드 또는 ATC4 시장을 지정해 주세요.",))
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.app.GenosClient.stream_answer",
+        generic_stream,
+    )
+
+    final = compute_final_answer(question, result, "membership-mismatch-test")
+
+    assert final.text == (
+        "마운자로는 요청한 고지혈증 치료제 시장에 포함되지 않습니다. "
+        "확인된 소속 시장: 당뇨병 시장. 브랜드 또는 시장을 확인해 주세요."
+    )
+    assert final.trace["qa_trace"]["routing"] == {
+        "route": {"mode": "deterministic", "deterministic_execution": None},
+        "scope": "market_membership_mismatch",
+        "gate": "brand_market_membership",
+        "gate_reason": "explicit_market_outside_brand_memberships",
+    }
+    assert streamed == []
+
+
 def test_mixed_market_question_without_brand_asks_for_clarification() -> None:
     result = ChatAgent().answer(
         "업로드한 시장 전망이랑 실제 우리 점유율 비교",
