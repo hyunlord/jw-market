@@ -249,4 +249,5 @@ def execute_incremental_rehearsal(
         config.comparison_output,
         gate="R-2",
         environment="isolated-full-then-incremental",
+        input_inventory_sha256=config.expected_input_inventory_sha256,
     )

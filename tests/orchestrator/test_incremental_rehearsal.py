@@ -363,6 +363,7 @@ def test_execute_runs_full_then_incremental_then_sigma_then_comparison(
     assert comparison_contract == {
         "gate": "R-2",
         "environment": "isolated-full-then-incremental",
+        "input_inventory_sha256": config.expected_input_inventory_sha256,
     }
 
 

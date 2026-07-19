@@ -106,8 +106,9 @@ class ComparisonReport:
         *,
         gate: str = "R-1",
         environment: str = "isolated-full-rehearsal",
-    ) -> dict[str, str | int | list[dict[str, object]]]:
-        return {
+        input_inventory_sha256: str | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
             "gate": gate,
             "classification": "census",
             "checked": len(self.tables),
@@ -119,6 +120,9 @@ class ComparisonReport:
             "environment": environment,
             "tables": [asdict(row) for row in self.tables],
         }
+        if input_inventory_sha256 is not None:
+            payload["input_inventory_sha256"] = input_inventory_sha256
+        return payload
 
 
 def compare_full_rehearsal(
@@ -149,6 +153,7 @@ def run_comparison(
     *,
     gate: str = "R-1",
     environment: str = "isolated-full-rehearsal",
+    input_inventory_sha256: str | None = None,
 ) -> int:
     conn = connect_admin()
     try:
@@ -158,7 +163,11 @@ def run_comparison(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(
-            report.as_dict(gate=gate, environment=environment),
+            report.as_dict(
+                gate=gate,
+                environment=environment,
+                input_inventory_sha256=input_inventory_sha256,
+            ),
             ensure_ascii=False,
             indent=2,
             sort_keys=True,

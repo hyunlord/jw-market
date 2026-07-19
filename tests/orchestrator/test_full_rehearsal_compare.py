@@ -8,6 +8,7 @@ from pipeline.orchestrator.full_rehearsal_compare import (
     CACHE_TABLES,
     MART_TABLES,
     ComparisonConfig,
+    ComparisonReport,
     compare_full_rehearsal,
 )
 from pipeline.scripts.deploy.mart_load_verify import CanonicalDigest
@@ -61,6 +62,17 @@ def test_full_comparison_population_has_explicit_canonical_digest_contracts() ->
         "cache_deep_analysis_general",
         "cache_market_forecast_general",
         "cache_brand_elements",
+    )
+
+
+def test_comparison_report_adds_input_inventory_sha_only_when_supplied() -> None:
+    report = ComparisonReport(())
+    inventory_sha256 = "b" * 64
+
+    assert "input_inventory_sha256" not in report.as_dict()
+    assert (
+        report.as_dict(input_inventory_sha256=inventory_sha256)["input_inventory_sha256"]
+        == inventory_sha256
     )
 
 
