@@ -81,7 +81,9 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
         selected_product_codes=set(csd_codes.selected),
         candidate_product_codes=set(csd_codes.candidates),
         qualifying_product_codes=(
-            set(csd_codes.candidates) if franchise_membership else set(csd_codes.selected)
+            _franchise_qualifying_codes(csd_codes, brand_meta)
+            if franchise_membership
+            else set(csd_codes.selected)
         ),
     )
     selected_crosswalks = _select_csd_markets(crosswalks, request["csd_market"])
@@ -129,6 +131,26 @@ def _iqvia_csd_product_codes(
     selected = by_brand.get(selected_brand, frozenset())
     candidates = frozenset(code for codes in by_brand.values() for code in codes)
     return CsdProductCodes(selected=selected, candidates=candidates, by_brand=by_brand)
+
+
+def _franchise_qualifying_codes(
+    csd_codes: CsdProductCodes,
+    brand_meta: Mapping[str, BrandMeta],
+) -> set[str]:
+    """Product codes that qualify a CSD market on the ml_id franchise axis.
+
+    The selected brand's own codes are always included (its own sheet must stay
+    resolvable even when the selected brand is non-JW). Beyond that, only same-ml_id
+    members flagged ``is_jw=True`` contribute, so non-JW competitors that share the
+    ml_id cannot make their own CSD sheet qualify.
+    """
+
+    codes = set(csd_codes.selected)
+    for brand_key, brand_codes in csd_codes.by_brand.items():
+        meta = brand_meta.get(brand_key)
+        if meta is not None and meta.is_jw:
+            codes |= set(brand_codes)
+    return codes
 
 
 def resolve_csd_markets(

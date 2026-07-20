@@ -609,3 +609,78 @@ def test_resolve_csd_markets_default_gate_is_legacy_selected_only(monkeypatch) -
     )
 
     assert [item.market for item in resolved] == ["LIVALO Market"]
+
+
+def _franchise_fixture():
+    csd_codes = service.CsdProductCodes(
+        selected=frozenset({"LIVALO"}),
+        candidates=frozenset({"LIVALO", "LIVALOZET", "CRESTOR"}),
+        by_brand={
+            "리바로": frozenset({"LIVALO"}),
+            "리바로젯": frozenset({"LIVALOZET"}),
+            "크레스토": frozenset({"CRESTOR"}),
+        },
+    )
+    brand_meta = {
+        "리바로": shared.BrandMeta("리바로", "리바로", ("LIVALO",), True),
+        "리바로젯": shared.BrandMeta("리바로젯", "리바로젯", ("LIVALOZET",), True),
+        "크레스토": shared.BrandMeta("크레스토", "크레스토", ("CRESTOR",), False),
+    }
+    return csd_codes, brand_meta
+
+
+def test_franchise_qualifying_codes_includes_same_ml_is_jw_sibling() -> None:
+    csd_codes, brand_meta = _franchise_fixture()
+    codes = service._franchise_qualifying_codes(csd_codes, brand_meta)
+    assert "LIVALO" in codes  # selected
+    assert "LIVALOZET" in codes  # same-ml_id JW sibling
+
+
+def test_franchise_qualifying_codes_excludes_non_jw_same_ml_competitor() -> None:
+    # ★ core defense of this change: a same-ml_id member with is_jw=False must not
+    # contribute its product codes to the qualification signal.
+    csd_codes, brand_meta = _franchise_fixture()
+    codes = service._franchise_qualifying_codes(csd_codes, brand_meta)
+    assert "CRESTOR" not in codes
+
+
+def test_franchise_qualifying_codes_keeps_selected_brand_even_if_non_jw() -> None:
+    # Selected brand's own codes are always included so its own sheet stays resolvable,
+    # even when the selected brand itself is is_jw=False.
+    csd_codes = service.CsdProductCodes(
+        selected=frozenset({"GENERICX"}),
+        candidates=frozenset({"GENERICX", "LIVALO"}),
+        by_brand={"제네릭엑스": frozenset({"GENERICX"}), "리바로": frozenset({"LIVALO"})},
+    )
+    brand_meta = {
+        "제네릭엑스": shared.BrandMeta("제네릭엑스", "제네릭엑스", ("GENERICX",), False),
+        "리바로": shared.BrandMeta("리바로", "리바로", ("LIVALO",), True),
+    }
+    codes = service._franchise_qualifying_codes(csd_codes, brand_meta)
+    assert "GENERICX" in codes
+
+
+def test_resolve_csd_markets_isjw_filter_blocks_same_ml_competitor_sheet(monkeypatch) -> None:
+    # End-to-end: CRESTOR is a same-ml_id member (in candidate) with its own sheet, but
+    # is_jw-filtered qualifying excludes it, so CRESTOR Market does not qualify while the
+    # JW sibling LIVALOZET Market does.
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "LIVALO Market", "master_product": "LIVALO"},
+            {"market": "LIVALOZET Market", "master_product": "LIVALOZET"},
+            {"market": "CRESTOR Market", "master_product": "CRESTOR"},
+        ],
+    )
+    csd_codes, brand_meta = _franchise_fixture()
+    qualifying = service._franchise_qualifying_codes(csd_codes, brand_meta)
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes=set(csd_codes.selected),
+        candidate_product_codes=set(csd_codes.candidates),
+        qualifying_product_codes=qualifying,
+    )
+
+    assert [item.market for item in resolved] == ["LIVALO Market", "LIVALOZET Market"]
+    assert resolved[0].market == "LIVALO Market"  # primary anchor unchanged
