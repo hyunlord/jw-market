@@ -5,8 +5,10 @@
   "conditional_gates": {
     "A-02": {
       "active": false,
-      "verdict": "BLOCKED",
-      "reason": "No organization-approved H36.0 business oracle was found in repository history or prior audits; live HIRA returned zero rows for H36.0.",
+      "verdict": "OUT_OF_SCOPE_PRECONDITION",
+      "reason": "No organization-approved H36.0 business oracle was found in repository history or prior audits; the Phase 0 live HIRA exact H36.0 query returned zero rows.",
+      "gap_id": "GAP-R1-HIRA-CODE-ORACLE",
+      "external_ticket": "PENDING",
       "prohibited": ["hard-coded H36.0 mapping", "E11 substitution", "H36 substitution"]
     },
     "A-11": {
@@ -52,8 +54,10 @@
     {
       "case_id": "A-02",
       "question": "당뇨병성 망막병증의 환자수 통계 알려줘",
-      "expected_decision_source": "BLOCKED",
-      "release_gate": "BLOCKED",
+      "expected_decision_source": "INACTIVE",
+      "release_gate": "INACTIVE",
+      "conditional_gate": "A-02",
+      "gap_id": "GAP-R1-HIRA-CODE-ORACLE",
       "routing_decision": null,
       "forbidden_codes": ["E11", "H36"],
       "required_oracle_before_activation": "organization-approved H36.0 mapping with source, version, and SHA256"

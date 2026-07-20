@@ -1,0 +1,18 @@
+{
+  "schema": "external_tool_routing_v4_gap_manifest_v1",
+  "gaps": [
+    {
+      "gap_id": "GAP-R1-HIRA-CODE-ORACLE",
+      "case_ids": ["A-02"],
+      "classification": "out_of_scope_precondition",
+      "external_ticket": "PENDING",
+      "release_blocking": false,
+      "activation_precondition": "organization-approved H36.0 mapping with source, version, and SHA256",
+      "evidence": [
+        "organization-approved H36.0 oracle absent",
+        "Phase 0 live HIRA exact H36.0 query returned zero rows"
+      ],
+      "preserved_gate": "Question-target and canonical-code evidence must agree before patient statistics can support a claim."
+    }
+  ]
+}

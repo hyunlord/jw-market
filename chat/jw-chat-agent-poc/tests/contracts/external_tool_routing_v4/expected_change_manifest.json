@@ -3,14 +3,16 @@
   "frozen_before_product_change": true,
   "baseline_snapshot_sha256": "93f0eddda904ea82e4de192720a2ca8886f26f9b2e627ec7c028d693251c7e01",
   "rule": "Only listed case_id and semantic_field pairs may change. Candidate values remain subject to the stated oracle contract.",
-  "blocked_cases": [
+  "blocked_cases": [],
+  "inactive_cases": [
     {
       "case_id": "A-02",
-      "reason": "organization-approved H36.0 oracle absent",
+      "classification": "out_of_scope_precondition",
+      "reason": "organization-approved H36.0 oracle absent and Phase 0 live HIRA exact H36.0 query returned zero rows",
+      "gap_id": "GAP-R1-HIRA-CODE-ORACLE",
+      "external_ticket": "PENDING",
       "allowed_changes": []
-    }
-  ],
-  "inactive_cases": [
+    },
     {
       "case_id": "A-12",
       "reason": "P-01 exact/unique full-universe resolver precondition not met",
