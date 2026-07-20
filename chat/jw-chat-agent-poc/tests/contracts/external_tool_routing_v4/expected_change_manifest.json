@@ -1,0 +1,286 @@
+{
+  "schema": "external_tool_routing_v4_expected_change_manifest_v1",
+  "frozen_before_product_change": true,
+  "baseline_snapshot_sha256": "93f0eddda904ea82e4de192720a2ca8886f26f9b2e627ec7c028d693251c7e01",
+  "rule": "Only listed case_id and semantic_field pairs may change. Candidate values remain subject to the stated oracle contract.",
+  "blocked_cases": [
+    {
+      "case_id": "A-02",
+      "reason": "organization-approved H36.0 oracle absent",
+      "allowed_changes": []
+    }
+  ],
+  "inactive_cases": [
+    {
+      "case_id": "A-12",
+      "reason": "P-01 exact/unique full-universe resolver precondition not met",
+      "allowed_changes": []
+    }
+  ],
+  "changes": [
+    {
+      "case_id": "A-01",
+      "semantic_field": "routing_signature",
+      "baseline": "legacy tool-use route without PRS/CCS",
+      "candidate": "NEW_RULE HIRA supported deterministic-singleton CALL",
+      "oracle": "expected_route_manifest A-01"
+    },
+    {
+      "case_id": "A-01",
+      "semantic_field": "canonical_code",
+      "baseline": "D693 was not preserved across calls",
+      "candidate": "D69.3",
+      "oracle": "official KCD canonicalization syntax"
+    },
+    {
+      "case_id": "A-01",
+      "semantic_field": "canonical_calls",
+      "baseline": "mixed HIRA errors and web_search calls",
+      "candidate": "HIRA patient-stat calls for each of the latest five available periods; web_search=0",
+      "oracle": "expected_route_manifest A-01 plus fixed replay"
+    },
+    {
+      "case_id": "A-01",
+      "semantic_field": "patient_count_values",
+      "baseline": "no authoritative HIRA counts in the answer",
+      "candidate": "exact fixed-replay HIRA values only",
+      "oracle": "HIRA fixture evidence IDs and values; no model-derived value allowed"
+    },
+    {
+      "case_id": "A-01",
+      "semantic_field": "coverage_status",
+      "baseline": "unavailable with unrelated web evidence",
+      "candidate": "ANSWERED or PARTIAL_RESULT based on contiguous available periods",
+      "oracle": "executed HIRA row periods"
+    },
+    {
+      "case_id": "A-03",
+      "semantic_field": "routing_signature",
+      "baseline": "legacy HIRA route substituted parent code",
+      "candidate": "NEW_RULE HIRA supported deterministic-singleton CALL",
+      "oracle": "expected_route_manifest A-03"
+    },
+    {
+      "case_id": "A-03",
+      "semantic_field": "canonical_code",
+      "baseline": "H36",
+      "candidate": "H36.0",
+      "oracle": "official code syntax canonicalization of explicit H360 input"
+    },
+    {
+      "case_id": "A-03",
+      "semantic_field": "patient_count_values",
+      "baseline": "parent H36 values",
+      "candidate": "none unless exact H36.0 rows exist",
+      "oracle": "exact-code evidence binding"
+    },
+    {
+      "case_id": "A-03",
+      "semantic_field": "reason_code",
+      "baseline": null,
+      "candidate": "NO_RECORD_FOUND when exact H36.0 rows are absent",
+      "oracle": "fixed zero-row replay and live Phase 0 H36.0 probe"
+    },
+    {
+      "case_id": "A-04",
+      "semantic_field": "routing_signature",
+      "baseline": "brand-absent typed stop before capability ownership",
+      "candidate": "INTENT_OWNER regulatory NOT_IMPLEMENTED NONE TYPED_STOP",
+      "oracle": "capability_matrix REIMBURSEMENT_CRITERIA"
+    },
+    {
+      "case_id": "A-04",
+      "semantic_field": "reason_code",
+      "baseline": "SOURCE_ABSENT",
+      "candidate": "CAPABILITY_NOT_IMPLEMENTED",
+      "oracle": "frozen 19-tool registry"
+    },
+    {
+      "case_id": "A-04",
+      "semantic_field": "typed_disclosure",
+      "baseline": "brand lookup failure language",
+      "candidate": "reimbursement capability is not implemented plus a safe alternative",
+      "oracle": "v4 typed-stop contract"
+    },
+    {
+      "case_id": "A-05",
+      "semantic_field": "routing_signature",
+      "baseline": "brand-absent typed stop",
+      "candidate": "same as A-04",
+      "oracle": "expected_route_manifest A-05"
+    },
+    {
+      "case_id": "A-05",
+      "semantic_field": "reason_code",
+      "baseline": "SOURCE_ABSENT",
+      "candidate": "CAPABILITY_NOT_IMPLEMENTED",
+      "oracle": "capability_matrix REIMBURSEMENT_CRITERIA"
+    },
+    {
+      "case_id": "A-05",
+      "semantic_field": "typed_disclosure",
+      "baseline": "brand lookup failure language",
+      "candidate": "same disclosure semantics as A-04",
+      "oracle": "v4 typed-stop contract"
+    },
+    {
+      "case_id": "A-06",
+      "semantic_field": "routing_signature",
+      "baseline": "brand-absent typed stop",
+      "candidate": "same as A-04",
+      "oracle": "expected_route_manifest A-06"
+    },
+    {
+      "case_id": "A-06",
+      "semantic_field": "reason_code",
+      "baseline": "SOURCE_ABSENT",
+      "candidate": "CAPABILITY_NOT_IMPLEMENTED",
+      "oracle": "capability_matrix REIMBURSEMENT_CRITERIA"
+    },
+    {
+      "case_id": "A-06",
+      "semantic_field": "typed_disclosure",
+      "baseline": "brand lookup failure language",
+      "candidate": "same disclosure semantics as A-04",
+      "oracle": "v4 typed-stop contract"
+    },
+    {
+      "case_id": "A-07",
+      "semantic_field": "routing_signature",
+      "baseline": "MFDS search error followed by web_search",
+      "candidate": "PREFIX_RULE regulatory FIELD_NOT_EXPOSED NONE TYPED_STOP",
+      "oracle": "Phase 0 MFDS field-coverage and cardinality probe"
+    },
+    {
+      "case_id": "A-07",
+      "semantic_field": "reason_code",
+      "baseline": "mixed tool failure without typed cardinality verdict",
+      "candidate": "AMBIGUOUS_INPUT",
+      "oracle": "Phase 0 cardinality=MANY precedence"
+    },
+    {
+      "case_id": "A-07",
+      "semantic_field": "candidate_products",
+      "baseline": "unbound web material",
+      "candidate": "the four exact-family Phase 0 permission candidates",
+      "oracle": "MFDS permission_search row identities"
+    },
+    {
+      "case_id": "A-07",
+      "semantic_field": "web_calls",
+      "baseline": "one or more",
+      "candidate": 0,
+      "oracle": "v4 no-web capability-stop policy"
+    },
+    {
+      "case_id": "A-08",
+      "semantic_field": "routing_signature",
+      "baseline": "ClinicalTrials search call used as detail evidence",
+      "candidate": "NEW_RULE clinical_trials FIELD_NOT_EXPOSED NONE TYPED_STOP",
+      "oracle": "capability_matrix CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
+    },
+    {
+      "case_id": "A-08",
+      "semantic_field": "reason_code",
+      "baseline": null,
+      "candidate": "FIELD_NOT_EXPOSED",
+      "oracle": "current ClinicalTrials schema"
+    },
+    {
+      "case_id": "A-08",
+      "semantic_field": "typed_disclosure",
+      "baseline": "search-summary prose",
+      "candidate": "field was not retrieved, never 'not public'",
+      "oracle": "v4 false-absence policy"
+    },
+    {
+      "case_id": "A-09",
+      "semantic_field": "routing_signature",
+      "baseline": "ClinicalTrials search call used as detail evidence",
+      "candidate": "same as A-08",
+      "oracle": "expected_route_manifest A-09"
+    },
+    {
+      "case_id": "A-09",
+      "semantic_field": "reason_code",
+      "baseline": null,
+      "candidate": "FIELD_NOT_EXPOSED",
+      "oracle": "current ClinicalTrials schema"
+    },
+    {
+      "case_id": "A-09",
+      "semantic_field": "typed_disclosure",
+      "baseline": "search-summary prose",
+      "candidate": "field was not retrieved, never 'not public'",
+      "oracle": "v4 false-absence policy"
+    },
+    {
+      "case_id": "A-10",
+      "semantic_field": "routing_signature",
+      "baseline": "legacy mixed clinical search calls without decision provenance",
+      "candidate": "LLM clinical_trials SUPPORTED LLM CALL",
+      "oracle": "expected_route_manifest A-10"
+    },
+    {
+      "case_id": "A-10",
+      "semantic_field": "canonical_calls",
+      "baseline": "both clinical search tools could execute",
+      "candidate": "exactly one LLM-selected tool from the two eligible tools",
+      "oracle": "PRS/CCS call budget contract"
+    },
+    {
+      "case_id": "A-10",
+      "semantic_field": "coverage_disclosure",
+      "baseline": "ambiguous total count",
+      "candidate": "retrieved_count and displayed_count; total_available only if upstream supplies it",
+      "oracle": "executed tool envelope metadata"
+    },
+    {
+      "case_id": "A-11",
+      "semantic_field": "axis_status",
+      "baseline": "requested-axis contamination",
+      "candidate": "existing-result axes only, with missing_axes when partial",
+      "oracle": "existing tool-result axis enums"
+    },
+    {
+      "case_id": "A-11",
+      "semantic_field": "axis_table",
+      "baseline": "table could contain competitor or cross-axis values",
+      "candidate": "omit table when zero requested axes; otherwise validated existing-axis rows only",
+      "oracle": "A-11 conditional gate"
+    },
+    {
+      "case_id": "A-11",
+      "semantic_field": "reason_code",
+      "baseline": null,
+      "candidate": "PARTIAL_RESULT, FIELD_NOT_EXPOSED, or CAPABILITY_NOT_IMPLEMENTED according to existing axis coverage",
+      "oracle": "A-11 conditional gate"
+    },
+    {
+      "case_id": "A-13",
+      "semantic_field": "routing_signature",
+      "baseline": "MFDS call without selector provenance",
+      "candidate": "INTENT_OWNER regulatory SUPPORTED DETERMINISTIC_SINGLETON CALL",
+      "oracle": "expected_route_manifest A-13"
+    },
+    {
+      "case_id": "A-13",
+      "semantic_field": "product_rows",
+      "baseline": "one evidence fact and no rendered product rows",
+      "candidate": "all four exact-family MFDS permission rows, preserving item name and manufacturer",
+      "oracle": "Phase 0 permission_search row identities"
+    },
+    {
+      "case_id": "A-13",
+      "semantic_field": "evidence_lineage",
+      "baseline": "answer did not expose item/manufacturer evidence",
+      "candidate": "each rendered item and manufacturer is bound to its MFDS evidence fact",
+      "oracle": "executed mfds_permission_search envelope"
+    }
+  ],
+  "immutable_sets": {
+    "B": "all semantic fields",
+    "A-12_B-07_alias": "all semantic fields",
+    "D-01_B-08_alias": "all semantic fields"
+  }
+}

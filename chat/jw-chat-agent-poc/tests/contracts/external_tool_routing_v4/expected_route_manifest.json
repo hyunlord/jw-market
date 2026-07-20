@@ -1,0 +1,314 @@
+{
+  "schema": "external_tool_routing_v4_expected_route_manifest_v1",
+  "frozen_before_product_change": true,
+  "phase0_baseline_snapshot_sha256": "93f0eddda904ea82e4de192720a2ca8886f26f9b2e627ec7c028d693251c7e01",
+  "conditional_gates": {
+    "A-02": {
+      "active": false,
+      "verdict": "BLOCKED",
+      "reason": "No organization-approved H36.0 business oracle was found in repository history or prior audits; live HIRA returned zero rows for H36.0.",
+      "prohibited": ["hard-coded H36.0 mapping", "E11 substitution", "H36 substitution"]
+    },
+    "A-11": {
+      "active": true,
+      "condition": "Use only requested axes already present in the existing tool result.",
+      "zero_axes": "TYPED_STOP_WITHOUT_TABLE",
+      "partial_axes": "PARTIAL_RESULT_WITH_MISSING_AXES",
+      "prohibited": ["new axis table assembly", "competitor brand as axis value", "cross-axis substitution"]
+    },
+    "A-12": {
+      "active": false,
+      "verdict": "OUT_OF_SCOPE_PRECONDITION",
+      "reason": "P-01 exact/unique full-universe resolver precondition is not met.",
+      "resolver_exact_candidate_count": 0,
+      "r5_code_edit_allowed": false,
+      "baseline_alias": "B-07"
+    },
+    "A-13": {
+      "active": true,
+      "eligible_tools_count": 1,
+      "expected_tool_selection_source": "DETERMINISTIC_SINGLETON",
+      "llm_selection_proof": false,
+      "reason": "Only mfds_permission_search exposes basic product information."
+    }
+  },
+  "cases": [
+    {
+      "case_id": "A-01",
+      "question": "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
+      "expected_decision_source": "NEW_RULE",
+      "routing_decision": {
+        "source_domain": "hira",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "NEW_RULE",
+        "route_outcome": "CALL"
+      },
+      "deterministic_rule_id": "DISEASE_CODE",
+      "eligible_tools": ["hira_disease_hospitalization_outpatient_stats"],
+      "canonical_argument_contract": {"sick_cd": "D69.3", "period_policy": "latest_5_available"},
+      "forbidden_tools": ["web_search"]
+    },
+    {
+      "case_id": "A-02",
+      "question": "당뇨병성 망막병증의 환자수 통계 알려줘",
+      "expected_decision_source": "BLOCKED",
+      "release_gate": "BLOCKED",
+      "routing_decision": null,
+      "forbidden_codes": ["E11", "H36"],
+      "required_oracle_before_activation": "organization-approved H36.0 mapping with source, version, and SHA256"
+    },
+    {
+      "case_id": "A-03",
+      "question": "질병코드 H360 환자수 통계 알려줘",
+      "expected_decision_source": "NEW_RULE",
+      "routing_decision": {
+        "source_domain": "hira",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "NEW_RULE",
+        "route_outcome": "CALL"
+      },
+      "deterministic_rule_id": "DISEASE_CODE",
+      "eligible_tools": ["hira_disease_hospitalization_outpatient_stats"],
+      "canonical_argument_contract": {"sick_cd": "H36.0"},
+      "allowed_terminal_reason": "NO_RECORD_FOUND",
+      "forbidden_codes": ["H36"]
+    },
+    {
+      "case_id": "A-04",
+      "question": "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+      "expected_decision_source": "NO_CAPABILITY",
+      "routing_decision": {
+        "source_domain": "regulatory",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "NOT_IMPLEMENTED",
+        "tool_selection_source": "NONE",
+        "route_outcome": "TYPED_STOP"
+      },
+      "reason_code": "CAPABILITY_NOT_IMPLEMENTED",
+      "forbidden_tools": ["web_search"]
+    },
+    {
+      "case_id": "A-05",
+      "question": "Eylea 급여기준 알려줘",
+      "expected_decision_source": "NO_CAPABILITY",
+      "same_route_as": "A-04"
+    },
+    {
+      "case_id": "A-06",
+      "question": "Aflibercept 급여기준 알려줘",
+      "expected_decision_source": "NO_CAPABILITY",
+      "same_route_as": "A-04"
+    },
+    {
+      "case_id": "A-07",
+      "question": "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘",
+      "expected_decision_source": "NEW_RULE",
+      "routing_decision": {
+        "source_domain": "regulatory",
+        "domain_decision_source": "PREFIX_RULE",
+        "capability_status": "FIELD_NOT_EXPOSED",
+        "tool_selection_source": "NONE",
+        "route_outcome": "TYPED_STOP"
+      },
+      "phase0_field_coverage": "NONE",
+      "phase0_cardinality": "MANY",
+      "reason_code": "AMBIGUOUS_INPUT",
+      "forbidden_behaviors": ["arbitrary first candidate", "web field completion"]
+    },
+    {
+      "case_id": "A-08",
+      "question": "NCT05151731의 inclusion 및 exclusion Criteria 알려줘",
+      "expected_decision_source": "NEW_RULE",
+      "routing_decision": {
+        "source_domain": "clinical_trials",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "FIELD_NOT_EXPOSED",
+        "tool_selection_source": "NONE",
+        "route_outcome": "TYPED_STOP"
+      },
+      "deterministic_rule_id": "NCT_ID",
+      "reason_code": "FIELD_NOT_EXPOSED",
+      "forbidden_claim": "not publicly available"
+    },
+    {
+      "case_id": "A-09",
+      "question": "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+      "expected_decision_source": "NEW_RULE",
+      "same_route_as": "A-08"
+    },
+    {
+      "case_id": "A-10",
+      "question": "당뇨병성 황반부종(DME) 관련 임상시험을 찾아줘",
+      "expected_decision_source": "LLM",
+      "routing_decision": {
+        "source_domain": "clinical_trials",
+        "domain_decision_source": "LLM",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "LLM",
+        "route_outcome": "CALL"
+      },
+      "eligible_tools": ["clinicaltrials_v2_search", "mfds_clinical_trial_kr"],
+      "eligible_tools_count": 2,
+      "required_disclosures": ["retrieved_count", "displayed_count"],
+      "conditional_disclosure": "total_available only when upstream exposes it"
+    },
+    {
+      "case_id": "A-11",
+      "question": "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘",
+      "expected_decision_source": "LEGACY_RULE",
+      "routing_decision": {
+        "source_domain": "internal_mart",
+        "domain_decision_source": "METRIC_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "LEGACY_RULE",
+        "route_outcome": "CALL"
+      },
+      "conditional_gate": "A-11",
+      "external_tool_calls": 0
+    },
+    {
+      "case_id": "A-12",
+      "question": "카나브패밀리 실적 어때?",
+      "expected_decision_source": "INACTIVE",
+      "release_gate": "INACTIVE",
+      "conditional_gate": "A-12",
+      "same_physical_result_as": "B-07"
+    },
+    {
+      "case_id": "A-13",
+      "question": "아일리아의 허가 품목명과 업체명을 공식 허가정보 기준으로 알려줘",
+      "expected_decision_source": "DETERMINISTIC_SINGLETON",
+      "routing_decision": {
+        "source_domain": "regulatory",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "DETERMINISTIC_SINGLETON",
+        "route_outcome": "CALL"
+      },
+      "eligible_tools": ["mfds_permission_search"],
+      "eligible_tools_count": 1,
+      "forbidden_tools": ["web_search"],
+      "llm_selection_proof": false
+    },
+    {
+      "case_id": "D-01",
+      "question": "리바로 매출 알려줘",
+      "expected_decision_source": "LEGACY_RULE",
+      "source_domain": "internal_mart",
+      "external_tool_calls": 0,
+      "same_physical_result_as": "B-08"
+    },
+    {
+      "case_id": "D-02",
+      "question": "고지혈증 시장 매출 알려줘",
+      "expected_decision_source": "LEGACY_RULE",
+      "source_domain": "internal_mart",
+      "external_tool_calls": 0
+    },
+    {
+      "case_id": "D-03a",
+      "question": "2024년 리바로 매출",
+      "expected_decision_source": "LEGACY_RULE",
+      "source_domain": "internal_mart",
+      "external_tool_calls": 0
+    },
+    {
+      "case_id": "D-03b",
+      "question": "리바로 100mg 매출",
+      "expected_decision_source": "LEGACY_RULE",
+      "source_domain": "internal_mart",
+      "external_tool_calls": 0
+    },
+    {
+      "case_id": "D-04",
+      "question": "HIRA: 아일리아 효능 알려줘",
+      "expected_decision_source": "NO_CAPABILITY",
+      "routing_decision": {
+        "source_domain": "hira",
+        "domain_decision_source": "PREFIX_RULE",
+        "capability_status": "FIELD_NOT_EXPOSED",
+        "tool_selection_source": "NONE",
+        "route_outcome": "TYPED_STOP"
+      },
+      "reason_code": "FIELD_NOT_EXPOSED",
+      "forbidden_source_switch": true
+    },
+    {
+      "case_id": "D-05a",
+      "fixture": "invalid first proposal then valid repair",
+      "expected_decision_source": "LLM",
+      "repair_count": 1,
+      "route_outcome": "CALL"
+    },
+    {
+      "case_id": "D-05b",
+      "fixture": "invalid first proposal then invalid repair",
+      "expected_decision_source": "LLM",
+      "repair_count": 1,
+      "route_outcome": "TYPED_STOP",
+      "reason_code": "INVALID_TOOL_ARGUMENTS"
+    },
+    {
+      "case_id": "D-06a",
+      "fixture": "authoritative tool timeout with web fallback disabled",
+      "route_outcome": "TYPED_STOP",
+      "reason_code": "UPSTREAM_UNAVAILABLE",
+      "web_calls": 0
+    },
+    {
+      "case_id": "D-06b",
+      "fixture": "authoritative tool timeout with official web fallback enabled",
+      "route_outcome": "CALL",
+      "web_domain_policy": "official_allowlist_only",
+      "required_disclosure": "unofficial fallback evidence"
+    },
+    {
+      "case_id": "D-07",
+      "fixture": "selected tool returns zero rows",
+      "route_outcome": "TYPED_STOP",
+      "reason_code": "NO_RECORD_FOUND"
+    },
+    {
+      "case_id": "D-08",
+      "fixture": "selected tool returns a truncated result",
+      "route_outcome": "TYPED_STOP",
+      "reason_code": "TRUNCATED_RESULT"
+    },
+    {
+      "case_id": "D-09",
+      "fixture": "duplicate canonical tool and arguments proposal",
+      "duplicate_executions": 0,
+      "call_budget_enforced": true
+    },
+    {
+      "case_id": "D-10",
+      "question": "이 챗봇 어떻게 쓰는 거야?",
+      "expected_decision_source": "NO_TOOL",
+      "route_outcome": "NO_TOOL",
+      "external_tool_calls": 0
+    },
+    {
+      "case_id": "D-11",
+      "fixture": "multiple exact product candidates",
+      "route_outcome": "TYPED_STOP",
+      "reason_code": "AMBIGUOUS_INPUT",
+      "arbitrary_first_selection": false
+    },
+    {
+      "case_id": "D-12",
+      "fixture": "internal strategy and revenue question",
+      "expected_decision_source": "LEGACY_RULE",
+      "external_tool_calls": 0,
+      "external_argument_leakage": false
+    },
+    {
+      "case_id": "D-13",
+      "fixture": "claim references MODEL_MEMORY instead of HIRA_FIXTURE_01",
+      "expected_gate_verdict": "FAIL",
+      "expected_evidence_id": "HIRA_FIXTURE_01",
+      "injected_evidence_id": "MODEL_MEMORY"
+    }
+  ]
+}
