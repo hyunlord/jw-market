@@ -23,6 +23,7 @@ DEFAULT_AGGREGATE_TERMS = (
     "평균",
     "개수",
     "건수",
+    "몇 건",
     "몇 개",
     "집계",
     "비교",
@@ -39,7 +40,7 @@ DEFAULT_AGGREGATE_TERMS = (
 DEFAULT_AMOUNT_QUESTION_TERMS = ("금액", "총액", "매출", "sell-out", "sell out", "sales", "amount")
 DEFAULT_AMOUNT_COLUMN_TERMS = ("values lc si price", "sales", "amount", "revenue", "매출", "금액")
 DEFAULT_AVERAGE_TERMS = ("average", "avg", "평균", "단가", "unit price")
-DEFAULT_COUNT_QUESTION_TERMS = ("개수", "건수", "몇 개", "count")
+DEFAULT_COUNT_QUESTION_TERMS = ("개수", "건수", "몇 건", "몇 개", "count")
 DEFAULT_QUANTITY_TERMS = ("quantity", "qty", "volume", "수량")
 
 
@@ -1091,6 +1092,14 @@ def _resolve_deterministic_select(
                         f" GROUP BY {channel_query} ORDER BY {aggregate_alias} DESC"
                     )
                     resolved.append("channel")
+            elif channel_value := _single_channel_subject(question):
+                channel = _find_column(columns, r"(?:^|\b)channel(?:\b|$)|채널")
+                if channel is None:
+                    missing.append("채널")
+                else:
+                    channel_query = str(channel.get("query_name") or "")
+                    filters.append(f"{channel_query} = {_sql_literal(channel_value)}")
+                    resolved.append("channel")
             elif re.search(r"제품\s*별|product(?:\s+name)?", question, re.IGNORECASE) or (
                 _top_n_limit(question) is not None
                 and re.search(r"제품(?:명)?", question, re.IGNORECASE)
@@ -1313,6 +1322,11 @@ def _single_manufacturer_subject(question: str) -> str:
         if not re.fullmatch(r"[A-Z]\d{2}[A-Z]\d", candidate, re.IGNORECASE):
             return candidate
     return ""
+
+
+def _single_channel_subject(question: str) -> str:
+    match = re.search(r"(?<!\d)(\d{1,3})\s*번\s*채널", question)
+    return match.group(1) if match else ""
 
 
 def _requested_sheet_name(

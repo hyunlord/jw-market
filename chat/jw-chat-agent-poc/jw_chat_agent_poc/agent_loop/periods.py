@@ -76,7 +76,14 @@ def _pre_resolved_periods(
     available: tuple[str, ...],
     latest_period: str,
 ) -> tuple[str, ...]:
-    periods = list(_available_explicit_periods(canonical_periods(question), available))
+    canonical = canonical_periods(question)
+    periods = list(_available_explicit_periods(canonical, available))
+    if not canonical:
+        year_match = re.search(r"(?<!\d)(20\d{2})\s*년", question)
+        if year_match is not None and any(
+            month.startswith(f"{year_match.group(1)}-") for month in available
+        ):
+            periods.append(year_match.group(1))
     for match in re.finditer(r"\d{1,2}\s*(?:달|개월)\s*전", question):
         period = _months_ago(match.group(0), current_month())
         if period in available:

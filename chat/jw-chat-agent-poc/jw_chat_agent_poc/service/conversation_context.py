@@ -12,6 +12,11 @@ from jw_chat_agent_poc.service.conversation import (
     ResultReference,
     SeriesPoint,
 )
+from jw_chat_agent_poc.service.conversation_followups import (
+    is_file_axis_followup,
+    requires_deterministic_followup,
+    resolve_deterministic_followup,
+)
 
 
 _FIRST_RANK_RE = re.compile(r"그\s*중\s*1위(?:\s*브랜드)?")
@@ -39,6 +44,8 @@ _GENERIC_REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"시장\s*규모"), "시장 규모"),
+    (re.compile(r"HHI|시장\s*집중도", re.IGNORECASE), "HHI"),
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
     (re.compile(r"점유율\s*(?:경향성|추이|흐름|변화)"), "점유율 추이"),
     (re.compile(r"경쟁\s*구도"), "경쟁구도"),
@@ -79,6 +86,13 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     file_measure = ""
     file_manufacturer = ""
     file_sheet = ""
+
+    diagnostics = result.get("router_diagnostics")
+    scope = _text(diagnostics.get("scope")) if isinstance(diagnostics, dict) else ""
+    if scope == "market_membership_mismatch" and isinstance(resolution, dict):
+        market = _text(resolution.get("requested_market_id"))
+        market_definition = _text(resolution.get("requested_market_name"))
+        metric = _inheritable_intent(_text(result.get("question")))
 
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "")
     if deterministic_file_answer:
@@ -208,6 +222,18 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
             brand=brand,
             interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
         )
+    deterministic = resolve_deterministic_followup(
+        question,
+        previous_turn,
+        _turn_intent(previous_turn) if previous_turn is not None else "",
+    )
+    if deterministic is not None:
+        return AnaphoraResolution(
+            resolved_question=deterministic.resolved_question,
+            brand=deterministic.brand,
+            unresolved_reference=deterministic.unresolved_reference,
+            interpretation_notice=deterministic.interpretation_notice,
+        )
     if _GENERIC_REFERENCE_RE.match(question):
         return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
     if not any(pattern.search(question) for pattern in _REFERENCE_RES):
@@ -251,6 +277,8 @@ def requires_previous_turn(question: str) -> bool:
         or _METRIC_ONLY_FOLLOWUP_RE.match(question)
         or _PERIOD_ONLY_FOLLOWUP_RE.match(question)
         or _GENERIC_REFERENCE_RE.match(question)
+        or requires_deterministic_followup(question)
+        or is_file_axis_followup(question)
         or any(pattern.search(question) for pattern in _REFERENCE_RES)
     )
 

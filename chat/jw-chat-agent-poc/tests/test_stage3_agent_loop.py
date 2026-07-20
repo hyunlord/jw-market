@@ -10,7 +10,12 @@ import pytest
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop import should_use_agent_loop
-from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent, _answer_contract_required_calls, _sales_delta_calls
+from jw_chat_agent_poc.agent_loop.loop import (
+    ToolUseAgent,
+    _answer_contract_required_calls,
+    _required_contract_plan,
+    _sales_delta_calls,
+)
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
@@ -720,6 +725,21 @@ def test_quarter_query_spec_does_not_replace_required_period_metric() -> None:
     assert render_data["period"] == "2025-Q2"
     assert render_data["query_spec"]["filters"]["period"] == "2025-Q2"
     assert "fallback_period" not in render_data
+
+
+def test_required_contract_metric_preserves_standalone_year() -> None:
+    question = "리바로 2024년 매출"
+    grounding = build_period_grounding(question)
+
+    plan = _required_contract_plan(
+        "get_brand_metric",
+        question,
+        "리바로",
+        grounding,
+    )
+
+    assert plan is not None
+    assert plan.arguments["period"] == "2024"
 
 
 def test_comparison_brand_uses_market_member_trend_when_not_canonical() -> None:

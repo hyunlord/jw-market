@@ -142,6 +142,36 @@ def test_extract_slots_prefers_metric_result_over_query_plan_metadata() -> None:
     )
 
 
+def test_membership_mismatch_preserves_resolved_brand_market_and_metric_slots() -> None:
+    result = {
+        "question": "고지혈증 시장에서 마운자로 점유율",
+        "resolution": {
+            "canonical_brand": "마운자로",
+            "market_ids": ["ml_003"],
+            "market_names": ["비만 시장"],
+            "requested_market_id": "ml_006",
+            "requested_market_name": "고지혈증 시장",
+        },
+        "router_diagnostics": {"scope": "market_membership_mismatch"},
+        "tool_calls": [],
+    }
+
+    slots = extract_conversation_slots(result)
+
+    assert slots.anchor_brand == "마운자로"
+    assert slots.market == "ml_006"
+    assert slots.market_definition == "고지혈증 시장"
+    assert slots.metric == "점유율"
+
+    previous = ConversationTurn(
+        question=result["question"],
+        answer="typed membership mismatch",
+        slots=slots,
+    )
+    resolved = resolve_anaphora("비만 시장에서는?", previous)
+    assert resolved.resolved_question == "비만 시장에서 마운자로 점유율은?"
+
+
 def test_resolve_anaphora_maps_first_rank_only_from_previous_turn() -> None:
     previous = ConversationTurn(
         question="리바로 시장 상위 3개 브랜드 점유율",
@@ -378,6 +408,115 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
     assert "anaphora_resolution" in span_names
     assert "context_scope_resolution" in span_names
     assert "conversation_state_persist" in span_names
+
+
+def test_service_path_executes_deterministic_followups_with_recorded_slot_context(monkeypatch) -> None:
+    cases = (
+        (
+            "previous-year",
+            "2024년은?",
+            ConversationSlots(anchor_brand="리바로", period="2024", metric="매출"),
+            "그 전 해는?",
+            "리바로 2023년 매출은?",
+        ),
+        (
+            "rank-pronoun",
+            "그중 1위 점유율은?",
+            ConversationSlots(anchor_brand="로수젯", metric="점유율"),
+            "걔 최근 추세는?",
+            "로수젯 최근 점유율 추세는?",
+        ),
+        (
+            "brand-switch",
+            "리바로 매출",
+            ConversationSlots(anchor_brand="리바로", period="2026-05", metric="매출"),
+            "리바로젯은?",
+            "리바로젯 매출은?",
+        ),
+        (
+            "market-context",
+            "고지혈증 시장 HHI",
+            ConversationSlots(
+                market="ml_006",
+                market_definition="고지혈증 시장",
+                metric="HHI",
+            ),
+            "시장 규모는?",
+            "고지혈증 시장 규모는?",
+        ),
+        (
+            "view-switch",
+            "리바로 전략뷰 시장 규모",
+            ConversationSlots(anchor_brand="리바로", metric="시장 규모", view="strategic_ml"),
+            "일반뷰로는?",
+            "리바로 일반뷰 시장 규모는?",
+        ),
+        (
+            "membership-correction",
+            "고지혈증 시장에서 마운자로 점유율",
+            ConversationSlots(
+                anchor_brand="마운자로",
+                market="ml_006",
+                market_definition="고지혈증 시장",
+                metric="점유율",
+            ),
+            "비만 시장에서는?",
+            "비만 시장에서 마운자로 점유율은?",
+        ),
+    )
+    captured: list[tuple[str, str]] = []
+
+    def capture_answer(_resolver, _factory, conversation_id, question, *_args, **_kwargs):
+        captured.append((conversation_id, question))
+        return {"answer": "검증된 응답", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", capture_answer)
+
+    for conversation_id, previous_question, slots, followup, expected in cases:
+        store = SessionStore()
+        store.conversations.record_exchange(
+            conversation_id,
+            previous_question,
+            "검증된 직전 응답",
+            slots=slots,
+        )
+
+        item = _answer_question(
+            store,
+            _market_scope_resolver(),
+            _fake_agent_factory,
+            followup,
+            "live",
+            conversation_id,
+            use_direct_agent_loop=True,
+        )
+
+        assert captured.pop(0) == (conversation_id, expected)
+        trace = item["result"]["_qa_conversation"]
+        assert trace["requested_question"] == followup
+        assert trace["resolved_question"] == expected
+        assert trace["execution_question"] == expected
+        assert trace["previous_slots"] == {
+            key: value
+            for key, value in conversation_slots_to_dict(slots).items()
+            if key
+            in {
+                "anchor_brand",
+                "market",
+                "market_definition",
+                "period",
+                "metric",
+                "view",
+                "result_ref",
+                "ranked_brands",
+                "file_name",
+                "file_measure",
+                "file_manufacturer",
+                "file_sheet",
+            }
+            and value not in (None, "", [], {})
+        }
+        assert store.conversations.get_or_create(conversation_id).turns[-1].question == followup
 
 
 def test_deep_mode_followup_uses_resolved_state_and_discloses_interpretation(monkeypatch) -> None:

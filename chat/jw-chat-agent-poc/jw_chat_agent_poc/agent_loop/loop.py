@@ -14,7 +14,7 @@ from jw_chat_agent_poc.agent_loop.parallel_execution import (
     execute_tool_batch,
     planned_parallel_tool_names,
 )
-from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
+from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
@@ -35,7 +35,6 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import add_stage, emit_completed_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
-from jw_chat_agent_poc.common.periods import canonical_periods
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -1091,7 +1090,7 @@ def _answer_contract_required_calls(
     metrics: MetricsTool,
     resolver: BrandResolver,
     current_month: Callable[[], str] | None,
-    period_grounding,
+    period_grounding: AgentPeriodGrounding | None,
     news: DeepAnalysisNewsTool | None,
     external: ExternalApiClient | None,
     query_layer: StrategicQueryLayer | None,
@@ -1109,7 +1108,12 @@ def _answer_contract_required_calls(
     for required_tool in required_tools:
         if required_tool in existing:
             continue
-        plan = _required_contract_plan(required_tool, question, brand)
+        plan = _required_contract_plan(
+            required_tool,
+            question,
+            brand,
+            period_grounding,
+        )
         if plan is None:
             continue
         key = _fingerprint(plan)
@@ -1145,9 +1149,16 @@ def _contract_required_tools(question: str) -> tuple[str, ...]:
     return ()
 
 
-def _required_contract_plan(required_tool: str, question: str, brand: str) -> ToolCallPlan | None:
+def _required_contract_plan(
+    required_tool: str,
+    question: str,
+    brand: str,
+    period_grounding: AgentPeriodGrounding | None,
+) -> ToolCallPlan | None:
     if required_tool == "get_brand_metric":
-        requested_periods = canonical_periods(question)
+        requested_periods = (
+            period_grounding.pre_resolved_periods if period_grounding is not None else ()
+        )
         return ToolCallPlan(
             name="get_metric",
             arguments={

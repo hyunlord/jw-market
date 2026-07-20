@@ -117,6 +117,7 @@ def test_explanatory_metric_question_is_not_misclassified_as_descriptive() -> No
 @pytest.mark.parametrize(
     ("question", "expected_period"),
     (
+        ("리바로 2024년 매출", "2024"),
         ("리바로 2025년 4월 매출", "2025-04"),
         ("리바로 2025년 2분기 매출", "2025-Q2"),
     ),
