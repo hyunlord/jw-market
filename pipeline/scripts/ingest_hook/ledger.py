@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -147,6 +148,11 @@ class Ledger:
         self._conn = conn
         self._dialect = dialect
         self._mark = "?" if dialect == "sqlite" else "%s"
+        # The trigger service shares this one connection across a request
+        # threadpool; DB-API connections are not thread-safe, so every _execute
+        # is serialized (a single shared connection touched by >1 thread corrupts
+        # the pymysql wire protocol -> struct.error / 'NoneType'.settimeout -> 500).
+        self._lock = threading.Lock()
 
     # -- schema ------------------------------------------------------------
     def ensure_table(self) -> None:
@@ -157,11 +163,13 @@ class Ledger:
     # -- helpers -----------------------------------------------------------
     def _execute(self, sql: str, params: tuple = ()):
         statement = sql.replace("?", self._mark) if self._dialect == "mysql" else sql
-        if self._dialect != "mysql":
-            # sqlite (tests/rehearsals): connection is local and never idle-closed,
-            # and has no .ping(); run directly.
-            return self._run(statement, params)
-        return self._execute_resilient(statement, params)
+        # Serialize all access to the single injected connection (thread-safety).
+        with self._lock:
+            if self._dialect != "mysql":
+                # sqlite (tests/rehearsals): local connection, never idle-closed,
+                # and no .ping(); run directly (still serialized for uniformity).
+                return self._run(statement, params)
+            return self._execute_resilient(statement, params)
 
     def _run(self, statement: str, params: tuple):
         cursor = self._conn.cursor()
@@ -172,40 +180,31 @@ class Ledger:
     def _execute_resilient(self, statement: str, params: tuple):
         """mysql only: survive a Galera ``wait_timeout`` idle-closed connection.
 
-        The production ledger holds one long-lived connection; Galera silently
-        drops it after ``wait_timeout`` of idle, so the next webhook/status request
-        would surface as ``OperationalError(2006)`` / ``InterfaceError`` → HTTP 500.
+        Runs under ``self._lock`` (see ``_execute``), so the shared connection is
+        touched by one thread at a time — this alone removes the concurrent-use
+        corruption (``struct.error`` / ``'NoneType'.settimeout`` → 500).
 
-        Two complementary layers (one alone is insufficient):
-          * W-1 — ``ping(reconnect=True)`` revives an idle-closed socket in place
-            before the statement, preserving ``self._conn`` identity and its
-            autocommit/charset settings.
-          * W-2 — if the socket still dies between the ping and the statement
-            (TOCTOU), reconnect and retry exactly once; a second consecutive
-            death is a real outage and raises ``LedgerConnectionError`` (a clear
-            5xx body, never a silent success).
+        For wait_timeout idle death: the first statement on a dropped connection
+        raises ``OperationalError(2006)`` / ``InterfaceError``; on that (and only
+        that) error, reconnect once and retry exactly once. A second consecutive
+        death is a real outage → ``LedgerConnectionError`` (clear 5xx, never a
+        silent success).
 
-        A per-request connection is deliberately NOT used — the injected
-        long-lived-connection contract and Galera connection cost are respected.
-        ``wait_timeout`` itself is a DB/platform setting and is never touched here;
-        the code adapts to it. Real SQL errors are never retried or masked.
+        No proactive per-call ``ping(reconnect=True)``: on a shared connection it
+        added a wasted round-trip AND a reconnect-mid-use race (it nulls the socket
+        while another thread reads it) that aggravated the concurrency corruption.
+        The catch-reconnect-retry below is the single defense. A per-request
+        connection is deliberately NOT used (injected long-lived-connection
+        contract); ``wait_timeout`` is never changed here. Real SQL errors
+        (integrity, lock timeout, syntax) are never retried or masked.
         """
-        # W-1: revive an idle wait_timeout-closed socket before use.
-        try:
-            self._conn.ping(reconnect=True)
-        except Exception as exc:  # server unreachable at ping time
-            raise LedgerConnectionError(
-                f"ingest ledger DB unreachable (ping/reconnect failed): {exc}"
-            ) from exc
-
         try:
             return self._run(statement, params)
         except _STALE_CONN_ERRORS as exc:
             if not _is_stale_connection_error(exc):
                 raise  # a real SQL/operational error — surface it unchanged
 
-        # W-2: the connection died between the ping and the statement. Reconnect
-        # and retry exactly once (never an unbounded retry loop).
+        # The connection was idle-closed by wait_timeout. Reconnect + retry once.
         try:
             self._conn.ping(reconnect=True)
         except Exception as exc:

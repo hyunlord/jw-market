@@ -153,7 +153,7 @@ def test_reconnects_and_retries_once_on_toctou_death():
 
     assert ledger.status(*IDENTITY) is None  # succeeds after a single retry
     assert conn.execute_attempts == 2  # first death + one retry
-    assert conn.ping_calls == 2  # W-1 entry ping + W-2 reconnect ping
+    assert conn.ping_calls == 1  # W-2 reconnect only (no proactive per-call ping)
 
 
 def test_interface_error_mid_statement_is_treated_as_stale_and_retried():
