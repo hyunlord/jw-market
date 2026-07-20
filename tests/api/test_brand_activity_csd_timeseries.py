@@ -521,3 +521,91 @@ def test_csd_timeseries_scope_keeps_quarters_and_adds_activity_months() -> None:
 
     assert payload["quarters"] == ["2025-Q1"]
     assert payload["activity_months"] == ["2025-01", "2025-02", "2025-03"]
+
+
+def test_resolve_csd_markets_includes_same_ml_franchise_sibling(monkeypatch) -> None:
+    # ml_id franchise gate: LIVALOZET sheet qualifies via sibling LIVALOZET even though
+    # the selected brand LIVALO is not present in that sheet. DONG_KOOK (not a market
+    # member / not in candidate) does not create qualification on its own.
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "LIVALO Market", "master_product": "LIVALO"},
+            {"market": "LIVALOZET Market", "master_product": "LIVALOZET"},
+            {"market": "LIVALOZET Market", "master_product": "DONG_KOOK"},
+        ],
+    )
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes={"LIVALO"},
+        candidate_product_codes={"LIVALO", "LIVALOZET"},
+        qualifying_product_codes={"LIVALO", "LIVALOZET"},
+    )
+
+    assert [item.market for item in resolved] == ["LIVALO Market", "LIVALOZET Market"]
+    assert resolved[0].market == "LIVALO Market"  # primary anchored on the selected brand
+
+
+def test_resolve_csd_markets_franchise_primary_stays_selected_anchor(monkeypatch) -> None:
+    # Even when a sibling sheet outscores the selected brand's sheet, the primary stays
+    # the selected brand's market (label unchanged).
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "LIVALO Market", "master_product": "LIVALO"},
+            {"market": "LIVALOZET Market", "master_product": "LIVALOZET"},
+            {"market": "LIVALOZET Market", "master_product": "LIVALO_V"},
+        ],
+    )
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes={"LIVALO"},
+        candidate_product_codes={"LIVALO", "LIVALOZET", "LIVALO_V"},
+        qualifying_product_codes={"LIVALO", "LIVALOZET", "LIVALO_V"},
+    )
+
+    assert resolved[0].market == "LIVALO Market"  # not the higher-scored LIVALOZET Market
+    assert {item.market for item in resolved} == {"LIVALO Market", "LIVALOZET Market"}
+
+
+def test_resolve_csd_markets_franchise_excludes_nonmember_competitor(monkeypatch) -> None:
+    # 6779da0b intent preserved: a sheet whose only product is a non-member competitor
+    # (CRESTOR not in the market brand set) never qualifies.
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "LIVALO Market", "master_product": "LIVALO"},
+            {"market": "CRESTOR Market", "master_product": "CRESTOR"},
+        ],
+    )
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes={"LIVALO"},
+        candidate_product_codes={"LIVALO", "LIVALOZET"},
+        qualifying_product_codes={"LIVALO", "LIVALOZET"},
+    )
+
+    assert [item.market for item in resolved] == ["LIVALO Market"]
+
+
+def test_resolve_csd_markets_default_gate_is_legacy_selected_only(monkeypatch) -> None:
+    # Without qualifying_product_codes (general / non-ml_id views) the legacy
+    # selected-brand-membership gate is preserved: the sibling sheet is excluded.
+    monkeypatch.setattr(
+        service.db,
+        "fetch_all",
+        lambda _sql, _params=None: [
+            {"market": "LIVALO Market", "master_product": "LIVALO"},
+            {"market": "LIVALOZET Market", "master_product": "LIVALOZET"},
+        ],
+    )
+
+    resolved = service.resolve_csd_markets(
+        selected_product_codes={"LIVALO"},
+        candidate_product_codes={"LIVALO", "LIVALOZET"},
+    )
+
+    assert [item.market for item in resolved] == ["LIVALO Market"]

@@ -72,9 +72,17 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     if selected_meta is None:
         return None
     csd_codes = _iqvia_csd_product_codes(brand_meta, selected_brand=brand_set.selected_brand)
+    # Franchise qualification: on the MI Master ml_id axis (view=strategic_ml) a CSD sheet
+    # qualifies when the selected brand OR a same-ml_id market member holds a product there,
+    # so LIVALO-family siblings (e.g. 리바로젯) are not treated as competitors. Other views
+    # (general/atc4, strategic_cd) keep the legacy selected-brand-presence rule.
+    franchise_membership = request["view"] == "strategic_ml"
     crosswalks = resolve_csd_markets(
         selected_product_codes=set(csd_codes.selected),
         candidate_product_codes=set(csd_codes.candidates),
+        qualifying_product_codes=(
+            set(csd_codes.candidates) if franchise_membership else set(csd_codes.selected)
+        ),
     )
     selected_crosswalks = _select_csd_markets(crosswalks, request["csd_market"])
     crosswalk = selected_crosswalks[0]
@@ -127,20 +135,29 @@ def resolve_csd_markets(
     *,
     selected_product_codes: set[str],
     candidate_product_codes: set[str],
+    qualifying_product_codes: set[str] | None = None,
 ) -> tuple[CsdCrosswalk, ...]:
-    """Resolve CSD markets represented by the selected IQVIA market brand set."""
+    """Resolve CSD markets represented by the selected IQVIA market brand set.
 
-    scored, selected_markets = _scored_csd_markets(
+    ``qualifying_product_codes`` widens *which markets qualify* beyond the selected
+    brand (e.g. same-ml_id franchise members). It defaults to the selected brand's
+    codes, preserving the legacy selected-brand-membership gate. The primary market
+    always stays anchored on the selected brand; competitor sheets whose products are
+    not in the market brand set stay excluded regardless of this argument.
+    """
+
+    scored, anchor_markets, qualifying_markets = _scored_csd_markets(
         selected_product_codes=selected_product_codes,
         candidate_product_codes=candidate_product_codes,
+        qualifying_product_codes=qualifying_product_codes,
     )
-    primary = _primary_csd_market(scored, selected_markets)
+    primary = _primary_csd_market(scored, anchor_markets)
     return (
         primary,
         *(
             item
             for item in scored
-            if item.market in selected_markets and item.market != primary.market
+            if item.market in qualifying_markets and item.market != primary.market
         ),
     )
 
@@ -149,7 +166,12 @@ def _scored_csd_markets(
     *,
     selected_product_codes: set[str],
     candidate_product_codes: set[str],
-) -> tuple[list[CsdCrosswalk], set[str]]:
+    qualifying_product_codes: set[str] | None = None,
+) -> tuple[list[CsdCrosswalk], set[str], set[str]]:
+    # ``qualifying_codes`` decides which markets clear the qualification gate.
+    # Defaults to the selected brand (legacy gate); callers on the ml_id franchise
+    # axis pass the full market brand set so same-ml_id siblings also qualify.
+    qualifying_codes = selected_product_codes if qualifying_product_codes is None else qualifying_product_codes
     product_codes = tuple(
         sorted(
             {
@@ -164,14 +186,18 @@ def _scored_csd_markets(
     for row in rows:
         by_market.setdefault(str(row["market"]), set()).add(str(row["master_product"]))
     scored: list[CsdCrosswalk] = []
-    selected_markets: set[str] = set()
+    anchor_markets: set[str] = set()
+    qualifying_markets: set[str] = set()
     for market, products in by_market.items():
         selected_overlap = normalized_product_overlap(selected_product_codes, products)
+        qualifying_overlap = normalized_product_overlap(qualifying_codes, products)
         overlap = tuple(sorted(normalized_product_overlap(candidate_product_codes, products)))
         if not overlap:
             continue
         if selected_overlap:
-            selected_markets.add(market)
+            anchor_markets.add(market)
+        if qualifying_overlap:
+            qualifying_markets.add(market)
         scored.append(
             CsdCrosswalk(
                 market=market,
@@ -180,7 +206,7 @@ def _scored_csd_markets(
                 score=len(overlap),
             )
         )
-    return sorted(scored, key=lambda item: (-item.score, item.market)), selected_markets
+    return sorted(scored, key=lambda item: (-item.score, item.market)), anchor_markets, qualifying_markets
 
 
 def resolve_csd_market(
@@ -190,18 +216,18 @@ def resolve_csd_market(
 ) -> CsdCrosswalk:
     """Resolve the selected brand to one CSD market, then rank by full overlap."""
 
-    all_scored, selected_markets = _scored_csd_markets(
+    all_scored, anchor_markets, _qualifying_markets = _scored_csd_markets(
         selected_product_codes=selected_product_codes,
         candidate_product_codes=candidate_product_codes,
     )
-    return _primary_csd_market(all_scored, selected_markets)
+    return _primary_csd_market(all_scored, anchor_markets)
 
 
 def _primary_csd_market(
     scored: list[CsdCrosswalk],
-    selected_markets: set[str],
+    anchor_markets: set[str],
 ) -> CsdCrosswalk:
-    selected = [item for item in scored if item.market in selected_markets]
+    selected = [item for item in scored if item.market in anchor_markets]
     if not selected:
         raise CsdTimeseriesNoMappingError("이 브랜드는 CSD 원천에 활동 데이터가 없음")
     best = selected[0]
