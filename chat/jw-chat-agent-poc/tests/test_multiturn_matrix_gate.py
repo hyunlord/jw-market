@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from scripts.multiturn_matrix_gate import (
+    DocumentIdentity,
     PortalClient,
     evaluate_turn,
     load_matrix,
@@ -217,7 +218,9 @@ def test_file_bridge_upload_uses_committed_document_identity(
         access_token="access-secret",
     )
 
-    assert client.upload("mt-b-06-r1-abcdef", fixture) == [114321]
+    assert client.upload("mt-b-06-r1-abcdef", fixture) == [
+        DocumentIdentity(field="document_id", value=114321)
+    ]
     assert calls[0][0] == "http://bridge/upload"
     request = calls[0][1]
     assert request["data"] == {
@@ -229,6 +232,135 @@ def test_file_bridge_upload_uses_committed_document_identity(
     assert "headers" not in request
 
 
+def test_file_bridge_upload_recovers_public_temp_identity_from_sql_tables(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fixture = tmp_path / "small_channel.xlsx"
+    fixture.write_bytes(b"xlsx")
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "errors": [],
+                "commit": {
+                    "file_only_ready": True,
+                    "errors": [],
+                    "documents": [
+                        {
+                            "file_name": "small_channel.xlsx",
+                            "chunk_count": 38,
+                            "route": "hybrid",
+                            "status": "committed",
+                            "sql_tables": [
+                                {
+                                    "logical_name": "doc_2768_raw_data",
+                                    "sheet_name": "RAW DATA",
+                                    "row_count": 194,
+                                    "column_count": 267,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+
+    monkeypatch.setattr(
+        "scripts.multiturn_matrix_gate.requests.post",
+        lambda *_args, **_kwargs: Response(),
+    )
+    client = PortalClient(
+        stream_url="http://stream/stream",
+        portal_base="http://portal/test2-api",
+        file_bridge_base="http://bridge",
+        timeout_s=10,
+        portal_token="portal-secret",
+        access_token="access-secret",
+    )
+
+    assert client.upload("mt-b-06-r1-abcdef", fixture) == [
+        DocumentIdentity(field="temp_document_id", value=2768)
+    ]
+    assert client.upload_evidence("mt-b-06-r1-abcdef") == {
+        "fixture": "small_channel.xlsx",
+        "upload": {
+            "keys": ["commit", "errors"],
+            "error_count": 0,
+            "temp_document_count": 0,
+        },
+        "commit": {
+            "keys": ["documents", "errors", "file_only_ready"],
+            "error_count": 0,
+            "file_only_ready": True,
+            "documents": [
+                {
+                    "file_name": "small_channel.xlsx",
+                    "status": "committed",
+                    "route": "hybrid",
+                    "chunk_count": 38,
+                    "logical_names": ["doc_2768_raw_data"],
+                }
+            ],
+        },
+        "identities": [{"field": "temp_document_id", "value": 2768}],
+    }
+
+
+def test_file_bridge_upload_rejects_ambiguous_public_temp_identity(
+    monkeypatch, tmp_path: Path
+) -> None:
+    fixture = tmp_path / "small_channel.xlsx"
+    fixture.write_bytes(b"xlsx")
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "errors": [],
+                "commit": {
+                    "file_only_ready": True,
+                    "errors": [],
+                    "documents": [
+                        {
+                            "file_name": "small_channel.xlsx",
+                            "sql_tables": [
+                                {"logical_name": "doc_2768_raw_data"},
+                                {"logical_name": "doc_9999_other"},
+                            ],
+                        }
+                    ],
+                },
+            }
+
+    monkeypatch.setattr(
+        "scripts.multiturn_matrix_gate.requests.post",
+        lambda *_args, **_kwargs: Response(),
+    )
+    client = PortalClient(
+        stream_url="http://stream/stream",
+        portal_base="http://portal/test2-api",
+        file_bridge_base="http://bridge",
+        timeout_s=10,
+        portal_token="portal-secret",
+        access_token="access-secret",
+    )
+
+    try:
+        client.upload("mt-b-06-r1-abcdef", fixture)
+    except RuntimeError as exc:
+        assert "ambiguous temp document identity" in str(exc)
+    else:
+        raise AssertionError("ambiguous public identity must fail closed")
+
+
 def test_file_bridge_cleanup_discovers_residuals_and_verifies_zero(
     monkeypatch,
 ) -> None:
@@ -238,7 +370,10 @@ def test_file_bridge_cleanup_discovers_residuals_and_verifies_zero(
             {
                 "documents": [
                     {"document_id": 114321, "file_name": "small_channel.xlsx"},
-                    {"document_id": 114322, "file_name": "orphan.xlsx"},
+                    {
+                        "file_name": "orphan.xlsx",
+                        "sql_tables": [{"logical_name": "doc_2768_raw_data"}],
+                    },
                 ]
             },
             {"documents": []},
@@ -286,6 +421,22 @@ def test_file_bridge_cleanup_discovers_residuals_and_verifies_zero(
         access_token="access-secret",
     )
 
-    assert client.cleanup("mt-b-06-r1-abcdef", [114321]) == []
-    assert [item[1]["json"]["document_id"] for item in posts] == [114321, 114322]
+    assert client.cleanup(
+        "mt-b-06-r1-abcdef",
+        [DocumentIdentity(field="document_id", value=114321)],
+    ) == []
+    assert [item[1]["json"] for item in posts] == [
+        {
+            "workflow_id": 301,
+            "vdb_id": 139,
+            "app_session_id": "mt-b-06-r1-abcdef",
+            "document_id": 114321,
+        },
+        {
+            "workflow_id": 301,
+            "vdb_id": 139,
+            "app_session_id": "mt-b-06-r1-abcdef",
+            "temp_document_id": 2768,
+        },
+    ]
     assert all(item[0] == "http://bridge/documents/delete" for item in posts)

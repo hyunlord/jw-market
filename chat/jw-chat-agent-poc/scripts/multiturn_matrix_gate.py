@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 import statistics
 import time
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -24,6 +26,22 @@ BRIDGE_DOCUMENTS_PATH = "/documents"
 BRIDGE_DELETE_PATH = "/documents/delete"
 WORKFLOW_ID = 301
 FILE_VDB_ID = 139
+TEMP_DOCUMENT_LOGICAL_NAME = re.compile(r"^doc_([1-9][0-9]*)(?:_|$)")
+
+
+@dataclass(frozen=True, order=True)
+class DocumentIdentity:
+    field: Literal["document_id", "temp_document_id"]
+    value: int
+
+    def __post_init__(self) -> None:
+        if self.field not in {"document_id", "temp_document_id"}:
+            raise ValueError(f"unsupported document identity field: {self.field}")
+        if type(self.value) is not int or self.value <= 0:
+            raise ValueError("document identity must be a positive integer")
+
+    def as_dict(self) -> dict[str, int | str]:
+        return {"field": self.field, "value": self.value}
 
 
 def make_conversation_id(mode: str, scenario_id: str, repeat: int) -> str:
@@ -161,6 +179,70 @@ def _strings(value: Any) -> tuple[str, ...]:
     return ()
 
 
+def _logical_names(row: Mapping[str, Any]) -> list[str]:
+    tables = row.get("sql_tables")
+    if not isinstance(tables, list):
+        return []
+    return [
+        str(table.get("logical_name"))
+        for table in tables
+        if isinstance(table, Mapping) and isinstance(table.get("logical_name"), str)
+    ]
+
+
+def _document_identity(row: Mapping[str, Any]) -> DocumentIdentity | None:
+    document_id = row.get("document_id")
+    if type(document_id) is int and document_id > 0:
+        return DocumentIdentity(field="document_id", value=document_id)
+    temp_document_id = row.get("temp_document_id")
+    if type(temp_document_id) is int and temp_document_id > 0:
+        return DocumentIdentity(field="temp_document_id", value=temp_document_id)
+    temp_ids = {
+        int(match.group(1))
+        for logical_name in _logical_names(row)
+        for match in [TEMP_DOCUMENT_LOGICAL_NAME.match(logical_name)]
+        if match is not None
+    }
+    if len(temp_ids) > 1:
+        raise RuntimeError(
+            "file bridge document has ambiguous temp document identity: "
+            + ",".join(str(value) for value in sorted(temp_ids))
+        )
+    if temp_ids:
+        return DocumentIdentity(field="temp_document_id", value=next(iter(temp_ids)))
+    return None
+
+
+def _bridge_payload_evidence(payload: Mapping[str, Any]) -> dict[str, Any]:
+    temp_documents = payload.get("temp_documents")
+    return {
+        "keys": sorted(str(key) for key in payload),
+        "error_count": len(_strings(payload.get("errors"))),
+        "temp_document_count": len(temp_documents) if isinstance(temp_documents, list) else 0,
+    }
+
+
+def _bridge_commit_evidence(commit: Mapping[str, Any]) -> dict[str, Any]:
+    rows = commit.get("documents")
+    documents = rows if isinstance(rows, list) else []
+    return {
+        "keys": sorted(str(key) for key in commit),
+        "error_count": len(_strings(commit.get("errors"))),
+        "file_only_ready": commit.get("file_only_ready") is True,
+        "documents": [
+            {
+                "file_name": row.get("file_name"),
+                "status": row.get("status"),
+                "route": row.get("route"),
+                "chunk_count": row.get("chunk_count"),
+                "logical_names": _logical_names(row),
+            }
+            for row in documents
+            if isinstance(row, Mapping)
+        ],
+    }
+
+
 def portal_tokens(auth_url: str, timeout_s: float) -> tuple[str, str]:
     response = requests.post(auth_url, json={}, timeout=timeout_s)
     response.raise_for_status()
@@ -195,6 +277,7 @@ class PortalClient:
         self.timeout_s = timeout_s
         self.portal_token = portal_token
         self.access_token = access_token
+        self._upload_evidence: dict[str, dict[str, Any]] = {}
 
     @property
     def auth_headers(self) -> dict[str, str]:
@@ -225,9 +308,10 @@ class PortalClient:
             "raw": raw,
         }
 
-    def upload(self, conversation_id: str, fixture: Path) -> list[int]:
+    def upload(self, conversation_id: str, fixture: Path) -> list[DocumentIdentity]:
         if self.file_bridge_base:
             return self._bridge_upload(conversation_id, fixture)
+        self._upload_evidence[conversation_id] = {"fixture": fixture.name, "path": "portal"}
         with fixture.open("rb") as handle:
             response = requests.post(
                 self.portal_base + FILES_PATH,
@@ -245,13 +329,22 @@ class PortalClient:
                 if row.get("file_name") == fixture.name
                 and (int(row.get("chunk_count") or 0) > 0 or bool(row.get("sql_tables")))
             ]
-            identifiers = [int(row["document_id"]) for row in matches if isinstance(row.get("document_id"), int)]
+            identifiers = [
+                DocumentIdentity(field="document_id", value=int(row["document_id"]))
+                for row in matches
+                if type(row.get("document_id")) is int and int(row["document_id"]) > 0
+            ]
             if identifiers:
+                self._upload_evidence[conversation_id]["identities"] = [
+                    identity.as_dict() for identity in identifiers
+                ]
                 return identifiers
             time.sleep(2)
         raise TimeoutError("uploaded fixture did not become queryable")
 
-    def _bridge_upload(self, conversation_id: str, fixture: Path) -> list[int]:
+    def _bridge_upload(self, conversation_id: str, fixture: Path) -> list[DocumentIdentity]:
+        evidence: dict[str, Any] = {"fixture": fixture.name}
+        self._upload_evidence[conversation_id] = evidence
         with fixture.open("rb") as handle:
             response = requests.post(
                 self.file_bridge_base + BRIDGE_UPLOAD_PATH,
@@ -268,6 +361,7 @@ class PortalClient:
         payload = response.json()
         if not isinstance(payload, Mapping):
             raise RuntimeError("file bridge upload response is not an object")
+        evidence["upload"] = _bridge_payload_evidence(payload)
         errors = _strings(payload.get("errors"))
         if errors:
             raise RuntimeError("file bridge upload failed: " + "; ".join(errors))
@@ -290,6 +384,7 @@ class PortalClient:
             commit = commit_response.json()
         if not isinstance(commit, Mapping):
             raise RuntimeError("file bridge commit response is not an object")
+        evidence["commit"] = _bridge_commit_evidence(commit)
         commit_errors = _strings(commit.get("errors"))
         if commit_errors:
             raise RuntimeError("file bridge commit failed: " + "; ".join(commit_errors))
@@ -297,16 +392,23 @@ class PortalClient:
             raise RuntimeError("file bridge commit did not become queryable")
         rows = commit.get("documents")
         documents = rows if isinstance(rows, list) else []
-        identifiers = [
-            value
-            for row in documents
-            if isinstance(row, Mapping)
-            for value in [row.get("document_id")]
-            if type(value) is int and value > 0
-        ]
+        identifiers: list[DocumentIdentity] = []
+        for row in documents:
+            if not isinstance(row, Mapping):
+                continue
+            identity = _document_identity(row)
+            if identity is None:
+                raise RuntimeError("file bridge commit returned no deletable document identity")
+            identifiers.append(identity)
         if not identifiers:
-            raise RuntimeError("file bridge commit returned no permanent document identity")
-        return sorted(set(identifiers))
+            raise RuntimeError("file bridge commit returned no deletable document identity")
+        identities = sorted(set(identifiers))
+        evidence["identities"] = [identity.as_dict() for identity in identities]
+        return identities
+
+    def upload_evidence(self, conversation_id: str) -> dict[str, Any]:
+        evidence = self._upload_evidence.get(conversation_id, {})
+        return json.loads(json.dumps(evidence, ensure_ascii=False))
 
     def documents(self, conversation_id: str) -> list[dict[str, Any]]:
         if self.file_bridge_base:
@@ -334,38 +436,53 @@ class PortalClient:
         rows = payload.get("documents") if isinstance(payload, dict) else None
         return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
-    def cleanup(self, conversation_id: str, document_ids: Iterable[int]) -> list[str]:
+    def cleanup(
+        self,
+        conversation_id: str,
+        document_ids: Iterable[DocumentIdentity],
+    ) -> list[str]:
         failures: list[str] = []
         if self.file_bridge_base:
-            owned_ids = {value for value in document_ids if type(value) is int and value > 0}
+            owned_ids = {value for value in document_ids if isinstance(value, DocumentIdentity)}
             try:
-                owned_ids.update(
-                    value
-                    for row in self.documents(conversation_id)
-                    for value in [row.get("document_id")]
-                    if type(value) is int and value > 0
-                )
+                for row in self.documents(conversation_id):
+                    try:
+                        identity = _document_identity(row)
+                    except RuntimeError as exc:
+                        failures.append(f"bridge_document_identity:{exc}")
+                        continue
+                    if identity is None:
+                        failures.append(
+                            f"bridge_document_identity_missing:{row.get('file_name') or '<unknown>'}"
+                        )
+                        continue
+                    owned_ids.add(identity)
             except Exception as exc:
                 failures.append(f"bridge_documents:{type(exc).__name__}:{exc}")
-            for document_id in sorted(owned_ids):
+            for identity in sorted(owned_ids):
+                delete_payload: dict[str, Any] = {
+                    "workflow_id": WORKFLOW_ID,
+                    "vdb_id": FILE_VDB_ID,
+                    "app_session_id": conversation_id,
+                    identity.field: identity.value,
+                }
                 response = requests.post(
                     self.file_bridge_base + BRIDGE_DELETE_PATH,
-                    json={
-                        "workflow_id": WORKFLOW_ID,
-                        "vdb_id": FILE_VDB_ID,
-                        "app_session_id": conversation_id,
-                        "document_id": document_id,
-                    },
+                    json=delete_payload,
                     timeout=60,
                 )
                 if response.status_code >= 400:
-                    failures.append(f"document_delete_http_{response.status_code}:{document_id}")
+                    failures.append(
+                        f"document_delete_http_{response.status_code}:{identity.field}:{identity.value}"
+                    )
                     continue
                 payload = response.json()
                 status = payload.get("status") if isinstance(payload, Mapping) else None
                 errors = _strings(payload.get("errors")) if isinstance(payload, Mapping) else ()
                 if errors or status not in {"deleted", "already_deleted", "not_found"}:
-                    failures.append(f"document_delete_failed:{document_id}:{status or '<empty>'}")
+                    failures.append(
+                        f"document_delete_failed:{identity.field}:{identity.value}:{status or '<empty>'}"
+                    )
             try:
                 residuals = self.documents(conversation_id)
                 if residuals:
@@ -373,9 +490,9 @@ class PortalClient:
             except Exception as exc:
                 failures.append(f"bridge_residual_check:{type(exc).__name__}:{exc}")
         else:
-            for document_id in document_ids:
+            for identity in document_ids:
                 response = requests.delete(
-                    f"{self.portal_base}{FILES_PATH}/{document_id}",
+                    f"{self.portal_base}{FILES_PATH}/{identity.value}",
                     params={"sessionId": conversation_id},
                     headers=self.auth_headers,
                     timeout=60,
@@ -414,7 +531,8 @@ def run_matrix(
         for scenario in matrix["scenarios"]:
             scenario_id = str(scenario["id"])
             conversation_id = make_conversation_id(mode, scenario_id, repeat)
-            document_ids: list[int] = []
+            document_ids: list[DocumentIdentity] = []
+            setup_evidence: dict[str, Any] = {}
             turn_rows: list[dict[str, Any]] = []
             can_capture = True
             try:
@@ -430,6 +548,10 @@ def run_matrix(
                                 f"{scenario_id}/r{repeat}:upload:{type(exc).__name__}:{exc}"
                             )
                             can_capture = False
+                        finally:
+                            evidence_reader = getattr(client, "upload_evidence", None)
+                            if callable(evidence_reader):
+                                setup_evidence = evidence_reader(conversation_id)
                 if can_capture:
                     for turn_index, turn in enumerate(scenario["turns"], start=1):
                         key = f"{scenario_id}_r{repeat}_t{turn_index}"
@@ -473,6 +595,7 @@ def run_matrix(
                     "scenario_name": scenario["name"],
                     "repeat": repeat,
                     "conversation_id": conversation_id,
+                    "setup_evidence": setup_evidence,
                     "turns": turn_rows,
                 }
             )
