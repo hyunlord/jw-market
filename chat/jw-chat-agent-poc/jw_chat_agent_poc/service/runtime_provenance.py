@@ -13,6 +13,7 @@ from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
 from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers as _ungrounded_numbers
+from jw_chat_agent_poc.service.routing_v4_trace import project_routing_v4_qa_trace
 
 
 _UNKNOWN = "unknown"
@@ -159,7 +160,7 @@ def _qa_trace(
     disposition = str(claim_items.get("disposition") or "")
     if not disposition:
         disposition = "empty" if not answer.strip() else "answered"
-    return {
+    qa_trace = {
         "request": {
             "request_id": trace_id,
             "session_id": conversation_id,
@@ -187,6 +188,10 @@ def _qa_trace(
             "body_empty": not bool(answer.strip()),
         },
     }
+    routing_v4 = project_routing_v4_qa_trace(diagnostic_items)
+    if routing_v4 is not None:
+        qa_trace["routing_v4"] = routing_v4
+    return qa_trace
 
 
 def _qa_spans(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
