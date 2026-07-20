@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import re
-from typing import Any, Final, Mapping
+from typing import TYPE_CHECKING, Any, Final, Mapping, Sequence
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
 from jw_chat_agent_poc.orchestrator.answer_completeness import (
@@ -15,6 +15,9 @@ from jw_chat_agent_poc.orchestrator.answer_completeness import (
 from jw_chat_agent_poc.orchestrator.dosage_notes import DOSAGE_COMBINATION_NOTE_PREFIX, dosage_combination_note
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
+
+if TYPE_CHECKING:
+    from jw_chat_agent_poc.tool_use.routing_v4_capabilities import ExistingAxisGate
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +228,8 @@ def enforce_answer_contract(
     answer: str,
     markdown_response: Mapping[str, Any] | None,
     general_view_contract: Mapping[str, Any] | None = None,
+    *,
+    tool_calls: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     """Repair final-model omissions when required facts already exist."""
 
@@ -243,16 +248,38 @@ def enforce_answer_contract(
                 repaired = _join_blocks(_trend_answer(fact), _source_block(fact_md))
         elif intent in COMPLETENESS_INTENTS:
             repaired = repair_completeness(intent, question, answer, fact_md)
-    repaired = _append_general_dosage_combination_note(_enforce_structural_contract(question, repaired, fact_md))
+    repaired = _append_general_dosage_combination_note(
+        _enforce_structural_contract(question, repaired, fact_md, tool_calls)
+    )
     return enforce_general_view_contract(repaired, dict(general_view_contract) if general_view_contract else None)
 
 
-def evaluate_answer_contract(question: str, answer: str, markdown_response: Mapping[str, Any] | None) -> dict[str, Any]:
+def evaluate_answer_contract(
+    question: str,
+    answer: str,
+    markdown_response: Mapping[str, Any] | None,
+    *,
+    tool_calls: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     """Return the contract status for trace metadata without mutating the answer."""
 
     fact_md = _fact_markdown(markdown_response)
     intent = _intent(question, fact_md)
     structural = _structural_contract_type(question)
+    if structural == "segment_compare" and _uses_conditional_axis_gate(question):
+        gate = _existing_axis_gate(question, tool_calls)
+        return {
+            "intent": intent,
+            "structural_contract": structural,
+            "status": (
+                "expected_gap"
+                if not gate.provided_axes
+                else ("partial" if gate.missing_axes else "pass")
+            ),
+            "reason_code": gate.reason_code,
+            "provided_axes": gate.provided_axes,
+            "missing_axes": gate.missing_axes,
+        }
     if intent is None:
         positioning_applicable = structural == "positioning" and _positioning_fact(fact_md) is not None
         structural_pass = _positioning_surface_ok(answer, fact_md) if positioning_applicable else bool(
@@ -892,10 +919,24 @@ def _join_blocks(*blocks: str) -> str:
     return "\n\n".join(block.strip() for block in blocks if block and block.strip()).strip()
 
 
-def _enforce_structural_contract(question: str, answer: str, fact_md: str) -> str:
+def _enforce_structural_contract(
+    question: str,
+    answer: str,
+    fact_md: str,
+    tool_calls: Sequence[Mapping[str, Any]],
+) -> str:
     contract_type = _structural_contract_type(question)
     if not contract_type or not fact_md:
         return answer
+    if contract_type == "segment_compare" and _uses_conditional_axis_gate(question):
+        gate = _existing_axis_gate(question, tool_calls)
+        if not gate.table_allowed:
+            axes = ", ".join(gate.missing_axes)
+            gap = (
+                f"요청한 {axes} 축은 현재 도구 결과에 포함되지 않아 표를 생성하지 않습니다. "
+                "경쟁 브랜드나 다른 차원의 값으로 대체하지 않습니다."
+            )
+            return _join_blocks(gap, _source_block(fact_md))
     answer = _dedupe_substantive_lines(answer)
     if contract_type == "trend_support_matrix":
         answer = _repair_split_market_support(answer, fact_md)
@@ -950,16 +991,16 @@ def _structural_contract_type(question: str) -> str:
         return "clinical_evidence"
     if _is_source_crosscheck_question(question):
         return "source_crosscheck"
-    if _is_specialty_breakdown_question(question):
-        return "specialty_breakdown"
+    if any(token in question for token in ("Weekly", "Monthly", "Class", "Molecule", "용량", "제형")) and "추이" in question:
+        return "trend_support_matrix"
     if _is_segment_compare_question(question):
         return "segment_compare"
+    if _is_specialty_breakdown_question(question):
+        return "specialty_breakdown"
     if _is_quarter_metric_question(question):
         return "quarter_metric"
     if any(token in question for token in ("영업활동", "영업 활동", "Impact", "impact", "상기 콜", "콜")):
         return "sales_activity_link"
-    if any(token in question for token in ("Weekly", "Monthly", "Class", "Molecule", "용량", "제형")) and "추이" in question:
-        return "trend_support_matrix"
     if any(token in question for token in ("변화 요인", "변화요인", "향후 예상", "Market expansion", "External", "Internal", "보건 정책")) or (
         "목표 시장" in question and any(token in question for token in ("출시", "정책", "Line extension", "채널", "변화"))
     ):
@@ -1090,7 +1131,7 @@ def _is_segment_compare_question(question: str) -> bool:
         return False
     if any(token in question for token in ("세그먼트별", "세그먼트 별", "segment별", "Segment별")):
         return True
-    return "비교" in question and len(axes) >= 2
+    return len(axes) >= 2 and any(token in question for token in ("비교", "별", "추이"))
 
 
 def _requested_segment_axes(question: str) -> tuple[str, ...]:
@@ -1100,6 +1141,8 @@ def _requested_segment_axes(question: str) -> tuple[str, ...]:
         ("브랜드", ("브랜드", "Brand", "brand")),
         ("회사", ("회사", "Company", "company")),
         ("제조사", ("제조사", "Manufacturer", "manufacturer")),
+        ("진료과", ("진료과",)),
+        ("유통채널", ("유통채널", "유통 채널")),
         ("용량", ("용량", "Dose", "dose")),
         ("제형", ("제형", "Form", "form")),
     )
@@ -1108,6 +1151,22 @@ def _requested_segment_axes(question: str) -> tuple[str, ...]:
         if any(token in question for token in tokens):
             axes.append(axis)
     return tuple(axes)
+
+
+def _uses_conditional_axis_gate(question: str) -> bool:
+    return any(axis in {"진료과", "유통채널"} for axis in _requested_segment_axes(question))
+
+
+def _existing_axis_gate(
+    question: str,
+    tool_calls: Sequence[Mapping[str, Any]],
+) -> ExistingAxisGate:
+    from jw_chat_agent_poc.orchestrator.market_answer_contract import available_conditional_axes
+    from jw_chat_agent_poc.tool_use.routing_v4_capabilities import evaluate_existing_axis_gate
+
+    requested = _requested_segment_axes(question)
+    available = available_conditional_axes(tool_calls)
+    return evaluate_existing_axis_gate(requested_axes=requested, available_axes=available)
 
 
 def _is_source_crosscheck_question(question: str) -> bool:

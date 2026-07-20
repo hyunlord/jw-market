@@ -296,14 +296,22 @@ def _drug_info_calls(resolution: AgentLoopResolution, external: ExternalApiClien
 
 
 def _first_matching_mfds_item(call: ExternalCall, brand: str) -> dict[str, Any] | None:
+    matches = _matching_mfds_items(call, brand)
+    return matches[0] if matches else None
+
+
+def _matching_mfds_items(call: ExternalCall, brand: str) -> tuple[dict[str, Any], ...]:
     if not _has_mfds_items(call):
-        return None
+        return ()
     brand_key = _normal_key(brand)
-    for item in _mfds_items(call):
-        name = _normal_key(item.get("ITEM_NAME") or item.get("itemName") or "")
-        if _is_mfds_product_family_match(name, brand_key):
-            return item
-    return None
+    return tuple(
+        item
+        for item in _mfds_items(call)
+        if _is_mfds_product_family_match(
+            _normal_key(item.get("ITEM_NAME") or item.get("itemName") or ""),
+            brand_key,
+        )
+    )
 
 
 def _is_mfds_product_family_match(product_name: str, canonical_brand: str) -> bool:

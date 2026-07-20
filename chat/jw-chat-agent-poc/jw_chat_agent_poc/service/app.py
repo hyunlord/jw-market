@@ -2294,6 +2294,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             answer,
             markdown_response,
             result.get("general_view_contract"),
+            tool_calls=tuple(result.get("tool_calls") or ()),
         )
         answer = _apply_relational_claim_gate(
             active_question,
@@ -2427,10 +2428,22 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         not external_tool_agent_result or structural_contract == "positioning"
     )
     if not file_context_fact and market_contract_allowed and general_contracts_allowed:
-        safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
+        safe_answer = enforce_answer_contract(
+            active_question,
+            safe_answer,
+            markdown_response,
+            result.get("general_view_contract"),
+            tool_calls=tuple(result.get("tool_calls") or ()),
+        )
     safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
     if not file_context_fact and market_contract_allowed and general_contracts_allowed:
-        safe_answer = enforce_answer_contract(active_question, safe_answer, markdown_response, result.get("general_view_contract"))
+        safe_answer = enforce_answer_contract(
+            active_question,
+            safe_answer,
+            markdown_response,
+            result.get("general_view_contract"),
+            tool_calls=tuple(result.get("tool_calls") or ()),
+        )
     if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
         safe_answer = apply_claim_policy(active_question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
     safe_answer = ensure_file_page_evidence(

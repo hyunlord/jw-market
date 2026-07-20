@@ -76,13 +76,18 @@ class GenosToolChoiceProvider:
             raise ToolProviderConfigurationError("tool planner endpoint or token is not configured")
         payload: dict[str, Any] = {
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
             "stream": False,
             "temperature": 0,
             "n": 1,
-            "parallel_tool_calls": False,
         }
+        if tools:
+            payload.update(
+                {
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": False,
+                }
+            )
         if self.model:
             payload["model"] = self.model
         response = requests.post(

@@ -8,7 +8,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from jw_chat_agent_poc.agent_loop.external_tools import _first_matching_mfds_item
+from jw_chat_agent_poc.agent_loop.external_tools import (
+    _first_matching_mfds_item,
+    _matching_mfds_items,
+)
 from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_text
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
@@ -127,8 +130,10 @@ class ExternalToolRegistry:
         request = BrandInput.model_validate(payload.model_dump())
         canonical = self._canonical_brand(request.brand)
         call = self._external.mfds_permission_search(canonical)
-        item = _first_matching_mfds_item(call, canonical)
-        if item is None:
+        if truncated := _truncated_result_envelope(call):
+            return truncated
+        items = _matching_mfds_items(call, canonical)
+        if not items:
             return ToolEnvelope(
                 ok=False,
                 preview=call.summary_text,
@@ -137,8 +142,18 @@ class ExternalToolRegistry:
                 error_code="NO_EVIDENCE",
                 error_message="식약처 검색에서 canonical 제품군 근거를 찾지 못했습니다.",
             )
-        fact = _row_fact(call, canonical, "허가 품목", item, 1)
-        return ToolEnvelope(ok=True, preview=call.summary_text, evidence=(fact,), raw=asdict(call), error_code=None, error_message=None)
+        facts = tuple(
+            _row_fact(call, canonical, "허가 품목", item, index)
+            for index, item in enumerate(items, start=1)
+        )
+        return ToolEnvelope(
+            ok=True,
+            preview=call.summary_text,
+            evidence=facts,
+            raw=asdict(call),
+            error_code=None,
+            error_message=None,
+        )
 
     def _canonical_brand(self, brand: str) -> str:
         try:
@@ -199,6 +214,8 @@ class ExternalToolRegistry:
 
 
 def _external_call_envelope(call: ExternalCall, subject: str, metric: str) -> ToolEnvelope:
+    if truncated := _truncated_result_envelope(call):
+        return truncated
     evidence = _facts_from_external_call(call, subject, metric)
     ok = call.status not in _FAILED_STATUSES and bool(evidence)
     if not ok:
@@ -218,9 +235,24 @@ def _external_call_envelope(call: ExternalCall, subject: str, metric: str) -> To
     return ToolEnvelope(ok=True, preview=call.summary_text, evidence=evidence, raw=asdict(call), error_code=None, error_message=None)
 
 
+def _truncated_result_envelope(call: ExternalCall) -> ToolEnvelope | None:
+    if call.render_data.get("truncated") is not True:
+        return None
+    return ToolEnvelope(
+        ok=False,
+        preview=call.summary_text,
+        evidence=(),
+        raw=asdict(call),
+        error_code="TRUNCATED_RESULT",
+        error_message="외부 도구 결과가 절단되어 완전한 근거로 사용할 수 없습니다.",
+    )
+
+
 def _facts_from_external_call(call: ExternalCall, subject: str, metric: str) -> tuple[EvidenceFact, ...]:
     data = call.render_data
     rows = _external_rows(data)
+    if call.tool == "clinicaltrials_v2_search":
+        return _clinical_trial_facts(call, subject, metric, rows)
     if _is_adverse_event_call(data):
         rows = tuple(row for row in rows if _adverse_report_matches_subject(row, subject))
     if rows:
@@ -245,6 +277,83 @@ def _facts_from_external_call(call: ExternalCall, subject: str, metric: str) -> 
             if nct_id
         )
     return ()
+
+
+def _clinical_trial_facts(
+    call: ExternalCall,
+    subject: str,
+    metric: str,
+    rows: tuple[dict[str, Any], ...],
+) -> tuple[EvidenceFact, ...]:
+    nct_ids = call.render_data.get("nct_ids")
+    retrieved_count = len(rows) if rows else len(nct_ids) if isinstance(nct_ids, list) else 0
+    if retrieved_count == 0:
+        return ()
+    displayed_count = min(retrieved_count, 5)
+    facts: list[EvidenceFact] = []
+    if rows:
+        facts.extend(
+            _row_fact(call, subject, metric, item, index)
+            for index, item in enumerate(rows[:5], start=1)
+        )
+    elif isinstance(nct_ids, list):
+        title = str(call.render_data.get("briefTitle") or "").strip()
+        facts.extend(
+            _text_fact(
+                call,
+                subject,
+                metric,
+                " · ".join(part for part in (str(nct_id), title) if part),
+                index,
+            )
+            for index, nct_id in enumerate(nct_ids[:5], start=1)
+            if nct_id
+        )
+    facts.extend(
+        (
+            _count_fact(call, subject, "현재 연결 조회 건수", retrieved_count, "응답에 수신된 레코드"),
+            _count_fact(call, subject, "표시 건수", displayed_count, "답변에 표시된 레코드"),
+        )
+    )
+    total_available = _clinical_total_available(call.render_data)
+    if total_available is not None:
+        facts.append(
+            _count_fact(call, subject, "원천 제공 총 건수", total_available, "upstream totalCount")
+        )
+    return tuple(facts)
+
+
+def _clinical_total_available(data: dict[str, Any]) -> int | None:
+    payload = data.get("payload")
+    candidate = data.get("totalCount")
+    if candidate is None and isinstance(payload, dict):
+        candidate = payload.get("totalCount")
+    try:
+        total = int(candidate)
+    except (TypeError, ValueError):
+        return None
+    return total if total >= 0 else None
+
+
+def _count_fact(
+    call: ExternalCall,
+    subject: str,
+    metric: str,
+    count: int,
+    locator: str,
+) -> EvidenceFact:
+    slug = re.sub(r"[^0-9a-z가-힣]+", "_", metric.casefold()).strip("_")
+    return EvidenceFact(
+        fact_id=f"{call.tool}:{slug}",
+        subject=subject,
+        metric=metric,
+        value=Decimal(count),
+        unit="건",
+        period=None,
+        source_name=_source_name(call),
+        source_locator=locator,
+        raw_ref=f"{call.tool}:{slug}",
+    )
 
 
 def _external_rows(data: dict[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -400,14 +509,15 @@ def _item_locator(item: dict[str, Any]) -> str | None:
             if value:
                 parts.append(f"{label} {value}")
         return " · ".join(parts)
+    product = str(item.get("ITEM_NAME") or item.get("GOODS_NAME") or "").strip()
+    company = str(item.get("ENTP_NAME") or "").strip()
     permit_date = str(item.get("ITEM_PERMIT_DATE") or "").strip()
-    if permit_date:
+    if product or company or permit_date:
         parts = []
-        product = str(item.get("ITEM_NAME") or item.get("GOODS_NAME") or "").strip()
         if product:
             parts.append(product)
-        parts.append(f"허가일 {permit_date}")
-        company = str(item.get("ENTP_NAME") or "").strip()
+        if permit_date:
+            parts.append(f"허가일 {permit_date}")
         if company:
             parts.append(company)
         ingredient = str(item.get("ITEM_INGR_NAME") or "").strip()

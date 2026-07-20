@@ -83,7 +83,14 @@ def trace_envelope(
     tools_called = _tools_called(result)
     facts_returned = _facts_returned(markdown_response)
     facts_surfaced = _facts_surfaced(answer)
-    answer_contract_status = evaluate_answer_contract(question, answer, markdown_response)
+    answer_contract_status = evaluate_answer_contract(
+        question,
+        answer,
+        markdown_response,
+        tool_calls=tuple(
+            call for call in (result.get("tool_calls") or ()) if isinstance(call, Mapping)
+        ),
+    )
     quality_taxonomy = _quality_taxonomy(
         question=question,
         result=result,

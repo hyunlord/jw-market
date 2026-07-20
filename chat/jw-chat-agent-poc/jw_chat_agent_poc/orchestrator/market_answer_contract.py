@@ -979,6 +979,18 @@ def _call_dimension(call: Mapping[str, Any]) -> str:
     return ""
 
 
+def available_conditional_axes(calls: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    axis_for_dimension = {"specialty": "진료과", "channel": "유통채널"}
+    available: list[str] = []
+    for call in calls:
+        if _call_failed(call) or not _has_usable_call_data(call):
+            continue
+        axis = axis_for_dimension.get(_call_dimension(call))
+        if axis and axis not in available:
+            available.append(axis)
+    return tuple(available)
+
+
 def _is_file_tool(call: Mapping[str, Any]) -> bool:
     tool = str(call.get("tool") or "")
     source = str(call.get("source") or "")

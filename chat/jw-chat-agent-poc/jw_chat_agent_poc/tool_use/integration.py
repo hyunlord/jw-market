@@ -16,6 +16,12 @@ from jw_chat_agent_poc.tool_use.executor import AgentExecutor
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoice, ToolChoiceProvider
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
+from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
+    configured_routing_mode,
+    execute_enforced_route,
+    shadow_route_diagnostics,
+)
+from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 
@@ -39,7 +45,58 @@ def run_external_tool_agent(
     resolver: BrandResolver,
     external: ExternalApiClient,
     provider: ToolChoiceProvider | None = None,
+    routing_provider: ToolChoiceProvider | None = None,
     timing: Timing | None = None,
+) -> dict[str, Any]:
+    mode = configured_routing_mode()
+    if mode is RoutingMode.OFF:
+        return _run_legacy_external_tool_agent(
+            question,
+            resolver=resolver,
+            external=external,
+            provider=provider,
+            timing=timing,
+        )
+
+    registry = ExternalToolRegistry(resolver=resolver, external=external)
+    tools = registry.list_for_query(question)
+    if mode is RoutingMode.SHADOW:
+        payload = _run_legacy_external_tool_agent(
+            question,
+            resolver=resolver,
+            external=external,
+            provider=provider,
+            timing=timing,
+        )
+        selected_routing_provider = routing_provider or GenosToolChoiceProvider.from_env()
+        diagnostics = shadow_route_diagnostics(
+            question,
+            tools=tools,
+            provider=selected_routing_provider,
+        )
+        payload["router_diagnostics"]["routing_v4"] = diagnostics
+        return payload
+
+    selected_routing_provider = routing_provider or provider or GenosToolChoiceProvider.from_env()
+    enforced = execute_enforced_route(
+        question,
+        tools=tools,
+        provider=selected_routing_provider,
+        completion_policy=_external_evidence_complete,
+        timing=timing,
+    )
+    payload = _agent_result_payload(question, enforced.result, timing=timing)
+    payload["router_diagnostics"]["routing_v4"] = enforced.diagnostics
+    return payload
+
+
+def _run_legacy_external_tool_agent(
+    question: str,
+    *,
+    resolver: BrandResolver,
+    external: ExternalApiClient,
+    provider: ToolChoiceProvider | None,
+    timing: Timing | None,
 ) -> dict[str, Any]:
     registry = ExternalToolRegistry(resolver=resolver, external=external)
     selected_provider = provider or GenosToolChoiceProvider.from_env()
@@ -203,6 +260,7 @@ def _agent_result_payload(
     *,
     timing: Timing | None = None,
 ) -> dict[str, Any]:
+    verified_statuses = {"ok", "partial"}
     payload = {
         "question": question,
         "resolution": None,
@@ -212,9 +270,17 @@ def _agent_result_payload(
         "answer": result.answer,
         "markdown_response": {
             "markdown": result.answer,
-            "fact_md": result.answer if result.status == "ok" else "",
+            "fact_md": result.answer if result.status in verified_statuses else "",
             "data_md": "",
-            "verification": {"status": "pass" if result.status == "ok" else "fail"},
+            "verification": {
+                "status": (
+                    "pass"
+                    if result.status == "ok"
+                    else "partial"
+                    if result.status == "partial"
+                    else "fail"
+                )
+            },
         },
         "sources": list(result.sources),
         "agent_trace": [trace.model_dump() for trace in result.traces],
