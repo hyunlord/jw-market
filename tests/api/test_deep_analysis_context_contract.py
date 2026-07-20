@@ -216,6 +216,85 @@ def test_general_context_uses_explicit_atc4_and_source(monkeypatch) -> None:
     assert context.db_source == "iqvia_nsa"
 
 
+def test_general_context_merges_source_native_zero_pad_variants(monkeypatch) -> None:
+    monkeypatch.setattr(
+        deep_analysis_context.db,
+        "fetch_all",
+        lambda sql, _params: [
+            {
+                "brand_key": "리바로젯",
+                "brand_name": "리바로젯",
+                "atc4_code": "C10C",
+                "market_name": "UBIST 지질조절제",
+                "source": "ubist",
+            },
+            {
+                "brand_key": "리바로젯",
+                "brand_name": "리바로젯",
+                "atc4_code": "C10C0",
+                "market_name": "IQVIA LIPID REGULATORS",
+                "source": "iqvia_nsa",
+            },
+        ]
+        if "mart_general_brand_metric" in sql
+        else [],
+    )
+
+    context = resolve_deep_analysis_context(
+        brand="리바로젯",
+        view_kind="general",
+        market_id="C10C",
+        source="iqvia",
+    )
+
+    assert context.market_id == "C10C0"
+    assert context.source == "iqvia"
+    assert context.market_allowed_sources == ("iqvia", "ubist")
+
+
+@pytest.mark.parametrize(
+    ("ubist_atc4", "iqvia_atc4"),
+    [
+        ("C10C", "C10C0"),
+        ("C1D", "C01D0"),
+        ("M1C", "M01C0"),
+        ("G4C2", "G04C2"),
+        ("B2D1", "B02D1"),
+    ],
+)
+def test_general_context_sample_markets_expose_both_sources(
+    monkeypatch,
+    ubist_atc4: str,
+    iqvia_atc4: str,
+) -> None:
+    monkeypatch.setattr(
+        deep_analysis_context,
+        "_general_rows",
+        lambda _brand: [
+            {
+                "brand_key": "표본브랜드",
+                "brand_name": "표본브랜드",
+                "atc4_code": ubist_atc4,
+                "market_name": "UBIST 시장",
+                "source": "ubist",
+            },
+            {
+                "brand_key": "표본브랜드",
+                "brand_name": "표본브랜드",
+                "atc4_code": iqvia_atc4,
+                "market_name": "IQVIA 시장",
+                "source": "iqvia_nsa",
+            },
+        ],
+    )
+
+    contexts = deep_analysis_context._general_contexts("표본브랜드")
+
+    assert len(contexts) == 2
+    assert {item.source for item in contexts} == {"ubist", "iqvia"}
+    assert all(item.market_allowed_sources == ("iqvia", "ubist") for item in contexts)
+
+
 def test_source_omission_is_rejected_for_dual_source_market(monkeypatch) -> None:
     monkeypatch.setattr(
         deep_analysis_context.db,

@@ -25,6 +25,7 @@ from pipeline.scripts.api.dynamic_market.types import (
     MarketDefinition,
     quote_identifier,
 )
+from pipeline.scripts.utils.atc4 import atc4_source_aliases
 
 
 VALID_MEASURES_BY_SOURCE: dict[str, frozenset[str]] = {
@@ -654,23 +655,7 @@ def expand_atc4_for_source(values: tuple[str, ...], *, source: str) -> tuple[str
 def _ubist_atc4_candidates(value: str) -> tuple[str, ...]:
     """Return canonical plus source-native UBIST ATC4 code candidates."""
 
-    candidates = [value]
-    if len(value) == 5:
-        leading_zero_removed = value[0] + value[2:] if value[1] == "0" and value[2].isdigit() else None
-        trailing_zero_removed = value[:-1] if value.endswith("0") else None
-        if leading_zero_removed:
-            candidates.append(leading_zero_removed)
-        if trailing_zero_removed:
-            candidates.append(trailing_zero_removed)
-        if leading_zero_removed and trailing_zero_removed:
-            candidates.append(leading_zero_removed[:-1])
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            deduped.append(candidate)
-    return tuple(deduped)
+    return atc4_source_aliases(value)
 
 
 def normalize_molecule_list(values: list[str]) -> tuple[str, ...]:

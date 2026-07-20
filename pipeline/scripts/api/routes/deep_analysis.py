@@ -39,6 +39,7 @@ from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOver
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
+from pipeline.scripts.utils.atc4 import normalize_atc4
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
@@ -769,35 +770,49 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
         raise
 
 
-def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime | None:
+def _general_source_state(brand: str, atc4: str | None) -> tuple[datetime | None, frozenset[str]]:
     params: list[str] = [brand, brand]
-    atc4_clause = ""
-    if atc4:
-        atc4_clause = "AND atc4_code = %s"
-        params.append(atc4)
     try:
-        row = db.fetch_one(
+        rows = db.fetch_all(
             f"""
-            SELECT MAX(computed_at) AS source_computed_at
+            SELECT atc4_code, MAX(computed_at) AS source_computed_at
             FROM mart_general_brand_metric
             WHERE (brand_name = %s OR brand_key = %s)
-              {atc4_clause}
+            GROUP BY atc4_code
             """,
             params,
         )
     except pymysql.MySQLError:
-        return None
-    value = row.get("source_computed_at") if row else None
-    return _coerce_datetime(value)
+        return None, frozenset()
+    normalized_atc4 = normalize_atc4(atc4) if atc4 else None
+    matching_rows = [
+        row
+        for row in rows
+        if normalized_atc4 is None
+        or normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
+    ]
+    values = [_coerce_datetime(row.get("source_computed_at")) for row in matching_rows]
+    raw_codes = frozenset(str(row.get("atc4_code") or "").strip() for row in matching_rows)
+    return max((value for value in values if value is not None), default=None), raw_codes
+
+
+def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime | None:
+    latest_source, _raw_codes = _general_source_state(brand, atc4)
+    return latest_source
 
 
 def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
     if _row_marked_stale(row):
         return False
     cached_source = _coerce_datetime(row.get("source_computed_at"))
+    latest_source, raw_codes = _general_source_state(
+        brand,
+        atc4 or str(row.get("atc4_code") or "").strip() or None,
+    )
+    if len(raw_codes) > 1:
+        return False
     if cached_source is None:
         return True
-    latest_source = _latest_general_source_computed_at(brand, atc4 or str(row.get("atc4_code") or "").strip() or None)
     return not (cached_source is not None and latest_source is not None and latest_source > cached_source)
 
 
@@ -847,9 +862,6 @@ def _fetch_general_metric_rows(
 ) -> list[dict]:
     clauses: list[str] = []
     params: list[str] = [brand, brand]
-    if atc4:
-        clauses.append("atc4_code = %s")
-        params.append(atc4)
     if source:
         clauses.append("source = %s")
         params.append(source)
@@ -864,16 +876,21 @@ def _fetch_general_metric_rows(
     """
     rows = db.fetch_all(base_sql, params)
     if rows:
-        return rows
+        if not atc4:
+            return rows
+        normalized_atc4 = normalize_atc4(atc4)
+        return [
+            row
+            for row in rows
+            if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
+        ]
     compact = compact_brand_name(brand)
     if not compact or compact == brand:
         return []
     compact_params: list[str] = [compact, compact]
-    if atc4:
-        compact_params.append(atc4)
     if source:
         compact_params.append(source)
-    return db.fetch_all(
+    compact_rows = db.fetch_all(
         f"""
         SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
                metric_history, unit_label, computed_at
@@ -884,6 +901,14 @@ def _fetch_general_metric_rows(
         """,
         compact_params,
     )
+    if not atc4:
+        return compact_rows
+    normalized_atc4 = normalize_atc4(atc4)
+    return [
+        row
+        for row in compact_rows
+        if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
+    ]
 
 
 def _choose_general_atc4(rows: list[dict]) -> str:
@@ -944,7 +969,12 @@ def _general_row_from_mart(
     if not rows:
         return None
     selected_atc4 = atc4 or _choose_general_atc4(rows)
-    selected_rows = [row for row in rows if str(row.get("atc4_code") or "").strip() == selected_atc4]
+    normalized_atc4 = normalize_atc4(selected_atc4)
+    selected_rows = [
+        row
+        for row in rows
+        if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
+    ]
     if not selected_rows:
         return None
     base = selected_rows[0]

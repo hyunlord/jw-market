@@ -9,6 +9,7 @@ from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.resolvers import normalize_source
 from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, quote_identifier
+from pipeline.scripts.utils.atc4 import normalize_atc4
 
 
 ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
@@ -200,26 +201,11 @@ def _unique_atc4(values: Iterable[Any]) -> tuple[str, ...]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
-        item = _canonical_atc4_code(str(value or "").strip().upper())
+        item = normalize_atc4(str(value or "").strip().upper())
         if item and item not in seen:
             seen.add(item)
             result.append(item)
     return tuple(result)
-
-
-def _canonical_atc4_code(value: str) -> str:
-    """Normalize ATC3-shaped mart values when they appear in ATC4 fields."""
-
-    tokens = ATC_TOKEN_RE.findall(value)
-    if not tokens:
-        return value
-    canonical_tokens = list(tokens)
-    if len(canonical_tokens) >= 2 and canonical_tokens[1].isdigit() and len(canonical_tokens[1]) == 1:
-        canonical_tokens[1] = canonical_tokens[1].zfill(2)
-    canonical = "".join(canonical_tokens)
-    if len(tokens) == 3 and tokens[0].isalpha() and tokens[1].isdigit() and tokens[2].isalpha():
-        return f"{canonical}0"
-    return canonical
 
 
 def _build_flagged_atc_hierarchy(atc4_values: Iterable[str], flagged_atc4: Sequence[str]) -> dict[str, list[dict[str, object]]]:

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from pipeline.scripts.api.main import app
 from pipeline.scripts.api.routes import deep_analysis
 from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError
+from pipeline.scripts.utils.atc4 import atc4_source_aliases, normalize_atc4
 
 
 def _row(scope: str, *, atc4: str | None = None, events: list[dict] | None = None) -> dict[str, Any]:
@@ -55,6 +56,82 @@ def _stub_auxiliary(monkeypatch) -> None:
             },
         ),
     )
+
+
+def test_normalize_atc4_uses_one_canonical_zero_pad_rule() -> None:
+    assert normalize_atc4("C10C") == "C10C0"
+    assert normalize_atc4("C10C0") == "C10C0"
+    assert normalize_atc4("C1D") == "C01D0"
+    assert normalize_atc4("G4C2") == "G04C2"
+    assert normalize_atc4("A10N1") == "A10N1"
+    assert atc4_source_aliases("C01D0") == ("C01D0", "C1D0", "C01D", "C1D")
+
+
+def test_general_metric_lookup_uses_source_native_row_for_normalized_market(monkeypatch) -> None:
+    seen: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        seen.append((sql, params))
+        return [
+            {
+                "brand_key": "리바로젯",
+                "brand_name": "리바로젯",
+                "atc4_code": "C10C0",
+                "source": "iqvia_nsa",
+            }
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    rows = deep_analysis._fetch_general_metric_rows(
+        "리바로젯",
+        atc4="C10C",
+        source="iqvia_nsa",
+    )
+
+    assert [row["atc4_code"] for row in rows] == ["C10C0"]
+    assert len(seen) == 1
+    sql, params = seen[0]
+    assert "source = %s" in sql
+    assert "atc4_code = %s" not in sql
+    assert params == ["리바로젯", "리바로젯", "iqvia_nsa"]
+
+
+def test_general_cache_is_bypassed_when_source_codes_share_normalized_market(monkeypatch) -> None:
+    monkeypatch.setattr(
+        deep_analysis.db,
+        "fetch_all",
+        lambda *_args, **_kwargs: [
+            {"atc4_code": "C10C", "source_computed_at": datetime(2026, 7, 1)},
+            {"atc4_code": "C10C0", "source_computed_at": datetime(2026, 7, 1)},
+            {"atc4_code": "C10A1", "source_computed_at": datetime(2026, 7, 2)},
+        ],
+    )
+    row = {
+        "atc4_code": "C10C",
+        "source_computed_at": None,
+        "is_stale": 0,
+    }
+
+    assert deep_analysis._general_cache_row_fresh(row, "리바로젯", "C10C") is False
+
+
+def test_general_cache_remains_usable_for_single_raw_market_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        deep_analysis.db,
+        "fetch_all",
+        lambda *_args, **_kwargs: [
+            {"atc4_code": "A10N1", "source_computed_at": datetime(2026, 7, 1)},
+            {"atc4_code": "C10A1", "source_computed_at": datetime(2026, 7, 2)},
+        ],
+    )
+    row = {
+        "atc4_code": "A10N1",
+        "source_computed_at": datetime(2026, 7, 1),
+        "is_stale": 0,
+    }
+
+    assert deep_analysis._general_cache_row_fresh(row, "가드렛", "A10N1") is True
 
 
 def test_deep_analysis_defaults_to_strategic_view(monkeypatch) -> None:
@@ -160,6 +237,97 @@ def test_deep_analysis_general_view_builds_lightweight_mart_payload_without_on_d
     assert combo["history_periods"] == ["2026-01", "2026-02"]
     assert combo["brands"][0]["history_values"] == [10.0, 12.0]
     assert combo["forecast_periods"] == []
+
+
+def test_general_mart_payload_merges_zero_pad_atc4_sources_without_changing_home_market_id(monkeypatch) -> None:
+    rows = [
+        {
+            "brand_key": "리바로젯",
+            "brand_name": "리바로젯",
+            "atc4_code": "C10C",
+            "atc4_desc": "UBIST C10C",
+            "source": "ubist",
+            "measure": "sales",
+            "metric_history": json.dumps({"2026-05": {"raw_value": 100, "ms": 4.2}}, ensure_ascii=False),
+            "unit_label": "원",
+            "computed_at": datetime(2026, 7, 1),
+        },
+        {
+            "brand_key": "리바로젯",
+            "brand_name": "리바로젯",
+            "atc4_code": "C10C0",
+            "atc4_desc": "IQVIA C10C0",
+            "source": "iqvia_nsa",
+            "measure": "sales",
+            "metric_history": json.dumps({"2026-Q1": {"raw_value": 90, "ms": 4.0}}, ensure_ascii=False),
+            "unit_label": "원",
+            "computed_at": datetime(2026, 7, 1),
+        },
+    ]
+    monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: rows)
+
+    result = deep_analysis._general_row_from_mart("리바로젯")
+
+    assert result is not None
+    payload = json.loads(result["response_json"])
+    assert payload["market_id"] == "general:C10C"
+    assert payload["market_meta"]["atc4_code"] == "C10C"
+    assert payload["market_meta"]["sources"] == ["IQVIA", "UBIST"]
+    assert payload["available_combos"] == ["IQVIA.sales", "UBIST.sales"]
+    assert payload["data"]["forecast"]["by_combo"]["IQVIA.sales"]["history_periods"] == ["2026-Q1"]
+    assert payload["data"]["forecast"]["by_combo"]["UBIST.sales"]["history_periods"] == ["2026-05"]
+
+
+def test_general_mart_payload_keeps_single_code_market_behavior(monkeypatch) -> None:
+    rows = [
+        {
+            "brand_key": "가드렛",
+            "brand_name": "가드렛",
+            "atc4_code": "A10N1",
+            "atc4_desc": "A10N1",
+            "source": source,
+            "measure": "sales",
+            "metric_history": json.dumps({period: {"raw_value": value, "ms": 1.0}}, ensure_ascii=False),
+            "unit_label": "원",
+            "computed_at": datetime(2026, 7, 1),
+        }
+        for source, period, value in (("ubist", "2026-05", 100), ("iqvia_nsa", "2026-Q1", 90))
+    ]
+    monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: rows)
+
+    result = deep_analysis._general_row_from_mart("가드렛")
+
+    assert result is not None
+    payload = json.loads(result["response_json"])
+    assert payload["market_id"] == "general:A10N1"
+    assert payload["market_meta"]["atc4_code"] == "A10N1"
+    assert payload["available_combos"] == ["IQVIA.sales", "UBIST.sales"]
+
+
+def test_general_mart_payload_does_not_merge_distinct_normalized_markets(monkeypatch) -> None:
+    rows = [
+        {
+            "brand_key": "다중시장",
+            "brand_name": "다중시장",
+            "atc4_code": atc4,
+            "atc4_desc": atc4,
+            "source": source,
+            "measure": "sales",
+            "metric_history": json.dumps({"2026-05": {"raw_value": value, "ms": 1.0}}, ensure_ascii=False),
+            "unit_label": "원",
+            "computed_at": datetime(2026, 7, 1),
+        }
+        for atc4, source, value in (("C10C", "ubist", 100), ("C10C0", "iqvia_nsa", 90), ("C10A1", "iqvia_nsa", 80))
+    ]
+    monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: rows)
+
+    result = deep_analysis._general_row_from_mart("다중시장")
+
+    assert result is not None
+    payload = json.loads(result["response_json"])
+    assert payload["market_id"] == "general:C10C"
+    assert payload["available_combos"] == ["IQVIA.sales", "UBIST.sales"]
+    assert payload["market_meta"]["market_count"] == 1
 
 
 def test_deep_analysis_general_view_for_strategic_brand_uses_only_general_mart_columns(monkeypatch) -> None:

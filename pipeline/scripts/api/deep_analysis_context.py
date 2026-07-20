@@ -8,6 +8,7 @@ import re
 from typing import Any, Final, Literal, TypeAlias, cast
 
 from pipeline.scripts.api import db
+from pipeline.scripts.utils.atc4 import normalize_atc4
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
@@ -103,7 +104,12 @@ def resolve_deep_analysis_context(
 
     market_candidates = candidates
     if normalized_market is not None:
-        market_candidates = tuple(item for item in candidates if item.market_id == normalized_market)
+        market_candidates = tuple(
+            item
+            for item in candidates
+            if _market_identity(normalized_view, item.market_id)
+            == _market_identity(normalized_view, normalized_market)
+        )
         if not market_candidates:
             raise DeepAnalysisContextError(
                 status_code=404,
@@ -124,7 +130,9 @@ def resolve_deep_analysis_context(
             )
 
     if len(source_candidates) != 1:
-        market_count = len({item.market_id for item in source_candidates})
+        market_count = len(
+            {_market_identity(normalized_view, item.market_id) for item in source_candidates}
+        )
         error = "ambiguous_market_context" if market_count > 1 else "ambiguous_source_context"
         message = (
             "market_id is required because the brand belongs to multiple markets"
@@ -184,6 +192,12 @@ def _normalize_market_id(view_kind: DeepAnalysisViewKind, value: str) -> str:
     return normalized
 
 
+def _market_identity(view_kind: DeepAnalysisViewKind, market_id: str) -> str:
+    """Return an internal equality key without changing public market ids."""
+
+    return normalize_atc4(market_id) if view_kind == "general" else market_id
+
+
 def _invalid_market_id(value: str, view_kind: str) -> DeepAnalysisContextError:
     return DeepAnalysisContextError(
         status_code=422,
@@ -212,10 +226,10 @@ def _general_contexts(brand: str) -> tuple[DeepAnalysisContext, ...]:
     for row in rows:
         market = str(row.get("atc4_code") or "").strip().upper()
         if market:
-            by_market.setdefault(market, []).append(row)
+            by_market.setdefault(normalize_atc4(market), []).append(row)
 
     contexts: list[DeepAnalysisContext] = []
-    for market, market_rows in sorted(by_market.items()):
+    for _market_identity_key, market_rows in sorted(by_market.items()):
         allowed = tuple(
             sorted(
                 {
@@ -225,17 +239,21 @@ def _general_contexts(brand: str) -> tuple[DeepAnalysisContext, ...]:
                 }
             )
         )
-        base = market_rows[0]
         for api_source in allowed:
+            db_source = SOURCE_TO_DB[api_source]
+            source_row = next(
+                row for row in market_rows if str(row.get("source") or "") == db_source
+            )
+            market = str(source_row.get("atc4_code") or "").strip().upper()
             contexts.append(
                 DeepAnalysisContext(
-                    brand_key=str(base.get("brand_key") or brand),
-                    brand_name=str(base.get("brand_name") or brand),
+                    brand_key=str(source_row.get("brand_key") or brand),
+                    brand_name=str(source_row.get("brand_name") or brand),
                     view_kind="general",
                     market_id=market,
-                    market_name=_optional_text(base.get("market_name")),
+                    market_name=_optional_text(source_row.get("market_name")),
                     source=api_source,
-                    db_source=SOURCE_TO_DB[api_source],
+                    db_source=db_source,
                     in_catalog=True,
                     has_market_data=True,
                     market_allowed_sources=allowed,
