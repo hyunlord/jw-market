@@ -97,7 +97,7 @@ def test_general_metric_lookup_uses_source_native_row_for_normalized_market(monk
     assert params == ["리바로젯", "리바로젯", "iqvia_nsa"]
 
 
-def test_general_cache_is_bypassed_when_source_codes_share_normalized_market(monkeypatch) -> None:
+def test_general_cache_freshness_uses_the_row_raw_code_within_normalized_market(monkeypatch) -> None:
     monkeypatch.setattr(
         deep_analysis.db,
         "fetch_all",
@@ -109,11 +109,171 @@ def test_general_cache_is_bypassed_when_source_codes_share_normalized_market(mon
     )
     row = {
         "atc4_code": "C10C",
-        "source_computed_at": None,
+        "source_computed_at": datetime(2026, 7, 1),
         "is_stale": 0,
     }
 
-    assert deep_analysis._general_cache_row_fresh(row, "리바로젯", "C10C") is False
+    assert deep_analysis._general_cache_row_fresh(row, "리바로젯", "C10C") is True
+
+
+def test_general_cache_rejects_a_truly_stale_raw_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        deep_analysis.db,
+        "fetch_all",
+        lambda *_args, **_kwargs: [
+            {"atc4_code": "C10C", "source_computed_at": datetime(2026, 7, 2)},
+            {"atc4_code": "C10C0", "source_computed_at": datetime(2026, 7, 1)},
+        ],
+    )
+    row = {
+        "atc4_code": "C10C",
+        "source_computed_at": datetime(2026, 7, 1),
+        "is_stale": 0,
+    }
+
+    assert deep_analysis._general_cache_row_fresh(row, "리바로젯", "C10C0") is False
+
+
+def _source_cache_row(
+    atc4: str,
+    combo: str,
+    *,
+    brand_count: int,
+    history_count: int,
+    forecast_count: int,
+    is_stale: int = 0,
+) -> dict[str, Any]:
+    source = combo.split(".", 1)[0]
+    brands = [
+        {
+            "brand": "리바로젯" if index == 0 else f"경쟁{index}",
+            "history_values": list(range(history_count)),
+            "forecast_values": list(range(forecast_count)),
+        }
+        for index in range(brand_count)
+    ]
+    payload = {
+        "brand": "리바로젯",
+        "brand_name": "리바로젯",
+        "brand_key": "리바로젯",
+        "market_id": f"general:{atc4}",
+        "available_combos": [combo],
+        "data": {
+            "forecast": {
+                "method": "data_size_dispatch_v1_phase30_baseline",
+                "by_combo": {combo: {"brands": brands}},
+            },
+            "simulation": {"by_combo": {combo: {"brands": brands}}},
+            "events": [],
+        },
+        "market_meta": {
+            "atc4_code": atc4,
+            "sources": [source],
+            "available_combos": [combo],
+            "default_source": source,
+            "source_count": 1,
+            "measure_count": 1,
+            "market_count": 1,
+        },
+    }
+    return {
+        "brand_key": "리바로젯",
+        "brand": "리바로젯",
+        "response_json": json.dumps(payload, ensure_ascii=False),
+        "brand_factors": json.dumps(
+            {
+                "atc": [atc4],
+                "ubist": {"seller": ["UBIST사"] if source == "UBIST" else []},
+                "iqvia": {"mfr_name_kor": ["IQVIA사"] if source == "IQVIA" else []},
+            },
+            ensure_ascii=False,
+        ),
+        "updated_at": datetime(2026, 7, 1),
+        "source_computed_at": datetime(2026, 7, 1),
+        "expires_at": None,
+        "is_stale": is_stale,
+        "stale_reason": "fixture_stale" if is_stale else None,
+        "stale_marked_at": datetime(2026, 7, 2) if is_stale else None,
+        "atc4_code": atc4,
+    }
+
+
+def test_general_cache_merges_source_native_rows_for_one_normalized_market(monkeypatch) -> None:
+    cache_rows = [
+        _source_cache_row("C10C", "UBIST.sales", brand_count=6, history_count=65, forecast_count=60),
+        _source_cache_row("C10C0", "IQVIA.sales", brand_count=6, history_count=20, forecast_count=20),
+    ]
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        if "cache_deep_analysis_general" in sql:
+            return cache_rows
+        if "mart_general_brand_metric" in sql:
+            return [
+                {"atc4_code": "C10C", "source_computed_at": datetime(2026, 7, 1)},
+                {"atc4_code": "C10C0", "source_computed_at": datetime(2026, 7, 1)},
+            ]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: cache_rows[0])
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    row = deep_analysis._fetch_general_deep_analysis_row("리바로젯", "C10C0")
+
+    assert row is not None
+    payload = json.loads(row["response_json"])
+    assert payload["market_id"] == "general:C10C"
+    assert payload["market_meta"]["sources"] == ["IQVIA", "UBIST"]
+    assert payload["market_meta"]["available_combos"] == ["IQVIA.sales", "UBIST.sales"]
+    assert set(payload["data"]["forecast"]["by_combo"]) == {"IQVIA.sales", "UBIST.sales"}
+
+
+def test_general_cache_value_gate_restores_competitors_and_forecast_points(monkeypatch) -> None:
+    cache_rows = [
+        _source_cache_row("C10C", "UBIST.sales", brand_count=6, history_count=65, forecast_count=60),
+        _source_cache_row("C10C0", "IQVIA.sales", brand_count=6, history_count=20, forecast_count=20),
+    ]
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        if "cache_deep_analysis_general" in sql:
+            return cache_rows
+        return [
+            {"atc4_code": "C10C", "source_computed_at": datetime(2026, 7, 1)},
+            {"atc4_code": "C10C0", "source_computed_at": datetime(2026, 7, 1)},
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: cache_rows[1])
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    row = deep_analysis._fetch_general_deep_analysis_row("리바로젯", "C10C0")
+
+    assert row is not None
+    by_combo = json.loads(row["response_json"])["data"]["forecast"]["by_combo"]
+    assert len(by_combo["UBIST.sales"]["brands"]) == 6
+    assert {len(brand["history_values"]) for brand in by_combo["UBIST.sales"]["brands"]} == {65}
+    assert {len(brand["forecast_values"]) for brand in by_combo["UBIST.sales"]["brands"]} == {60}
+    assert len(by_combo["IQVIA.sales"]["brands"]) == 6
+    assert {len(brand["history_values"]) for brand in by_combo["IQVIA.sales"]["brands"]} == {20}
+    assert {len(brand["forecast_values"]) for brand in by_combo["IQVIA.sales"]["brands"]} == {20}
+
+
+def test_general_cache_rejects_the_normalized_group_when_any_source_row_is_stale(monkeypatch) -> None:
+    cache_rows = [
+        _source_cache_row("C10C", "UBIST.sales", brand_count=6, history_count=65, forecast_count=60),
+        _source_cache_row("C10C0", "IQVIA.sales", brand_count=6, history_count=20, forecast_count=20),
+    ]
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        if "cache_deep_analysis_general" in sql:
+            return cache_rows
+        return [
+            {"atc4_code": "C10C", "source_computed_at": datetime(2026, 7, 1)},
+            {"atc4_code": "C10C0", "source_computed_at": datetime(2026, 7, 2)},
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: cache_rows[1])
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    assert deep_analysis._fetch_general_deep_analysis_row("리바로젯", "C10C0") is None
 
 
 def test_general_cache_remains_usable_for_single_raw_market_code(monkeypatch) -> None:

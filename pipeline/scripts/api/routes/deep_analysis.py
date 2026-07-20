@@ -742,7 +742,7 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             params,
         )
         if row:
-            return row if _general_cache_row_fresh(row, brand, atc4) else None
+            return _resolve_general_cache_row(row, brand, atc4)
         compact = compact_brand_name(brand)
         if not compact or compact == brand:
             return None
@@ -763,17 +763,17 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             compact_params,
         )
         row = _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
-        return row if row and _general_cache_row_fresh(row, brand, atc4) else None
+        return _resolve_general_cache_row(row, brand, atc4) if row else None
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
             return None
         raise
 
 
-def _general_source_state(brand: str, atc4: str | None) -> tuple[datetime | None, frozenset[str]]:
+def _general_source_rows(brand: str) -> list[dict]:
     params: list[str] = [brand, brand]
     try:
-        rows = db.fetch_all(
+        return db.fetch_all(
             f"""
             SELECT atc4_code, MAX(computed_at) AS source_computed_at
             FROM mart_general_brand_metric
@@ -783,7 +783,16 @@ def _general_source_state(brand: str, atc4: str | None) -> tuple[datetime | None
             params,
         )
     except pymysql.MySQLError:
-        return None, frozenset()
+        return []
+
+
+def _general_source_state(
+    brand: str,
+    atc4: str | None,
+    *,
+    source_rows: list[dict] | None = None,
+) -> tuple[datetime | None, frozenset[str]]:
+    rows = source_rows if source_rows is not None else _general_source_rows(brand)
     normalized_atc4 = normalize_atc4(atc4) if atc4 else None
     matching_rows = [
         row
@@ -801,19 +810,102 @@ def _latest_general_source_computed_at(brand: str, atc4: str | None) -> datetime
     return latest_source
 
 
-def _general_cache_row_fresh(row: dict, brand: str, atc4: str | None) -> bool:
+def _general_cache_row_fresh(
+    row: dict,
+    brand: str,
+    atc4: str | None,
+    *,
+    source_rows: list[dict] | None = None,
+) -> bool:
     if _row_marked_stale(row):
         return False
     cached_source = _coerce_datetime(row.get("source_computed_at"))
-    latest_source, raw_codes = _general_source_state(
-        brand,
-        atc4 or str(row.get("atc4_code") or "").strip() or None,
-    )
-    if len(raw_codes) > 1:
-        return False
+    raw_atc4 = str(row.get("atc4_code") or atc4 or "").strip()
+    rows = source_rows if source_rows is not None else _general_source_rows(brand)
+    values = [
+        _coerce_datetime(source_row.get("source_computed_at"))
+        for source_row in rows
+        if str(source_row.get("atc4_code") or "").strip() == raw_atc4
+    ]
+    latest_source = max((value for value in values if value is not None), default=None)
     if cached_source is None:
         return True
     return not (cached_source is not None and latest_source is not None and latest_source > cached_source)
+
+
+def _merge_general_cache_rows(rows: list[dict]) -> dict | None:
+    ordered_rows = sorted(rows, key=lambda row: str(row.get("atc4_code") or ""))
+    payloads = [compose_cached_json(row.get("response_json")) for row in ordered_rows]
+    if not payloads or not all(isinstance(payload, dict) for payload in payloads):
+        return None
+
+    merged_payload = json.loads(json.dumps(payloads[0], ensure_ascii=False))
+    merged_data = merged_payload.setdefault("data", {})
+    merged_meta = merged_payload.setdefault("market_meta", {})
+    combos: set[str] = set()
+    sources: set[str] = set()
+    for payload in payloads:
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        for section_name in ("forecast", "simulation"):
+            source_section = data.get(section_name) if isinstance(data.get(section_name), dict) else {}
+            source_combos = source_section.get("by_combo")
+            if not isinstance(source_combos, dict):
+                continue
+            target_section = merged_data.setdefault(section_name, {})
+            target_combos = target_section.setdefault("by_combo", {})
+            for combo, combo_payload in source_combos.items():
+                target_combos.setdefault(combo, combo_payload)
+                combos.add(str(combo))
+        meta = payload.get("market_meta") if isinstance(payload.get("market_meta"), dict) else {}
+        sources.update(str(source) for source in meta.get("sources", []) if source)
+
+    ordered_combos = sorted(combos)
+    ordered_sources = sorted(sources or {combo.split(".", 1)[0] for combo in ordered_combos})
+    merged_payload["available_combos"] = ordered_combos
+    merged_meta["available_combos"] = ordered_combos
+    merged_meta["sources"] = ordered_sources
+    merged_meta["source_count"] = len(ordered_sources)
+    merged_meta["measure_count"] = len({combo.split(".", 1)[1] for combo in ordered_combos if "." in combo})
+
+    merged_row = dict(ordered_rows[0])
+    merged_row["response_json"] = json.dumps(merged_payload, ensure_ascii=False)
+    return merged_row
+
+
+def _resolve_general_cache_row(row: dict, brand: str, atc4: str | None) -> dict | None:
+    source_rows = _general_source_rows(brand)
+    row_atc4 = str(row.get("atc4_code") or atc4 or "").strip()
+    _latest_source, raw_codes = _general_source_state(
+        brand,
+        atc4 or row_atc4 or None,
+        source_rows=source_rows,
+    )
+    if len(raw_codes) <= 1:
+        return row if _general_cache_row_fresh(row, brand, atc4, source_rows=source_rows) else None
+
+    placeholders = ", ".join(["%s"] * len(raw_codes))
+    cache_rows = db.fetch_all(
+        f"""
+        SELECT brand_key, brand, response_json, brand_factors, updated_at,
+               source_computed_at, expires_at, is_stale, stale_reason,
+               stale_marked_at, atc4_code
+        FROM cache_deep_analysis_general
+        WHERE (brand = %s OR brand_key = %s)
+          AND atc4_code IN ({placeholders})
+        ORDER BY atc4_code ASC
+        """,
+        [str(row.get("brand") or brand), str(row.get("brand_key") or brand), *sorted(raw_codes)],
+    )
+    rows_by_code = {str(cache_row.get("atc4_code") or "").strip(): cache_row for cache_row in cache_rows}
+    if set(rows_by_code) != set(raw_codes):
+        return None
+    ordered_rows = [rows_by_code[raw_code] for raw_code in sorted(raw_codes)]
+    if not all(
+        _general_cache_row_fresh(cache_row, brand, raw_code, source_rows=source_rows)
+        for raw_code, cache_row in zip(sorted(raw_codes), ordered_rows, strict=True)
+    ):
+        return None
+    return _merge_general_cache_rows(ordered_rows)
 
 
 def _json_object(value: object) -> dict:
