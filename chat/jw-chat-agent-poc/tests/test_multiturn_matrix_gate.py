@@ -26,6 +26,31 @@ def test_permanent_multiturn_matrix_has_all_nine_required_scenarios() -> None:
     assert matrix["scenarios"][0]["turns"][2]["question"] == "그 전 해는?"
 
 
+def test_file_inheritance_scenario_matches_the_pinned_channel_fixture() -> None:
+    matrix = load_matrix(FIXTURE)
+    scenario = next(item for item in matrix["scenarios"] if item["id"] == "MT-06")
+
+    assert scenario["turns"] == [
+        {
+            "question": "이 파일의 채널별 건수를 알려줘",
+            "expected": {
+                "slots": {"file_name": ["small_channel.xlsx"]},
+                "answer_contains": ["192", "100", "92"],
+                "disposition": "answered",
+            },
+        },
+        {
+            "question": "그중 1번 채널은 몇 건이야?",
+            "expected": {
+                "slots": {"file_name": ["small_channel.xlsx"]},
+                "answer_contains": ["92"],
+                "answer_excludes": ["파일을 업로드"],
+                "disposition": "answered",
+            },
+        },
+    ]
+
+
 def test_matrix_turn_gate_checks_trace_slots_and_answer_contract() -> None:
     turn = {
         "question": "2024년은?",

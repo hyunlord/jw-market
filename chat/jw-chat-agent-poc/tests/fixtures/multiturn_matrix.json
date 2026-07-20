@@ -127,12 +127,21 @@
       "file_fixture": true,
       "turns": [
         {
-          "question": "이 파일의 전체 매출 합계는?",
-          "expected": {"slots": {"file_name": ["small_channel.xlsx"]}, "disposition": "answered"}
+          "question": "이 파일의 채널별 건수를 알려줘",
+          "expected": {
+            "slots": {"file_name": ["small_channel.xlsx"]},
+            "answer_contains": ["192", "100", "92"],
+            "disposition": "answered"
+          }
         },
         {
-          "question": "제조사별로는?",
-          "expected": {"slots": {"file_name": ["small_channel.xlsx"]}, "answer_excludes": ["파일을 업로드"], "disposition": "answered"}
+          "question": "그중 1번 채널은 몇 건이야?",
+          "expected": {
+            "slots": {"file_name": ["small_channel.xlsx"]},
+            "answer_contains": ["92"],
+            "answer_excludes": ["파일을 업로드"],
+            "disposition": "answered"
+          }
         }
       ]
     },
