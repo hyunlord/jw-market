@@ -76,6 +76,43 @@ def test_concentration_requires_hhi_and_raw_cr5() -> None:
     assert "CR5 29.52%" in answer
 
 
+def test_brand_anchor_concentration_states_annual_hhi_basis() -> None:
+    answer = enforce_market_answer_contract(
+        question="리바로가 속한 시장 HHI와 CR5를 알려줘",
+        answer="",
+        tool_calls=[
+            _top_call(),
+            {
+                "tool": "get_brand_metric",
+                "render_data": {
+                    "status": "ok",
+                    "metric": "hhi",
+                    "hhi_recent": 262.4174,
+                    "hhi_basis_period": "2025",
+                    "hhi_basis_label": "2025 연간 기준",
+                },
+            },
+        ],
+    )
+
+    assert "HHI 262.42" in answer
+    assert "2025 연간 기준" in answer
+
+
+def test_monthly_concentration_does_not_invent_annual_basis() -> None:
+    answer = enforce_market_answer_contract(
+        question="고지혈증 시장 HHI와 CR5를 알려줘",
+        answer="",
+        tool_calls=[
+            _top_call(),
+            {"tool": "get_brand_metric", "render_data": {"status": "ok", "metric": "hhi", "hhi": 253.62}},
+        ],
+    )
+
+    assert "HHI 253.62" in answer
+    assert "연간 기준" not in answer
+
+
 def test_supported_disease_market_uses_grounded_top_five_instead_of_status_rejection() -> None:
     answer = enforce_market_answer_contract(
         question="고지혈증 시장 상위 5개 브랜드와 HHI, CR5를 알려줘",

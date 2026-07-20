@@ -346,9 +346,11 @@ def _concentration_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> 
     if hhi is None or len(shares) < 5:
         return ""
     cr5 = sum(shares, Decimal("0"))
+    hhi_basis = _find_hhi_basis_label(calls, hhi)
+    hhi_basis_suffix = f" ({hhi_basis})" if hhi_basis else ""
     lines = [
         "## 시장 집중도\n"
-        f"HHI {hhi:.2f}, CR5 {cr5:.2f}%입니다. "
+        f"HHI {hhi:.2f}{hhi_basis_suffix}, CR5 {cr5:.2f}%입니다. "
         "두 지표는 동일한 최신 시장 범위의 원시 점유율로 계산했습니다."
     ]
     requested = _requested_top_count(question)
@@ -798,6 +800,28 @@ def _find_hhi(calls: Sequence[Mapping[str, Any]]) -> Decimal | None:
             if value is not None:
                 return value
     return None
+
+
+def _find_hhi_basis_label(
+    calls: Sequence[Mapping[str, Any]],
+    expected_hhi: Decimal,
+) -> str:
+    for call in calls:
+        data = _render_data(call)
+        observed_hhi = next(
+            (
+                value
+                for key in ("hhi", "hhi_recent")
+                if (value := _decimal(data.get(key))) is not None
+            ),
+            None,
+        )
+        if observed_hhi != expected_hhi:
+            continue
+        label = str(data.get("hhi_basis_label") or "").strip()
+        if re.fullmatch(r"20\d{2} 연간 기준", label):
+            return label
+    return ""
 
 
 def _has_grounded_market_evidence(calls: Sequence[Mapping[str, Any]]) -> bool:

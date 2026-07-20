@@ -93,6 +93,9 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     if market_size:
         rows.append(("시장규모", market_size))
     rows.extend(_metric_scalar_rows(data))
+    hhi_basis_label = data.get("hhi_basis_label")
+    if hhi_basis_label and data.get("hhi_recent") is not None:
+        rows.append(("산출 기준", hhi_basis_label))
     if isinstance(data.get("series_insight"), dict):
         value_header = "수치(단위 포함)"
     blocks = [table("### 지표", ("지표", value_header), tuple(rows))] if rows else []

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+import math
 import os
+import re
 from threading import Lock
 import time
 from typing import Any, Protocol
@@ -168,7 +170,7 @@ class CauseMarket:
         trend_rows = list(selected)
         if target is not None and all(row.brand != target.brand for row in trend_rows):
             trend_rows.append(target)
-        return {
+        rendered = {
             "brand": self.brand,
             "metric": "market_top_brands",
             "market_name": self.market_name,
@@ -203,6 +205,11 @@ class CauseMarket:
                 "limit": bounded_limit,
             },
         }
+        hhi_basis_period = _annual_hhi_basis_period(self.hhi_recent, self.hhi_series)
+        if hhi_basis_period:
+            rendered["hhi_basis_period"] = hhi_basis_period
+            rendered["hhi_basis_label"] = f"{hhi_basis_period} 연간 기준"
+        return rendered
 
     def render_brand_metric(self, metric: str) -> dict[str, Any]:
         if metric.casefold() != "hhi":
@@ -560,6 +567,22 @@ def _hhi_series(data: Mapping[str, Any]) -> list[dict[str, Any]]:
             continue
         rows.append({"period": period, "period_full": _text(item.get("period_full")) or period, "year": _integer(item.get("year")), "hhi": hhi})
     return rows
+
+
+def _annual_hhi_basis_period(
+    hhi_recent: float | None,
+    rows: tuple[dict[str, Any], ...],
+) -> str:
+    if hhi_recent is None:
+        return ""
+    for item in reversed(rows):
+        period = str(item.get("period") or "").strip()
+        value = _number(item.get("hhi"))
+        if not re.fullmatch(r"20\d{2}", period) or value is None:
+            continue
+        if math.isclose(value, hhi_recent, rel_tol=1e-9, abs_tol=1e-6):
+            return period
+    return ""
 
 
 def _target_series(rows: tuple[CauseBrandRow, ...], brand: str) -> list[dict[str, Any]]:

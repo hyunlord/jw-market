@@ -88,6 +88,8 @@ def test_cause_backend_uses_brand_only_contract_and_projects_internal_ids_out() 
     assert market.brand_share_pct == pytest.approx(3.7577)
     assert market.brand_rank == 6
     assert hhi["hhi_recent"] == pytest.approx(262.4174)
+    assert hhi["hhi_basis_period"] == "2025"
+    assert hhi["hhi_basis_label"] == "2025 연간 기준"
     assert [row["brand"] for row in scope["level_segments"]] == ["로수젯", "리피토", "리바로"]
     assert not (_recursive_keys(scope) | _recursive_keys(hhi)) & {
         "market_id",
@@ -321,8 +323,8 @@ def _cause_payload(*, brand: str = "리바로", source: str = "UBIST") -> dict[s
                 ]
             },
             "hhi_series_5y": [
-                {"period": "2025", "period_full": "2025", "year": 2025, "hhi": 270.0},
-                {"period": "2026", "period_full": "2026", "year": 2026, "hhi": 262.4174},
+                {"period": "2024", "period_full": "2024", "year": 2024, "hhi": 270.0},
+                {"period": "2025", "period_full": "2025", "year": 2025, "hhi": 262.4174},
             ],
         },
     }
