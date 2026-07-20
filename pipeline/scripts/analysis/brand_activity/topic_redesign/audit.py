@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import csv
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -110,7 +111,8 @@ def create_zip_package(tag: str, audit_dir: Path) -> tuple[Path, str]:
 
 def backup_zip(zip_path: Path, zip_sha: str, tag: str) -> Path:
     """Copy the final zip to a non-/tmp backup path."""
-    backup_dir = Path("/Users/rexxa/jw_backups/topic_redesign")
+    # 백업 위치는 환경변수 JW_BACKUP_DIR 로 지정(미설정 시 홈 밑 ~/jw_backups). 하드코딩 로컬경로 제거.
+    backup_dir = Path(os.environ.get("JW_BACKUP_DIR", str(Path.home() / "jw_backups"))) / "topic_redesign"
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backup_dir / f"topic_redesign_{tag}.zip"
     shutil.copy2(zip_path, backup_path)

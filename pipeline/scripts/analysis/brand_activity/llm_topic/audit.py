@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -69,7 +70,8 @@ def create_zip_package(tag: str, audit_dir: Path) -> tuple[Path, str, Path]:
             archive.write(path, path.relative_to(REPO_ROOT))
     zip_sha = file_sha256(zip_path)
     zip_path.with_suffix(zip_path.suffix + ".sha256").write_text(f"{zip_sha}  {zip_path.name}\n", encoding="utf-8")
-    backup_dir = Path("/Users/rexxa/jw_backups/llm_topic")
+    # 백업 위치는 환경변수 JW_BACKUP_DIR 로 지정(미설정 시 홈 밑 ~/jw_backups). 하드코딩 로컬경로 제거.
+    backup_dir = Path(os.environ.get("JW_BACKUP_DIR", str(Path.home() / "jw_backups"))) / "llm_topic"
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backup_dir / zip_path.name
     shutil.copy2(zip_path, backup_path)
