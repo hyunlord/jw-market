@@ -25,6 +25,7 @@ def _run_ubist(params: dict[str, Any]) -> int:
     incremental = bool(params.get("incremental"))
     file_arg = params.get("file")
     source_dir = Path(str(params["ubist_source_dir"])) if params.get("ubist_source_dir") else None
+    exclude_periods = frozenset(params.get("exclude_ubist_months") or ())
     try:
         if incremental:
             stats = run_incremental_ubist_load(
@@ -75,6 +76,7 @@ def _run_ubist(params: dict[str, Any]) -> int:
             paths=paths,
             file=Path(str(file_arg)) if file_arg else None,
             all_sources=False,
+            exclude_periods=exclude_periods,
         )
     except Exception as exc:
         print(f"[{STAGE}] UBIST 실패: {exc}")

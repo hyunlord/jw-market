@@ -183,6 +183,24 @@ def _etl(*args: str) -> tuple[str, ...]:
     return (PY, "-m", "pipeline.etl.run", *args)
 
 
+def _sidecar_period(relative: Path) -> str:
+    """Derive the UBIST period (YYYY-MM) from a sidecar ``relative_path``.
+
+    Sidecar destinations are Hive-partitioned as ``year=YYYY/month=MM/...``.
+    """
+    year = month = None
+    for part in relative.parts:
+        if part.startswith("year="):
+            year = part[len("year=") :]
+        elif part.startswith("month="):
+            month = part[len("month=") :]
+    if not (year and month and year.isdigit() and month.isdigit()):
+        raise RehearsalContractError(
+            f"cannot derive UBIST period from sidecar relative_path: {relative}"
+        )
+    return f"{int(year):04d}-{int(month):02d}"
+
+
 def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalStep, ...]:
     inputs = config.validate()
     work = config.work_dir.resolve()
@@ -224,6 +242,16 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
         else ()
     )
 
+    # s1 must NOT materialize the months pinned to canonical parquet sidecars:
+    # otherwise the later install_ubist_sidecars step collides with its
+    # no-overwrite guard (the R-1 failure this fixes). Exclude them here so the
+    # sidecar step creates those partitions cleanly. Guard stays intact.
+    ubist_exclude_args: tuple[str, ...] = tuple(
+        arg
+        for sidecar in inputs.ubist_parquet_sidecars
+        for arg in ("--exclude-ubist-month", _sidecar_period(sidecar.relative_path))
+    )
+
     return (
         RehearsalStep(
             "load_ubist",
@@ -232,6 +260,7 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
                 "--ubist-source-dir", str(inputs.ubist_source_dir),
                 "--target-dir", str(ubist_parquet),
                 "--ubist-mode", "replace",
+                *ubist_exclude_args,
             ),
         ),
         *sidecar_steps,

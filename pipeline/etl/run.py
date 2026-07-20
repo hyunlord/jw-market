@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -120,10 +121,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="replace",
         help="UBIST parquet write mode for s1.",
     )
+    parser.add_argument(
+        "--exclude-ubist-month",
+        action="append",
+        default=[],
+        metavar="YYYY-MM",
+        dest="exclude_ubist_month",
+        help=(
+            "Skip these UBIST periods during s1 load (they are pinned to canonical "
+            "parquet sidecars installed by a later rehearsal step). Repeatable."
+        ),
+    )
     parser.add_argument("--stage", choices=[stage.STAGE.split()[0] for stage in STAGES])
     args = parser.parse_args(argv)
     if args.input_file and args.mi_master:
         parser.error("--input-file and --mi-master are aliases; pass only one")
+    for month in args.exclude_ubist_month:
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            parser.error(f"--exclude-ubist-month must be YYYY-MM: {month!r}")
     return args
 
 
@@ -206,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         "incremental": args.incremental,
         "allow_overlap_dedup": args.allow_overlap_dedup,
         "ubist_mode": args.ubist_mode,
+        "exclude_ubist_months": list(args.exclude_ubist_month),
         "mode": mode_name(args),
     }
     print(f"[etl] 모드={params['mode']} period={params['period']}")

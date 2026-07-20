@@ -181,6 +181,31 @@ def test_plan_installs_pinned_ubist_sidecar_before_downstream_stages(tmp_path: P
     assert all(not step.writes_operating for step in plan)
 
 
+def test_load_ubist_excludes_pinned_sidecar_months(tmp_path: Path) -> None:
+    manifest = _write_sources(tmp_path, with_sidecar=True)
+    plan = build_full_rehearsal_plan(_config(tmp_path, manifest))
+
+    load_ubist = plan[0]
+    assert load_ubist.key == "load_ubist"
+    argv = load_ubist.argv
+    # The pinned month is skipped by s1 and left for install_ubist_sidecars.
+    assert argv.count("--exclude-ubist-month") == 1
+    idx = argv.index("--exclude-ubist-month")
+    assert argv[idx + 1] == "2026-05"
+    # It still runs in replace mode and reads the raw source dir for all other months.
+    assert "--ubist-mode" in argv and argv[argv.index("--ubist-mode") + 1] == "replace"
+    assert "--ubist-source-dir" in argv
+
+
+def test_load_ubist_without_sidecars_excludes_nothing(tmp_path: Path) -> None:
+    manifest = _write_sources(tmp_path)  # schema_version 1, no sidecars
+    plan = build_full_rehearsal_plan(_config(tmp_path, manifest))
+
+    # Regression guard: the plain (non-sidecar) load path is byte-for-byte
+    # unchanged — no exclusion flags are injected.
+    assert "--exclude-ubist-month" not in plan[0].argv
+
+
 def test_rehearse_full_dry_run_prints_plan_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

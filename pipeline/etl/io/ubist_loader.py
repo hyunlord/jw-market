@@ -782,6 +782,27 @@ def deduplicate_written_partitions(target: Path, stats: dict[str, PartitionStats
     return reports
 
 
+def iter_included_xlsx_rows(
+    xlsx_path: Path,
+    generic_lookup: dict[str, str] | None,
+    exclude_periods: frozenset[str],
+    *,
+    _row_source=iter_xlsx_rows,
+):
+    """Yield (period, row) from a UBIST workbook, skipping excluded periods.
+
+    R-1 rehearsals pin selected months to canonical parquet sidecars. Those
+    months must NOT be materialized by s1: if s1 wrote them, the downstream
+    ``install_ubist_sidecars`` step would collide with its no-overwrite guard.
+    Excluding them here leaves the partition for the sidecar step to create.
+    A period never appears mid-file, so filtering per (period, row) is exact.
+    """
+    for period, row in _row_source(xlsx_path, generic_lookup):
+        if period in exclude_periods:
+            continue
+        yield period, row
+
+
 def load_to_parquet(
     xlsx_paths: list[Path],
     target: Path,
@@ -789,6 +810,7 @@ def load_to_parquet(
     mode: str,
     truncate: bool,
     previous_manifest: dict[str, object] | None = None,
+    exclude_periods: frozenset[str] = frozenset(),
 ) -> dict[str, PartitionStats]:
     timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
     tmp_target = target.parent / f"{target.name}.__tmp_{timestamp}"
@@ -803,6 +825,9 @@ def load_to_parquet(
     elif mode != "replace":
         raise ValueError(f"Unsupported mode: {mode}")
 
+    if exclude_periods:
+        LOGGER.info("UBIST load excluding pinned sidecar periods=%s", sorted(exclude_periods))
+
     buffers: dict[str, list[dict[str, object]]] = defaultdict(list)
     writer = PartitionWriter(tmp_target)
     total_rows = 0
@@ -810,7 +835,7 @@ def load_to_parquet(
     try:
         for idx, xlsx_path in enumerate(xlsx_paths, start=1):
             LOGGER.info("[%s/%s] reading %s", idx, len(xlsx_paths), xlsx_path)
-            for period, row in iter_xlsx_rows(xlsx_path, generic_lookup):
+            for period, row in iter_included_xlsx_rows(xlsx_path, generic_lookup, exclude_periods):
                 buffers[period].append(row)
                 total_rows += 1
                 if total_rows % 250_000 == 0:
@@ -820,6 +845,11 @@ def load_to_parquet(
         flush_buffers(writer, buffers, final=True)
     finally:
         writer.close()
+
+    leaked = exclude_periods & set(writer.stats)
+    if leaked:
+        # Fail closed: an excluded period must never be materialized by s1.
+        raise RuntimeError(f"excluded UBIST periods leaked into load: {sorted(leaked)}")
 
     LOGGER.info(
         "UBIST stream load complete rows=%s partitions=%s; starting partition dedup",
@@ -1209,6 +1239,7 @@ def run_ubist_load(
     folder: Path | None = None,
     file: Path | None = None,
     all_sources: bool = True,
+    exclude_periods: frozenset[str] = frozenset(),
 ) -> dict[str, PartitionStats]:
     args = argparse.Namespace(
         all=all_sources,
@@ -1220,7 +1251,9 @@ def run_ubist_load(
         target_dir=str(target),
     )
     xlsx_paths = [p.resolve() for p in paths] if paths is not None else discover_xlsx(args)
-    return load_to_parquet(xlsx_paths, target, mode=mode, truncate=truncate)
+    return load_to_parquet(
+        xlsx_paths, target, mode=mode, truncate=truncate, exclude_periods=exclude_periods
+    )
 
 
 if __name__ == "__main__":
