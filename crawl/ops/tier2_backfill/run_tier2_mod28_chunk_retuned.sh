@@ -37,6 +37,8 @@ metadata:
 spec:
   activeDeadlineSeconds: 14400
   backoffLimit: 0
+  # Auto-GC finished (Complete/Failed) Job 7d after finish to prevent leftover accumulation.
+  ttlSecondsAfterFinished: 604800
   template:
     metadata:
       annotations:
