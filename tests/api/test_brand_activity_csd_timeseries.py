@@ -684,3 +684,54 @@ def test_resolve_csd_markets_isjw_filter_blocks_same_ml_competitor_sheet(monkeyp
 
     assert [item.market for item in resolved] == ["LIVALO Market", "LIVALOZET Market"]
     assert resolved[0].market == "LIVALO Market"  # primary anchor unchanged
+
+
+def test_general_franchise_codes_includes_same_ml_jw_sibling(monkeypatch) -> None:
+    # 리바로 -> ml_006; canonical registry ml_006 = {리바로, 리바로젯} (JW franchise).
+    monkeypatch.setattr(
+        service,
+        "iqvia_product_codes_by_brand",
+        lambda names: {"리바로": ("LIVALO",), "리바로젯": ("LIVALOZET",)},
+    )
+    codes = service._general_franchise_codes("리바로", {"LIVALO"})
+    assert "LIVALO" in codes and "LIVALOZET" in codes
+
+
+def test_general_franchise_codes_scopes_to_selected_ml_only(monkeypatch) -> None:
+    # 리바로페노=ml_007, 리바로하이/브이=ml_008 must NOT join 리바로(ml_006) franchise.
+    captured: dict[str, set[str]] = {}
+
+    def fake(names):
+        captured["names"] = set(names.values())
+        return {name: () for name in names}
+
+    monkeypatch.setattr(service, "iqvia_product_codes_by_brand", fake)
+    service._general_franchise_codes("리바로", {"LIVALO"})
+    assert captured["names"] == {"리바로", "리바로젯"}
+
+
+def test_general_franchise_codes_unmapped_brand_falls_back_no_query(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def fake(names):
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(service, "iqvia_product_codes_by_brand", fake)
+    codes = service._general_franchise_codes("존재하지않는브랜드XYZ", {"XCODE"})
+    assert codes == {"XCODE"}  # no ml mapping -> selected-only (legacy)
+    assert calls["n"] == 0  # no extra IQVIA lookup for unmapped brand
+
+
+def test_general_franchise_qualifying_matches_strategic_membership(monkeypatch) -> None:
+    # View-independence: the general franchise brand membership equals the strategic_ml
+    # is_jw membership for the same ml_id (리바로 -> {리바로, 리바로젯}).
+    monkeypatch.setattr(
+        service,
+        "iqvia_product_codes_by_brand",
+        lambda names: {n: (n.upper(),) for n in names},
+    )
+    codes = service._general_franchise_codes("리바로", {"리바로".upper()})
+    # both franchise members contribute; non-ml_006 siblings (페노/하이/브이) absent
+    assert "리바로".upper() in codes and "리바로젯".upper() in codes
+    assert "리바로페노".upper() not in codes and "리바로하이".upper() not in codes

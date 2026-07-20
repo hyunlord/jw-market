@@ -7,6 +7,7 @@ from pipeline.scripts.analysis.brand_activity.alias.normalize import configured_
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, resolve_brand_set
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
+from pipeline.scripts.api.catalog import DISPLAY_BRANDS, get_display_brand
 from pipeline.scripts.api.brand_activity_csd_shared import (
     PUBLIC_MEASURES,
     RANKING_MEASURE,
@@ -76,15 +77,27 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     # qualifies when the selected brand OR a same-ml_id market member holds a product there,
     # so LIVALO-family siblings (e.g. 리바로젯) are not treated as competitors. Other views
     # (general/atc4, strategic_cd) keep the legacy selected-brand-presence rule.
-    franchise_membership = request["view"] == "strategic_ml"
+    # CSD franchise gate is view-independent: whichever view (competitor-selection axis)
+    # the request arrives on, a CSD sheet qualifies when the selected brand OR a same-ml_id
+    # (MI Master) JW franchise member holds a product there. The competitor brand list stays
+    # exactly the request-view set (brand_set.choices); only the CSD sheet qualification
+    # widens to the ml_id franchise. strategic_cd and ml-unmapped brands keep the legacy
+    # selected-brand-only gate.
+    selected_codes = set(csd_codes.selected)
+    candidate_codes = set(csd_codes.candidates)
+    if request["view"] == "strategic_ml":
+        qualifying_codes = _franchise_qualifying_codes(csd_codes, brand_meta)
+    elif request["view"] == "general":
+        qualifying_codes = _general_franchise_codes(brand_set.selected_brand, selected_codes)
+        # Ensure the franchise members' CSD sheets are fetched/discovered even when they fall
+        # outside the general (atc4) candidate set (e.g. LIVALOZET for a C10A1 request).
+        candidate_codes |= qualifying_codes
+    else:
+        qualifying_codes = selected_codes
     crosswalks = resolve_csd_markets(
-        selected_product_codes=set(csd_codes.selected),
-        candidate_product_codes=set(csd_codes.candidates),
-        qualifying_product_codes=(
-            _franchise_qualifying_codes(csd_codes, brand_meta)
-            if franchise_membership
-            else set(csd_codes.selected)
-        ),
+        selected_product_codes=selected_codes,
+        candidate_product_codes=candidate_codes,
+        qualifying_product_codes=qualifying_codes,
     )
     selected_crosswalks = _select_csd_markets(crosswalks, request["csd_market"])
     crosswalk = selected_crosswalks[0]
@@ -150,6 +163,28 @@ def _franchise_qualifying_codes(
         meta = brand_meta.get(brand_key)
         if meta is not None and meta.is_jw:
             codes |= set(brand_codes)
+    return codes
+
+
+def _general_franchise_codes(selected_brand: str, selected_product_codes: set[str]) -> set[str]:
+    """General-view franchise product codes = selected brand + same-ml_id JW siblings.
+
+    General/atc4 requests carry no ml_id, so franchise membership is read from the in-memory
+    canonical JW display-brand registry (same ml_id => JW franchise family; the registry is
+    the JW is_jw source of truth). This yields the same {선택 + 동일 ml_id ∩ is_jw} signal as
+    the strategic_ml path without a strategic mart re-scan. A brand with no ml mapping (not in
+    the registry) falls back to selected-only, preserving the legacy gate.
+    """
+
+    codes = set(selected_product_codes)
+    display = get_display_brand(selected_brand)
+    if display is None:
+        return codes
+    siblings = {brand.brand_name for brand in DISPLAY_BRANDS if brand.ml_id == display.ml_id}
+    if not siblings:
+        return codes
+    for sibling_codes in iqvia_product_codes_by_brand({name: name for name in siblings}).values():
+        codes |= set(sibling_codes)
     return codes
 
 
