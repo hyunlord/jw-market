@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from jw_chat_agent_poc.agent_loop import structured_planner as structured_planner_module
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.agent_loop.structured_planner import (
@@ -59,6 +60,43 @@ def test_structured_metric_owner_uses_metric_semantics_not_market_token(
     owner: str,
 ) -> None:
     assert structured_metric_owner(question) == owner
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "최신 데이터가 언제까지야",
+        "최근 업데이트 언제 됐어",
+        "시장 데이터는 몇 월까지 있어?",
+    ),
+)
+def test_structured_intent_identifies_data_freshness_questions(question: str) -> None:
+    assert structured_planner_module.structured_question_intent(question) == "data_freshness"
+
+
+def test_structured_intent_does_not_capture_historical_sales_question() -> None:
+    assert structured_planner_module.structured_question_intent("2024년 리바로 매출") is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "고지혈증 시장에서 리바로 위치",
+        "리바로는 고지혈증 시장에서 몇 위",
+        "고지혈증 시장 리바로 순위",
+    ),
+)
+def test_position_phrasings_share_canonical_brand_rank_metric(question: str) -> None:
+    assert structured_planner_module.structured_metric_name(question) == "brand_rank"
+    assert structured_metric_owner(question) == "brand"
+
+
+def test_generic_location_is_not_a_brand_rank_metric() -> None:
+    assert structured_planner_module.structured_metric_name("서울 위치") is None
+
+
+def test_market_forecast_is_owned_by_market_for_deep_scope() -> None:
+    assert structured_metric_owner("고지혈증 시장 전망") == "market"
 
 
 def test_structured_slot_planner_hits_at_least_seventy_percent_without_llm() -> None:

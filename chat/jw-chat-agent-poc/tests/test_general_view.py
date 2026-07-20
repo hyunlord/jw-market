@@ -410,6 +410,26 @@ def test_route_matrix_has_no_human_loop() -> None:
     assert service.route("포도당 대한 시장 점유율은?") is GeneralRoute.GENERAL_ONLY
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "고지혈증 시장에서 리바로 위치",
+        "리바로는 고지혈증 시장에서 몇 위",
+        "고지혈증 시장 리바로 순위",
+    ),
+)
+def test_position_intent_prefers_strategic_view(question: str) -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route(question) is GeneralRoute.EXISTING
+
+
+def test_explicit_general_view_still_wins_for_position_intent() -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership({"리바로"}), enabled=True)
+
+    assert service.route("일반뷰에서 리바로 위치") is GeneralRoute.GENERAL_ONLY
+
+
 def test_unknown_brand_in_explicit_strategic_market_stays_on_typed_brand_path() -> None:
     service = GeneralViewService(
         FakeBackend(),

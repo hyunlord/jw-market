@@ -7,7 +7,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
-from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_owner
+from jw_chat_agent_poc.agent_loop.structured_planner import (
+    structured_metric_name,
+    structured_metric_owner,
+)
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
@@ -89,6 +92,8 @@ class GeneralViewService:
             return GeneralRoute.EXISTING
         if _has_explicit_general_signal(normalized):
             return GeneralRoute.GENERAL_ONLY
+        if structured_metric_name(question) == "brand_rank":
+            return GeneralRoute.EXISTING
         if _has_existing_analytic_signal(normalized):
             return GeneralRoute.EXISTING
         if structured_metric_owner(question) == "brand" and self._explicit_strategic_market(question):

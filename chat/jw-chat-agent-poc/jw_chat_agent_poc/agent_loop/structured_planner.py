@@ -41,6 +41,12 @@ class AnswerModeSpec:
     pattern: re.Pattern[str]
 
 
+@dataclass(frozen=True, slots=True)
+class QuestionIntentSpec:
+    name: str
+    pattern: re.Pattern[str]
+
+
 _METRICS: Final[tuple[MetricSpec, ...]] = (
     MetricSpec(
         "market_top",
@@ -69,7 +75,12 @@ _METRICS: Final[tuple[MetricSpec, ...]] = (
     MetricSpec(
         "brand_rank",
         "brand",
-        re.compile(r"순위|몇\s*위|랭킹|rank", re.IGNORECASE),
+        re.compile(
+            r"순위|몇\s*위|랭킹|rank|"
+            r"(?:(?:시장|경쟁(?:사)?|브랜드|점유율|매출).{0,24}위치|"
+            r"위치.{0,24}(?:시장|경쟁(?:사)?|브랜드|점유율|매출))",
+            re.IGNORECASE,
+        ),
         ("get_brand_share", "get_brand_series", "get_top_brands"),
     ),
     MetricSpec(
@@ -79,6 +90,12 @@ _METRICS: Final[tuple[MetricSpec, ...]] = (
         ("get_top_brands", "get_brand_series"),
     ),
     MetricSpec("market_size", "market", re.compile(r"시장\s*규모|시장규모"), ("get_brand_series", "get_top_brands")),
+    MetricSpec(
+        "market_forecast",
+        "market",
+        re.compile(r"시장.*(?:전망|예측|향후)|(?:전망|예측|향후).*시장", re.IGNORECASE),
+        ("get_brand_series", "get_top_brands"),
+    ),
 )
 _AXES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("channel", re.compile(r"채널|channel", re.IGNORECASE), "get_brand_channel_breakdown"),
@@ -87,6 +104,20 @@ _AXES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
 _ANSWER_MODES: Final[tuple[AnswerModeSpec, ...]] = (
     AnswerModeSpec("explanatory", re.compile(r"왜|원인|이유|영향", re.IGNORECASE)),
     AnswerModeSpec("forecast", re.compile(r"전망|예측|향후", re.IGNORECASE)),
+)
+_QUESTION_INTENTS: Final[tuple[QuestionIntentSpec, ...]] = (
+    QuestionIntentSpec(
+        "data_freshness",
+        re.compile(
+            r"(?:"
+            r"(?:최신|최근)\s*(?:시장\s*)?(?:데이터|자료|업데이트|갱신|반영)"
+            r".*(?:언제|몇\s*(?:월|분기)|까지|됐|되었)"
+            r"|(?:데이터|자료|업데이트|갱신|반영)"
+            r".*(?:언제|몇\s*(?:월|분기)).*(?:까지|됐|되었|있)"
+            r")",
+            re.IGNORECASE,
+        ),
+    ),
 )
 _TOOL_ARGUMENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "get_brand_sales": ("brand", "period"),
@@ -106,8 +137,22 @@ def deterministic_market_planner_enabled() -> bool:
 def structured_metric_owner(question: str) -> str | None:
     """Return the owner of the first metric selected by the canonical planner."""
 
-    metric = next((item for item in _METRICS if item.pattern.search(question)), None)
+    metric = _structured_metric(question)
     return metric.owner if metric is not None else None
+
+
+def structured_metric_name(question: str) -> str | None:
+    """Return the canonical metric selected by the shared deterministic planner."""
+
+    metric = _structured_metric(question)
+    return metric.name if metric is not None else None
+
+
+def structured_question_intent(question: str) -> str | None:
+    """Return a system-level intent that must not fall through to general search."""
+
+    intent = next((item for item in _QUESTION_INTENTS if item.pattern.search(question)), None)
+    return intent.name if intent is not None else None
 
 
 def plan_structured_market_question(
@@ -129,7 +174,7 @@ def plan_structured_market_question(
         return None
     available_tools = _schema_names(schemas)
     axis = next((item for item in _AXES if item[1].search(question)), None)
-    metric = next((item for item in _METRICS if item.pattern.search(question)), None)
+    metric = _structured_metric(question)
     comparison = len(brands) > 1
     if axis is None and metric is None and not comparison:
         return None
@@ -178,6 +223,10 @@ def _resolved_brands(question: str, resolver: BrandResolver) -> tuple[str, ...]:
         return tuple(item.canonical_brand for item in resolver.resolve_many(question, allow_default=False))
     except (UnsupportedBrandError, OSError):
         return ()
+
+
+def _structured_metric(question: str) -> MetricSpec | None:
+    return next((item for item in _METRICS if item.pattern.search(question)), None)
 
 
 def _schema_names(schemas: tuple[dict[str, object], ...]) -> frozenset[str]:

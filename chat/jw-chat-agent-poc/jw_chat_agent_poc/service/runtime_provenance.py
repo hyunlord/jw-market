@@ -149,9 +149,18 @@ def _qa_trace(
     ) or None
     claim_gate = result.get("_qa_claim_gate")
     claim_items = claim_gate if isinstance(claim_gate, Mapping) else {}
-    disposition = str(claim_items.get("disposition") or "")
+    body_gate = result.get("_qa_body_gate")
+    body_items = body_gate if isinstance(body_gate, Mapping) else {}
+    disposition = str(body_items.get("disposition") or claim_items.get("disposition") or "")
     if not disposition:
         disposition = "empty" if not answer.strip() else "answered"
+    final = {
+        "disposition": disposition,
+        "body_empty": not bool(answer.strip()),
+    }
+    body_status = str(body_items.get("body_status") or "")
+    if body_status:
+        final["body_status"] = body_status
     return {
         "request": {
             "request_id": trace_id,
@@ -174,10 +183,7 @@ def _qa_trace(
             "blocked_count": int(claim_items.get("blocked_claim_count") or 0),
             "blocked_reasons": tuple(str(item) for item in claim_items.get("blocked_reasons", ()) if str(item)),
         },
-        "final": {
-            "disposition": disposition,
-            "body_empty": not bool(answer.strip()),
-        },
+        "final": final,
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Mapping
@@ -95,6 +96,47 @@ class StrategicQueryLayer:
             {"brand": brand, "market_id": market_id, "market_name": market_id}
             for brand, market_id in sorted(memberships)
         )
+
+    def data_freshness(self) -> dict[str, Any]:
+        """Return source-specific latest valid periods measured from the mart snapshot."""
+
+        snapshot = self._snapshot()
+        latest_by_source: dict[str, tuple[int, str]] = {}
+        for record in snapshot.records:
+            if record.measure != "sales":
+                continue
+            for period in record.metric_history:
+                if not _is_source_period(period) or snapshot.value_or_none(record, period) is None:
+                    continue
+                period_key = _source_period_key(period)
+                current = latest_by_source.get(record.source)
+                if current is None or period_key > current[0]:
+                    latest_by_source[record.source] = (period_key, period)
+        if not latest_by_source:
+            raise LookupError("mart source periods missing")
+        rows = [
+            {
+                "source_key": source,
+                "source": _freshness_source_label(source),
+                "max_period": period,
+            }
+            for source, (_period_key, period) in sorted(
+                latest_by_source.items(),
+                key=_freshness_source_order,
+            )
+        ]
+        data_as_of = str(max(rows, key=lambda row: _source_period_key(str(row["max_period"])))["max_period"])
+        return {
+            "source": "strategic mart",
+            "tool": "get_data_freshness",
+            "summary_text": "전략 mart에서 소스별 최신 반영 기간을 확인했습니다.",
+            "render_data": {
+                "status": "ok",
+                "metric": "data_freshness",
+                "sources": rows,
+                "data_as_of": data_as_of,
+            },
+        }
 
     def brand_metric(
         self,
@@ -661,6 +703,36 @@ def _failed_metric_call(
         "summary_text": message,
         "render_data": render_data,
     }
+
+
+def _is_source_period(period: str) -> bool:
+    return bool(re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2]|Q[1-4])", period))
+
+
+def _source_period_key(period: str) -> int:
+    year = int(period[:4])
+    suffix = period[5:]
+    month = int(suffix[1:]) * 3 if suffix.startswith("Q") else int(suffix)
+    return year * 12 + month
+
+
+def _freshness_source_label(source: str) -> str:
+    normalized = source.casefold()
+    if normalized.startswith("iqvia"):
+        return "IQVIA NSA"
+    if normalized == "ubist":
+        return "UBIST"
+    return source
+
+
+def _freshness_source_order(item: tuple[str, tuple[int, str]]) -> tuple[int, str]:
+    source, _period = item
+    normalized = source.casefold()
+    if normalized == "ubist":
+        return (0, normalized)
+    if normalized.startswith("iqvia"):
+        return (1, normalized)
+    return (2, normalized)
 
 
 def _required_market(snapshot: MartSnapshot, brand: str, requested_market: str | None = None) -> str:

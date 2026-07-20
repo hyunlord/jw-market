@@ -89,6 +89,74 @@ class MarketScopeResolver:
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)
 
+    def answer_data_freshness(self, question: str) -> dict[str, Any]:
+        started_at = qa_trace_started_at()
+        if self._query_layer is None:
+            return self._data_freshness_failed(
+                question,
+                "전략 시장 조회 계층을 사용할 수 없습니다.",
+                started_at=started_at,
+            )
+        try:
+            call = self._query_layer.data_freshness()
+        except Exception as exc:  # noqa: BLE001 - every mart failure must produce the typed safe response.
+            return self._data_freshness_failed(
+                question,
+                f"최신 기간 조회가 실패했습니다 ({type(exc).__name__}).",
+                started_at=started_at,
+            )
+        data = call.get("render_data")
+        source_rows = data.get("sources") if isinstance(data, dict) else None
+        if not isinstance(source_rows, list) or not source_rows:
+            return self._data_freshness_failed(
+                question,
+                "전략 시장 최신 기간 응답이 비어 있습니다.",
+                started_at=started_at,
+            )
+        lines = ["시스템 시장 데이터의 최신 반영 범위입니다."]
+        sources: list[str] = []
+        for item in source_rows:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            period = str(item.get("max_period") or "").strip()
+            if not source or not period:
+                continue
+            sources.append(source)
+            descriptor = "처방 데이터" if source == "UBIST" else "데이터"
+            lines.append(f"- {source} {descriptor}는 {period}까지 반영되어 있습니다.")
+        if len(lines) == 1:
+            return self._data_freshness_failed(
+                question,
+                "전략 시장 최신 기간 응답에 유효한 소스가 없습니다.",
+                started_at=started_at,
+            )
+        data_as_of = str(data.get("data_as_of") or "").strip() or None
+        attach_tool_qa_trace(
+            call,
+            started_at=started_at,
+            status="ok",
+            row_count=len(lines) - 1,
+            data_as_of=data_as_of,
+            cache_hit=False,
+        )
+        return {
+            "question": question,
+            "resolution": {"scope": "system_data_freshness"},
+            "decomposition": [{"intent": "data_freshness", "scope": "market"}],
+            "router_diagnostics": {
+                "deterministic": True,
+                "mode": "data_freshness",
+                "scope": "market",
+                "gate": "structured_intent",
+                "gate_reason": "data_freshness",
+            },
+            "tool_calls": [call],
+            "answer": "\n\n".join((lines[0], "\n".join(lines[1:]))),
+            "markdown_response": None,
+            "sources": sources,
+        }
+
     def answer(self, question: str, *, view_type: MarketView) -> dict[str, Any]:
         started_at = qa_trace_started_at()
         if view_type == "general_view":
@@ -361,6 +429,56 @@ class MarketScopeResolver:
             "answer": markdown.markdown,
             "markdown_response": markdown.to_dict(),
             "sources": ["backend_api"],
+        }
+
+    @staticmethod
+    def _data_freshness_failed(
+        question: str,
+        reason: str,
+        *,
+        started_at: datetime,
+    ) -> dict[str, Any]:
+        answer = (
+            "상태: 확인 불가\n\n"
+            f"사유: {reason}\n\n"
+            "확인된 범위: 없음\n\n"
+            "대안: 관리자에게 시장 데이터 조회 상태 확인을 요청해 주세요."
+        )
+        call: dict[str, Any] = {
+            "source": "strategic mart",
+            "tool": "get_data_freshness",
+            "status": "query_failed",
+            "summary_text": reason,
+            "render_data": {
+                "status": "query_failed",
+                "metric": "data_freshness",
+                "message": reason,
+            },
+        }
+        attach_tool_qa_trace(
+            call,
+            started_at=started_at,
+            status="query_failed",
+            row_count=0,
+            cache_hit=False,
+        )
+        return {
+            "question": question,
+            "resolution": {"scope": "system_data_freshness"},
+            "decomposition": [
+                {"intent": "data_freshness", "scope": "market", "status": "query_failed"}
+            ],
+            "router_diagnostics": {
+                "deterministic": True,
+                "mode": "data_freshness",
+                "scope": "market",
+                "gate": "typed_unavailable",
+                "gate_reason": "data_freshness_query_failed",
+            },
+            "tool_calls": [call],
+            "answer": answer,
+            "markdown_response": None,
+            "sources": ["strategic mart"],
         }
 
     def clarification(self, question: str, *, brand: str) -> dict[str, Any]:

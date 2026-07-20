@@ -389,6 +389,49 @@ def test_deep_fixture_execution_selects_all_evidence_families(
     assert not any("clinicaltrials_v2_search" in str(event) for event in events)
 
 
+def test_deep_market_scope_bypasses_single_brand_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Resolver:
+        def resolve(self, question: str, *, allow_default: bool = False):
+            calls.append(question)
+            raise AssertionError("market-owned deep questions must not require a brand")
+
+    class DeepAgent:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def answer(self, question: str) -> dict[str, object]:
+            return {
+                "answer": f"market-deep:{question}",
+                "sources": ["UBIST"],
+                "tool_calls": [],
+                "timing": {"stages": []},
+            }
+
+    dependencies = SimpleNamespace(
+        metrics=object(),
+        resolver=Resolver(),
+        news=object(),
+        external=object(),
+        query_layer=object(),
+    )
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": dependencies,
+    )
+    monkeypatch.setattr(service_app, "ToolUseAgent", DeepAgent)
+
+    result = service_app._answer_deep_research("고지혈증 시장 전망", "fixture")
+
+    assert calls == []
+    assert result["answer"] == "market-deep:고지혈증 시장 전망"
+    assert result["research_mode"] == "deep"
+
+
 def test_deep_progress_reports_serial_fallback_when_parallel_workers_are_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -29,6 +29,7 @@ from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.structured_planner import (
     preflight_structured_market_question,
     structured_metric_owner,
+    structured_question_intent,
 )
 from jw_chat_agent_poc.common.periods import (
     canonical_periods,
@@ -554,6 +555,7 @@ def _answer_question(
         previous_turn = state.turns[-1] if state.turns else None
         routing_resolution = resolve_anaphora(effective_question, previous_turn)
         routing_question = routing_resolution.resolved_question
+        structured_intent = structured_question_intent(routing_question)
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
         metric_owner = structured_metric_owner(routing_question)
         needs_brand_clarification = (
@@ -583,9 +585,13 @@ def _answer_question(
             and not has_file_reference(routing_question)
             and _is_entity_free_market_metric_question(routing_question)
         )
-        has_market_intent = deep_request.enabled or _has_market_intent(
-            routing_question,
-            has_brand_anchor=has_explicit_market_anchor,
+        has_market_intent = (
+            deep_request.enabled
+            or structured_intent == "data_freshness"
+            or _has_market_intent(
+                routing_question,
+                has_brand_anchor=has_explicit_market_anchor,
+            )
         )
         has_market_anchor = (
             market_scope_resolver.has_explicit_anchor(routing_question) if has_market_intent else False
@@ -608,7 +614,11 @@ def _answer_question(
             has_market_anchor=has_market_anchor,
             file_schema_columns=file_schema_columns,
         )
-        if needs_brand_clarification or needs_market_clarification:
+        if (
+            needs_brand_clarification
+            or needs_market_clarification
+            or structured_intent == "data_freshness"
+        ):
             context_scope = ContextScope.MARKET
         if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
             emit_completed_stage(
@@ -655,6 +665,8 @@ def _answer_question(
             result = _brand_metric_clarification_result(effective_question)
         elif needs_market_clarification:
             result = _market_metric_clarification_result(effective_question)
+        elif structured_intent == "data_freshness":
+            result = market_scope_resolver.answer_data_freshness(effective_question)
         elif uses_monthly_market_golden:
             result = market_scope_resolver.answer_monthly_market_golden(
                 effective_question,
@@ -1648,20 +1660,21 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
 def _answer_deep_research(question: str, external_mode: str) -> dict:
     with stage(None, "deep_research_prepare", "브랜드와 조사 범위 확인"):
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
-        try:
-            dependencies.resolver.resolve(question, allow_default=False)
-        except UnsupportedBrandError:
-            result = unsupported_brand_result(
-                question,
-                [],
-                {
-                    "mode": "deep_research",
-                    "deterministic_execution": True,
-                    "model": "gemini-3.1-pro-preview",
-                    "serving_id": "202",
-                },
-            )
-            return {**result, "research_mode": "deep", "effective_question": question}
+        if structured_metric_owner(question) != "market":
+            try:
+                dependencies.resolver.resolve(question, allow_default=False)
+            except UnsupportedBrandError:
+                result = unsupported_brand_result(
+                    question,
+                    [],
+                    {
+                        "mode": "deep_research",
+                        "deterministic_execution": True,
+                        "model": "gemini-3.1-pro-preview",
+                        "serving_id": "202",
+                    },
+                )
+                return {**result, "research_mode": "deep", "effective_question": question}
 
     agent = ToolUseAgent(
         metrics=dependencies.metrics,
@@ -2031,6 +2044,13 @@ _VERIFIED_EVIDENCE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("환자수", ("hira_", "get_disease_stats")),
     ("최신 자료", ("web_search", "search_news")),
 )
+_FINAL_PROGRESS_PREAMBLE_RE = re.compile(
+    r"^(?:"
+    r"(?:확인된\s*자료를\s*종합해\s*)?답변을\s*(?:정리|작성)하고\s*(?:있어요|있습니다)"
+    r"|(?:자료|데이터|근거)?\s*(?:검토|확인)\s*중(?:입니다|이에요)?"
+    r"|(?:자료|데이터|근거)?\s*(?:검토|확인)하고\s*(?:있어요|있습니다)"
+    r")\s*[.!]?(?:\s*\n+|$)"
+)
 
 
 def _stream_ready_prefix(result: dict[str, Any]) -> str:
@@ -2090,6 +2110,37 @@ def _prepend_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> st
     if not prefix or answer.startswith(prefix):
         return answer
     return f"{prefix}\n\n{answer}" if answer else prefix
+
+
+def _enforce_substantive_final_body(
+    answer: str,
+    result: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    cleaned = answer.strip()
+    progress_prefix = cleanup_markdown_answer(_verified_evidence_prefix(result))
+    had_progress_prefix = bool(progress_prefix and cleaned.startswith(progress_prefix))
+    if had_progress_prefix:
+        cleaned = cleaned[len(progress_prefix) :].lstrip()
+    generic_progress_prefix = _FINAL_PROGRESS_PREAMBLE_RE.match(cleaned)
+    if generic_progress_prefix is not None:
+        cleaned = cleaned[generic_progress_prefix.end() :].lstrip()
+        had_progress_prefix = True
+    substantive = re.split(r"(?m)^##\s*출처\s*$", cleaned, maxsplit=1)[0].strip()
+    if substantive:
+        return cleaned, result
+    body_status = "preamble_only" if had_progress_prefix else "source_only"
+    safe_error = (
+        "상태: 확인 불가\n\n"
+        "사유: 답변 본문 합성이 완료되지 않았습니다.\n\n"
+        "확인된 범위: 없음\n\n"
+        "대안: 질문의 대상과 기간을 명시해 새 요청을 보내 주세요."
+    )
+    gated_result = dict(result)
+    gated_result["_qa_body_gate"] = {
+        "disposition": "safe_error",
+        "body_status": body_status,
+    }
+    return safe_error, gated_result
 
 
 def _sse_initial_text_events(
@@ -2471,7 +2522,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     safe_answer = scrub_internal_terminology(safe_answer)
     if not deep_mode and not file_context_fact and market_contract_allowed:
         safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
-    safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
+    safe_answer, result = _enforce_substantive_final_body(safe_answer, result)
     trace = trace_envelope(
         question=question,
         result=result,
@@ -2645,6 +2696,9 @@ def _compute_mixed_final_answer(
 
 
 def _deterministic_simple_market_answer(question: str, result: dict) -> str:
+    diagnostics = result.get("router_diagnostics")
+    if isinstance(diagnostics, dict) and diagnostics.get("mode") == "data_freshness":
+        return cleanup_markdown_answer(str(result.get("answer") or ""))
     normalized = re.sub(r"\s+", " ", question).strip()
     decomposition = result.get("decomposition")
     same_market_sales = isinstance(decomposition, list) and any(

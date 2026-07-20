@@ -9,7 +9,13 @@ from jw_chat_agent_poc.orchestrator.answer_completeness import completeness_inte
 
 _CSD_ACTIVITY_TOKENS = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
 _DRUG_INFO_TOKENS = ("허가", "품목", "식약처", "MFDS", "의약품정보", "의약품 정보")
-_SHARE_OR_RANK_RE = re.compile(r"(?:점유율|순위|(?<![A-Za-z])M\s*/?\s*S(?![A-Za-z]))", re.IGNORECASE)
+_SHARE_OR_RANK_RE = re.compile(
+    r"(?:점유율|순위|몇\s*위|"
+    r"(?:(?:시장|경쟁(?:사)?|브랜드|점유율|매출).{0,24}위치|"
+    r"위치.{0,24}(?:시장|경쟁(?:사)?|브랜드|점유율|매출))|"
+    r"(?<![A-Za-z])M\s*/?\s*S(?![A-Za-z]))",
+    re.IGNORECASE,
+)
 _TOP_N_RE = re.compile(
     r"(?:상위\s*\d+(?!\d)(?!\.\d)|(?<![A-Za-z0-9_])top\s*\d+(?!\d)(?!\.\d))",
     re.IGNORECASE,

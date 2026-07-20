@@ -191,6 +191,10 @@ def test_off_domain_top_n_phrases_stay_on_general_path(question: str) -> None:
     assert should_use_agent_loop(question) is False
 
 
+def test_generic_location_stays_on_non_agent_path() -> None:
+    assert should_use_agent_loop("서울 위치") is False
+
+
 def test_top_n_uses_pre_resolved_dynamic_brand_anchor() -> None:
     assert should_use_agent_loop("리바로 top5", has_brand_anchor=True) is True
 

@@ -91,6 +91,122 @@ def test_market_scope_queries_explicit_strategy_id_without_brand_fallback() -> N
     assert data["market_size_억원"] == 180.99782
 
 
+def _freshness_record(source: str, periods: tuple[str, ...]) -> MartRecord:
+    return MartRecord(
+        ml_id="ml_006",
+        brand_name="리바로",
+        source=source,
+        measure="sales",
+        metric_history={period: {"raw_value": 1.0} for period in periods},
+        channel_data={},
+        specialty_data={},
+        dimension_data={},
+        by_dimension={},
+    )
+
+
+@pytest.mark.parametrize("question", ("최신 데이터가 언제까지야", "최근 업데이트 언제 됐어"))
+def test_freshness_question_uses_deterministic_mart_route_without_agent(
+    question: str,
+) -> None:
+    FakeAgent.calls.clear()
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(
+                (
+                    _freshness_record("ubist", ("2026-04", "2026-05")),
+                    _freshness_record("iqvia_nsa", ("2025-Q3", "2025-Q4")),
+                )
+            )
+        ),
+    )
+
+    item = service_app._answer_question(
+        SessionStore(),
+        resolver,
+        _fake_agent_factory,
+        question,
+        "fixture",
+        None,
+        use_direct_agent_loop=True,
+    )
+
+    result = item["result"]
+    assert FakeAgent.calls == []
+    assert "UBIST 처방 데이터는 2026-05까지 반영되어 있습니다" in result["answer"]
+    assert "IQVIA NSA 데이터는 2025-Q4까지 반영되어 있습니다" in result["answer"]
+    assert result["tool_calls"][0]["tool"] == "get_data_freshness"
+    assert result["tool_calls"][0]["qa_trace"]["status"] == "ok"
+    assert result["router_diagnostics"]["mode"] == "data_freshness"
+    assert all(call[0] != question for call in FakeAgent.calls)
+
+
+@pytest.mark.parametrize("error_type", (OSError, RuntimeError))
+def test_freshness_query_failure_returns_typed_answer_without_fabricated_period(
+    error_type: type[Exception],
+) -> None:
+    class FailingQueryLayer:
+        def data_freshness(self) -> dict[str, object]:
+            raise error_type("injected mart failure")
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=FailingQueryLayer(),
+    )
+
+    result = resolver.answer_data_freshness("최근 업데이트 언제 됐어")
+
+    assert "상태: 확인 불가" in result["answer"]
+    assert "2026-05" not in result["answer"]
+    assert result["tool_calls"][0]["tool"] == "get_data_freshness"
+    assert result["tool_calls"][0]["qa_trace"]["status"] == "query_failed"
+
+
+def test_freshness_trace_uses_canonical_cross_grain_data_as_of() -> None:
+    class MixedGrainQueryLayer:
+        def data_freshness(self) -> dict[str, object]:
+            return {
+                "source": "strategic mart",
+                "tool": "get_data_freshness",
+                "render_data": {
+                    "status": "ok",
+                    "metric": "data_freshness",
+                    "sources": [
+                        {"source": "UBIST", "max_period": "2026-05"},
+                        {"source": "IQVIA NSA", "max_period": "2026-Q1"},
+                    ],
+                    "data_as_of": "2026-05",
+                },
+            }
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=MixedGrainQueryLayer(),
+    )
+
+    result = resolver.answer_data_freshness("최신 데이터가 언제까지야")
+
+    assert result["tool_calls"][0]["qa_trace"]["data_as_of"] == "2026-05"
+
+
+def test_freshness_final_answer_never_calls_genos(monkeypatch) -> None:
+    def unexpected_genos_call(*_args):
+        raise AssertionError("deterministic freshness answers must not call GenOS")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_genos_call)
+    result = {
+        "answer": "UBIST 처방 데이터는 2026-05까지 반영되어 있습니다.",
+        "sources": ["UBIST"],
+        "tool_calls": [],
+        "router_diagnostics": {"mode": "data_freshness"},
+    }
+
+    final = compute_final_answer("최신 데이터가 언제까지야", result, "freshness")
+
+    assert final.text == result["answer"]
+
+
 def _reconstruct_answer_from_sse(sse: str) -> str:
     answer_parts: list[str] = []
     for block in sse.split("\n\n"):
@@ -311,6 +427,52 @@ def test_compute_final_answer_does_not_recreate_recent_trend_from_cached_fallbac
         "disposition": "cached_partial",
         "body_empty": False,
     }
+
+
+def test_compute_final_answer_rejects_progress_preamble_as_final_body(monkeypatch) -> None:
+    result = {
+        "answer": "",
+        "sources": ["ClinicalTrials.gov"],
+        "tool_calls": [
+            {
+                "tool": "clinicaltrials_v2_search",
+                "status": "ok",
+                "render_data": {"ok": True, "evidence": [{"id": "NCT001"}]},
+            }
+        ],
+        "router_diagnostics": {"mode": "tool_use_agent"},
+        "markdown_response": {"fact_md": "", "data_md": ""},
+    }
+    preamble = service_app._verified_evidence_prefix(result)
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter((preamble,)))
+
+    final = compute_final_answer("2026년 5월 데이터 있어?", result, "preamble-only")
+
+    assert "정리하고 있어요" not in final.text
+    assert "상태: 확인 불가" in final.text
+    assert final.text.strip()
+    assert final.trace["qa_trace"]["final"] == {
+        "disposition": "safe_error",
+        "body_empty": False,
+        "body_status": "preamble_only",
+    }
+
+
+def test_compute_final_answer_rejects_generic_progress_only_final_body(monkeypatch) -> None:
+    result = {
+        "answer": "",
+        "sources": [],
+        "tool_calls": [],
+        "router_diagnostics": {"mode": "tool_use_agent"},
+        "markdown_response": {"fact_md": "", "data_md": ""},
+    }
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter(("검토 중입니다.",)))
+
+    final = compute_final_answer("2026년 5월 데이터 있어?", result, "generic-preamble-only")
+
+    assert final.text != "검토 중입니다."
+    assert "상태: 확인 불가" in final.text
+    assert final.trace["qa_trace"]["final"]["body_status"] == "preamble_only"
 
 
 def test_compute_final_answer_checks_trend_relations_after_llm_synthesis(monkeypatch) -> None:
