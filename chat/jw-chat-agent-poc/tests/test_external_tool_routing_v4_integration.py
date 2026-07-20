@@ -329,7 +329,7 @@ def test_a01_partial_periods_preserve_official_rows_without_trend_claim(monkeypa
 def test_d06_authoritative_timeout_stops_without_web_fallback(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
 
-    def timeout(*, sick_cd: str, year: str = "2024") -> ExternalCall:
+    def timeout(sick_cd: str, *, year: str = "2024") -> ExternalCall:
         del sick_cd, year
         raise requests.Timeout("authoritative timeout")
 
