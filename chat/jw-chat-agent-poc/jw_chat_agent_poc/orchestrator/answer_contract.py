@@ -392,7 +392,7 @@ def _intent(question: str, fact_md: str = "") -> str | None:
 def _ranking_question(question: str) -> bool:
     if any(token in question for token in ("채널", "경쟁", "구도", "상위", "비교", "아토젯")):
         return False
-    return "순위" in question or any(token in question for token in ("몇 위", "몇위", "위야", "위?", "랭킹"))
+    return "순위" in question or any(token in question for token in ("몇 위", "몇위", "위야", "랭킹"))
 
 
 def _trend_question(question: str) -> bool:

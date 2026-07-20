@@ -281,6 +281,21 @@ def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> Non
     assert "- 데이터:" not in revised
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 매출 단위?",
+        "리바로 점유율 단위?",
+    ),
+)
+def test_metric_unit_questions_do_not_activate_ranking_contract(question: str) -> None:
+    status = evaluate_answer_contract(question, "", {})
+    plans = answer_contract_backfill_tool_calls(question, "리바로", [])
+
+    assert status["intent"] != "ranking"
+    assert all(plan.name != "get_metric" for plan in plans)
+
+
 def test_sales_activity_contract_adds_missing_data_analysis_design() -> None:
     answer = "매출 추이는 확인됩니다. 최신 값은 저점 이후 회복 흐름을 보여줍니다.\n\n## 출처\n- 데이터: UBIST"
 
