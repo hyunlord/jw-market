@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 import requests
 
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.tool_use.contracts import AgentResult
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
+from jw_chat_agent_poc.tool_use.routing_v4_execution import claim_evidence_bindings
 from jw_chat_agent_poc.tool_use.routing_v4_rules import QuestionClassification
 from jw_chat_agent_poc.tool_use.routing_v4_types import (
     DomainDecisionSource,
@@ -34,6 +37,13 @@ class _TimeoutProvider:
     def choose(self, *, user_text: str, messages: list[dict], tools: list[dict]) -> ToolChoice:
         del user_text, messages, tools
         raise requests.Timeout("shadow planner timeout")
+
+
+class _SlowProvider:
+    def choose(self, *, user_text: str, messages: list[dict], tools: list[dict]) -> ToolChoice:
+        del user_text, messages, tools
+        time.sleep(0.25)
+        return ToolChoice(None, {}, "late shadow response", call_id=None)
 
 
 def _no_tool_provider(message: str = "no matching tool") -> _ChoiceSequence:
@@ -132,6 +142,34 @@ def test_shadow_planner_timeout_is_isolated_from_legacy_response(monkeypatch) ->
     diagnostics = shadow["router_diagnostics"]["routing_v4"]
     assert diagnostics["shadow_status"] == "error"
     assert diagnostics["shadow_error"] == "Timeout"
+
+
+def test_shadow_slow_provider_cannot_delay_the_legacy_response(monkeypatch) -> None:
+    question = "당뇨병성 황반부종(DME) 관련 임상시험을 찾아줘"
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "OFF")
+    off = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_no_tool_provider(),
+    )
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_SHADOW_MAX_WAIT_MS", "25")
+
+    started = time.monotonic()
+    shadow = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_no_tool_provider(),
+        routing_provider=_SlowProvider(),
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.10
+    assert _without_v4_diagnostics(shadow) == off
+    diagnostics = shadow["router_diagnostics"]["routing_v4"]
+    assert diagnostics["shadow_status"] == "budget_exceeded"
 
 
 def test_force_flag_does_not_disable_shadow_routing_provider(monkeypatch) -> None:
@@ -323,7 +361,134 @@ def test_a01_partial_periods_preserve_official_rows_without_trend_claim(monkeypa
     assert ccs["runtime_status"] == "partial"
     assert len(ccs["executed_calls"]) == 5
     assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
+    assert "일부 결과" in payload["answer"]
+    assert "2022" in payload["answer"]
+    assert payload["markdown_response"]["fact_md"]
+    assert payload["markdown_response"]["verification"]["status"] == "partial"
     assert not any(token in payload["answer"] for token in ("연속 상승", "연속 하락", "반등", "정점"))
+
+
+def test_a10_clinical_search_discloses_retrieved_displayed_and_upstream_total(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    studies = [
+        {"NCTId": f"NCT0000000{index}", "briefTitle": f"DME study {index}"}
+        for index in range(1, 8)
+    ]
+
+    def search(query_intr: str, *, query_type: str = "intervention") -> ExternalCall:
+        assert query_intr == "diabetic macular edema"
+        assert query_type == "condition"
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="ok",
+            summary_text="7 retrieved from 700",
+            render_data={
+                "items": studies,
+                "payload": {"totalCount": 700},
+                "request": {"query.condition": query_intr},
+            },
+        )
+
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "diabetic macular edema", "query_type": "condition"},
+                "global clinical source",
+                call_id="a10-1",
+            ),
+        )
+    )
+    monkeypatch.setattr(external, "clinicaltrials_v2_search", search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "당뇨병성 황반부종(DME) 관련 임상시험을 찾아줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=provider,
+    )
+
+    assert "현재 연결 조회 건수 = 7건" in payload["answer"]
+    assert "표시 건수 = 5건" in payload["answer"]
+    assert "원천 제공 총 건수 = 700건" in payload["answer"]
+
+
+def test_a10_does_not_invent_total_when_upstream_omits_it(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def search(query_intr: str, *, query_type: str = "intervention") -> ExternalCall:
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="ok",
+            summary_text="one retrieved",
+            render_data={
+                "items": [{"NCTId": "NCT00000001", "briefTitle": query_intr}],
+                "request": {"query_type": query_type},
+            },
+        )
+
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "diabetic macular edema", "query_type": "condition"},
+                "global clinical source",
+                call_id="a10-1",
+            ),
+        )
+    )
+    monkeypatch.setattr(external, "clinicaltrials_v2_search", search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "당뇨병성 황반부종(DME) 관련 임상시험을 찾아줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=provider,
+    )
+
+    assert "현재 연결 조회 건수 = 1건" in payload["answer"]
+    assert "표시 건수 = 1건" in payload["answer"]
+    assert "원천 제공 총 건수" not in payload["answer"]
+
+
+def test_d13_mutated_rendered_claim_fails_evidence_binding() -> None:
+    result = AgentResult(
+        status="ok",
+        answer="- 아일리아: 허가 품목 = 조작된 품목 [식약처 의약품 정보]",
+        tool_calls=(
+            {
+                "tool": "mfds_permission_search",
+                "status": "ok",
+                "render_data": {
+                    "evidence": [
+                        {
+                            "fact_id": "mfds_permission_search:1",
+                            "subject": "아일리아",
+                            "metric": "허가 품목",
+                            "value": None,
+                            "unit": None,
+                            "period": None,
+                            "source_name": "식약처 의약품 정보",
+                            "source_locator": "아일리아주사 · 바이엘코리아(주)",
+                            "raw_ref": "mfds_permission_search:1",
+                        }
+                    ]
+                },
+            },
+        ),
+        sources=("식약처 의약품 정보",),
+        traces=(),
+        fallback_code=None,
+    )
+
+    status, bindings = claim_evidence_bindings(result)
+
+    assert status == "fail"
+    assert bindings == []
 
 
 def test_d06_authoritative_timeout_stops_without_web_fallback(monkeypatch) -> None:

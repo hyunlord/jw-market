@@ -260,7 +260,7 @@ def test_second_invalid_llm_proposal_stops_without_filling_missing_arguments() -
 
 
 def test_d10_general_help_question_is_no_tool_not_missing_capability() -> None:
-    provider = _ChoiceSequence((ToolChoice(None, {}, "사용 방법을 안내합니다.", call_id=None),))
+    provider = _ChoiceSequence((ToolChoice(None, {}, "검증되지 않은 외부 사실을 답합니다.", call_id=None),))
 
     plan = _planner(provider).plan(
         "이 챗봇 어떻게 쓰는 거야?",
@@ -274,4 +274,6 @@ def test_d10_general_help_question_is_no_tool_not_missing_capability() -> None:
     assert plan.proposal.routing_decision.route_outcome is RouteOutcome.NO_TOOL
     assert plan.proposal.proposed_calls == ()
     assert plan.reason_code is None
-    assert plan.typed_message == "사용 방법을 안내합니다."
+    assert plan.typed_message != "검증되지 않은 외부 사실을 답합니다."
+    assert "시장" in plan.typed_message
+    assert "브랜드" in plan.typed_message

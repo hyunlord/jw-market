@@ -163,6 +163,18 @@ A11_PARTIAL_AXIS_FACT_MD = """## 확정 fact set
 """
 
 
+A11_SPECIALTY_CALLS = (
+    {
+        "tool": "get_brand_specialty_breakdown",
+        "status": "ok",
+        "render_data": {
+            "requested_dimension": "specialty",
+            "items": [{"specialty": "순환기내과", "sales": 18.20}],
+        },
+    },
+)
+
+
 SOURCE_CROSSCHECK_FACT_MD = """## 확정 fact set
 
 ### 필수 답변 fact
@@ -468,17 +480,45 @@ def test_a11_partial_axis_preserves_only_existing_axis_and_discloses_missing_axi
         question,
         "일반 시장표를 대신 제공하지 않습니다.",
         {"fact_md": A11_PARTIAL_AXIS_FACT_MD},
+        tool_calls=A11_SPECIALTY_CALLS,
     )
 
     assert "## 세그먼트 비교 지원 범위" in revised
     assert "| 진료과 | 지원 |" in revised
     assert "순환기내과 처방 18.20억원" in revised
     assert "| 유통채널 | 미지원 |" in revised
-    status = evaluate_answer_contract(question, revised, {"fact_md": A11_PARTIAL_AXIS_FACT_MD})
+    status = evaluate_answer_contract(
+        question,
+        revised,
+        {"fact_md": A11_PARTIAL_AXIS_FACT_MD},
+        tool_calls=A11_SPECIALTY_CALLS,
+    )
     assert status["status"] == "partial"
     assert status["reason_code"] == "PARTIAL_RESULT"
     assert status["provided_axes"] == ("진료과",)
     assert status["missing_axes"] == ("유통채널",)
+
+
+def test_a11_rendered_support_label_cannot_spoof_structured_axis_availability() -> None:
+    question = "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘"
+
+    revised = enforce_answer_contract(
+        question,
+        "일반 시장표를 대신 제공하지 않습니다.",
+        {"fact_md": A11_PARTIAL_AXIS_FACT_MD},
+        tool_calls=(),
+    )
+    status = evaluate_answer_contract(
+        question,
+        revised,
+        {"fact_md": A11_PARTIAL_AXIS_FACT_MD},
+        tool_calls=(),
+    )
+
+    assert "18.20억원" not in revised
+    assert status["status"] == "expected_gap"
+    assert status["provided_axes"] == ()
+    assert status["missing_axes"] == ("진료과", "유통채널")
 
 
 def test_source_crosscheck_contract_keeps_single_source_values_without_cross_claim() -> None:

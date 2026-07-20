@@ -274,3 +274,15 @@ def test_evidence_binding_positive_and_lineage_mutation_proofs_are_distinct() ->
         expected_evidence_ids=("HIRA_FIXTURE_01",),
         bound_evidence_ids=("MODEL_MEMORY",),
     )
+
+
+def test_a02_blocked_oracle_case_stops_the_release_gate() -> None:
+    from jw_chat_agent_poc.tool_use.routing_v4_release_gate import evaluate_release_gate
+
+    manifest = json.loads((CONTRACT_DIR / "expected_route_manifest.json").read_text(encoding="utf-8"))
+
+    decision = evaluate_release_gate(manifest)
+
+    assert decision.release_allowed is False
+    assert decision.blocking_cases == ("A-02",)
+    assert decision.reason_codes == ("APPROVED_ORACLE_MISSING",)
