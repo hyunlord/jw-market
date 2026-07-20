@@ -10,6 +10,7 @@ from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
 from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external import ExternalCall
 
 
 @dataclass(slots=True)
@@ -173,3 +174,120 @@ def test_enforce_typed_stop_does_not_execute_web_fallback(monkeypatch) -> None:
     assert ccs["routing_decision"]["route_outcome"] == "TYPED_STOP"
     assert ccs["reason_code"] == "CAPABILITY_NOT_IMPLEMENTED"
     assert ccs["executed_calls"] == []
+
+
+def test_a13_preserves_all_exact_family_rows_and_binds_each_claim(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    rows = [
+        {
+            "ITEM_SEQ": f"item-{index}",
+            "ITEM_NAME": f"아일리아주사{index}",
+            "ENTP_NAME": f"제조사{index}",
+            "ITEM_PERMIT_DATE": f"20240{index}01",
+        }
+        for index in range(1, 5)
+    ]
+
+    def permission_search(brand: str) -> ExternalCall:
+        assert brand == "아일리아"
+        return ExternalCall(
+            tool="mfds_permission_search",
+            source="external_api",
+            status="ok",
+            summary_text="exact family 4 rows",
+            render_data={"items": rows, "request": {"brand": brand}},
+        )
+
+    monkeypatch.setattr(external, "mfds_permission_search", permission_search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "아일리아의 허가 품목명과 업체명을 공식 허가정보 기준으로 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    for index in range(1, 5):
+        assert f"아일리아주사{index}" in payload["answer"]
+        assert f"제조사{index}" in payload["answer"]
+    evidence = payload["tool_calls"][0]["render_data"]["evidence"]
+    assert [fact["fact_id"] for fact in evidence] == [
+        "mfds_permission_search:1",
+        "mfds_permission_search:2",
+        "mfds_permission_search:3",
+        "mfds_permission_search:4",
+    ]
+    diagnostics = payload["router_diagnostics"]["routing_v4"]
+    assert diagnostics["claim_evidence_binding_status"] == "pass"
+    assert diagnostics["claim_evidence_bindings"] == [
+        {
+            "claim_ordinal": index,
+            "tool_name": "mfds_permission_search",
+            "evidence_ids": [f"mfds_permission_search:{index}"],
+        }
+        for index in range(1, 5)
+    ]
+
+
+def test_a03_exact_code_zero_rows_is_no_record_found_not_parent_substitution(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    observed_codes: list[str] = []
+
+    def no_rows(sick_cd: str, year: str = "2024") -> ExternalCall:
+        observed_codes.append(sick_cd)
+        return ExternalCall(
+            tool="hira_disease_hospitalization_outpatient_stats",
+            source="external_api",
+            status="ok",
+            summary_text="zero exact rows",
+            render_data={"items": [], "request": {"sick_cd": sick_cd, "year": year}},
+        )
+
+    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", no_rows)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "질병코드 H360 환자수 통계 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    assert observed_codes == ["H36.0"]
+    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert ccs["reason_code"] == "NO_RECORD_FOUND"
+    assert ccs["runtime_status"] == "typed_stop"
+    assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
+
+
+def test_a01_partial_periods_preserve_official_rows_without_trend_claim(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def period_rows(sick_cd: str, year: str = "2024") -> ExternalCall:
+        assert sick_cd == "D69.3"
+        available = year != "2022"
+        return ExternalCall(
+            tool="hira_disease_hospitalization_outpatient_stats",
+            source="external_api",
+            status="ok" if available else "no_data",
+            summary_text=f"{year} {'one row' if available else 'no rows'}",
+            render_data={
+                "items": ([{"year": year, "value": str(100 + int(year))}] if available else []),
+                "request": {"sick_cd": sick_cd, "year": year},
+            },
+        )
+
+    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", period_rows)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert ccs["reason_code"] == "PARTIAL_RESULT"
+    assert ccs["runtime_status"] == "partial"
+    assert len(ccs["executed_calls"]) == 5
+    assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
+    assert not any(token in payload["answer"] for token in ("연속 상승", "연속 하락", "반등", "정점"))
