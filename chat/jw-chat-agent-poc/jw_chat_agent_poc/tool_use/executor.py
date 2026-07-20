@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import logging
 from typing import Protocol
@@ -10,6 +11,7 @@ from typing import Protocol
 from pydantic import BaseModel, ValidationError
 import requests
 
+from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.common.timing import Timing, stage
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolEnvelope, ToolTrace
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
@@ -113,7 +115,7 @@ class AgentExecutor:
                 futures = [
                     pool.submit(
                         copy_context().run,
-                        _execute_with_progress,
+                        _execute_with_progress_and_trace,
                         self.timing,
                         spec,
                         payload,
@@ -126,8 +128,9 @@ class AgentExecutor:
                     start=1,
                 ):
                     try:
-                        envelope = future.result()
+                        envelope, started_at, ended_at = future.result()
                     except (FutureTimeoutError, requests.Timeout):
+                        started_at = qa_trace_started_at()
                         if not self.best_effort:
                             traces.append(
                                 ToolTrace(
@@ -147,6 +150,7 @@ class AgentExecutor:
                             error_code=FallbackCode.TOOL_TIMEOUT.value,
                             error_message="도구 조회 시간이 초과되었습니다.",
                         )
+                        ended_at = qa_trace_started_at()
                     except (requests.RequestException, ValidationError, KeyError, TypeError, ValueError) as exc:
                         LOGGER.warning("tool-use execution failed tool=%s error=%s", choice.name, exc)
                         traces.append(
@@ -168,15 +172,18 @@ class AgentExecutor:
                     public_preview = _public_preview(envelope)
                     safe_envelope = envelope.model_dump(exclude={"raw"}, mode="json")
                     safe_envelope["preview"] = public_preview
-                    tool_calls.append(
+                    call = attach_tool_qa_trace(
                         {
                             "tool": spec.name,
                             "source": spec.tags[0] if spec.tags else "tool_use",
                             "status": "ok" if envelope.ok else "error",
                             "summary_text": public_preview,
                             "render_data": safe_envelope,
-                        }
+                        },
+                        started_at=started_at,
+                        ended_at=ended_at,
                     )
+                    tool_calls.append(call)
                     traces.append(
                         ToolTrace(
                             step=step,
@@ -252,6 +259,7 @@ class AgentExecutor:
                 LOGGER.warning("tool-use arguments rejected tool=%s error=%s", choice.name, exc)
                 traces.append(ToolTrace(step=step, tool=choice.name, status="schema_invalid", fallback_code=FallbackCode.SCHEMA_INVALID, message="tool arguments rejected"))
                 return _terminal("tool argument schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
+            started_at = qa_trace_started_at()
             try:
                 with stage(self.timing, f"tool:{spec.name}", user_text) as progress:
                     envelope = _execute_with_timeout(spec, payload)
@@ -276,11 +284,23 @@ class AgentExecutor:
                 LOGGER.warning("tool-use execution failed tool=%s error=%s", choice.name, exc)
                 traces.append(ToolTrace(step=step, tool=choice.name, status="schema_invalid", fallback_code=FallbackCode.SCHEMA_INVALID, message=type(exc).__name__))
                 return _terminal("tool response schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
+            ended_at = qa_trace_started_at()
             ledger.add(envelope)
             public_preview = _public_preview(envelope)
             safe_envelope = envelope.model_dump(exclude={"raw"}, mode="json")
             safe_envelope["preview"] = public_preview
-            tool_calls.append({"tool": spec.name, "source": spec.tags[0] if spec.tags else "tool_use", "status": "ok" if envelope.ok else "error", "summary_text": public_preview, "render_data": safe_envelope})
+            call = attach_tool_qa_trace(
+                {
+                    "tool": spec.name,
+                    "source": spec.tags[0] if spec.tags else "tool_use",
+                    "status": "ok" if envelope.ok else "error",
+                    "summary_text": public_preview,
+                    "render_data": safe_envelope,
+                },
+                started_at=started_at,
+                ended_at=ended_at,
+            )
+            tool_calls.append(call)
             traces.append(ToolTrace(step=step, tool=spec.name, status="ok" if envelope.ok else "no_evidence", fallback_code=None if envelope.ok else FallbackCode.VERIFICATION_FAIL, message=public_preview))
             if not envelope.ok or not ledger.is_complete():
                 if self.best_effort:
@@ -398,3 +418,14 @@ def _execute_with_progress(
             else "확인된 근거 없음"
         )
         return envelope
+
+
+def _execute_with_progress_and_trace(
+    timing: Timing | None,
+    spec: ToolSpec,
+    payload: BaseModel,
+    user_text: str,
+) -> tuple[ToolEnvelope, datetime, datetime]:
+    started_at = qa_trace_started_at()
+    envelope = _execute_with_progress(timing, spec, payload, user_text)
+    return envelope, started_at, qa_trace_started_at()

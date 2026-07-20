@@ -392,7 +392,7 @@ def _intent(question: str, fact_md: str = "") -> str | None:
 def _ranking_question(question: str) -> bool:
     if any(token in question for token in ("채널", "경쟁", "구도", "상위", "비교", "아토젯")):
         return False
-    return "순위" in question or ("점유율" in question and any(token in question for token in ("몇 위", "몇위", "위야", "위?", "랭킹")))
+    return "순위" in question or any(token in question for token in ("몇 위", "몇위", "위야", "위?", "랭킹"))
 
 
 def _trend_question(question: str) -> bool:
@@ -853,9 +853,10 @@ def _answer_table_rows(answer: str) -> tuple[str, ...]:
 
 
 def _ranking_answer(fact: RankingFact) -> str:
+    display_rank = _human_rank(fact.rank)
     return "\n".join(
         (
-            f"{fact.brand}는 {fact.period} 기준 매출 {fact.sales}, 시장점유율 {fact.share}, 순위 {fact.rank}입니다.",
+            f"{fact.brand}는 {fact.period} 기준 매출 {fact.sales}, 시장점유율 {fact.share}, 순위 {display_rank}입니다.",
             "",
             "| 항목 | 값 |",
             "| --- | --- |",
@@ -863,9 +864,18 @@ def _ranking_answer(fact: RankingFact) -> str:
             f"| 기간 | {fact.period} |",
             f"| 매출 | {fact.sales} |",
             f"| 시장점유율 | {fact.share} |",
-            f"| 순위 | {fact.rank} |",
+            f"| 순위 | {display_rank} |",
         )
     )
+
+
+def _human_rank(rank: str) -> str:
+    match = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", rank)
+    if match:
+        return f"{match.group(1)}위({match.group(1)}/{match.group(2)})"
+    if re.fullmatch(r"\s*\d+\s*", rank):
+        return f"{rank.strip()}위"
+    return rank
 
 
 def _trend_answer(fact: TrendFact) -> str:
@@ -1048,7 +1058,7 @@ def _is_clinical_evidence_question(question: str) -> bool:
 
 def _is_positioning_question(question: str) -> bool:
     compact = re.sub(r"\s+", "", question.lower())
-    return any(
+    explicit = any(
         token in compact
         for token in (
             "포지셔닝",
@@ -1061,6 +1071,10 @@ def _is_positioning_question(question: str) -> bool:
             "positioning",
         )
     )
+    contextual = "위치" in compact and any(
+        token in compact for token in ("시장", "경쟁", "브랜드", "점유율", "매출")
+    )
+    return explicit or contextual
 
 
 def _is_threat_detection_question(question: str) -> bool:

@@ -191,6 +191,9 @@ def test_agent_executor_runs_all_forced_tools_before_accepting_complete_evidence
     assert result.status == "ok"
     assert calls == ["clinical", "permission"]
     assert [call["tool"] for call in result.tool_calls] == ["clinical", "permission"]
+    assert all(call["qa_trace"]["started_at"] for call in result.tool_calls)
+    assert all(call["qa_trace"]["ended_at"] for call in result.tool_calls)
+    assert all(call["qa_trace"]["row_count"] == 1 for call in result.tool_calls)
     assert provider.calls == 0
 
 
@@ -240,6 +243,9 @@ def test_agent_executor_runs_preplanned_independent_tools_in_parallel() -> None:
 
     assert result.status == "ok"
     assert [call["tool"] for call in result.tool_calls] == list(names)
+    assert all(call["qa_trace"]["started_at"] for call in result.tool_calls)
+    assert all(call["qa_trace"]["ended_at"] for call in result.tool_calls)
+    assert all(call["qa_trace"]["row_count"] == 1 for call in result.tool_calls)
     assert provider.calls == 0
     assert all(
         left[0] < right[1] and right[0] < left[1]

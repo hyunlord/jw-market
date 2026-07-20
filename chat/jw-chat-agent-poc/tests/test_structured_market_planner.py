@@ -68,6 +68,7 @@ def test_structured_metric_owner_uses_metric_semantics_not_market_token(
         "최신 데이터가 언제까지야",
         "최근 업데이트 언제 됐어",
         "시장 데이터는 몇 월까지 있어?",
+        "2026년 5월 데이터 있어?",
     ),
 )
 def test_structured_intent_identifies_data_freshness_questions(question: str) -> None:

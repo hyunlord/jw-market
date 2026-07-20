@@ -275,7 +275,8 @@ def test_ranking_contract_replaces_ubist_dash_with_verified_rank_answer() -> Non
     assert "리바로는 2026-04 기준" in revised
     assert "매출 84.93억원" in revised
     assert "시장점유율 3.76%" in revised
-    assert "순위 6/470" in revised
+    assert "순위 6위" in revised
+    assert "6/470" in revised
     assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in revised
     assert "- 데이터:" not in revised
 
@@ -1165,6 +1166,32 @@ def test_positioning_contract_requires_competitors_own_position_and_superior_gap
     assert "격차 0.44%p" in revised
     assert status["structural_contract"] == "positioning"
     assert status["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "고지혈증 시장에서 리바로 위치",
+        "리바로는 고지혈증 시장에서 몇 위",
+        "리바로 순위",
+    ),
+)
+def test_position_rank_phrasings_surface_human_rank_and_strategic_view(question: str) -> None:
+    revised = enforce_answer_contract(
+        question,
+        (
+            "상위 브랜드는 로수젯, 리피토, 리바로젯, 아토젯, 로수바미브입니다.\n\n"
+            "## 출처\n"
+            "| 출처 | 기준기간 | 뷰 |\n"
+            "| --- | --- | --- |\n"
+            "| UBIST | 2026-04 | 전략뷰 |"
+        ),
+        {"fact_md": POSITIONING_COMPLETE_FACT_MD},
+    )
+
+    assert "리바로" in revised
+    assert "6위" in revised
+    assert "전략뷰" in revised
 
 
 def test_positioning_contract_uses_key_value_rank_when_required_fact_block_is_absent() -> None:

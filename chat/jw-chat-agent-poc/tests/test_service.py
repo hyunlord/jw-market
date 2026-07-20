@@ -105,7 +105,10 @@ def _freshness_record(source: str, periods: tuple[str, ...]) -> MartRecord:
     )
 
 
-@pytest.mark.parametrize("question", ("최신 데이터가 언제까지야", "최근 업데이트 언제 됐어"))
+@pytest.mark.parametrize(
+    "question",
+    ("최신 데이터가 언제까지야", "최근 업데이트 언제 됐어", "2026년 5월 데이터 있어?"),
+)
 def test_freshness_question_uses_deterministic_mart_route_without_agent(
     question: str,
 ) -> None:
