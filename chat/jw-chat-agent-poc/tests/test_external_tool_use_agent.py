@@ -1199,6 +1199,42 @@ def test_genos_provider_parses_strict_tool_call(monkeypatch) -> None:
     assert posted["json"]["tool_choice"] == "auto"
 
 
+def test_genos_provider_omits_tool_fields_for_no_tool_question(monkeypatch) -> None:
+    # Given: the v4 planner classified a general-help request with no eligible tools.
+    posted: dict[str, Any] = {}
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"choices": [{"message": {"content": "사용 방법을 안내합니다."}}]}
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        posted.update({"url": url, **kwargs})
+        return _Response()
+
+    monkeypatch.setattr("jw_chat_agent_poc.tool_use.provider.requests.post", fake_post)
+    provider = GenosToolChoiceProvider(
+        base_url="https://planner.example",
+        token="dummy-token",
+        model="planner",
+    )
+
+    # When: the provider classifies the request without any external tool schema.
+    choice = provider.choose(
+        user_text="이 챗봇 어떻게 쓰는 거야?",
+        messages=[{"role": "user", "content": "이 챗봇 어떻게 쓰는 거야?"}],
+        tools=[],
+    )
+
+    # Then: no empty tool contract is sent and the natural no-tool answer survives.
+    assert choice == ToolChoice(None, {}, "사용 방법을 안내합니다.", call_id=None)
+    assert "tools" not in posted["json"]
+    assert "tool_choice" not in posted["json"]
+    assert "parallel_tool_calls" not in posted["json"]
+
+
 def test_tool_use_agent_answer_uses_guarded_markdown_generation_when_configured(monkeypatch) -> None:
     # Given: completed external evidence and a configured final-answer token.
     calls: list[tuple[str, str]] = []
