@@ -149,6 +149,20 @@ SEGMENT_COMPARE_FACT_MD = """## 확정 fact set
 """
 
 
+A11_PARTIAL_AXIS_FACT_MD = """## 확정 fact set
+
+### 필수 답변 fact
+| 구분 | 반드시 반영할 내용 |
+| --- | --- |
+| 진료과 지원 | UBIST 2026-04 기준 순환기내과 처방 18.20억원 |
+
+### 출처 유형 fact
+| 출처 | 상세 |
+| --- | --- |
+| 데이터 상세 | UBIST — 기간 2026-04, 시장 ml_006, view market_landscape |
+"""
+
+
 SOURCE_CROSSCHECK_FACT_MD = """## 확정 fact set
 
 ### 필수 답변 fact
@@ -425,6 +439,46 @@ def test_segment_compare_contract_surfaces_supported_and_missing_axes() -> None:
     )
     assert status["structural_contract"] == "segment_compare"
     assert status["status"] == "pass"
+
+
+def test_a11_zero_requested_axes_in_fact_set_emits_no_generic_table() -> None:
+    question = "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘"
+    answer = (
+        "리바로젯의 일반 매출을 대신 제공합니다.\n\n"
+        "| 기간 | 매출 |\n| --- | --- |\n| 2026-04 | 84.93억원 |"
+    )
+
+    revised = enforce_answer_contract(question, answer, {"fact_md": RANKING_FACT_MD})
+
+    assert "84.93억원" not in revised
+    assert "| 기간 | 매출 |" not in revised
+    assert "진료과" in revised
+    assert "유통채널" in revised
+    status = evaluate_answer_contract(question, revised, {"fact_md": RANKING_FACT_MD})
+    assert status["structural_contract"] == "segment_compare"
+    assert status["status"] == "expected_gap"
+    assert status["reason_code"] == "FIELD_NOT_EXPOSED"
+    assert status["missing_axes"] == ("진료과", "유통채널")
+
+
+def test_a11_partial_axis_preserves_only_existing_axis_and_discloses_missing_axis() -> None:
+    question = "리바로젯 제품의 진료과별·유통채널별 처방 추이를 알려줘"
+
+    revised = enforce_answer_contract(
+        question,
+        "일반 시장표를 대신 제공하지 않습니다.",
+        {"fact_md": A11_PARTIAL_AXIS_FACT_MD},
+    )
+
+    assert "## 세그먼트 비교 지원 범위" in revised
+    assert "| 진료과 | 지원 |" in revised
+    assert "순환기내과 처방 18.20억원" in revised
+    assert "| 유통채널 | 미지원 |" in revised
+    status = evaluate_answer_contract(question, revised, {"fact_md": A11_PARTIAL_AXIS_FACT_MD})
+    assert status["status"] == "partial"
+    assert status["reason_code"] == "PARTIAL_RESULT"
+    assert status["provided_axes"] == ("진료과",)
+    assert status["missing_axes"] == ("유통채널",)
 
 
 def test_source_crosscheck_contract_keeps_single_source_values_without_cross_claim() -> None:

@@ -130,6 +130,25 @@ def test_hira_prefix_does_not_switch_source_to_answer_an_unsupported_field() -> 
     assert plan.proposal.proposed_calls == ()
 
 
+def test_a07_many_product_family_stops_as_ambiguous_before_field_gap() -> None:
+    plan = _planner().plan(
+        "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘",
+        routing_mode=RoutingMode.ENFORCE,
+    )
+
+    assert plan.proposal.routing_decision == RoutingDecision(
+        source_domain="regulatory",
+        domain_decision_source=DomainDecisionSource.PREFIX_RULE,
+        capability_status=CapabilityStatus.FIELD_NOT_EXPOSED,
+        tool_selection_source=ToolSelectionSource.NONE,
+        route_outcome=RouteOutcome.TYPED_STOP,
+    )
+    assert plan.reason_code == "AMBIGUOUS_INPUT"
+    assert plan.proposal.proposed_calls == ()
+    assert "제품명" in str(plan.typed_message)
+    assert "web_search" not in plan.eligible_tools
+
+
 @pytest.mark.parametrize(
     "question",
     (
@@ -238,3 +257,21 @@ def test_second_invalid_llm_proposal_stops_without_filling_missing_arguments() -
     assert plan.reason_code == "INVALID_TOOL_ARGUMENTS"
     assert plan.proposal.routing_decision.route_outcome is RouteOutcome.TYPED_STOP
     assert plan.proposal.proposed_calls == ()
+
+
+def test_d10_general_help_question_is_no_tool_not_missing_capability() -> None:
+    provider = _ChoiceSequence((ToolChoice(None, {}, "사용 방법을 안내합니다.", call_id=None),))
+
+    plan = _planner(provider).plan(
+        "이 챗봇 어떻게 쓰는 거야?",
+        routing_mode=RoutingMode.ENFORCE,
+    )
+
+    assert provider.calls == 1
+    assert provider.visible_tool_names == [()]
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.UNRESOLVED
+    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.LLM
+    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.NO_TOOL
+    assert plan.proposal.proposed_calls == ()
+    assert plan.reason_code is None
+    assert plan.typed_message == "사용 방법을 안내합니다."

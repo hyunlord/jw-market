@@ -9,6 +9,11 @@ import requests
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
+from jw_chat_agent_poc.tool_use.routing_v4_rules import QuestionClassification
+from jw_chat_agent_poc.tool_use.routing_v4_types import (
+    DomainDecisionSource,
+    ProposedCall,
+)
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
 
@@ -127,6 +132,34 @@ def test_shadow_planner_timeout_is_isolated_from_legacy_response(monkeypatch) ->
     diagnostics = shadow["router_diagnostics"]["routing_v4"]
     assert diagnostics["shadow_status"] == "error"
     assert diagnostics["shadow_error"] == "Timeout"
+
+
+def test_force_flag_does_not_disable_shadow_routing_provider(monkeypatch) -> None:
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "diabetic macular edema", "query_type": "condition"},
+                "bounded candidate",
+                call_id="proposal-1",
+            ),
+        )
+    )
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+
+    payload = run_external_tool_agent(
+        "당뇨병성 황반부종(DME) 관련 임상시험을 찾아줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_no_tool_provider(),
+        routing_provider=provider,
+    )
+
+    assert provider.calls == 1
+    proposal = payload["router_diagnostics"]["routing_v4"]["proposed_routing_signature"]
+    assert proposal["routing_decision"]["tool_selection_source"] == "LLM"
+    assert proposal["proposed_calls"][0]["tool_name"] == "clinicaltrials_v2_search"
 
 
 def test_enforce_executes_the_prs_and_emits_ordered_ccs(monkeypatch) -> None:
@@ -291,3 +324,100 @@ def test_a01_partial_periods_preserve_official_rows_without_trend_claim(monkeypa
     assert len(ccs["executed_calls"]) == 5
     assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
     assert not any(token in payload["answer"] for token in ("연속 상승", "연속 하락", "반등", "정점"))
+
+
+def test_d06_authoritative_timeout_stops_without_web_fallback(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def timeout(*, sick_cd: str, year: str = "2024") -> ExternalCall:
+        del sick_cd, year
+        raise requests.Timeout("authoritative timeout")
+
+    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", timeout)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert ccs["reason_code"] == "UPSTREAM_UNAVAILABLE"
+    assert ccs["runtime_status"] == "typed_stop"
+    assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
+
+
+def test_d08_explicitly_truncated_result_fails_closed(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def truncated(brand: str) -> ExternalCall:
+        return ExternalCall(
+            tool="mfds_permission_search",
+            source="external_api",
+            status="ok",
+            summary_text="upstream result truncated",
+            render_data={
+                "truncated": True,
+                "items": [
+                    {
+                        "ITEM_SEQ": "201306324",
+                        "ITEM_NAME": f"{brand}주사",
+                        "ENTP_NAME": "바이엘코리아(주)",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(external, "mfds_permission_search", truncated)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "아일리아의 허가 품목명과 업체명을 공식 허가정보 기준으로 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert ccs["reason_code"] == "TRUNCATED_RESULT"
+    assert ccs["runtime_status"] == "typed_stop"
+    assert "아일리아주사" not in payload["answer"]
+
+
+def test_d09_duplicate_canonical_calls_never_execute(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    executions = 0
+    original = external.hira_disease_hospitalization_outpatient_stats
+
+    def counted(*, sick_cd: str, year: str = "2024") -> ExternalCall:
+        nonlocal executions
+        executions += 1
+        return original(sick_cd=sick_cd, year=year)
+
+    duplicate = ProposedCall(
+        tool_name="hira_disease_hospitalization_outpatient_stats",
+        normalized_args={"sick_cd": "D69.3", "year": "2024"},
+    )
+    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", counted)
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.tool_use.routing_v4_planner.classify_question",
+        lambda _question: QuestionClassification(
+            source_domain="hira",
+            domain_decision_source=DomainDecisionSource.INTENT_OWNER,
+            requested_capability="HIRA_DISEASE_PATIENT_STATS",
+            direct_calls=(duplicate, duplicate),
+            eligible_override=("hira_disease_hospitalization_outpatient_stats",),
+        ),
+    )
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "duplicate fixture",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    assert executions == 0
+    assert payload["tool_calls"] == []
+    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert ccs["reason_code"] == "INVALID_TOOL_ARGUMENTS"
