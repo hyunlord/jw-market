@@ -428,7 +428,12 @@ def _atc4_code(question: str) -> str | None:
 
 def _brand_hint(question: str) -> str:
     market_scope = detect_market_scope_intent(question)
-    if market_scope is not None and market_scope.brand_hint:
+    if (
+        market_scope is not None
+        and market_scope.brand_hint
+        and market_scope.brand_hint.replace(" ", "").casefold()
+        not in {"일반뷰", "전략뷰", "경쟁뷰", "generalview", "strategicview"}
+    ):
         return market_scope.brand_hint
     text = _SOURCE_PATTERN.sub(" ", question)
     text = _ATC4_PATTERN.sub(" ", text)

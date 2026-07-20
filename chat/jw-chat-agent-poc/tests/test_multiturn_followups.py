@@ -100,6 +100,20 @@ def test_deterministic_followups_inherit_only_the_requested_slot(
     assert resolved.unresolved_reference is False
 
 
+def test_market_metric_followup_prefers_the_previous_human_label_over_an_internal_market_id() -> None:
+    previous = _turn(
+        "고지혈증 시장 HHI",
+        market="ml_006",
+        market_definition="ml_006",
+        metric="HHI",
+    )
+
+    resolved = resolve_anaphora("시장 규모는?", previous)
+
+    assert resolved.resolved_question == "고지혈증 시장 규모는?"
+    assert resolved.unresolved_reference is False
+
+
 @pytest.mark.parametrize(
     "question",
     [

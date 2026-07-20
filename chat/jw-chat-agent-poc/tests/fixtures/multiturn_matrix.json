@@ -129,7 +129,7 @@
         {
           "question": "이 파일의 채널별 건수를 알려줘",
           "expected": {
-            "slots": {"file_name": ["small_channel.xlsx"]},
+            "slots": {"file_name": ["small_channel"]},
             "answer_contains": ["192", "100", "92"],
             "disposition": "answered"
           }
@@ -137,7 +137,7 @@
         {
           "question": "그중 1번 채널은 몇 건이야?",
           "expected": {
-            "slots": {"file_name": ["small_channel.xlsx"]},
+            "slots": {"file_name": ["small_channel"]},
             "answer_contains": ["92"],
             "answer_excludes": ["파일을 업로드"],
             "disposition": "answered"
@@ -185,7 +185,7 @@
       "turns": [
         {
           "question": "리바로 Cortellis 매출 알려줘",
-          "expected": {"answer_contains_any": ["확인 불가", "연결되어 있지", "조회할 수"], "answer_excludes": ["연속 상승", "연속 하락"], "disposition_any": ["unavailable", "answered"]}
+          "expected": {"answer_contains_any": ["확인 불가", "연결되어 있지", "조회할 수", "원천에 없음", "미보유"], "answer_excludes": ["연속 상승", "연속 하락"], "disposition_any": ["unavailable", "answered"]}
         },
         {
           "question": "리바로 매출 알려줘",

@@ -162,6 +162,7 @@ def test_membership_mismatch_preserves_resolved_brand_market_and_metric_slots() 
     assert slots.market == "ml_006"
     assert slots.market_definition == "고지혈증 시장"
     assert slots.metric == "점유율"
+    assert slots.view == "market_landscape"
 
     previous = ConversationTurn(
         question=result["question"],
@@ -169,7 +170,71 @@ def test_membership_mismatch_preserves_resolved_brand_market_and_metric_slots() 
         slots=slots,
     )
     resolved = resolve_anaphora("비만 시장에서는?", previous)
-    assert resolved.resolved_question == "비만 시장에서 마운자로 점유율은?"
+    assert resolved.resolved_question == "비만 시장에서 마운자로 전략뷰 점유율은?"
+
+
+def test_extract_slots_preserves_explicit_view_when_tool_payload_omits_it() -> None:
+    result = {
+        "question": "리바로 시장 규모를 전략뷰로 알려줘",
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [
+            {
+                "tool": "get_market_landscape",
+                "render_data": {
+                    "brand": "리바로",
+                    "market_name": "고지혈증",
+                    "metric": "market_top_brands",
+                },
+            }
+        ],
+    }
+
+    slots = extract_conversation_slots(result)
+
+    assert slots.view == "market_landscape"
+
+
+def test_ranked_followup_persists_the_deterministically_resolved_brand(monkeypatch) -> None:
+    store = SessionStore()
+    store.conversations.record_exchange(
+        "ranked-followup-persist",
+        "고지혈증 시장 상위 5개",
+        "1위 로수젯",
+        slots=ConversationSlots(anchor_brand="리바로", ranked_brands=("로수젯",)),
+    )
+
+    def stale_anchor_answer(*_args, **_kwargs):
+        return {
+            "answer": "로수젯 점유율은 9.1%입니다.",
+            "resolution": {"canonical_brand": "리바로"},
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "render_data": {
+                        "brand": "로수젯",
+                        "metric": "market_share",
+                        "period": "2026-05",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", stale_anchor_answer)
+
+    item = _answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "그중 1위 점유율은?",
+        "live",
+        "ranked-followup-persist",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["_qa_conversation"]["resolved_slots"]["anchor_brand"] == "로수젯"
+    assert store.conversations.get_or_create("ranked-followup-persist").turns[-1].slots.anchor_brand == "로수젯"
 
 
 def test_resolve_anaphora_maps_first_rank_only_from_previous_turn() -> None:
@@ -395,7 +460,7 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
         "execution_question": "가드렛 매출 추이는?",
         "history_source": "persisted",
         "previous_slots": {"anchor_brand": "리바로"},
-        "resolved_slots": {},
+        "resolved_slots": {"anchor_brand": "가드렛"},
         "resolution": {
             "brand": "가드렛",
             "unresolved_reference": False,

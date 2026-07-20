@@ -17,6 +17,7 @@ from jw_chat_agent_poc.service.conversation_followups import (
     requires_deterministic_followup,
     resolve_deterministic_followup,
 )
+from jw_chat_agent_poc.tools.metrics.market_scope_intent import map_market_view_reply
 
 
 _FIRST_RANK_RE = re.compile(r"그\s*중\s*1위(?:\s*브랜드)?")
@@ -71,12 +72,13 @@ class AnaphoraResolution:
 
 def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     resolution = result.get("resolution")
+    question = _text(result.get("question"))
     anchor = str(resolution.get("canonical_brand") or "").strip() if isinstance(resolution, dict) else ""
     market = ""
     market_definition = ""
     period = ""
     metric = ""
-    view = ""
+    view = map_market_view_reply(question) or ""
     result_ref: ResultReference | None = None
     result_ref_score = -1
     denominator = ""
@@ -92,7 +94,8 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     if scope == "market_membership_mismatch" and isinstance(resolution, dict):
         market = _text(resolution.get("requested_market_id"))
         market_definition = _text(resolution.get("requested_market_name"))
-        metric = _inheritable_intent(_text(result.get("question")))
+        metric = _inheritable_intent(question)
+        view = view or "market_landscape"
 
     deterministic_file_answer = str(result.get("deterministic_file_answer") or "")
     if deterministic_file_answer:
@@ -128,7 +131,7 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         if not isinstance(data, dict):
             continue
         anchor = anchor or _text(data.get("anchor_brand") or data.get("brand"))
-        view = view or _text(data.get("view_source_id") or data.get("view"))
+        view = view or _text(data.get("view_type") or data.get("view_source_id") or data.get("view"))
         market = market or _text(data.get("market_id") or data.get("market_name") or data.get("view_source_id"))
         market_definition = market_definition or _text(
             data.get("market_definition_full") or data.get("market_definition_label") or data.get("market_name")

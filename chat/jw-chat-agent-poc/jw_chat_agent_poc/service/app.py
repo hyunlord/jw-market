@@ -580,6 +580,12 @@ def _answer_question(
         previous_turn = state.turns[-1] if state.turns else None
         with trace_span("anaphora_resolution", "deterministic previous-turn slot resolution"):
             routing_resolution = resolve_anaphora(effective_question, previous_turn)
+        if (
+            previous_turn is None
+            and routing_resolution.unresolved_reference
+            and map_market_view_reply(effective_question) is not None
+        ):
+            routing_resolution = replace(routing_resolution, unresolved_reference=False)
         routing_question = routing_resolution.resolved_question
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
         metric_owner = structured_metric_owner(routing_question)
@@ -804,6 +810,8 @@ def _answer_question(
         result = _attach_file_context(result, delegated_file_context, file_source_items)
         result = _annotate_context_scope(result, context_scope)
         resolved_slots = extract_conversation_slots(result)
+        if routing_resolution.brand:
+            resolved_slots = replace(resolved_slots, anchor_brand=routing_resolution.brand)
         result["_qa_conversation"] = {
             "requested_question": effective_question,
             "resolved_question": routing_question,
@@ -1527,6 +1535,12 @@ def _answer_with_conversation(
     state = store.conversations.get_or_create(conversation_id)
     previous_turn = state.turns[-1] if state.turns else None
     resolution = resolve_anaphora(question, previous_turn)
+    if (
+        previous_turn is None
+        and resolution.unresolved_reference
+        and map_market_view_reply(question) is not None
+    ):
+        resolution = replace(resolution, unresolved_reference=False)
     if resolution.unresolved_reference:
         return unresolved_reference_result(question)
     if resolution.reusable_ranked is not None:

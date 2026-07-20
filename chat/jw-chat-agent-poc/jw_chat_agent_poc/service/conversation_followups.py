@@ -26,6 +26,12 @@ _BARE_SUBJECT_RE = re.compile(
 _FILE_CHANNEL_REFERENCE_RE = re.compile(r"그\s*중\s*\d{1,3}\s*번\s*채널")
 _EXPLICIT_YEAR_RE = re.compile(r"(?<!\d)(20\d{2})\s*년")
 _MARKET_LABEL_RE = re.compile(r"([가-힣A-Za-z0-9_-]{2,40}\s*시장)")
+_INTERNAL_MARKET_ID_RE = re.compile(r"(?:ml|strategy)_\d+", re.IGNORECASE)
+_VIEW_LABELS = {
+    "market_landscape": "전략뷰",
+    "competitive_dynamics": "경쟁뷰",
+    "general_view": "일반뷰",
+}
 _NON_BRAND_SUBJECTS = frozenset(
     {
         "날씨",
@@ -134,10 +140,12 @@ def resolve_deterministic_followup(
             return _unresolved(question)
         brand = previous_turn.slots.anchor_brand
         market = " ".join(market_match.group("market").split())
+        view = _VIEW_LABELS.get(previous_turn.slots.view or "", "")
+        scoped_intent = f"{view} {inherited_intent}" if view else inherited_intent
         return _resolved(
-            f"{market}에서 {brand} {inherited_intent}은?",
+            f"{market}에서 {brand} {scoped_intent}은?",
             brand,
-            f"{market}에서 {brand}의 {inherited_intent}로 이해했어요.",
+            f"{market}에서 {brand}의 {scoped_intent}로 이해했어요.",
         )
 
     subject = _bare_subject(question)
@@ -173,10 +181,13 @@ def _previous_year(turn: ConversationTurn) -> int | None:
 
 
 def _market_label(turn: ConversationTurn) -> str:
-    if turn.slots.market_definition:
-        return " ".join(turn.slots.market_definition.split())
+    definition = " ".join((turn.slots.market_definition or "").split())
+    if definition and _INTERNAL_MARKET_ID_RE.fullmatch(definition) is None:
+        return definition
     match = _MARKET_LABEL_RE.search(turn.question)
-    return " ".join(match.group(1).split()) if match else ""
+    if match is not None:
+        return " ".join(match.group(1).split())
+    return definition
 
 
 def _base_metric(intent: str) -> str:

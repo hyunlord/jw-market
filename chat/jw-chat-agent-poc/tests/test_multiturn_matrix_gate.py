@@ -35,7 +35,7 @@ def test_file_inheritance_scenario_matches_the_pinned_channel_fixture() -> None:
         {
             "question": "이 파일의 채널별 건수를 알려줘",
             "expected": {
-                "slots": {"file_name": ["small_channel.xlsx"]},
+                "slots": {"file_name": ["small_channel"]},
                 "answer_contains": ["192", "100", "92"],
                 "disposition": "answered",
             },
@@ -43,13 +43,78 @@ def test_file_inheritance_scenario_matches_the_pinned_channel_fixture() -> None:
         {
             "question": "그중 1번 채널은 몇 건이야?",
             "expected": {
-                "slots": {"file_name": ["small_channel.xlsx"]},
+                "slots": {"file_name": ["small_channel"]},
                 "answer_contains": ["92"],
                 "answer_excludes": ["파일을 업로드"],
                 "disposition": "answered",
             },
         },
     ]
+
+
+def test_failure_scenario_accepts_the_typed_source_absent_vocabulary() -> None:
+    matrix = load_matrix(FIXTURE)
+    scenario = next(item for item in matrix["scenarios"] if item["id"] == "MT-09")
+
+    assert scenario["turns"][0]["expected"]["answer_contains_any"] == [
+        "확인 불가",
+        "연결되어 있지",
+        "조회할 수",
+        "원천에 없음",
+        "미보유",
+    ]
+
+
+def test_speed_target_is_reported_separately_from_multiturn_correctness(tmp_path: Path) -> None:
+    class SlowFollowupClient:
+        def __init__(self) -> None:
+            self.turn = 0
+
+        def capture(self, question: str, _conversation_id: str) -> dict[str, object]:
+            self.turn += 1
+            return {
+                "answer": "검증된 응답",
+                "elapsed_s": float(self.turn),
+                "raw": "event:done\n",
+                "trace": {
+                    "qa_trace": {
+                        "conversation": {"resolved_question": question, "resolved_slots": {}},
+                        "final": {"disposition": "answered", "body_empty": False},
+                    }
+                },
+                "timing": None,
+            }
+
+        def cleanup(self, _conversation_id: str, _document_ids: list[DocumentIdentity]) -> list[str]:
+            return []
+
+    matrix = {
+        "scenarios": [
+            {
+                "id": "MT-TEST",
+                "name": "speed-is-advisory",
+                "turns": [
+                    {"question": "첫 질문", "expected": {"disposition": "answered"}},
+                    {"question": "후속 질문", "expected": {"disposition": "answered"}},
+                ],
+            }
+        ]
+    }
+
+    summary = run_matrix(
+        matrix,
+        SlowFollowupClient(),  # type: ignore[arg-type]
+        tmp_path / "out",
+        repeats=1,
+        mode="candidate",
+        fixture=None,
+        expected_commit="",
+        expected_digest="",
+    )
+
+    assert summary["accuracy_passed"] is True
+    assert summary["speed_target_passed"] is False
+    assert summary["passed"] is True
 
 
 def test_matrix_turn_gate_checks_trace_slots_and_answer_contract() -> None:

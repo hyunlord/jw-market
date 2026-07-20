@@ -501,6 +501,10 @@ def test_brand_hint_preserves_brand_names_starting_with_korean_particle_characte
     assert _brand_hint(f"일반뷰 ATC4 기준 {brand} 시장점유율") == brand
 
 
+def test_brand_hint_does_not_mistake_a_postposed_view_label_for_the_brand() -> None:
+    assert _brand_hint("리바로 일반뷰 시장 규모는?") == "리바로"
+
+
 @pytest.mark.parametrize("particle", ("은", "는", "이", "가", "을", "를"))
 def test_brand_hint_removes_only_a_trailing_korean_particle(particle: str) -> None:
     assert _brand_hint(f"일반뷰 기준 리바로{particle} 시장점유율") == "리바로"

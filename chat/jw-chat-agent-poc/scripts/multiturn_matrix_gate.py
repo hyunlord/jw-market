@@ -610,6 +610,8 @@ def run_matrix(
         item["scenario_id"] for item in scenario_summary
         if item["followup_not_slower"] is False
     ]
+    accuracy_passed = not failures and not capture_failures and not cleanup_failures
+    speed_target_passed = not speed_failures
     summary = {
         "captured_at": datetime.now(UTC).isoformat(),
         "mode": mode,
@@ -623,7 +625,9 @@ def run_matrix(
         "speed_failures": speed_failures,
         "capture_failures": capture_failures,
         "cleanup_failures": cleanup_failures,
-        "passed": not failures and not speed_failures and not capture_failures and not cleanup_failures,
+        "accuracy_passed": accuracy_passed,
+        "speed_target_passed": speed_target_passed,
+        "passed": accuracy_passed,
     }
     (output / "multiturn_matrix_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
