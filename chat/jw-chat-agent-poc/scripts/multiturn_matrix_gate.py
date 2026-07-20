@@ -18,6 +18,18 @@ import requests
 STREAM_PATH = "/api/v1/market/socket-lab/stream"
 FILES_PATH = "/api/v1/market/socket-lab/market/files"
 SESSION_DELETE_PATH = "/api/v1/rnd/chat/session/delete"
+BRIDGE_UPLOAD_PATH = "/upload"
+BRIDGE_COMMIT_PATH = "/commit"
+BRIDGE_DOCUMENTS_PATH = "/documents"
+BRIDGE_DELETE_PATH = "/documents/delete"
+WORKFLOW_ID = 301
+FILE_VDB_ID = 139
+
+
+def make_conversation_id(mode: str, scenario_id: str, repeat: int) -> str:
+    mode_code = "b" if mode == "baseline" else "c"
+    scenario_code = scenario_id.removeprefix("MT-").lower()
+    return f"mt-{mode_code}-{scenario_code}-r{repeat}-{uuid4().hex[:12]}"
 
 
 def load_matrix(path: Path) -> dict[str, Any]:
@@ -175,9 +187,11 @@ class PortalClient:
         timeout_s: float,
         portal_token: str,
         access_token: str,
+        file_bridge_base: str = "",
     ) -> None:
         self.stream_url = stream_url
         self.portal_base = portal_base.rstrip("/")
+        self.file_bridge_base = file_bridge_base.rstrip("/")
         self.timeout_s = timeout_s
         self.portal_token = portal_token
         self.access_token = access_token
@@ -212,6 +226,8 @@ class PortalClient:
         }
 
     def upload(self, conversation_id: str, fixture: Path) -> list[int]:
+        if self.file_bridge_base:
+            return self._bridge_upload(conversation_id, fixture)
         with fixture.open("rb") as handle:
             response = requests.post(
                 self.portal_base + FILES_PATH,
@@ -235,7 +251,78 @@ class PortalClient:
             time.sleep(2)
         raise TimeoutError("uploaded fixture did not become queryable")
 
+    def _bridge_upload(self, conversation_id: str, fixture: Path) -> list[int]:
+        with fixture.open("rb") as handle:
+            response = requests.post(
+                self.file_bridge_base + BRIDGE_UPLOAD_PATH,
+                data={
+                    "workflow_id": str(WORKFLOW_ID),
+                    "app_session_id": conversation_id,
+                    "vdb_id": str(FILE_VDB_ID),
+                    "return_when": "complete",
+                },
+                files=[("files", (fixture.name, handle))],
+                timeout=max(self.timeout_s, 1200),
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("file bridge upload response is not an object")
+        errors = _strings(payload.get("errors"))
+        if errors:
+            raise RuntimeError("file bridge upload failed: " + "; ".join(errors))
+        commit = payload.get("commit")
+        if not isinstance(commit, Mapping):
+            temp_documents = payload.get("temp_documents")
+            if not isinstance(temp_documents, list) or not temp_documents:
+                raise RuntimeError("file bridge upload returned no commit or temp documents")
+            commit_response = requests.post(
+                self.file_bridge_base + BRIDGE_COMMIT_PATH,
+                json={
+                    "workflow_id": WORKFLOW_ID,
+                    "vdb_id": FILE_VDB_ID,
+                    "app_session_id": conversation_id,
+                    "temp_documents": temp_documents,
+                },
+                timeout=max(self.timeout_s, 1200),
+            )
+            commit_response.raise_for_status()
+            commit = commit_response.json()
+        if not isinstance(commit, Mapping):
+            raise RuntimeError("file bridge commit response is not an object")
+        commit_errors = _strings(commit.get("errors"))
+        if commit_errors:
+            raise RuntimeError("file bridge commit failed: " + "; ".join(commit_errors))
+        if commit.get("file_only_ready") is not True:
+            raise RuntimeError("file bridge commit did not become queryable")
+        rows = commit.get("documents")
+        documents = rows if isinstance(rows, list) else []
+        identifiers = [
+            value
+            for row in documents
+            if isinstance(row, Mapping)
+            for value in [row.get("document_id")]
+            if type(value) is int and value > 0
+        ]
+        if not identifiers:
+            raise RuntimeError("file bridge commit returned no permanent document identity")
+        return sorted(set(identifiers))
+
     def documents(self, conversation_id: str) -> list[dict[str, Any]]:
+        if self.file_bridge_base:
+            response = requests.get(
+                self.file_bridge_base + BRIDGE_DOCUMENTS_PATH,
+                params={
+                    "workflow_id": WORKFLOW_ID,
+                    "app_session_id": conversation_id,
+                    "vdb_id": FILE_VDB_ID,
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload.get("documents") if isinstance(payload, Mapping) else None
+            return [dict(row) for row in rows if isinstance(row, Mapping)] if isinstance(rows, list) else []
         response = requests.get(
             self.portal_base + FILES_PATH,
             params={"sessionId": conversation_id},
@@ -249,15 +336,52 @@ class PortalClient:
 
     def cleanup(self, conversation_id: str, document_ids: Iterable[int]) -> list[str]:
         failures: list[str] = []
-        for document_id in document_ids:
-            response = requests.delete(
-                f"{self.portal_base}{FILES_PATH}/{document_id}",
-                params={"sessionId": conversation_id},
-                headers=self.auth_headers,
-                timeout=60,
-            )
-            if response.status_code >= 400:
-                failures.append(f"document_delete_http_{response.status_code}:{document_id}")
+        if self.file_bridge_base:
+            owned_ids = {value for value in document_ids if type(value) is int and value > 0}
+            try:
+                owned_ids.update(
+                    value
+                    for row in self.documents(conversation_id)
+                    for value in [row.get("document_id")]
+                    if type(value) is int and value > 0
+                )
+            except Exception as exc:
+                failures.append(f"bridge_documents:{type(exc).__name__}:{exc}")
+            for document_id in sorted(owned_ids):
+                response = requests.post(
+                    self.file_bridge_base + BRIDGE_DELETE_PATH,
+                    json={
+                        "workflow_id": WORKFLOW_ID,
+                        "vdb_id": FILE_VDB_ID,
+                        "app_session_id": conversation_id,
+                        "document_id": document_id,
+                    },
+                    timeout=60,
+                )
+                if response.status_code >= 400:
+                    failures.append(f"document_delete_http_{response.status_code}:{document_id}")
+                    continue
+                payload = response.json()
+                status = payload.get("status") if isinstance(payload, Mapping) else None
+                errors = _strings(payload.get("errors")) if isinstance(payload, Mapping) else ()
+                if errors or status not in {"deleted", "already_deleted", "not_found"}:
+                    failures.append(f"document_delete_failed:{document_id}:{status or '<empty>'}")
+            try:
+                residuals = self.documents(conversation_id)
+                if residuals:
+                    failures.append(f"document_residual:{len(residuals)}")
+            except Exception as exc:
+                failures.append(f"bridge_residual_check:{type(exc).__name__}:{exc}")
+        else:
+            for document_id in document_ids:
+                response = requests.delete(
+                    f"{self.portal_base}{FILES_PATH}/{document_id}",
+                    params={"sessionId": conversation_id},
+                    headers=self.auth_headers,
+                    timeout=60,
+                )
+                if response.status_code >= 400:
+                    failures.append(f"document_delete_http_{response.status_code}:{document_id}")
         response = requests.put(
             self.portal_base + SESSION_DELETE_PATH,
             headers={"Content-Type": "application/json", **self.auth_headers},
@@ -289,46 +413,55 @@ def run_matrix(
     for repeat in range(1, repeats + 1):
         for scenario in matrix["scenarios"]:
             scenario_id = str(scenario["id"])
-            conversation_id = f"latency-mt-{mode}-{scenario_id.lower()}-r{repeat}-{uuid4()}"
+            conversation_id = make_conversation_id(mode, scenario_id, repeat)
             document_ids: list[int] = []
-            if scenario.get("file_fixture") is True:
-                if fixture is None:
-                    capture_failures.append(f"{scenario_id}/r{repeat}:file_fixture_missing")
-                    continue
-                document_ids = client.upload(conversation_id, fixture)
             turn_rows: list[dict[str, Any]] = []
+            can_capture = True
             try:
-                for turn_index, turn in enumerate(scenario["turns"], start=1):
-                    key = f"{scenario_id}_r{repeat}_t{turn_index}"
-                    try:
-                        capture = client.capture(str(turn["question"]), conversation_id)
-                    except Exception as exc:
-                        capture_failures.append(f"{key}:{type(exc).__name__}:{exc}")
-                        break
-                    raw = str(capture.pop("raw"))
-                    (raw_dir / f"{key}.sse").write_text(raw, encoding="utf-8")
-                    failures = evaluate_turn(turn, capture)
-                    trace = capture.get("trace")
-                    version = trace.get("version") if isinstance(trace, Mapping) else None
-                    version_items = version if isinstance(version, Mapping) else {}
-                    if expected_commit and version_items.get("git_sha") != expected_commit:
-                        failures.append("commit_mismatch")
-                    if expected_digest and version_items.get("image_digest") != expected_digest:
-                        failures.append("digest_mismatch")
-                    row = {
-                        "key": key,
-                        "question": turn["question"],
-                        "answer": capture["answer"],
-                        "elapsed_s": capture["elapsed_s"],
-                        "trace": trace,
-                        "timing": capture.get("timing"),
-                        "failures": failures,
-                    }
-                    turn_rows.append(row)
-                    (output / f"{key}.json").write_text(
-                        json.dumps(row, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8",
-                    )
+                if scenario.get("file_fixture") is True:
+                    if fixture is None:
+                        capture_failures.append(f"{scenario_id}/r{repeat}:file_fixture_missing")
+                        can_capture = False
+                    else:
+                        try:
+                            document_ids = client.upload(conversation_id, fixture)
+                        except Exception as exc:
+                            capture_failures.append(
+                                f"{scenario_id}/r{repeat}:upload:{type(exc).__name__}:{exc}"
+                            )
+                            can_capture = False
+                if can_capture:
+                    for turn_index, turn in enumerate(scenario["turns"], start=1):
+                        key = f"{scenario_id}_r{repeat}_t{turn_index}"
+                        try:
+                            capture = client.capture(str(turn["question"]), conversation_id)
+                        except Exception as exc:
+                            capture_failures.append(f"{key}:{type(exc).__name__}:{exc}")
+                            break
+                        raw = str(capture.pop("raw"))
+                        (raw_dir / f"{key}.sse").write_text(raw, encoding="utf-8")
+                        failures = evaluate_turn(turn, capture)
+                        trace = capture.get("trace")
+                        version = trace.get("version") if isinstance(trace, Mapping) else None
+                        version_items = version if isinstance(version, Mapping) else {}
+                        if expected_commit and version_items.get("git_sha") != expected_commit:
+                            failures.append("commit_mismatch")
+                        if expected_digest and version_items.get("image_digest") != expected_digest:
+                            failures.append("digest_mismatch")
+                        row = {
+                            "key": key,
+                            "question": turn["question"],
+                            "answer": capture["answer"],
+                            "elapsed_s": capture["elapsed_s"],
+                            "trace": trace,
+                            "timing": capture.get("timing"),
+                            "failures": failures,
+                        }
+                        turn_rows.append(row)
+                        (output / f"{key}.json").write_text(
+                            json.dumps(row, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
             finally:
                 cleanup_failures.extend(
                     f"{scenario_id}/r{repeat}:{item}"
@@ -411,6 +544,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--matrix", type=Path, default=Path("tests/fixtures/multiturn_matrix.json"))
     parser.add_argument("--stream-url", required=True)
     parser.add_argument("--portal-base", required=True)
+    parser.add_argument("--file-bridge-base", default="")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("baseline", "candidate"), required=True)
     parser.add_argument("--repeats", type=int)
@@ -439,6 +573,7 @@ def main() -> int:
     client = PortalClient(
         stream_url=args.stream_url,
         portal_base=args.portal_base,
+        file_bridge_base=args.file_bridge_base,
         timeout_s=args.timeout_s,
         portal_token=portal_token,
         access_token=access_token,
