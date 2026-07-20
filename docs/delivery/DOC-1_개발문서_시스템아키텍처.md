@@ -355,9 +355,9 @@ web/
 
 ## 확인 결과 · 잔여 항목
 
-2026-07-18 jw market 실측(근거: `evidence/openq_resolution_20260718.md`). ✅=해소, ⏳=PL/데이터 대기(→ [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)).
+2026-07-18 jw market 실측(근거: 저장소 audit evidence). ✅=해소, ⏳=PL/데이터 대기(저장소 작업 메모 `OPEN_QUESTIONS.md`; 전달 패키지 제외).
 
 1. 운영 좌표는 문서의 과거 캡처가 아니라 live query로 확인한다.
 2. backend와 `dynamic-market-cache-warm`의 imageID가 다르면 캐시 계산 경로 drift로 분류해 별도 게이트한다.
 3. 사이트 코드는 Gitea 원격 HEAD, 실행체는 Deployment/pod imageID로 각각 확인한다.
-4. 비용·실적재 전환처럼 승인에 의존하는 항목은 [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)에 남기고 문서가 임의 확정하지 않는다.
+4. 비용·실적재 전환처럼 승인에 의존하는 항목은 저장소 작업 메모 `OPEN_QUESTIONS.md`에 남기고 문서가 임의 확정하지 않는다.

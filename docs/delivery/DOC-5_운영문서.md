@@ -212,7 +212,7 @@ jw-data-input(사이트) "제출 확정"
 - **CronJob 성공 여부**: `kubectl -n llmops get cronjob`(LAST SCHEDULE·SUSPEND) / `kubectl -n llmops get jobs`(COMPLETIONS)로 라이브 CronJob(2-3절 False 행)의 성공을 확인. 실패 Job은 `failedJobsHistoryLimit=3`으로 보존된 pod 로그를 확인.
 - **파이프라인 로그**: 오케스트레이터·빌더는 JSON 1줄 1이벤트 로그(stdout + `--log-file`). 게이트 통과/중단이 이벤트로 남는다.
 - **증분 훅(현재 라이브)**: 트리거 서비스 헬스 `GET /healthz`(Deployment `jw-ingest-hook` 1/1), ledger 상태 분포 `SELECT status, COUNT(*) FROM ingest_ledger GROUP BY status`, sweep CronJob `jw-ingest-sweep-daily` 성공 여부. Σ 게이트 로그(`gate=sigma … worst_rel=…`)로 정합 감시. 단 리허설 env가 걸려 있는 동안은 실적재/refresh가 스킵되므로 mart 반영은 없다.
-- 그 외 대시보드/알림(Grafana·Alertmanager): 확인 결과(2026-07-18 실측) — 클러스터 전역 kube-prometheus-stack이 `monitoring` 네임스페이스에 상주(`prom-grafana-0` 3/3, `alertmanager-prom-0` 2/2, `prom-prometheus-node-exporter-*`). 단 **jw-market 서비스는 이 스택에 미배선**이다: `llmops` 네임스페이스(backend/cronjob 소재)에 ServiceMonitor·PrometheusRule 0개(전역 ServiceMonitor 9개 중 llmops 소속 없음, CRD 조회 가능 → 부재는 실측 음성). 즉 노드/클러스터 메트릭은 수집되나 **jw-market 서비스별 전용 대시보드·알림룰은 미구성**이며, 앱-레벨 모니터링 추가 여부는 플랫폼 소관이다 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)(근거: `evidence/openq_resolution_20260718.md`).
+- 그 외 대시보드/알림(Grafana·Alertmanager): 확인 결과(2026-07-18 실측) — 클러스터 전역 kube-prometheus-stack이 `monitoring` 네임스페이스에 상주(`prom-grafana-0` 3/3, `alertmanager-prom-0` 2/2, `prom-prometheus-node-exporter-*`). 단 **jw-market 서비스는 이 스택에 미배선**이다: `llmops` 네임스페이스(backend/cronjob 소재)에 ServiceMonitor·PrometheusRule 0개(전역 ServiceMonitor 9개 중 llmops 소속 없음, CRD 조회 가능 → 부재는 실측 음성). 즉 노드/클러스터 메트릭은 수집되나 **jw-market 서비스별 전용 대시보드·알림룰은 미구성**이며, 앱-레벨 모니터링 추가 여부는 플랫폼 소관이다. 결정은 저장소 작업 메모 `OPEN_QUESTIONS.md`에서 추적하며 전달 패키지에서는 제외한다.
 
 ---
 

@@ -204,7 +204,7 @@ UBIST 진료과 매핑(`etl/config/customer_dictionary.yaml:29-66`).
 
 | # | 항목 | 사유 | 처리 |
 |---|---|---|---|
-| 1 | 하이라이트 min5/max15 규칙 | 시장분석 백엔드 코드에 리터럴 미확인 (5장) | 포탈(SI) 프론트/트래커 소관 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md) |
-| 2 | 심층분석 화면 섹션 문안 목록 | 사전 계산 블록/포탈 렌더 의존 (7장) | 포탈(SI) 렌더 계층 소관 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md) |
+| 1 | 하이라이트 min5/max15 규칙 | 시장분석 백엔드 코드에 리터럴 미확인 (5장) | 포탈(SI) 프론트/트래커 소관 → 저장소 작업 메모 `OPEN_QUESTIONS.md` |
+| 2 | 심층분석 화면 섹션 문안 목록 | 사전 계산 블록/포탈 렌더 의존 (7장) | 포탈(SI) 렌더 계층 소관 → 저장소 작업 메모 `OPEN_QUESTIONS.md` |
 
-**[확인 필요] 총 2건 — 둘 다 포탈(SI) 렌더 계층 소관으로, 백엔드(jw market) 조사로는 해소 불가. OPEN_QUESTIONS.md 에 타 세션(SI) 회신 항목으로 등재.**
+**[확인 필요] 총 2건 — 둘 다 포탈(SI) 렌더 계층 소관으로, 백엔드(jw market) 조사로는 해소 불가. 저장소 작업 메모 `OPEN_QUESTIONS.md`에 타 세션(SI) 회신 항목으로 등재되어 있으며 전달 패키지에서는 제외한다.**
