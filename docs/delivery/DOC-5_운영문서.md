@@ -2,14 +2,13 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 소스(develop) | `7ca98403` (worktree `/tmp/jwm-develop-docs`; 761b4def→7ca98403 전진 12커밋은 전부 ingest_hook·deploy/k8s/{ingest-hook,crawler}·RUNBOOK·tests 영역 — API·DB·시장분석 서술은 무변경) |
-| 운영 backend | GKE ns `llmops`, deployment `jw-market-backend-api` (HPA min 2 / max 8, 현재 8 replicas), generation **302** |
-| 운영 이미지 APP_VERSION | `ad782bc064ba03a45eaa4f1e301dbd75b8bf9a9e` (release annotation `jw-market/release=f139-brand-activity-general-scope`) |
-| 생성일 / 버전 | 2026-07-17 / v1.0 |
+| 기준 소스 | 원격 `develop` live HEAD (`git fetch jw-private develop && git rev-parse jw-private/develop`) |
+| 운영 backend | GKE ns `llmops`, Deployment `jw-market-backend-api`; replica·generation은 live query |
+| 운영 이미지 | Deployment image와 전체 pod `imageID`, `APP_VERSION` live 대조 |
+| 갱신일 / 버전 | 2026-07-20 / v2.0 |
 
 > 이 문서는 **관리자 운영**용이다. 자격증명 값은 일절 기재하지 않는다(계정명·secret 리소스명·보관 위치만 기술). 실체 확인이 불가한 절차는 `[확인 필요]`로 명시한다.
-> 인프라 실명·CronJob 실측 표의 정본은 `docs/delivery`와 동일 근거(BASELINE 실측, 2026-07-17)이며, 이 문서의 CronJob 표는 그 실측을 그대로 옮긴 것이다.
-> 월간 운영 정본 `RUNBOOK_MONTHLY.md`도 이번 전진에서 §5(crawl cutover 절)가 갱신됐다(8줄) — 3절·2-3절에 반영.
+> 운영 좌표와 CronJob 상태는 캡처값이 아니라 `kubectl -n llmops get deploy,pod,cronjob -o wide`로 확인한다. 배포는 [배포·승격·롤백 런북](RUNBOOK_배포_승격_롤백.md), 계정은 [온보딩 런북](RUNBOOK_계정_권한_온보딩.md), 복구는 [백업·복구 정책](POLICY_백업_복구.md)이 정본이다.
 
 ---
 
@@ -18,7 +17,7 @@
 - **서빙(backend)**: `jw-market-backend-api` (ns `llmops`, HPA min 2 / max 8, ClusterIP svc `jw-market-backend-api-service` :80 → :8000). 사용자 요청은 여기로만 들어온다. 데이터 적재/배치는 서빙과 **프로세스·Pod·엔드포인트를 공유하지 않는다**(설계 원칙).
 - **데이터 파이프라인(배치)**: ns `llmops`의 CronJob·Job 군. mart DB `jw_mart_d2_stage_20260630_r2`(MariaDB Galera `galera-mariadb-galera`)에 적재한다.
 - **월간 post-mart 체인**: `cache → forecast → strength → shortlong → events → elements`. 단일 진입점 `python -m pipeline.orchestrator run --mode full`. 이 명령은 raw source를 mart로 재적재하지 않으며, mart 갱신 뒤 후처리만 수행한다. 상세 절차는 `RUNBOOK_MONTHLY.md`가 정본.
-- **사이트(입력)**: `jw-data-portal`(입력·업로드, `v0.6.0-8ca9d98`), 별도 Deployment. 증분 훅(3절)이 이 사이트의 제출 확정(webhook)을 받는다 — **배포·기동됨(리허설 격리 모드), 실적재 미전환**.
+- **사이트(입력)**: `jw-data-portal`(입력·업로드), 별도 Deployment. 현재 imageID와 인입 모드는 live env로 확인한다.
 
 운영자가 알아야 할 두 축: **(A) 정기 전체 재적재(월간/분기, 2절)**와 **(B) 증분 적재 훅(3절, 배포·기동됨 — 리허설 격리 모드로 실 mart 미반영)**. 라이브로 도는 것은 (A)와 그 부속 CronJob들, 그리고 (B)의 트리거 서비스(`jw-ingest-hook`)·sweep CronJob이다. (B)의 실적재 전환(리허설 env 해제)은 PL 게이트로 남아 있다(3-5절).
 
@@ -74,9 +73,9 @@ python -m pipeline.orchestrator rehearse-full \
 - `--dry-run`은 명령 계획만 JSON으로 출력하고 work directory와 DB를 만들지 않는다.
 - dry-run 이후 실제 실행은 격리 DB write다. 운영 mart와의 전수 대조 및 R-1 게이트가 통과하기 전에는 "전체 재적재 재현 완료"로 보고하지 않는다.
 
-### 2-3. 상시 CronJob 운영 표 (ns `llmops`, 실측 2026-07-17)
+### 2-3. 상시 CronJob 운영 표 (ns `llmops`)
 
-> cron 스케줄은 별도 표기가 없으면 **UTC**(예: `0 16 * * *` = 01:00 KST). `SUSPEND=True`는 등록만 되고 자동 실행되지 않는 상태다.
+> 아래 표는 설계 기준이다. 실행 전 `kubectl -n llmops get cronjobs -o wide`로 schedule·suspend·last schedule을 확인한다. `SUSPEND=True`는 등록만 되고 자동 실행되지 않는 상태다.
 
 | CronJob | 스케줄 | SUSPEND | 상태 / 성격 |
 |---|---|---|---|
@@ -106,7 +105,7 @@ python -m pipeline.orchestrator rehearse-full \
 
 ## 3. 증분(훅) 운영 체계 — 활성화(리허설 모드)
 
-> **★ 현재 상태(2026-07-17 재실측)**: 훅 체계가 클러스터에 **배포·기동됐다** — Deployment `jw-ingest-hook`(1/1, 이미지 `jw-pipeline-orchestrator@sha256:fea29685…`), Service `jw-ingest-hook`(:8080), CronJob `jw-ingest-sweep-daily`(`30 19 * * *` UTC, suspend=False), mart DB에 `ingest_ledger` 테이블 생성됨(현재 3행). 사이트도 `v0.6.0-8ca9d98`로 재배포되어 MinIO·훅 트리거/상태 URL env가 붙었다.
+> **현재 상태 확인**: `kubectl -n llmops get deploy jw-ingest-hook -o json`, `get svc jw-ingest-hook`, `get cronjob jw-ingest-sweep-daily -o json` 및 serving DB의 `SELECT status, COUNT(*) FROM ingest_ledger GROUP BY status`로 재실측한다. 과거 캡처의 image·schedule·행수를 현재값으로 사용하지 않는다.
 > **단 완전 운영 전환 전 단계다**: 트리거 서비스·sweep에 **`INGEST_REHEARSAL_ROOT=/tmp/ingest-rehearsal`가 설정돼 있어 `job_runner`가 격리(리허설) 모드로 동작한다**(`config.py` 계약). 즉 제출을 받으면 CSV를 sqlite staging에 적재해 Σ게이트까지 검증하되 **오케스트레이터/mart 실적재(refresh)는 호출하지 않는다**(운영 무접촉 E2E). 리허설 env 제거 + 실적재 경로 승인(refresh 활성)은 **PL 게이트(D-3)**로 남아 있다.
 
 ### 3-1. 데이터 흐름
@@ -173,9 +172,9 @@ jw-data-input(사이트) "제출 확정"
 
 ### 4-2. 재적재 원복 (staging → 승격 실패/이상 시)
 
-- 모든 write는 빌더의 **staging → gate → swap** 경로로만 이뤄진다(live 테이블 직접 write 금지). cache-refresh는 apply 전 `cache_deep_analysis_bak_d2_prev3_<RUN_ID>`로 라이브를 백업한다.
-- 이상 감지 시 원복은 백업 테이블을 원자 `RENAME`으로 되돌리는 방식(과거 F-124a 승격에서 검증된 패턴). 대상 백업 테이블명과 원복 SQL은 실행 전 보존한다.
-- staging/backup 테이블은 `_bak_*`·`_stage_*`·`_backup_*` 등 패턴으로 식별하며 정본이 아니다(정본: `catalog_ml_market`/`catalog_cd_market`/`catalog_strategic_brand`).
+- 모든 write는 빌더의 **staging → gate → swap** 경로로만 이뤄진다(live 테이블 직접 write 금지).
+- 이상 감지 시 통합 rollback CLI가 ledger의 완전한 promotion 세트, 비어 있지 않은 백업, 행수와 digest를 확인한 뒤 원자 전환한다. 상세는 [백업·복구 정책](POLICY_백업_복구.md)을 따른다.
+- `_bak_*`·`_stage_*` 같은 이름만으로 정본·백업 여부를 판단하지 않는다. 현재 serving DB는 Deployment `DB_NAME`, 세대 순서는 promotion ledger가 정본이다.
 
 ### 4-3. 증분 훅 Job 실패 (현재 라이브 — 리허설 모드)
 
@@ -186,8 +185,8 @@ jw-data-input(사이트) "제출 확정"
 
 ### 4-4. backend 롤백 (이미지 digest 교체)
 
-- backend는 digest-pin 이미지로 배포된다(운영 gen 302, 이미지 `jw-market-backend-api@sha256:d5e2…cd66`(deployment 실측); APP_VERSION `ad782bc0`).
-- 롤백은 배포 매니페스트의 이미지 digest를 이전 정상 digest로 교체 → `kubectl -n llmops set image deployment/jw-market-backend-api ...` 또는 `kubectl rollout undo deployment/jw-market-backend-api`.
+- backend는 immutable digest로 배포한다. 현재 generation·imageID·APP_VERSION은 [배포·승격·롤백 런북](RUNBOOK_배포_승격_롤백.md)의 live query로 확인한다.
+- 롤백은 승격 직전 보존한 Deployment JSON에서 이전 정상 digest와 APP_VERSION을 읽어 같은 CAS 절차로 복원한다. revision 번호만 믿는 `kubectl rollout undo`는 표준 절차로 사용하지 않는다.
 - 검증: `GET /api/health`의 `version` 필드가 목표 커밋(APP_VERSION)과 일치하는지 대조(§6).
 - ★ `api/Dockerfile` 및 보호 blob은 수정 금지(계약 테스트가 sha256 pin). agent3 Job도 같은 backend 이미지 계보를 쓰므로 롤백 시 rev pin(`AGENT3_WORKFLOW_REV=5692`) 정합을 함께 확인한다.
 
@@ -195,9 +194,12 @@ jw-data-input(사이트) "제출 확정"
 
 ## 5. 백업
 
-- **Gitea 저장소 백업**: CronJob `jw-gitea-dump-daily`(라이브, `40 19 * * *` UTC = 04:40 KST). Gitea org `jw-market`(`jw-data-input.git`, `jw-market.git`)의 일일 덤프. 이 CronJob은 플랫폼 소관이며 이 repo `deploy/`에 매니페스트가 없다(클러스터 실측만 확인).
-- **재적재 staging 백업 규약**: 각 빌더가 apply 전 라이브를 백업 테이블로 복제한다. 관측된 패턴 예: `cache_deep_analysis_bak_d2_prev3_<RUN_ID>`. 백업/작업용 테이블 접두 규약 = `_bak_*`·`_backup_*`·`_stage_*`·`_mig_stg_*`·`_old_*`·`__failed_*`·`_cutover_*`(정본 아님으로 분류).
-- **mart DB(MariaDB Galera) 자체 백업**: **PL/플랫폼 판단 사안** — 이 repo/실측 범위(2026-07-18)에서 DB 스냅샷·PITR·mysqldump 스케줄의 존재를 확인하지 못했다(코드·매니페스트 부재). Galera 3-노드 복제(`galera-mariadb-galera` 3/3)는 고가용이나 백업과는 별개이므로, 정기 논리 백업 정책 유무·주기는 플랫폼팀 결정 사안이다 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
+백업 대상·보존·복구·리허설의 정본은 [백업·복구 정책](POLICY_백업_복구.md)이다.
+
+- Gitea dump Job의 스케줄과 최근 성공은 `kubectl -n llmops get cronjob jw-gitea-dump-daily -o json` 및 관련 Job으로 live 확인한다.
+- mart는 격리 generation + promotion ledger + `__old_<run_id>` 세트를 사용한다. 이름 패턴은 삭제·복구 판정 근거가 아니다.
+- `python3 -m pipeline.scripts.rollback retention --list --target-db "$DB_NAME"`는 후보만 출력한다. `--apply`는 별도 승인 없이는 실행하지 않는다.
+- Galera replica는 고가용 수단이며 논리 백업/PITR을 대체하지 않는다. 플랫폼 백업은 성공 로그뿐 아니라 격리 복원 리허설로 검증한다.
 
 ---
 
@@ -205,8 +207,8 @@ jw-data-input(사이트) "제출 확정"
 
 실존이 확인된 지표만 기술한다.
 
-- **backend 헬스**: `GET /api/health` → `{status:"ok", markets_loaded, brands_loaded, version}`. 운영 캡처(2026-07-17): `markets_loaded=25`, `brands_loaded=25`, `version=ad782bc0…`. 배포 전환 후 image tag / APP_VERSION / OpenAPI version 대조에 사용한다.
-- **backend 오토스케일(HPA)**: `jw-market-backend-api-hpa`(대상 Deployment `jw-market-backend-api`) 존재 — **min 2 / max 8, memory 60% 타깃**. 재실측(2026-07-17) 시 현재 memory 85%(타깃 60% 초과) → **8/8 replicas**로 스케일아웃된 상태. 상태 확인: `kubectl -n llmops get hpa jw-market-backend-api-hpa`(TARGETS·MINPODS·MAXPODS·REPLICAS) / `kubectl -n llmops get deploy jw-market-backend-api`(READY). 지속적으로 max(8)에 붙어 있으면 max 상향 또는 메모리 타깃·요청량을 재검토한다.
+- **backend 헬스**: `GET /api/health` → `{status, markets_loaded, brands_loaded, version}`. 배포 전환 후 pod imageID / APP_VERSION / 응답 version 대조에 사용한다.
+- **backend 오토스케일(HPA)**: `kubectl -n llmops get hpa jw-market-backend-api-hpa`와 `kubectl -n llmops get deploy jw-market-backend-api`로 현재 target·min/max·replica를 조회한다. max에 지속적으로 붙으면 용량 계획을 재검토한다.
 - **CronJob 성공 여부**: `kubectl -n llmops get cronjob`(LAST SCHEDULE·SUSPEND) / `kubectl -n llmops get jobs`(COMPLETIONS)로 라이브 CronJob(2-3절 False 행)의 성공을 확인. 실패 Job은 `failedJobsHistoryLimit=3`으로 보존된 pod 로그를 확인.
 - **파이프라인 로그**: 오케스트레이터·빌더는 JSON 1줄 1이벤트 로그(stdout + `--log-file`). 게이트 통과/중단이 이벤트로 남는다.
 - **증분 훅(현재 라이브)**: 트리거 서비스 헬스 `GET /healthz`(Deployment `jw-ingest-hook` 1/1), ledger 상태 분포 `SELECT status, COUNT(*) FROM ingest_ledger GROUP BY status`, sweep CronJob `jw-ingest-sweep-daily` 성공 여부. Σ 게이트 로그(`gate=sigma … worst_rel=…`)로 정합 감시. 단 리허설 env가 걸려 있는 동안은 실적재/refresh가 스킵되므로 mart 반영은 없다.
@@ -217,18 +219,19 @@ jw-data-input(사이트) "제출 확정"
 ## 7. 계정 · 권한
 
 > 아래는 **리소스명·env 키 이름·보관 위치**만 기술한다. 자격증명 값은 이 문서에 없으며, 어떤 경우에도 문서/로그/커밋에 기재하지 않는다.
+> 신청·승인·발급·검증·회수의 정본 절차는 [계정·권한 온보딩 런북](RUNBOOK_계정_권한_온보딩.md)이다.
 
 | 대상 | 식별 정보(값 아님) | 보관 위치 |
 |---|---|---|
-| Gitea(코드·사이트 저장소) | 계정 `llmops` / `jw-market-bot` / `jw-pl`, org `jw-market` | 운영 credential 보관처(ops VM `~/.rnd_creds.env` 등) — 값은 위치에서만 조회 |
-| 사이트 인증(jw-data-portal) | env 키 `NEXTAUTH_URL`(= `https://jwai-dev.jwhealthcare.com/jw-data-portal/api/auth`), GenOS 연동 | 배포 env / k8s secret — 값 위치만 |
+| Gitea(코드·사이트 저장소) | org `jw-market`, 개인 계정과 자동화 계정 분리 | Gitea 팀/IAM과 승인된 비밀 저장소 |
+| 사이트 인증(jw-data-portal) | env 키 `NEXTAUTH_URL`, Google OAuth·GenOS 연동 | 배포 env / k8s secret — 값 금지 |
 | MinIO(오브젝트 스토리지) | svc `minio`(9000)·`minio-console`(9090), ExternalName `llmops-minio-service`; 훅 env `MINIO_ENDPOINT`·`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`(secretRef), 제출 버킷 `INGEST_S3_BUCKET`(secretRef) | k8s secret(리소스명만). 증분 훅은 버킷 전용 **read-only MinIO 유저**로 읽는다(상류 `e479d087`). csd-sensor(예비)도 resume 전 scoped read-only 유저 사용 |
 | MariaDB — 서빙(backend) | user `llmops`, secret `galera-mariadb-galera`(key `mariadb-password`) | k8s secret — 값 금지 |
 | MariaDB — 배치(CronJob·ingest) | secret `jw-mart-d2-writer`(key `username`/`password`), mart writer 신원 | k8s secret — 값 금지 |
 
 - backend와 배치가 **서로 다른 DB secret**을 쓴다: 서빙은 `galera-mariadb-galera`(user `llmops`), 배치(orchestrator·agent3·cache-refresh·ingest)는 `jw-mart-d2-writer`. 롤백/권한 조정 시 두 신원을 혼동하지 않는다.
 - 이미지 레지스트리(AR): `asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01`. push는 GCP ops VM에서 `--platform linux/amd64`.
-- GCP/노드 접근(SSH)·bastion 자격증명: 운영 credential 보관처(ops VM `~/.rnd_creds.env`)에서만 조회(값·경로 상세는 이 문서 범위 밖).
+- GCP/노드 접근(SSH)·bastion 자격증명은 승인된 비밀 저장소와 개인 발급 절차로 관리한다. 로컬 임시 env 파일을 인수 계약으로 삼지 않는다.
 
 ---
 

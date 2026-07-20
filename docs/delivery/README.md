@@ -1,79 +1,73 @@
-# SI 납품 문서 세트 — 문서 맵 & 협업 가이드 (README)
+# JW Market 전달 문서
 
-| 항목 | 값 |
-|---|---|
-| 목적 | SI 납품 문서를 **3세션(jw market · jw agent · jw chat) 협업**으로 완성 |
-| 위치 | 이 디렉토리 `docs/delivery/` 가 전 문서의 단일 소스(정본) |
-| 통합 담당 | jw market 세션 (문서 맵 관리 · 최종 정합 게이트) |
-| 기준(초판) | develop `4b02b56b` `docs/delivery/` (기존 5종 + 게이트 대조표) |
-| 생성일 | 2026-07-18 · README 버전 v1.0 |
+`docs/delivery/`는 JW Market 인수자가 시스템을 이해하고 운영할 때 사용하는 문서 정본이다. 특정 시점의 SHA·generation·image tag는 계약이 아니다. **코드 기준은 원격 `develop`, 실행체 기준은 Kubernetes live query**로 확인한다.
 
-> **읽는 순서.** 기고자(jw agent · jw chat 세션)는 ① 아래 **§3 작성 규칙**을 먼저 읽고 → ② **§2 문서 맵**에서 자기 소관 스켈레톤을 찾아 → ③ 그 파일의 머리말·각 섹션 `[기고 필요]` 안내대로 채운 뒤 → ④ **§4 통합 절차**로 push 하면 된다. 위치·형식을 헤맬 필요 없이 스켈레톤이 이미 자리에 있다.
+## 1. 먼저 읽을 문서
 
----
+| 순서 | 문서 | 용도 |
+|---:|---|---|
+| 1 | [DOC-1 시스템 아키텍처](DOC-1_개발문서_시스템아키텍처.md) | 구성요소·데이터 흐름·인프라 경계 |
+| 2 | [DOC-5 운영 문서](DOC-5_운영문서.md) | 정기 운영·인입·장애·모니터링 |
+| 3 | [배포·승격·롤백 런북](RUNBOOK_배포_승격_롤백.md) | digest 조회부터 test2·운영·롤백까지 |
+| 4 | [계정·권한 온보딩 런북](RUNBOOK_계정_권한_온보딩.md) | 신청·승인·발급·검증·회수 |
+| 5 | [백업·복구 정책](POLICY_백업_복구.md) | 백업 범위·보존·복구·리허설 |
 
-## 1. 목적 · 납품 범위
+## 2. 문서 맵
 
-SI 납품 문서의 대상 시스템은 **3세션 소관의 합**이다.
+| 문서 | 대상 독자 | 내용 |
+|---|---|---|
+| [DOC-1](DOC-1_개발문서_시스템아키텍처.md) | 개발·운영 | 전체 시스템과 배포 경계 |
+| [DOC-1b](DOC-1b_개발문서_크롤_BA파이프라인.md) | 데이터·AI 개발 | 뉴스 크롤·브랜드 활동 파이프라인 |
+| [DOC-1c](DOC-1c_개발문서_채팅에이전트.md) | 채팅 개발 | 채팅 에이전트·wf301·GenOS 연동 |
+| [DOC-2](DOC-2_DB_스키마정의서.md) | DB·백엔드 개발 | mart·cache·catalog·ledger 스키마 |
+| [DOC-2b](DOC-2b_DB_크롤_BA_테이블.md) | 데이터·AI 개발 | 크롤·브랜드 활동 테이블 |
+| [DOC-3](DOC-3_API_명세서.md) | API 소비자 | 시장분석 백엔드 API 계약 |
+| [DOC-3b](DOC-3b_API_채팅.md) | 채팅·포탈 개발 | 채팅 API 계약 |
+| [DOC-4a](DOC-4a_사용설명서_시장분석.md) | 업무 사용자 | 시장분석 화면 사용법 |
+| [DOC-4b](DOC-4b_사용설명서_jw-data-input.md) | 업로드 사용자 | 데이터 인입 포털 사용법 |
+| [DOC-4c](DOC-4c_사용설명서_브랜드활동_데이터맥락.md) | 업무 사용자 | 브랜드 활동 데이터 맥락 |
+| [DOC-4d](DOC-4d_사용설명서_채팅.md) | 채팅 사용자 | 질문 유형·파일 질답·한계 |
+| [DOC-5](DOC-5_운영문서.md) | 운영자 | 정기 운영·증분 인입·장애 대응 |
 
-- **jw market**: 백엔드 API · mart/DB · 파이프라인(전체/증분·훅) · jw-data-input 사이트 (초판 5종 작성 완료)
-- **jw agent**: 뉴스 크롤(tier1/tier2) · brand_activity 생성(Agent1~4) · orchestrator · 관련 테이블
-- **jw chat**: 채팅 에이전트 · wf301 브리지 · GenOS/Flowise 연동 · 파일 질답
+## 3. 현재 좌표 확인
 
-문서는 개발문서(아키텍처)·DB(스키마)·API(명세)·사용설명서(유저용)·운영문서(관리자용) 5축으로 나뉘며, 각 축에 세션별 분책(`-b`/`-c`/`-d` 접미)이 붙는다.
+문서 머리의 오래된 캡처값을 복사하지 않는다.
 
-## 2. ★ 문서 맵
+```bash
+# 코드 정본
+git fetch jw-private develop
+git rev-parse jw-private/develop
 
-| 문서 | 담당 세션 | 상태 | 내용 범위 |
-|---|---|---|---|
-| `DOC-1_개발문서_시스템아키텍처.md` | jw market | ✅ 작성완료 | 전체 구성도·컴포넌트·인프라·코드맵·빌드/배포 |
-| `DOC-2_DB_스키마정의서.md` | jw market | ✅ 작성완료 | mart_general/strategic·cache·catalog·ingest_ledger 등 |
-| `DOC-3_API_명세서.md` | jw market | ✅ 작성완료 | 백엔드 EP 전수·view 체계·오류 계약·ingest hook API |
-| `DOC-4a_사용설명서_시장분석.md` | jw market | ✅ 작성완료 | 일반뷰/전략뷰/브랜드활동 탭·필터·주의점 |
-| `DOC-4b_사용설명서_jw-data-input.md` | jw market | ✅ 작성완료 | 업로드 사이트 사용법·제출/상태/재실행 |
-| `DOC-5_운영문서.md` | jw market | ✅ 작성완료 | 월간/증분 운영·장애·백업·모니터링·계정 (※ §8은 jw agent 기고 자리) |
-| `G_gates_대조표.md` | jw market | ✅ 작성완료 | 문서↔실체 정합 게이트(G-1~G-5) |
-| `OPEN_QUESTIONS.md` | jw market | ✅ 작성완료 | 조사로 해소 불가한 [확인 필요] 잔여(PL 판단·데이터 대기·타 세션 회신) 분리 등재 |
-| `G_gates_openq_20260718.md` | jw market | ✅ 작성완료 | [확인 필요] 해소 라운드 게이트(G-1~G-5)·항목별 해소/미해소 표 |
-| `evidence/openq_resolution_20260718.md` | jw market | ✅ 작성완료 | [확인 필요] 해소 실측 근거(Q-1~Q-8·코드 grep·in-mesh kubectl·site head) |
-| **`DOC-1b_개발문서_크롤_BA파이프라인.md`** | **jw agent** | ⏳ 기고 대기 | 크롤 tier1/2·brand_activity(Agent1~4)·orchestrator·이미지/배포 |
-| **`DOC-2b_DB_크롤_BA_테이블.md`** | **jw agent** | ⏳ 기고 대기 | 크롤 계열·토픽/BA 계열·staging 테이블·관계 |
-| **`DOC-4c_사용설명서_브랜드활동_데이터맥락.md`** | **jw agent** | ⏳ 기고 대기 | BA 데이터 생성 과정·갱신주기·데이터 없음 사유 |
-| **`DOC-1c_개발문서_채팅에이전트.md`** | **jw chat** | ⏳ 기고 대기 | 채팅 질의 흐름·wf301 브리지·GenOS/Flowise·파일 질답·배포 |
-| **`DOC-3b_API_채팅.md`** | **jw chat** | ⏳ 기고 대기 | 채팅 EP·포탈↔채팅↔백엔드 계약·오류/한계 |
-| **`DOC-4d_사용설명서_채팅.md`** | **jw chat** | ⏳ 기고 대기 | 채팅 사용법·질문 유형별 안내·한계·파일 질답 |
+# backend/test2 실행체
+kubectl config current-context
+kubectl -n llmops get deploy jw-market-backend-api jw-market-backend-api-test \
+  -o custom-columns='NAME:.metadata.name,GEN:.metadata.generation,IMAGE:.spec.template.spec.containers[?(@.name=="jw-market-backend-api")].image,READY:.status.readyReplicas'
 
-문서 번호 규칙: `DOC-N` = 5축(1 개발·2 DB·3 API·4 사용설명서·5 운영), 접미 `a/b/c/d` = 같은 축의 세션별/주제별 분책.
+# 포털 실행체
+kubectl -n llmops get deploy jw-data-portal jw-data-portal-worker \
+  -o custom-columns='NAME:.metadata.name,GEN:.metadata.generation,IMAGE:.spec.template.spec.containers[0].image,READY:.status.readyReplicas'
 
-## 3. ★ 작성 규칙 (기고자 필독 — 이것만 지키면 기존 5종과 형식 일치)
-
-1. **근거 병기.** 모든 서술에 근거를 붙인다 — 코드 `파일:줄`, 클러스터 리소스 실명, 실측 캡처 파일 경로. 근거 없는 단정 금지.
-2. **추측 금지.** 확인 불가 항목은 서술로 채우지 말고 `[확인 필요]`로 표기하고, 문서 말미에 `[확인 필요]` 목록을 둔다.
-3. **문서 머리.** 각 문서 첫 표에 기준 `develop SHA` · 운영 `generation`(해당 시) · 생성일 · 문서 버전을 명기한다. (기존 DOC-1 머리 형식 참고)
-4. **자격증명 값 금지.** 비밀번호·토큰·키 값은 절대 기재하지 않는다. secret **리소스명**과 **보관 위치**만 쓴다.
-5. **스크린샷 플레이스홀더.** 화면 캡처는 `[화면: 무엇]` 플레이스홀더로 삽입하고, 문서 말미에 캡처 리스트를 둔다.
-6. **미구현 서술 금지(사용설명서).** 실제 동작하는 것만 쓴다. 미구현/예정 기능은 "적용 예정"으로 명확히 구분한다.
-7. **자기 소관 대조.** 기고 완료 시 `G_gates` 방식으로 자기 문서 ↔ 실체(코드/스키마/리소스) 대조를 수행하고(누락 0·유령 0), 결과를 문서 말미 또는 통합 시 제출한다.
-8. **기존 문서 무수정.** 다른 세션의 문서·기존 5종을 임의 수정하지 않는다. 자기 스켈레톤만 채운다. (교차 참조는 파일명으로 링크)
-
-## 4. 통합 절차
-
-```
-각 세션:  git pull(develop) → 자기 스켈레톤 파일만 채움 → safe_push(FF, develop)
-              (충돌 없음: 세션마다 파일이 분리됨)
-jw market: 기고 완료분 취합 → 통합 정합 게이트(G_gates 확장: 문서↔실체 전수 대조)
-              → 문서 맵 상태 갱신(⏳→✅) → 최종본 확정
+# 스케줄과 활성 여부
+kubectl -n llmops get cronjobs -o wide
 ```
 
-- push는 `pipeline/scripts/gates/safe_push.py`(FF·비-force·승인 조상 검증)로. 세션별 파일이 분리돼 있어 병렬 push도 FF로 안전하다.
-- 통합·정합 게이트는 **전 세션 기고 완료 후 별도 라운드**로 수행한다(초판 게이트와 동일 기준: 문서 전 항목 ↔ 실체 누락 0·유령 0).
+Pod 실제 digest는 Deployment image tag가 아니라 `status.containerStatuses[].imageID`로 확인한다.
 
-## 5. 현재 상태 (2026-07-18 기준)
+## 4. 문서 유지 규칙
 
-- ✅ **완료(jw market, 초판 5종 + 게이트)**: DOC-1·2·3·4a·4b·5 + G_gates. develop `4b02b56b`에 반영.
-- ⏳ **기고 대기(jw agent 3종)**: DOC-1b·2b·4c — 스켈레톤 생성됨(이 라운드).
-- ⏳ **기고 대기(jw chat 3종)**: DOC-1c·3b·4d — 스켈레톤 생성됨(이 라운드).
-- ⏳ **jw market 보강 자리**: DOC-5 §8(CronJob 소관별 상세) — jw agent 기고 자리 명시됨.
-- ⏳ **최종 통합 게이트**: 전 기고 완료 후.
+1. 사실에는 코드 경로, live 리소스명 또는 라운드 evidence를 붙인다.
+2. SHA·generation·digest는 문서 본문에 "현재값"으로 고정하지 않는다. live 조회법을 기록한다.
+3. 자격증명 값은 금지한다. Secret 리소스·키 이름만 기록한다.
+4. 미확인 사항은 `[확인 필요]`로 남기고 추측으로 채우지 않는다.
+5. API·DB·화면 계약이 바뀌면 관련 DOC와 사용설명서를 같은 변경에서 갱신한다.
+6. 배포 증거는 문서가 아니라 라운드별 audit에 보존한다.
 
-> 이 라운드 산출 = README(문서 맵) + 스켈레톤 6종 + DOC-5 §8 자리. 기존 5종 내용은 무수정.
+## 5. 전달 패키지 범위
+
+JW 전달 zip에는 위 DOC 문서와 운영 런북·정책만 포함한다. 다음은 저장소에는 남아도 인수 패키지에서는 제외한다.
+
+- 조사 evidence, audit 원문, 작업 큐
+- 작성 과정의 open question·게이트 메모
+- 중복·폐기 판정 문서와 버전별 임시 handoff
+
+패키지의 `MANIFEST.sha256`과 `SOURCE_STATE.txt`로 파일 무결성과 원격 source SHA를 확인한다.

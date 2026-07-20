@@ -2,18 +2,21 @@
 
 | 항목 | 값 |
 |---|---|
-| 기준 코드(백엔드/파이프라인) | `develop` @ `7ca98403` (워크트리 `/tmp/jwm-develop-docs`는 `7ca98403` 위 rebase됨; 문서 산출 커밋 포함 HEAD `24f14d0e`) |
-| 운영 백엔드 | GKE ns `llmops`, deployment `jw-market-backend-api` (HPA `jw-market-backend-api-hpa` 2~8, memory 60% 타깃; 캡처 시점 8), generation **302**, `APP_VERSION=ad782bc064ba03a45eaa4f1e301dbd75b8bf9a9e` |
-| 사이트 코드(jw-data-input) | Gitea `jw-market/jw-data-input.git`, HEAD(`feat/market-ingest-v21`) `8ca9d9870b2a90b08ebae321c0d56971b1590bad`, main `bc7d6248` (워크트리 `/tmp/site-head`) |
-| 운영 사이트 | deployment `jw-data-portal` + `jw-data-portal-worker` (`jw-data-portal:v0.6.0-8ca9d98`, Gitea HEAD 커밋과 동일) |
-| 생성일 | 2026-07-17 |
-| 문서 버전 | v1.0 |
+| 기준 코드(백엔드/파이프라인) | 원격 `develop` live HEAD (`git fetch jw-private develop && git rev-parse jw-private/develop`) |
+| 운영 백엔드 | GKE ns `llmops`, Deployment `jw-market-backend-api`; generation·imageID·APP_VERSION은 아래 live query로 확인 |
+| 사이트 코드(jw-data-input) | Gitea `jw-market/jw-data-input.git` 활성 브랜치의 원격 HEAD |
+| 운영 사이트 | Deployment `jw-data-portal` + `jw-data-portal-worker`; imageID는 live query로 확인 |
+| 갱신일 | 2026-07-20 |
+| 문서 버전 | v2.0 |
 
-> **기준 SHA 갱신 각주.** 의뢰서 기준 SHA(백엔드 `2b38c507`, 사이트 `36aa856b`)는 작성 시점에 다음과 같이 실측 갱신되었다.
-> - 코드 기준 SHA는 `develop 761b4def` → **`7ca98403`**으로 전진했다(12커밋). 전진분은 전부 `pipeline/scripts/ingest_hook/`·`deploy/k8s/{ingest-hook,crawler}/`·`RUNBOOK_MONTHLY.md`·`tests/` 영역이고, **`pipeline/scripts/api/`·`pipeline/etl/`는 무변경**이다(BASELINE §09:54 갱신). 따라서 §2.1 API·DB·시장분석 서술은 `761b4def` 검증 그대로 유효하며, 인입 훅·크롤 cutover 관련 절만 `7ca98403` 기준으로 갱신했다.
-> - 백엔드: 운영 이미지의 `APP_VERSION`은 `ad782bc0...`이며 이는 코드 정본(`develop`)의 조상이 **아니다**. 별도 latency 릴리즈 브랜치 빌드로, 배포 annotation `jw-market/release=f139-brand-activity-general-scope`가 붙어 있다(evidence/backend_deploy_env.txt). 코드 정본은 `develop`, 운영 실행체는 그 위에 latency 계열 커밋이 얹힌 이미지다.
-> - 사이트: 의뢰서의 `36aa856b`는 로컬·Gitea 이력에서 발견되지 않았음을 재확인(2026-07-18). 본 문서는 Gitea 정본 HEAD `8ca9d987`을 기준으로 기술한다.
-> 본 문서의 모든 서술은 위 워크트리의 실코드와 evidence 디렉토리의 실측 리소스명에 근거하며, 각 사실 옆에 근거 파일 경로 또는 실 리소스명을 병기했다.
+> **좌표 규칙.** 이 문서에 남은 과거 SHA·digest·행수는 당시 evidence를 설명하는 역사값이며 현재 운영 좌표가 아니다. 운영 작업 전 [배포·승격·롤백 런북](RUNBOOK_배포_승격_롤백.md)의 live query로 코드 SHA, Deployment generation, imageID와 APP_VERSION을 다시 고정한다.
+
+```bash
+git fetch jw-private develop && git rev-parse jw-private/develop
+kubectl -n llmops get deploy jw-market-backend-api jw-market-backend-api-test -o json
+kubectl -n llmops get pods -l app=jw-market-backend-api -o json
+kubectl -n llmops get deploy jw-data-portal jw-data-portal-worker -o json
+```
 
 ---
 
@@ -85,7 +88,7 @@
 | 역할 | 시장/브랜드/원인/심층분석/브랜드활동 조회 API. mart를 읽어 화면 카드·시계열·필터를 응답 | `pipeline/scripts/api/main.py` |
 | 기술 스택 | FastAPI 0.135.1 · uvicorn · Pydantic 2 · PyMySQL 1.1 · numpy/pandas/statsmodels · PyYAML | `pipeline/scripts/api/requirements.txt` |
 | repo 위치 | `pipeline/scripts/api/` (routes·handlers·composers·dynamic_market·models) | — |
-| 배포 형태 | Deployment, HPA `jw-market-backend-api-hpa`(대상 Deployment/jw-market-backend-api, min 2/max 8, memory 60% 타깃; 2026-07-17 캡처 시점 8/8), gen 302, nodeSelector `knp-jw-agn-dev-genos-api-01` | evidence/backend_deploy_env.txt, k8s_llmops.txt |
+| 배포 형태 | Deployment + HPA `jw-market-backend-api-hpa`; 현재 replica·generation·node 배치는 live query로 확인 | `kubectl -n llmops get deploy,hpa,pod -o wide` |
 | 진입점 | `uvicorn pipeline.scripts.api.main:app --workers 1` | `api/Dockerfile` CMD |
 | 컨테이너 | Python 3.11-slim, 비-root UID/GID 3000, `/app` workdir, `EXPOSE 8000` | `api/Dockerfile` |
 | 서비스 | `jw-market-backend-api-service` (ClusterIP :80→:8000), test용 `jw-market-backend-api-test`(+service) | BASELINE §인프라 |
@@ -192,15 +195,15 @@ DB `jw_brand_activity_stage`(7테이블)를 씀. API 서빙은 `routes/brand_act
 
 | 항목 | 값 | 근거 |
 |---|---|---|
-| 역할 | UBIST/IQVIA 등 원천 파일 업로드·제출·대시보드 | `/tmp/site-head/web/src/app/(portal)/` |
+| 역할 | UBIST/IQVIA 등 원천 파일 업로드·제출·대시보드 | 사이트 repo `web/src/app/(portal)/` |
 | 기술 스택 | Next.js 14.2.35 · React 18 · next-auth 4 · Tailwind 3 · AWS SDK S3(MinIO)·GCS·Firestore · exceljs·adm-zip·uppy | `web/package.json` |
-| 배포 형태 | Deployment `jw-data-portal` + worker `jw-data-portal-worker` (`v0.6.0-8ca9d98`, Gitea HEAD와 동일 커밋; 직전 `v0.5.2`에서 재배포), svc `jw-data-portal-service`(:80) | evidence/dataportal_env_v060.txt, BASELINE §09:54 |
+| 배포 형태 | Deployment `jw-data-portal` + worker `jw-data-portal-worker`, svc `jw-data-portal-service`(:80); 현재 imageID는 live query | `kubectl -n llmops get deploy,pod -o json` |
 | 라우팅 | Istio VirtualService `jw-data-portal-virtualservice`, `llmops-gateway`, prefix `/jw-data-portal/`, timeout 120s | `web/k8s-manifests/jw-data-portal-vs.yaml` |
 | 컨테이너 | node:20-bookworm-slim, 멀티스테이지(builder→runner), `next build`+`build:worker`, `PORT=8080` | `web/Dockerfile` |
 
 **현행 운영 인입 방식(R&D 등 일반 업로드)**: `STORAGE_PROVIDER=local`, `UPLOAD_BASE_PATH=/nfs-root/autoIngestion`(유지). 업로드 파일을 NFS에 두고 worker(`upload-worker`, poll 30s/lease 600s)가 처리. Weaviate dedup 활성(`WEAVIATE_DEDUP_ENABLED=true`).
 
-**시장 인입 방식(배선 완료·env 장착)**(`feat/market-ingest-v21`): MinIO S3 서명 URL 업로드 → manifest(계약 v2, `web/src/lib/market-ingestion.ts`) PUT → webhook(`ingest-hook-client.ts`가 `INGEST_HOOK_TRIGGER_URL`로 POST). `v0.6.0-8ca9d98` 재배포로 `MINIO_ENDPOINT`(`http://minio.llmops.svc.cluster.local:9000`)·`MINIO_FORCE_PATH_STYLE`·`MINIO_MARKET_BUCKET`·`INGEST_HOOK_TRIGGER_URL`·`INGEST_HOOK_STATUS_URL`(전부 secretRef) env가 실제 장착되었다(evidence/dataportal_env_v060.txt). `STORAGE_PROVIDER=local`은 그대로라 일반 업로드 경로는 무영향이고, 시장 인입만 MinIO+webhook 경로로 배선된다.
+**시장 인입 방식**: MinIO S3 서명 URL 업로드 → manifest(계약 v2, `web/src/lib/market-ingestion.ts`) PUT → webhook(`ingest-hook-client.ts`가 `INGEST_HOOK_TRIGGER_URL`로 POST). `MINIO_*`·`INGEST_HOOK_*` 키는 Deployment의 secretRef 존재 여부를 live query로 확인한다. 일반 업로드와 시장 인입의 실제 storage provider도 현재 env/config를 함께 확인한다.
 
 **사이트 API 라우트**(`web/src/app/api/`): `market/submissions`(목록/`confirm`/`retry`), `upload`(`signed-url`/`complete`/`jobs`), `uploads/stats`, `files/[...path]`, `categories`, `admin/*`, `auth/[...nextauth]`.
 
@@ -219,7 +222,7 @@ DB `jw_brand_activity_stage`(7테이블)를 씀. API 서빙은 `routes/brand_act
 
 **★ 현재 동작 모드 = 리허설 격리(운영 무접촉 E2E)**: 라이브 트리거 서비스 env에 `INGEST_REHEARSAL_ROOT=/tmp/ingest-rehearsal`이 설정되어 있다(evidence/k8s_ingest_active.txt). `config.py` 계약상 이 변수가 설정되면 `job_runner`가 격리 모드로 동작해 orchestrator를 호출하지 않고 sqlite staging에서 G3→적재→Σ게이트 순서만 검증한다(RUNBOOK 격리 리허설 절차). 즉 훅은 배선·기동은 되었으나 실 mart를 변경하지 않는 리허설 단계다. 실적재 전환(REHEARSAL_ROOT 해제)은 남은 PL 게이트다.
 
-**신규 코드(develop 7ca98403)**:
+**관련 코드(원격 `develop` live HEAD)**:
 - `s3_input.py` — MinIO 제출 세트를 파일시스템 마운트가 아닌 **S3 API로 읽는 stdlib-only(SigV4) 리더**(GET/LIST, path-style). 의존성 프리(오케스트레이터 이미지에 boto3 없음). write 연산 부재 = 제출 버킷 불변. `INGEST_S3_BUCKET` 설정 시 활성, 미설정 시 로컬 루트 폴백(`config.open_input_source()`).
 - `sigma_market.py` — 실적재용 Σ(부분)=전체 핀: `Σ mart_general_brand_metric.metric_history[period].raw_value == mart_general_market_metric.market_size_series[period]`를 (source, atc4_code, period) 단위로 대사. 2026-07-17 라이브 대사 결과 ubist 364/364·iqvia_nsa 538/538·worst rel 0.000000%(코드 docstring). 로드한 기간을 시장이 하나도 안 담고 있으면 실패로 처리(skip 아님).
 
@@ -255,7 +258,7 @@ DB `jw_brand_activity_stage`(7테이블)를 씀. API 서빙은 `routes/brand_act
 
 ## 4. 코드 구조
 
-### 4.1 백엔드/파이프라인 repo (`/tmp/jwm-develop-docs`, develop 7ca98403)
+### 4.1 백엔드/파이프라인 repo (GitHub 원격 `develop`)
 
 ```
 api/Dockerfile                     # 백엔드 API 이미지(보호 blob — 수정 금지, 계약 테스트 pin)
@@ -295,7 +298,7 @@ tests/                             # agent3·api·crawler·etl·forecast·gates�
 - `deploy/docker/pipeline-orchestrator.Dockerfile`: pipeline 패키지 전체 + docs/crawl. AGENT3_WORKFLOW_REV baked 없음(fail-closed).
 - `deploy/docker/crawl.Dockerfile`: `crawl/crawler`←`scripts/crawler`, `crawl/agent1`←`scripts/agent_2`, `/opt/tier2`←`scripts/crawler/tier2_*` 재조립.
 
-### 4.2 사이트 repo (`/tmp/site-head/web`, HEAD 8ca9d987)
+### 4.2 사이트 repo (Gitea 원격 활성 브랜치의 `web/`)
 
 ```
 web/
@@ -327,7 +330,7 @@ web/
 
 ### 5.2 백엔드 API 배포 흐름
 
-메모리 기록 기준 관행: ops VM amd64 빌드 → AR push → test2(`jw-market-backend-api-test`)에서 검증 → 운영 승격은 generation CAS(gen 번호 확인 후 교체). **repo 워크트리에 백엔드 이미지 승격 자동화 스크립트는 없음이 확인됐다**(2026-07-18 grep; `pipeline/scripts/deploy/`의 스크립트는 캐시 blue-green `analysis_cache_blue_green.py`·mart dimension 승격 `filter_dimension_promote.py` 등 **데이터/캐시** 승격 전용이지 백엔드 이미지 승격이 아니다). 즉 백엔드 이미지 승격은 **GenOS 운영 UI/플랫폼 경로**(코드 밖)로 수행된다. GenOS 측 정확한 승격 커맨드·절차는 플랫폼 소관 → [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)(근거: `evidence/openq_resolution_20260718.md` Q-6).
+현행 절차는 amd64 이미지 1회 빌드·AR push → immutable digest 확인 → test2 검증 → 같은 digest를 운영에 승격 → 전체 pod imageID·strict log 검증이다. 명령, CAS 좌표 보존, 이미지 롤백과 데이터 롤백의 구분은 [배포·승격·롤백 런북](RUNBOOK_배포_승격_롤백.md)을 따른다.
 
 ### 5.3 mart DB 세대 교체(RUNBOOK §4)
 
@@ -339,7 +342,7 @@ web/
 
 - `web/deploy.sh`: `docker build --platform linux/amd64` → AR push → `kubectl apply -f k8s-manifests/{jw-data-portal,jw-data-portal-worker,jw-data-portal-vs}.yaml`. AR는 stg 프로젝트(`prj-jw-agn-stg-ai`), 배포는 dev 클러스터(`kcl-jw-agn-dev-genos`)로 권한 분리. 컨텍스트 불일치 시 확인 프롬프트.
 - `web/cloudbuild.yaml`: Cloud Build로 `$SHORT_SHA`·`_VERSION` 두 태그 빌드·push.
-- ★ 버전 불일치: `deploy.sh`/`cloudbuild.yaml`의 기본 `VERSION`은 `v0.2.9`인데 운영 실배포는 `v0.6.0-8ca9d98`(직전 `v0.5.2`)이다(evidence/dataportal_env_v060.txt). 확인 결과 — **`web/` 배포 스크립트는 이 pipeline repo가 아니라 별도 사이트 repo(Gitea `jw-data-input`/`jw-market`) 소관**이다(2026-07-18 본 워크트리 `web/` 부재 실측). 운영 태그 `v0.6.0-8ca9d98` = `v0.6.0` + 커밋 SHA(`8ca9d98`) 접미. 스크립트 기본 `VERSION=v0.2.9`↔운영 태그 괴리의 갱신 책임은 사이트 repo 소관이므로 그쪽 배포 관행 확인이 정본(근거: `evidence/openq_resolution_20260718.md` Q-8).
+- 사이트 배포 스크립트는 별도 Gitea `jw-data-input` 저장소 소관이다. README나 스크립트 기본 tag를 현재 운영값으로 간주하지 말고 `kubectl -n llmops get deploy jw-data-portal jw-data-portal-worker -o json`의 image와 각 pod `imageID`를 대조한다.
 
 ### 5.5 머지 금지(BRANCH_POLICY.md, RUNBOOK §7)
 
@@ -354,9 +357,7 @@ web/
 
 2026-07-18 jw market 실측(근거: `evidence/openq_resolution_20260718.md`). ✅=해소, ⏳=PL/데이터 대기(→ [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)).
 
-1. ✅ 의뢰서 사이트 기준 SHA `36aa856b` — 로컬·Gitea 이력 미발견 확인. 본 문서는 실측 HEAD `8ca9d987` 사용(BASELINE §문서 머리).
-2. ✅ `dynamic-market-cache-warm` 치환 실이미지 = `jw-market-backend-api@sha256:8e2501cd…`(§2.2, Q-7). backend API 이미지 계열이며 live deploy(`@aec14a90…`)와 digest 드리프트.
-3. ✅ 백엔드 운영 승격 — repo에 이미지 승격 자동화 스크립트 없음 확인(§5.2, Q-6). GenOS 운영 UI/gen CAS(플랫폼 경로). GenOS 정확 커맨드는 ⏳ PL.
-4. ✅ 사이트 배포 `VERSION` 괴리 — `web/` 배포 스크립트는 별도 사이트 repo(Gitea) 소관 확인(§5.4, Q-8). 운영 태그 = `v0.6.0` + 커밋 SHA 접미.
-5. ⏳ shortlong(Agent2) 실전 비용 — 첫 staging 실행 전 데이터 미생성(측정 대기). → OPEN_QUESTIONS.
-6. ⏳ 인입 훅 리허설→실적재 전환 시점 — `INGEST_REHEARSAL_ROOT` 격리 모드 기동 중, 실 mart 적재 전환(변수 해제)은 남은 PL 게이트(§2.8). → OPEN_QUESTIONS.
+1. 운영 좌표는 문서의 과거 캡처가 아니라 live query로 확인한다.
+2. backend와 `dynamic-market-cache-warm`의 imageID가 다르면 캐시 계산 경로 drift로 분류해 별도 게이트한다.
+3. 사이트 코드는 Gitea 원격 HEAD, 실행체는 Deployment/pod imageID로 각각 확인한다.
+4. 비용·실적재 전환처럼 승인에 의존하는 항목은 [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md)에 남기고 문서가 임의 확정하지 않는다.

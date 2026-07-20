@@ -2,16 +2,16 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v1.0 |
-| 사이트 정본 | Gitea `jw-market/jw-data-input.git` · HEAD(feat/market-ingest-v21) `8ca9d987` |
-| 근거 코드 | `/tmp/site-head/web/src` (Next.js — app/·components/·lib/) — **배포 이미지와 동일 커밋** |
-| 운영 배포 | GKE `llmops` ns · deployment `jw-data-portal`(+worker) (`jw-data-portal:v0.6.0-8ca9d98`) |
+| 문서 버전 | v2.0 |
+| 사이트 정본 | Gitea `jw-market/jw-data-input.git` 활성 브랜치의 원격 HEAD |
+| 근거 코드 | 사이트 repo `web/src` (Next.js — app/·components/·lib/) |
+| 운영 배포 | GKE `llmops` ns · Deployment `jw-data-portal`(+worker); imageID는 live query |
 | 접속 URL | `https://jwai-dev.jwhealthcare.com/jw-data-portal/` |
-| 생성일 | 2026-07-17 (v0.6.0 재배포 반영) |
+| 갱신일 | 2026-07-20 |
 
-> **본 문서의 범위.** JW 데이터 인입 포털에 데이터를 올리는 담당자(사용자)를 위한 안내서다. 모든 화면 문구·버튼 라벨·상태값은 사이트 실코드(`/tmp/site-head/web/src`)에서 확인한 실제 문자열이다. **본 문서의 근거 코드는 현재 배포 이미지 `v0.6.0-8ca9d98`과 동일 커밋(Gitea HEAD `8ca9d987`)이다.** 확인 불가 항목은 **[확인 필요]**로 표시했다.
+> **본 문서의 범위.** JW 데이터 인입 포털에 데이터를 올리는 담당자(사용자)를 위한 안내서다. 화면 문구·버튼 라벨·상태값은 사이트 repo의 실코드에서 확인한다. 현재 배포와 코드의 일치는 `kubectl -n llmops get deploy jw-data-portal jw-data-portal-worker -o json` 및 pod `imageID`로 재확인한다. 확인 불가 항목은 **[확인 필요]**로 표시했다.
 >
-> **★ 현행 배포(v0.6.0) 기준 활성 구분.** 배포 환경변수(`dataportal_env_v060.txt`)는 `STORAGE_PROVIDER=local`을 유지하되, **MinIO 접속 정보**(`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_MARKET_BUCKET`)와 **인입 훅 URL**(`INGEST_HOOK_TRIGGER_URL`, `INGEST_HOOK_STATUS_URL`, `INGEST_HOOK_TIMEOUT_MS=5000`)이 **추가로 설정**되었다. 핵심은 **스토리지 라우팅이 에이전트 단위**라는 점이다: 시장(market) 에이전트는 설정 자체가 `storage.provider="s3"`(`config/agents.ts` 아래)이므로 `STORAGE_PROVIDER=local`과 **무관하게 항상 MinIO(S3) 경로**를 탄다. 따라서 v0.6.0에서는 **R&D 업로드(NFS)와 시장 데이터 인입(MinIO 제출 확정 → 훅 트리거 → 상태 조회) 플로우가 모두 활성**이다.
+> **활성 구분.** 환경변수의 값은 문서 캡처가 아니라 Deployment live env에서 확인한다. 일반 업로드는 `STORAGE_PROVIDER`/`UPLOAD_BASE_PATH`, 시장 인입은 agent 설정의 S3 provider와 `MINIO_*`/`INGEST_HOOK_*` 키가 함께 결정한다. 값은 출력하지 말고 키의 존재와 참조 방식만 점검한다.
 >
 > **단, 백엔드 인입 훅(`jw-ingest-hook:8080`)은 리허설 격리 모드로 운영된다(운영/PL 통지 사항).** 즉 포털 측 플로우(업로드·제출 확정·manifest 기록·훅 트리거·상태/재실행)는 실동작하지만, 그 뒤 실제 마트 적재는 격리된 리허설로 처리되며 본운영 적재로의 전환은 별도 게이트다. 아래 각 절에 **[현행 활성]** / **[활성 · 리허설 격리]** 를 명기한다.
 
@@ -198,7 +198,7 @@
 |---|---|---|---|
 | 1 | 미인가 화면(`unauthorized`) 실제 문구 | 본 문서에서 파일 존재만 확인, 정확한 안내 문구 미인용 | ✅ 해소(2026-07-18, `web/src/app/unauthorized/page.tsx:27-73` 실측) |
 
-**미인가 화면 실제 문구**(사이트 정본 HEAD `8ca9d987`, `web/src/app/unauthorized/page.tsx`):
+**미인가 화면 실제 문구**(사이트 repo `web/src/app/unauthorized/page.tsx`):
 - 상단 라벨(영문): **"Access Restricted"**
 - 제목: **"접근 권한이 없습니다"**
 - 본문: **"현재 로그인한 계정은 이 포털에 허용되지 않았거나, 요청한 화면에 대한 권한이 없습니다."**
