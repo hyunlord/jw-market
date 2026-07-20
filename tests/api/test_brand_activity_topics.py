@@ -793,13 +793,129 @@ def test_general_group_topic_scope_wins_over_member_scope() -> None:
     assert scope["scope_id"] == "group:livalo_family"
 
 
-def test_general_single_atc_filter_does_not_broaden_to_group() -> None:
+def test_general_single_atc_filter_resolves_containing_group_scope() -> None:
+    brand_set = replace(
+        _brand_set(),
+        market_id="C10C0",
+        applied_filter={"atc4": ["C10C0"]},
+    )
+
     scope = topic_matrix._topic_scope(
-        brand_set=_brand_set(),
+        brand_set=brand_set,
         topic_rows=[_group_topic_row()],
     )
 
-    assert scope == {}
+    assert scope["scope_id"] == "group:livalo_family"
+
+
+def test_general_containing_group_scope_uses_tightest_then_lexical_priority() -> None:
+    brand_set = replace(
+        _brand_set(),
+        market_id="C10C0",
+        applied_filter={"atc4": ["C10C0"]},
+    )
+    broad = _topic_row_for_scope("group:a_broad", ["C10A1", "C10C0", "C10D1"])
+    tight_later = _topic_row_for_scope("group:z_tight", ["C10A1", "C10C0"])
+    tight_first = _topic_row_for_scope("group:a_tight", ["C10A1", "C10C0"])
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[broad, tight_later, tight_first],
+    )
+
+    assert scope["scope_id"] == "group:a_tight"
+
+
+def test_general_containing_group_scope_still_wins_over_member_scope() -> None:
+    brand_set = replace(
+        _brand_set(),
+        market_id="C10C0",
+        applied_filter={"atc4": ["C10C0"]},
+    )
+    member = _topic_row_for_scope("atc4:C10C0", ["C10C0"])
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[member, _group_topic_row()],
+    )
+
+    assert scope["scope_id"] == "group:livalo_family"
+
+
+def test_general_and_strategic_views_return_identical_topic_sets_and_ranks(monkeypatch) -> None:
+    livalozet_meta = {
+        "리바로젯": BrandMeta("리바로젯", "리바로젯", ("LIVALOZET",), True),
+    }
+    livalozet_choices = (
+        BrandChoice("리바로젯", "리바로젯", 1, True),
+    )
+    general = replace(
+        _brand_set(),
+        market_id="C10C0",
+        selected_brand="리바로젯",
+        brand_meta=livalozet_meta,
+        choices=livalozet_choices,
+        applied_filter={"atc4": ["C10C0"]},
+    )
+    strategic = replace(
+        _strategic_brand_set(),
+        selected_brand="리바로젯",
+        brand_meta=livalozet_meta,
+        choices=livalozet_choices,
+    )
+    monkeypatch.setattr(
+        topic_matrix,
+        "resolve_brand_set",
+        lambda **kwargs: general if kwargs["view_name"] == "general" else strategic,
+    )
+    monkeypatch.setattr(topic_matrix, "_fetch_topic_rows", lambda: [_group_topic_row()])
+    monkeypatch.setattr(
+        topic_matrix,
+        "_catalog_atc4_values",
+        lambda brand_set: (
+            ("C10C0",)
+            if brand_set.view_name == "general"
+            else ("C10A1", "C10C0")
+        ),
+    )
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _brands: {})
+    monkeypatch.setattr(
+        topic_matrix,
+        "_fetch_sliced_topic_rows",
+        lambda **_kwargs: [
+            {
+                "topic_id": "T01",
+                "affected_row_count": 8,
+                "brand_total_rows": 10,
+                "share_pct": "80.00",
+            },
+            {
+                "topic_id": "T02",
+                "affected_row_count": 3,
+                "brand_total_rows": 10,
+                "share_pct": "30.00",
+            },
+        ],
+    )
+
+    general_result = topic_matrix.get_topic_brand_payload(
+        {"view": "general", "selected_brand": "리바로젯", "filter": {"atc4": ["C10C0"]}}
+    )
+    strategic_result = topic_matrix.get_topic_brand_payload(
+        {"view": "strategic_ml", "market_id": "ml_006", "selected_brand": "리바로젯"}
+    )
+
+    assert general_result is not None
+    assert strategic_result is not None
+    assert "reason" not in general_result
+    assert all(brand["topics"] for brand in general_result["brands"])
+    assert [brand["topics"] for brand in general_result["brands"]] == [
+        brand["topics"] for brand in strategic_result["brands"]
+    ]
+    assert [brand["topic_shares"] for brand in general_result["brands"]] == [
+        brand["topic_shares"] for brand in strategic_result["brands"]
+    ]
 
 
 def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_none(monkeypatch) -> None:
@@ -991,9 +1107,26 @@ def test_missing_catalog_topic_scope_returns_explicit_reason(monkeypatch, caplog
         )
 
     assert result is not None
-    assert result["reason"] == "no_topic_scope"
+    assert result["reason"] == "no_topic_scope:stored_scopes_missing"
     assert len(result["brands"]) == 2
-    assert "reason=no_topic_scope" in caplog.text
+    assert "reason=no_topic_scope:stored_scopes_missing" in caplog.text
+
+
+def test_topic_scope_failure_reason_distinguishes_missing_selection_from_mismatch(monkeypatch) -> None:
+    rows = [_group_topic_row()]
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ())
+
+    assert topic_matrix._topic_scope_failure_reason(
+        brand_set=_brand_set(),
+        topic_rows=rows,
+    ) == "no_topic_scope:selected_atc4_missing"
+
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("Z99Z9",))
+
+    assert topic_matrix._topic_scope_failure_reason(
+        brand_set=_brand_set(),
+        topic_rows=rows,
+    ) == "no_topic_scope:no_reachable_scope"
 
 
 def test_cd_topic_scope_reads_atc_membership_through_ml_catalog(monkeypatch) -> None:
@@ -1113,5 +1246,17 @@ def _group_topic_row() -> dict[str, str]:
         "scope_id": "group:livalo_family",
         "run_id": "brand_activity_group_replay",
         "atc4_values": json.dumps(["C10A1", "C10C0"]),
+        "payload": json.dumps(payload, ensure_ascii=False),
+    }
+
+
+def _topic_row_for_scope(scope_id: str, atc4_values: list[str]) -> dict[str, str]:
+    row = _group_topic_row()
+    payload = json.loads(row["payload"])
+    payload["scope"] = {"scope_id": scope_id, "atc4_values": atc4_values}
+    return {
+        **row,
+        "scope_id": scope_id,
+        "atc4_values": json.dumps(atc4_values),
         "payload": json.dumps(payload, ensure_ascii=False),
     }

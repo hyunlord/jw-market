@@ -129,9 +129,11 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
         ],
     }
     if not topic_scope:
-        result["reason"] = "no_topic_scope"
+        reason = _topic_scope_failure_reason(brand_set=brand_set, topic_rows=topic_rows)
+        result["reason"] = reason
         LOGGER.warning(
-            "brand activity topic scope unavailable: reason=no_topic_scope view=%s market_id=%s",
+            "brand activity topic scope unavailable: reason=%s view=%s market_id=%s",
+            reason,
             brand_set.view_name,
             brand_set.market_id,
         )
@@ -308,12 +310,29 @@ def _topic_scope(
     catalog_codes = set(_catalog_atc4_values(brand_set))
     if not catalog_codes:
         return {}
-    if brand_set.view_name == "general" and len(catalog_codes) == 1:
-        market_codes = _atc4_values(brand_set.market_id)
-        direct_scope_id = f"atc4:{market_codes[0]}" if len(market_codes) == 1 else ""
+    if brand_set.view_name == "general":
+        # A general-view ATC selection identifies competitors, while topics are
+        # stored under reusable group scopes. Prefer the tightest containing
+        # group so topic output remains independent of the requested view.
+        containing_groups: list[tuple[int, str, dict[str, JsonValue]]] = []
         for row in topic_rows:
-            if direct_scope_id and _text(row.get("scope_id")) == direct_scope_id:
-                return _scope_catalog_row(row)
+            scope_id = _text(row.get("scope_id"))
+            row_codes = set(_atc4_values(row.get("atc4_values")))
+            if scope_id.startswith("group:") and row_codes and catalog_codes <= row_codes:
+                containing_groups.append((len(row_codes), scope_id, row))
+        if containing_groups:
+            _size, _scope_id, winner = min(
+                containing_groups,
+                key=lambda candidate: (candidate[0], candidate[1]),
+            )
+            return _scope_catalog_row(winner)
+
+        if len(catalog_codes) == 1:
+            market_codes = _atc4_values(brand_set.market_id)
+            direct_scope_id = f"atc4:{market_codes[0]}" if len(market_codes) == 1 else ""
+            for row in topic_rows:
+                if direct_scope_id and _text(row.get("scope_id")) == direct_scope_id:
+                    return _scope_catalog_row(row)
     candidates: list[tuple[int, dict[str, JsonValue]]] = []
     for row in topic_rows:
         row_codes = set(_atc4_values(row.get("atc4_values")))
@@ -326,6 +345,19 @@ def _topic_scope(
     if len(winners) == 1:
         return _scope_catalog_row(winners[0])
     return {}
+
+
+def _topic_scope_failure_reason(
+    *,
+    brand_set: BrandSetResolution,
+    topic_rows: Sequence[dict[str, JsonValue]],
+) -> str:
+    """Explain which input prevented a stored topic scope from resolving."""
+    if not topic_rows:
+        return "no_topic_scope:stored_scopes_missing"
+    if not _catalog_atc4_values(brand_set):
+        return "no_topic_scope:selected_atc4_missing"
+    return "no_topic_scope:no_reachable_scope"
 
 
 def _catalog_atc4_values(brand_set: BrandSetResolution) -> tuple[str, ...]:
