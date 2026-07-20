@@ -110,6 +110,39 @@ def normalized_product_overlap(left: set[str], right: set[str]) -> set[str]:
     return {normalize_iqvia_en(value) for value in left} & {normalize_iqvia_en(value) for value in right}
 
 
+def csd_markets_for_products(
+    product_codes: set[str] | frozenset[str] | tuple[str, ...],
+    product_rows: list[JsonMap] | tuple[JsonMap, ...],
+) -> tuple[CsdCrosswalk, ...]:
+    """Return every CSD Market sheet a brand's products overlap, ranked.
+
+    Ordered by overlap size (desc) then market name (asc).  Unlike the legacy
+    single-market crosswalk this never raises on ties: a brand bound to multiple
+    workbook Market sheets surfaces all of them as selectable options.  Rows are
+    ``{"market", "master_product"}`` from ``csd_channel_dynamics_stage`` where the
+    ``market`` column is the sheet-derived market name (e.g. ``"LIVALO Market"``).
+    """
+
+    codes = set(product_codes)
+    by_market: dict[str, set[str]] = {}
+    for row in product_rows:
+        by_market.setdefault(str(row["market"]), set()).add(str(row["master_product"]))
+    scored: list[CsdCrosswalk] = []
+    for market, products in by_market.items():
+        overlap = tuple(sorted(normalized_product_overlap(codes, products)))
+        if overlap:
+            scored.append(
+                CsdCrosswalk(
+                    market=market,
+                    display_market=display_csd_market(market),
+                    overlap=overlap,
+                    score=len(overlap),
+                )
+            )
+    scored.sort(key=lambda item: (-item.score, item.market))
+    return tuple(scored)
+
+
 def json_map(value: Any) -> JsonMap:
     """Parse a JSON object-like value from DB JSON columns."""
 

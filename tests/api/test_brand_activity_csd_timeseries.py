@@ -82,6 +82,36 @@ def test_csd_timeseries_route_wraps_success_envelope(monkeypatch) -> None:
     assert response.json() == {"data": expected}
 
 
+def test_csd_timeseries_route_accepts_mock_filters_and_optional_market_id(monkeypatch) -> None:
+    captured = {}
+    expected = {"scope": {"view": "general"}, "brands": [], "market_totals": {}}
+
+    def fake_get_csd_timeseries(payload):
+        captured["payload"] = payload
+        return expected
+
+    monkeypatch.setattr(brand_activity, "get_csd_timeseries", fake_get_csd_timeseries)
+    app = FastAPI()
+    app.include_router(brand_activity.router)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/csd-timeseries",
+        json={
+            "view": "general",
+            "market_id": None,
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "mode": "share",
+            "selected_brand_label": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"]["filter"] == {"atc4": ["C10A1"]}
+    assert captured["payload"]["filters"] == {"atc4": ["C10A1"]}
+    assert captured["payload"]["mode"] == "share"
+
+
 def test_csd_timeseries_route_returns_null_for_missing_market(monkeypatch) -> None:
     monkeypatch.setattr(brand_activity, "get_csd_timeseries", lambda _payload: None)
     app = FastAPI()

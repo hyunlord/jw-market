@@ -17,6 +17,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     CsdTimeseriesInputError,
     JsonMap,
     ViewConfig,
+    csd_markets_for_products,
     display_csd_market,
     first,
     float_value,
@@ -56,12 +57,32 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     selected_meta = brand_meta.get(request["selected_brand"])
     if selected_meta is None:
         return None
-    mart_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
-    crosswalk = resolve_csd_market(mart_codes)
+    # Channel Dynamics market axis = the CSD Market sheets of *every brand in the
+    # resolved market* (MI Master grouping), not just the selected brand.  A family
+    # such as 리바로 + 리바로젯 shares one strategic market (ml_006) but sits in two
+    # separate workbook sheets (LIVALO Market / LIVALOZET Market); scoping to the
+    # selected brand's own product codes dropped the sibling sheet.  The union over
+    # market members restores both sheets; the selected brand's own sheet(s) stay
+    # primary so the backward-compatible ``csd_market`` label is unchanged.
+    member_product_codes = {code for meta in brand_meta.values() for code in meta.product_codes}
+    available_markets = _order_selected_first(
+        resolve_csd_markets(member_product_codes), set(selected_meta.product_codes)
+    )
+    active_markets, selected_market_key = _select_active_markets(available_markets, request["csd_market"])
     rx_rows = _fetch_rx_rows(brand_set.view, brand_set.market_id, tuple(choice.brand_key for choice in choices))
-    activity = _activity_series(crosswalk.market, choices, brand_meta, quarters)
+    activity = _activity_series([market.market for market in active_markets], choices, brand_meta, quarters)
     return {
-        "scope": _scope_payload(request, brand_set.view, brand_set.market_row, selected_meta, brand_set.ranking_quarter, brand_set.applied_filter, crosswalk, quarters),
+        "scope": _scope_payload(
+            request,
+            brand_set.view,
+            brand_set.market_row,
+            selected_meta,
+            brand_set.ranking_quarter,
+            brand_set.applied_filter,
+            available_markets,
+            selected_market_key,
+            quarters,
+        ),
         "brands": [_brand_payload(choice, brand_meta, rx_rows, activity, quarters) for choice in choices],
         "market_totals": _market_totals(brand_set.view, brand_set.market_id, quarters, activity["totals"]),
     }
@@ -89,6 +110,63 @@ def resolve_csd_market(mart_product_codes: set[str]) -> CsdCrosswalk:
     return best
 
 
+# Tokens that mean "aggregate every sheet the brand belongs to" (시장 전체 default).
+_ALL_MARKET_TOKENS = frozenset({"전체", "all", "total"})
+
+
+def resolve_csd_markets(product_codes: set[str]) -> tuple[CsdCrosswalk, ...]:
+    """Return all CSD Market sheets a brand's products overlap (dropdown source).
+
+    Unlike :func:`resolve_csd_market` this never raises on ambiguity — a brand in
+    multiple workbook Market sheets yields all of them so the UI can offer them.
+    """
+
+    rows = db.fetch_all(_sql_csd_products())
+    return csd_markets_for_products(product_codes, rows)
+
+
+def _order_selected_first(
+    markets: tuple[CsdCrosswalk, ...], selected_product_codes: set[str]
+) -> tuple[CsdCrosswalk, ...]:
+    """Keep the selected brand's own CSD Market sheet(s) as the leading (primary) entries.
+
+    ``resolve_csd_markets`` ranks purely by overlap size.  Once the market axis is
+    widened to every member brand, a larger sibling sheet (e.g. LIVALOZET) could
+    otherwise displace the selected brand's own sheet (e.g. LIVALO) from the primary
+    slot used for the backward-compatible ``csd_market`` label.  Sheets overlapping
+    the selected brand's products lead — preserving their relative order — and the
+    remaining member sheets follow in their existing order.  Both ``selected_product_codes``
+    and ``CsdCrosswalk.overlap`` are already IQVIA-normalized, so a plain set
+    intersection is sufficient.
+    """
+
+    if not selected_product_codes:
+        return markets
+    own = tuple(market for market in markets if selected_product_codes & set(market.overlap))
+    rest = tuple(market for market in markets if not (selected_product_codes & set(market.overlap)))
+    return own + rest
+
+
+def _select_active_markets(
+    available: tuple[CsdCrosswalk, ...], requested: str | None
+) -> tuple[tuple[CsdCrosswalk, ...], str | None]:
+    """Choose the aggregation scope: an explicit sheet, else all sheets (시장 전체).
+
+    Returns ``(active_markets, selected_market_key)`` where ``selected_market_key``
+    is ``None`` for the all-sheets default.  An unrecognized request falls back to
+    all sheets rather than erroring.
+    """
+
+    available = tuple(available)
+    if requested:
+        key = requested.strip()
+        if key and key.lower() not in _ALL_MARKET_TOKENS:
+            match = next((item for item in available if item.market == key or item.display_market == key), None)
+            if match is not None:
+                return ((match,), match.market)
+    return (available, None)
+
+
 def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
     view = text(payload.get("view"))
     if view not in {"general", "strategic_ml"}:
@@ -106,6 +184,7 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
         "market_id": market_id,
         "selected_brand": selected_brand,
         "filter": filter_payload,
+        "csd_market": text(payload.get("csd_market")),
         "mode": text(payload.get("mode")) or "absolute",
         "window": window if isinstance(window, dict) else {},
     }
@@ -118,14 +197,27 @@ def _scope_payload(
     selected_meta: BrandMeta,
     ranking_quarter: str,
     applied_filter: JsonMap,
-    crosswalk: CsdCrosswalk,
+    available_markets: tuple[CsdCrosswalk, ...],
+    selected_market_key: str | None,
     quarters: list[str],
 ) -> JsonMap:
+    if selected_market_key:
+        active_display = next((market.display_market for market in available_markets if market.market == selected_market_key), "")
+    else:
+        active_display = available_markets[0].display_market if available_markets else ""
     return {
         "view": request["view"],
         "market_id": str(market_row.get(view.market_key) or request["market_id"]),
         "market_name": str(market_row.get(view.market_name_column) or market_row.get(view.market_key) or request["market_id"]),
-        "csd_market": crosswalk.display_market,
+        # csd_market keeps the currently-scoped market label (backward compatible);
+        # csd_markets is the corrected dropdown of the brand's CSD Market sheets;
+        # selected_csd_market is the active sheet (None == 시장 전체 / all sheets).
+        "csd_market": active_display,
+        "csd_markets": [
+            {"market": market.market, "label": market.display_market, "score": market.score}
+            for market in available_markets
+        ],
+        "selected_csd_market": selected_market_key,
         "selected_brand": {"brand_key": selected_meta.brand_key, "product_code": first(selected_meta.product_codes)},
         "ranking_measure": RANKING_MEASURE,
         "ranking_quarter": ranking_quarter,
@@ -197,11 +289,13 @@ def _market_totals(view: ViewConfig, market_id: str, quarters: list[str], activi
     return totals
 
 
-def _activity_series(csd_market: str, choices: list[BrandChoice], metas: dict[str, BrandMeta], quarters: list[str]) -> JsonMap:
-    rows = db.fetch_all(_sql_csd_activity(), (csd_market,))
+def _activity_series(csd_markets: list[str], choices: list[BrandChoice], metas: dict[str, BrandMeta], quarters: list[str]) -> JsonMap:
     totals = {quarter: 0.0 for quarter in quarters}
     by_brand = {choice.brand_key: {quarter: 0.0 for quarter in quarters} for choice in choices}
     matched = {choice.brand_key: False for choice in choices}
+    if not csd_markets:
+        return {"totals": totals, "by_brand": by_brand, "matched": matched}
+    rows = db.fetch_all(_sql_csd_activity(len(csd_markets)), tuple(csd_markets))
     code_sets = {key: set(meta.product_codes) for key, meta in metas.items()}
     for row in rows:
         quarter = period_ym_to_quarter(str(row["period_ym"]))
@@ -266,5 +360,6 @@ def _sql_csd_products() -> str:
     return f"SELECT market, master_product FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE jw_channel = 'TOTAL' GROUP BY market, master_product"
 
 
-def _sql_csd_activity() -> str:
-    return f"SELECT period_ym, master_product, SUM(product_details) AS value FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE market = %s AND jw_channel = 'TOTAL' GROUP BY period_ym, master_product"
+def _sql_csd_activity(market_count: int) -> str:
+    placeholders = ", ".join(["%s"] * market_count)
+    return f"SELECT period_ym, master_product, SUM(product_details) AS value FROM {quote_identifier(config.brand_activity_db_name)}.`csd_channel_dynamics_stage` WHERE market IN ({placeholders}) AND jw_channel = 'TOTAL' GROUP BY period_ym, master_product"

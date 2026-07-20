@@ -46,6 +46,7 @@ class CsdTimeseriesRequest(BaseModel):
     selected_brand: str
     filters: dict[str, JsonValue] = Field(default_factory=dict)
     filter: dict[str, JsonValue] = Field(default_factory=dict)
+    csd_market: str | None = None
     mode: str = "absolute"
     window: CsdTimeseriesWindow | None = None
 
