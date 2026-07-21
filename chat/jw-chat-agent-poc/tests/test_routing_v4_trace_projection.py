@@ -48,6 +48,11 @@ def test_trace_envelope_projects_v4_prs_without_ccs_in_shadow() -> None:
                 "repair_count": 0,
                 "deterministic_rule_id": "direct-disease-code",
                 "shadow_status": "ok",
+                "legacy_response_invariant": {
+                    "before_sha256": "a" * 64,
+                    "after_sha256": "a" * 64,
+                    "unchanged": True,
+                },
             },
         },
         "tool_calls": [],
@@ -61,6 +66,11 @@ def test_trace_envelope_projects_v4_prs_without_ccs_in_shadow() -> None:
     assert routing_v4["proposed_routing_signature"] == proposed_signature
     assert "executed_call_signature" not in routing_v4
     assert routing_v4["shadow_status"] == "ok"
+    assert routing_v4["legacy_response_invariant"] == {
+        "before_sha256": "a" * 64,
+        "after_sha256": "a" * 64,
+        "unchanged": True,
+    }
 
 
 def test_trace_envelope_projects_v4_ccs_in_enforce() -> None:

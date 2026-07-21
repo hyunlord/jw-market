@@ -60,7 +60,14 @@ from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 from jw_chat_agent_poc.tool_use.contracts import FallbackCode
-from jw_chat_agent_poc.tool_use.integration import external_tool_agent_enabled, run_external_tool_agent
+from jw_chat_agent_poc.tool_use.integration import (
+    attach_routing_v4_legacy_observation,
+    external_tool_agent_enabled,
+    run_external_tool_agent,
+)
+from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
+from jw_chat_agent_poc.tool_use.routing_v4_runtime import configured_routing_mode
+from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 
 
 class ChatAgent:
@@ -111,7 +118,13 @@ class ChatAgent:
         pre_resolved: BrandResolution | None = None
 
         def finish(payload: dict[str, Any]) -> dict[str, Any]:
-            return _annotate_external_tool_fallback(payload, external_fallback_code)
+            annotated = _annotate_external_tool_fallback(payload, external_fallback_code)
+            return attach_routing_v4_legacy_observation(
+                question,
+                annotated,
+                resolver=self.resolver,
+                external=self.external,
+            )
 
         if external_tool_agent_enabled() and agent_source_trap is None:
             tool_pack_routes = BQRouter().route(question, has_documents=bool(docs))
@@ -836,6 +849,11 @@ def _is_external_tool_agent_candidate(
         return False
     if is_top_n_intent(question):
         return False
+    if (
+        configured_routing_mode() is RoutingMode.ENFORCE
+        and classify_question(question).source_domain in {"hira", "regulatory", "clinical_trials"}
+    ):
+        return True
     sources = {source for route in routes for source in route.sources}
     if "external_api" in sources:
         return True

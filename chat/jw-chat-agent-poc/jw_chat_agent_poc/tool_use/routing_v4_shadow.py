@@ -21,8 +21,13 @@ class ShadowOutcome(Generic[T]):
     error_name: str | None = None
 
 
-def run_with_budget(operation: Callable[[], T]) -> ShadowOutcome[T]:
-    """Bound response-path waiting while allowing SHADOW diagnostics to finish."""
+@dataclass(frozen=True, slots=True)
+class ShadowTask(Generic[T]):
+    result_queue: Queue[ShadowOutcome[T]]
+
+
+def start_with_budget(operation: Callable[[], T]) -> ShadowTask[T]:
+    """Start a SHADOW operation without waiting on the response path."""
 
     result_queue: Queue[ShadowOutcome[T]] = Queue(maxsize=1)
 
@@ -34,10 +39,22 @@ def run_with_budget(operation: Callable[[], T]) -> ShadowOutcome[T]:
         result_queue.put_nowait(outcome)
 
     Thread(target=worker, name="routing-v4-shadow", daemon=True).start()
+    return ShadowTask(result_queue=result_queue)
+
+
+def collect_with_budget(task: ShadowTask[T]) -> ShadowOutcome[T]:
+    """Wait only the configured response-path budget for a started task."""
+
     try:
-        return result_queue.get(timeout=_configured_budget_ms() / 1000)
+        return task.result_queue.get(timeout=_configured_budget_ms() / 1000)
     except Empty:
         return ShadowOutcome(status="budget_exceeded")
+
+
+def run_with_budget(operation: Callable[[], T]) -> ShadowOutcome[T]:
+    """Start and collect a SHADOW operation within one bounded call."""
+
+    return collect_with_budget(start_with_budget(operation))
 
 
 def _configured_budget_ms() -> int:

@@ -155,7 +155,7 @@ def no_tool_route_plan(
         source_domain=classification.source_domain,
         domain_decision_source=classification.domain_decision_source,
         capability_status=status,
-        tool_selection_source=ToolSelectionSource.LLM,
+        tool_selection_source=ToolSelectionSource.NONE,
         route_outcome=RouteOutcome.NO_TOOL,
     )
     return RoutePlan(
@@ -174,35 +174,7 @@ def resolve_no_tool_route_plan(
     request: NoToolPlanRequest,
     provider: ToolChoiceProvider | None,
 ) -> RoutePlan:
-    if provider is None:
-        return typed_route_plan(
-            routing_mode=request.routing_mode,
-            classification=request.classification,
-            status=request.capability_status,
-            reason_code="AMBIGUOUS_INPUT",
-            eligible_tools=(),
-            selection_source=ToolSelectionSource.LLM,
-        )
-    choice = provider.choose(
-        user_text=request.question,
-        messages=[
-            {
-                "role": "system",
-                "content": "Answer the general help question without selecting an external tool.",
-            },
-            {"role": "user", "content": request.question},
-        ],
-        tools=[],
-    )
-    if choice.name is not None:
-        return typed_route_plan(
-            routing_mode=request.routing_mode,
-            classification=request.classification,
-            status=request.capability_status,
-            reason_code="INVALID_TOOL_ARGUMENTS",
-            eligible_tools=(),
-            selection_source=ToolSelectionSource.LLM,
-        )
+    del provider
     return no_tool_route_plan(
         routing_mode=request.routing_mode,
         classification=request.classification,

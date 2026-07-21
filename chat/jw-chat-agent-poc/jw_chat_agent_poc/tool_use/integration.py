@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -17,10 +19,14 @@ from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoice, ToolChoiceProvider
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
+    begin_shadow_route_diagnostics,
+    complete_shadow_route_diagnostics,
     configured_routing_mode,
     execute_enforced_route,
+    internal_legacy_route_diagnostics,
     shadow_route_diagnostics,
 )
+from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -29,6 +35,18 @@ from jw_chat_agent_poc.tools.external import ExternalApiClient
 LOGGER = logging.getLogger(__name__)
 FEATURE_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_AGENT_ENABLED"
 FORCE_CONTRACT_CALLS_FLAG: Final[str] = "CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS"
+_INTERNAL_MART_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "agent_calculation",
+        "bq_analysis",
+        "csd_activity_trend",
+        "general_view_dynamic_market",
+        "get_brand_metric",
+        "get_market_landscape",
+        "market_scope",
+        "query_spec",
+    }
+)
 _CLINICAL_DISEASE_ALIASES: Final[dict[str, str]] = {
     "고지혈증": "hyperlipidemia",
     "뇌경색": "cerebral infarction",
@@ -61,6 +79,12 @@ def run_external_tool_agent(
     registry = ExternalToolRegistry(resolver=resolver, external=external)
     tools = registry.list_for_query(question)
     if mode is RoutingMode.SHADOW:
+        selected_routing_provider = routing_provider or GenosToolChoiceProvider.from_env()
+        shadow_task = begin_shadow_route_diagnostics(
+            question,
+            tools=tools,
+            provider=selected_routing_provider,
+        )
         payload = _run_legacy_external_tool_agent(
             question,
             resolver=resolver,
@@ -68,14 +92,8 @@ def run_external_tool_agent(
             provider=provider,
             timing=timing,
         )
-        selected_routing_provider = routing_provider or GenosToolChoiceProvider.from_env()
-        diagnostics = shadow_route_diagnostics(
-            question,
-            tools=tools,
-            provider=selected_routing_provider,
-        )
-        payload["router_diagnostics"]["routing_v4"] = diagnostics
-        return payload
+        diagnostics = complete_shadow_route_diagnostics(shadow_task)
+        return _attach_routing_v4_diagnostics(payload, diagnostics)
 
     selected_routing_provider = routing_provider or provider or GenosToolChoiceProvider.from_env()
     enforced = execute_enforced_route(
@@ -88,6 +106,102 @@ def run_external_tool_agent(
     payload = _agent_result_payload(question, enforced.result, timing=timing)
     payload["router_diagnostics"]["routing_v4"] = enforced.diagnostics
     return payload
+
+
+def attach_routing_v4_legacy_observation(
+    question: str,
+    payload: dict[str, Any],
+    *,
+    resolver: BrandResolver | None = None,
+    external: ExternalApiClient | None = None,
+    routing_provider: ToolChoiceProvider | None = None,
+) -> dict[str, Any]:
+    """Attach v4 observations to legacy paths without changing their response."""
+
+    mode = configured_routing_mode()
+    diagnostics = payload.get("router_diagnostics")
+    if mode is RoutingMode.OFF or (
+        isinstance(diagnostics, dict) and isinstance(diagnostics.get("routing_v4"), dict)
+    ):
+        return payload
+
+    tool_calls = payload.get("tool_calls")
+    if _has_internal_mart_call(tool_calls):
+        metrics = payload.get("agent_loop_metrics")
+        runtime_status = (
+            str(metrics.get("status") or "legacy")
+            if isinstance(metrics, dict)
+            else "legacy"
+        )
+        observation = internal_legacy_route_diagnostics(mode, runtime_status=runtime_status)
+        return _attach_routing_v4_diagnostics(payload, observation)
+
+    classification = classify_question(question)
+    if (
+        mode is RoutingMode.SHADOW
+        and classification.source_domain != "unresolved"
+        and resolver is not None
+        and external is not None
+    ):
+        registry = ExternalToolRegistry(resolver=resolver, external=external)
+        provider = routing_provider or GenosToolChoiceProvider.from_env()
+        observation = shadow_route_diagnostics(
+            question,
+            tools=registry.list_for_query(question),
+            provider=provider,
+        )
+        return _attach_routing_v4_diagnostics(payload, observation)
+    return payload
+
+
+def _has_internal_mart_call(tool_calls: object) -> bool:
+    if not isinstance(tool_calls, list):
+        return False
+    return any(
+        isinstance(call, dict)
+        and str(call.get("tool") or "") in _INTERNAL_MART_TOOL_NAMES
+        for call in tool_calls
+    )
+
+
+def _attach_routing_v4_diagnostics(
+    payload: dict[str, Any],
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    before_sha256 = _legacy_response_sha256(payload)
+    annotated = dict(payload)
+    existing = annotated.get("router_diagnostics")
+    router_diagnostics = dict(existing) if isinstance(existing, dict) else {}
+    routing_v4 = dict(diagnostics)
+    router_diagnostics["routing_v4"] = routing_v4
+    annotated["router_diagnostics"] = router_diagnostics
+    after_sha256 = _legacy_response_sha256(annotated)
+    routing_v4["legacy_response_invariant"] = {
+        "before_sha256": before_sha256,
+        "after_sha256": after_sha256,
+        "unchanged": before_sha256 == after_sha256,
+    }
+    return annotated
+
+
+def _legacy_response_sha256(payload: dict[str, Any]) -> str:
+    visible_fields = (
+        "question",
+        "resolution",
+        "decomposition",
+        "tool_calls",
+        "answer",
+        "markdown_response",
+        "sources",
+    )
+    visible = {key: payload.get(key) for key in visible_fields if key in payload}
+    canonical = json.dumps(
+        visible,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _run_legacy_external_tool_agent(

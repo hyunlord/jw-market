@@ -19,7 +19,11 @@ from jw_chat_agent_poc.tool_use.routing_v4_execution import (
 )
 from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan, typed_message
 from jw_chat_agent_poc.tool_use.routing_v4_planner import ExternalRoutePlanner
-from jw_chat_agent_poc.tool_use.routing_v4_shadow import run_with_budget
+from jw_chat_agent_poc.tool_use.routing_v4_shadow import (
+    ShadowTask,
+    collect_with_budget,
+    start_with_budget,
+)
 from jw_chat_agent_poc.tool_use.routing_v4_types import (
     CapabilityStatus,
     DomainDecisionSource,
@@ -27,6 +31,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import (
     ExecutedCallSignature,
     ProposedRoutingSignature,
     RouteOutcome,
+    RoutingV4ContractError,
     RoutingDecision,
     RoutingMode,
     ToolSelectionSource,
@@ -61,12 +66,27 @@ def shadow_route_diagnostics(
     tools: tuple[ToolSpec, ...],
     provider: ToolChoiceProvider,
 ) -> dict[str, Any]:
+    return complete_shadow_route_diagnostics(
+        begin_shadow_route_diagnostics(question, tools=tools, provider=provider)
+    )
+
+
+def begin_shadow_route_diagnostics(
+    question: str,
+    *,
+    tools: tuple[ToolSpec, ...],
+    provider: ToolChoiceProvider,
+) -> ShadowTask[RoutePlan]:
     def plan_route() -> RoutePlan:
         plan = _planner(tools, provider).plan(question, routing_mode=RoutingMode.SHADOW)
         LOGGER.info("v4 shadow plan completed prs=%s", plan.proposal.model_dump_json())
         return plan
 
-    outcome = run_with_budget(plan_route)
+    return start_with_budget(plan_route)
+
+
+def complete_shadow_route_diagnostics(task: ShadowTask[RoutePlan]) -> dict[str, Any]:
+    outcome = collect_with_budget(task)
     if outcome.status == "budget_exceeded":
         return {
             "routing_mode": RoutingMode.SHADOW.value,
@@ -81,6 +101,49 @@ def shadow_route_diagnostics(
         }
     assert outcome.value is not None
     return _plan_diagnostics(outcome.value, status_key="shadow_status", status_value="ok")
+
+
+def internal_legacy_route_diagnostics(
+    mode: RoutingMode,
+    *,
+    runtime_status: str,
+) -> dict[str, Any]:
+    decision = RoutingDecision(
+        source_domain="internal_mart",
+        domain_decision_source=DomainDecisionSource.METRIC_OWNER,
+        capability_status=CapabilityStatus.SUPPORTED,
+        tool_selection_source=ToolSelectionSource.LEGACY_RULE,
+        route_outcome=RouteOutcome.CALL,
+    )
+    proposal = ProposedRoutingSignature(
+        routing_mode=mode,
+        routing_decision=decision,
+    )
+    diagnostics: dict[str, Any] = {
+        "routing_mode": mode.value,
+        "proposed_routing_signature": proposal.model_dump(mode="json"),
+        "eligible_tools": [],
+        "reason_code": None,
+        "repair_count": 0,
+        "deterministic_rule_id": "INTERNAL_MART_LEGACY_ROUTE",
+    }
+    match mode:
+        case RoutingMode.SHADOW:
+            diagnostics["shadow_status"] = "ok"
+        case RoutingMode.ENFORCE:
+            signature = ExecutedCallSignature(
+                routing_mode=mode,
+                routing_decision=decision,
+                fallback_reason=None,
+                reason_code=None,
+                runtime_status=runtime_status,
+            )
+            diagnostics["executed_call_signature"] = signature.model_dump(mode="json")
+            diagnostics["claim_evidence_binding_status"] = "not_applicable"
+            diagnostics["claim_evidence_bindings"] = []
+        case RoutingMode.OFF:
+            raise RoutingV4ContractError("OFF mode does not emit routing v4 diagnostics")
+    return diagnostics
 
 
 def execute_enforced_route(

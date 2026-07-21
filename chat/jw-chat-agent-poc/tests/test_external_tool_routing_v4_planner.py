@@ -267,10 +267,10 @@ def test_d10_general_help_question_is_no_tool_not_missing_capability() -> None:
         routing_mode=RoutingMode.ENFORCE,
     )
 
-    assert provider.calls == 1
-    assert provider.visible_tool_names == [()]
+    assert provider.calls == 0
+    assert provider.visible_tool_names == []
     assert plan.proposal.routing_decision.capability_status is CapabilityStatus.UNRESOLVED
-    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.LLM
+    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.NONE
     assert plan.proposal.routing_decision.route_outcome is RouteOutcome.NO_TOOL
     assert plan.proposal.proposed_calls == ()
     assert plan.reason_code is None

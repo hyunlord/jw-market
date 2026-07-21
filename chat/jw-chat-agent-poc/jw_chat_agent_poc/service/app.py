@@ -143,6 +143,10 @@ from jw_chat_agent_poc.common.timing import (
     trace_span,
 )
 from jw_chat_agent_poc.common.token_usage import record_token_usage
+from jw_chat_agent_poc.tool_use.integration import attach_routing_v4_legacy_observation
+from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
+from jw_chat_agent_poc.tool_use.routing_v4_runtime import configured_routing_mode
+from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
@@ -1611,6 +1615,7 @@ def _answer_existing_without_pending(
         and agent_loop_required
         and not documents
         and not tool_use_requirements(question)
+        and not _v4_enforces_external_question(question)
     ):
         return _answer_direct_agent_loop(question, external_mode)
     if agent_loop_required:
@@ -1667,11 +1672,35 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
             try:
                 dependencies.resolver.resolve(question, allow_default=False)
             except UnsupportedBrandError:
-                return unsupported_brand_result(question, routes, router_diagnostics(dependencies.router))
+                result = unsupported_brand_result(
+                    question,
+                    routes,
+                    router_diagnostics(dependencies.router),
+                )
+                return attach_routing_v4_legacy_observation(
+                    question,
+                    result,
+                    resolver=dependencies.resolver,
+                    external=getattr(dependencies, "external", None),
+                )
     with trace_span("agent_loop_construction", "tool-use agent construction"):
         agent = build_tool_use_agent(dependencies.agent_loop_dependencies())
     with trace_span("agent_loop_execution", "tool-use agent execution"):
-        return agent.answer(question)
+        result = agent.answer(question)
+    return attach_routing_v4_legacy_observation(
+        question,
+        result,
+        resolver=dependencies.resolver,
+        external=getattr(dependencies, "external", None),
+    )
+
+
+def _v4_enforces_external_question(question: str) -> bool:
+    return (
+        configured_routing_mode() is RoutingMode.ENFORCE
+        and classify_question(question).source_domain
+        in {"hira", "regulatory", "clinical_trials"}
+    )
 
 
 def _answer_deep_research(question: str, external_mode: str) -> dict:

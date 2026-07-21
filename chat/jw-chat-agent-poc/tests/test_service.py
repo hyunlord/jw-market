@@ -24,6 +24,7 @@ from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
+from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
@@ -623,6 +624,122 @@ def test_direct_agent_loop_bypasses_question_router_for_explicit_quarter_sales(m
 
     assert result["answer"] == "242.72억원"
     assert captured["loop_question"] == "리바로 2025년 2분기 매출"
+
+
+def test_direct_agent_loop_shadow_attaches_internal_mart_prs(monkeypatch) -> None:
+    class RouterBomb:
+        def route(self, _question: str, *, has_documents: bool = False):
+            raise AssertionError("structured sales must bypass question decomposition")
+
+    class Dependencies:
+        router = RouterBomb()
+        resolver = BrandResolver(mode="fixture")
+
+        def agent_loop_dependencies(self):
+            return "internal-loop-deps"
+
+    class Loop:
+        def answer(self, question: str) -> dict:
+            return {
+                "question": question,
+                "answer": "리바로 매출은 10억원입니다.",
+                "sources": ["UBIST"],
+                "tool_calls": [{"tool": "get_brand_metric", "status": "ok"}],
+                "router_diagnostics": {"mode": "agent_loop"},
+            }
+
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+    monkeypatch.setattr(service_app, "build_tool_use_agent", lambda _dependencies: Loop())
+
+    result = service_app._answer_direct_agent_loop("리바로 2025년 2분기 매출", "live")
+
+    decision = result["router_diagnostics"]["routing_v4"]["proposed_routing_signature"][
+        "routing_decision"
+    ]
+    assert decision["source_domain"] == "internal_mart"
+    assert decision["tool_selection_source"] == "LEGACY_RULE"
+    assert decision["route_outcome"] == "CALL"
+
+
+def test_direct_agent_loop_shadow_attaches_regulatory_typed_stop_prs(monkeypatch) -> None:
+    class Resolver:
+        def resolve(self, _question: str, *, allow_default: bool = False):
+            raise UnsupportedBrandError("not a brand-scoped request")
+
+    class Router:
+        def route(self, _question: str, *, has_documents: bool = False):
+            return ()
+
+    class Dependencies:
+        router = Router()
+        resolver = Resolver()
+        external = ExternalApiClient(mode="fixture")
+
+        def agent_loop_dependencies(self):
+            raise AssertionError("typed stop must happen before the legacy loop")
+
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+
+    result = service_app._answer_direct_agent_loop(
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        "live",
+    )
+
+    diagnostics = result["router_diagnostics"]["routing_v4"]
+    decision = diagnostics["proposed_routing_signature"]["routing_decision"]
+    assert diagnostics["shadow_status"] == "ok"
+    assert decision == {
+        "source_domain": "regulatory",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "NOT_IMPLEMENTED",
+        "tool_selection_source": "NONE",
+        "route_outcome": "TYPED_STOP",
+    }
+
+
+def test_enforce_external_question_bypasses_direct_legacy_loop(monkeypatch) -> None:
+    captured: list[str] = []
+
+    class Agent:
+        def answer(self, question: str, _documents=None) -> dict:
+            captured.append(question)
+            return {"answer": "canonical external route", "sources": [], "tool_calls": []}
+
+    def agent_factory(*, external_mode: str = "fixture") -> Agent:
+        del external_mode
+        return Agent()
+
+    def direct_loop_bomb(_question: str, _external_mode: str) -> dict:
+        raise AssertionError("ENFORCE external requests must use the canonical router")
+
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setattr(service_app, "should_use_agent_loop", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(service_app, "tool_use_requirements", lambda _question: ())
+    monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop_bomb)
+
+    result = service_app._answer_existing_without_pending(
+        _market_scope_resolver(),
+        agent_factory,
+        "enforce-session",
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        "fixture",
+        None,
+        SessionStore(),
+        use_direct_agent_loop=True,
+    )
+
+    assert result["answer"] == "canonical external route"
+    assert captured == ["아일리아의 급여기준에 대해서 적응증 별로 설명해줘"]
 
 
 def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monkeypatch) -> None:

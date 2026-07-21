@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.tool_use import integration as routing_integration
 from jw_chat_agent_poc.tool_use.contracts import AgentResult
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
@@ -44,6 +45,16 @@ class _SlowProvider:
         del user_text, messages, tools
         time.sleep(0.25)
         return ToolChoice(None, {}, "late shadow response", call_id=None)
+
+
+@dataclass(slots=True)
+class _DelayedNoToolProvider:
+    delay_seconds: float
+
+    def choose(self, *, user_text: str, messages: list[dict], tools: list[dict]) -> ToolChoice:
+        del user_text, messages, tools
+        time.sleep(self.delay_seconds)
+        return ToolChoice(None, {}, "no tool", call_id=None)
 
 
 def _no_tool_provider(message: str = "no matching tool") -> _ChoiceSequence:
@@ -170,6 +181,126 @@ def test_shadow_slow_provider_cannot_delay_the_legacy_response(monkeypatch) -> N
     assert _without_v4_diagnostics(shadow) == off
     diagnostics = shadow["router_diagnostics"]["routing_v4"]
     assert diagnostics["shadow_status"] == "budget_exceeded"
+
+
+def test_shadow_planner_uses_legacy_execution_time_before_spending_response_budget(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_SHADOW_MAX_WAIT_MS", "25")
+
+    payload = run_external_tool_agent(
+        "당뇨병성 황반부종(DME) 관련 임상시험을 찾아줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_DelayedNoToolProvider(delay_seconds=0.08),
+        routing_provider=_DelayedNoToolProvider(delay_seconds=0.06),
+    )
+
+    assert payload["router_diagnostics"]["routing_v4"]["shadow_status"] == "ok"
+
+
+def test_shadow_internal_mart_path_emits_prs_and_same_request_invariant(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    payload = {
+        "question": "리바로 매출 추이",
+        "router_diagnostics": {"mode": "strategic_market"},
+        "tool_calls": [{"tool": "get_brand_metric", "status": "ok"}],
+        "answer": "리바로 매출은 2026-05 기준 10억원입니다.",
+        "markdown_response": {"markdown": "리바로 매출은 2026-05 기준 10억원입니다."},
+        "sources": ["UBIST"],
+    }
+
+    observed = routing_integration.attach_routing_v4_legacy_observation(
+        "리바로 매출 추이",
+        payload,
+    )
+
+    diagnostics = observed["router_diagnostics"]["routing_v4"]
+    decision = diagnostics["proposed_routing_signature"]["routing_decision"]
+    assert decision == {
+        "source_domain": "internal_mart",
+        "domain_decision_source": "METRIC_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "LEGACY_RULE",
+        "route_outcome": "CALL",
+    }
+    assert diagnostics["proposed_routing_signature"]["proposed_calls"] == []
+    invariant = diagnostics["legacy_response_invariant"]
+    assert invariant["before_sha256"] == invariant["after_sha256"]
+    assert invariant["unchanged"] is True
+
+
+def test_shadow_actual_internal_mart_call_overrides_external_intent_guess(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    monkeypatch.setattr(
+        routing_integration,
+        "classify_question",
+        lambda _question: QuestionClassification(
+            source_domain="hira",
+            domain_decision_source=DomainDecisionSource.INTENT_OWNER,
+            requested_capability="HIRA_DISEASE_PATIENT_STATS",
+        ),
+    )
+    payload = {
+        "question": "고지혈증 시장 매출 알려줘",
+        "router_diagnostics": {"mode": "agent_loop"},
+        "tool_calls": [{"tool": "get_brand_metric", "status": "ok"}],
+        "answer": "고지혈증 시장 매출은 100억원입니다.",
+        "sources": ["UBIST"],
+    }
+
+    observed = routing_integration.attach_routing_v4_legacy_observation(
+        "고지혈증 시장 매출 알려줘",
+        payload,
+    )
+
+    decision = observed["router_diagnostics"]["routing_v4"]["proposed_routing_signature"][
+        "routing_decision"
+    ]
+    assert decision["source_domain"] == "internal_mart"
+    assert decision["domain_decision_source"] == "METRIC_OWNER"
+
+
+def test_shadow_external_catalog_call_is_not_labeled_internal_mart(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+    payload = {
+        "question": "최신 치료 가이드라인을 찾아줘",
+        "router_diagnostics": {"mode": "agent_loop"},
+        "tool_calls": [{"tool": "web_search", "status": "ok"}],
+        "answer": "검색 결과입니다.",
+        "sources": ["web"],
+    }
+
+    observed = routing_integration.attach_routing_v4_legacy_observation(
+        "최신 치료 가이드라인을 찾아줘",
+        payload,
+    )
+
+    assert "routing_v4" not in observed["router_diagnostics"]
+
+
+def test_enforce_internal_mart_path_emits_ccs_without_external_execution(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = {
+        "question": "리바로 매출 추이",
+        "router_diagnostics": {"mode": "strategic_market"},
+        "tool_calls": [{"tool": "get_brand_metric", "status": "ok"}],
+        "answer": "리바로 매출은 2026-05 기준 10억원입니다.",
+        "markdown_response": {"markdown": "리바로 매출은 2026-05 기준 10억원입니다."},
+        "sources": ["UBIST"],
+    }
+
+    observed = routing_integration.attach_routing_v4_legacy_observation(
+        "리바로 매출 추이",
+        payload,
+    )
+
+    diagnostics = observed["router_diagnostics"]["routing_v4"]
+    ccs = diagnostics["executed_call_signature"]
+    assert ccs["routing_decision"]["source_domain"] == "internal_mart"
+    assert ccs["routing_decision"]["route_outcome"] == "CALL"
+    assert ccs["proposed_calls"] == []
+    assert ccs["executed_calls"] == []
+    assert diagnostics["claim_evidence_binding_status"] == "not_applicable"
 
 
 def test_force_flag_does_not_disable_shadow_routing_provider(monkeypatch) -> None:

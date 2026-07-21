@@ -28,6 +28,13 @@ def project_routing_v4_qa_trace(
     }
     if raw.get("shadow_status") is not None:
         projected["shadow_status"] = str(raw["shadow_status"])
+    invariant = raw.get("legacy_response_invariant")
+    if isinstance(invariant, Mapping):
+        projected["legacy_response_invariant"] = {
+            "before_sha256": str(invariant.get("before_sha256") or _UNKNOWN),
+            "after_sha256": str(invariant.get("after_sha256") or _UNKNOWN),
+            "unchanged": invariant.get("unchanged") is True,
+        }
 
     proposed = raw.get("proposed_routing_signature")
     if isinstance(proposed, Mapping):

@@ -124,7 +124,11 @@ class ProposedRoutingSignature(BaseModel):
     @model_validator(mode="after")
     def validate_outcome(self) -> ProposedRoutingSignature:
         has_calls = bool(self.proposed_calls)
-        if self.routing_decision.route_outcome is RouteOutcome.CALL and not has_calls:
+        if (
+            self.routing_decision.route_outcome is RouteOutcome.CALL
+            and not has_calls
+            and not _is_internal_legacy_call(self.routing_decision)
+        ):
             raise RoutingV4ContractError("CALL routing outcome requires at least one proposed call")
         if self.routing_decision.route_outcome is not RouteOutcome.CALL and has_calls:
             raise RoutingV4ContractError("non-CALL routing outcome cannot contain proposed calls")
@@ -164,7 +168,11 @@ class ExecutedCallSignature(BaseModel):
         executed = Counter(_call_key(call.tool_name, call.normalized_args) for call in self.executed_calls)
         if executed - proposed:
             raise RoutingV4ContractError("executed calls must be present in the proposed call set")
-        if self.routing_decision.route_outcome is RouteOutcome.CALL and not self.proposed_calls:
+        if (
+            self.routing_decision.route_outcome is RouteOutcome.CALL
+            and not self.proposed_calls
+            and not _is_internal_legacy_call(self.routing_decision)
+        ):
             raise RoutingV4ContractError("CALL routing outcome requires a proposed call set")
         return self
 
@@ -201,4 +209,13 @@ def _call_key(tool_name: str, normalized_args: dict[str, Any]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+    )
+
+
+def _is_internal_legacy_call(decision: RoutingDecision) -> bool:
+    return (
+        decision.source_domain == "internal_mart"
+        and decision.domain_decision_source is DomainDecisionSource.METRIC_OWNER
+        and decision.capability_status is CapabilityStatus.SUPPORTED
+        and decision.tool_selection_source is ToolSelectionSource.LEGACY_RULE
     )
