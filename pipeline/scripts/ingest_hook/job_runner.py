@@ -23,6 +23,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,6 +47,79 @@ from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_stagin
 
 def _run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+class _StageTracker:
+    """Records each job_runner stage to ingest_stage_event + stdout markers.
+
+    Purely observational (S-4): the ledger recorder swallows its own DB errors, so
+    a recording failure never breaks the load. Markers use the R-1 form
+    ``[stage] <name> start(i/N)`` / ``end rc=N`` so a silent kill (OOM/eviction)
+    leaves the failing stage as the last marker in the durable log.
+    Rows accumulate per run_id (S-3): a retry passes a new run_id, never overwriting.
+    """
+
+    STAGES = ("g3", "load", "load_verify", "sigma", "post_gate", "refresh")
+
+    def __init__(self, ledger: Ledger, identity: tuple[str, str, str], run_id: str):
+        self._ledger = ledger
+        self._identity = identity
+        self._run_id = run_id
+        self._seq = {name: index + 1 for index, name in enumerate(self.STAGES)}
+        self._n = len(self.STAGES)
+        self._current: str | None = None
+        self._t0: float | None = None
+
+    def _record(self, name: str, status: str, *, reason: str | None = None,
+                started: str | None = None, finished: str | None = None, duration_ms: int | None = None) -> None:
+        self._ledger.record_stage(
+            *self._identity, run_id=self._run_id, seq=self._seq[name], stage=name,
+            status=status, reason=reason, started_at=started, finished_at=finished, duration_ms=duration_ms,
+        )
+
+    def enter(self, name: str) -> None:
+        self._current = name
+        self._t0 = time.monotonic()
+        self._record(name, "running", started=_stamp())
+        print(f"[stage] {name} start({self._seq[name]}/{self._n})")
+
+    def done(self, rc: int = 0) -> None:
+        if self._current is None:
+            return
+        name, dur = self._current, self._elapsed_ms()
+        self._record(name, "complete", finished=_stamp(), duration_ms=dur)
+        print(f"[stage] {name} end rc={rc}")
+        self._current = None
+        self._t0 = None
+
+    def complete(self, name: str, reason: str | None = None) -> None:
+        """Record a stage that ran inside a helper (load_verify inside _real_load;
+        sigma inside run_post_gates) as complete without a separate enter/exit."""
+        stamp = _stamp()
+        self._record(name, "complete", reason=reason, started=stamp, finished=stamp, duration_ms=0)
+        print(f"[stage] {name} end rc=0")
+
+    def skip(self, name: str, reason: str) -> None:
+        stamp = _stamp()
+        self._record(name, "skipped", reason=reason, started=stamp, finished=stamp, duration_ms=0)
+        print(f"[stage] {name} skipped reason={reason}")
+
+    def fail(self, reason: str) -> None:
+        """Mark the in-flight stage failed (called from run()'s except handlers)."""
+        if self._current is None:
+            return
+        name, dur = self._current, self._elapsed_ms()
+        self._record(name, "failed", reason=reason, finished=_stamp(), duration_ms=dur)
+        print(f"[stage] {name} end rc=1")
+        self._current = None
+        self._t0 = None
+
+    def _elapsed_ms(self) -> int | None:
+        return int((time.monotonic() - self._t0) * 1000) if self._t0 is not None else None
 
 
 def _rehearsal_load(manifest, input_root: Path, rehearsal_root: Path) -> str:
@@ -164,17 +238,24 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
     if entry.status == STATUS_QUEUED:
         ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
 
+    tracker = _StageTracker(ledger, identity, run_id)
     try:
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
 
         # 1) G3 — always first; a failure here has zero DB effect.
+        tracker.enter("g3")
         report = validate(manifest, spec, input_root, previous_total_rows=previous_total)
         print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
+        tracker.done()
 
         # 2) load + 3) fail-closed post-gates
         if rehearsal_root is not None:
+            tracker.enter("load")
             table = _rehearsal_load(manifest, input_root, rehearsal_root)
+            tracker.done()
+            tracker.skip("load_verify", "rehearsal (sqlite staging)")
+            tracker.skip("sigma", "rehearsal (mart untouched)")
             conn = sqlite3.connect(str(rehearsal_root / "staging.db"))
             try:
                 stable = SourceSnapshot((TableFingerprint("external_mart", 0, "untouched"),))
@@ -184,6 +265,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     checked = len(sigma.periods)
                     return SigmaEvidence(checked, checked, str(sigma.periods))
 
+                tracker.enter("post_gate")
                 post = run_post_gates(
                     run_id=run_id,
                     epoch=manifest.epoch,
@@ -198,6 +280,8 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
             finally:
                 conn.close()
             print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
+            tracker.done()
+            tracker.skip("refresh", "rehearsal (orchestrator untouched)")
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
             mart_conn = None
@@ -209,10 +293,19 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     mart_conn, touched_source=spec.sigma_source
                 )
             # 2) real load — wire the materialized upload in, prove the epoch landed (M-2).
+            tracker.enter("load")
             load_result = _real_load(manifest, spec, input_root)
+            tracker.done()
+            if load_result["epoch_rows"] is not None:
+                tracker.complete("load_verify")  # verify_epoch_loaded ran inside _real_load
+            else:
+                tracker.skip("load_verify", "category has no load_verify spec")
             staging_verify = load_result["staging_verify"]
             if staging_verify:
                 # Isolated J5 verification: real loader exercised, zero mart write.
+                tracker.skip("sigma", "staging-verify (mart untouched)")
+                tracker.skip("post_gate", "staging-verify (mart untouched)")
+                tracker.skip("refresh", "staging-verify (orchestrator untouched)")
                 print("gate=sigma status=skipped reason=staging-verify (mart untouched)")
                 print("phase=refresh status=skipped reason=staging-verify (orchestrator untouched)")
             else:
@@ -239,6 +332,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
 
                     if mart_conn is None or before_snapshot is None:
                         raise RuntimeError("live post-gate requires a mart connection and baseline")
+                    tracker.enter("post_gate")
                     post = run_post_gates(
                         run_id=run_id,
                         epoch=manifest.epoch,
@@ -253,7 +347,14 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                         report_path=load_result["target_dir"] / "post_gate_report.json",
                     )
                     print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
+                    tracker.done()
+                    tracker.complete("sigma")  # sigma_check ran inside run_post_gates and passed
+                else:
+                    tracker.skip("sigma", "category has no sigma_source")
+                    tracker.skip("post_gate", "category has no sigma_source")
+                tracker.enter("refresh")
                 _run_commands("refresh", spec.refresh_argv)
+                tracker.done()
             if load_result["epoch_rows"] is not None:
                 report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
 
@@ -261,10 +362,12 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
     except PostGateError as exc:
+        tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
         print(f"result=gate_failed reason={exc}", file=sys.stderr)
         return 1
     except (G3Error, SigmaGateError, UnknownCategoryError, RuntimeError) as exc:
+        tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

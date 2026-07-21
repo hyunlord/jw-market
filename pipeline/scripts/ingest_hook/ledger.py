@@ -111,6 +111,53 @@ CREATE TABLE IF NOT EXISTS ingest_ledger (
 """
 
 
+# Per-stage observation table. Separate from ingest_ledger (not extra columns)
+# because one submission runs N stages and may be retried under new run_ids —
+# a 1:N child keyed by the ledger identity + run_id + seq. Purely observational:
+# a write failure here must never fail the load (see Ledger.record_stage).
+STAGE_RUNNING = "running"
+STAGE_COMPLETE = "complete"
+STAGE_FAILED = "failed"
+STAGE_SKIPPED = "skipped"
+
+_DDL_STAGE_SQLITE = """
+CREATE TABLE IF NOT EXISTS ingest_stage_event (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  epoch         TEXT NOT NULL,
+  category      TEXT NOT NULL,
+  manifest_sha  TEXT NOT NULL,
+  run_id        TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  stage         TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  reason        TEXT,
+  started_at    TEXT,
+  finished_at   TEXT,
+  duration_ms   INTEGER,
+  UNIQUE (epoch, category, manifest_sha, run_id, seq)
+)
+"""
+
+_DDL_STAGE_MYSQL = """
+CREATE TABLE IF NOT EXISTS ingest_stage_event (
+  id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+  epoch         VARCHAR(32)  NOT NULL,
+  category      VARCHAR(32)  NOT NULL,
+  manifest_sha  CHAR(64)     NOT NULL,
+  run_id        VARCHAR(64)  NOT NULL,
+  seq           INT          NOT NULL,
+  stage         VARCHAR(32)  NOT NULL,
+  status        VARCHAR(16)  NOT NULL,
+  reason        TEXT         NULL,
+  started_at    DATETIME     NULL,
+  finished_at   DATETIME     NULL,
+  duration_ms   BIGINT       NULL,
+  UNIQUE KEY uq_stage_identity (epoch, category, manifest_sha, run_id, seq),
+  KEY idx_stage_lookup (epoch, category, manifest_sha)
+)
+"""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -139,6 +186,18 @@ class ReceiveDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class StageEvent:
+    run_id: str
+    seq: int
+    stage: str
+    status: str  # running | complete | failed | skipped
+    reason: str | None
+    started_at: str | None
+    finished_at: str | None
+    duration_ms: int | None
+
+
 class Ledger:
     """Dialect-neutral ledger operations over an injected DB-API connection."""
 
@@ -158,6 +217,7 @@ class Ledger:
     def ensure_table(self) -> None:
         cursor = self._conn.cursor()
         cursor.execute(_DDL_SQLITE if self._dialect == "sqlite" else _DDL_MYSQL)
+        cursor.execute(_DDL_STAGE_SQLITE if self._dialect == "sqlite" else _DDL_STAGE_MYSQL)
         self._conn.commit()
 
     # -- helpers -----------------------------------------------------------
@@ -349,6 +409,76 @@ class Ledger:
         if not raw:
             return None
         return sum(json.loads(raw).values())
+
+    # -- stage observation (best-effort; never fails the load) ---------------
+    def record_stage(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        run_id: str,
+        seq: int,
+        stage: str,
+        status: str,
+        reason: str | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """Upsert one stage row by (identity, run_id, seq). Best-effort by design:
+
+        observation must never break the load (S-4). Any DB error is swallowed with
+        an stderr note; the run continues. Rows accumulate per run_id — a retry uses
+        a new run_id and never overwrites a prior attempt's history (S-3).
+        """
+        try:
+            existing = self._execute(
+                "SELECT id FROM ingest_stage_event"
+                " WHERE epoch=? AND category=? AND manifest_sha=? AND run_id=? AND seq=?",
+                (epoch, category, manifest_sha, run_id, seq),
+            ).fetchone()
+            if existing is None:
+                self._execute(
+                    "INSERT INTO ingest_stage_event"
+                    " (epoch, category, manifest_sha, run_id, seq, stage, status, reason,"
+                    "  started_at, finished_at, duration_ms)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (epoch, category, manifest_sha, run_id, seq, stage, status, reason,
+                     started_at, finished_at, duration_ms),
+                )
+            else:
+                self._execute(
+                    "UPDATE ingest_stage_event SET stage=?, status=?, reason=?,"
+                    " finished_at=COALESCE(?, finished_at), duration_ms=COALESCE(?, duration_ms),"
+                    " started_at=COALESCE(started_at, ?)"
+                    " WHERE epoch=? AND category=? AND manifest_sha=? AND run_id=? AND seq=?",
+                    (stage, status, reason, finished_at, duration_ms, started_at,
+                     epoch, category, manifest_sha, run_id, seq),
+                )
+        except Exception as exc:  # noqa: BLE001 — observation is best-effort (S-4)
+            import sys
+            print(f"[stage] record failed (ignored; load continues): {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+
+    def stage_events(self, epoch: str, category: str, manifest_sha: str) -> list[StageEvent]:
+        cursor = self._execute(
+            "SELECT run_id, seq, stage, status, reason, started_at, finished_at, duration_ms"
+            " FROM ingest_stage_event WHERE epoch=? AND category=? AND manifest_sha=?"
+            " ORDER BY run_id, seq",
+            (epoch, category, manifest_sha),
+        )
+        events: list[StageEvent] = []
+        for row in cursor.fetchall():
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            events.append(StageEvent(
+                run_id=str(values[0]), seq=int(values[1]), stage=str(values[2]),
+                status=str(values[3]), reason=values[4],
+                started_at=str(values[5]) if values[5] else None,
+                finished_at=str(values[6]) if values[6] else None,
+                duration_ms=int(values[7]) if values[7] is not None else None,
+            ))
+        return events
 
 
 def open_sqlite_ledger(path: Path) -> Ledger:

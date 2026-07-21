@@ -121,6 +121,17 @@ def create_app(service: IngestService) -> FastAPI:
         entry = service.ledger.status(epoch, category, manifest_sha)
         if entry is None:
             raise HTTPException(status_code=404, detail="unknown submission identity")
+        # Additive only (backward compatible): existing keys are unchanged; the
+        # stage list / current_stage / log_ref are new. stage_events reads are
+        # best-effort — a stage-table read failure degrades to an empty list, never
+        # a 500, so status stays available even before the stage table is activated.
+        try:
+            events = service.ledger.stage_events(epoch, category, manifest_sha)
+        except Exception:  # noqa: BLE001 — observation must not break status
+            events = []
+        current_stage = next(
+            (event.stage for event in reversed(events) if event.status == "running"), None
+        )
         return {
             "epoch": entry.epoch,
             "category": entry.category,
@@ -131,6 +142,31 @@ def create_app(service: IngestService) -> FastAPI:
             "uploaded_by": entry.uploaded_by,
             "received_at": entry.received_at,
             "finished_at": entry.finished_at,
+            # -- new (additive) --
+            "current_stage": current_stage,
+            "stages": [
+                {
+                    "run_id": event.run_id,
+                    "seq": event.seq,
+                    "stage": event.stage,
+                    "status": event.status,
+                    "reason": event.reason,
+                    "started_at": event.started_at,
+                    "finished_at": event.finished_at,
+                    "duration_ms": event.duration_ms,
+                }
+                for event in events
+            ],
+            "log_ref": {
+                "job_name": entry.job_name,
+                "run_id": entry.run_id,
+                # Path hint only (not the body): logs can be large; body exposure
+                # with a size cap + paging is a B-track item, not this round.
+                "durable_log_hint": (
+                    f"{config.log_root_hint()}/{entry.category}/{entry.epoch}/"
+                    if entry.job_name else None
+                ),
+            },
         }
 
     @app.post("/ingest/reconcile")
