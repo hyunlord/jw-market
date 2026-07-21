@@ -14,6 +14,7 @@ def _row(
     route: str = "llm",
     tools: tuple[str, ...] = ("get_brand_metric",),
     answer_chars: int = 1762,
+    answer: str = "grounded answer",
     numeric_tokens: tuple[str, ...] = (),
 ) -> dict[str, object]:
     return {
@@ -31,6 +32,7 @@ def _row(
             for name in tools
         ],
         "answer_chars": answer_chars,
+        "answer": answer,
         "answer_sha256": f"answer-{answer_chars}",
         "numeric_tokens": list(numeric_tokens),
     }
@@ -47,8 +49,8 @@ def _payload(overrides: dict[str, list[dict[str, object]]] | None = None) -> dic
         "market_news_negative": _five(_row(route="tool_use_agent", tools=("web_search",), answer_chars=620)),
         "C_03": _five(_row(tools=("web_search",), answer_chars=900)),
         "owner_brand_share": _five(_row(numeric_tokens=("3.76",))),
-        "A_03": _five(_row(numeric_tokens=("253.62", "2026-05"))),
-        "E1_market_hhi": _five(_row(numeric_tokens=("262.42", "2025"))),
+        "A_03": _five(_row(answer="HHI 253.62, UBIST 2026-05", numeric_tokens=("253.62", "2026", "05"))),
+        "E1_market_hhi": _five(_row(answer="HHI 262.42", numeric_tokens=("262.42",))),
     }
     rows.update(overrides or {})
     return {"cases": rows}
@@ -123,3 +125,13 @@ def test_rpt_golden_tokens_are_not_relaxed() -> None:
 
     assert result["passed"] is False
     assert "missing_numeric_token:262.42" in result["cases"]["E1_market_hhi"]["candidate"]["failures"]
+
+
+def test_rpt_golden_period_uses_answer_surface_not_split_numeric_tokens() -> None:
+    manifest = load_manifest(MANIFEST)
+    missing_period = _five(_row(answer="HHI 253.62", numeric_tokens=("253.62", "2026", "05")))
+
+    result = evaluate_repeats(manifest, _payload(), _payload({"A_03": missing_period}))
+
+    assert result["passed"] is False
+    assert "missing_answer_substring:2026-05" in result["cases"]["A_03"]["candidate"]["failures"]

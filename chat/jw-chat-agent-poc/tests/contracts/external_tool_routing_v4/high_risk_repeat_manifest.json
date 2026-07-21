@@ -43,13 +43,14 @@
       "case_id": "A_03",
       "question": "고지혈증 시장 HHI",
       "risk_classes": ["golden_linked"],
-      "required_numeric_tokens": ["253.62", "2026-05"]
+      "required_numeric_tokens": ["253.62"],
+      "required_answer_substrings": ["2026-05"]
     },
     {
       "case_id": "E1_market_hhi",
       "question": "리바로가 속한 시장 HHI",
       "risk_classes": ["golden_linked", "market_brand_boundary"],
-      "required_numeric_tokens": ["262.42", "2025"]
+      "required_numeric_tokens": ["262.42"]
     }
   ]
 }

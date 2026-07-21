@@ -80,6 +80,7 @@ def _normalized_run(row: dict[str, Any], run_number: int) -> dict[str, Any]:
         "tools": tools,
         "tool_contracts": contracts,
         "answer_chars": row.get("answer_chars"),
+        "answer": str(row.get("answer") or ""),
         "answer_sha256": row.get("answer_sha256"),
         "numeric_tokens": [str(token) for token in numeric_tokens],
     }
@@ -126,6 +127,9 @@ def _evaluate_surface(
     required_tools = {str(name) for name in spec.get("required_tools", [])}
     forbidden_tools = {str(name) for name in spec.get("forbidden_tools", [])}
     required_tokens = {str(token) for token in spec.get("required_numeric_tokens", [])}
+    required_answer_substrings = {
+        str(value) for value in spec.get("required_answer_substrings", [])
+    }
     minimum_answer_chars = spec.get("minimum_answer_chars")
     for run in runs:
         tools = set(run["tools"])
@@ -136,6 +140,10 @@ def _evaluate_surface(
         numeric_tokens = set(run["numeric_tokens"])
         for token in sorted(required_tokens - numeric_tokens):
             failures.append(f"missing_numeric_token:{token}")
+        answer = run["answer"]
+        for value in sorted(required_answer_substrings):
+            if value not in answer:
+                failures.append(f"missing_answer_substring:{value}")
         if isinstance(minimum_answer_chars, int):
             actual = run["answer_chars"]
             if not isinstance(actual, int) or actual < minimum_answer_chars:
