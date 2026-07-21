@@ -1240,6 +1240,12 @@ def _ground_unanchored_market_golden(
     ):
         return "리바로 시장 HHI와 CR5를 알려줘"
     if re.fullmatch(
+        r"(?:고지혈증|이상지질혈증)\s*시장\s*상황(?:\s*알려\s*줘)?[?!.]?",
+        question.strip(),
+        re.IGNORECASE,
+    ):
+        return "리바로 시장 상황 알려줘"
+    if re.fullmatch(
         r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*최근\s*이슈와\s*시장\s*변화[?!.]?",
         question.strip(),
         re.IGNORECASE,

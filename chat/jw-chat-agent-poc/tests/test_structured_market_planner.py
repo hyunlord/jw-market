@@ -61,6 +61,18 @@ def test_structured_metric_owner_uses_metric_semantics_not_market_token(
     assert structured_metric_owner(question) == owner
 
 
+def test_b05_market_status_owner_is_market_without_generic_token_matching() -> None:
+    assert structured_metric_owner("리바로 시장 상황 알려줘") == "market"
+
+
+def test_n03_competitive_market_status_owner_is_market() -> None:
+    assert structured_metric_owner("리바로 시장 경쟁 상황 어때?") == "market"
+
+
+def test_market_status_owner_does_not_capture_recent_issue_question() -> None:
+    assert structured_metric_owner("고지혈증 관련 최근 이슈") is None
+
+
 def test_structured_slot_planner_hits_at_least_seventy_percent_without_llm() -> None:
     resolver = BrandResolver(mode="fixture")
     hits = []

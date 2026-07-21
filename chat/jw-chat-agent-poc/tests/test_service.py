@@ -881,6 +881,24 @@ def test_unanchored_market_goldens_are_grounded_before_direct_execution(
     assert item["result"]["context_scope"] == "MARKET"
 
 
+def test_b05_unanchored_market_status_uses_established_strategic_anchor() -> None:
+    grounded = service_app._ground_unanchored_market_golden(
+        "고지혈증 시장 상황 알려줘",
+        has_explicit_anchor=False,
+    )
+
+    assert grounded == "리바로 시장 상황 알려줘"
+
+
+def test_b05_market_status_grounding_does_not_capture_recent_issue_question() -> None:
+    question = "고지혈증 관련 최근 이슈"
+
+    assert service_app._ground_unanchored_market_golden(
+        question,
+        has_explicit_anchor=False,
+    ) == question
+
+
 @pytest.mark.parametrize(
     ("question", "grounded_question"),
     (

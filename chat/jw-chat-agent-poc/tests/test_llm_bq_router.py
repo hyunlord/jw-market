@@ -131,6 +131,36 @@ def test_keyword_router_routes_news_questions_to_deep_analysis_events() -> None:
     assert router.last_diagnostics.fallback_used is True
 
 
+def test_b05_market_status_bypasses_llm_and_routes_metrics() -> None:
+    router = LLMFirstBQRouter(decomposer=FailingDecomposer())
+
+    routes = router.route("리바로 시장 상황 알려줘")
+
+    assert routes[0].sources == ("metrics",)
+    assert router.last_diagnostics.mode == "guard"
+    assert router.last_diagnostics.fallback_used is False
+
+
+def test_n03_competitive_market_status_bypasses_llm_and_routes_metrics() -> None:
+    router = LLMFirstBQRouter(decomposer=FailingDecomposer())
+
+    routes = router.route("리바로 시장 경쟁 상황 어때?")
+
+    assert routes[0].sources == ("metrics",)
+    assert router.last_diagnostics.mode == "guard"
+    assert router.last_diagnostics.fallback_used is False
+
+
+def test_market_status_guard_does_not_capture_recent_issue_question() -> None:
+    router = LLMFirstBQRouter(decomposer=FailingDecomposer())
+
+    routes = router.route("고지혈증 관련 최근 이슈")
+
+    assert routes[0].sources == ("deep_analysis_events",)
+    assert router.last_diagnostics.mode == "keyword"
+    assert router.last_diagnostics.fallback_used is True
+
+
 def test_keyword_router_extracts_news_source_filter() -> None:
     router = LLMFirstBQRouter(decomposer=FailingDecomposer())
 

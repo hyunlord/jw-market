@@ -89,6 +89,11 @@ _ANSWER_MODES: Final[tuple[AnswerModeSpec, ...]] = (
     AnswerModeSpec("explanatory", re.compile(r"왜|원인|이유|영향", re.IGNORECASE)),
     AnswerModeSpec("forecast", re.compile(r"전망|예측|향후", re.IGNORECASE)),
 )
+_MARKET_STATUS_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:^|\s)시장\s+(?:경쟁\s+)?상황"
+    r"(?:\s+(?:알려\s*줘|어때(?:요)?|설명해\s*줘))?[?!.]?\s*$",
+    re.IGNORECASE,
+)
 _TOOL_ARGUMENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "get_brand_sales": ("brand", "period"),
     "get_brand_share": ("brand", "period"),
@@ -108,7 +113,15 @@ def structured_metric_owner(question: str) -> str | None:
     """Return the owner of the first metric selected by the canonical planner."""
 
     metric = next((item for item in _METRICS if item.pattern.search(question)), None)
-    return metric.owner if metric is not None else None
+    if metric is not None:
+        return metric.owner
+    return "market" if is_market_status_intent(question) else None
+
+
+def is_market_status_intent(question: str) -> bool:
+    """Match the established market-status utterance without claiming news intent."""
+
+    return _MARKET_STATUS_PATTERN.search(question.strip()) is not None
 
 
 def plan_structured_market_question(

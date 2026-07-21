@@ -7,6 +7,7 @@ from typing import Any, Mapping, Protocol
 
 import requests
 
+from jw_chat_agent_poc.agent_loop.structured_planner import is_market_status_intent
 from jw_chat_agent_poc.genos_config import DEFAULT_GENOS_BASE_URL, resolve_genos_base_url
 from jw_chat_agent_poc.portfolio_scope import portfolio_scope_for_question
 from .bq_router import BQRouter, BQSubQuestion, BQ_SYSTEM_PROMPT, _is_forecast_question
@@ -116,7 +117,8 @@ class LLMFirstBQRouter:
     def route(self, question: str, has_documents: bool = False) -> list[BQSubQuestion]:
         boundary = self._boundary_route(question, has_documents)
         if boundary:
-            self.last_diagnostics = RouteDiagnostics(mode="guard", fallback_used=False, reason="no_data_boundary")
+            reason = "market_status_intent" if is_market_status_intent(question) else "no_data_boundary"
+            self.last_diagnostics = RouteDiagnostics(mode="guard", fallback_used=False, reason=reason)
             return boundary
         try:
             raw = self._decomposer.decompose(question, has_documents)
@@ -155,9 +157,10 @@ class LLMFirstBQRouter:
         )
         return routes
 
-    @classmethod
-    def _boundary_route(cls, question: str, has_documents: bool = False) -> list[BQSubQuestion]:
+    def _boundary_route(self, question: str, has_documents: bool = False) -> list[BQSubQuestion]:
         lower = question.lower()
+        if is_market_status_intent(question):
+            return self._keyword_router.route(question, has_documents)
         if "영업활동" in question or "영업 활동" in question or "영업 impact" in lower:
             return [
                 BQSubQuestion(
