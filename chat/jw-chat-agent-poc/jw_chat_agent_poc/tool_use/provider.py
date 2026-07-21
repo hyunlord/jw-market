@@ -11,6 +11,23 @@ import requests
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
 
 
+DEFAULT_TOOL_ROUTING_PLANNER_TIMEOUT_S = 20.0
+DEFAULT_TOOL_ROUTING_PLANNER_MAX_TOKENS = 512
+TOOL_ROUTING_PLANNER_MAX_TOKENS_FLAG = "CHAT_TOOL_ROUTING_PLANNER_MAX_TOKENS"
+
+
+def configured_planner_max_tokens() -> int:
+    raw = os.environ.get(
+        TOOL_ROUTING_PLANNER_MAX_TOKENS_FLAG,
+        str(DEFAULT_TOOL_ROUTING_PLANNER_MAX_TOKENS),
+    )
+    try:
+        value = int(raw)
+    except ValueError:
+        value = DEFAULT_TOOL_ROUTING_PLANNER_MAX_TOKENS
+    return min(max(value, 64), 4096)
+
+
 class ToolProviderConfigurationError(RuntimeError):
     """Raised when the planner endpoint cannot satisfy the tool contract."""
 
@@ -65,11 +82,16 @@ class GenosToolChoiceProvider:
     base_url: str = field(default_factory=resolve_planner_genos_base_url)
     token: str | None = field(default_factory=resolve_planner_genos_token)
     model: str | None = field(default_factory=lambda: os.environ.get("CHAT_TOOL_USE_MODEL"))
-    timeout_s: float = 20.0
+    timeout_s: float = DEFAULT_TOOL_ROUTING_PLANNER_TIMEOUT_S
+    max_tokens: int | None = None
 
     @classmethod
     def from_env(cls) -> GenosToolChoiceProvider:
         return cls()
+
+    @classmethod
+    def for_routing_v4(cls) -> GenosToolChoiceProvider:
+        return cls(max_tokens=configured_planner_max_tokens())
 
     def choose(self, *, user_text: str, messages: list[dict], tools: list[dict]) -> ToolChoice:
         if not self.base_url or not self.token:
@@ -80,6 +102,8 @@ class GenosToolChoiceProvider:
             "temperature": 0,
             "n": 1,
         }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
         if tools:
             payload.update(
                 {

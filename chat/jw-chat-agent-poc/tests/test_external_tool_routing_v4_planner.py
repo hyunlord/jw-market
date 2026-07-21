@@ -9,6 +9,7 @@ import pytest
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
+from jw_chat_agent_poc.tool_use.routing_v4_plan_support import validate_proposed_calls
 from jw_chat_agent_poc.tool_use.routing_v4 import (
     CapabilityMatrix,
     CapabilityStatus,
@@ -21,6 +22,8 @@ from jw_chat_agent_poc.tool_use.routing_v4 import (
     ToolSelectionSource,
 )
 from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingV4ContractError
+from jw_chat_agent_poc.tool_use.specs import ToolSpec
 
 
 CONTRACT_DIR = Path(__file__).parent / "contracts" / "external_tool_routing_v4"
@@ -52,6 +55,14 @@ def _planner(provider: _ChoiceSequence | None = None) -> ExternalRoutePlanner:
     )
 
 
+def _tool_specs_by_name() -> dict[str, ToolSpec]:
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+    return {tool.name: tool for tool in registry.list_for_query("external routing v4 contract")}
+
+
 def test_a01_direct_disease_code_uses_new_rule_and_five_unique_period_calls() -> None:
     plan = _planner().plan(
         "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
@@ -77,6 +88,38 @@ def test_a01_direct_disease_code_uses_new_rule_and_five_unique_period_calls() ->
         "2023",
         "2024",
     ]
+
+
+def test_period_call_exception_rejects_multiple_authority_tool_types() -> None:
+    calls = (
+        ProposedCall(
+            tool_name="hira_disease_hospitalization_outpatient_stats",
+            normalized_args={"sick_cd": "D69.3", "year": "2023"},
+        ),
+        ProposedCall(
+            tool_name="mfds_permission_search",
+            normalized_args={"brand": "아일리아"},
+        ),
+    )
+
+    with pytest.raises(RoutingV4ContractError, match="same authority tool"):
+        validate_proposed_calls(calls, _tool_specs_by_name())
+
+
+def test_period_call_exception_rejects_target_drift_between_periods() -> None:
+    calls = (
+        ProposedCall(
+            tool_name="hira_disease_hospitalization_outpatient_stats",
+            normalized_args={"sick_cd": "D69.3", "year": "2023"},
+        ),
+        ProposedCall(
+            tool_name="hira_disease_hospitalization_outpatient_stats",
+            normalized_args={"sick_cd": "E11", "year": "2024"},
+        ),
+    )
+
+    with pytest.raises(RoutingV4ContractError, match="non-period arguments"):
+        validate_proposed_calls(calls, _tool_specs_by_name())
 
 
 def test_a03_explicit_compact_code_never_falls_back_to_parent_code() -> None:

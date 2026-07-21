@@ -3,18 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import os
+import time
 from typing import Any
 
 from jw_chat_agent_poc.common.timing import Timing
 from jw_chat_agent_poc.tool_use.contracts import AgentResult
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor, CompletionPolicy
-from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider
+from jw_chat_agent_poc.tool_use.provider import (
+    DEFAULT_TOOL_ROUTING_PLANNER_MAX_TOKENS,
+    DEFAULT_TOOL_ROUTING_PLANNER_TIMEOUT_S,
+    ToolChoice,
+    ToolChoiceProvider,
+)
 from jw_chat_agent_poc.tool_use.routing_v4_capabilities import (
     default_capability_matrix,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_execution import (
     claim_evidence_bindings,
     normalize_execution_result,
+    official_web_fallback_call_cap,
     safe_execution_failure,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan, typed_message
@@ -31,6 +38,8 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import (
     ExecutedCallSignature,
     ProposedRoutingSignature,
     RouteOutcome,
+    RoutingBudgetTrace,
+    RoutingToolCallBudget,
     RoutingV4ContractError,
     RoutingDecision,
     RoutingMode,
@@ -48,6 +57,19 @@ ROUTING_MODE_FLAG = "CHAT_TOOL_ROUTING_MODE"
 class EnforcedRouteResult:
     result: AgentResult
     diagnostics: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _MeasuredRoutePlan:
+    plan: RoutePlan
+    planner_latency_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowRouteTask:
+    task: ShadowTask[_MeasuredRoutePlan]
+    tools: tuple[ToolSpec, ...]
+    provider: ToolChoiceProvider
 
 
 class _StopAfterPlanProvider:
@@ -76,21 +98,36 @@ def begin_shadow_route_diagnostics(
     *,
     tools: tuple[ToolSpec, ...],
     provider: ToolChoiceProvider,
-) -> ShadowTask[RoutePlan]:
-    def plan_route() -> RoutePlan:
+) -> ShadowRouteTask:
+    def plan_route() -> _MeasuredRoutePlan:
+        started = time.perf_counter()
         plan = _planner(tools, provider).plan(question, routing_mode=RoutingMode.SHADOW)
+        planner_latency_ms = _elapsed_ms(started)
         LOGGER.info("v4 shadow plan completed prs=%s", plan.proposal.model_dump_json())
-        return plan
+        return _MeasuredRoutePlan(plan=plan, planner_latency_ms=planner_latency_ms)
 
-    return start_with_budget(plan_route)
+    return ShadowRouteTask(
+        task=start_with_budget(plan_route),
+        tools=tools,
+        provider=provider,
+    )
 
 
-def complete_shadow_route_diagnostics(task: ShadowTask[RoutePlan]) -> dict[str, Any]:
-    outcome = collect_with_budget(task)
+def complete_shadow_route_diagnostics(task: ShadowRouteTask) -> dict[str, Any]:
+    outcome = collect_with_budget(task.task)
     if outcome.status == "budget_exceeded":
         return {
             "routing_mode": RoutingMode.SHADOW.value,
             "shadow_status": "budget_exceeded",
+            "budget": _routing_budget_trace(
+                plan=None,
+                tools=task.tools,
+                provider=task.provider,
+                planner_latency_ms=None,
+                tool_execution_latency_ms=None,
+                routing_latency_ms=None,
+                executed_calls=None,
+            ).model_dump(mode="json"),
         }
     if outcome.status == "error":
         LOGGER.warning("v4 shadow planning failed: %s", outcome.error_name)
@@ -98,9 +135,33 @@ def complete_shadow_route_diagnostics(task: ShadowTask[RoutePlan]) -> dict[str, 
             "routing_mode": RoutingMode.SHADOW.value,
             "shadow_status": "error",
             "shadow_error": outcome.error_name,
+            "budget": _routing_budget_trace(
+                plan=None,
+                tools=task.tools,
+                provider=task.provider,
+                planner_latency_ms=None,
+                tool_execution_latency_ms=None,
+                routing_latency_ms=None,
+                executed_calls=None,
+            ).model_dump(mode="json"),
         }
     assert outcome.value is not None
-    return _plan_diagnostics(outcome.value, status_key="shadow_status", status_value="ok")
+    measured = outcome.value
+    budget = _routing_budget_trace(
+        plan=measured.plan,
+        tools=task.tools,
+        provider=task.provider,
+        planner_latency_ms=measured.planner_latency_ms,
+        tool_execution_latency_ms=None,
+        routing_latency_ms=measured.planner_latency_ms,
+        executed_calls=None,
+    )
+    return _plan_diagnostics(
+        measured.plan,
+        budget=budget,
+        status_key="shadow_status",
+        status_value="ok",
+    )
 
 
 def internal_legacy_route_diagnostics(
@@ -126,6 +187,15 @@ def internal_legacy_route_diagnostics(
         "reason_code": None,
         "repair_count": 0,
         "deterministic_rule_id": "INTERNAL_MART_LEGACY_ROUTE",
+        "budget": _routing_budget_trace(
+            plan=None,
+            tools=(),
+            provider=None,
+            planner_latency_ms=0.0,
+            tool_execution_latency_ms=None if mode is RoutingMode.SHADOW else 0.0,
+            routing_latency_ms=0.0,
+            executed_calls=None if mode is RoutingMode.SHADOW else 0,
+        ).model_dump(mode="json"),
     }
     match mode:
         case RoutingMode.SHADOW:
@@ -154,12 +224,18 @@ def execute_enforced_route(
     completion_policy: CompletionPolicy,
     timing: Timing | None,
 ) -> EnforcedRouteResult:
+    route_started = time.perf_counter()
+    planner_started = time.perf_counter()
+    planner_calls_override: int | None = None
     try:
         plan = _planner(tools, provider).plan(question, routing_mode=RoutingMode.ENFORCE)
     except Exception as exc:  # noqa: BROAD_EXCEPT_OK - ENFORCE boundary must fail closed.
         LOGGER.warning("v4 enforce planning failed closed: %s", exc)
         plan = _failed_plan()
+        planner_calls_override = 1
+    planner_latency_ms = _elapsed_ms(planner_started)
 
+    tool_execution_latency_ms = 0.0
     if plan.proposal.routing_decision.route_outcome is not RouteOutcome.CALL:
         result = _typed_result(plan)
     else:
@@ -172,6 +248,7 @@ def execute_enforced_route(
             )
             for ordinal, call in enumerate(plan.proposal.proposed_calls, start=1)
         )
+        tool_execution_started = time.perf_counter()
         result = AgentExecutor(
             provider=_StopAfterPlanProvider(),
             completion_policy=completion_policy,
@@ -180,6 +257,7 @@ def execute_enforced_route(
             parallel_forced_choices=len(forced_choices) > 1,
             timing=timing,
         ).run(user_text=question, tools=tools)
+        tool_execution_latency_ms = _elapsed_ms(tool_execution_started)
         result, runtime_reason = normalize_execution_result(plan, result)
 
     if plan.proposal.routing_decision.route_outcome is not RouteOutcome.CALL:
@@ -191,7 +269,17 @@ def execute_enforced_route(
         runtime_reason = "EVIDENCE_BINDING_FAILED"
 
     signature = _executed_signature(plan, result, runtime_reason=runtime_reason)
-    diagnostics = _plan_diagnostics(plan)
+    budget = _routing_budget_trace(
+        plan=plan,
+        tools=tools,
+        provider=provider,
+        planner_latency_ms=planner_latency_ms,
+        tool_execution_latency_ms=tool_execution_latency_ms,
+        routing_latency_ms=_elapsed_ms(route_started),
+        executed_calls=len(signature.executed_calls),
+        planner_calls_override=planner_calls_override,
+    )
+    diagnostics = _plan_diagnostics(plan, budget=budget)
     diagnostics["executed_call_signature"] = signature.model_dump(mode="json")
     diagnostics["claim_evidence_binding_status"] = binding_status
     diagnostics["claim_evidence_bindings"] = bindings
@@ -212,6 +300,7 @@ def _planner(
 def _plan_diagnostics(
     plan: RoutePlan,
     *,
+    budget: RoutingBudgetTrace,
     status_key: str | None = None,
     status_value: str | None = None,
 ) -> dict[str, Any]:
@@ -222,10 +311,68 @@ def _plan_diagnostics(
         "reason_code": plan.reason_code,
         "repair_count": plan.repair_count,
         "deterministic_rule_id": plan.deterministic_rule_id,
+        "budget": budget.model_dump(mode="json"),
     }
     if status_key is not None:
         diagnostics[status_key] = status_value
     return diagnostics
+
+
+def _routing_budget_trace(
+    *,
+    plan: RoutePlan | None,
+    tools: tuple[ToolSpec, ...],
+    provider: ToolChoiceProvider | None,
+    planner_latency_ms: float | None,
+    tool_execution_latency_ms: float | None,
+    routing_latency_ms: float | None,
+    executed_calls: int | None,
+    planner_calls_override: int | None = None,
+) -> RoutingBudgetTrace:
+    proposed_calls = plan.proposal.proposed_calls if plan is not None else ()
+    planned_count = len(proposed_calls)
+    if planned_count > 5:
+        raise RoutingV4ContractError("authority tool call plan exceeds the v4 cap")
+    authority_cap = 5 if planned_count > 1 else planned_count
+    by_name = {tool.name: tool for tool in tools}
+    timeout_budgets: list[RoutingToolCallBudget] = []
+    for ordinal, call in enumerate(proposed_calls, start=1):
+        spec = by_name.get(call.tool_name)
+        if spec is None:
+            raise RoutingV4ContractError("proposed tool is missing from the runtime registry")
+        timeout_budgets.append(
+            RoutingToolCallBudget(
+                call_ordinal=ordinal,
+                tool_name=call.tool_name,
+                timeout_s=spec.timeout_s,
+            )
+        )
+    planner_calls_used = planner_calls_override
+    if planner_calls_used is None and plan is not None:
+        selection_source = plan.proposal.routing_decision.tool_selection_source
+        planner_calls_used = (
+            1 + plan.repair_count if selection_source is ToolSelectionSource.LLM else 0
+        )
+    planner_token_cap = getattr(provider, "max_tokens", None)
+    return RoutingBudgetTrace(
+        planner_calls_used=planner_calls_used,
+        planner_timeout_s=float(
+            getattr(provider, "timeout_s", DEFAULT_TOOL_ROUTING_PLANNER_TIMEOUT_S)
+        ),
+        planner_token_cap=int(planner_token_cap or DEFAULT_TOOL_ROUTING_PLANNER_MAX_TOKENS),
+        authority_tool_call_cap=authority_cap,
+        authority_tool_calls_planned=planned_count,
+        authority_tool_calls_executed=executed_calls,
+        official_web_fallback_call_cap=official_web_fallback_call_cap(),
+        tool_call_timeouts=tuple(timeout_budgets),
+        planner_latency_ms=planner_latency_ms,
+        tool_execution_latency_ms=tool_execution_latency_ms,
+        routing_latency_ms=routing_latency_ms,
+    )
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
 
 
 def _typed_result(plan: RoutePlan) -> AgentResult:

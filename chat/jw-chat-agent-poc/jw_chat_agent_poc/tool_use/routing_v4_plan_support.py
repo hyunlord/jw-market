@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,7 @@ GENERAL_HELP_MESSAGE = (
     "시장, 브랜드, 기간, 지표를 포함해 질문하면 확인 가능한 근거를 조회해 답합니다. "
     "필수 정보가 모호하면 부족한 항목만 다시 확인합니다."
 )
+_PERIOD_ARGUMENT_KEYS = frozenset({"period", "year"})
 
 
 class RoutePlan(BaseModel):
@@ -61,12 +63,64 @@ def validate_proposed_calls(
     by_name: dict[str, ToolSpec],
 ) -> None:
     seen: set[str] = set()
+    validated_calls: list[ProposedCall] = []
     for call in calls:
         validated = validated_call(call.tool_name, call.normalized_args, by_name)
         key = proposed_call_key(validated)
         if key in seen:
             raise RoutingV4ContractError("duplicate canonical tool and arguments")
         seen.add(key)
+        validated_calls.append(validated)
+    _validate_period_call_exception(tuple(validated_calls))
+
+
+def _validate_period_call_exception(calls: tuple[ProposedCall, ...]) -> None:
+    if len(calls) <= 1:
+        return
+    if len(calls) > 5:
+        raise RoutingV4ContractError("period call exception exceeds five authority calls")
+    if len({call.tool_name for call in calls}) != 1:
+        raise RoutingV4ContractError("period call exception requires the same authority tool")
+
+    stable_arguments = {
+        json.dumps(
+            {
+                key: value
+                for key, value in call.normalized_args.items()
+                if key not in _PERIOD_ARGUMENT_KEYS
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for call in calls
+    }
+    if len(stable_arguments) != 1:
+        raise RoutingV4ContractError(
+            "period call exception requires identical non-period arguments"
+        )
+
+    period_arguments = tuple(
+        {
+            key: value
+            for key, value in call.normalized_args.items()
+            if key in _PERIOD_ARGUMENT_KEYS
+        }
+        for call in calls
+    )
+    if any(not arguments for arguments in period_arguments):
+        raise RoutingV4ContractError("period call exception requires period arguments")
+    canonical_periods = {
+        json.dumps(
+            arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for arguments in period_arguments
+    }
+    if len(canonical_periods) != len(calls):
+        raise RoutingV4ContractError("period call exception requires unique period arguments")
 
 
 def validated_call(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -16,7 +17,12 @@ from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.contracts import AgentResult
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
-from jw_chat_agent_poc.tool_use.provider import GenosToolChoiceProvider, ToolChoice, ToolChoiceProvider
+from jw_chat_agent_poc.tool_use.provider import (
+    GenosToolChoiceProvider,
+    ToolChoice,
+    ToolChoiceProvider,
+    configured_planner_max_tokens,
+)
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
     begin_shadow_route_diagnostics,
@@ -79,7 +85,7 @@ def run_external_tool_agent(
     registry = ExternalToolRegistry(resolver=resolver, external=external)
     tools = registry.list_for_query(question)
     if mode is RoutingMode.SHADOW:
-        selected_routing_provider = routing_provider or GenosToolChoiceProvider.from_env()
+        selected_routing_provider = _routing_v4_provider(routing_provider)
         shadow_task = begin_shadow_route_diagnostics(
             question,
             tools=tools,
@@ -95,7 +101,7 @@ def run_external_tool_agent(
         diagnostics = complete_shadow_route_diagnostics(shadow_task)
         return _attach_routing_v4_diagnostics(payload, diagnostics)
 
-    selected_routing_provider = routing_provider or provider or GenosToolChoiceProvider.from_env()
+    selected_routing_provider = _routing_v4_provider(routing_provider, fallback=provider)
     enforced = execute_enforced_route(
         question,
         tools=tools,
@@ -144,7 +150,7 @@ def attach_routing_v4_legacy_observation(
         and external is not None
     ):
         registry = ExternalToolRegistry(resolver=resolver, external=external)
-        provider = routing_provider or GenosToolChoiceProvider.from_env()
+        provider = _routing_v4_provider(routing_provider)
         observation = shadow_route_diagnostics(
             question,
             tools=registry.list_for_query(question),
@@ -152,6 +158,19 @@ def attach_routing_v4_legacy_observation(
         )
         return _attach_routing_v4_diagnostics(payload, observation)
     return payload
+
+
+def _routing_v4_provider(
+    provider: ToolChoiceProvider | None,
+    *,
+    fallback: ToolChoiceProvider | None = None,
+) -> ToolChoiceProvider:
+    selected = provider or fallback
+    if selected is None:
+        return GenosToolChoiceProvider.for_routing_v4()
+    if isinstance(selected, GenosToolChoiceProvider) and selected.max_tokens is None:
+        return replace(selected, max_tokens=configured_planner_max_tokens())
+    return selected
 
 
 def _has_internal_mart_call(tool_calls: object) -> bool:

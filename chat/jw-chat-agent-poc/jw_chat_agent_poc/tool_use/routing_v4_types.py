@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 import json
-from typing import Any, assert_never
+from typing import Any, Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -182,6 +182,96 @@ class ExecutedCallSignature(BaseModel):
             routing_decision=self.routing_decision,
             proposed_calls=self.proposed_calls,
         )
+
+
+class RoutingToolCallBudget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    call_ordinal: int
+    tool_name: str
+    timeout_s: float
+
+    @model_validator(mode="after")
+    def validate_values(self) -> RoutingToolCallBudget:
+        if self.call_ordinal < 1:
+            raise RoutingV4ContractError("tool call budget ordinal must be positive")
+        if not self.tool_name:
+            raise RoutingV4ContractError("tool call budget requires a tool name")
+        if self.timeout_s <= 0:
+            raise RoutingV4ContractError("tool call timeout must be positive")
+        return self
+
+
+class RoutingBudgetTrace(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal["external_tool_routing_v4_budget_v1"] = (
+        "external_tool_routing_v4_budget_v1"
+    )
+    planner_initial_call_cap: int = 1
+    planner_repair_call_cap: int = 1
+    planner_calls_used: int | None
+    planner_timeout_s: float
+    planner_token_cap: int
+    authority_tool_call_cap: int
+    authority_tool_calls_planned: int
+    authority_tool_calls_executed: int | None
+    duplicate_canonical_call_cap: int = 0
+    official_web_fallback_call_cap: int
+    tool_call_timeouts: tuple[RoutingToolCallBudget, ...] = ()
+    planner_latency_ms: float | None
+    tool_execution_latency_ms: float | None
+    routing_latency_ms: float | None
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> RoutingBudgetTrace:
+        if self.planner_initial_call_cap != 1 or self.planner_repair_call_cap != 1:
+            raise RoutingV4ContractError("planner call budget must remain one plus one repair")
+        planner_cap = self.planner_initial_call_cap + self.planner_repair_call_cap
+        if self.planner_calls_used is not None and not 0 <= self.planner_calls_used <= planner_cap:
+            raise RoutingV4ContractError("planner calls exceed the configured budget")
+        if self.planner_timeout_s <= 0 or self.planner_token_cap <= 0:
+            raise RoutingV4ContractError("planner timeout and token caps must be positive")
+        if self.authority_tool_call_cap not in {0, 1, 5}:
+            raise RoutingV4ContractError("authority tool call cap must be zero, one, or five")
+        expected_authority_cap = (
+            0
+            if self.authority_tool_calls_planned == 0
+            else 1
+            if self.authority_tool_calls_planned == 1
+            else 5
+        )
+        if self.authority_tool_call_cap != expected_authority_cap:
+            raise RoutingV4ContractError(
+                "authority tool call cap must match the planned call shape"
+            )
+        if not 0 <= self.authority_tool_calls_planned <= self.authority_tool_call_cap:
+            raise RoutingV4ContractError("planned authority calls exceed the call cap")
+        if (
+            self.authority_tool_calls_executed is not None
+            and not 0
+            <= self.authority_tool_calls_executed
+            <= self.authority_tool_calls_planned
+        ):
+            raise RoutingV4ContractError("executed authority calls exceed the proposed set")
+        if self.duplicate_canonical_call_cap != 0:
+            raise RoutingV4ContractError("duplicate canonical calls must remain forbidden")
+        if self.official_web_fallback_call_cap not in {0, 1}:
+            raise RoutingV4ContractError("official web fallback cap must be zero or one")
+        if len(self.tool_call_timeouts) != self.authority_tool_calls_planned:
+            raise RoutingV4ContractError("every proposed authority call requires a timeout budget")
+        expected_ordinals = tuple(range(1, len(self.tool_call_timeouts) + 1))
+        actual_ordinals = tuple(item.call_ordinal for item in self.tool_call_timeouts)
+        if actual_ordinals != expected_ordinals:
+            raise RoutingV4ContractError("tool timeout ordinals must be contiguous")
+        for latency in (
+            self.planner_latency_ms,
+            self.tool_execution_latency_ms,
+            self.routing_latency_ms,
+        ):
+            if latency is not None and latency < 0:
+                raise RoutingV4ContractError("routing latencies cannot be negative")
+        return self
 
 
 def compare_proposed_routes(

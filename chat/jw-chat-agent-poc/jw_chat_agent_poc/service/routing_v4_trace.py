@@ -6,6 +6,7 @@ from typing import Any
 from jw_chat_agent_poc.tool_use.routing_v4_types import (
     ExecutedCallSignature,
     ProposedRoutingSignature,
+    RoutingBudgetTrace,
 )
 
 
@@ -53,6 +54,15 @@ def project_routing_v4_qa_trace(
             ).model_dump(mode="json")
         except ValueError:
             projected["executed_call_signature_status"] = "invalid"
+
+    budget = raw.get("budget")
+    if isinstance(budget, Mapping):
+        try:
+            projected["budget"] = RoutingBudgetTrace.model_validate(budget).model_dump(
+                mode="json"
+            )
+        except ValueError:
+            projected["budget_status"] = "invalid"
 
     if raw.get("claim_evidence_binding_status") is not None:
         projected["claim_evidence_binding_status"] = str(

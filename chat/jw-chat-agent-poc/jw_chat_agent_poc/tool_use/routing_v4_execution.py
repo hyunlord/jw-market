@@ -77,6 +77,10 @@ def _official_web_fallback_enabled() -> bool:
     }
 
 
+def official_web_fallback_call_cap() -> int:
+    return 1 if _official_web_fallback_enabled() else 0
+
+
 def _is_official_web_url(url: str, *, source_domain: str) -> bool:
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").lower().rstrip(".")

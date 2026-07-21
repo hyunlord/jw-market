@@ -131,6 +131,14 @@ def test_shadow_records_prs_without_executing_or_changing_legacy_response(monkey
     assert {call["tool_name"] for call in proposal["proposed_calls"]} == {
         "hira_disease_hospitalization_outpatient_stats"
     }
+    budget = shadow["router_diagnostics"]["routing_v4"]["budget"]
+    assert budget["planner_initial_call_cap"] == 1
+    assert budget["planner_repair_call_cap"] == 1
+    assert budget["planner_calls_used"] == 0
+    assert budget["authority_tool_call_cap"] == 5
+    assert budget["authority_tool_calls_planned"] == 5
+    assert budget["authority_tool_calls_executed"] is None
+    assert len(budget["tool_call_timeouts"]) == 5
 
 
 def test_shadow_planner_timeout_is_isolated_from_legacy_response(monkeypatch) -> None:
@@ -303,6 +311,9 @@ def test_enforce_internal_mart_path_emits_ccs_without_external_execution(monkeyp
     assert ccs["proposed_calls"] == []
     assert ccs["executed_calls"] == []
     assert diagnostics["claim_evidence_binding_status"] == "not_applicable"
+    assert diagnostics["budget"]["authority_tool_call_cap"] == 0
+    assert diagnostics["budget"]["authority_tool_calls_planned"] == 0
+    assert diagnostics["budget"]["authority_tool_calls_executed"] == 0
 
 
 def test_force_flag_does_not_disable_shadow_routing_provider(monkeypatch) -> None:
@@ -358,6 +369,13 @@ def test_enforce_executes_the_prs_and_emits_ordered_ccs(monkeypatch) -> None:
             "result_status": payload["tool_calls"][0]["status"],
         }
     ]
+    budget = diagnostics["budget"]
+    assert budget["planner_calls_used"] == 0
+    assert budget["planner_token_cap"] == 512
+    assert budget["authority_tool_call_cap"] == 1
+    assert budget["authority_tool_calls_planned"] == 1
+    assert budget["authority_tool_calls_executed"] == 1
+    assert budget["tool_call_timeouts"][0]["tool_name"] == "mfds_permission_search"
 
 
 def test_enforce_typed_stop_does_not_execute_web_fallback(monkeypatch) -> None:

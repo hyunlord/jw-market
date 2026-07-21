@@ -1182,6 +1182,7 @@ def test_genos_provider_parses_strict_tool_call(monkeypatch) -> None:
         base_url="https://planner.example",
         token="dummy-token",
         model="planner",
+        max_tokens=512,
     )
 
     # When: the provider chooses from one strict function schema.
@@ -1195,6 +1196,7 @@ def test_genos_provider_parses_strict_tool_call(monkeypatch) -> None:
     assert choice == ToolChoice("local_molecule_lookup", {"brand": "리바로"}, "리바로 성분", call_id="call-7")
     assert posted["url"] == "https://planner.example/chat/completions"
     assert posted["json"]["temperature"] == 0
+    assert posted["json"]["max_tokens"] == 512
     assert posted["json"]["parallel_tool_calls"] is False
     assert posted["json"]["tool_choice"] == "auto"
 
@@ -1228,8 +1230,9 @@ def test_genos_provider_omits_tool_fields_for_no_tool_question(monkeypatch) -> N
         tools=[],
     )
 
-    # Then: no empty tool contract is sent and the natural no-tool answer survives.
+    # Then: the legacy provider payload remains unchanged and the natural no-tool answer survives.
     assert choice == ToolChoice(None, {}, "사용 방법을 안내합니다.", call_id=None)
+    assert "max_tokens" not in posted["json"]
     assert "tools" not in posted["json"]
     assert "tool_choice" not in posted["json"]
     assert "parallel_tool_calls" not in posted["json"]
