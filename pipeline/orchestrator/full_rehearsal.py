@@ -408,9 +408,17 @@ def execute_full_rehearsal(config: FullRehearsalConfig, *, dry_run: bool) -> int
         return 0
 
     config.work_dir.mkdir(parents=True, exist_ok=False)
-    for step in plan:
+    total = len(plan)
+    for index, step in enumerate(plan, start=1):
+        # Explicit stage markers so a persisted log can pinpoint the failing
+        # step from the last line alone — even when a step is killed silently
+        # (OOM / eviction) and never prints its own error. flush=True guarantees
+        # the marker reaches the durable evidence log before the child runs.
+        print(f"[stage] {step.key} start ({index}/{total})", flush=True)
         result = subprocess.run(step.argv, check=False, env={**os.environ, **dict(step.env)})
+        print(f"[stage] {step.key} end rc={result.returncode}", flush=True)
         if result.returncode != 0:
-            print(f"rehearsal failed step={step.key} rc={result.returncode}", file=sys.stderr)
+            print(f"rehearsal failed step={step.key} rc={result.returncode}", file=sys.stderr, flush=True)
             return int(result.returncode or 1)
+    print(f"[stage] rehearse-full complete rc=0 ({total}/{total})", flush=True)
     return 0

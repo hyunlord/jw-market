@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 from pipeline.orchestrator import cli
+from pipeline.orchestrator import full_rehearsal as fr
 from pipeline.orchestrator.full_rehearsal import (
     FullRehearsalConfig,
     RehearsalContractError,
     build_full_rehearsal_plan,
+    execute_full_rehearsal,
     load_input_manifest,
 )
 
@@ -239,3 +241,52 @@ def test_rehearse_full_dry_run_prints_plan_without_writes(
     assert payload[0]["key"] == "load_ubist"
     assert payload[-1]["key"] == "brand_elements_cache"
     assert all(row["writes_operating"] is False for row in payload)
+
+
+class _FakeResult:
+    def __init__(self, returncode: int) -> None:
+        self.returncode = returncode
+
+
+def test_execute_emits_stage_markers_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = _write_sources(tmp_path, with_sidecar=True)
+    config = _config(tmp_path, manifest)
+    monkeypatch.setattr(fr.subprocess, "run", lambda *a, **k: _FakeResult(0))
+
+    rc = execute_full_rehearsal(config, dry_run=False)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Every planned step brackets a start/end rc=0 marker, ending with a complete line.
+    assert "[stage] load_ubist start (1/" in out
+    assert "[stage] install_ubist_sidecars start (2/" in out
+    assert "[stage] install_ubist_sidecars end rc=0" in out
+    assert "[stage] rehearse-full complete rc=0" in out
+
+
+def test_execute_marks_failing_step_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = _write_sources(tmp_path, with_sidecar=True)
+    config = _config(tmp_path, manifest)
+
+    def run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        # Fail exactly at install_ubist_sidecars (the historical R-1 failure step).
+        # argv elements carry the full module path, so match on substring.
+        return _FakeResult(2 if any("full_rehearsal_ubist_sidecars" in a for a in argv) else 0)
+
+    monkeypatch.setattr(fr.subprocess, "run", run)
+
+    rc = execute_full_rehearsal(config, dry_run=False)
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
+    assert "[stage] install_ubist_sidecars start (2/" in out
+    assert "[stage] install_ubist_sidecars end rc=2" in out
+    # Stopped at the failing step: downstream stages never start.
+    assert "[stage] load_iqvia start" not in out
+    assert "[stage] rehearse-full complete" not in out
+    assert "rehearsal failed step=install_ubist_sidecars rc=2" in err

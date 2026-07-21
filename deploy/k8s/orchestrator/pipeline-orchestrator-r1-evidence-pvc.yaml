@@ -1,0 +1,23 @@
+# Durable evidence volume for R-1 full rehearsals.
+#
+# /work stays an ephemeral emptyDir (fast, discarded with the pod). Only the
+# evidence subtree is mounted here on an nfs-client RWX PVC so the teed
+# rehearse.log, input_manifest.json, input_inventory.json, and r1_compare.json
+# SURVIVE pod loss (GC / eviction / OOM). RWX lets a reader pod tail the log
+# while the job runs, so install_ubist_sidecars pass/fail can be checked right
+# after s1 without waiting for the full run.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: r1-evidence-nfs
+  namespace: llmops
+  labels:
+    app: jw-pipeline-r1-rehearsal
+    codex-owner: latency-goal
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 5Gi
