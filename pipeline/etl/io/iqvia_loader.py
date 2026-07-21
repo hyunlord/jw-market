@@ -149,20 +149,29 @@ class LoadStats:
 
 def load_env(path: Path) -> dict[str, str]:
     env: dict[str, str] = {}
+    if not path.exists():
+        # Stage/컨테이너(R-1 rehearsal, k8s) 환경에는 pipeline/docker/.env가 없고
+        # MARIADB_* 환경변수만 secret으로 주입된다. general_config.load_env와
+        # 동일하게 이때 env fallback을 허용한다(파일이 있으면 종전 파싱 유지).
+        return {key: value for key, value in os.environ.items() if key.startswith("MARIADB_") or key == "HOST_PORT"}
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         env[key.strip()] = value.strip()
+    # .env를 읽은 뒤에도 shell env가 있으면 그 값을 우선한다(로컬↔staging 동일 경로).
+    for key in ("MARIADB_HOST", "MARIADB_PORT", "MARIADB_DATABASE", "MARIADB_USER", "MARIADB_PASSWORD", "HOST_PORT"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
     return env
 
 
 @retry((pymysql.err.OperationalError, pymysql.err.InterfaceError), logger=LOGGER)
 def connect(database: str | None = None) -> pymysql.connections.Connection:
     env_path = first_existing(REPO_ROOT / "pipeline" / "docker" / ".env", REPO_ROOT / "docker" / ".env")
-    if not env_path.exists():
-        raise FileNotFoundError(f"Missing MariaDB env file: {env_path}")
+    # .env 부재를 raise하지 않는다: load_env가 os.environ fallback을 반환하고,
+    # 아래 user/password/host/database는 이미 os.getenv를 우선 사용한다.
     env = load_env(env_path)
     user = os.getenv("MARIADB_USER", env.get("MARIADB_USER", "jwapp"))
     password = os.getenv("MARIADB_PASSWORD") or (
