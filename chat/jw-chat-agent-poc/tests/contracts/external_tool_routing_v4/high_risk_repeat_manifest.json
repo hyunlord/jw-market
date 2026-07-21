@@ -1,0 +1,55 @@
+{
+  "schema": "external_tool_routing_v4_high_risk_repeat_manifest_v1",
+  "repeat_count": 5,
+  "approved_presentation_exceptions": [
+    "C_03",
+    "owner_brand_share"
+  ],
+  "cases": [
+    {
+      "case_id": "B-05",
+      "question": "고지혈증 시장 상황 알려줘",
+      "risk_classes": ["routing_boundary", "prior_comparator_failure"],
+      "required_tools": ["get_brand_metric"],
+      "forbidden_tools": ["web_search"],
+      "minimum_answer_chars": 1000
+    },
+    {
+      "case_id": "B-03",
+      "question": "리바로 시장 경쟁 상황 어때?",
+      "risk_classes": ["routing_boundary"],
+      "required_tools": ["get_brand_metric"],
+      "forbidden_tools": ["web_search"]
+    },
+    {
+      "case_id": "market_news_negative",
+      "question": "고지혈증 관련 최근 이슈",
+      "risk_classes": ["internal_external_boundary", "false_positive_negative"],
+      "allowed_tools": ["web_search"]
+    },
+    {
+      "case_id": "C_03",
+      "question": "고지혈증 시장 최근 이슈와 시장 변화",
+      "risk_classes": ["internal_external_boundary", "prior_comparator_failure"],
+      "presentation_exception": "approved_numeric_token_variation"
+    },
+    {
+      "case_id": "owner_brand_share",
+      "question": "리바로 시장점유율",
+      "risk_classes": ["market_brand_boundary", "prior_comparator_failure", "golden_linked"],
+      "presentation_exception": "approved_numeric_token_variation"
+    },
+    {
+      "case_id": "A_03",
+      "question": "고지혈증 시장 HHI",
+      "risk_classes": ["golden_linked"],
+      "required_numeric_tokens": ["253.62", "2026-05"]
+    },
+    {
+      "case_id": "E1_market_hhi",
+      "question": "리바로가 속한 시장 HHI",
+      "risk_classes": ["golden_linked", "market_brand_boundary"],
+      "required_numeric_tokens": ["262.42", "2025"]
+    }
+  ]
+}
