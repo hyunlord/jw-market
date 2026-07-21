@@ -37,7 +37,7 @@ spec:
         genos: enabled
       containers:
       - name: worker
-        image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:d3de296993369a73f6d9959da422c7f2deeca754ad37d1e936eb96f261e52ee9
+        image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:48f22b5532e21366df3e4b06adf5a790f109a91a1400527f03db0ac582b34b5e
         imagePullPolicy: IfNotPresent
         command:
         - python
