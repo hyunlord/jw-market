@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import unicodedata
 from pathlib import Path
 from typing import Any
+
+
+def _nfc(value: object) -> str:
+    # NFC-normalize at validation sites only (Korean values from the NFS-staged
+    # MI Master can be NFD while EXPECTED_* literals are NFC). Build path untouched.
+    return unicodedata.normalize("NFC", str(value))
 
 from pipeline.etl.io.catalog._lib.common import read_parquet_rows, utc_now_text, write_records_parquet
 from pipeline.etl.io.catalog._lib.expected_counts import expected_int
@@ -64,15 +71,15 @@ def validate_source_brand_consolidation(rows: list[dict[str, Any]]) -> None:
         )
 
     expected_old_rows = {
-        (EXPECTED_STRATEGIC_MARKET_ID, GROUP_NAME_BY_ID[group_id], drug_index, name)
+        (EXPECTED_STRATEGIC_MARKET_ID, _nfc(GROUP_NAME_BY_ID[group_id]), _nfc(drug_index), _nfc(name))
         for group_id, drug_index, name in EXPECTED_MEMBERS
     }
     actual_old_rows = {
         (
-            str(row.get("strategic_market_id")),
-            str(row.get("brand_group")),
-            str(row.get("member_drug_index")),
-            str(row.get("member_drug_name")),
+            _nfc(row.get("strategic_market_id")),
+            _nfc(row.get("brand_group")),
+            _nfc(row.get("member_drug_index")),
+            _nfc(row.get("member_drug_name")),
         )
         for row in rows
     }
@@ -83,14 +90,14 @@ def validate_source_brand_consolidation(rows: list[dict[str, Any]]) -> None:
             f"extra={sorted(actual_old_rows - expected_old_rows)}"
         )
 
-    source_versions = {str(row.get("source_file_version")) for row in rows}
-    source_sheets = {str(row.get("source_sheet")) for row in rows}
-    source_remarks = {str(row.get("source_remark")) for row in rows}
-    if source_versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    source_versions = {_nfc(row.get("source_file_version")) for row in rows}
+    source_sheets = {_nfc(row.get("source_sheet")) for row in rows}
+    source_remarks = {_nfc(row.get("source_remark")) for row in rows}
+    if source_versions != {_nfc(EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(f"source_file_version mismatch: {source_versions}")
-    if source_sheets != {EXPECTED_SOURCE_SHEET}:
+    if source_sheets != {_nfc(EXPECTED_SOURCE_SHEET)}:
         raise ValueError(f"source_sheet mismatch: {source_sheets}")
-    if source_remarks != {EXPECTED_SOURCE_REMARK}:
+    if source_remarks != {_nfc(EXPECTED_SOURCE_REMARK)}:
         raise ValueError(f"source_remark mismatch: {source_remarks}")
 
 
