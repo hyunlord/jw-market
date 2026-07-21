@@ -208,3 +208,68 @@ python3 -m pipeline.scripts.rollback --to <promotion-run-id> --yes \
 - 롤백 필요 시 직전 image·APP_VERSION과 사건 사유
 
 고정 좌표를 이 문서에 다시 쓰지 않는다. 실행 증거는 라운드별 audit에 보관한다.
+
+## 9. code-serving-235 브리지 배포
+
+`code-serving-235`(`chat/wf301-vdb-bridge`)는 위 backend-api 절차의 대상이 아니다. 이 서비스는 GenOS code-serving 등록과 승인을 거쳐 배포하며, 현재 singleton `Recreate` 구성에서는 stop 승인부터 새 pod 준비까지 파일 업로드·검색이 완전히 중단된다.
+
+### 9.1 배포 전 앵커
+
+다음 항목을 **같은 시점의 Kubernetes JSON**에서 함께 보존한다. 이미지와 commit만 기록하면 롤백 좌표가 불완전하다.
+
+- Deployment generation, strategy, replicas와 전체 pod imageID/restart
+- 컨테이너 image, `COMMIT_HASH`, env 전체(Secret 값은 저장하지 않고 `valueFrom` 참조 유지)
+- `volumeMounts`, `volumes`, PVC/ConfigMap 참조
+- 현재 이미지 digest에 대응하는 Artifact Registry 태그의 존재
+- GenOS의 활성 deployment ID, DockerImage ID, instance type, replicas
+
+후보와 직전 이미지는 **stop 전에** GenOS DockerImage로 모두 등록하고 `COMPLETED` 상태와 실제 registry digest를 대조한다. 감사 산출물에는 Secret 값이나 광범위한 승인자 목록을 넣지 않는다.
+
+### 9.2 승인과 배포
+
+1. GitHub 원격 SHA와 로컬 SHA, 최신 기준 브랜치를 다시 대조한다.
+2. 실행 정본 저장소의 commit과 exact-source 이미지 revision을 대조한다.
+3. `/serving/code/235/stop` 요청의 `approval_id`를 `/approval/approve`로 승인한다.
+4. 중지 완료 뒤 `/serving/code/235/deploy`에 commit, DockerImage ID, instance type, replicas를 제출하고 새 `approval_id`를 승인한다.
+5. rollout 뒤 pod imageID가 후보 digest와 정확히 같고 Ready 1/1, restart 0인지 확인한다.
+
+2026-07-22 실측에서 stop/deploy 승인 API 처리는 각각 약 3.5~4.7초였지만, 운영 SLA로 간주하지 않는다. 승인 요청·승인·rollout 시작과 종료 시각을 매 실행마다 별도로 기록한다.
+
+### 9.3 pod-template 동등성 hard gate
+
+GenOS 배포가 새 Deployment를 생성할 때 기존 수동 env와 PVC mount를 승계한다는 보장은 없다. 2026-07-22에는 기존 42개 env가 6개로 줄고 `/nfs-root` PVC mount가 사라졌다. 그 결과 `/documents`는 `DB_PASSWORD is not configured`, 업로드는 `/nfs-root` 권한 오류로 실패했다.
+
+기능 호출 전에 후보 Deployment를 앵커와 구조적으로 대조한다.
+
+- 컨테이너 population과 이름
+- env 이름 population 및 각 `value`/`valueFrom` 형태
+- volume/volumeMount population, 이름, mountPath, PVC/ConfigMap 참조
+- service selector와 container port
+
+하나라도 다르면 후보 기능을 통과시키지 않는다. GenOS 서비스 정의에서 설정을 복원할 수 없으면 후보를 중지하고 직전 이미지를 승인 재배포한 뒤, 앵커의 env와 mount를 이름 기준으로 복원한다. Secret은 평문 env로 바꾸지 않고 기존 `secretKeyRef`를 유지한다.
+
+### 9.4 라이브 계약 게이트
+
+pod-template 동등성 통과 후 고유 세션으로 다음을 순서대로 검증한다.
+
+1. 파일 업로드 성공
+2. `GET /documents`의 `document_id`·`temp_document_id`
+3. 반환된 ID를 사용한 `POST /documents/delete`
+4. 재조회 잔존 0
+5. OpenAPI의 additive 필드와 기존 source projection 불변
+6. CSV 인코딩·구분자 조합, 기존 PDF/PPTX/DOCX/XLSX 스모크
+7. chat 파일 질답, 현재 pod 전건 strict 로그
+
+`checked`와 `population`을 분리하고 population 0은 실패로 처리한다. SQL 전용 문서는 벡터 `result_count=0`일 수 있으므로 `sql_available`과 SQL query 결과로 판정한다. 테스트 문서는 성공·실패와 무관하게 삭제하고 재조회 잔존 0을 요구한다.
+
+### 9.5 수동 롤백
+
+mandatory gate 실패 시 후보 deployment를 stop 승인하고, 9.1에서 등록한 직전 DockerImage ID와 commit으로 deploy 승인한다. 이미지 복귀 뒤에도 env·Secret 참조·PVC mount를 앵커와 대조하고, 누락 시 이름 기준으로 복원한다. 마지막으로 다음을 모두 확인한다.
+
+- 직전 immutable imageID, Ready 1/1, restart 0
+- env/volume/volumeMount 동등성
+- `/documents`와 `/search` 정상 응답
+- chat 파일 질답 1회와 테스트 문서 잔존 0
+- 현재 pod strict 로그 실패 0
+
+자동원복은 없으며, 승인 지연과 pod-template 비승계가 복구 시간을 지배한다. 후보 실패를 성공으로 기록하지 않고, 실패 원인과 수동 복원 항목을 사건 기록에 남긴다.
