@@ -20,6 +20,13 @@ from pipeline.scripts.agent3.source_loader import (
 )
 
 
+CANONICAL_AGENT3_IMAGE = (
+    "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/"
+    "ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:"
+    "8fc03788b8b4fcbcad8f89adfda0ae8d5fdb2eff6a2f194e1ffe8013b16cacf8"
+)
+
+
 def test_canonical_content_match_ignores_hash_and_revision() -> None:
     old = ExistingAgent3SourceState(
         input_hash="old-hash",
@@ -158,8 +165,28 @@ def test_manifests_use_source_aware_runner() -> None:
         assert "AGENT3_MODE" not in text
         images.add(next(line.split("image:", 1)[1].strip() for line in text.splitlines() if "image:" in line))
 
-    assert len(images) == 1
-    assert "@sha256:" in next(iter(images))
+    assert images == {CANONICAL_AGENT3_IMAGE}
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "agent3-full-job.yaml",
+        "agent3-market-full-job.yaml",
+        "agent3-refresh-cronjob.yaml",
+    ),
+)
+def test_agent3_manifests_pin_the_canonical_image(name: str) -> None:
+    from pathlib import Path
+
+    text = (Path("deploy/k8s/agent3") / name).read_text(encoding="utf-8")
+    image = next(
+        line.split("image:", 1)[1].strip()
+        for line in text.splitlines()
+        if "image:" in line
+    )
+
+    assert image == CANONICAL_AGENT3_IMAGE
 
 
 def test_api_image_contains_canonical_agent3_runtime() -> None:

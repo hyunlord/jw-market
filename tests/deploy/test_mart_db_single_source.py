@@ -12,7 +12,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from pipeline.scripts.utils.mart_config import DEFAULT_MART_DB_NAME, DEFAULT_SOURCE_EPOCH, resolve_mart_db_name
+from pipeline.scripts.utils.mart_config import (
+    DEFAULT_MART_DB_NAME,
+    DEFAULT_SOURCE_EPOCH,
+    PROTECTED_MART_DB_NAMES,
+    resolve_mart_db_name,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -86,6 +91,10 @@ def test_python_literal_only_in_declared_files() -> None:
 
 def test_source_epoch_is_generation_name() -> None:
     assert DEFAULT_SOURCE_EPOCH == DEFAULT_MART_DB_NAME
+
+
+def test_protected_mart_databases_follow_the_canonical_generation() -> None:
+    assert PROTECTED_MART_DB_NAMES == frozenset({"jw_mart", DEFAULT_MART_DB_NAME})
 
 
 def test_resolver_prefers_env_then_default(monkeypatch) -> None:

@@ -24,13 +24,14 @@ def test_full_rehearsal_job_is_fail_closed_and_resource_bounded() -> None:
 
     assert spec["suspend"] is True
     assert spec["backoffLimit"] == 0
-    assert spec["activeDeadlineSeconds"] == 21600
+    assert spec["activeDeadlineSeconds"] == 43200
+    assert spec["ttlSecondsAfterFinished"] == 86400
     assert spec["template"]["spec"]["restartPolicy"] == "Never"
     assert container["resources"] == {
         "requests": {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "20Gi"},
         "limits": {"cpu": "4", "memory": "16Gi", "ephemeral-storage": "50Gi"},
     }
-    assert "@sha256:" in container["image"]
+    assert container["image"].endswith(":REPLACE_WITH_PINNED_DIGEST")
 
 
 def test_full_rehearsal_job_requires_an_isolated_target_database() -> None:

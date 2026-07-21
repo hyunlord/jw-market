@@ -25,6 +25,9 @@ import os
 from typing import Final
 
 DEFAULT_MART_DB_NAME: Final[str] = "jw_mart_d2_stage_20260630_r2"
+PROTECTED_MART_DB_NAMES: Final[frozenset[str]] = frozenset(
+    {"jw_mart", DEFAULT_MART_DB_NAME}
+)
 
 # The mart source epoch is the generation name itself.
 DEFAULT_SOURCE_EPOCH: Final[str] = DEFAULT_MART_DB_NAME
