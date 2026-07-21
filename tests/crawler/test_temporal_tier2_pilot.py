@@ -10,7 +10,10 @@ from pipeline.scripts.crawler import crawl_2tier
 from pipeline.scripts.crawler.tier2_catalog import stable_weekday_slice
 from pipeline.scripts.crawler.temporal_tier2_pilot import (
     PilotInput,
+    StageValidationError,
+    _assert_valid_stage_output,
     activity_commands,
+    isolated_match_table,
     safe_run_id,
 )
 
@@ -76,10 +79,25 @@ def test_pilot_commands_are_fixed_and_write_only_to_isolated_staging() -> None:
         "validate_isolated_result",
     ]
     assert "--dry-run" in commands["select_brand_universe"]
-    assert "--score-only" in commands["match_and_prescore"]
+    assert commands["match_and_prescore"][1].endswith("tier2_body_match_runner.py")
+    assert "--limit-news" in commands["match_and_prescore"]
+    assert isolated_match_table(config) in commands["match_and_prescore"]
+    assert isolated_match_table(config) in commands["llm_precision_score"]
+    assert isolated_match_table(config) in commands["validate_isolated_result"]
     assert "append-live" not in " ".join(sum(commands.values(), []))
     assert "replace-live" not in " ".join(sum(commands.values(), []))
     assert "event_brand_scores__temporal_pilot_pilot_20260721_a" in commands["llm_precision_score"]
+
+
+def test_validation_stage_rejects_a_false_validation_payload() -> None:
+    lines = ['{', '  "checked": 1,', '  "valid": false', '}']
+
+    with pytest.raises(StageValidationError, match="valid=false"):
+        _assert_valid_stage_output("validate_isolated_result", lines)
+
+
+def test_non_validation_stage_does_not_parse_incidental_json() -> None:
+    _assert_valid_stage_output("crawl_news", ['{"valid": false}'])
 
 
 @pytest.mark.parametrize("value", ["../escape", "bad;drop", "space name", ""])

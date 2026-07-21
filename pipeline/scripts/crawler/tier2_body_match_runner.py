@@ -427,11 +427,17 @@ def summarize_matches(matches: Sequence[BodyMatch], *, news_count: int, brand_co
     }
 
 
-def run_matching(conn: pymysql.connections.Connection) -> tuple[list[BodyMatch], dict[str, object]]:
+def run_matching(
+    conn: pymysql.connections.Connection,
+    *,
+    limit_news: int | None = None,
+) -> tuple[list[BodyMatch], dict[str, object]]:
     brands = load_tier2_brands(conn)
     matcher = Tier2BodyMatcher(brands, BodyMatchRunnerConfig())
     exact_news_ids = load_tier2_exact_news_ids(conn)
     target_news = filter_target_news(load_news_items(conn), exact_news_ids)
+    if limit_news is not None:
+        target_news = target_news[:limit_news]
     matches: list[BodyMatch] = []
     for item in target_news:
         matches.extend(
@@ -456,11 +462,12 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="Write matches to the intermediate table.")
     parser.add_argument("--replace-table", action="store_true", help="Drop/recreate only the target staging table.")
     parser.add_argument("--batch-size", type=int, default=1000)
+    parser.add_argument("--limit-news", type=int, help="Bound the number of news items before matching.")
     args = parser.parse_args()
 
     conn = connect_from_env()
     try:
-        matches, summary = run_matching(conn)
+        matches, summary = run_matching(conn, limit_news=args.limit_news)
         summary = {
             **summary,
             "run_id": args.run_id,

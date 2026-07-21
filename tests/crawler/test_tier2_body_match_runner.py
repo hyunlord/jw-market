@@ -6,9 +6,46 @@ from pipeline.scripts.crawler.tier2_body_match_runner import (
     STOPLIST_BRAND_NAMES,
     BodyMatchBrand,
     BodyMatchRunnerConfig,
+    NewsItem,
     Tier2BodyMatcher,
+    run_matching,
     should_pause_for_ambiguous_brand,
 )
+
+
+def test_run_matching_limits_news_before_matching(monkeypatch) -> None:
+    brands = [BodyMatchBrand(brand_key="livaro", brand_name="리바로", source="ubist")]
+    news = [
+        NewsItem(
+            news_id="n1",
+            title="리바로",
+            article_text="첫 기사",
+            collection_provenance='[{"tier":"2","brand_key":"livaro"}]',
+        ),
+        NewsItem(
+            news_id="n2",
+            title="리바로",
+            article_text="둘째 기사",
+            collection_provenance='[{"tier":"2","brand_key":"livaro"}]',
+        ),
+    ]
+    monkeypatch.setattr(
+        "pipeline.scripts.crawler.tier2_body_match_runner.load_tier2_brands",
+        lambda _conn: brands,
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.crawler.tier2_body_match_runner.load_tier2_exact_news_ids",
+        lambda _conn: set(),
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.crawler.tier2_body_match_runner.load_news_items",
+        lambda _conn: news,
+    )
+
+    matches, summary = run_matching(None, limit_news=1)
+
+    assert [match.news_id for match in matches] == ["n1"]
+    assert summary["target_news_count"] == 1
 
 
 def test_longest_match_keeps_nested_long_brand_only() -> None:

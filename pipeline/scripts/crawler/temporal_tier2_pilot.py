@@ -28,6 +28,13 @@ _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _SAFE_TABLE = re.compile(r"^[a-zA-Z0-9_]+$")
 
 
+class StageValidationError(RuntimeError):
+    def __init__(self, stage: str, detail: str) -> None:
+        self.stage = stage
+        self.detail = detail
+        super().__init__(f"stage={stage} {detail}")
+
+
 @dataclass(frozen=True)
 class PilotInput:
     run_id: str
@@ -69,11 +76,15 @@ def isolated_staging_table(config: PilotInput) -> str:
     return f"event_brand_scores__temporal_pilot_{suffix}"
 
 
+def isolated_match_table(config: PilotInput) -> str:
+    suffix = safe_run_id(config.run_id).replace("-", "_")
+    return f"tier2_match_staging__temporal_pilot_{suffix}"
+
+
 def activity_commands(config: PilotInput) -> dict[str, list[str]]:
     config = _validated(config)
     work = Path(config.work_root) / config.run_id
     raw = work / "raw"
-    processed = work / "processed"
     plan = work / "tier2_brand_plan.json"
     common = [
         "--brand-file",
@@ -118,22 +129,24 @@ def activity_commands(config: PilotInput) -> dict[str, list[str]]:
         ],
         "match_and_prescore": [
             "python",
-            "crawl/crawler/crawl_2tier.py",
-            "--tier",
-            "2",
-            "--score-only",
-            *common,
-            "--output-dir",
-            str(raw),
-            "--processed-dir",
-            str(processed),
+            "/opt/tier2/tier2_body_match_runner.py",
+            "--target-table",
+            isolated_match_table(config),
+            "--run-id",
+            config.run_id,
+            "--apply",
+            "--replace-table",
+            "--limit-news",
+            str(config.llm_limit),
+            "--batch-size",
+            "10",
         ],
         "llm_precision_score": [
             "python",
             "/opt/tier2/tier2_full_scoring_runner.py",
             "score-staging",
             "--match-table",
-            config.match_table,
+            isolated_match_table(config),
             "--staging-table",
             isolated_staging_table(config),
             "--limit",
@@ -146,7 +159,7 @@ def activity_commands(config: PilotInput) -> dict[str, list[str]]:
             "/opt/tier2/tier2_full_scoring_runner.py",
             "validate-staging",
             "--match-table",
-            config.match_table,
+            isolated_match_table(config),
             "--staging-table",
             isolated_staging_table(config),
         ],
@@ -155,6 +168,21 @@ def activity_commands(config: PilotInput) -> dict[str, list[str]]:
 
 def _receipt_path(config: PilotInput, stage: str) -> Path:
     return Path(config.work_root) / config.run_id / "receipts" / f"{stage}.json"
+
+
+def _assert_valid_stage_output(stage: str, lines: list[str]) -> None:
+    if stage != "validate_isolated_result":
+        return
+    payload_text = "\n".join(lines)
+    start = payload_text.find("{")
+    if start < 0:
+        raise StageValidationError(stage, "missing validation JSON")
+    try:
+        payload = json.loads(payload_text[start:])
+    except json.JSONDecodeError as error:
+        raise StageValidationError(stage, f"invalid validation JSON: {error.msg}") from error
+    if payload.get("valid") is not True:
+        raise StageValidationError(stage, "valid=false")
 
 
 async def _run_stage(config: PilotInput, stage: str) -> dict[str, Any]:
@@ -202,6 +230,7 @@ async def _run_stage(config: PilotInput, stage: str) -> dict[str, Any]:
         raise RuntimeError(
             f"stage={stage} return_code={return_code} tail={lines[-20:]}"
         )
+    _assert_valid_stage_output(stage, lines)
     result = {
         "stage": stage,
         "status": "completed",
