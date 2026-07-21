@@ -1,11 +1,104 @@
 from __future__ import annotations
 
-from typing import Any
+import os
+from dataclasses import dataclass
+from typing import Any, Final
+from urllib.parse import urlparse
 
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, EvidenceFact
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_claim
 from jw_chat_agent_poc.tool_use.routing_v4_capabilities import verify_claim_evidence
 from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan
+
+
+OFFICIAL_WEB_FALLBACK_FLAG: Final = "CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED"
+_OFFICIAL_WEB_DOMAINS: Final = {
+    "hira": ("hira.or.kr",),
+    "regulatory": ("mfds.go.kr",),
+    "clinical_trials": ("clinicaltrials.gov", "cris.nih.go.kr"),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialWebFallbackDecision:
+    web_call_budget: int
+    accepted_urls: tuple[str, ...]
+    separate_section: bool
+    reason_code: str
+    disclosure: str
+
+
+def official_web_fallback_policy(
+    *,
+    source_domain: str,
+    runtime_reason: str,
+    usable_authoritative_results: int,
+    candidate_urls: tuple[str, ...],
+) -> OfficialWebFallbackDecision:
+    if usable_authoritative_results > 0:
+        return OfficialWebFallbackDecision(
+            web_call_budget=0,
+            accepted_urls=(),
+            separate_section=False,
+            reason_code="PARTIAL_RESULT",
+            disclosure="",
+        )
+    if runtime_reason != "UPSTREAM_UNAVAILABLE" or not _official_web_fallback_enabled():
+        return OfficialWebFallbackDecision(
+            web_call_budget=0,
+            accepted_urls=(),
+            separate_section=False,
+            reason_code=runtime_reason,
+            disclosure="",
+        )
+
+    accepted_urls = tuple(
+        dict.fromkeys(
+            url
+            for url in candidate_urls
+            if _is_official_web_url(url, source_domain=source_domain)
+        )
+    )
+    return OfficialWebFallbackDecision(
+        web_call_budget=1 if accepted_urls else 0,
+        accepted_urls=accepted_urls,
+        separate_section=bool(accepted_urls),
+        reason_code="UPSTREAM_UNAVAILABLE",
+        disclosure=_official_web_disclosure(source_domain) if accepted_urls else "",
+    )
+
+
+def _official_web_fallback_enabled() -> bool:
+    return os.environ.get(OFFICIAL_WEB_FALLBACK_FLAG, "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _is_official_web_url(url: str, *, source_domain: str) -> bool:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme != "https" or not hostname:
+        return False
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in _OFFICIAL_WEB_DOMAINS.get(source_domain, ())
+    )
+
+
+def _official_web_disclosure(source_domain: str) -> str:
+    source_name = {
+        "hira": "HIRA 공식 통계",
+        "regulatory": "식품의약품안전처 공식 정보",
+        "clinical_trials": "공식 임상시험 정보",
+    }.get(source_domain, "권위 원천")
+    return (
+        f"{source_name} 조회에 실패했습니다(UPSTREAM_UNAVAILABLE). "
+        "아래는 웹 검색 결과이며 공식 통계가 아닙니다. "
+        "정확한 수치는 해당 공식 시스템에서 확인하십시오."
+    )
 
 
 def safe_execution_failure(result: AgentResult, *, reason_code: str) -> AgentResult:
