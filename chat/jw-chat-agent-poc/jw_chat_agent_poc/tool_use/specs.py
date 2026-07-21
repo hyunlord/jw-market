@@ -77,6 +77,12 @@ class ClinicalQueryInput(BaseModel):
     query_type: Literal["intervention", "condition"] = "intervention"
 
 
+class NctIdInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    nct_id: str
+
+
 class DiseaseCodeInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

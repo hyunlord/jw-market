@@ -550,6 +550,75 @@ def test_clinicaltrials_live_search_fails_closed_on_mcp_error(monkeypatch):
     assert "NCT" not in call.summary_text
 
 
+def test_clinicaltrials_detail_preserves_supported_fields_and_partial_eligibility(monkeypatch):
+    def fake_post(url, json, headers, timeout):
+        assert json["params"]["name"] == "get_study_details"
+        assert json["params"]["arguments"] == {"nctId": "NCT05151731"}
+        return _McpResponse(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "clinicaltrials_url: https://clinicaltrials.gov/study/NCT05151731\n"
+                                "identification:\n"
+                                "  nctId: NCT05151731\n"
+                                "  briefTitle: DME Study\n"
+                                "status:\n"
+                                "  overallStatus: COMPLETED\n"
+                                "  startDate: 2022-01-01\n"
+                                "  primaryCompletionDate: 2024-04-01\n"
+                                "design:\n"
+                                "  phases[1]: PHASE3\n"
+                                "  enrollmentCount: 300\n"
+                                "outcomes:\n"
+                                "  primary[1]{measure,timeFrame}:\n"
+                                "    Visual acuity,Week 48\n"
+                                "eligibility:\n"
+                                "  eligibilityCriteria: Adults with DME att...\n"
+                                "interventions[1]{type,name}:\n"
+                                "  DRUG,Aflibercept\n"
+                            ),
+                        }
+                    ]
+                },
+            }
+        )
+
+    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://ct-mcp/json")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
+
+    call = ExternalApiClient(mode="live", timeout_s=1).clinicaltrials_study_details("NCT05151731")
+
+    assert call.status == "live"
+    detail = call.render_data["detail"]
+    assert detail["nct_id"] == "NCT05151731"
+    assert detail["phase"] == "PHASE3"
+    assert detail["enrollment"] == 300
+    assert detail["interventions"] == ["Aflibercept"]
+    assert detail["outcomes"] == ["Visual acuity"]
+    assert call.render_data["field_capabilities"]["eligibility"] == "PARTIAL"
+    assert call.render_data["eligibility_disclosure"] == "선정·제외 기준은 원문 앞 200자까지만 제공됩니다."
+    assert call.safe_url == "https://clinicaltrials.gov/study/NCT05151731"
+
+
+def test_clinicaltrials_detail_failure_keeps_exact_tool_identity(monkeypatch):
+    def fake_post(url, json, headers, timeout):
+        raise requests.Timeout("network down")
+
+    monkeypatch.setenv("CLINICAL_TRIALS_MCP_URL", "http://ct-mcp/json")
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", fake_post)
+
+    call = ExternalApiClient(mode="live", timeout_s=1).clinicaltrials_study_details("NCT05151731")
+
+    assert call.status == "error"
+    assert call.tool == "clinicaltrials_study_details"
+    assert call.render_data["external_claim_policy"] == "fail_closed_error"
+
+
 @pytest.mark.skipif(not os.environ.get("DATA_GO_KR_KEY"), reason="DATA_GO_KR_KEY is required for live external API tests")
 def test_live_external_endpoints_parse_real_responses():
     client = ExternalApiClient(mode="live", timeout_s=15)

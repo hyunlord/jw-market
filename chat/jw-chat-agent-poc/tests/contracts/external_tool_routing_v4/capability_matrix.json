@@ -84,9 +84,11 @@
     {
       "requested_capability": "CLINICAL_TRIAL_NCT_DETAIL_FIELDS",
       "source_domain": "clinical_trials",
-      "capability_status": "FIELD_NOT_EXPOSED",
-      "eligible_tools": [],
-      "truth_basis": "current ClinicalTrials contract exposes search summaries, not eligibility, outcome, or date detail"
+      "capability_status": "SUPPORTED",
+      "eligible_tools": [
+        "clinicaltrials_study_details"
+      ],
+      "truth_basis": "2026-07-22 live get_study_details probe exposes outcomes, dates, phase, enrollment, interventions, and 200-character eligibility excerpt"
     },
     {
       "requested_capability": "UNCLASSIFIED_EXTERNAL_REQUEST",

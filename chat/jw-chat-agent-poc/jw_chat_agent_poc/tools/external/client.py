@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import csv
 import json
 import os
 import re
@@ -128,6 +129,12 @@ class ExternalApiClient:
     ) -> ExternalCall:
         key = "query.condition" if query_type == "condition" else "query.intr"
         return self._fixture_or_live("clinicaltrials_v2_search", {key: query_intr})
+
+    def clinicaltrials_study_details(self, nct_id: str) -> ExternalCall:
+        return self._fixture_or_live(
+            "clinicaltrials_study_details",
+            {"nct_id": nct_id.upper()},
+        )
 
     def openfda_label_search(
         self,
@@ -282,7 +289,7 @@ class ExternalApiClient:
         except McpClientError as exc:
             elapsed = round((time.monotonic() - start) * 1000, 1)
             safe_reason = self.redact_url(exc.message)
-            if tool == "clinicaltrials_v2_search":
+            if tool in {"clinicaltrials_v2_search", "clinicaltrials_study_details"}:
                 return _clinicaltrials_failed_call(params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
             return _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
         elapsed = round((time.monotonic() - start) * 1000, 1)
@@ -428,6 +435,13 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
                     else {"intervention": params.get("query.intr", ""), "pageSize": 5}
                 ),
             }
+        case "clinicaltrials_study_details":
+            return {
+                "resource_id": os.environ.get(CLINICAL_TRIALS_MCP_RESOURCE_ENV, CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE),
+                "source": CLINICAL_TRIALS_MCP_SOURCE,
+                "mcp_tool": "get_study_details",
+                "arguments": {"nctId": params.get("nct_id", "")},
+            }
         case "openfda_label_search":
             ingredient = _openfda_active_ingredient(params)
             if params.get("evidence_type") == "adverse_event":
@@ -540,6 +554,8 @@ def _mcp_external_call(
 ) -> ExternalCall:
     if result.raw_result.get("isError") is True:
         return _mcp_failed_call(tool, source, params, mcp_tool, result.content_text, url, elapsed, no_data="No results" in result.content_text)
+    if tool == "clinicaltrials_study_details":
+        return _clinicaltrials_detail_call_from_mcp(params, mcp_tool, result, url, elapsed)
     if tool == "clinicaltrials_v2_search":
         return _clinicaltrials_call_from_mcp(params, mcp_tool, result, url, elapsed)
     payload = _mcp_payload(result)
@@ -564,14 +580,15 @@ def _mcp_external_call(
 
 
 def _clinicaltrials_failed_call(params: dict[str, str], mcp_tool: str, reason: str, url: str, elapsed: float) -> ExternalCall:
+    tool = "clinicaltrials_study_details" if "nct_id" in params else "clinicaltrials_v2_search"
     return ExternalCall(
-        tool="clinicaltrials_v2_search",
+        tool=tool,
         source=CLINICAL_TRIALS_MCP_SOURCE,
         status="error",
         summary_text=f"ClinicalTrials MCP 조회 실패: {reason}",
         render_data={
             "request": params,
-            "payload": {"studies": []},
+            "payload": {"studies": []} if tool == "clinicaltrials_v2_search" else {},
             "mcp": {"tool": mcp_tool},
             "error": reason,
             "external_claim_policy": "fail_closed_error",
@@ -615,6 +632,106 @@ def _clinicaltrials_call_from_mcp(params: dict[str, str], mcp_tool: str, result:
         safe_url=url,
         elapsed_ms=elapsed,
     )
+
+
+def _clinicaltrials_detail_call_from_mcp(
+    params: dict[str, str],
+    mcp_tool: str,
+    result: McpToolResult,
+    url: str,
+    elapsed: float,
+) -> ExternalCall:
+    detail = _clinicaltrials_detail_payload(result.content_text)
+    nct_id = str(detail.get("nct_id") or params.get("nct_id") or "").upper()
+    study_url = str(detail.get("url") or f"https://clinicaltrials.gov/study/{nct_id}")
+    render_data = {
+        "request": params,
+        "detail": detail,
+        "field_capabilities": {
+            "outcomes": "SUPPORTED",
+            "dates": "SUPPORTED",
+            "phase": "SUPPORTED",
+            "enrollment": "SUPPORTED",
+            "interventions": "SUPPORTED",
+            "eligibility": "PARTIAL",
+        },
+        "eligibility_disclosure": "선정·제외 기준은 원문 앞 200자까지만 제공됩니다.",
+        "mcp": {"tool": mcp_tool},
+        "external_claim_policy": "source_relay_only",
+    }
+    if not nct_id or not detail.get("title"):
+        return ExternalCall(
+            tool="clinicaltrials_study_details",
+            source=CLINICAL_TRIALS_MCP_SOURCE,
+            status="no_data",
+            summary_text="ClinicalTrials 상세 응답에서 검증 가능한 연구 식별자와 제목을 찾지 못했습니다.",
+            render_data=render_data,
+            safe_url=study_url or url,
+            elapsed_ms=elapsed,
+        )
+    return ExternalCall(
+        tool="clinicaltrials_study_details",
+        source=CLINICAL_TRIALS_MCP_SOURCE,
+        status="live",
+        summary_text=f"ClinicalTrials.gov에서 {nct_id} 상세 원문을 확인했습니다.",
+        render_data=render_data,
+        safe_url=study_url,
+        elapsed_ms=elapsed,
+    )
+
+
+def _clinicaltrials_detail_payload(text: str) -> dict[str, Any]:
+    aliases = {
+        "nctId": "nct_id",
+        "clinicaltrials_url": "url",
+        "briefTitle": "title",
+        "overallStatus": "status",
+        "startDate": "start_date",
+        "primaryCompletionDate": "primary_completion_date",
+        "phases": "phase",
+        "enrollmentCount": "enrollment",
+        "interventions": "interventions",
+        "primaryOutcomes": "outcomes",
+        "secondaryOutcomes": "secondary_outcomes",
+        "eligibilityCriteria": "eligibility",
+    }
+    detail: dict[str, Any] = {}
+    row_mode: str | None = None
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip().lstrip("- ")
+        if stripped.startswith("primary["):
+            row_mode = "outcomes"
+            continue
+        if stripped.startswith("secondary["):
+            row_mode = "secondary_outcomes"
+            continue
+        if stripped.startswith("interventions["):
+            row_mode = "interventions"
+            continue
+        if re.match(r"^[A-Za-z][A-Za-z]+(?:\[[^]]+\])?:", stripped):
+            row_mode = None
+        if row_mode is not None and "," in stripped and ":" not in stripped:
+            values = next(csv.reader([stripped]))
+            if row_mode == "interventions" and len(values) >= 2:
+                detail.setdefault(row_mode, []).append(values[1].strip())
+            elif values:
+                detail.setdefault(row_mode, []).append(values[0].strip())
+            continue
+        if ":" not in stripped:
+            continue
+        raw_key, raw_value = stripped.split(":", 1)
+        normalized_key = re.sub(r"\[[^]]+\](?:\{[^}]+\})?$", "", raw_key.strip())
+        key = aliases.get(normalized_key)
+        if key is None:
+            continue
+        value = raw_value.strip().strip('"')
+        if key == "enrollment":
+            detail[key] = _int_or_none(value)
+        elif key in {"interventions", "outcomes", "secondary_outcomes"}:
+            detail[key] = [part.strip() for part in value.split(",") if part.strip()]
+        else:
+            detail[key] = value
+    return detail
 
 
 def _mcp_failed_call(

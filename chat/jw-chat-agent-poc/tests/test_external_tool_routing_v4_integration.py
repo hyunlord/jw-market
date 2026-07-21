@@ -344,6 +344,31 @@ def test_force_flag_does_not_disable_shadow_routing_provider(monkeypatch) -> Non
     assert proposal["proposed_calls"][0]["tool_name"] == "clinicaltrials_v2_search"
 
 
+def test_enforce_routes_nct_id_directly_to_detail_tool(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+
+    payload = run_external_tool_agent(
+        "NCT05151731의 결과와 선정기준을 알려줘",
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "clinicaltrials_study_details"
+    ]
+    assert "선정·제외 기준은 원문 앞 200자까지만 제공됩니다" in payload["answer"]
+    proposal = payload["router_diagnostics"]["routing_v4"]["proposed_routing_signature"]
+    assert proposal["routing_decision"]["tool_selection_source"] == "NEW_RULE"
+    assert proposal["proposed_calls"] == [
+        {
+            "tool_name": "clinicaltrials_study_details",
+            "normalized_args": {"nct_id": "NCT05151731"},
+        }
+    ]
+
+
 def test_enforce_executes_the_prs_and_emits_ordered_ccs(monkeypatch) -> None:
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
 

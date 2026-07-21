@@ -115,7 +115,8 @@ def default_capability_matrix() -> CapabilityMatrix:
         _entry(
             "clinical_trials",
             "CLINICAL_TRIAL_NCT_DETAIL_FIELDS",
-            "FIELD_NOT_EXPOSED",
+            "SUPPORTED",
+            ("clinicaltrials_study_details",),
         ),
         _entry("unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST", "UNRESOLVED"),
     )

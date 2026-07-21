@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 import logging
+import re
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.agent_loop.external_tools import (
@@ -124,6 +125,8 @@ class AgentToolFacade:
                 return self._procedure_stats(grounded_arguments)
             if name == "search_clinical":
                 return self._clinical(grounded_arguments)
+            if name == "get_clinical_study_details":
+                return self._clinical_detail(grounded_arguments)
             if name == "search_patent":
                 return self._patent(grounded_arguments)
             if name == "search_drug_info":
@@ -308,6 +311,15 @@ class AgentToolFacade:
         call = clinical_call(resolution, self._external)
         call["render_data"]["brand"] = brand
         return ToolExecution("ok", f"{brand} clinical", call, arguments)
+
+    def _clinical_detail(self, arguments: Mapping[str, str]) -> ToolExecution:
+        nct_id = str(arguments.get("nct_id") or "").upper()
+        if not re.fullmatch(r"NCT\d{8}", nct_id):
+            raise ValueError("정확한 NCT ID가 필요합니다.")
+        external_call = self._external.clinicaltrials_study_details(nct_id)
+        call = asdict(external_call)
+        status = "ok" if external_call.status not in {"error", "no_data", "unsupported"} else QUERY_FAILED_STATUS
+        return ToolExecution(status, external_call.summary_text, call, arguments)
 
     def _patent(self, arguments: Mapping[str, str]) -> ToolExecution:
         ingredient = arguments.get("ingredient")

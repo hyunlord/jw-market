@@ -184,6 +184,16 @@ def test_clinical_disease_queries_use_condition_slots() -> None:
     assert domestic_spec["arguments"] == {"clinic_exam_title": "고지혈증", "limit": 5}
 
 
+def test_clinicaltrials_detail_spec_uses_verified_nct_contract() -> None:
+    spec = _mcp_tool_spec(
+        "clinicaltrials_study_details",
+        {"nct_id": "NCT05151731"},
+    )
+
+    assert spec["mcp_tool"] == "get_study_details"
+    assert spec["arguments"] == {"nctId": "NCT05151731"}
+
+
 def test_main_ingredient_spec_uses_mart_then_mfds_fallback_method(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
     calls: list[str] = []

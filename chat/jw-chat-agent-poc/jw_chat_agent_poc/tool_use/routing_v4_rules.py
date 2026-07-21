@@ -156,9 +156,21 @@ def _clinical_classification(
     rule_id: str,
 ) -> QuestionClassification:
     capability = "CLINICAL_TRIAL_NCT_DETAIL_FIELDS" if nct_match is not None else "CLINICAL_TRIAL_SEARCH"
+    calls = (
+        (
+            ProposedCall(
+                tool_name="clinicaltrials_study_details",
+                normalized_args={"nct_id": nct_match.group(0).upper()},
+            ),
+        )
+        if nct_match is not None
+        else ()
+    )
     return QuestionClassification(
         source_domain="clinical_trials",
         domain_decision_source=decision_source,
         requested_capability=capability,
         deterministic_rule_id=rule_id,
+        direct_calls=calls,
+        eligible_override=("clinicaltrials_study_details",) if calls else (),
     )

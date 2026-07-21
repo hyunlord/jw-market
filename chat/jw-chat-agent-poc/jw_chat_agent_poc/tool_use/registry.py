@@ -22,6 +22,7 @@ from jw_chat_agent_poc.tool_use.specs import (
     DiseaseCodeInput,
     IngredientInput,
     ItemSequenceInput,
+    NctIdInput,
     OpenFdaInput,
     ProcedureCodeInput,
     QueryInput,
@@ -53,6 +54,7 @@ class ExternalToolRegistry:
             ("mfds_permission_detail", ItemSequenceInput, self._permission_detail, mcp_timeout_s, ("external", "mfds")),
             ("mfds_clinical_trial_kr", ClinicalQueryInput, self._clinical_kr, mcp_timeout_s, ("external", "mfds")),
             ("clinicaltrials_v2_search", ClinicalQueryInput, self._clinical_global, mcp_timeout_s, ("external", "clinicaltrials")),
+            ("clinicaltrials_study_details", NctIdInput, self._clinical_detail, mcp_timeout_s, ("external", "clinicaltrials")),
             ("mfds_patent", IngredientInput, partial(self._ingredient_call, "mfds_patent", "국내 특허"), mcp_timeout_s, ("external", "mfds")),
             ("mfds_fda_orangebook", IngredientInput, partial(self._ingredient_call, "mfds_fda_orangebook", "미국 특허/독점권"), mcp_timeout_s, ("external", "orangebook")),
             ("hira_disease_name_code", DiseaseCodeInput, partial(self._disease_call, "hira_disease_name_code", "질병명/상병코드"), mcp_timeout_s, ("external", "hira", "grounding")),
@@ -194,6 +196,59 @@ class ExternalToolRegistry:
         request = ClinicalQueryInput.model_validate(payload.model_dump())
         call = self._external.clinicaltrials_v2_search(request.query, query_type=request.query_type)
         return _external_call_envelope(call, request.query, "글로벌 임상시험")
+
+    def _clinical_detail(self, payload: BaseModel) -> ToolEnvelope:
+        request = NctIdInput.model_validate(payload.model_dump())
+        call = self._external.clinicaltrials_study_details(request.nct_id)
+        detail = call.render_data.get("detail")
+        if call.status in _FAILED_STATUSES or not isinstance(detail, dict):
+            return _external_call_envelope(call, request.nct_id, "임상시험 상세")
+        url = str(call.safe_url or "")
+        facts = tuple(
+            EvidenceFact(
+                fact_id=f"{call.tool}:{request.nct_id}:{index}",
+                subject=request.nct_id,
+                metric=label,
+                value=None,
+                unit=None,
+                period=None,
+                source_name="ClinicalTrials.gov 임상시험 상세",
+                source_locator=f"{value} · {url}" if url else str(value),
+                raw_ref=f"{call.tool}:{key}",
+            )
+            for index, (key, label, value) in enumerate(
+                (
+                    ("title", "연구 제목", detail.get("title")),
+                    ("status", "연구 상태", detail.get("status")),
+                    ("phase", "임상 단계", detail.get("phase")),
+                    ("enrollment", "등록 인원", detail.get("enrollment")),
+                    ("interventions", "중재", detail.get("interventions")),
+                    ("outcomes", "결과지표", detail.get("outcomes")),
+                    (
+                        "eligibility",
+                        "선정·제외 기준",
+                        (
+                            f"{detail.get('eligibility')} "
+                            "(선정·제외 기준은 원문 앞 200자까지만 제공됩니다.)"
+                            if detail.get("eligibility")
+                            else None
+                        ),
+                    ),
+                ),
+                start=1,
+            )
+            if value is not None and value != "" and value != () and value != []
+        )
+        if not facts:
+            return _error("NO_EVIDENCE", "ClinicalTrials 상세 응답에 검증 가능한 필드가 없습니다.")
+        return ToolEnvelope(
+            ok=True,
+            preview=call.summary_text,
+            evidence=facts,
+            raw=asdict(call),
+            error_code=None,
+            error_message=None,
+        )
 
     def _web_search(self, payload: BaseModel) -> ToolEnvelope:
         request = QueryInput.model_validate(payload.model_dump())

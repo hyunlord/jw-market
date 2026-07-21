@@ -114,6 +114,48 @@ def _metrics_tool() -> MetricsTool:
     return MetricsTool(mode="cache", cache_reader=cache_reader, cause_reader=cause_reader)
 
 
+def test_legacy_planner_routes_nct_id_without_brand_grounding() -> None:
+    planner = GenosToolPlanner(token=None, fallback=HeuristicToolPlanner())
+    schemas = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    ).schemas(())
+
+    decision = planner.decide(
+        "NCT05151731의 결과와 선정기준을 알려줘",
+        (),
+        schemas,
+        (),
+        (),
+    )
+
+    assert decision.tool_calls == (
+        ToolCallPlan(
+            "get_clinical_study_details",
+            {"nct_id": "NCT05151731"},
+            "NCT 상세 근거 확인",
+        ),
+    )
+
+
+def test_legacy_facade_preserves_nct_partial_eligibility_disclosure() -> None:
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+
+    execution = facade.execute(
+        "get_clinical_study_details",
+        {"nct_id": "NCT05151731"},
+    )
+
+    assert execution.status == "ok"
+    assert execution.call["tool"] == "clinicaltrials_study_details"
+    assert "200자까지만" in str(execution.call["render_data"])
+
+
 def _livalohigh_metrics_tool() -> MetricsTool:
     cache_reader = StaticMetricsCacheReader(
         cache_brands=[{"brand": "리바로하이", "market_id": "strategy_011", "market_name": "리바로하이 시장", "sources": ["UBIST"]}],

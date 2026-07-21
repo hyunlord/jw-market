@@ -177,6 +177,17 @@ def _deterministic_external_decision(
     """
     if observations:
         return None
+    nct_match = re.search(r"(?<![A-Za-z0-9])NCT\d{8}(?![A-Za-z0-9])", question, re.IGNORECASE)
+    if nct_match is not None:
+        return AgentDecision(
+            tool_calls=(
+                ToolCallPlan(
+                    "get_clinical_study_details",
+                    {"nct_id": nct_match.group(0).upper()},
+                    "NCT 상세 근거 확인",
+                ),
+            )
+        )
     external_intent = (
         _asks_clinical(question)
         or _asks_patent(question)
@@ -262,7 +273,7 @@ _RELATIVE_DATE_TOOL_NAMES = ("resolve_relative_date",)
 _NEWS_TOOL_NAMES = ("search_news",)
 _HIRA_TOOL_NAMES = ("get_disease_stats",)
 _HIRA_PROCEDURE_TOOL_NAMES = ("get_procedure_stats",)
-_CLINICAL_TOOL_NAMES = ("search_clinical",)
+_CLINICAL_TOOL_NAMES = ("search_clinical", "get_clinical_study_details")
 _PATENT_TOOL_NAMES = ("search_patent",)
 _DRUG_INFO_TOOL_NAMES = ("search_drug_info",)
 _CSD_ACTIVITY_TOOL_NAMES = ("csd_activity_trend",)

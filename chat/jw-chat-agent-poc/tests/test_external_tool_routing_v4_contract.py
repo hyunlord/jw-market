@@ -98,6 +98,17 @@ def test_capability_manifest_uses_exactly_the_four_v4_states() -> None:
         CapabilityStatus.UNRESOLVED,
     }
     assert matrix.status_for("hira", "HIRA_DISEASE_PATIENT_STATS") is CapabilityStatus.SUPPORTED
+
+
+def test_nct_detail_capability_is_supported_by_verified_detail_tool() -> None:
+    matrix = default_capability_matrix()
+
+    assert matrix.status_for(
+        "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
+    ) is CapabilityStatus.SUPPORTED
+    assert matrix.resolve(
+        "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
+    ).eligible_tools == ("clinicaltrials_study_details",)
     assert matrix.status_for("hira", "HIRA_LABEL_EFFICACY") is CapabilityStatus.FIELD_NOT_EXPOSED
     assert matrix.status_for("regulatory", "REIMBURSEMENT_CRITERIA") is CapabilityStatus.NOT_IMPLEMENTED
     assert matrix.status_for("unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST") is CapabilityStatus.UNRESOLVED

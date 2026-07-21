@@ -19,6 +19,7 @@ TOOL_DESCRIPTION_CATALOG: tuple[ToolDescriptionRecord, ...] = (
     ToolDescriptionRecord("mfds_permission_detail", True, "식약처 허가 상세 조회. when to use: 허가 품목의 ITEM_SEQ가 확인된 뒤. when NOT to use: ITEM_SEQ가 없거나 특허/부작용 질의."),
     ToolDescriptionRecord("mfds_clinical_trial_kr", True, "국내 임상시험 조회. when to use: 국내/한국/식약처 임상시험이라고 명시한 질의. when NOT to use: 비한정 임상시험, 글로벌 임상, NCT 질의."),
     ToolDescriptionRecord("clinicaltrials_v2_search", True, "ClinicalTrials.gov 글로벌 임상 조회. when to use: 지역을 한정하지 않은 비한정 임상시험, 글로벌 임상, NCT 질의. when NOT to use: 국내/한국/식약처 임상만 명시한 질의."),
+    ToolDescriptionRecord("clinicaltrials_study_details", True, "ClinicalTrials.gov NCT 상세 조회. when to use: 정확한 NCT ID가 있는 질의. 선정·제외 기준은 원문 앞 200자까지만 제공됨을 고지합니다. when NOT to use: NCT ID 없는 임상 검색."),
     ToolDescriptionRecord("mfds_patent", True, "국내 의약품 특허 조회. when to use: 국내 특허/독점권 질의. when NOT to use: 미국 Orange Book만 묻는 질의."),
     ToolDescriptionRecord("mfds_fda_orangebook", True, "FDA Orange Book 조회. when to use: 미국 특허/독점권 질의. when NOT to use: 국내 특허만 묻는 질의."),
     ToolDescriptionRecord("hira_disease_name_code", True, "HIRA 질병명과 상병코드 조회. when to use: 질병명/상병코드 확인. when NOT to use: 이미 확정된 코드의 환자 통계."),
