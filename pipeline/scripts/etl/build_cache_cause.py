@@ -48,6 +48,7 @@ from cache_build_common import (
     period_key,
     optional_float,
     safe_float,
+    market_cagr_exclusive,
     series_cagr,
     series_latest_number,
     source_list,
@@ -3964,6 +3965,9 @@ def build_response(
     display_market_cagr = optional_float(target_display.get("market_cagr_pct"))
     if display_market_cagr is None:
         display_market_cagr = series_cagr(market_series)
+    # Exclusive 5y/3y market CAGR: report the horizon explicitly instead of the
+    # legacy silent 5y→3y fallback so the consumer can tell which window applies.
+    market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series)
 
     return {
         "brand": brand_row["brand_name"],
@@ -3977,7 +3981,8 @@ def build_response(
         "data": {
             "kpi": {
                 "market_size_recent": series_latest_number(market_series),
-                "market_cagr_5y_pct": display_market_cagr,
+                "market_cagr_5y_pct": market_cagr_5y,
+                "market_cagr_3y_pct": market_cagr_3y,
                 "top3_share_pct": top3_share(sibling_rows),
                 "hhi_recent": hhi_recent,
                 "direct_competition_count": direct_competition_count,
@@ -3993,6 +3998,7 @@ def build_response(
                 "target_momentum": optional_float(target_display.get("momentum_score")),
                 "target_rank": target_display.get("rank"),
                 "target_share_pct": safe_float(target_display.get("share_pct")),
+                "target_brand_sales": safe_float(recent.get("raw_value")),
                 "brand_value_recent": safe_float(recent.get("raw_value")),
                 "brand_share_pct": safe_float(target_display.get("share_pct")),
             },

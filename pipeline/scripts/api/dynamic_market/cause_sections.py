@@ -16,6 +16,7 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     safe_pct,
 )
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
+from pipeline.scripts.etl.cache_build_common import market_cagr_exclusive
 
 
 def matrix_growth_value(
@@ -184,9 +185,17 @@ def kpi(
     if target is None:
         return {}
     top3_share = sum(item.get("share_pct", 0.0) for item in matrix[:3])
+    # Exclusive 5y/3y market CAGR: report the horizon explicitly (no silent
+    # 5y→3y fallback) so the consumer can tell which window a value describes.
+    # market_size_series returns a period-ordered list; the endpoint CAGR helper
+    # needs a period-keyed map.
+    market_series_points = market_size_series(metrics)
+    market_series_map = {str(point["period"]): point for point in market_series_points}
+    market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series_map)
     return {
-        "market_size_recent": latest_market_value(market_size_series(metrics)),
-        "market_cagr_5y_pct": metrics.cagr,
+        "market_size_recent": latest_market_value(market_series_points),
+        "market_cagr_5y_pct": market_cagr_5y,
+        "market_cagr_3y_pct": market_cagr_3y,
         "top3_share_pct": top3_share,
         "hhi_recent": hhi_recent,
         "direct_competition_count": len(metrics.all_brands),
@@ -202,6 +211,7 @@ def kpi(
         "target_momentum": target.get("momentum_score"),
         "target_rank": target.get("rank"),
         "target_share_pct": target.get("share_pct"),
+        "target_brand_sales": target.get("value_recent"),
         "brand_value_recent": target.get("value_recent"),
         "brand_share_pct": target.get("share_pct"),
         "momentum_score": target.get("momentum_score"),

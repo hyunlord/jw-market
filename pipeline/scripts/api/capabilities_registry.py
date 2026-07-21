@@ -92,6 +92,8 @@ _METRIC_LABELS: dict[str, tuple[str, str]] = {
     "ms_first_period_pct": ("최초 기간 점유율", "pct"),
     "market_size_recent": ("최근 시장 규모", "value"),
     "market_cagr_5y_pct": ("시장 5년 CAGR", "pct"),
+    "market_cagr_3y_pct": ("시장 3년 CAGR", "pct"),
+    "target_brand_sales": ("선택 브랜드 최근 매출", "value"),
     "brand_cagr_5y_pct": ("브랜드 5년 CAGR", "pct"),
     "excess_growth_pct": ("초과 성장률", "pct"),
 }

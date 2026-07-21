@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.openapi_docs import MARKET_STATUS_RESPONSES, PORTAL_CORE_TAG
+from pipeline.scripts.api.services import market_recent_periods
 
 
 router = APIRouter()
@@ -32,4 +33,7 @@ def market_status() -> dict:
     payload = compose_cached_json(row["response_json"])
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_market_status"})
+    # Serving-time baseline labels (mart latest period per source); the cached
+    # payload is otherwise returned verbatim.
+    payload.update(market_recent_periods())
     return payload
