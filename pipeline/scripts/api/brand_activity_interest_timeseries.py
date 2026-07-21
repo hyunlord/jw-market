@@ -27,7 +27,20 @@ from pipeline.scripts.api.brand_activity_topic_matrix import _alias_lookup, _key
 from pipeline.scripts.api.brand_activity_interest_rx_matrix import _canonical_product
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
-from pipeline.scripts.api.services import _period_minus_months
+
+
+def _period_minus_months(period: str, months: int) -> str:
+    """Shift a YYYY-MM period by ``months`` (negative to go forward). Pure integer math.
+
+    Defined locally on purpose: the equivalent services._period_minus_months lives in a module
+    that does a top-level ``import pyarrow`` (an ETL-only dep absent from the API image), so
+    importing it crashes the API container at startup. Keeping this off the pyarrow import path
+    mirrors commit e448d3b2 (which moved the market-status recent-period helper out of services).
+    """
+
+    year, month = (int(part) for part in period.split("-", 1))
+    index = year * 12 + month - 1 - months
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
 
 # 3-year window = 36 monthly points inclusive of the anchor month.
 _WINDOW_MONTHS = 36
