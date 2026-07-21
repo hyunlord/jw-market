@@ -558,7 +558,7 @@ def _asks_clinical(question: str) -> bool:
 
 
 def _asks_patent(question: str) -> bool:
-    return any(token in question for token in ("특허", "독점권", "patent", "Orange", "orange", "라벨", "FDA"))
+    return any(token in question for token in ("특허", "독점권", "patent", "Orange", "orange"))
 
 
 def _asks_market_scope(question: str) -> bool:
@@ -576,7 +576,7 @@ def _asks_relative_date(question: str) -> bool:
 
 
 def _needs_external_context(question: str) -> bool:
-    return _asks_news(question) or _asks_hira(question) or _asks_hira_procedure(question) or _asks_clinical(question) or _asks_patent(question) or _asks_drug_info(question) or _asks_web_search(question)
+    return _asks_news(question) or _asks_hira(question) or _asks_hira_procedure(question) or _asks_clinical(question) or _asks_patent(question) or _asks_drug_info(question) or _asks_safety(question) or _asks_web_search(question)
 
 
 def _asks_web_search(question: str) -> bool:
@@ -709,6 +709,8 @@ def _needs_expanded_tools(question: str) -> bool:
         return True
     if _asks_drug_info(question):
         return True
+    if _asks_safety(question):
+        return True
     return any(token in question for token in ("뉴스", "이슈", "환자", "질병", "질환", "HIRA", "진료행위", "행위코드", "수가코드", "검사", "수술", "임상", "특허", "라벨", "FDA", "디테일링", "KOL", "시장동향", "웹검색", "웹 검색", "검색해줘", "검색 결과", "최신 동향", "최근 동향"))
 
 
@@ -729,6 +731,8 @@ def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed
         calls.extend(ToolCallPlan("search_clinical", {"brand": brand}, "임상 근거 확인") for brand in brands)
     if _asks_drug_info(question):
         calls.extend(ToolCallPlan("search_drug_info", {"brand": brand}, "식약처 허가정보 확인") for brand in brands)
+    if _asks_safety(question):
+        calls.extend(ToolCallPlan("search_safety", {"brand": brand}, "FDA 안전성 근거 확인") for brand in brands)
     if _asks_patent(question):
         patent_args = {"query": question}
         ingredient = resolve_patent_ingredient_query(question)
@@ -773,6 +777,12 @@ def _asks_drug_info(question: str) -> bool:
     if "성분" in question and not any(token in question for token in ("특허", "임상", "FDA", "라벨")):
         return True
     return any(token in question for token in ("효능", "용법")) and any(token in question for token in ("국내", "식약처", "허가"))
+
+
+def _asks_safety(question: str) -> bool:
+    if _asks_patent(question):
+        return False
+    return any(token in question for token in ("안전성", "부작용", "이상반응", "adverse", "side effect", "FDA", "라벨"))
 
 
 def _news_query(question: str) -> str:

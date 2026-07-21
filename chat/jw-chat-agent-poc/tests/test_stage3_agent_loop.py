@@ -1364,6 +1364,56 @@ def test_heuristic_planner_routes_domestic_permission_question_to_drug_info() ->
     assert decision.tool_calls[0].name == "search_drug_info"
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 FDA 안전성 알려줘",
+        "리바로 부작용 알려줘",
+        "리바로 FDA 라벨 이상반응 알려줘",
+    ),
+)
+def test_heuristic_planner_routes_safety_questions_to_openfda_facade(question: str) -> None:
+    planner = HeuristicToolPlanner()
+
+    decision = planner.decide(
+        question,
+        (),
+        (
+            {
+                "function": {
+                    "name": "search_safety",
+                    "parameters": {"properties": {"brand": {"enum": ["리바로"]}}},
+                }
+            },
+        ),
+        ("리바로",),
+        (),
+    )
+
+    assert [call.name for call in decision.tool_calls] == ["search_safety"]
+
+
+def test_heuristic_planner_keeps_patent_question_on_patent_facade() -> None:
+    planner = HeuristicToolPlanner()
+
+    decision = planner.decide(
+        "리바로 미국 특허와 독점권 알려줘",
+        (),
+        (
+            {
+                "function": {
+                    "name": "search_patent",
+                    "parameters": {"properties": {"brand": {"enum": ["리바로"]}}},
+                }
+            },
+        ),
+        ("리바로",),
+        (),
+    )
+
+    assert [call.name for call in decision.tool_calls] == ["search_patent"]
+
+
 class _PermissionOnlyExternal(ExternalApiClient):
     def __init__(self) -> None:
         super().__init__(mode="fixture")
