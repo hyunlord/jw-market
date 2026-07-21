@@ -24,6 +24,11 @@ FILE_UPLOAD_PLUGIN_CODE = "WP01"
 LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
 # 로컬 XLSX 전처리 경로가 직접 처리하는 확장자. .xlsm은 매크로를 무시하고 데이터 시트만 색인한다.
 LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
+# 로컬 CSV 전처리 경로가 직접 처리하는 확장자. xlsx처럼 DB 화이트리스트와 외부 전처리기를
+# 우회하고 file-SQL 논리테이블로 색인한다(인코딩·구분자·헤더는 csv_preprocessor가 처리).
+LOCAL_CSV_EXTENSIONS = frozenset({"csv"})
+# 브리지가 로컬에서 직접 파싱하는 전체 집합(DB 화이트리스트·외부 전처리기 우회).
+_LOCAL_EXTENSIONS = LOCAL_PREPROCESSOR_EXTENSIONS | LOCAL_XLSX_EXTENSIONS | LOCAL_CSV_EXTENSIONS
 GATED_EXTERNAL_PREPROCESSOR_EXTENSIONS = frozenset({"pdf", "pptx"})
 PPTX_SLIDE_NAME = re.compile(r"^ppt/slides/slide\d+\.xml$")
 PREPROCESSOR_TIMEOUT_MESSAGE = (
@@ -372,7 +377,7 @@ def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[s
     errors: list[str] = []
     for file in files:
         extension = _extension(file.filename)
-        if extension in LOCAL_PREPROCESSOR_EXTENSIONS or extension in LOCAL_XLSX_EXTENSIONS:
+        if extension in _LOCAL_EXTENSIONS:
             continue
         if extension not in allowed_extensions:
             errors.append(f"허용되지 않는 파일 확장자입니다: {file.filename}")
@@ -381,7 +386,7 @@ def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[s
 
 def requires_external_preprocessor(item: SavedTempDocument) -> bool:
     extension = _extension(item.file_name)
-    return extension not in LOCAL_PREPROCESSOR_EXTENSIONS and extension not in LOCAL_XLSX_EXTENSIONS
+    return extension not in _LOCAL_EXTENSIONS
 
 
 def create_temp_vdb_index(

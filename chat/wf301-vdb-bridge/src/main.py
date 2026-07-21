@@ -94,7 +94,9 @@ from .xlsx_preprocessor import (
     should_stream_xlsx_chunks,
 )
 from .docx_preprocessor import DocxPreprocessError, extract_docx_chunk_records
+from .csv_preprocessor import CsvPreprocessError, CsvSqlTable, parse_csv_table
 from .xlsx_sql_route import (
+    SheetSqlProfile,
     WorkbookSqlDecision,
     inspect_xlsx_for_sql,
     load_sql_sheet,
@@ -172,6 +174,8 @@ def _persisted_file_card(
 TARGET_VDB_EXAMPLE = settings.TARGET_VDB_ID
 # .xlsm은 매크로(vbaProject)를 무시하고 데이터 시트만 .xlsx와 같은 로컬 전처리 경로로 처리한다.
 LOCAL_XLSX_SUFFIXES = (".xlsx", ".xlsm")
+# CSV는 시트가 없는 단일 논리테이블로, xlsx와 같은 file-SQL 경로를 재사용한다.
+LOCAL_CSV_SUFFIXES = (".csv",)
 _UPLOAD_OWNERSHIP = UploadOwnershipRegistry(Path(settings.TEMP_DOCUMENT_DIR))
 _UPLOAD_STATUS = UploadStatusRegistry(Path(settings.TEMP_DOCUMENT_DIR))
 
@@ -574,11 +578,47 @@ def _description(
     }
 
 
+def _csv_profile(temp_doc: TempDocument, table: CsvSqlTable) -> SheetSqlProfile:
+    """Present a parsed CSV as a single dense SQL sheet so the xlsx SQL flow applies."""
+    return SheetSqlProfile(
+        sheet_index=0,
+        sheet_name=temp_doc.file_name,
+        sheet_path="",
+        row_count=table.row_count,
+        column_count=table.column_count,
+        used_cell_count=table.row_count * table.column_count,
+        formula_cell_count=0,
+        merged_range_count=0,
+    )
+
+
 def _sql_decision_for_temp_doc(temp_doc: TempDocument) -> WorkbookSqlDecision | None:
-    if not temp_doc.file_name.lower().endswith(LOCAL_XLSX_SUFFIXES) or not temp_doc.file_path:
+    if not temp_doc.file_path:
         return None
     path = Path(temp_doc.file_path)
     if not path.is_file():
+        return None
+    if temp_doc.file_name.lower().endswith(LOCAL_CSV_SUFFIXES):
+        # CSV is a single logical table: parse to (columns, rows), then reuse the
+        # xlsx SQL control flow via a synthetic one-sheet decision. The xlsx path
+        # is untouched (gated by extension), so the four existing formats cannot
+        # regress. The scoped-query engine, security, and cleanup are all reused.
+        try:
+            table = parse_csv_table(path)
+        except CsvPreprocessError as exc:
+            safe_log("csv_storage_route", file_name=temp_doc.file_name, route="rejected", route_reason=str(exc))
+            return None
+        profile = _csv_profile(temp_doc, table)
+        reason = f"csv 단일 논리테이블 (encoding={table.encoding}, delimiter={table.delimiter!r})"
+        safe_log(
+            "csv_storage_route",
+            file_name=temp_doc.file_name,
+            route="sql",
+            route_reason=reason,
+            sheet_profiles=[profile.audit_dict()],
+        )
+        return WorkbookSqlDecision(route="sql", reason=reason, profiles=(profile,), selected_sheets=(profile,))
+    if not temp_doc.file_name.lower().endswith(LOCAL_XLSX_SUFFIXES):
         return None
     decision = inspect_xlsx_for_sql(path)
     safe_log(
@@ -589,6 +629,13 @@ def _sql_decision_for_temp_doc(temp_doc: TempDocument) -> WorkbookSqlDecision | 
         sheet_profiles=[profile.audit_dict() for profile in decision.profiles],
     )
     return decision
+
+
+def _load_sql_sheet_rows(path: Path, profile: SheetSqlProfile):
+    """Load (columns, rows) for one SQL sheet — CSV reuses the same interface as xlsx."""
+    if path.suffix.lower() in LOCAL_CSV_SUFFIXES:
+        return parse_csv_table(path)
+    return load_sql_sheet(path, profile)
 
 
 def _sql_table_metadata(
@@ -1340,7 +1387,7 @@ def _commit_owned_temp_documents(
                         sql_decision.selected_sheets,
                         strict=True,
                     ):
-                        sheet_data = load_sql_sheet(path, profile)
+                        sheet_data = _load_sql_sheet_rows(path, profile)
                         provision_session_table(
                             session_id,
                             table.logical_name,
