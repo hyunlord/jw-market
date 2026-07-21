@@ -11,6 +11,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     ChatAgentDependencyOverrides,
     build_chat_agent_dependencies,
     build_tool_use_agent,
+    field_not_exposed_result,
     unsupported_brand_result,
     unsupported_hira_interface_result,
 )
@@ -66,6 +67,7 @@ from jw_chat_agent_poc.tool_use.integration import (
     external_tool_agent_enabled,
     run_external_tool_agent,
 )
+from jw_chat_agent_poc.tool_use.routing_v4_capabilities import default_capability_matrix
 from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import configured_routing_mode
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
@@ -126,6 +128,38 @@ class ChatAgent:
                 resolver=self.resolver,
                 external=self.external,
             )
+
+        if not docs:
+            classification = classify_question(question)
+            capability = default_capability_matrix().resolve(
+                classification.source_domain,
+                classification.requested_capability,
+            )
+            if capability.status.value == "FIELD_NOT_EXPOSED":
+                routes = BQRouter().route(question, has_documents=False)
+                return finish(
+                    field_not_exposed_result(
+                        question,
+                        capability.requested_capability,
+                        routes,
+                        router_diagnostics(self.router),
+                    )
+                )
+            if is_hira_disease_question(question):
+                try:
+                    pre_resolved = self.resolver.resolve(question, allow_default=False)
+                except UnsupportedBrandError:
+                    disease_anchor = hira_disease_anchor_brand(question)
+                    if disease_anchor is None:
+                        routes = BQRouter().route(question, has_documents=False)
+                        return finish(
+                            unsupported_hira_interface_result(
+                                question,
+                                routes,
+                                router_diagnostics(self.router),
+                            )
+                        )
+                    pre_resolved = self.resolver.resolve(disease_anchor, allow_default=False)
 
         if external_tool_agent_enabled() and agent_source_trap is None:
             tool_pack_routes = BQRouter().route(question, has_documents=bool(docs))

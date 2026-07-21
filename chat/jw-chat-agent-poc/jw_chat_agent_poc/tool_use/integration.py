@@ -301,7 +301,9 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
 
 def _preferred_requirement_tool(alternatives: frozenset[str]) -> str | None:
     preference = (
+        "mfds_composition",
         "local_molecule_lookup",
+        "clinicaltrials_study_details",
         "clinicaltrials_v2_search",
         "mfds_clinical_trial_kr",
         "mfds_permission_search",
@@ -325,8 +327,20 @@ def _deterministic_arguments(
     ingredient: str | None,
     disease_query: str | None,
 ) -> dict[str, Any] | None:
-    if tool_name in {"local_molecule_lookup", "get_drug_main_ingredient", "mfds_permission_search"}:
+    if tool_name in {
+        "local_molecule_lookup",
+        "get_drug_main_ingredient",
+        "mfds_permission_search",
+        "mfds_composition",
+    }:
         return {"brand": brand} if brand is not None else None
+    if tool_name == "clinicaltrials_study_details":
+        classification = classify_question(question)
+        direct_call = next(
+            (call for call in classification.direct_calls if call.tool_name == tool_name),
+            None,
+        )
+        return dict(direct_call.normalized_args) if direct_call is not None else None
     if tool_name in {"clinicaltrials_v2_search", "mfds_clinical_trial_kr"}:
         if ingredient is not None:
             return {"query": ingredient}

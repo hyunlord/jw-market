@@ -35,7 +35,10 @@ class ToolUseRequirement:
 def tool_use_requirements(question: str) -> tuple[ToolUseRequirement, ...]:
     """Return verification requirements without selecting or routing a tool."""
 
+    from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
+
     lowered = question.casefold()
+    classification = classify_question(question)
     requirements: list[ToolUseRequirement] = []
     if is_hira_disease_question(question):
         requirements.extend(_hira_requirements(lowered))
@@ -55,13 +58,17 @@ def tool_use_requirements(question: str) -> tuple[ToolUseRequirement, ...]:
         requirements.append(_one("FDA Orange Book", "mfds_fda_orangebook"))
     elif any(token in lowered for token in ("특허", "독점권", "만료", "patent")):
         requirements.append(_one("특허/독점권", "mfds_patent", "mfds_fda_orangebook"))
-    if any(token in lowered for token in ("국내 임상", "한국 임상", "식약처 임상", "mfds 임상")):
+    if classification.requested_capability == "CLINICAL_TRIAL_NCT_DETAIL_FIELDS":
+        requirements.append(_one("글로벌 임상시험 상세", "clinicaltrials_study_details"))
+    elif any(token in lowered for token in ("국내 임상", "한국 임상", "식약처 임상", "mfds 임상")):
         requirements.append(_one("국내 임상시험", "mfds_clinical_trial_kr"))
     elif any(token in lowered for token in ("임상", "clinical", "nct")):
         requirements.append(_one("글로벌 임상시험", "clinicaltrials_v2_search"))
     if any(token in lowered for token in ("가이드라인", "치료 지침", "guideline")):
         requirements.append(_one("웹 검색", "web_search"))
-    if any(token in lowered for token in ("성분", "주성분", "molecule", "ingredient")):
+    if classification.requested_capability == "MFDS_COMPOSITION":
+        requirements.append(_one("성분 조성", "mfds_composition"))
+    elif any(token in lowered for token in ("성분", "주성분", "molecule", "ingredient")):
         requirements.append(_one("성분", "local_molecule_lookup", "get_drug_main_ingredient"))
     return tuple(requirements)
 

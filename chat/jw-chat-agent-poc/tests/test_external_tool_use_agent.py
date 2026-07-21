@@ -340,6 +340,28 @@ def test_disease_identity_question_uses_hira_mapping_instead_of_molecule_lookup(
     )
 
 
+def test_exact_nct_question_forces_verified_detail_tool_in_off_mode() -> None:
+    choices = _deterministic_tool_choices(
+        "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+        BrandResolver(),
+    )
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        ("clinicaltrials_study_details", {"nct_id": "NCT05151731"}),
+    ]
+
+
+def test_nedrug_composition_forces_contract_backed_tool_in_off_mode() -> None:
+    choices = _deterministic_tool_choices(
+        "NeDrug: 리바로 성분 조성 알려줘",
+        BrandResolver(),
+    )
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        ("mfds_composition", {"brand": "리바로"}),
+    ]
+
+
 def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug() -> None:
     question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
 

@@ -358,7 +358,7 @@ def test_enforce_routes_nct_id_directly_to_detail_tool(monkeypatch) -> None:
     assert [call["tool"] for call in payload["tool_calls"]] == [
         "clinicaltrials_study_details"
     ]
-    assert "선정·제외 기준은 원문 앞 200자까지만 제공됩니다" in payload["answer"]
+    assert "선정·제외기준은 현재 연결에서 앞부분 200자까지만 제공됩니다" in payload["answer"]
     proposal = payload["router_diagnostics"]["routing_v4"]["proposed_routing_signature"]
     assert proposal["routing_decision"]["tool_selection_source"] == "NEW_RULE"
     assert proposal["proposed_calls"] == [

@@ -42,6 +42,60 @@ def test_feature_flag_routes_unclassified_external_question_to_tool_agent(monkey
     assert "pitavastatin" in result["answer"]
 
 
+@pytest.mark.parametrize(
+    "routing_mode",
+    ("OFF", "ENFORCE"),
+)
+@pytest.mark.parametrize(
+    "question",
+    (
+        "HIRA: 상병코드 D693 환자수 알려줘",
+        "상병코드 E11 2024년 환자수",
+        "면역혈소판감소증 환자수 알려줘",
+    ),
+)
+def test_direct_hira_subject_is_rejected_before_external_tool_agent(
+    monkeypatch,
+    question: str,
+    routing_mode: str,
+) -> None:
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", routing_mode)
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsupported direct HIRA subjects must stop before provider execution")
+        ),
+    )
+
+    result = ChatAgent(router=BQRouter()).answer(question)
+
+    assert result["tool_calls"] == []
+    assert result["sources"] == ["unsupported_hira_interface"]
+    assert "상병코드 또는 질환명 직접 조회" in result["answer"]
+
+
+def test_field_not_exposed_nedrug_question_stops_before_legacy_provider(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "OFF")
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("FIELD_NOT_EXPOSED must stop before provider execution")
+        ),
+    )
+
+    result = ChatAgent(router=BQRouter()).answer("NeDrug: 리바로 e약 효능 알려줘")
+
+    assert result["tool_calls"] == []
+    assert result["sources"] == ["field_not_exposed"]
+    assert "현재 연결에서 제공되지 않습니다" in result["answer"]
+
+
 def test_external_tool_agent_receives_and_returns_request_timing(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

@@ -283,7 +283,7 @@ class ExternalToolRegistry:
                         "선정·제외 기준",
                         (
                             f"{detail.get('eligibility')} "
-                            "(선정·제외 기준은 원문 앞 200자까지만 제공됩니다.)"
+                            "(선정·제외기준은 현재 연결에서 앞부분 200자까지만 제공됩니다.)"
                             if detail.get("eligibility")
                             else None
                         ),

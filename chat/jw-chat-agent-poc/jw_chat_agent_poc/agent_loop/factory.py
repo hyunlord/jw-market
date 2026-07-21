@@ -186,3 +186,25 @@ def unsupported_hira_interface_result(
         "markdown_response": markdown.to_dict(),
         "sources": ["unsupported_hira_interface"],
     }
+
+
+def field_not_exposed_result(
+    question: str,
+    _capability: str,
+    routes: list[BQSubQuestion],
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    markdown = MarkdownResponseBuilder().field_not_exposed(
+        "요청한 상세 항목은 현재 연결에서 제공되지 않습니다. "
+        "확인 가능한 다른 허가 항목을 지정해 주세요."
+    )
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [route.__dict__ for route in routes],
+        "router_diagnostics": diagnostics,
+        "tool_calls": [],
+        "answer": markdown.markdown,
+        "markdown_response": markdown.to_dict(),
+        "sources": ["field_not_exposed"],
+    }
