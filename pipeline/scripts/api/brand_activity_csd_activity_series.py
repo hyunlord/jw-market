@@ -31,6 +31,7 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     CsdProductCodes,
     CsdMarketFilterError,
     _aggregate_market_activity,
+    _franchise_csd_codes,
     _iqvia_csd_product_codes,
     _select_csd_markets,
     resolve_csd_markets,
@@ -79,9 +80,19 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
     if selected_meta is None:
         return None
     csd_codes = _iqvia_csd_product_codes(brand_set.brand_meta, selected_brand=brand_set.selected_brand)
+    # Same view-independent CSD franchise gate as csd-timeseries (shared helper): a CSD sheet
+    # qualifies for the selected brand OR a same-ml_id JW franchise sibling, so LIVALO-family
+    # sheets (LIVALO + LIVALOZET) group together here too. The competitor/entity list is untouched.
+    selected_codes, candidate_codes, qualifying_codes = _franchise_csd_codes(
+        view=request.view,
+        csd_codes=csd_codes,
+        brand_meta=brand_set.brand_meta,
+        selected_brand=brand_set.selected_brand,
+    )
     crosswalks = resolve_csd_markets(
-        selected_product_codes=set(csd_codes.selected),
-        candidate_product_codes=set(csd_codes.candidates),
+        selected_product_codes=selected_codes,
+        candidate_product_codes=candidate_codes,
+        qualifying_product_codes=qualifying_codes,
     )
     selected_crosswalks = _select_csd_markets(crosswalks, request.csd_market)
     crosswalk = selected_crosswalks[0]
