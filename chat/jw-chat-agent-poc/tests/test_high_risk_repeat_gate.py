@@ -7,6 +7,10 @@ from scripts.high_risk_repeat_gate import evaluate_repeats, load_manifest
 
 
 MANIFEST = Path(__file__).parent / "contracts/external_tool_routing_v4/high_risk_repeat_manifest.json"
+JW_CONTROL_MANIFEST = (
+    Path(__file__).parent
+    / "contracts/external_tool_routing_v4/round2_jw_control_manifest.json"
+)
 
 
 def _row(
@@ -16,6 +20,7 @@ def _row(
     answer_chars: int = 1762,
     answer: str = "grounded answer",
     numeric_tokens: tuple[str, ...] = (),
+    cache_hit: bool = False,
 ) -> dict[str, object]:
     return {
         "scope": "strategic_view",
@@ -27,7 +32,7 @@ def _row(
                 "status": "ok",
                 "row_count": 1,
                 "data_as_of": "2026-05",
-                "cache_hit": False,
+                "cache_hit": cache_hit,
             }
             for name in tools
         ],
@@ -124,6 +129,25 @@ def test_rpt_approved_numeric_variation_still_rejects_tool_drift() -> None:
     assert "contract_variants:2" in result["cases"]["C_03"]["candidate"]["failures"]
 
 
+def test_rpt_cache_state_is_observed_but_not_an_immutable_contract() -> None:
+    manifest = load_manifest(MANIFEST)
+    varied = _five(_row(cache_hit=False))
+    varied[2] = _row(cache_hit=True)
+
+    result = evaluate_repeats(manifest, _payload(), _payload({"B-03": varied}))
+
+    assert result["passed"] is True
+    runs = result["cases"]["B-03"]["candidate"]["runs"]
+    assert [run["tool_contracts"][0]["cache_hit"] for run in runs] == [
+        False,
+        False,
+        True,
+        False,
+        False,
+    ]
+    assert result["cases"]["B-03"]["candidate"]["contract_variant_count"] == 1
+
+
 def test_rpt_golden_tokens_are_not_relaxed() -> None:
     manifest = load_manifest(MANIFEST)
     wrong_hhi = _five(_row(numeric_tokens=("260.00", "2025")))
@@ -167,3 +191,22 @@ def test_rpt_round2_changed_tools_are_permanent_high_risk_cases() -> None:
     assert cases["MFDS_COMPOSITION"]["required_tools"] == ["mfds_composition"]
     assert cases["MFDS_EASY_DRUG_FIELD_GAP"]["forbidden_tools"] == ["mfds_easy_drug"]
     assert cases["CT_NCT_DETAIL"]["required_tools"] == ["clinicaltrials_study_details"]
+
+
+def test_rpt_round2_jw_controls_use_observed_canonical_tool_contracts() -> None:
+    manifest = load_manifest(JW_CONTROL_MANIFEST)
+    cases = {str(item["case_id"]): item for item in manifest["cases"]}
+
+    assert manifest["repeat_count"] == 1
+    assert cases["JW_CONTROL_H5C"]["required_tools"] == [
+        "hira_disease_hospitalization_outpatient_stats"
+    ]
+    assert cases["JW_CONTROL_H6C"]["required_tools"] == [
+        "hira_disease_hospitalization_outpatient_stats"
+    ]
+    assert cases["JW_CONTROL_M5C"]["required_tools"] == ["mfds_permission_search"]
+    assert cases["JW_CONTROL_C5C"]["required_tools"] == ["clinicaltrials_v2_search"]
+    assert cases["JW_CONTROL_F1"]["required_tools"] == ["openfda_label_search"]
+    assert cases["JW_CONTROL_F3C"]["required_tools"] == ["openfda_label_search"]
+    assert cases["JW_CONTROL_P1"]["required_tools"] == ["mfds_patent"]
+    assert cases["JW_CONTROL_P3"]["required_tools"] == ["mfds_fda_orangebook"]

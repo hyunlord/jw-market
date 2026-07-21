@@ -70,6 +70,10 @@ def _tool_contracts(row: dict[str, Any]) -> list[dict[str, Any]]:
 def _normalized_run(row: dict[str, Any], run_number: int) -> dict[str, Any]:
     tools = _tool_names(row)
     contracts = _tool_contracts(row)
+    stable_contracts = [
+        {key: value for key, value in contract.items() if key != "cache_hit"}
+        for contract in contracts
+    ]
     numeric_tokens = row.get("numeric_tokens")
     if not isinstance(numeric_tokens, list):
         numeric_tokens = []
@@ -85,7 +89,10 @@ def _normalized_run(row: dict[str, Any], run_number: int) -> dict[str, Any]:
         "numeric_tokens": [str(token) for token in numeric_tokens],
     }
     normalized["contract_fingerprint"] = _stable_hash(
-        {field: normalized[field] for field in CONTRACT_FIELDS}
+        {
+            field: stable_contracts if field == "tool_contracts" else normalized[field]
+            for field in CONTRACT_FIELDS
+        }
     )
     normalized["presentation_fingerprint"] = _stable_hash(
         {

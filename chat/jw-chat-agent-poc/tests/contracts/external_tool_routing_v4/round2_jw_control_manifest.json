@@ -1,0 +1,57 @@
+{
+  "schema": "external_tool_routing_v4_high_risk_repeat_manifest_v1",
+  "repeat_count": 1,
+  "approved_presentation_exceptions": [],
+  "cases": [
+    {
+      "case_id": "JW_CONTROL_H5C",
+      "question": "타발리스 환자수 알려줘",
+      "risk_classes": ["round2_jw_control", "hira_supported_brand"],
+      "required_tools": ["hira_disease_hospitalization_outpatient_stats"],
+      "forbidden_answer_substrings": ["현재 HIRA 조회는 브랜드 기준으로만 지원"]
+    },
+    {
+      "case_id": "JW_CONTROL_H6C",
+      "question": "가드메트 관련 질병 환자 통계 알려줘",
+      "risk_classes": ["round2_jw_control", "hira_supported_brand"],
+      "required_tools": ["hira_disease_hospitalization_outpatient_stats"],
+      "forbidden_answer_substrings": ["현재 HIRA 조회는 브랜드 기준으로만 지원"]
+    },
+    {
+      "case_id": "JW_CONTROL_M5C",
+      "question": "리바로 식약처 허가 품목 정보 알려줘",
+      "risk_classes": ["round2_jw_control", "mfds_supported_brand"],
+      "required_tools": ["mfds_permission_search"]
+    },
+    {
+      "case_id": "JW_CONTROL_C5C",
+      "question": "리바로 임상시험 근거 알려줘",
+      "risk_classes": ["round2_jw_control", "clinicaltrials_supported_brand"],
+      "required_tools": ["clinicaltrials_v2_search"]
+    },
+    {
+      "case_id": "JW_CONTROL_F1",
+      "question": "리바로 FDA 라벨 정보 알려줘",
+      "risk_classes": ["round2_jw_control", "openfda_supported_brand"],
+      "required_tools": ["openfda_label_search"]
+    },
+    {
+      "case_id": "JW_CONTROL_F3C",
+      "question": "리바로젯 FDA 라벨 알려줘",
+      "risk_classes": ["round2_jw_control", "openfda_supported_brand"],
+      "required_tools": ["openfda_label_search"]
+    },
+    {
+      "case_id": "JW_CONTROL_P1",
+      "question": "리바로 특허 정보 알려줘",
+      "risk_classes": ["round2_jw_control", "patent_supported_brand"],
+      "required_tools": ["mfds_patent"]
+    },
+    {
+      "case_id": "JW_CONTROL_P3",
+      "question": "리바로 오렌지북 특허 정보 알려줘",
+      "risk_classes": ["round2_jw_control", "patent_supported_brand"],
+      "required_tools": ["mfds_fda_orangebook"]
+    }
+  ]
+}
