@@ -24,7 +24,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
-from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies, build_tool_use_agent, unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.factory import (
+    build_chat_agent_dependencies,
+    build_tool_use_agent,
+    unsupported_brand_result,
+    unsupported_hira_interface_result,
+)
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.structured_planner import (
     preflight_structured_market_question,
@@ -57,6 +62,7 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     enforce_market_answer_contract,
     render_same_market_sales_answer,
 )
+from jw_chat_agent_poc.orchestrator.hira_disease import is_hira_disease_question
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
@@ -1678,11 +1684,12 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
             try:
                 dependencies.resolver.resolve(question, allow_default=False)
             except UnsupportedBrandError:
-                result = unsupported_brand_result(
-                    question,
-                    routes,
-                    router_diagnostics(dependencies.router),
+                typed_result = (
+                    unsupported_hira_interface_result
+                    if is_hira_disease_question(question)
+                    else unsupported_brand_result
                 )
+                result = typed_result(question, routes, router_diagnostics(dependencies.router))
                 return attach_routing_v4_legacy_observation(
                     question,
                     result,
@@ -1715,7 +1722,12 @@ def _answer_deep_research(question: str, external_mode: str) -> dict:
         try:
             dependencies.resolver.resolve(question, allow_default=False)
         except UnsupportedBrandError:
-            result = unsupported_brand_result(
+            typed_result = (
+                unsupported_hira_interface_result
+                if is_hira_disease_question(question)
+                else unsupported_brand_result
+            )
+            result = typed_result(
                 question,
                 [],
                 {

@@ -12,6 +12,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_chat_agent_dependencies,
     build_tool_use_agent,
     unsupported_brand_result,
+    unsupported_hira_interface_result,
 )
 from jw_chat_agent_poc.agent_loop.bq_planner import preflight_bq_question
 from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
@@ -497,6 +498,12 @@ class ChatAgent:
         )
 
     def _unsupported_brand(self, question: str, routes) -> dict[str, Any]:
+        if is_hira_disease_question(question):
+            return unsupported_hira_interface_result(
+                question,
+                routes,
+                router_diagnostics(self.router),
+            )
         return unsupported_brand_result(question, routes, router_diagnostics(self.router))
 
     def _requested_source_unavailable(self, question: str, resolution, routes, source_trap) -> dict[str, Any]:

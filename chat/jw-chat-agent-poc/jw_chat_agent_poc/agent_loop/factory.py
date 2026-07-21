@@ -163,3 +163,26 @@ def unsupported_brand_result(
         "markdown_response": markdown.to_dict(),
         "sources": ["unsupported_brand"],
     }
+
+
+def unsupported_hira_interface_result(
+    question: str,
+    routes: list[BQSubQuestion],
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    markdown = MarkdownResponseBuilder().unsupported_brand(
+        "현재 HIRA 조회는 브랜드 기준으로만 지원됩니다. "
+        "상병코드 또는 질환명 직접 조회는 현재 인터페이스에서 처리할 수 없습니다. "
+        "다른 대상의 통계를 대신 반환하지 않으며, 상병코드 기준 통계는 "
+        "HIRA 보건의료빅데이터개방시스템에서 확인해 주세요."
+    )
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [route.__dict__ for route in routes],
+        "router_diagnostics": diagnostics,
+        "tool_calls": [],
+        "answer": markdown.markdown,
+        "markdown_response": markdown.to_dict(),
+        "sources": ["unsupported_hira_interface"],
+    }
