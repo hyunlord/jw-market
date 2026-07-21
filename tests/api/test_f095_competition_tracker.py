@@ -66,7 +66,7 @@ def test_company_hhi_aggregates_brands_before_computing_concentration() -> None:
     assert result == [{"period": "2023", "period_full": "2023", "year": 2023, "hhi": 5800.0}]
 
 
-def test_brand_ranking_includes_intervening_actual_ranks_for_fixed_competitors() -> None:
+def test_brand_ranking_series_matches_visible_top_brands() -> None:
     # Given: total-window selection keeps brand G although brand F outranks it in 2023.
     brands = (
         _brand("a", "A", "A Co", {"2023-Q1": 100.0, "2024-Q1": 100.0}),
@@ -81,11 +81,19 @@ def test_brand_ranking_includes_intervening_actual_ranks_for_fixed_competitors()
     # When: the selected brand plus five fixed competitors are rendered for 2023.
     result = brand_ranking(brands, focus=brands[0])
 
-    # Then: the actual sixth-place brand is not hidden merely because the fixed
-    # cohort also contains the seventh-place brand.
+    # Then: only the selected brand, five fixed competitors, and 기타 are emitted.
     rows = [row for row in result["rankings_by_year"]["2023"] if not row["is_others"]]
-    assert [row["brand"] for row in rows] == ["A", "B", "C", "D", "E", "F", "G"]
-    assert [row["rank"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
+    assert [row["brand"] for row in rows] == result["top_brands"][:-1]
+    assert {row["brand"]: row["rank"] for row in rows} == {
+        "A": 1,
+        "B": 2,
+        "C": 3,
+        "D": 4,
+        "E": 5,
+        "G": 7,
+    }
+    assert set(result["series"]) == set(result["top_brands"])
+    assert "F" not in result["series"]
 
 
 def test_b02d1_green_gene_f_remains_visible_at_rank_six() -> None:

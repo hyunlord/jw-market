@@ -42,6 +42,16 @@ DIMENSION_LABELS: dict[str, str] = {
     "pack": "PACK DESC",
     "strength": "STRENGTH",
     "nhi": "NHI TYPE",
+    "mfr_name_kor": "MFR NAME KOR",
+    "pack_desc": "PACK DESC",
+    "nhi_type": "NHI TYPE",
+}
+DIMENSION_API_ALIASES: dict[str, dict[str, str]] = {
+    "iqvia_nsa": {
+        "mfr": "mfr_name_kor",
+        "nhi": "nhi_type",
+        "pack": "pack_desc",
+    },
 }
 DIMENSION_ORDER_HINTS: tuple[str, ...] = (
     "class",
@@ -134,9 +144,7 @@ def build_filter_options(
             brand=normalized_brand,
         )
     option_atc4_codes = parsed_atc4_codes
-    if normalized_view == "general" and normalized_brand and not market_id:
-        option_atc4_codes = ()
-    parsed_selections = _parse_selection_map(selections)
+    parsed_selections = _parse_selection_map(selections, source=normalized_source)
     payload = _build_filter_options_uncached(
         mart_db=mart_db,
         dimension_db=dimension_db,
@@ -169,6 +177,7 @@ def build_filter_options(
         atc4_codes=parsed_atc4_codes,
         selections=parsed_selections,
         brand_matched=brand_matched,
+        source=normalized_source,
     )
     return payload
 
@@ -409,7 +418,7 @@ def build_filter_option_payload(
 ) -> dict[str, object]:
     grouped: dict[str, list[DimensionOptionRow]] = defaultdict(list)
     for row in dimensions:
-        grouped[row.dimension_type].append(row)
+        grouped[_api_dimension_type(source, row.dimension_type)].append(row)
     ordered_dimensions: list[dict[str, object]] = []
     for dimension_type in sorted(grouped, key=_dimension_sort_key):
         rows = sorted(grouped.get(dimension_type, ()), key=lambda item: item.dimension_value)
@@ -1178,7 +1187,11 @@ def _canonical_general_atc4(value: str) -> str:
     return value.strip().upper()
 
 
-def _parse_selection_map(selections: Mapping[str, Sequence[str]] | str | None) -> dict[str, tuple[str, ...]]:
+def _parse_selection_map(
+    selections: Mapping[str, Sequence[str]] | str | None,
+    *,
+    source: str | None = None,
+) -> dict[str, tuple[str, ...]]:
     if selections is None:
         return {}
     if isinstance(selections, str):
@@ -1196,7 +1209,7 @@ def _parse_selection_map(selections: Mapping[str, Sequence[str]] | str | None) -
             for key, value in parsed.items()
         }
     return {
-        _canonical_selection_key(key): tuple(values)
+        _canonical_selection_key(key, source=source): tuple(values)
         for key, raw_values in selections.items()
         if (values := _clean_values(raw_values))
     }
@@ -1218,11 +1231,23 @@ def _clean_values(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
-def _canonical_selection_key(key: str) -> str:
+def _canonical_selection_key(key: str, *, source: str | None = None) -> str:
     normalized = key.strip()
     if normalized == "atc4_code":
         return "atc4"
-    return normalized
+    return _canonical_dimension_type(source, normalized)
+
+
+def _api_dimension_type(source: str | None, dimension_type: str) -> str:
+    return DIMENSION_API_ALIASES.get(source or "", {}).get(dimension_type, dimension_type)
+
+
+def _canonical_dimension_type(source: str | None, dimension_type: str) -> str:
+    aliases = DIMENSION_API_ALIASES.get(source or "", {})
+    return next(
+        (canonical for canonical, public in aliases.items() if public == dimension_type),
+        dimension_type,
+    )
 
 
 def _dimension_sort_key(dimension_type: str) -> tuple[int, str]:
@@ -1239,6 +1264,7 @@ def _apply_option_state(
     atc4_codes: Sequence[str],
     selections: Mapping[str, Sequence[str]],
     brand_matched: Mapping[str, Sequence[str]],
+    source: str | None = None,
 ) -> None:
     default_selections: dict[str, list[str]] = {}
     applied_selections: dict[str, list[str]] = {key: list(values) for key, values in selections.items()}
@@ -1249,6 +1275,7 @@ def _apply_option_state(
         if not isinstance(dimension, dict):
             continue
         dimension_type = str(dimension.get("dimension_type") or "")
+        canonical_dimension_type = _canonical_dimension_type(source, dimension_type)
         values = dimension.get("values")
         if not dimension_type or not isinstance(values, list):
             continue
@@ -1259,9 +1286,9 @@ def _apply_option_state(
                 if isinstance(value, dict) and value.get("key")
             ]
             applied_selections.setdefault(dimension_type, list(default_selections[dimension_type]))
-        flagged_values = set(brand_matched.get(dimension_type, ()))
+        flagged_values = set(brand_matched.get(canonical_dimension_type, ()))
         default_values = set(default_selections.get(dimension_type, ()))
-        selected_values = set(applied_selections.get(dimension_type, ()))
+        selected_values = set(applied_selections.get(canonical_dimension_type, ()))
         for value in values:
             if not isinstance(value, dict):
                 continue

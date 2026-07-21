@@ -91,10 +91,11 @@ def _ranking(
         top_n=5,
     )
     selected = set(visible_keys)
+    has_others = any(key not in selected for key in total_values)
     for year, totals in sorted(totals_by_year.items()):
         market = sum(totals.values())
         annual_order = sorted(totals, key=lambda key: (-totals[key], key))
-        ordered_keys = selected_annual_rank_prefix(annual_order, selected)
+        annual_ranks = {key: rank for rank, key in enumerate(annual_order, start=1)}
         rows = [
             _ranking_row(
                 key=key,
@@ -102,27 +103,37 @@ def _ranking(
                 company=companies[key],
                 value=totals.get(key, 0.0),
                 market=market,
-                rank=rank,
+                rank=annual_ranks.get(key),
                 entity_key=entity_key,
                 focus_key=focus_key,
             )
-            for rank, key in enumerate(ordered_keys, start=1)
+            for key in visible_keys
         ]
         for row in rows:
             _collect_yearly_value(entity_series, row, entity_key, int(year))
-        annual_visible = set(ordered_keys)
-        other_value = sum(value for key, value in totals.items() if key not in annual_visible)
-        if other_value:
+        other_value = sum(value for key, value in totals.items() if key not in selected)
+        if has_others:
             rows.append(_others_row(entity_key, other_value, market))
         yearly.append({"year": int(year), "rankings": rows})
     collection_key = "companies" if entity_key == "company" else "brands"
     series = list(entity_series.values())
+    visible_labels = [names[key] for key in visible_keys]
+    top_labels = [*visible_labels, *(["기타"] if has_others else [])]
     return {
         "years": [item["year"] for item in yearly],
         "yearly": yearly,
         collection_key: series,
-        "top_brands": [names[key] for key in visible_keys],
-        "series": {str(item[entity_key]): [point["value"] for point in item["yearly_values"]] for item in series},
+        "top_brands": top_labels,
+        "series": {
+            label: [
+                next(
+                    (row["value"] for row in item["rankings"] if str(row[entity_key]) == label),
+                    0.0,
+                )
+                for item in yearly
+            ]
+            for label in top_labels
+        },
         "rankings_by_year": {str(item["year"]): item["rankings"] for item in yearly},
         "period_count_by_year": period_count_by_year,
     }
@@ -142,7 +153,7 @@ def _ranking_row(
     company: str,
     value: float,
     market: float,
-    rank: int,
+    rank: int | None,
     entity_key: str,
     focus_key: str | None,
 ) -> dict[str, Any]:

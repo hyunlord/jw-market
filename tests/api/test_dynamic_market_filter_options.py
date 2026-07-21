@@ -27,11 +27,11 @@ def test_build_filter_option_payload_includes_iqvia_molecule_desc_dimension() ->
     )
 
     assert [item["dimension_type"] for item in payload["dimensions"]] == [
-        "mfr",
+        "mfr_name_kor",
         "molecule_type",
         "molecule_desc",
         "strength",
-        "nhi",
+        "nhi_type",
     ]
     molecule_desc = payload["dimensions"][2]
     assert molecule_desc["label"] == "성분"
@@ -274,6 +274,103 @@ def test_general_filter_options_treats_empty_atc4_codes_as_unscoped(monkeypatch)
     assert [option["key"] for option in payload["atc"]["atc4"]] == ["A01A1", "C10A1"]
 
 
+def test_general_filter_options_keeps_explicit_atc4_scope_with_brand(monkeypatch) -> None:
+    # Given: a portal request that sends both the selected brand and its ATC4 scope.
+    filter_options.clear_filter_option_cache()
+    captured: list[tuple[str, ...]] = []
+    monkeypatch.setattr(filter_options, "_general_atc4_codes_for_brand", lambda **_kwargs: ("C10C",))
+    monkeypatch.setattr(filter_options, "_load_brand_dimension_matches", lambda **_kwargs: {})
+    monkeypatch.setattr(filter_options, "_load_atc_rows", lambda **_kwargs: ())
+    monkeypatch.setattr(filter_options, "_load_dimension_options", lambda **_kwargs: ())
+
+    def fake_channel_axis(**kwargs: object) -> dict[str, object]:
+        atc4_codes = tuple(kwargs["atc4_codes"])
+        captured.append(atc4_codes)
+        if not atc4_codes:
+            return {}
+        return {"ubist": {"facility": [{"key": "의원"}], "specialty": [], "pairs": []}}
+
+    monkeypatch.setattr(
+        filter_options,
+        "_load_channel_axis_options",
+        fake_channel_axis,
+    )
+
+    # When: options are assembled for the brand-scoped request.
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        brand="리바로젯",
+        atc4_codes=("C10C",),
+    )
+
+    # Then: the explicit market scope reaches the channel-axis loader unchanged.
+    assert captured == [("C10C",)]
+    assert payload["channel_axis"]["ubist"]["facility"] == [{"key": "의원"}]
+
+
+def test_iqvia_filter_options_exposes_portal_dimension_aliases() -> None:
+    # Given: canonical IQVIA sidecar rows.
+    rows = (
+        filter_options.DimensionOptionRow("mfr", "JW중외제약", "jw중외제약", 1),
+        filter_options.DimensionOptionRow("nhi", "급여", "급여", 1),
+        filter_options.DimensionOptionRow("pack", "30 TAB", "30 tab", 1),
+    )
+
+    # When: the public filter-options payload is assembled.
+    payload = filter_options.build_filter_option_payload(
+        view="general",
+        source="iqvia_nsa",
+        market_id=None,
+        dimensions=rows,
+        atc_rows=(),
+    )
+
+    # Then: dimension types match the portal's existing contract.
+    assert [item["dimension_type"] for item in payload["dimensions"]] == [
+        "mfr_name_kor",
+        "pack_desc",
+        "nhi_type",
+    ]
+
+
+def test_iqvia_filter_option_selections_accept_canonical_and_portal_aliases() -> None:
+    # Given: equivalent selections using the old and portal-facing names.
+    canonical = {"mfr": ["jw중외제약"], "nhi": ["급여"], "pack": ["30 tab"]}
+    aliases = {"mfr_name_kor": ["jw중외제약"], "nhi_type": ["급여"], "pack_desc": ["30 tab"]}
+
+    # When: both request forms cross the filter-options boundary.
+    parsed_canonical = filter_options._parse_selection_map(canonical, source="iqvia_nsa")
+    parsed_aliases = filter_options._parse_selection_map(aliases, source="iqvia_nsa")
+
+    # Then: both resolve to the canonical sidecar keys used by SQL filtering.
+    assert parsed_canonical == parsed_aliases == {
+        "mfr": ("jw중외제약",),
+        "nhi": ("급여",),
+        "pack": ("30 tab",),
+    }
+
+    for selections in (parsed_canonical, parsed_aliases):
+        payload = filter_options.build_filter_option_payload(
+            view="general",
+            source="iqvia_nsa",
+            market_id=None,
+            dimensions=(filter_options.DimensionOptionRow("mfr", "JW중외제약", "jw중외제약", 1),),
+            atc_rows=(),
+        )
+        filter_options._apply_option_state(
+            payload=payload,
+            view="general",
+            atc4_codes=(),
+            selections=selections,
+            brand_matched={},
+            source="iqvia_nsa",
+        )
+        assert payload["dimensions"][0]["values"][0]["selected"] is True
+
+
 def test_build_filter_options_uses_resolved_market_id_for_payload_and_brand_match(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     captured: dict[str, Any] = {}
@@ -355,7 +452,7 @@ def test_general_filter_options_scope_dimensions_to_selected_atc4(monkeypatch) -
     assert payload["applied_selections"]["atc4"] == ["C10A1", "C10C0"]
 
 
-def test_general_filter_options_keeps_brand_universe_full_with_explicit_atc4_selection(monkeypatch) -> None:
+def test_general_filter_options_keeps_explicit_atc4_scope_with_brand_selection(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     captured_dimension_params: list[object] = []
     captured_match_params: list[object] = []
@@ -375,7 +472,7 @@ def test_general_filter_options_keeps_brand_universe_full_with_explicit_atc4_sel
             ]
         if "mart_general_filter_dimension_metric" in sql:
             captured_dimension_params = params
-            assert "atc4_code IN" not in sql
+            assert "atc4_code IN" in sql
             return []
         if "mart_general_brand_metric" in sql:
             return [{"atc4_code": "C10A1"}, {"atc4_code": "C10C0"}]
@@ -394,7 +491,7 @@ def test_general_filter_options_keeps_brand_universe_full_with_explicit_atc4_sel
         atc4_codes=["C10A1,C10C0"],
     )
 
-    assert captured_dimension_params == ["ubist", "sales"]
+    assert captured_dimension_params == ["ubist", "sales", "C10A1", "C10C0"]
     assert captured_match_params[-2:] == ["C10A1", "C10C0"]
     assert payload["default_selections"]["atc4"] == ["C10A1", "C10C0"]
     assert payload["brand_matched"]["atc4"] == ["C10A1", "C10C0"]
