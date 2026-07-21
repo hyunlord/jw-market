@@ -20,7 +20,6 @@ from pipeline.scripts.api.drivers import compute_drivers
 from pipeline.scripts.api.market_id import to_ml_id, to_strategy_id
 from pipeline.scripts.api.metadata import BRAND_METADATA, build_brand_metadata_payload
 from pipeline.scripts.api.utils import loads_json_maybe, now_iso, to_jsonable
-from pipeline.scripts.etl.cache_build_common import iqvia_period_to_display, period_key
 
 
 FORM_BOUNDARY = re.compile(r"(?:$|\\s|정|캡슐|주|액|서방|시럽|현탁|구강|SR|CR|OD)", re.IGNORECASE)
@@ -511,41 +510,6 @@ def build_market_status_cards(market_id: str | None = None) -> list[dict[str, An
         for meta in sorted(BRAND_METADATA, key=lambda item: item.rank)
     ]
     return filter_market_status_cards(cards, market_id=market_id)
-
-
-def market_recent_periods() -> dict[str, str | None]:
-    """Return the latest period that actually has mart values, per source.
-
-    Serving-time computation (the market-status route serves cache_market_status
-    verbatim, and mart/ETL must not be rebuilt). ``ubist_recent`` is a ``YYYY-MM``
-    month; ``iqvia_recent`` is a ``YYYY-nQ`` quarter converted from the mart's
-    ``YYYY-Qn`` label. Source of truth is ``metric_history`` (a period-keyed map
-    of real values), scanned over the actively-tracked JW brand rows — the
-    latest period is globally uniform across markets, so this bounded scan
-    equals the global mart maximum. ``None`` when no data exists.
-    """
-    rows = db.fetch_all(
-        """
-        SELECT source, metric_history
-        FROM mart_strategic_ml_brand_metric
-        WHERE measure = 'sales' AND is_jw = 1
-        """
-    )
-    keys_by_source: dict[str, set[str]] = {}
-    for row in rows:
-        history = loads_json_maybe(row.get("metric_history")) or {}
-        if not isinstance(history, dict):
-            continue
-        keys_by_source.setdefault(str(row["source"]), set()).update(str(k) for k in history)
-
-    def _latest(source: str) -> str | None:
-        keys = keys_by_source.get(source)
-        return sorted(keys, key=period_key)[-1] if keys else None
-
-    return {
-        "ubist_recent": _latest("ubist"),
-        "iqvia_recent": iqvia_period_to_display(_latest("iqvia_nsa")),
-    }
 
 
 def build_market_status_response(
