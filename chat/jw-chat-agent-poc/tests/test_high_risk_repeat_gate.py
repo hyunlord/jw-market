@@ -16,6 +16,7 @@ def _row(
     answer_chars: int = 1762,
     answer: str = "grounded answer",
     numeric_tokens: tuple[str, ...] = (),
+    cache_hit: bool = False,
 ) -> dict[str, object]:
     return {
         "scope": "strategic_view",
@@ -27,7 +28,7 @@ def _row(
                 "status": "ok",
                 "row_count": 1,
                 "data_as_of": "2026-05",
-                "cache_hit": False,
+                "cache_hit": cache_hit,
             }
             for name in tools
         ],
@@ -135,3 +136,20 @@ def test_rpt_golden_period_uses_answer_surface_not_split_numeric_tokens() -> Non
 
     assert result["passed"] is False
     assert "missing_answer_substring:2026-05" in result["cases"]["A_03"]["candidate"]["failures"]
+
+
+def test_rpt_cache_state_does_not_change_the_semantic_tool_contract() -> None:
+    manifest = load_manifest(MANIFEST)
+    warm = _five(_row(cache_hit=True))
+    cold = _five(_row(cache_hit=False))
+    mixed = [warm[0], cold[0], warm[1], cold[1], warm[2]]
+
+    result = evaluate_repeats(
+        manifest,
+        _payload({"B-03": warm}),
+        _payload({"B-03": mixed}),
+    )
+
+    assert result["passed"] is True
+    assert result["cases"]["B-03"]["baseline"]["contract_variant_count"] == 1
+    assert result["cases"]["B-03"]["candidate"]["contract_variant_count"] == 1

@@ -57,7 +57,6 @@ def _tool_contracts(row: dict[str, Any]) -> list[dict[str, Any]]:
                     "status",
                     "row_count",
                     "data_as_of",
-                    "cache_hit",
                     "endpoint",
                     "source_epoch",
                     "built_at",
