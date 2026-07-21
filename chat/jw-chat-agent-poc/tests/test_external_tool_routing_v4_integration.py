@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 import time
 from typing import Any
 
+import pytest
 import requests
 
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use import integration as routing_integration
+from jw_chat_agent_poc.tool_use import routing_v4_execution
 from jw_chat_agent_poc.tool_use.contracts import AgentResult
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
@@ -642,6 +644,91 @@ def test_d06_authoritative_timeout_stops_without_web_fallback(monkeypatch) -> No
     assert ccs["reason_code"] == "UPSTREAM_UNAVAILABLE"
     assert ccs["runtime_status"] == "typed_stop"
     assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
+
+
+def test_d06b_official_web_fallback_accepts_only_allowlisted_sources_when_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    decision = routing_v4_execution.official_web_fallback_policy(
+        source_domain="hira",
+        runtime_reason="UPSTREAM_UNAVAILABLE",
+        usable_authoritative_results=0,
+        candidate_urls=(
+            "https://opendata.hira.or.kr/op/opc/olapHthInsRvStatInfoTab1.do",
+            "https://blog.naver.com/unverified-statistics",
+            "https://hira.or.kr.evil.example/spoofed",
+            "https://www.hira.or.kr/bbsDummy.do",
+        ),
+    )
+
+    assert decision.web_call_budget == 1
+    assert decision.accepted_urls == (
+        "https://opendata.hira.or.kr/op/opc/olapHthInsRvStatInfoTab1.do",
+        "https://www.hira.or.kr/bbsDummy.do",
+    )
+    assert decision.separate_section is True
+    assert "UPSTREAM_UNAVAILABLE" in decision.disclosure
+    assert "공식 통계가 아닙니다" in decision.disclosure
+
+
+@pytest.mark.parametrize(
+    "candidate_urls",
+    (
+        (),
+        ("https://blog.naver.com/unverified-statistics",),
+        ("https://hira.or.kr.evil.example/spoofed",),
+    ),
+)
+def test_d06b_web_fallback_budget_stays_closed_without_an_official_url(
+    monkeypatch,
+    candidate_urls: tuple[str, ...],
+) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    decision = routing_v4_execution.official_web_fallback_policy(
+        source_domain="hira",
+        runtime_reason="UPSTREAM_UNAVAILABLE",
+        usable_authoritative_results=0,
+        candidate_urls=candidate_urls,
+    )
+
+    assert decision.web_call_budget == 0
+    assert decision.accepted_urls == ()
+    assert decision.separate_section is False
+    assert decision.disclosure == ""
+
+
+def test_d06b_partial_authoritative_result_never_enables_web_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    decision = routing_v4_execution.official_web_fallback_policy(
+        source_domain="hira",
+        runtime_reason="UPSTREAM_UNAVAILABLE",
+        usable_authoritative_results=1,
+        candidate_urls=("https://opendata.hira.or.kr/official",),
+    )
+
+    assert decision.web_call_budget == 0
+    assert decision.accepted_urls == ()
+    assert decision.separate_section is False
+    assert decision.reason_code == "PARTIAL_RESULT"
+
+
+def test_d06b_web_fallback_flag_is_off_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", raising=False)
+
+    decision = routing_v4_execution.official_web_fallback_policy(
+        source_domain="hira",
+        runtime_reason="UPSTREAM_UNAVAILABLE",
+        usable_authoritative_results=0,
+        candidate_urls=("https://opendata.hira.or.kr/official",),
+    )
+
+    assert decision.web_call_budget == 0
+    assert decision.accepted_urls == ()
+    assert decision.reason_code == "UPSTREAM_UNAVAILABLE"
 
 
 def test_d08_explicitly_truncated_result_fails_closed(monkeypatch) -> None:
