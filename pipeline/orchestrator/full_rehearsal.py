@@ -16,12 +16,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from pipeline.scripts.utils.mart_config import PROTECTED_MART_DB_NAMES
+
 
 PY = sys.executable or "python3"
 SAFE_DB_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MART_PREFIX = "jw_mart_rehearsal_"
 CACHE_PREFIX = "jw_mart_s6_rehearsal_"
-PROTECTED_DATABASES = {"jw_mart", "jw_mart_d2_stage_20260630_r2"}
 
 
 class RehearsalContractError(ValueError):
@@ -58,7 +59,7 @@ class FullRehearsalConfig:
         ):
             if not SAFE_DB_RE.fullmatch(value) or not value.startswith(prefix):
                 raise RehearsalContractError(f"{label} must start with {prefix!r}: {value!r}")
-            if value in PROTECTED_DATABASES or value == self.source_db:
+            if value in PROTECTED_MART_DB_NAMES or value == self.source_db:
                 raise RehearsalContractError(f"{label} is not isolated: {value!r}")
         if self.target_db == self.cache_db:
             raise RehearsalContractError("target_db and cache_db must be separate schemas")
