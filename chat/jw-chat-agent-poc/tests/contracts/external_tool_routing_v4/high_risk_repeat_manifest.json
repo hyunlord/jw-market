@@ -51,6 +51,65 @@
       "question": "리바로가 속한 시장 HHI",
       "risk_classes": ["golden_linked", "market_brand_boundary"],
       "required_numeric_tokens": ["262.42"]
+    },
+    {
+      "case_id": "HIRA_H1_D693",
+      "question": "HIRA: 상병코드 D693 환자수 알려줘",
+      "risk_classes": ["round2_changed", "hallucination_redline", "implicit_default"],
+      "required_answer_substrings": [
+        "현재 HIRA 조회는 브랜드 기준으로만 지원",
+        "상병코드 또는 질환명 직접 조회"
+      ],
+      "forbidden_answer_substrings": ["E78", "데이터가 없습니다", "원천에서 확인되지"]
+    },
+    {
+      "case_id": "HIRA_H2_E11",
+      "question": "상병코드 E11 2024년 환자수",
+      "risk_classes": ["round2_changed", "hallucination_redline", "implicit_default"],
+      "required_answer_substrings": [
+        "현재 HIRA 조회는 브랜드 기준으로만 지원",
+        "상병코드 또는 질환명 직접 조회"
+      ],
+      "forbidden_answer_substrings": ["E78", "데이터가 없습니다", "원천에서 확인되지"]
+    },
+    {
+      "case_id": "HIRA_H3_ITP",
+      "question": "면역혈소판감소증 환자수",
+      "risk_classes": ["round2_changed", "hallucination_redline", "implicit_default"],
+      "required_answer_substrings": [
+        "현재 HIRA 조회는 브랜드 기준으로만 지원",
+        "상병코드 또는 질환명 직접 조회"
+      ],
+      "forbidden_answer_substrings": ["E78", "데이터가 없습니다", "원천에서 확인되지"]
+    },
+    {
+      "case_id": "OPENFDA_AGENT_LOOP",
+      "question": "리바로 FDA 안전성 알려줘",
+      "risk_classes": ["round2_changed", "internal_external_boundary", "agent_loop"],
+      "required_tools": ["openfda_label_search"]
+    },
+    {
+      "case_id": "MFDS_COMPOSITION",
+      "question": "NeDrug: 리바로 성분 조성 알려줘",
+      "risk_classes": ["round2_changed", "field_capability_boundary"],
+      "required_tools": ["mfds_composition"]
+    },
+    {
+      "case_id": "MFDS_EASY_DRUG_FIELD_GAP",
+      "question": "NeDrug: 리바로 e약 효능 알려줘",
+      "risk_classes": ["round2_changed", "field_capability_boundary", "false_positive_negative"],
+      "forbidden_tools": ["mfds_easy_drug"]
+    },
+    {
+      "case_id": "CT_NCT_DETAIL",
+      "question": "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+      "risk_classes": ["round2_changed", "direct_identifier", "partial_field_disclosure"],
+      "required_tools": ["clinicaltrials_study_details"],
+      "required_answer_substrings": [
+        "앞부분 200자까지만 제공",
+        "https://clinicaltrials.gov/study/NCT05151731"
+      ],
+      "forbidden_answer_substrings": ["공개되어 있지"]
     }
   ]
 }

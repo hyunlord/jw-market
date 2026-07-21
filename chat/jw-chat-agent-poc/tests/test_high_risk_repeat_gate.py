@@ -51,6 +51,13 @@ def _payload(overrides: dict[str, list[dict[str, object]]] | None = None) -> dic
         "owner_brand_share": _five(_row(numeric_tokens=("3.76",))),
         "A_03": _five(_row(answer="HHI 253.62, UBIST 2026-05", numeric_tokens=("253.62", "2026", "05"))),
         "E1_market_hhi": _five(_row(answer="HHI 262.42", numeric_tokens=("262.42",))),
+        "HIRA_H1_D693": _five(_row(tools=(), answer="현재 HIRA 조회는 브랜드 기준으로만 지원되며 상병코드 또는 질환명 직접 조회는 제공되지 않습니다.")),
+        "HIRA_H2_E11": _five(_row(tools=(), answer="현재 HIRA 조회는 브랜드 기준으로만 지원되며 상병코드 또는 질환명 직접 조회는 제공되지 않습니다.")),
+        "HIRA_H3_ITP": _five(_row(tools=(), answer="현재 HIRA 조회는 브랜드 기준으로만 지원되며 상병코드 또는 질환명 직접 조회는 제공되지 않습니다.")),
+        "OPENFDA_AGENT_LOOP": _five(_row(route="tool_use_agent", tools=("openfda_label_search",))),
+        "MFDS_COMPOSITION": _five(_row(route="tool_use_agent", tools=("mfds_composition",))),
+        "MFDS_EASY_DRUG_FIELD_GAP": _five(_row(route="tool_use_agent", tools=(), answer="요청 필드는 현재 연결에서 제공되지 않습니다.")),
+        "CT_NCT_DETAIL": _five(_row(route="tool_use_agent", tools=("clinicaltrials_study_details",), answer="선정·제외기준은 현재 연결에서 앞부분 200자까지만 제공됩니다. https://clinicaltrials.gov/study/NCT05151731")),
     }
     rows.update(overrides or {})
     return {"cases": rows}
@@ -75,7 +82,7 @@ def test_rpt_b05_accepts_five_identical_grounded_runs() -> None:
 
     assert result["passed"] is True
     assert result["cases"]["B-05"]["candidate"]["variant_count"] == 1
-    assert len(result["repeat_table"]) == 7 * 2 * 5
+    assert len(result["repeat_table"]) == 14 * 2 * 5
 
 
 def test_rpt_news_negative_keeps_web_path_eligible() -> None:
@@ -135,3 +142,28 @@ def test_rpt_golden_period_uses_answer_surface_not_split_numeric_tokens() -> Non
 
     assert result["passed"] is False
     assert "missing_answer_substring:2026-05" in result["cases"]["A_03"]["candidate"]["failures"]
+
+
+def test_rpt_round2_hira_cases_reject_substituted_disease_evidence() -> None:
+    manifest = load_manifest(MANIFEST)
+    substituted = _five(_row(tools=("get_disease_stats",), answer="리바로 E78 환자 통계입니다."))
+
+    result = evaluate_repeats(
+        manifest,
+        _payload(),
+        _payload({"HIRA_H1_D693": substituted}),
+    )
+
+    assert result["passed"] is False
+    assert "forbidden_answer_substring:E78" in result["cases"]["HIRA_H1_D693"]["candidate"]["failures"]
+
+
+def test_rpt_round2_changed_tools_are_permanent_high_risk_cases() -> None:
+    manifest = load_manifest(MANIFEST)
+    cases = {str(item["case_id"]): item for item in manifest["cases"]}
+
+    assert {"HIRA_H1_D693", "HIRA_H2_E11", "HIRA_H3_ITP"} <= cases.keys()
+    assert cases["OPENFDA_AGENT_LOOP"]["required_tools"] == ["openfda_label_search"]
+    assert cases["MFDS_COMPOSITION"]["required_tools"] == ["mfds_composition"]
+    assert cases["MFDS_EASY_DRUG_FIELD_GAP"]["forbidden_tools"] == ["mfds_easy_drug"]
+    assert cases["CT_NCT_DETAIL"]["required_tools"] == ["clinicaltrials_study_details"]

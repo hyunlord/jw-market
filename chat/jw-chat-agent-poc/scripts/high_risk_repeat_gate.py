@@ -130,6 +130,9 @@ def _evaluate_surface(
     required_answer_substrings = {
         str(value) for value in spec.get("required_answer_substrings", [])
     }
+    forbidden_answer_substrings = {
+        str(value) for value in spec.get("forbidden_answer_substrings", [])
+    }
     minimum_answer_chars = spec.get("minimum_answer_chars")
     for run in runs:
         tools = set(run["tools"])
@@ -144,6 +147,9 @@ def _evaluate_surface(
         for value in sorted(required_answer_substrings):
             if value not in answer:
                 failures.append(f"missing_answer_substring:{value}")
+        for value in sorted(forbidden_answer_substrings):
+            if value in answer:
+                failures.append(f"forbidden_answer_substring:{value}")
         if isinstance(minimum_answer_chars, int):
             actual = run["answer_chars"]
             if not isinstance(actual, int) or actual < minimum_answer_chars:
