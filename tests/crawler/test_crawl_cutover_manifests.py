@@ -19,11 +19,11 @@ def test_tier1_manifest_uses_rev5674_marker_and_redesigned_path() -> None:
     assert "--months 1" in manifest
     assert "PRESEED_URL_COUNT" in manifest
     assert "CANDIDATE_GATE" in manifest
-    # Cutover executed 2026-07-17: the redesigned tier1 path is live.
-    assert "suspend: false" in manifest
+    # The sequential-chain cutover preserves this object as a suspended rollback path.
+    assert "suspend: true" in manifest
 
 
-def test_tier2_manifest_pins_ga_workflow_and_stays_active() -> None:
+def test_tier2_manifest_pins_ga_workflow_and_is_retained_for_rollback() -> None:
     manifest = _manifest("crawl-tier2-cronjob.yaml")
 
     assert f"@sha256:{CANONICAL_IMAGE_DIGEST}" in manifest
@@ -41,7 +41,7 @@ def test_tier2_manifest_pins_ga_workflow_and_stays_active() -> None:
     assert "python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories" in manifest
     assert manifest.index("append-live") < manifest.index("refresh-live-categories")
     assert "name: tier2-llm-runner-rev5671" in manifest
-    assert "suspend: false" in manifest
+    assert "suspend: true" in manifest
 
 
 def test_tier2_apply_script_generates_configmap_from_canonical_runner() -> None:

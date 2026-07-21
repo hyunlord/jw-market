@@ -1,0 +1,132 @@
+# PL-GATED CUTOVER: do not apply this file until the tracked legacy CronJobs
+# can be suspended in the same maintenance change. The 05:00 cache refresh is
+# deliberately independent and publishes the prior complete crawl snapshot.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jw-crawl-chain-state
+  namespace: llmops
+  labels:
+    app: jw-crawl-chain
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-crawl-chain-daily
+  namespace: llmops
+  labels:
+    app: jw-crawl-chain
+spec:
+  schedule: 10 18 * * *
+  # The tracked object stays inert until apply-crawl-chain.sh --execute-cutover
+  # suspends both legacy schedules and activates this one in the same operation.
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 43200
+      backoffLimit: 0
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: 'false'
+          labels:
+            app: jw-crawl-chain
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            genos: enabled
+          containers:
+          - name: crawler
+            image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl@sha256:64bb2b9f2ad213a06392d5caf9ea4191615d265ecdcfb52b64bba59ae9171268
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/bash
+            - -lc
+            args:
+            - |
+              set -euo pipefail
+              cd /app
+              # Canonical sources: pipeline/scripts/crawler/crawl_chain.py and
+              # pipeline/scripts/crawler/crawl_chain_steps.sh. The apply helper
+              # builds crawl-chain-runner from those tracked files.
+              RUN_ID="$(TZ=Asia/Seoul date '+%Y-%m-%dT03-10-00+09-00')"
+              exec python /opt/crawl-chain/crawl_chain.py run \
+                --run-id "${RUN_ID}" \
+                --state-root /var/lib/jw-crawl-chain \
+                --stage-script /opt/crawl-chain/crawl_chain_steps.sh
+            env:
+            - name: DB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: DB_PORT
+              value: '3306'
+            - name: DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            - name: WF196_DIRECT_RUN_URL
+              value: http://workflow-196.llmops.svc.cluster.local:8080/run/v2
+            - name: WF337_URL
+              value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+            - name: D2_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: username
+            - name: D2_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jw-mart-d2-writer
+                  key: password
+            - name: CRAWL_CHAIN_TIMEOUT_TIER1_COLLECT
+              value: '10800'
+            - name: CRAWL_CHAIN_TIMEOUT_TIER1_CLASSIFY
+              value: '900'
+            - name: CRAWL_CHAIN_TIMEOUT_TIER2_COLLECT
+              value: '28800'
+            - name: CRAWL_CHAIN_TIMEOUT_TIER2_CLASSIFY
+              value: '1800'
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: '1'
+                memory: 2Gi
+            volumeMounts:
+            - name: chain-state
+              mountPath: /var/lib/jw-crawl-chain
+            - name: chain-runner
+              mountPath: /opt/crawl-chain
+              readOnly: true
+            - name: tier2-llm-runner
+              mountPath: /opt/tier2
+              readOnly: true
+          volumes:
+          - name: chain-state
+            persistentVolumeClaim:
+              claimName: jw-crawl-chain-state
+          - name: chain-runner
+            configMap:
+              name: crawl-chain-runner
+              defaultMode: 365
+          - name: tier2-llm-runner
+            configMap:
+              name: tier2-llm-runner-rev5671

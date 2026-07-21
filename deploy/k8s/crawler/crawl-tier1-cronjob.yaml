@@ -249,4 +249,6 @@ spec:
   successfulJobsHistoryLimit: 3
   # Cutover resume (2026-07-17, PL (b) + jw market delegation): the redesigned
   # rev5674 path takes over the daily 18:10 UTC schedule in place.
-  suspend: false
+  # PL-gated cutover: retained for rollback, suspended when jw-crawl-chain-daily
+  # becomes active so the old schedule cannot double-run.
+  suspend: true

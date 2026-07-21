@@ -7,6 +7,10 @@ metadata:
     app: jw-cache-refresh
     component: cache-deep-analysis
 spec:
+  # Independent 05:00 KST publication contract: this Job publishes the prior
+  # complete crawl snapshot. It is intentionally not ordered after the same
+  # day's 03:10 crawl chain, which can run until noon. Do not report that lag
+  # as partial-cache corruption; see docs/OPS_TRACKS_READINESS.md §8.6.
   concurrencyPolicy: Forbid
   failedJobsHistoryLimit: 3
   jobTemplate:
