@@ -53,7 +53,6 @@ from cache_build_common import (
     source_list,
 )
 from pipeline.scripts.api.dynamic_market.cause_sections import matrix_growth_value
-from pipeline.scripts.api.dynamic_market.cause_ranking import selected_annual_rank_prefix
 from pipeline.scripts.api.dynamic_market.analysis_level_block_replay import (
     AnalysisLevelBlockKey,
     current_analysis_level_source_epoch,
@@ -398,7 +397,6 @@ def _stacked_ranking(
         for row in visible_candidates
         if row_identity(row, label_key)
     ]
-    visible_id_set = set(visible_ids)
 
     for year in years:
         normalized = deepcopy(by_year[year])
@@ -436,19 +434,17 @@ def _stacked_ranking(
         normalized_by_year[year] = deepcopy(normalized)
 
         row_by_id = {row_identity(row, label_key): row for row in normalized if row_identity(row, label_key)}
-        annual_order = [
-            str(row_identity(row, label_key))
-            for row in normalized
-            if row_identity(row, label_key) and isinstance(row.get("rank"), int)
-        ]
-        selected_order = selected_annual_rank_prefix(annual_order, visible_id_set)
-        selected = [row_by_id[item_id] for item_id in selected_order]
-        selected.extend(
+        # D-1 (PL 2026-07-21, 방식 A): emit exactly the fixed visible cohort
+        # (선택 1 + 경쟁 top_n), mirroring PATH1 archive_metrics.annual_ranking_payload.
+        # The F-123 contiguous annual-rank prefix widened the yearly rankings with
+        # non-visible brands, so the emitted series exceeded top_brands (series=11 vs
+        # top_brands=7). Non-visible brands now fold into 기타 below, preserving the
+        # market total while making the emitted series key set equal top_brands.
+        selected = [
             row_by_id.get(item_id)
             or _zero_rank_row(item_id, label_key=label_key, target_name=target_name)
             for item_id in visible_ids
-            if item_id not in selected_order
-        )
+        ]
         selected_ids = {row_identity(row, label_key) for row in selected}
         others = [row for row in normalized if row_identity(row, label_key) not in selected_ids]
         displayed_ms = _sum_optional_complete(row.get("ms_pct") for row in selected)
