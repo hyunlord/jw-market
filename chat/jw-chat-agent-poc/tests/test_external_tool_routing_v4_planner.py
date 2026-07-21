@@ -199,14 +199,14 @@ def test_a07_many_product_family_stops_as_ambiguous_before_field_gap() -> None:
         "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
     ),
 )
-def test_nct_detail_requests_stop_when_detail_fields_are_not_exposed(question: str) -> None:
+def test_nct_detail_requests_use_verified_detail_tool(question: str) -> None:
     plan = _planner().plan(question, routing_mode=RoutingMode.ENFORCE)
 
     assert plan.proposal.routing_decision.source_domain == "clinical_trials"
-    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.FIELD_NOT_EXPOSED
-    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.TYPED_STOP
-    assert plan.reason_code == "FIELD_NOT_EXPOSED"
-    assert plan.proposal.proposed_calls == ()
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.SUPPORTED
+    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.CALL
+    assert plan.reason_code is None
+    assert [call.tool_name for call in plan.proposal.proposed_calls] == ["clinicaltrials_study_details"]
 
 
 def test_a13_one_eligible_tool_is_selected_without_calling_llm_provider() -> None:

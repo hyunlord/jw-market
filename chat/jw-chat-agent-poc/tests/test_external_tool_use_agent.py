@@ -520,7 +520,7 @@ def test_agent_executor_continues_when_completion_policy_requires_final_tool() -
     assert "provider_payload" not in result.answer
 
 
-def test_tool_catalog_has_descriptions_for_all_19_tools() -> None:
+def test_tool_catalog_has_descriptions_for_all_20_tools() -> None:
     # Given: the phase-1 external tool inventory.
     records = TOOL_DESCRIPTION_CATALOG
 
@@ -528,8 +528,8 @@ def test_tool_catalog_has_descriptions_for_all_19_tools() -> None:
     descriptions = tuple(record.description.casefold() for record in records)
 
     # Then: every tool has explicit positive and negative guidance.
-    assert len(records) == 19
-    assert len({record.name for record in records}) == 19
+    assert len(records) == 20
+    assert len({record.name for record in records}) == 20
     assert all("when to use" in description for description in descriptions)
     assert all("when not" in description for description in descriptions)
 
@@ -553,7 +553,7 @@ def test_registry_exposes_a_spec_for_every_cataloged_tool() -> None:
     specs = registry.list_for_query("외부 근거 조회")
 
     # Then: every cataloged tool is executable and names are identical.
-    assert len(specs) == 19
+    assert len(specs) == 20
     assert {spec.name for spec in specs} == {record.name for record in TOOL_DESCRIPTION_CATALOG}
 
 
@@ -731,7 +731,7 @@ def test_registry_forwards_mfds_clinical_condition_and_default_intervention() ->
     assert external.calls == [("고지혈증", "condition"), ("리바로", "intervention")]
 
 
-def test_fixture_tool_pack_executes_all_19_specs_with_evidence() -> None:
+def test_fixture_tool_pack_executes_all_20_specs_with_evidence() -> None:
     # Given: schema-valid fixture inputs for every registered external tool.
     payloads: dict[str, dict[str, str]] = {
         "local_molecule_lookup": {"brand": "리바로"},
@@ -742,6 +742,7 @@ def test_fixture_tool_pack_executes_all_19_specs_with_evidence() -> None:
         "mfds_permission_detail": {"item_seq": "200500287"},
         "mfds_clinical_trial_kr": {"query": "리바로"},
         "clinicaltrials_v2_search": {"query": "pitavastatin"},
+        "clinicaltrials_study_details": {"nct_id": "NCT05151731"},
         "mfds_patent": {"ingredient": "pitavastatin"},
         "mfds_fda_orangebook": {"ingredient": "pitavastatin"},
         "hira_disease_name_code": {"sick_cd": "E78"},
