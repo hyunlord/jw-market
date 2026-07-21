@@ -17,6 +17,8 @@ TOOL_DESCRIPTION_CATALOG: tuple[ToolDescriptionRecord, ...] = (
     ToolDescriptionRecord("web_search", True, "최신 동향/가이드라인/학회/KOL 웹 검색. when to use: DB에 없는 시의성 정보. 최신 가이드라인은 topic=general로 원문을 찾고, 뉴스·최근 사건처럼 발행일이 핵심인 요청만 topic=news. when NOT to use: 시장 수치/매출/점유율."),
     ToolDescriptionRecord("mfds_permission_search", True, "식약처 허가 품목 검색. when to use: 제품명으로 허가 품목과 ITEM_SEQ를 찾을 때. when NOT to use: 성분만 묻고 로컬 근거가 있을 때."),
     ToolDescriptionRecord("mfds_permission_detail", True, "식약처 허가 상세 조회. when to use: 허가 품목의 ITEM_SEQ가 확인된 뒤. when NOT to use: ITEM_SEQ가 없거나 특허/부작용 질의."),
+    ToolDescriptionRecord("mfds_composition", True, "식약처 제품별 성분·함량 조회. when to use: 제품명에 일치하는 성분 조성 근거가 필요할 때. when NOT to use: 효능·용법·주의사항 질의."),
+    ToolDescriptionRecord("mfds_easy_drug", True, "식약처 e약은요 일반인용 정보 조회. when to use: 제품명과 정확히 일치하는 e약은요 원문 필드가 반환될 때. when NOT to use: 조회 결과가 없거나 다른 제품의 일반인용 정보."),
     ToolDescriptionRecord("mfds_clinical_trial_kr", True, "국내 임상시험 조회. when to use: 국내/한국/식약처 임상시험이라고 명시한 질의. when NOT to use: 비한정 임상시험, 글로벌 임상, NCT 질의."),
     ToolDescriptionRecord("clinicaltrials_v2_search", True, "ClinicalTrials.gov 글로벌 임상 조회. when to use: 지역을 한정하지 않은 비한정 임상시험, 글로벌 임상, NCT 질의. when NOT to use: 국내/한국/식약처 임상만 명시한 질의."),
     ToolDescriptionRecord("clinicaltrials_study_details", True, "ClinicalTrials.gov NCT 상세 조회. when to use: 정확한 NCT ID가 있는 질의. 선정·제외 기준은 원문 앞 200자까지만 제공됨을 고지합니다. when NOT to use: NCT ID 없는 임상 검색."),

@@ -308,7 +308,12 @@ def _matching_mfds_items(call: ExternalCall, brand: str) -> tuple[dict[str, Any]
         item
         for item in _mfds_items(call)
         if _is_mfds_product_family_match(
-            _normal_key(item.get("ITEM_NAME") or item.get("itemName") or ""),
+            _normal_key(
+                item.get("ITEM_NAME")
+                or item.get("itemName")
+                or item.get("PRDUCT")
+                or ""
+            ),
             brand_key,
         )
     )

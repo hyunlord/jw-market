@@ -101,16 +101,16 @@ class ExternalApiClient:
     def mfds_permission_detail(self, item_seq: str) -> ExternalCall:
         return self._fixture_or_live("mfds_permission_detail", {"item_seq": item_seq})
 
-    def mfds_composition(self, item_seq: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_composition", {"item_seq": item_seq})
+    def mfds_composition(self, brand: str) -> ExternalCall:
+        return self._fixture_or_live("mfds_composition", {"brand": brand})
 
     def mfds_main_ingredient(self, brand: str) -> ExternalCall:
         if self.mode != "live":
             return self.mfds_permission_search(brand)
         return self._live_mcp_call("mfds_main_ingredient", {"brand": brand})
 
-    def mfds_easy_drug(self, item_seq: str) -> ExternalCall:
-        return self._fixture_or_live("mfds_easy_drug", {"item_seq": item_seq})
+    def mfds_easy_drug(self, brand: str) -> ExternalCall:
+        return self._fixture_or_live("mfds_easy_drug", {"brand": brand})
 
     def mfds_clinical_trial_kr(
         self,
@@ -466,11 +466,11 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
         case "mfds_permission_detail":
             return _nedrug_spec(tool, "get_drug_permission_detail", {"item_seq": params.get("item_seq"), "limit": 5})
         case "mfds_composition":
-            return _nedrug_spec(tool, "get_drug_main_ingredient", {"item_seq": params.get("item_seq"), "limit": 5})
+            return _nedrug_spec(tool, "get_drug_main_ingredient", {"prduct": params.get("brand"), "limit": 5})
         case "mfds_main_ingredient":
             return _nedrug_spec(tool, "get_drug_main_ingredient", {"prduct": params.get("brand"), "limit": 10})
         case "mfds_easy_drug":
-            return _nedrug_spec(tool, "search_easy_drug_info", {"item_seq": params.get("item_seq"), "limit": 5})
+            return _nedrug_spec(tool, "search_easy_drug_info", {"item_name": params.get("brand"), "limit": 5})
         case "mfds_clinical_trial_kr":
             return _nedrug_spec(
                 tool,

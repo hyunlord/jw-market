@@ -219,6 +219,74 @@ def test_main_ingredient_spec_uses_mart_then_mfds_fallback_method(monkeypatch) -
     assert envelope.evidence[0].source_locator == "TIRZEPATIDE"
 
 
+def test_mfds_composition_spec_uses_verified_product_name_contract() -> None:
+    # Given: the live NeDrug method accepts prduct, entrps, and limit only.
+    # When: a brand-scoped composition lookup is rendered for MCP.
+    spec = _mcp_tool_spec("mfds_composition", {"brand": "리바로"})
+
+    # Then: the adapter uses the verified product-name argument, not item_seq.
+    assert spec["mcp_tool"] == "get_drug_main_ingredient"
+    assert spec["arguments"] == {"prduct": "리바로", "limit": 5}
+
+
+def test_mfds_easy_drug_spec_uses_verified_item_name_contract() -> None:
+    # Given: the live easy-drug method accepts item_name without a preceding item-seq lookup.
+    # When: a brand-scoped easy-drug lookup is rendered for MCP.
+    spec = _mcp_tool_spec("mfds_easy_drug", {"brand": "리바로"})
+
+    # Then: the adapter sends the brand through the verified item_name slot.
+    assert spec["mcp_tool"] == "search_easy_drug_info"
+    assert spec["arguments"] == {"item_name": "리바로", "limit": 5}
+
+
+def test_orphaned_mfds_methods_are_registered_with_brand_inputs() -> None:
+    # Given: both verified methods are callable through the shared external client.
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+
+    # When: the planner-visible external registry is listed.
+    specs = {item.name: item for item in registry.list_for_query("리바로 성분과 e약은요")}
+
+    # Then: both former orphan methods are planner candidates with brand-scoped inputs.
+    assert specs["mfds_composition"].input_model.model_validate({"brand": "리바로"}).brand == "리바로"
+    assert specs["mfds_easy_drug"].input_model.model_validate({"brand": "리바로"}).brand == "리바로"
+
+
+def test_mfds_composition_only_emits_matching_product_evidence() -> None:
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+    spec = next(item for item in registry.list_for_query("성분 조성") if item.name == "mfds_composition")
+
+    matching = spec.execute(spec.input_model.model_validate({"brand": "중외"}))
+    unrelated = spec.execute(spec.input_model.model_validate({"brand": "리바로"}))
+
+    assert matching.ok is True
+    assert "포도당" in str(matching.evidence[0].source_locator)
+    assert unrelated.ok is False
+    assert unrelated.error_code == "NO_EVIDENCE"
+
+
+def test_mfds_easy_drug_only_emits_matching_public_fields() -> None:
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+    spec = next(item for item in registry.list_for_query("e약은요") if item.name == "mfds_easy_drug")
+
+    matching = spec.execute(spec.input_model.model_validate({"brand": "활명수"}))
+    unrelated = spec.execute(spec.input_model.model_validate({"brand": "리바로"}))
+
+    assert matching.ok is True
+    assert matching.evidence[0].metric == "효능·효과"
+    assert "소화불량" in str(matching.evidence[0].source_locator)
+    assert unrelated.ok is False
+    assert unrelated.error_code == "NO_EVIDENCE"
+
+
 def test_openfda_adverse_event_text_becomes_public_evidence() -> None:
     result = McpToolResult(
         content_text=(

@@ -52,6 +52,8 @@ class ExternalToolRegistry:
             ("web_search", QueryInput, self._web_search, 8.0, ("external", "web")),
             ("mfds_permission_search", BrandInput, self._permission_search, mcp_timeout_s, ("external", "mfds")),
             ("mfds_permission_detail", ItemSequenceInput, self._permission_detail, mcp_timeout_s, ("external", "mfds")),
+            ("mfds_composition", BrandInput, self._mfds_composition, mcp_timeout_s, ("external", "mfds")),
+            ("mfds_easy_drug", BrandInput, self._mfds_easy_drug, mcp_timeout_s, ("external", "mfds")),
             ("mfds_clinical_trial_kr", ClinicalQueryInput, self._clinical_kr, mcp_timeout_s, ("external", "mfds")),
             ("clinicaltrials_v2_search", ClinicalQueryInput, self._clinical_global, mcp_timeout_s, ("external", "clinicaltrials")),
             ("clinicaltrials_study_details", NctIdInput, self._clinical_detail, mcp_timeout_s, ("external", "clinicaltrials")),
@@ -151,6 +153,58 @@ class ExternalToolRegistry:
         return ToolEnvelope(
             ok=True,
             preview=call.summary_text,
+            evidence=facts,
+            raw=asdict(call),
+            error_code=None,
+            error_message=None,
+        )
+
+    def _mfds_composition(self, payload: BaseModel) -> ToolEnvelope:
+        request = BrandInput.model_validate(payload.model_dump())
+        canonical = self._canonical_brand(request.brand)
+        call = self._external.mfds_composition(canonical)
+        items = _matching_mfds_items(call, canonical)
+        facts = tuple(
+            EvidenceFact(
+                fact_id=f"{call.tool}:{canonical}:{index}",
+                subject=canonical,
+                metric="성분 조성",
+                value=None,
+                unit=None,
+                period=None,
+                source_name="식약처 의약품 성분 정보",
+                source_locator=_composition_locator(item),
+                raw_ref=f"{call.tool}:{index}",
+            )
+            for index, item in enumerate(items, start=1)
+            if _composition_locator(item)
+        )
+        if not facts:
+            return _error("NO_EVIDENCE", "식약처 응답에 제품명과 일치하는 성분 조성 근거가 없습니다.")
+        return ToolEnvelope(
+            ok=True,
+            preview=f"{canonical} 성분 조성 {len(facts)}건",
+            evidence=facts,
+            raw=asdict(call),
+            error_code=None,
+            error_message=None,
+        )
+
+    def _mfds_easy_drug(self, payload: BaseModel) -> ToolEnvelope:
+        request = BrandInput.model_validate(payload.model_dump())
+        canonical = self._canonical_brand(request.brand)
+        call = self._external.mfds_easy_drug(canonical)
+        items = _matching_mfds_items(call, canonical)
+        facts = tuple(
+            fact
+            for index, item in enumerate(items, start=1)
+            for fact in _easy_drug_facts(call, canonical, item, index)
+        )
+        if not facts:
+            return _error("NO_EVIDENCE", "식약처 e약은요 응답에 제품명과 일치하는 공개 필드가 없습니다.")
+        return ToolEnvelope(
+            ok=True,
+            preview=f"{canonical} e약은요 공개 필드 {len(facts)}건",
             evidence=facts,
             raw=asdict(call),
             error_code=None,
@@ -612,6 +666,55 @@ def _decimal_or_none(value: Any) -> Decimal | None:
         return Decimal(str(value)) if value not in (None, "") else None
     except (ArithmeticError, TypeError, ValueError):
         return None
+
+
+def _composition_locator(item: dict[str, Any]) -> str | None:
+    product = str(item.get("PRDUCT") or item.get("ITEM_NAME") or "").strip()
+    ingredient = str(
+        item.get("MTRAL_NM")
+        or item.get("MAIN_INGR_ENG")
+        or item.get("ITEM_INGR_NAME")
+        or ""
+    ).strip()
+    if not product or not ingredient:
+        return None
+    quantity = str(item.get("QNT") or "").strip()
+    unit = str(item.get("INGD_UNIT_CD") or "").strip()
+    amount = f" {quantity}{unit}" if quantity else ""
+    return f"{product} · {ingredient}{amount}"
+
+
+def _easy_drug_facts(
+    call: ExternalCall,
+    subject: str,
+    item: dict[str, Any],
+    row_index: int,
+) -> tuple[EvidenceFact, ...]:
+    product = str(item.get("itemName") or item.get("ITEM_NAME") or "").strip()
+    fields = (
+        ("efcyQesitm", "효능·효과"),
+        ("useMethodQesitm", "용법·용량"),
+        ("atpnWarnQesitm", "주의사항 경고"),
+        ("atpnQesitm", "주의사항"),
+        ("intrcQesitm", "상호작용"),
+        ("seQesitm", "부작용"),
+        ("depositMethodQesitm", "보관법"),
+    )
+    return tuple(
+        EvidenceFact(
+            fact_id=f"{call.tool}:{subject}:{row_index}:{key}",
+            subject=subject,
+            metric=label,
+            value=None,
+            unit=None,
+            period=None,
+            source_name="식약처 e약은요 정보",
+            source_locator=f"{product} · {value}" if product else value,
+            raw_ref=f"{call.tool}:{row_index}:{key}",
+        )
+        for key, label in fields
+        if (value := str(item.get(key) or "").strip())
+    )
 
 
 def _success(preview: str, evidence: tuple[EvidenceFact, ...]) -> ToolEnvelope:
