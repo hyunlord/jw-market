@@ -34,7 +34,8 @@ RUN pip install --no-cache-dir \
     "lxml>=5.0.0" \
     "trafilatura>=1.8.0" \
     "pandas>=2.2.0" \
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0" \
+    "temporalio==1.30.0"
 
 WORKDIR /work
 

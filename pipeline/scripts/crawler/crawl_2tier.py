@@ -203,6 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Plan only; do not crawl, score, load, or delete.")
     parser.add_argument("--run-crawl", action="store_true", help="Actually perform crawl. Keep off for planning.")
     parser.add_argument("--score", action="store_true", help="Score Tier2 crawled JSON with exact-match rules.")
+    parser.add_argument(
+        "--score-only",
+        action="store_true",
+        help="Score an existing Tier2 corpus without crawling. Used by staged batch orchestrators.",
+    )
     parser.add_argument("--output-dir", default="/tmp/jw-news-crawl")
     parser.add_argument("--processed-dir", default="/tmp/jw-news-crawl-processed")
     parser.add_argument("--brand-plan-output", type=Path, default=Path("/tmp/tier2_brand_plan.json"))
@@ -232,8 +237,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_mode(args: argparse.Namespace) -> None:
+    if getattr(args, "score_only", False) and args.tier != "2":
+        raise ValueError("--score-only is available only for Tier2")
+    if getattr(args, "score_only", False) and getattr(args, "run_crawl", False):
+        raise ValueError("--score-only cannot be combined with --run-crawl")
+
+
 def main() -> int:
     args = build_parser().parse_args()
+    validate_mode(args)
     if args.tier == "1":
         if args.dry_run or not args.run_crawl:
             print(json.dumps({"tier": 1, "mode": "existing_wf196_flow", "planned": True}, ensure_ascii=False))
@@ -247,10 +260,19 @@ def main() -> int:
         "brand_count": len(brands),
         "weekday_slice": args.weekday_slice,
         "excluded_sites": sorted(EXCLUDED_TIER2_SITES),
-        "site_count": len(tier2_sites(args.sites)),
         "brand_plan_output": str(args.brand_plan_output),
         "llm_calls": 0,
     }
+    if args.score_only:
+        summary["score_summary"] = score_tier2_corpus(
+            Path(args.output_dir),
+            Path(args.processed_dir),
+            brands,
+        )
+        summary["score_only"] = True
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
+    summary["site_count"] = len(tier2_sites(args.sites))
     if args.dry_run or not args.run_crawl:
         summary["planned"] = True
         print(json.dumps(summary, ensure_ascii=False))

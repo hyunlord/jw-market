@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jw-market-tier2-temporal-pilot-brands
+  namespace: llmops
+data:
+  brands.json: |
+    [
+      {
+        "brand_name": "리바로",
+        "brand_key": "리바로",
+        "source": "ubist",
+        "reason": "isolated Temporal pilot"
+      }
+    ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-news-tier2-temporal-pilot
+  namespace: llmops
+  labels:
+    app: jw-news-tier2-temporal-pilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jw-news-tier2-temporal-pilot
+  template:
+    metadata:
+      labels:
+        app: jw-news-tier2-temporal-pilot
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      nodeSelector:
+        genos: enabled
+      containers:
+      - name: worker
+        image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-crawl:temporal-pilot-unbuilt
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - pipeline.scripts.crawler.temporal_tier2_worker
+        env:
+        - name: TEMPORAL_ADDRESS
+          value: temporal-frontend.temporal.svc:7233
+        - name: TEMPORAL_NAMESPACE
+          value: jw-market-pilot
+        - name: TEMPORAL_TASK_QUEUE
+          value: jw-market-tier2-pilot-v1
+        - name: TIER2_REPO_ROOT
+          value: /work
+        - name: DB_HOST
+          value: llmops-mariadb-service.llmops.svc.cluster.local
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_NAME
+          value: jw_mart_d2_stage_20260630_r2
+        - name: WF337_URL
+          value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
+        - name: D2_WRITER_USER
+          valueFrom:
+            secretKeyRef:
+              name: jw-mart-d2-writer
+              key: username
+        - name: D2_WRITER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: jw-mart-d2-writer
+              key: password
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: jw-mart-d2-writer
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: jw-mart-d2-writer
+              key: password
+        volumeMounts:
+        - name: pilot-brands
+          mountPath: /work/pilot
+          readOnly: true
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+      volumes:
+      - name: pilot-brands
+        configMap:
+          name: jw-market-tier2-temporal-pilot-brands
+      restartPolicy: Always
