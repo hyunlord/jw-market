@@ -181,7 +181,14 @@ def connect(database: str | None = None) -> pymysql.connections.Connection:
         raise RuntimeError("MariaDB password is not configured")
     return pymysql.connect(
         host=os.getenv("MARIADB_HOST", "127.0.0.1"),
-        port=int(os.getenv("HOST_PORT", env.get("HOST_PORT", "3307"))),
+        # k8s/R-1은 MARIADB_PORT(=3306)만 주입한다. general_config와 동일하게
+        # MARIADB_PORT를 우선하고, 로컬 .env의 HOST_PORT(3307)는 fallback으로 둔다.
+        port=int(
+            os.getenv("MARIADB_PORT")
+            or os.getenv("HOST_PORT")
+            or env.get("MARIADB_PORT")
+            or env.get("HOST_PORT", "3307")
+        ),
         user=user,
         password=password,
         database=database or os.getenv("MARIADB_DATABASE", env.get("MARIADB_DATABASE", "jw_mart")),

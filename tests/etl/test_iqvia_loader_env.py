@@ -75,6 +75,25 @@ def test_connect_does_not_raise_when_env_file_missing(
     assert captured["database"] == "jw_mart_rehearsal_r1_test"
 
 
+def test_connect_prefers_mariadb_port_over_host_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # k8s/R-1 injects MARIADB_PORT (=3306) and no HOST_PORT; the service is 3306,
+    # so connect() must use MARIADB_PORT, not the legacy HOST_PORT default 3307.
+    monkeypatch.setattr(iqvia_loader, "first_existing", lambda *paths: tmp_path / "absent.env")
+    monkeypatch.delenv("HOST_PORT", raising=False)
+    monkeypatch.setenv("MARIADB_PORT", "3306")
+    monkeypatch.setenv("MARIADB_USER", "root")
+    monkeypatch.setenv("MARIADB_ROOT_PASSWORD", "rootpw")
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(iqvia_loader.pymysql, "connect", lambda **kw: captured.update(kw) or "C")
+
+    iqvia_loader.connect("db")
+
+    assert captured["port"] == 3306   # not 3307
+
+
 def test_connect_still_raises_when_no_password(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
