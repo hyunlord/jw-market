@@ -160,7 +160,7 @@ def normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def singleton_arguments(tool_name: str, question: str) -> dict[str, Any] | None:
-    if tool_name == "mfds_permission_search":
+    if tool_name in {"mfds_permission_search", "mfds_composition"}:
         body = PREFIX_RE.sub("", question, count=1).strip()
         match = re.match(r"(?P<subject>[A-Za-z가-힣0-9+_-]{2,80}?)(?:의|\s)", body)
         return {"brand": match.group("subject").strip()} if match else None

@@ -44,6 +44,20 @@
       "truth_basis": "Phase 0 permission search returned item name and manufacturer for four exact-family rows"
     },
     {
+      "requested_capability": "MFDS_COMPOSITION",
+      "source_domain": "regulatory",
+      "capability_status": "SUPPORTED",
+      "eligible_tools": ["mfds_composition"],
+      "truth_basis": "2026-07-22 live get_drug_main_ingredient probe returned product-matched ingredient and amount fields"
+    },
+    {
+      "requested_capability": "MFDS_EASY_DRUG_FIELDS",
+      "source_domain": "regulatory",
+      "capability_status": "FIELD_NOT_EXPOSED",
+      "eligible_tools": [],
+      "truth_basis": "2026-07-22 live search_easy_drug_info probe returned zero rows for product name and verified item sequence"
+    },
+    {
       "requested_capability": "MFDS_LABEL_EFFICACY",
       "source_domain": "regulatory",
       "capability_status": "FIELD_NOT_EXPOSED",

@@ -114,6 +114,15 @@ def test_nct_detail_capability_is_supported_by_verified_detail_tool() -> None:
     assert matrix.status_for("unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST") is CapabilityStatus.UNRESOLVED
 
 
+def test_mfds_composition_is_supported_while_easy_drug_fields_remain_unexposed() -> None:
+    matrix = default_capability_matrix()
+
+    assert matrix.resolve("regulatory", "MFDS_COMPOSITION").eligible_tools == (
+        "mfds_composition",
+    )
+    assert matrix.status_for("regulatory", "MFDS_EASY_DRUG_FIELDS") is CapabilityStatus.FIELD_NOT_EXPOSED
+
+
 def test_runtime_default_capability_matrix_matches_the_frozen_manifest() -> None:
     payload = json.loads((CONTRACT_DIR / "capability_matrix.json").read_text(encoding="utf-8"))
     runtime = default_capability_matrix()

@@ -209,6 +209,35 @@ def test_nct_detail_requests_use_verified_detail_tool(question: str) -> None:
     assert [call.tool_name for call in plan.proposal.proposed_calls] == ["clinicaltrials_study_details"]
 
 
+def test_verified_mfds_composition_uses_the_single_contract_backed_tool() -> None:
+    plan = _planner().plan(
+        "NeDrug: 리바로 성분 조성 알려줘",
+        routing_mode=RoutingMode.ENFORCE,
+    )
+
+    assert plan.proposal.routing_decision == RoutingDecision(
+        source_domain="regulatory",
+        domain_decision_source=DomainDecisionSource.PREFIX_RULE,
+        capability_status=CapabilityStatus.SUPPORTED,
+        tool_selection_source=ToolSelectionSource.DETERMINISTIC_SINGLETON,
+        route_outcome=RouteOutcome.CALL,
+    )
+    assert plan.proposal.proposed_calls == (
+        ProposedCall(tool_name="mfds_composition", normalized_args={"brand": "리바로"}),
+    )
+
+
+def test_easy_drug_label_fields_remain_field_not_exposed() -> None:
+    plan = _planner().plan(
+        "NeDrug: 리바로 e약 효능 알려줘",
+        routing_mode=RoutingMode.ENFORCE,
+    )
+
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.FIELD_NOT_EXPOSED
+    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.TYPED_STOP
+    assert plan.proposal.proposed_calls == ()
+
+
 def test_a13_one_eligible_tool_is_selected_without_calling_llm_provider() -> None:
     provider = _ChoiceSequence(
         (ToolChoice("web_search", {"query": "must not run"}, "wrong", call_id="wrong"),)

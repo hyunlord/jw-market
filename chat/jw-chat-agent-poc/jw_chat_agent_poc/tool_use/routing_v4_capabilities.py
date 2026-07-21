@@ -102,6 +102,13 @@ def default_capability_matrix() -> CapabilityMatrix:
             "SUPPORTED",
             ("mfds_permission_search",),
         ),
+        _entry(
+            "regulatory",
+            "MFDS_COMPOSITION",
+            "SUPPORTED",
+            ("mfds_composition",),
+        ),
+        _entry("regulatory", "MFDS_EASY_DRUG_FIELDS", "FIELD_NOT_EXPOSED"),
         _entry("regulatory", "MFDS_LABEL_EFFICACY", "FIELD_NOT_EXPOSED"),
         _entry("regulatory", "MFDS_DOSAGE", "FIELD_NOT_EXPOSED"),
         _entry("regulatory", "MFDS_PRECAUTIONS", "FIELD_NOT_EXPOSED"),

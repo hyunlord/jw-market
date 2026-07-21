@@ -41,7 +41,12 @@ def classify_question(question: str) -> QuestionClassification:
             )
         return _hira_classification(body, code, DomainDecisionSource.PREFIX_RULE, "SOURCE_PREFIX_HIRA")
     if prefix == "nedrug":
-        capability = "MFDS_LABEL_EFFICACY" if asks_label_fields(lowered) else "MFDS_BASIC_PRODUCT_INFO"
+        if asks_composition_fields(lowered):
+            capability = "MFDS_COMPOSITION"
+        elif asks_label_fields(lowered):
+            capability = "MFDS_LABEL_EFFICACY"
+        else:
+            capability = "MFDS_BASIC_PRODUCT_INFO"
         return QuestionClassification(
             source_domain="regulatory",
             domain_decision_source=DomainDecisionSource.PREFIX_RULE,
@@ -106,6 +111,10 @@ def asks_label_fields(lowered: str) -> bool:
         token in lowered
         for token in ("효능", "효과", "용법", "용량", "주의사항", "precaution", "dosage", "efficacy")
     )
+
+
+def asks_composition_fields(lowered: str) -> bool:
+    return any(token in lowered for token in ("성분 조성", "성분·함량", "성분 함량"))
 
 
 def asks_basic_permission_fields(lowered: str) -> bool:
