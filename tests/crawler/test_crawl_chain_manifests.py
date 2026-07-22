@@ -106,6 +106,21 @@ def test_stage_script_supports_bounded_shadow_crawls_without_changing_defaults()
     assert "--tier2-concurrent-sites" not in script
 
 
+def test_stage_script_can_isolate_a_manual_shadow_by_one_keyword() -> None:
+    # Given: an operator-provided keyword used only by the manual shadow worker.
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    # When/Then: both tiers consume the same run-scoped keyword identity, while
+    # an unset variable leaves the existing profile/catalog paths untouched.
+    assert 'shadow_keyword="${CRAWL_CHAIN_SHADOW_KEYWORD:-}"' in script
+    assert 'prepare_shadow_tier1_profile "${profiles}/drug_profiles" "${shadow_keyword}"' in script
+    assert 'prepare_shadow_tier2_brand_file "${shadow_brand_file}" "${shadow_keyword}"' in script
+    assert 'crawl_command+=(--brand-file "${shadow_brand_file}" --weekday-slice "${weekday}")' in script
+    assert 'crawl_command+=(--weekday-slice "${weekday}")' in script
+
+
 def test_shadow_manifest_limits_only_the_manual_shadow_worker() -> None:
     # Given: the dedicated Temporal shadow worker manifest.
     manifest = _yaml_documents("temporal-crawl-shadow-worker.yaml")
@@ -116,11 +131,11 @@ def test_shadow_manifest_limits_only_the_manual_shadow_worker() -> None:
     # When/Then: one-site, one-day bounds are explicit and cannot affect legacy CronJobs.
     assert deployment["spec"]["strategy"]["type"] == "Recreate"
     assert environment["CRAWL_CHAIN_TIER1_SITES"] == "히트뉴스"
-    assert environment["CRAWL_CHAIN_TIER1_MAX_ARTICLES"] == "2"
+    assert environment["CRAWL_CHAIN_TIER1_MAX_ARTICLES"] == "1"
     assert environment["CRAWL_CHAIN_TIER2_SITES"] == "히트뉴스"
     assert environment["CRAWL_CHAIN_TIER2_DAYS"] == "1"
     assert environment["CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE"] == "1"
     assert environment["CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE"] == "10"
-    assert environment["CRAWL_CHAIN_TIER2_MAX_ARTICLES"] == "2"
-    assert environment["CRAWL_CHAIN_TIER2_LIMIT_BRANDS"] == "10"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_ARTICLES"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_LIMIT_BRANDS"] == "1"
     assert environment["CRAWL_CHAIN_DELAY_SECONDS"] == "0.1"

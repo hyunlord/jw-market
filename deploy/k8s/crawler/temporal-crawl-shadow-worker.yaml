@@ -65,7 +65,7 @@ spec:
         - name: CRAWL_CHAIN_TIER1_SITES
           value: 히트뉴스
         - name: CRAWL_CHAIN_TIER1_MAX_ARTICLES
-          value: "2"
+          value: "1"
         - name: CRAWL_CHAIN_TIER2_SITES
           value: 히트뉴스
         - name: CRAWL_CHAIN_TIER2_DAYS
@@ -75,9 +75,9 @@ spec:
         - name: CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE
           value: "10"
         - name: CRAWL_CHAIN_TIER2_MAX_ARTICLES
-          value: "2"
+          value: "1"
         - name: CRAWL_CHAIN_TIER2_LIMIT_BRANDS
-          value: "10"
+          value: "1"
         - name: CRAWL_CHAIN_DELAY_SECONDS
           value: "0.1"
         - name: DB_USER

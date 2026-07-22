@@ -196,6 +196,59 @@ print("CANDIDATE_GATE=" + json.dumps(summary, ensure_ascii=False, sort_keys=True
 PY
 }
 
+prepare_shadow_tier1_profile() {
+  local profile_dir="$1"
+  local keyword="$2"
+  PROFILE_DIR="${profile_dir}" KEYWORD="${keyword}" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+profile_dir = Path(os.environ["PROFILE_DIR"])
+keyword = os.environ["KEYWORD"].strip()
+if not keyword:
+    raise SystemExit("CRAWL_CHAIN_SHADOW_KEYWORD must not be blank")
+profile_dir.mkdir(parents=True, exist_ok=True)
+for path in profile_dir.glob("drug_profile_*.json"):
+    path.unlink()
+payload = {
+    "약 한글명": keyword,
+    "약 영문명": "",
+    "질환명": [],
+    "경쟁사 약 한글명": [],
+    "경쟁사 약 영문명": [],
+    "성분명 한글": "",
+    "성분명 영문": "",
+}
+(profile_dir / "drug_profile_shadow.json").write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+)
+print(f"SHADOW_TIER1_KEYWORD_COUNT=1")
+PY
+}
+
+prepare_shadow_tier2_brand_file() {
+  local brand_file="$1"
+  local keyword="$2"
+  BRAND_FILE="${brand_file}" KEYWORD="${keyword}" python - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+keyword = os.environ["KEYWORD"].strip()
+if not keyword:
+    raise SystemExit("CRAWL_CHAIN_SHADOW_KEYWORD must not be blank")
+brand_key = "temporal-shadow-" + hashlib.sha256(keyword.encode("utf-8")).hexdigest()[:16]
+payload = [{"brand_name": keyword, "brand_key": brand_key, "source": "temporal_shadow"}]
+path = Path(os.environ["BRAND_FILE"])
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+weekday = int(hashlib.sha256(brand_key.encode("utf-8")).hexdigest()[:8], 16) % 7
+print(weekday)
+PY
+}
+
 tier1_collect() {
   local output="${CHAIN_STAGE_OUTPUT_DIR}"
   local raw="${output}/raw"
@@ -206,6 +259,7 @@ tier1_collect() {
   local months="${CRAWL_CHAIN_TIER1_MONTHS:-1}"
   local max_articles="${CRAWL_CHAIN_TIER1_MAX_ARTICLES:-0}"
   local delay_seconds="${CRAWL_CHAIN_DELAY_SECONDS:-5}"
+  local shadow_keyword="${CRAWL_CHAIN_SHADOW_KEYWORD:-}"
   local -a crawl_command=(
     python crawl/crawler/crawl_2tier.py
     --tier 1 --run-crawl --months "${months}" --concurrent-sites 4
@@ -218,6 +272,9 @@ tier1_collect() {
   fi
   mkdir -p "${raw}" "${profiles}"
   python -c 'import sys,zipfile; from pathlib import Path; target=Path(sys.argv[1]); target.mkdir(parents=True, exist_ok=True); zipfile.ZipFile("crawl/config/drug_profiles.zip").extractall(target)' "${profiles}"
+  if [[ -n "${shadow_keyword}" ]]; then
+    prepare_shadow_tier1_profile "${profiles}/drug_profiles" "${shadow_keyword}"
+  fi
   preseed_urls "${raw}" "${preseed_sites}"
   "${crawl_command[@]}"
   RAW="${raw}" OUTPUT="${output}" python - <<'PY'
@@ -307,6 +364,8 @@ tier2_collect() {
   local max_articles="${CRAWL_CHAIN_TIER2_MAX_ARTICLES:-0}"
   local limit_brands="${CRAWL_CHAIN_TIER2_LIMIT_BRANDS:-0}"
   local delay_seconds="${CRAWL_CHAIN_DELAY_SECONDS:-5}"
+  local shadow_keyword="${CRAWL_CHAIN_SHADOW_KEYWORD:-}"
+  local shadow_brand_file="${output}/shadow_brand.json"
   local -a crawl_command=(
     python crawl/crawler/crawl_2tier.py
     --tier 2 --run-crawl --score --days "${days}"
@@ -315,8 +374,13 @@ tier2_collect() {
     --delay-sec "${delay_seconds}" --output-dir "${raw}"
     --processed-dir "${processed}" --brand-plan-output "${output}/tier2_brand_plan.json"
   )
-  weekday="$(python -c 'from datetime import datetime; print(datetime.now().weekday())')"
-  crawl_command+=(--weekday-slice "${weekday}")
+  if [[ -n "${shadow_keyword}" ]]; then
+    weekday="$(prepare_shadow_tier2_brand_file "${shadow_brand_file}" "${shadow_keyword}")"
+    crawl_command+=(--brand-file "${shadow_brand_file}" --weekday-slice "${weekday}")
+  else
+    weekday="$(python -c 'from datetime import datetime; print(datetime.now().weekday())')"
+    crawl_command+=(--weekday-slice "${weekday}")
+  fi
   if [[ -n "${selected_sites}" ]]; then
     crawl_command+=(--sites "${selected_sites}")
   fi
