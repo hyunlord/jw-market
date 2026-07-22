@@ -15,7 +15,13 @@ uv run render_standby.py apply
 uv run render_standby.py wire-chat
 ```
 
-`wire-chat` changes only the four MCP endpoint variables and keeps `CHAT_EXTERNAL_TOOL_AGENT_ENABLED=true`. It never changes the chat image.
+`wire-chat` changes the four MCP endpoint variables as one command and keeps
+`CHAT_EXTERNAL_TOOL_AGENT_ENABLED=true`. It never changes the chat image.
+Run it only after all four standby Deployments are Ready and every `/json`
+endpoint has returned a successful `tools/list` response. If one check fails,
+inject none of the URLs. After wiring, run the deployment identity, required
+pod-template annotation, and env-presence gates documented in
+`../../../DEPLOYMENT_ENV_RUNBOOK.md`.
 
 There is intentionally no manifest-output mode. Source Deployments can contain literal runtime configuration, so `apply` keeps the rendered objects in memory and passes them directly to `kubectl apply -f -` without writing or printing them.
 
@@ -25,5 +31,6 @@ The direct standby route is `/json`. The gateway resource route `/mcp/{resource}
 
 - Original `code-serving-*` Deployments, Temporal resources, and scaler resources are read-only inputs.
 - Standby names and labels do not contain `code-serving`, so the platform scaler does not own them.
+- Partial URL injection is forbidden; the four URLs and external-tool flag are one recovery unit.
 - Literal runtime values are never written by this renderer; they move only through the in-memory kubectl pipeline.
 - The renderer refuses to run when credential-shaped content is found in this tracked directory.
