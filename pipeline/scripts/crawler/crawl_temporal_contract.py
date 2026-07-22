@@ -156,6 +156,27 @@ def read_stage_gate(path: Path, *, expected_stage: str | None = None) -> StageGa
     return gate
 
 
+def orchestrator_failure_count(report: object) -> int:
+    """Count failed site results in the tier1 orchestrator report."""
+
+    if not isinstance(report, dict):
+        raise ValueError("orchestrator report must be an object")
+    results = report.get("results")
+    if not isinstance(results, list):
+        raise ValueError("orchestrator report results must be a list")
+    failures = 0
+    for index, result in enumerate(results):
+        if not isinstance(result, dict):
+            raise ValueError(f"orchestrator result {index} must be an object")
+        exit_code = result.get("exit_code")
+        invalid_exit = isinstance(exit_code, bool) or not isinstance(exit_code, int)
+        error = result.get("error")
+        invalid_error = error is not None and not isinstance(error, str)
+        if invalid_exit or invalid_error or exit_code != 0 or bool(error):
+            failures += 1
+    return failures
+
+
 def activity_command(config: CrawlDailyInput, activity_name: str) -> list[str]:
     """Build the fixed one-stage command run by a Temporal activity."""
 

@@ -37,6 +37,15 @@ def test_loader_partial_failures_and_global_gaps_are_fail_closed() -> None:
     assert 'json.load(open(sys.argv[1]))["pending_gap"]' in script
 
 
+def test_tier1_collect_reported_site_failures_are_fail_closed() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "pipeline/scripts/crawler/crawl_chain_steps.sh").read_text(encoding="utf-8")
+
+    assert "orchestrator_failure_count(report)" in script
+    assert '"failures": failures' in script
+    assert 'write_stage_gate "${failures}" 0 0' in script
+
+
 def test_stage_script_uses_configured_repo_root_for_loader_imports() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "pipeline/scripts/crawler/crawl_chain_steps.sh").read_text(encoding="utf-8")
