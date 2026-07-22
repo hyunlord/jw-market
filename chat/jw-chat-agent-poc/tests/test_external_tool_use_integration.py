@@ -47,16 +47,48 @@ def test_feature_flag_routes_unclassified_external_question_to_tool_agent(monkey
     ("OFF", "ENFORCE"),
 )
 @pytest.mark.parametrize(
-    "question",
+    ("question", "expected_sick_cd"),
     (
-        "HIRA: 상병코드 D693 환자수 알려줘",
-        "상병코드 E11 2024년 환자수",
-        "면역혈소판감소증 환자수 알려줘",
+        ("HIRA: 상병코드 D693 환자수 알려줘", "D69.3"),
+        ("질병코드 H360 환자수 통계 알려줘", "H36.0"),
+        ("질병코드 H36.0 환자수 통계 알려줘", "H36.0"),
+        ("상병코드 E11 2024년 환자수", "E11"),
     ),
 )
-def test_direct_hira_subject_is_rejected_before_external_tool_agent(
+def test_direct_hira_code_routes_before_external_tool_agent(
     monkeypatch,
     question: str,
+    expected_sick_cd: str,
+    routing_mode: str,
+) -> None:
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", routing_mode)
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit HIRA disease codes must stay on the direct HIRA path")
+        ),
+    )
+
+    result = ChatAgent(router=BQRouter()).answer(question)
+
+    assert result["sources"] == ["hira_disease"]
+    requests = [call["render_data"]["request"] for call in result["tool_calls"]]
+    assert requests
+    assert {request["sickCd"] for request in requests} == {expected_sick_cd}
+    assert "상병코드 또는 질환명 직접 조회" not in result["answer"]
+    assert result["resolution"]["canonical_brand"] == expected_sick_cd
+    assert result["resolution"]["support_source"] == "hira_disease_code"
+
+
+@pytest.mark.parametrize(
+    "routing_mode",
+    ("OFF", "ENFORCE"),
+)
+def test_direct_hira_non_code_subject_is_rejected_before_external_tool_agent(
+    monkeypatch,
     routing_mode: str,
 ) -> None:
     monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
@@ -70,7 +102,7 @@ def test_direct_hira_subject_is_rejected_before_external_tool_agent(
         ),
     )
 
-    result = ChatAgent(router=BQRouter()).answer(question)
+    result = ChatAgent(router=BQRouter()).answer("면역혈소판감소증 환자수 알려줘")
 
     assert result["tool_calls"] == []
     assert result["sources"] == ["unsupported_hira_interface"]

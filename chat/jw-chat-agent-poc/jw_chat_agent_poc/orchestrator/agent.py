@@ -32,7 +32,9 @@ from jw_chat_agent_poc.orchestrator.external_notices import (
 )
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     HIRA_DISEASE_MAPPINGS,
+    explicit_hira_disease_code,
     hira_disease_anchor_brand,
+    hira_disease_code_calls,
     hira_disease_calls,
     is_hira_disease_question,
 )
@@ -45,7 +47,6 @@ from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.orchestrator.question_intent import (
     allows_background_news_context,
     metric_from_question,
-    requires_brand,
 )
 from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
@@ -79,6 +80,9 @@ from jw_chat_agent_poc.tool_use.routing_v4_capabilities import default_capabilit
 from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import configured_routing_mode
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
+
+
+__all__ = ("ChatAgent", "HIRA_DISEASE_MAPPINGS")
 
 
 class ChatAgent:
@@ -182,7 +186,8 @@ class ChatAgent:
                     pre_resolved = self.resolver.resolve(question, allow_default=False)
                 except UnsupportedBrandError:
                     disease_anchor = hira_disease_anchor_brand(question)
-                    if disease_anchor is None:
+                    disease_code = explicit_hira_disease_code(question)
+                    if disease_anchor is None and disease_code is None:
                         routes = BQRouter().route(question, has_documents=False)
                         return finish(
                             unsupported_hira_interface_result(
@@ -191,11 +196,18 @@ class ChatAgent:
                                 router_diagnostics(self.router),
                             )
                         )
-                    pre_resolved = self.resolver.resolve(disease_anchor, allow_default=False)
+                    if disease_code is not None:
+                        pre_resolved = _hira_code_resolution(disease_code)
+                    else:
+                        assert disease_anchor is not None
+                        pre_resolved = self.resolver.resolve(disease_anchor, allow_default=False)
 
         if external_tool_agent_enabled() and agent_source_trap is None:
             tool_pack_routes = BQRouter().route(question, has_documents=bool(docs))
-            if _is_external_tool_agent_candidate(tool_pack_routes, docs, question=question):
+            if (
+                not _is_hira_code_resolution(pre_resolved)
+                and _is_external_tool_agent_candidate(tool_pack_routes, docs, question=question)
+            ):
                 tool_result, pre_resolved, external_fallback_code = self._attempt_external_tool_agent(
                     question,
                     pre_resolved,
@@ -233,6 +245,7 @@ class ChatAgent:
         if (
             external_tool_agent_enabled()
             and external_fallback_code is None
+            and not _is_hira_code_resolution(pre_resolved)
             and _is_external_tool_agent_candidate(routes, docs, question=question)
             and agent_source_trap is None
         ):
@@ -246,7 +259,6 @@ class ChatAgent:
         if not docs and _is_known_ingredient_patent_question(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
             return finish(loop.answer(question))
-        requires_brand_flag = requires_brand(routes) and not is_hira_disease_question(question)
         portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
         if portfolio_scope:
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
@@ -269,7 +281,10 @@ class ChatAgent:
             )
         except UnsupportedBrandError:
             disease_anchor = hira_disease_anchor_brand(question)
-            if disease_anchor is not None:
+            disease_code = explicit_hira_disease_code(question)
+            if disease_code is not None:
+                resolution = _hira_code_resolution(disease_code)
+            elif disease_anchor is not None:
                 resolution = self.resolver.resolve(disease_anchor, allow_default=False)
             elif docs:
                 resolution = _document_resolution()
@@ -437,6 +452,8 @@ class ChatAgent:
         calls: list[ExternalCall] = []
         if is_hira_disease_question(question):
             with stage(timing, "tool:hira_disease", resolution.canonical_brand):
+                if resolution.support_source == "hira_disease_code":
+                    return hira_disease_code_calls(question, resolution.canonical_brand, self.external)
                 return hira_disease_calls(question, resolution, self.external)
         needs_molecule = (
             "임상" in question
@@ -897,6 +914,23 @@ def _document_resolution() -> BrandResolution:
         is_combo=False,
         support_source="document_context",
     )
+
+
+def _hira_code_resolution(sick_cd: str) -> BrandResolution:
+    return BrandResolution(
+        canonical_brand=sick_cd,
+        audit_code=f"hira_disease_code:{sick_cd}",
+        molecule_en=(),
+        atc=(),
+        edi_code=None,
+        item_seq=None,
+        is_combo=False,
+        support_source="hira_disease_code",
+    )
+
+
+def _is_hira_code_resolution(resolution: BrandResolution | None) -> bool:
+    return resolution is not None and resolution.support_source == "hira_disease_code"
 
 
 def _brand_clarification_result(question: str) -> dict[str, Any]:

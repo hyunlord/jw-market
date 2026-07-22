@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Final
 
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     HIRA_TREND_YEARS,
+    explicit_hira_disease_code,
     hira_disease_code_for_text,
     is_hira_disease_question,
 )
@@ -26,11 +26,7 @@ class QuestionClassification:
 
 
 PREFIX_RE = re.compile(r"^\s*(?P<prefix>NeDrug|HIRA|ClinicalTrials)\s*:\s*", re.IGNORECASE)
-DISEASE_CODE_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?P<category>[A-Za-z]\d{2})(?:\.?(?P<subcode>\d{1,2}))?(?![A-Za-z0-9])"
-)
 NCT_ID_RE = re.compile(r"(?<![A-Za-z0-9])NCT\d{8}(?![A-Za-z0-9])", re.IGNORECASE)
-DIRECT_HIRA_DISEASE_CODES: Final[frozenset[str]] = frozenset({"D69.3", "H36.0", "E11", "E11.3"})
 
 
 def classify_question(question: str) -> QuestionClassification:
@@ -156,13 +152,7 @@ def classify_question(question: str) -> QuestionClassification:
 
 
 def explicit_disease_code(text: str) -> str | None:
-    match = DISEASE_CODE_RE.search(text)
-    if match is None:
-        return None
-    category = match.group("category").upper()
-    subcode = match.group("subcode")
-    code = category if subcode is None else f"{category}.{subcode}"
-    return code if code in DIRECT_HIRA_DISEASE_CODES else None
+    return explicit_hira_disease_code(text)
 
 
 def asks_label_fields(lowered: str) -> bool:
