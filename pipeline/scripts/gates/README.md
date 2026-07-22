@@ -44,6 +44,28 @@ key, malformed Deployment JSON, or empty required set fails closed. The 235
 required set intentionally excludes `FILE_SQL_ENABLED` until its policy is
 decided separately.
 
+## Environment manifest ownership
+
+The tracked chat and 235 Deployment files are server-side-apply ownership
+manifests for stable environment settings. They are not standalone Deployment
+creation manifests. Image and release identity belong to the release pipeline;
+replicas belong to the HPA or workload controller. Before any apply, fail closed
+if either field has drifted back into a tracked manifest:
+
+```bash
+python3 pipeline/scripts/gates/manifest_field_ownership_gate.py \
+  < chat/jw-chat-agent-poc/deploy/deployment.yaml
+
+python3 pipeline/scripts/gates/manifest_field_ownership_gate.py \
+  < chat/wf301-vdb-bridge/deploy/deployment.yaml
+```
+
+Use the dedicated `jw-chat-env-canonicalizer` server-side field manager against
+an existing Deployment. First run `--dry-run=server` and verify that the merged
+result preserves the live image and replica count. Do not use ordinary
+client-side apply: historical `last-applied-configuration` ownership can delete
+fields omitted from the new env-only manifest.
+
 ## API goldens
 
 Run the four tracked requests directly against the candidate runtime:

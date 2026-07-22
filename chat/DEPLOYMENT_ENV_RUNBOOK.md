@@ -1,27 +1,44 @@
 # Chat and 235 deployment environment runbook
 
-The tracked Deployment manifests are complete, secret-safe baselines for the
-live-observed snapshots below. They are not evidence that a later runtime still
-matches those snapshots.
+The tracked Deployment files are secret-safe, server-side-apply ownership
+manifests for stable environment settings. They are deliberately incomplete and
+must only be applied to existing Deployments. They do not own image, replicas,
+release identity, probes, resources, selectors, or other workload fields.
 
-| Deployment | Observed source snapshot | Manifest |
-| --- | --- | --- |
-| `jw-chat-agent-poc` | `998f3519ea85c729d2e4fe201867af48315ede03` | `jw-chat-agent-poc/deploy/deployment.yaml` |
-| `code-serving-235` | `abf6e59aafa06cf47ef2b31b771207a90627a57e` | `wf301-vdb-bridge/deploy/deployment.yaml` |
+| Deployment | Stable env owner | Manifest-owned env |
+| --- | --- | ---: |
+| `jw-chat-agent-poc` | `jw-chat-env-canonicalizer` | 64 |
+| `code-serving-235` | `jw-chat-env-canonicalizer` | 36 |
 
-The former chat env and warmup patch files were absorbed into the complete
-chat manifest. Keeping both forms would allow the same field to acquire two
-owners, so the fragments were removed. Chat replicas are omitted because an
-HPA owns that field. The 235 manifest retains the live-observed singleton.
+The former chat env and warmup fragments were absorbed into the chat env
+ownership manifest. Keeping both forms would allow the same field to acquire
+two owners, so the fragments remain removed. The chat HPA owns replicas; the
+release or workload controller owns every other omitted field.
+
+Do not use ordinary client-side `kubectl apply` with these files. Use a dedicated
+server-side field manager so omitted fields retain their existing owners:
+
+```bash
+kubectl -n llmops apply --server-side --dry-run=server \
+  --field-manager=jw-chat-env-canonicalizer \
+  -f chat/jw-chat-agent-poc/deploy/deployment.yaml -o json
+```
+
+The dry-run result must retain the exact live image and replica count. A first
+ownership transfer can report conflicts on env entries owned by another
+manager. Review the conflict paths and the complete masked env census before a
+separately approved apply uses `--force-conflicts`; never force unrelated
+workload fields.
 
 ## Release-time identity
 
-Do not hardcode per-release identity into the baseline manifest. Deployment
-automation must set the image and these environment variables in the same
-release transaction:
+Do not hardcode per-release identity into the env ownership manifest.
+Deployment automation must set the image and these environment variables in the
+same release transaction:
 
-- chat: `JW_CHAT_GIT_SHA` and `APP_VERSION`
-- 235: `JW_235_GIT_SHA` and `OPENAPI_VERSION`
+- chat: `APP_VERSION`, `JW_CHAT_GIT_SHA`, `JW_CHAT_IMAGE_DIGEST`
+- 235: `COMMIT_HASH`, `JW_235_GIT_SHA`, `JW_235_IMAGE_DIGEST`,
+  `JW_235_RELEASE_ID`, `OPENAPI_VERSION`
 
 The chat values must equal the committed source SHA. The 235 OpenAPI marker
 must name the contract shipped by the same source SHA. Remove the stale generic
@@ -29,14 +46,20 @@ chat aliases `GIT_SHA` and `COMMIT_SHA`; they must not be used as runtime
 identity. If either alias reappears, locate its image or deployment injection
 source instead of trusting its value.
 
-The observed serving IDs in this baseline are common/final/planner `190` and
-deep `202`. These are recorded observations, not a policy declaration. A policy
-change requires a separate decision and a new verified manifest update.
+The observed serving IDs in the stable env set are common/final/planner `190`
+and deep `202`. These are recorded observations, not a policy declaration. A
+policy change requires a separate decision and a new verified manifest update.
 
 Before applying the 235 manifest, provision Secret
 `code-serving-235-runtime-secrets` with key `REPOSITORY_URL`. The live snapshot
 held that credential-bearing URL as a literal. The tracked manifest deliberately
 converts it to `secretKeyRef`; never copy the literal into Git or an audit file.
+The explicit `value: null` beside `valueFrom` is intentional: server-side apply
+uses it to remove the live literal while transferring this one env entry to the
+Secret reference. A no-force server dry-run must first show only the expected
+field-manager conflict on that literal. Provision and hash-verify the Secret
+before any separately approved `--force-conflicts` apply; never force this
+ownership transfer while the Secret is absent.
 
 `FILE_SQL_ENABLED` is intentionally absent from the 235 manifest and required
 set. Its live value and policy are being evaluated separately. Do not infer an
@@ -44,7 +67,21 @@ OFF or ON policy from that omission.
 
 ## Ordered post-deploy gates
 
-Run these gates after every image or mode transition:
+Before applying either env ownership manifest, run the field-ownership gate:
+
+```bash
+python3 pipeline/scripts/gates/manifest_field_ownership_gate.py \
+  < chat/jw-chat-agent-poc/deploy/deployment.yaml
+python3 pipeline/scripts/gates/manifest_field_ownership_gate.py \
+  < chat/wf301-vdb-bridge/deploy/deployment.yaml
+```
+
+It must report one checked container and zero failures for each file. Then use
+server-side dry-run to prove that the live image and replicas survive the merge.
+An image field, a replicas field, or an empty container population is a hard
+stop.
+
+Run these gates after every image, mode, or env transition:
 
 1. Verify pod `imageID` equals the intended digest exactly and Deployment
    `generation` equals `observedGeneration`.
@@ -62,8 +99,15 @@ kubectl -n llmops get deployment code-serving-235 -o json \
       --required-file pipeline/scripts/gates/required_env/code-serving-235.json
 ```
 
-The gate checks names only. It never prints or compares values. Missing keys,
-malformed input, and an empty required population all exit non-zero.
+The presence gate checks names only. It never prints or compares values. The
+required sets retain release-time identities even though the env ownership
+manifests omit them. Missing keys, malformed input, and an empty required
+population all exit non-zero.
+
+Omitting the stale generic aliases `GIT_SHA` and `COMMIT_SHA` from the env
+ownership manifest does not by itself remove live entries owned by another
+field manager. The release track must remove them explicitly after proving their
+source; their continued presence must not be interpreted as current identity.
 
 ## MCP standby recovery
 

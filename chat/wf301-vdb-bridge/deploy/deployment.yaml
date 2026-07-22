@@ -1,44 +1,17 @@
-# Live-observed baseline: bridge commit abf6e59a (2026-07-22).
+# Server-side-apply ownership manifest for stable bridge environment settings.
+# Apply only to the existing Deployment with field-manager jw-chat-env-canonicalizer.
 # FILE_SQL_ENABLED is intentionally omitted pending a separate policy decision.
-# Release automation injects dynamic identity markers.
+# Release automation owns image and identity; workload automation owns replicas.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: code-serving-235
   namespace: llmops
-  labels:
-    app: code-serving-235
 spec:
-  progressDeadlineSeconds: 600
-  replicas: 1
-  revisionHistoryLimit: 10
-  selector:
-    matchLabels:
-      app: code-serving-235
-  strategy:
-    rollingUpdate:
-      maxSurge: 25%
-      maxUnavailable: 25%
-    type: RollingUpdate
   template:
-    metadata:
-      labels:
-        app: code-serving-235
-        auth: external
     spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: code-serving-235
-              topologyKey: kubernetes.io/hostname
-            weight: 100
       containers:
-      - command:
-        - supervisord
-        - -n
+      - name: code-serving-235
         env:
         - name: DB_PASSWORD
           valueFrom:
@@ -53,9 +26,8 @@ spec:
           value: '235'
         - name: CODE_SERVING_DEPLOYMENT_ID
           value: '919'
-        - name: COMMIT_HASH
-          value: abf6e59aafa06cf47ef2b31b771207a90627a57e
         - name: REPOSITORY_URL
+          value: null
           valueFrom:
             secretKeyRef:
               name: code-serving-235-runtime-secrets
@@ -120,53 +92,3 @@ spec:
           value: '100'
         - name: QUOTA_MAX_SESSION_MB
           value: '100'
-        - name: JW_235_IMAGE_DIGEST
-          value: sha256:285cf2a688ac65e336626d23445643b0bb580a7435f23e6024b1da59f8d77d26
-        - name: JW_235_RELEASE_ID
-          value: bridge-docid-abf6e59a-r5-20260722
-        image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/mnc/wf301-vdb-bridge@sha256:285cf2a688ac65e336626d23445643b0bb580a7435f23e6024b1da59f8d77d26
-        imagePullPolicy: Always
-        name: code-serving-235
-        ports:
-        - containerPort: 8080
-          protocol: TCP
-        resources:
-          limits:
-            cpu: '1'
-            memory: 2G
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: true
-        startupProbe:
-          failureThreshold: 120
-          httpGet:
-            path: /health
-            port: 8080
-            scheme: HTTP
-          periodSeconds: 5
-          successThreshold: 1
-          timeoutSeconds: 2
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
-        volumeMounts:
-        - mountPath: /nfs-root
-          name: nfs-root
-        - mountPath: /etc/pip.conf
-          name: global-configmap
-          subPath: pip.conf
-        workingDir: /app
-      dnsPolicy: ClusterFirst
-      nodeSelector:
-        genos: enabled
-      restartPolicy: Always
-      schedulerName: default-scheduler
-      securityContext: {}
-      terminationGracePeriodSeconds: 30
-      volumes:
-      - name: nfs-root
-        persistentVolumeClaim:
-          claimName: llmops-nfs-root
-      - configMap:
-          defaultMode: 511
-          name: llmops-global-configmap
-        name: global-configmap
