@@ -50,6 +50,12 @@ class UnsupportedBrandError(LookupError):
 class AmbiguousBrandError(LookupError):
     """Raised when one exact alias maps to multiple canonical brands."""
 
+    def __init__(self, message: str | None = None, *, query: str = "", candidates: tuple[str, ...] = ()) -> None:
+        self.query = query
+        self.candidates = tuple(candidates)
+        detail = message or f"Ambiguous brand: {query}; candidates={','.join(self.candidates)}"
+        super().__init__(detail)
+
 
 class BrandMembershipReader(Protocol):
     def brand_memberships(self) -> tuple[dict[str, str], ...]: ...
@@ -91,6 +97,7 @@ class BrandResolver:
         with trace_span("brand_alias_match_one", f"catalog_size={len(raw_items)}", category="resolver"):
             market_universe = self._market_universe(raw_items, self._fixture_items)
             matches = self._matching_spans(question_or_brand, raw_items)
+            self._raise_family_ambiguity(question_or_brand, raw_items)
             if matches:
                 start, end, key, candidates = matches[0]
                 selected = self._select_candidate(question_or_brand, start, end, key, candidates)
@@ -107,6 +114,7 @@ class BrandResolver:
         with trace_span("brand_alias_match_many", f"catalog_size={len(items)}", category="resolver"):
             market_universe = self._market_universe(items, self._fixture_items)
             spans = self._matching_spans(question_or_brands, items)
+            self._raise_family_ambiguity(question_or_brands, items)
             selected: list[tuple[int, dict[str, Any]]] = []
             occupied: list[tuple[int, int]] = []
             for start, end, key, candidates in spans:
@@ -355,6 +363,28 @@ class BrandResolver:
         self._alias_index_source = source
         return self._alias_index, self._alias_window_size
 
+    def _raise_family_ambiguity(self, text: str, items: list[dict[str, Any]]) -> None:
+        index, _ = self._alias_lookup(items)
+        normalized_text = unicodedata.normalize("NFKC", text)
+        for match in re.finditer(
+            r"(?P<prefix>[0-9A-Za-z가-힣+_.-]{2,})\s*패밀리(?![0-9A-Za-z가-힣+_.-])",
+            normalized_text,
+        ):
+            prefix = self._normalize(match.group("prefix"))
+            family_key = f"{prefix}패밀리"
+            if family_key in index:
+                continue
+            candidates = sorted(
+                {
+                    str(item["canonical_brand"])
+                    for item in items
+                    if self._normalize(str(item["canonical_brand"])).startswith(prefix)
+                },
+                key=lambda value: (len(self._normalize(value)), self._normalize(value), value),
+            )
+            if len(candidates) > 1:
+                raise AmbiguousBrandError(query=family_key, candidates=tuple(candidates))
+
     @staticmethod
     def _select_candidate(
         text: str,
@@ -381,9 +411,7 @@ class BrandResolver:
         ]
         if len(exact) == 1:
             return exact[0]
-        raise AmbiguousBrandError(
-            f"Ambiguous brand alias: {key}; candidates={','.join(sorted(canonical))}"
-        )
+        raise AmbiguousBrandError(query=key, candidates=tuple(sorted(canonical)))
 
     @staticmethod
     def _to_resolution(

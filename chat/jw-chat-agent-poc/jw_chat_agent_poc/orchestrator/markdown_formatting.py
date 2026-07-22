@@ -142,7 +142,9 @@ def source_label(source: str | None) -> str:
         "nedrug_mcp": "식약처 의약품 정보",
         "document": "업로드 문서",
         "none": "데이터 없음",
-        "unsupported_brand": "전략 마트 원천 미확인",
+        "unsupported_brand": "브랜드 식별 미확인",
+        "ambiguous_brand": "브랜드 식별 후보",
+        "strategic_market_not_member": "전략시장 정의 미포함",
     }
     return labels.get(key, key or "도구 결과")
 
@@ -169,7 +171,9 @@ def source_description(source: str | None) -> str:
         "업로드 문서": "사용자가 업로드한 문서 검색 결과",
         "none": "현재 POC가 보유하지 않은 데이터 영역",
         "데이터 없음": "현재 POC가 보유하지 않은 데이터 영역",
-        "unsupported_brand": "현재 전략 마트 원천에서 브랜드 미확인",
+        "unsupported_brand": "요청 이름과 일치하는 브랜드 미확인",
+        "ambiguous_brand": "요청 이름과 일치하는 복수 브랜드 후보",
+        "strategic_market_not_member": "해당 브랜드가 전략시장 정의에 포함되지 않음",
         "지원 범위 밖": "현재 운영 지원 브랜드 목록 밖 질의",
     }
     return descriptions.get(label, descriptions.get(str(source or ""), "도구 결과"))

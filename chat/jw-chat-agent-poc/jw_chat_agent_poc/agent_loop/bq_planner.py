@@ -130,7 +130,7 @@ def _arguments(tool: str, slots: BqSlots, source: str) -> dict[str, str]:
     if tool == "get_top_brands":
         arguments["limit"] = "5"
     if tool == "get_brand_series":
-        arguments["history_points"] = "60"
+        arguments["history_points"] = str(_relative_history_points(slots.question) or 60)
     if tool in {"search_news", "web_search"}:
         arguments["query"] = slots.question
     if source:
@@ -155,7 +155,18 @@ def _schema_names(schemas: tuple[dict[str, object], ...]) -> frozenset[str]:
 
 
 def _period(question: str, grounding: AgentPeriodGrounding) -> str:
+    if _relative_history_points(question) is not None:
+        return "latest"
     explicit = re.search(r"20\d{2}-(?:0[1-9]|1[0-2])", question)
     if explicit and explicit.group(0) in grounding.schema_periods:
         return explicit.group(0)
     return grounding.pre_resolved_periods[0] if grounding.pre_resolved_periods else "latest"
+
+
+def _relative_history_points(question: str) -> int | None:
+    match = re.search(r"최근\s*(\d{1,2})\s*(년|개월|달)", question)
+    if match is None:
+        return None
+    count = int(match.group(1))
+    months = count * 12 if match.group(2) == "년" else count
+    return months if 2 <= months <= 60 else None

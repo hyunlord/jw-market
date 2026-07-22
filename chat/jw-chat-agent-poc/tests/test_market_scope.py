@@ -238,6 +238,7 @@ def test_strategic_metric_for_general_only_brand_is_typed_as_market_unavailable(
 
     assert resolver.is_general_only_brand("아일리아 전략뷰 HHI") is True
     assert result["router_diagnostics"]["gate"] == "typed_unavailable"
+    assert result["sources"] == ["strategic_market_not_member"]
     assert "전략시장 정의에 포함되지 않아" in result["answer"]
     assert "브랜드를 확인" not in result["answer"]
 
@@ -268,6 +269,8 @@ def test_strategic_other_member_listing_uses_full_population_and_excludes_top_fi
     )
 
     data = result["tool_calls"][0]["render_data"]
+    assert result["tool_calls"][0]["status"] == "ok"
+    assert data["status"] == "ok"
     assert data["total_brands_in_market"] == 8
     assert data["displayed_brand_count"] == 3
     assert [row["brand"] for row in data["level_segments"]] == ["브랜드6", "브랜드7", "브랜드8"]

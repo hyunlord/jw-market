@@ -40,7 +40,10 @@ def test_membership_queries_read_each_presence_source_without_cross_mart_sorting
     assert len(queries) == 3
     joined = "\n".join(queries)
     assert "mart_strategic_ml_brand_metric" in joined
-    assert "mart_general_brand_metric" in joined
+    assert "chat_general_brand_membership" in joined
+    assert "mart_general_brand_metric" not in joined
+    assert "membership.brand_key AS brand" in joined
+    assert "membership.brand_name" in joined
     assert "catalog_strategic_brand" in joined
     assert "catalog_ml_market" in joined
     assert "brand.brand_id = mart_brand.brand_id" in joined

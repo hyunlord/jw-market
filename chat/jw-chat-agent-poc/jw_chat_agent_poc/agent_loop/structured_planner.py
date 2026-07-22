@@ -145,6 +145,8 @@ def plan_structured_market_question(
     available_tools = _schema_names(schemas)
     axis = next((item for item in _AXES if item[1].search(question)), None)
     metric = next((item for item in _METRICS if item.pattern.search(question)), None)
+    if metric is not None and metric.owner == "market":
+        brands = brands[:1]
     comparison = len(brands) > 1
     if axis is None and metric is None and not comparison:
         return None

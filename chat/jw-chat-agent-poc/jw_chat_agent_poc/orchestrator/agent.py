@@ -8,6 +8,7 @@ from typing import Any
 from jw_chat_agent_poc.agent_loop import ToolUseAgent, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.routing import is_top_n_intent
 from jw_chat_agent_poc.agent_loop.factory import (
+    ambiguous_brand_result,
     ChatAgentDependencyOverrides,
     build_chat_agent_dependencies,
     build_tool_use_agent,
@@ -46,7 +47,7 @@ from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_sta
 from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
-from jw_chat_agent_poc.resolver import BrandResolution, BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver import AmbiguousBrandError, BrandResolution, BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter, LLMFirstBQRouter
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.external.policy import (
@@ -219,6 +220,15 @@ class ChatAgent:
                     if pre_resolved is not None
                     else self.resolver.resolve(question, allow_default=False)
                 )
+        except AmbiguousBrandError as exc:
+            return finish(
+                ambiguous_brand_result(
+                    question,
+                    routes,
+                    router_diagnostics(self.router),
+                    exc.candidates,
+                )
+            )
         except UnsupportedBrandError:
             disease_anchor = hira_disease_anchor_brand(question)
             if disease_anchor is not None:

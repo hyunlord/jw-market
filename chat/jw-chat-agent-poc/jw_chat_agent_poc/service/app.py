@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import (
+    ambiguous_brand_result,
     build_chat_agent_dependencies,
     build_tool_use_agent,
     unsupported_brand_result,
@@ -67,7 +68,7 @@ from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
-from jw_chat_agent_poc.resolver import UnsupportedBrandError
+from jw_chat_agent_poc.resolver import AmbiguousBrandError, UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
     append_deterministic_source_block,
     cleanup_markdown_answer,
@@ -593,7 +594,7 @@ def _answer_question(
         )
         grounded_market_question = _ground_unanchored_market_golden(
             routing_question,
-            has_explicit_anchor=has_explicit_market_anchor,
+            has_explicit_anchor=False,
         )
         uses_monthly_market_golden = _uses_monthly_market_golden(
             routing_question,
@@ -605,10 +606,8 @@ def _answer_question(
             else effective_question
         )
         routing_question = grounded_market_question
-        has_grounded_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
         needs_market_clarification = (
             structured_metric_owner(routing_question) == "market"
-            and not has_grounded_market_anchor
             and not has_file_reference(routing_question)
             and _is_entity_free_market_metric_question(routing_question)
         )
@@ -1676,7 +1675,21 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     structured_plan = None
     with trace_span("structured_preflight", "deterministic structured question preflight"):
         if callable(getattr(dependencies.resolver, "resolve_many", None)):
-            structured_plan = preflight_structured_market_question(question, dependencies.resolver)
+            try:
+                structured_plan = preflight_structured_market_question(question, dependencies.resolver)
+            except AmbiguousBrandError as exc:
+                result = ambiguous_brand_result(
+                    question,
+                    routes,
+                    router_diagnostics(dependencies.router),
+                    exc.candidates,
+                )
+                return attach_routing_v4_legacy_observation(
+                    question,
+                    result,
+                    resolver=dependencies.resolver,
+                    external=getattr(dependencies, "external", None),
+                )
     if (
         not is_explicit_quarter_sales_question(question)
         and structured_plan is None
@@ -1694,6 +1707,19 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
         ):
             try:
                 dependencies.resolver.resolve(question, allow_default=False)
+            except AmbiguousBrandError as exc:
+                result = ambiguous_brand_result(
+                    question,
+                    routes,
+                    router_diagnostics(dependencies.router),
+                    exc.candidates,
+                )
+                return attach_routing_v4_legacy_observation(
+                    question,
+                    result,
+                    resolver=dependencies.resolver,
+                    external=getattr(dependencies, "external", None),
+                )
             except UnsupportedBrandError:
                 typed_result = (
                     unsupported_hira_interface_result
@@ -1732,6 +1758,19 @@ def _answer_deep_research(question: str, external_mode: str) -> dict:
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
         try:
             dependencies.resolver.resolve(question, allow_default=False)
+        except AmbiguousBrandError as exc:
+            result = ambiguous_brand_result(
+                question,
+                [],
+                {
+                    "mode": "deep_research",
+                    "deterministic_execution": True,
+                    "model": "gemini-3.1-pro-preview",
+                    "serving_id": "202",
+                },
+                exc.candidates,
+            )
+            return {**result, "research_mode": "deep", "effective_question": question}
         except UnsupportedBrandError:
             typed_result = (
                 unsupported_hira_interface_result
@@ -2919,6 +2958,8 @@ def _is_terminal_typed_result(result: dict) -> bool:
     if isinstance(sources, (list, tuple)) and len(sources) == 1:
         if str(sources[0] or "") in {
             "unsupported_brand",
+            "ambiguous_brand",
+            "strategic_market_not_member",
             "unsupported_hira_interface",
             "field_not_exposed",
         }:

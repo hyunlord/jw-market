@@ -519,6 +519,7 @@ class MarketScopeResolver:
             "gate": "typed_unavailable",
             "gate_reason": "strategic_market_not_member",
         }
+        result["sources"] = ["strategic_market_not_member"]
         return result
 
     @staticmethod

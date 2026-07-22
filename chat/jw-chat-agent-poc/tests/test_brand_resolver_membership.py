@@ -260,6 +260,27 @@ def test_shared_alias_with_no_exact_canonical_remains_ambiguous() -> None:
         resolver.resolve("공통별칭 매출", allow_default=False)
 
 
+def test_family_label_without_exact_entity_returns_real_candidates() -> None:
+    memberships = StaticMembershipReader(
+        tuple(
+            {
+                "brand": brand,
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            }
+            for brand in ("카나브", "카나브젯", "카나브플러스")
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    with pytest.raises(AmbiguousBrandError) as raised:
+        resolver.resolve("카나브패밀리 실적 어때?", allow_default=False)
+
+    assert raised.value.query == "카나브패밀리"
+    assert raised.value.candidates == ("카나브", "카나브젯", "카나브플러스")
+
+
 def test_resolve_many_keeps_exact_canonical_when_normalized_catalog_keys_collide() -> None:
     memberships = StaticMembershipReader(
         (

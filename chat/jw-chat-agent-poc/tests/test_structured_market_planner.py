@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
@@ -195,6 +197,28 @@ def test_recent_three_year_plan_requests_only_a_bounded_36_month_series() -> Non
         "period": "latest",
         "history_points": "36",
     }
+
+
+def test_market_top_plan_does_not_promote_structural_catalog_terms_to_comparison_brands() -> None:
+    class GlobalCatalogResolver:
+        def resolve_many(self, _question: str, allow_default: bool = False):
+            assert allow_default is False
+            return (
+                SimpleNamespace(canonical_brand="리바로"),
+                SimpleNamespace(canonical_brand="상위"),
+                SimpleNamespace(canonical_brand="브랜드"),
+            )
+
+    question = "리바로 시장 상위 5개 브랜드"
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
+
+    plan = plan_structured_market_question(question, GlobalCatalogResolver(), grounding, schemas)
+
+    assert plan is not None
+    assert plan.kind == "market_top"
+    assert plan.slots.brands == ("리바로",)
+    assert "compare_brands_series" not in {call.name for call in plan.decision.tool_calls}
 
 
 def test_query_tool_descriptions_require_context_companions() -> None:

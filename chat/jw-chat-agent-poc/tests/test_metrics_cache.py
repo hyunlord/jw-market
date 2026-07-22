@@ -560,7 +560,7 @@ def test_chat_agent_reports_mart_absence_for_unknown_brand() -> None:
 
     assert result["sources"] == ["unsupported_brand"]
     assert result["tool_calls"] == []
-    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "일치하는 브랜드가 확인되지 않습니다" in result["answer"]
     assert "지원하지 않는 브랜드" not in result["answer"]
 
 

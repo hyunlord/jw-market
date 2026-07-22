@@ -151,7 +151,7 @@ def unsupported_brand_result(
     diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
     markdown = MarkdownResponseBuilder().unsupported_brand(
-        "요청한 브랜드는 현재 전략 마트 원천에서 확인되지 않습니다. 브랜드명을 확인해 주세요."
+        "요청한 이름과 일치하는 브랜드가 확인되지 않습니다. 브랜드명을 확인해 주세요."
     )
     return {
         "question": question,
@@ -162,6 +162,28 @@ def unsupported_brand_result(
         "answer": markdown.markdown,
         "markdown_response": markdown.to_dict(),
         "sources": ["unsupported_brand"],
+    }
+
+
+def ambiguous_brand_result(
+    question: str,
+    routes: list[BQSubQuestion] | tuple[BQSubQuestion, ...],
+    diagnostics: dict[str, Any],
+    candidates: tuple[str, ...],
+) -> dict[str, Any]:
+    candidate_text = ", ".join(candidates)
+    markdown = MarkdownResponseBuilder().ambiguous_brand(
+        f"요청한 이름만으로 하나의 브랜드를 정할 수 없습니다. 후보: {candidate_text}. 하나를 지정해 주세요."
+    )
+    return {
+        "question": question,
+        "resolution": {"status": "ambiguous", "candidates": list(candidates)},
+        "decomposition": [route.__dict__ for route in routes],
+        "router_diagnostics": diagnostics,
+        "tool_calls": [],
+        "answer": markdown.markdown,
+        "markdown_response": markdown.to_dict(),
+        "sources": ["ambiguous_brand"],
     }
 
 

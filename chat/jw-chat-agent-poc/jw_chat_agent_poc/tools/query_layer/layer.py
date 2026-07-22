@@ -318,6 +318,7 @@ class StrategicQueryLayer:
         bounded = max(1, min(int(limit), 50))
         selected = ranked[5 : 5 + bounded] if include_other else ranked[:bounded]
         data: dict[str, Any] = {
+            "status": "ok",
             "market": selected_market,
             "market_id": selected_market,
             "market_name": selected_market,
@@ -354,6 +355,7 @@ class StrategicQueryLayer:
             data["market_structure"] = structure
         qualifier = "상위 5개 밖의" if include_other else ""
         return {
+            "status": "ok",
             "source": source_label(source),
             "tool": "get_market_members",
             "summary_text": (
@@ -710,12 +712,19 @@ def _failed_metric_call(
     market: str | None = None,
     market_structure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    message = f"{period} 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다."
+    absent = status in {"missing", "no_data", "not_found"}
+    public_status = "no_data" if absent else "query_failed"
+    message = (
+        f"요청하신 {period} 데이터를 조회할 수 없습니다. 해당하는 시계열 데이터가 없습니다. "
+        "다른 기간 값으로 대체하지 않습니다."
+        if absent
+        else f"{period} 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다."
+    )
     render_data: dict[str, Any] = {
         "brand": brand,
         "metric": metric_name(metric),
         "period": period,
-        "status": "query_failed",
+        "status": public_status,
         "message": message,
         "source_status": status,
     }
@@ -726,7 +735,7 @@ def _failed_metric_call(
         render_data["market_structure"] = market_structure
     return {
         "source": source_label(source),
-        "tool": "query_failed",
+        "tool": "get_brand_metric" if absent else "query_failed",
         "summary_text": message,
         "render_data": render_data,
     }

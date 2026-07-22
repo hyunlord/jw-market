@@ -122,14 +122,14 @@ class MariaDbCatalogMembershipReader:
             """,
             """
                 SELECT DISTINCT
-                       general.brand_name AS brand,
-                       NULLIF(general.brand_key, '') AS brand_alias,
+                       membership.brand_key AS brand,
+                       NULLIF(membership.brand_name, '') AS brand_alias,
                        NULL AS market_id,
                        NULL AS market_name,
                        'general_mart' AS support_source
-                FROM mart_general_brand_metric AS general
-                WHERE general.brand_name IS NOT NULL
-                  AND general.brand_name <> ''
+                FROM chat_general_brand_membership AS membership
+                WHERE membership.brand_key IS NOT NULL
+                  AND membership.brand_key <> ''
             """,
         )
 

@@ -108,3 +108,19 @@ def test_required_market_source_gap_is_explicit_in_plan() -> None:
     assert plan is not None
     assert plan.missing_sources == ("iqvia_nsa",)
     assert [call.arguments.get("source") for call in plan.decision.tool_calls] == ["ubist"]
+
+
+def test_recent_three_year_bq_plan_uses_latest_endpoint_and_36_month_window() -> None:
+    plan = _plan("리바로 최근 3년 매출 추이 보여줘")
+
+    assert plan is not None
+    period_calls = [
+        call for call in plan.decision.tool_calls if "period" in call.arguments
+    ]
+    series_calls = [
+        call for call in plan.decision.tool_calls if call.name == "get_brand_series"
+    ]
+    assert period_calls
+    assert {call.arguments["period"] for call in period_calls} == {"latest"}
+    assert series_calls
+    assert {call.arguments["history_points"] for call in series_calls} == {"36"}

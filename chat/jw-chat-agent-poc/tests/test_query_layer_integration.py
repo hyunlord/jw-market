@@ -167,8 +167,10 @@ def test_brand_metric_aggregates_complete_quarter_and_rejects_incomplete_quarter
     assert "fallback_period" not in complete["render_data"]
     assert complete["render_data"]["query_spec"]["filters"]["period"] == "2025-Q2"
     assert "~" not in complete["summary_text"]
-    assert incomplete["tool"] == "query_failed"
+    assert incomplete["tool"] == "get_brand_metric"
     assert incomplete["render_data"]["period"] == "2025-Q2"
+    assert incomplete["render_data"]["status"] == "no_data"
+    assert "다른 기간 값으로 대체하지 않습니다" in incomplete["summary_text"]
 
 
 def test_brand_metric_never_falls_back_from_an_explicit_missing_month() -> None:
@@ -193,10 +195,12 @@ def test_brand_metric_never_falls_back_from_an_explicit_missing_month() -> None:
         "리바로", "sales", "2025-05"
     )
 
-    assert call["tool"] == "query_failed"
+    assert call["tool"] == "get_brand_metric"
     assert call["render_data"]["period"] == "2025-05"
+    assert call["render_data"]["status"] == "no_data"
     assert "fallback_period" not in call["render_data"]
     assert "2025-04" not in call["summary_text"]
+    assert "다른 기간 값으로 대체하지 않습니다" in call["summary_text"]
 
 
 def test_market_members_honors_explicit_period_instead_of_latest() -> None:
@@ -223,6 +227,8 @@ def test_market_members_honors_explicit_period_instead_of_latest() -> None:
     )
 
     data = call["render_data"]
+    assert call["status"] == "ok"
+    assert data["status"] == "ok"
     assert data["period"] == "2025-04"
     assert data["member_brands"] == ("과거선두", "현재선두")
     assert data["query_spec"]["filters"] == {"period": "2025-04"}

@@ -29,7 +29,7 @@ from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader,
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 from jw_chat_agent_poc.tools.external import ExternalApiClient
-from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver import AmbiguousBrandError, BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
@@ -878,7 +878,41 @@ def test_direct_agent_loop_mixed_brand_metric_keeps_unknown_brand_validation(mon
 
     assert result["sources"] == ["unsupported_brand"]
     assert result["tool_calls"] == []
-    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "일치하는 브랜드가 확인되지 않습니다" in result["answer"]
+    assert "전략 마트 원천" not in result["answer"]
+
+
+def test_direct_agent_loop_returns_typed_brand_ambiguity_before_tools(monkeypatch) -> None:
+    class Resolver:
+        def resolve(self, _question: str, *, allow_default: bool = False):
+            raise AmbiguousBrandError(
+                query="카나브패밀리",
+                candidates=("카나브", "카나브젯", "카나브플러스"),
+            )
+
+    class Router:
+        def route(self, _question: str, *, has_documents: bool = False):
+            return ()
+
+    class Dependencies:
+        router = Router()
+        resolver = Resolver()
+
+        def agent_loop_dependencies(self):
+            raise AssertionError("ambiguous brand must stop before tools")
+
+    monkeypatch.setattr(
+        service_app,
+        "build_chat_agent_dependencies",
+        lambda *, external_mode="fixture": Dependencies(),
+    )
+
+    result = service_app._answer_direct_agent_loop("카나브패밀리 실적 어때?", "live")
+
+    assert result["sources"] == ["ambiguous_brand"]
+    assert result["tool_calls"] == []
+    assert all(candidate in result["answer"] for candidate in ("카나브", "카나브젯", "카나브플러스"))
+    assert "하나를 지정" in result["answer"]
 
 
 @pytest.mark.parametrize(
@@ -991,6 +1025,39 @@ def test_unanchored_concentration_goldens_use_monthly_truth_path(
     assert item["result"]["answer"] == "HHI 253.62"
 
 
+def test_unanchored_concentration_golden_ignores_global_catalog_common_noun_collision(
+    monkeypatch,
+) -> None:
+    resolver = _market_scope_resolver()
+    captured: list[tuple[str, str]] = []
+    original_has_anchor = resolver.has_explicit_anchor
+
+    def has_anchor(question: str) -> bool:
+        if question == "고지혈증 시장 상위 5개 브랜드 알려줘":
+            return True
+        return original_has_anchor(question)
+
+    def monthly_golden(value: str, *, anchor_brand: str) -> dict:
+        captured.append((value, anchor_brand))
+        return {"answer": "HHI 253.62", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr(resolver, "has_explicit_anchor", has_anchor)
+    monkeypatch.setattr(resolver, "answer_monthly_market_golden", monthly_golden)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        resolver,
+        _fake_agent_factory,
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        "global-catalog-common-noun-collision",
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == [("고지혈증 시장 상위 5개 브랜드 알려줘", "리바로")]
+    assert item["result"]["effective_question"] == "리바로 시장 상위 5개와 HHI, CR5를 알려줘"
+
+
 def test_unanchored_quarter_sales_asks_for_brand_before_tool_execution(monkeypatch) -> None:
     def direct_loop(_question: str, _external_mode: str) -> dict:
         raise AssertionError("an ambiguous brand-level sales question must not execute tools")
@@ -1060,6 +1127,27 @@ def test_unanchored_market_top_five_asks_for_market_not_brand(monkeypatch) -> No
         "상위 5개 브랜드",
         "live",
         "ambiguous-market-top-five",
+        use_direct_agent_loop=True,
+    )
+
+    assert item["result"]["answer"] == "어느 시장의 상위 브랜드인지 알려주세요."
+    assert item["result"]["tool_calls"] == []
+    assert item["result"]["router_diagnostics"]["mode"] == "market_clarification"
+
+
+def test_unanchored_market_top_five_ignores_global_catalog_common_noun_collision(
+    monkeypatch,
+) -> None:
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr(resolver, "has_explicit_anchor", lambda _question: True)
+
+    item = service_app._answer_question(
+        SessionStore(),
+        resolver,
+        _fake_agent_factory,
+        "상위 5개 브랜드",
+        "live",
+        "ambiguous-market-top-five-global-catalog",
         use_direct_agent_loop=True,
     )
 
@@ -2340,7 +2428,8 @@ def test_answer_question_direct_agent_loop_reports_mart_absence(monkeypatch) -> 
     assert result["sources"] == ["unsupported_brand"]
     assert result["tool_calls"] == []
     assert result["router_diagnostics"] == service_app.router_diagnostics(Dependencies.router)
-    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "일치하는 브랜드가 확인되지 않습니다" in result["answer"]
+    assert "전략 마트 원천" not in result["answer"]
     assert "지원하지 않는 브랜드" not in result["answer"]
 
 
@@ -2364,7 +2453,8 @@ def test_compute_final_answer_preserves_strategic_mart_absence(monkeypatch) -> N
     final = compute_final_answer(question, result, "source-absent-final")
 
     assert not genos_called
-    assert "전략 마트 원천에서 확인되지 않습니다" in final.text
+    assert "일치하는 브랜드가 확인되지 않습니다" in final.text
+    assert "전략 마트 원천" not in final.text
     assert "브랜드 목록에서 일치 항목을 찾지 못했습니다" not in final.text
     assert final.sources == ("unsupported_brand",)
 

@@ -69,9 +69,9 @@ def test_unsupported_brand_result_reports_absence_from_strategic_mart() -> None:
     assert result["tool_calls"] == []
     assert result["sources"] == ["unsupported_brand"]
     assert result["router_diagnostics"] == router_diagnostics(router)
-    assert "전략 마트 원천에서 확인되지 않습니다" in result["answer"]
+    assert "일치하는 브랜드가 확인되지 않습니다" in result["answer"]
     assert "지원하지 않는 브랜드" not in result["answer"]
     assert result["markdown_response"]["sources_md"].startswith("## 출처")
-    assert "전략 마트 원천 미확인" in result["markdown_response"]["sources_md"]
+    assert "브랜드 식별 미확인" in result["markdown_response"]["sources_md"]
     assert "지원 범위 밖" not in result["markdown_response"]["sources_md"]
-    assert source_description("unsupported_brand") == "현재 전략 마트 원천에서 브랜드 미확인"
+    assert source_description("unsupported_brand") == "요청 이름과 일치하는 브랜드 미확인"
