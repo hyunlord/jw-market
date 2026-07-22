@@ -23,6 +23,11 @@ from jw_chat_agent_poc.tool_use.provider import (
     ToolChoiceProvider,
     configured_planner_max_tokens,
 )
+from jw_chat_agent_poc.tool_use.clinical_disease import (
+    clinical_disease_for_query,
+    clinical_disease_for_text,
+    clinicaltrials_condition_query,
+)
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
     begin_shadow_route_diagnostics,
@@ -32,10 +37,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
     internal_legacy_route_diagnostics,
     shadow_route_diagnostics,
 )
-from jw_chat_agent_poc.tool_use.routing_v4_rules import (
-    clinical_condition_query,
-    classify_question,
-)
+from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -56,10 +58,6 @@ _INTERNAL_MART_TOOL_NAMES: Final[frozenset[str]] = frozenset(
         "query_spec",
     }
 )
-_CLINICAL_DISEASE_ALIASES: Final[dict[str, str]] = {
-    "고지혈증": "hyperlipidemia",
-    "뇌경색": "cerebral infarction",
-}
 _CLINICAL_TOOL_SCOPE_LABELS: Final[dict[str, str]] = {
     "clinicaltrials_v2_search": "ClinicalTrials.gov 임상시험",
     "mfds_clinical_trial_kr": "식약처 국내 임상시험",
@@ -458,7 +456,7 @@ def _deterministic_arguments(
         if disease_query is None:
             return None
         query = (
-            _CLINICAL_DISEASE_ALIASES.get(disease_query, disease_query)
+            clinicaltrials_condition_query(disease_query)
             if tool_name == "clinicaltrials_v2_search"
             else disease_query
         )
@@ -481,8 +479,9 @@ def _deterministic_arguments(
 def _disease_query(question: str) -> str | None:
     """Extract a disease phrase without forwarding the full user sentence as a drug name."""
 
-    if clinical_condition_query(question) == "diabetic macular edema":
-        return "diabetic macular edema"
+    disease = clinical_disease_for_text(question)
+    if disease is not None:
+        return disease.query
     tokens = re.findall(r"[가-힣A-Za-z0-9]+", question)
     suffixes = ("증", "병", "암", "염", "장애")
     suffixed = next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)
@@ -495,8 +494,9 @@ def _disease_query(question: str) -> str | None:
     )
     if parenthetical_component is not None:
         subject = parenthetical_component.group("subject")
-        if subject in _CLINICAL_DISEASE_ALIASES:
-            return subject
+        disease = clinical_disease_for_query(subject)
+        if disease is not None:
+            return disease.query
     clinical_subject = re.search(
         r"(?P<subject>[가-힣A-Za-z0-9]{2,40})\s+(?:질환\s*)?(?:임상|clinical)\b",
         question,
@@ -505,7 +505,8 @@ def _disease_query(question: str) -> str | None:
     if clinical_subject is None:
         return None
     subject = clinical_subject.group("subject")
-    return subject if subject in _CLINICAL_DISEASE_ALIASES else None
+    disease = clinical_disease_for_query(subject)
+    return disease.query if disease is not None else None
 
 
 def _explicit_brand_query(question: str) -> str | None:

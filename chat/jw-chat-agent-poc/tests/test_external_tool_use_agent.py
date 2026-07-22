@@ -454,6 +454,17 @@ def test_clinicaltrials_prefix_dme_forces_list_only_condition_lookup() -> None:
     ]
 
 
+def test_legacy_t2_dme_reuses_shared_disease_translation() -> None:
+    question = "당뇨황반부종(DME) 질환(성분)의 임상·허가심사"
+
+    choices = _deterministic_tool_choices(question, BrandResolver())
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        ("clinicaltrials_v2_search", {"query": "diabetic macular edema", "query_type": "condition"}),
+        ("mfds_clinical_trial_kr", {"query": "당뇨황반부종", "query_type": "condition"}),
+    ]
+
+
 def test_force_contract_flag_prevents_empty_tool_calls_for_exact_live_question(monkeypatch) -> None:
     question = "고지혈증 질환(성분)의 임상·허가심사 단계 경쟁약물 현황을 알려줘 ."
     provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))

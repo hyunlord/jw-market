@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 
 from jw_chat_agent_poc.orchestrator.hira_disease import HIRA_TREND_YEARS, is_hira_disease_question
+from jw_chat_agent_poc.tool_use.clinical_disease import clinical_disease_for_text
 from jw_chat_agent_poc.tool_use.routing_v4_types import DomainDecisionSource, ProposedCall
 
 
@@ -21,11 +22,6 @@ class QuestionClassification:
 PREFIX_RE = re.compile(r"^\s*(?P<prefix>NeDrug|HIRA|ClinicalTrials)\s*:\s*", re.IGNORECASE)
 DISEASE_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(?P<code>[A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 NCT_ID_RE = re.compile(r"(?<![A-Za-z0-9])NCT\d{8}(?![A-Za-z0-9])", re.IGNORECASE)
-_CLINICAL_CONDITION_ALIASES = {
-    "당뇨황반부종": "diabetic macular edema",
-    "당뇨병성황반부종": "diabetic macular edema",
-    "dme": "diabetic macular edema",
-}
 
 
 def classify_question(question: str) -> QuestionClassification:
@@ -112,18 +108,6 @@ def explicit_disease_code(text: str) -> str | None:
     return compact
 
 
-def clinical_condition_query(text: str) -> str | None:
-    compact = re.sub(r"\s+", "", text.casefold())
-    return next(
-        (
-            condition
-            for token, condition in _CLINICAL_CONDITION_ALIASES.items()
-            if token in compact
-        ),
-        None,
-    )
-
-
 def asks_label_fields(lowered: str) -> bool:
     return any(
         token in lowered
@@ -184,7 +168,7 @@ def _clinical_classification(
     rule_id: str,
 ) -> QuestionClassification:
     capability = "CLINICAL_TRIAL_NCT_DETAIL_FIELDS" if nct_match is not None else "CLINICAL_TRIAL_SEARCH"
-    condition = clinical_condition_query(body)
+    disease = clinical_disease_for_text(body)
     if nct_match is not None:
         calls = (
             ProposedCall(
@@ -192,11 +176,14 @@ def _clinical_classification(
                 normalized_args={"nct_id": nct_match.group(0).upper()},
             ),
         )
-    elif condition is not None:
+    elif disease is not None:
         calls = (
             ProposedCall(
                 tool_name="clinicaltrials_v2_search",
-                normalized_args={"query": condition, "query_type": "condition"},
+                normalized_args={
+                    "query": disease.clinicaltrials_condition,
+                    "query_type": "condition",
+                },
             ),
         )
     else:
