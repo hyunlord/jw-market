@@ -137,6 +137,31 @@ def test_c2_enforce_preserves_five_step_data_absence_contract() -> None:
     assert result.report.violation_codes == ()
 
 
+def test_enforce_preserves_explicit_hira_interface_honesty() -> None:
+    answer = (
+        "## 해석\n\n"
+        "- 현재 HIRA 조회는 브랜드 기준으로만 지원됩니다. "
+        "상병코드 또는 질환명 직접 조회는 현재 인터페이스에서 처리할 수 없습니다. "
+        "다른 대상의 통계를 대신 반환하지 않습니다.\n\n"
+        "## 출처\n"
+        "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 전략 마트 원천 미확인 | — | — | — | — | 전체 | — |"
+    )
+
+    result = apply_response_format_contract(
+        "HIRA: 상병코드 D693 환자수 알려줘",
+        answer,
+        mode=ResponseFormatMode.ENFORCE,
+        sources=("unsupported_hira_interface",),
+    )
+
+    assert result.answer == answer
+    assert result.report.blocked is False
+    assert "C1_TABLE_ONLY" not in result.report.violation_codes
+    assert "C5_PROVENANCE_INCOMPLETE" not in result.report.violation_codes
+
+
 def test_c3_without_binding_provider_remains_detection_only_in_enforce() -> None:
     answer = _fixture("c3_violation")
 
