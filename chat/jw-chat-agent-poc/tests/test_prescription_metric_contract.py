@@ -8,6 +8,10 @@ from jw_chat_agent_poc.agent_loop.bq_slots import extract_bq_slots
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
+from jw_chat_agent_poc.orchestrator.response_format_contract import (
+    ResponseFormatMode,
+    apply_response_format_contract,
+)
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.query_layer.catalog import default_catalog
 
@@ -99,6 +103,31 @@ def test_explicit_sales_does_not_hide_a_requested_prescription_metric() -> None:
     assert result["reason_code"] == "FIELD_NOT_EXPOSED"
     assert result["value"] is None
     assert result["tool_calls"] == []
+    assert result["proxy"] == {
+        "metric": "sales",
+        "status": "separate_request_only",
+        "substituted": False,
+    }
+
+
+def test_response_contract_preserves_typed_prescription_absence() -> None:
+    question = "리바로 처방조제액 추이"
+    result = ChatAgent(external_mode="fixture").answer(question)
+
+    formatted = apply_response_format_contract(
+        question,
+        result["answer"],
+        mode=ResponseFormatMode.ENFORCE,
+        tool_calls=result["tool_calls"],
+        sources=result["sources"],
+    )
+
+    assert formatted.answer == result["answer"]
+    assert formatted.report.blocked is False
+    assert "C2_EMPTY_ISSUE_SECTION" not in formatted.report.violation_codes
+    assert "C4_CROSS_SOURCE_AGGREGATION" not in formatted.report.violation_codes
+    assert "1. 미보유 데이터" in formatted.answer
+    assert "5. 확보 시 수행할 분석" in formatted.answer
     assert result["proxy"] == {
         "metric": "sales",
         "status": "separate_request_only",
