@@ -42,3 +42,13 @@ def test_shadow_manifest_cannot_create_a_schedule_or_cronjob() -> None:
     assert "kind: Schedule" not in manifest
     assert "-canonical" not in manifest
     assert "jw-market-crawl-temporal-shadow-v1" in manifest
+
+
+def test_shadow_manifest_uses_an_isolated_state_claim() -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = (root / "deploy/k8s/crawler/temporal-crawl-shadow-worker.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "jw-crawl-temporal-shadow-state" in manifest
+    assert "jw-crawl-chain-state" not in manifest
