@@ -54,7 +54,7 @@ def test_feature_flag_routes_unclassified_external_question_to_tool_agent(monkey
         "면역혈소판감소증 환자수 알려줘",
     ),
 )
-def test_direct_hira_subject_is_rejected_before_external_tool_agent(
+def test_direct_hira_subject_absence_stops_before_external_tool_agent(
     monkeypatch,
     question: str,
     routing_mode: str,
@@ -66,15 +66,19 @@ def test_direct_hira_subject_is_rejected_before_external_tool_agent(
         agent_module,
         "run_external_tool_agent",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("unsupported direct HIRA subjects must stop before provider execution")
+            AssertionError("direct HIRA search absence must stop before provider execution")
         ),
     )
 
     result = ChatAgent(router=BQRouter()).answer(question)
 
-    assert result["tool_calls"] == []
-    assert result["sources"] == ["unsupported_hira_interface"]
-    assert "상병코드 또는 질환명 직접 조회" in result["answer"]
+    assert result["sources"] == ["hira_disease"]
+    assert result["tool_calls"][0]["tool"] == "hira_disease_code_absent"
+    assert result["tool_calls"][0]["status"] == "no_data"
+    assert all(
+        call.get("tool") != "hira_disease_hospitalization_outpatient_stats"
+        for call in result["tool_calls"]
+    )
 
 
 def test_field_not_exposed_nedrug_question_stops_before_legacy_provider(monkeypatch) -> None:

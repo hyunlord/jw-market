@@ -5,7 +5,7 @@ import pytest
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 
 
-UNSUPPORTED_DIRECT_HIRA_QUESTIONS = (
+DIRECT_HIRA_ABSENT_QUESTIONS = (
     "HIRA: 상병코드 D693 환자수 알려줘",
     "상병코드 E11 2024년 환자수",
     "면역혈소판감소증 환자수 알려줘",
@@ -23,21 +23,23 @@ SUPPORTED_BRAND_HIRA_QUESTIONS = (
 )
 
 
-@pytest.mark.parametrize("question", UNSUPPORTED_DIRECT_HIRA_QUESTIONS)
-def test_direct_hira_subject_is_reported_as_interface_limitation(question: str) -> None:
+@pytest.mark.parametrize("question", DIRECT_HIRA_ABSENT_QUESTIONS)
+def test_direct_hira_subject_search_absence_does_not_guess_code_or_stats(question: str) -> None:
     agent = ChatAgent(external_mode="fixture")
 
     for _ in range(5):
         result = agent.answer(question)
         answer = str(result.get("answer") or "")
 
-        assert result["tool_calls"] == []
-        assert result["sources"] == ["unsupported_hira_interface"]
-        assert "현재 HIRA 조회는 브랜드 기준으로만 지원" in answer
-        assert "상병코드 또는 질환명 직접 조회" in answer
+        assert result["sources"] == ["hira_disease"]
+        assert result["tool_calls"][0]["tool"] == "hira_disease_code_absent"
+        assert result["tool_calls"][0]["status"] == "no_data"
+        assert all(
+            call.get("tool") != "hira_disease_hospitalization_outpatient_stats"
+            for call in result["tool_calls"]
+        )
         assert "E78" not in answer
         assert "데이터가 없습니다" not in answer
-        assert "원천에서 확인되지" not in answer
 
 
 @pytest.mark.parametrize("question", SUPPORTED_BRAND_HIRA_QUESTIONS)
@@ -48,4 +50,3 @@ def test_supported_brand_hira_questions_keep_their_mapped_calls(question: str) -
     assert result["sources"] == ["hira_disease"]
     assert "hira_disease_mapping" in tools or "get_disease_stats" in tools
     assert "unsupported_hira_interface" not in str(result.get("answer") or "")
-
