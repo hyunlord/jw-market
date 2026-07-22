@@ -14,7 +14,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_te
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
-from jw_chat_agent_poc.tool_use.contracts import AgentResult
+from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolTrace
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import (
@@ -56,6 +56,12 @@ _INTERNAL_MART_TOOL_NAMES: Final[frozenset[str]] = frozenset(
 _CLINICAL_DISEASE_ALIASES: Final[dict[str, str]] = {
     "고지혈증": "hyperlipidemia",
     "뇌경색": "cerebral infarction",
+}
+_CLINICAL_TOOL_SCOPE_LABELS: Final[dict[str, str]] = {
+    "clinicaltrials_v2_search": "ClinicalTrials.gov 임상시험",
+    "mfds_clinical_trial_kr": "식약처 국내 임상시험",
+    "mfds_permission_search": "식약처 허가정보",
+    "openfda_label_search": "FDA 라벨",
 }
 
 
@@ -232,13 +238,26 @@ def _run_legacy_external_tool_agent(
     timing: Timing | None,
 ) -> dict[str, Any]:
     registry = ExternalToolRegistry(resolver=resolver, external=external)
-    selected_provider = provider or GenosToolChoiceProvider.from_env()
-    force_contract_calls = os.environ.get(FORCE_CONTRACT_CALLS_FLAG, "0").lower() in {"1", "true", "yes"}
+    force_contract_calls = os.environ.get(FORCE_CONTRACT_CALLS_FLAG, "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     forced_choices = (
         _deterministic_tool_choices(question, resolver)
         if provider is None and force_contract_calls
         else ()
     )
+    if (
+        provider is None
+        and force_contract_calls
+        and _is_combined_clinical_review(question)
+        and not forced_choices
+    ):
+        result = _unconstructible_clinical_result()
+        return _agent_result_payload(question, result, timing=timing)
+
+    selected_provider = provider or GenosToolChoiceProvider.from_env()
     result = AgentExecutor(
         provider=selected_provider,
         completion_policy=_external_evidence_complete,
@@ -248,6 +267,8 @@ def _run_legacy_external_tool_agent(
         authoritative_forced_choices=bool(forced_choices),
         timing=timing,
     ).run(user_text=question, tools=registry.list_for_query(question))
+    if forced_choices:
+        result = _disclose_unconstructible_clinical_scopes(question, forced_choices, result)
     if result.fallback_code is not None:
         LOGGER.info("external tool agent fallback code=%s", result.fallback_code.value)
     return _agent_result_payload(question, result, timing=timing)
@@ -270,20 +291,12 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
 
     contract = evaluate_answer_contract(question, "", None)
     contract_key = str(contract.get("structural_contract") or contract.get("intent") or "")
-    lowered = question.casefold()
-    combined_clinical_review = (
-        contract_key == "clinical_evidence"
-        and any(token in lowered for token in ("임상", "clinical"))
-        and any(token in lowered for token in ("허가", "permission", "approval"))
-    )
+    combined_clinical_review = _is_combined_clinical_review(question, contract_key=contract_key)
     requested = list(CONTRACT_REQUIRED_TOOLS.get(contract_key, ())) if combined_clinical_review else []
     for requirement in tool_use_requirements(question):
         preferred = _preferred_requirement_tool(requirement.alternatives)
         if preferred is not None and preferred not in requested:
             requested.append(preferred)
-    if combined_clinical_review and resolution is None and "web_search" not in requested:
-        requested.append("web_search")
-
     choices: list[ToolChoice] = []
     for tool_name in requested:
         arguments = _deterministic_arguments(tool_name, question, brand, ingredient, disease_query)
@@ -298,6 +311,85 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
             )
         )
     return tuple(choices)
+
+
+def _is_combined_clinical_review(question: str, *, contract_key: str | None = None) -> bool:
+    if contract_key is None:
+        contract = evaluate_answer_contract(question, "", None)
+        contract_key = str(contract.get("structural_contract") or contract.get("intent") or "")
+    lowered = question.casefold()
+    return (
+        contract_key == "clinical_evidence"
+        and any(token in lowered for token in ("임상", "clinical"))
+        and any(token in lowered for token in ("허가", "permission", "approval"))
+    )
+
+
+def _unconstructible_clinical_result() -> AgentResult:
+    reason = (
+        "질환 또는 제품 식별자를 결정론적으로 해소하지 못해 "
+        "권위 임상·허가 도구 호출을 구성할 수 없습니다."
+    )
+    return AgentResult(
+        status="fallback",
+        answer=(
+            f"상태: 확인 불가\n사유: {reason}\n"
+            "대안: 질환명 또는 제품명을 지정해 주세요."
+        ),
+        tool_calls=(),
+        sources=(),
+        traces=(
+            ToolTrace(
+                step=0,
+                tool=None,
+                status="not_constructible",
+                fallback_code=FallbackCode.UNSUPPORTED_QUERY,
+                message=reason,
+            ),
+        ),
+        fallback_code=FallbackCode.UNSUPPORTED_QUERY,
+    )
+
+
+def _disclose_unconstructible_clinical_scopes(
+    question: str,
+    forced_choices: tuple[ToolChoice, ...],
+    result: AgentResult,
+) -> AgentResult:
+    if not _is_combined_clinical_review(question):
+        return result
+    selected = {choice.name for choice in forced_choices}
+    missing_tools = tuple(
+        tool_name
+        for tool_name in CONTRACT_REQUIRED_TOOLS["clinical_evidence"]
+        if tool_name not in selected
+    )
+    if not missing_tools:
+        return result
+    if result.status not in {"ok", "partial"}:
+        return result
+
+    labels = ", ".join(_CLINICAL_TOOL_SCOPE_LABELS[name] for name in missing_tools)
+    reason = (
+        "제품 또는 성분 식별자가 없어 해당 도구 호출 인자를 구성하지 못했습니다."
+    )
+    disclosure = (
+        "상태: 일부 결과만 확인했습니다.\n"
+        f"확인하지 못한 범위: {labels}\n"
+        f"사유: {reason}"
+    )
+    answer = "\n\n".join(part for part in (result.answer.strip(), disclosure) if part)
+    traces = result.traces + tuple(
+        ToolTrace(
+            step=len(result.traces) + index,
+            tool=tool_name,
+            status="not_constructible",
+            fallback_code=FallbackCode.UNSUPPORTED_QUERY,
+            message=reason,
+        )
+        for index, tool_name in enumerate(missing_tools, start=1)
+    )
+    return result.model_copy(update={"status": "partial", "answer": answer, "traces": traces})
 
 
 def _preferred_requirement_tool(alternatives: frozenset[str]) -> str | None:
@@ -376,12 +468,24 @@ def _disease_query(question: str) -> str | None:
     suffixed = next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)
     if suffixed is not None:
         return suffixed
+    parenthetical_component = re.search(
+        r"(?P<subject>[가-힣A-Za-z0-9]{2,40})\s+질환\s*\(\s*성분\s*\)\s*의?\s*(?:임상|clinical)\b",
+        question,
+        flags=re.IGNORECASE,
+    )
+    if parenthetical_component is not None:
+        subject = parenthetical_component.group("subject")
+        if subject in _CLINICAL_DISEASE_ALIASES:
+            return subject
     clinical_subject = re.search(
         r"(?P<subject>[가-힣A-Za-z0-9]{2,40})\s+(?:질환\s*)?(?:임상|clinical)\b",
         question,
         flags=re.IGNORECASE,
     )
-    return clinical_subject.group("subject") if clinical_subject is not None else None
+    if clinical_subject is None:
+        return None
+    subject = clinical_subject.group("subject")
+    return subject if subject in _CLINICAL_DISEASE_ALIASES else None
 
 
 def _explicit_brand_query(question: str) -> str | None:
