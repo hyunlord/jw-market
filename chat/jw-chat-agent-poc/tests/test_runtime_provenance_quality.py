@@ -268,7 +268,7 @@ def test_number_absent_from_rendered_facts_remains_ungrounded() -> None:
     assert _ungrounded_numbers("리바로 매출은 99.99억원입니다.", markdown_response) == ("99.99억원",)
 
 
-def test_public_web_search_number_is_grounded_by_rendered_tool_evidence() -> None:
+def test_public_web_search_number_cannot_ground_generated_numeric_claim() -> None:
     markdown_response = {
         "allowed_numbers": (),
         "fact_md": "",
@@ -290,17 +290,14 @@ def test_public_web_search_number_is_grounded_by_rendered_tool_evidence() -> Non
         }
     ]
 
-    assert (
-        _ungrounded_numbers(
-            "웹 검색 근거에서는 LDL-C를 30% 이상 낮추도록 권고합니다.",
-            markdown_response,
-            tool_calls,
-        )
-        == ()
-    )
+    assert _ungrounded_numbers(
+        "웹 검색 근거에서는 LDL-C를 30% 이상 낮추도록 권고합니다.",
+        markdown_response,
+        tool_calls,
+    ) == ("30%",)
 
 
-def test_live_public_web_search_number_is_grounded_by_rendered_tool_evidence() -> None:
+def test_live_public_web_search_numbers_remain_supplementary() -> None:
     # Given: the live external adapter returned public web evidence.
     markdown_response = {
         "allowed_numbers": (),
@@ -330,11 +327,11 @@ def test_live_public_web_search_number_is_grounded_by_rendered_tool_evidence() -
         tool_calls,
     )
 
-    # Then: values in the public live projection are grounded.
-    assert ungrounded == ()
+    # Then: web dates and values cannot become authoritative answer evidence.
+    assert ungrounded == ("-06", "-20", "2023", "30%")
 
 
-def test_partial_public_evidence_number_is_grounded_when_one_source_succeeds() -> None:
+def test_partial_public_web_evidence_cannot_ground_generated_numeric_claim() -> None:
     # Given: one external source returned evidence while another returned no data.
     markdown_response = {
         "allowed_numbers": (),
@@ -378,8 +375,8 @@ def test_partial_public_evidence_number_is_grounded_when_one_source_succeeds() -
         tool_calls,
     )
 
-    # Then: partial aggregate evidence remains usable.
-    assert ungrounded == ()
+    # Then: partial web evidence remains a separate appendix, not numeric grounding.
+    assert ungrounded == ("28%",)
 
 
 def test_non_rendered_tool_internal_number_remains_ungrounded() -> None:
@@ -505,6 +502,50 @@ def test_cleaned_deterministic_web_appendix_is_excluded_from_claim_grounding() -
     assert _ungrounded_numbers(answer, markdown_response, tool_calls) == ("99.99억원",)
 
 
+def test_question_aware_web_appendix_is_excluded_from_claim_grounding() -> None:
+    question = "상병코드 D693의 환자수 추이를 알려줘"
+    markdown_response = {
+        "allowed_numbers": (),
+        "fact_md": "",
+        "data_md": "",
+    }
+    tool_calls = [
+        {
+            "tool": "hira_disease_hospitalization_outpatient_stats",
+            "source": "HIRA",
+            "status": "error",
+            "render_data": {"error_code": "UPSTREAM_UNAVAILABLE"},
+        },
+        {
+            "tool": "web_search",
+            "status": "live",
+            "render_data": {
+                "items": [
+                    {
+                        "title": "HIRA 통계 안내",
+                        "url": "https://opendata.hira.or.kr/guide",
+                        "snippet": "공식 통계 시스템 이용 안내입니다.",
+                        "published_date": "2025-01-02",
+                    }
+                ]
+            },
+        },
+    ]
+    answer = "\n\n".join(
+        (
+            "시장 수치는 99.99억원입니다.",
+            web_search_mi_section_from_calls(tool_calls, question=question),
+        )
+    )
+
+    assert _ungrounded_numbers(
+        answer,
+        markdown_response,
+        tool_calls,
+        question=question,
+    ) == ("99.99억원",)
+
+
 def test_web_appendix_heading_alone_does_not_bypass_claim_grounding() -> None:
     markdown_response = {
         "allowed_numbers": (),
@@ -595,7 +636,7 @@ def test_visible_number_remains_ungrounded_when_same_number_appears_in_bare_url(
     assert _ungrounded_numbers(answer, markdown_response) == ("27271",)
 
 
-def test_trace_envelope_grounds_numbers_from_public_tool_projection() -> None:
+def test_trace_envelope_marks_web_only_numeric_claim_ungrounded() -> None:
     result = {
         "context_scope": "MARKET",
         "tool_calls": [
@@ -629,4 +670,4 @@ def test_trace_envelope_grounds_numbers_from_public_tool_projection() -> None:
         conversation_id="fixture",
     )
 
-    assert trace["ungrounded_numeric_spans"] == ()
+    assert trace["ungrounded_numeric_spans"] == ("30%",)

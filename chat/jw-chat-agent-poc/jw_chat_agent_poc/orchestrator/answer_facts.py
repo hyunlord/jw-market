@@ -21,6 +21,7 @@ from jw_chat_agent_poc.orchestrator.call_normalization import dedupe_blocked_met
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note
 from jw_chat_agent_poc.orchestrator.market_insights import render_market_insights
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_fact_markdown
+from jw_chat_agent_poc.orchestrator.source_grading import grade_web_url
 from jw_chat_agent_poc.orchestrator.surface_policy import (
     DeltaOperands,
     can_surface_derived_value,
@@ -2502,9 +2503,10 @@ def _web_search_source_rows(calls: list[dict[str, Any]]) -> list[tuple[str, str]
             url = str(item.get("url") or "").strip()
             title = str(item.get("title") or "").strip()
             if url:
-                rows.append(("웹 검색", f"{detail} — {title} {url}".strip()))
+                grade = grade_web_url(url).value
+                rows.append((f"웹 검색 [{grade}]", f"{detail} — {title} {url}".strip()))
         if not rows:
-            rows.append(("웹 검색", detail))
+            rows.append(("웹 검색 [UNVERIFIED]", detail))
     return _dedupe_rows(rows)
 
 
