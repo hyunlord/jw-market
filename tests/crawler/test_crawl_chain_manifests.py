@@ -94,6 +94,7 @@ def test_stage_script_supports_bounded_shadow_crawls_without_changing_defaults()
 
     # When/Then: limits are opt-in, while the normal production windows remain the defaults.
     assert 'CRAWL_CHAIN_TIER1_SITES:-' in script
+    assert 'selected_sites="${CRAWL_CHAIN_TIER1_SITES:-${all_sites// /,}}"' in script
     assert 'CRAWL_CHAIN_TIER1_MONTHS:-1' in script
     assert 'CRAWL_CHAIN_TIER1_MAX_ARTICLES:-0' in script
     assert 'CRAWL_CHAIN_TIER2_SITES:-' in script
