@@ -7,6 +7,12 @@ import threading
 import time
 from typing import Protocol
 
+from .catalog_membership_paging import (
+    GENERAL_MEMBERSHIP_PAGE_QUERY,
+    CatalogMembershipCursor,
+    load_general_membership_rows,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,12 @@ class MariaDbCatalogMembershipReader:
     read_timeout_s: int = field(
         default_factory=lambda: int(os.environ.get("CHAT_CATALOG_DB_READ_TIMEOUT_S", "15"))
     )
+    general_page_size: int = field(
+        default_factory=lambda: int(os.environ.get("CHAT_CATALOG_GENERAL_PAGE_SIZE", "2000"))
+    )
+    general_max_rows: int = field(
+        default_factory=lambda: int(os.environ.get("CHAT_CATALOG_GENERAL_MAX_ROWS", "100000"))
+    )
 
     @staticmethod
     def membership_queries() -> tuple[str, ...]:
@@ -120,17 +132,20 @@ class MariaDbCatalogMembershipReader:
                         brand.name
                       ) IS NOT NULL
             """,
-            """
-                SELECT DISTINCT
-                       membership.brand_key AS brand,
-                       NULLIF(membership.brand_name, '') AS brand_alias,
-                       NULL AS market_id,
-                       NULL AS market_name,
-                       'general_mart' AS support_source
-                FROM chat_general_brand_membership AS membership
-                WHERE membership.brand_key IS NOT NULL
-                  AND membership.brand_key <> ''
-            """,
+        )
+
+    @staticmethod
+    def general_membership_page_query() -> str:
+        return GENERAL_MEMBERSHIP_PAGE_QUERY
+
+    def load_general_membership_rows(
+        self,
+        cursor: CatalogMembershipCursor,
+    ) -> tuple[dict[str, object], ...]:
+        return load_general_membership_rows(
+            cursor,
+            page_size=self.general_page_size,
+            max_rows=self.general_max_rows,
         )
 
     def load(self) -> tuple[dict[str, str], ...]:
@@ -154,6 +169,7 @@ class MariaDbCatalogMembershipReader:
                 for query in self.membership_queries():
                     cursor.execute(query)
                     rows.extend(cursor.fetchall())
+                rows.extend(self.load_general_membership_rows(cursor))
         return _merge_membership_rows(tuple(rows))
 
 
