@@ -96,7 +96,7 @@ def execute_calls(
     for scope_key, sample_rows in axis_samples.items():
         payload, logs = _call_axis_map_reduce(token, dictionary, scope_key, metadata, sample_rows, task="market_axis", model_key="flash", token_budget=axis_chunk_token_budget)
         call_logs.extend(logs)
-        minimum_topics = 3 if len(sample_rows) < 45 else 5
+        minimum_topics = _minimum_axis_topics(len(sample_rows))
         normalized = normalize_axis_payload(payload, scope_id=_scope_id(scope_key, metadata), fallback_label=_display_name(scope_key, metadata), minimum_topics=minimum_topics)
         normalized["scope_key"] = scope_key
         normalized["display_name"] = _display_name(scope_key, metadata)
@@ -154,6 +154,13 @@ def execute_calls(
         }
     stability_results["quality_gate_artificial_anomalies"] = artificial_qc_probe(axis_topics)
     return ExecutionResult(axis_results=axis_results, brand_results=brand_results, stability_results=stability_results, dictionary_results=dictionary_results, call_logs=call_logs)
+
+
+def _minimum_axis_topics(source_row_count: int) -> int:
+    """Keep a one-row scope usable without inventing a third unsupported axis."""
+    if source_row_count == 1:
+        return 2
+    return 3 if source_row_count < 45 else 5
 
 
 def skipped_execution(dictionary: dict[str, JsonValue], brand_samples: dict[str, list[KeywordRow]]) -> ExecutionResult:
