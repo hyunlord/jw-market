@@ -127,6 +127,7 @@ def trace_envelope(
             answer,
             _numeric_grounding_response(result, markdown_response),
             result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
+            question=question,
         ),
         "token_usage": _token_usage(timing),
         "chart_count": len(charts),

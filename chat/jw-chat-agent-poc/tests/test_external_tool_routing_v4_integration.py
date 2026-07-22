@@ -745,6 +745,105 @@ def test_d06_authoritative_timeout_stops_without_web_fallback(monkeypatch) -> No
     assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
 
 
+def test_d06c_runtime_uses_one_allowlisted_web_fallback_after_hira_outage(
+    monkeypatch,
+) -> None:
+    external = ExternalApiClient(mode="fixture")
+    web_calls = 0
+
+    def timeout(sick_cd: str, *, year: str = "2024") -> ExternalCall:
+        del sick_cd, year
+        raise requests.Timeout("authoritative timeout")
+
+    def web_search(
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: str = "general",
+    ) -> ExternalCall:
+        nonlocal web_calls
+        del query, max_results, topic
+        web_calls += 1
+        return ExternalCall(
+            tool="web_search",
+            source="web_search",
+            status="ok",
+            summary_text="official and unverified web rows",
+            render_data={
+                "provider": "fixture",
+                "items": [
+                    {
+                        "title": "HIRA official statistics page",
+                        "url": "https://opendata.hira.or.kr/official",
+                    },
+                    {
+                        "title": "unverified blog",
+                        "url": "https://blog.naver.com/unverified-statistics",
+                    },
+                ],
+            },
+        )
+
+    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", timeout)
+    monkeypatch.setattr(external, "web_search", web_search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    payload = run_external_tool_agent(
+        "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    assert web_calls == 1
+    assert [call["tool"] for call in payload["tool_calls"]].count("web_search") == 1
+    assert "공식 통계가 아닙니다" in payload["answer"]
+    assert "https://opendata.hira.or.kr/official" in payload["answer"]
+    assert "blog.naver.com" not in payload["answer"]
+    fallback = payload["router_diagnostics"]["routing_v4"]["official_web_fallback"]
+    assert fallback["calls_executed"] == 1
+    assert fallback["accepted_urls"] == ["https://opendata.hira.or.kr/official"]
+
+
+def test_d06c_explicit_hira_request_never_executes_web_fallback(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    web_calls = 0
+
+    def timeout(sick_cd: str, *, year: str = "2024") -> ExternalCall:
+        del sick_cd, year
+        raise requests.Timeout("authoritative timeout")
+
+    def web_search(
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: str = "general",
+    ) -> ExternalCall:
+        nonlocal web_calls
+        del query, max_results, topic
+        web_calls += 1
+        raise AssertionError("explicit HIRA request must not execute web fallback")
+
+    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", timeout)
+    monkeypatch.setattr(external, "web_search", web_search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    payload = run_external_tool_agent(
+        "HIRA: 상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+    )
+
+    assert web_calls == 0
+    assert "web_search" not in [call["tool"] for call in payload["tool_calls"]]
+    assert payload["router_diagnostics"]["routing_v4"]["executed_call_signature"][
+        "reason_code"
+    ] == "UPSTREAM_UNAVAILABLE"
+
+
 def test_d06b_official_web_fallback_accepts_only_allowlisted_sources_when_enabled(
     monkeypatch,
 ) -> None:

@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any, Final
-from urllib.parse import urlparse
 
+from jw_chat_agent_poc.orchestrator.source_grading import (
+    is_official_web_url,
+    official_web_domains,
+)
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, EvidenceFact
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_claim
 from jw_chat_agent_poc.tool_use.routing_v4_capabilities import verify_claim_evidence
@@ -12,11 +15,6 @@ from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan
 
 
 OFFICIAL_WEB_FALLBACK_FLAG: Final = "CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED"
-_OFFICIAL_WEB_DOMAINS: Final = {
-    "hira": ("hira.or.kr",),
-    "regulatory": ("mfds.go.kr",),
-    "clinical_trials": ("clinicaltrials.gov", "cris.nih.go.kr"),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,12 +26,35 @@ class OfficialWebFallbackDecision:
     disclosure: str
 
 
+def official_web_fallback_eligible(
+    *,
+    source_domain: str,
+    runtime_reason: str,
+    usable_authoritative_results: int,
+    requested_source_explicit: bool,
+) -> bool:
+    return (
+        usable_authoritative_results == 0
+        and not requested_source_explicit
+        and runtime_reason == "UPSTREAM_UNAVAILABLE"
+        and bool(official_web_domains(source_domain))
+        and _official_web_fallback_enabled()
+    )
+
+
+def official_web_fallback_query(question: str, *, source_domain: str) -> str:
+    domains = official_web_domains(source_domain)
+    domain_clause = " OR ".join(f"site:{domain}" for domain in domains)
+    return f"{question} ({domain_clause})" if domain_clause else question
+
+
 def official_web_fallback_policy(
     *,
     source_domain: str,
     runtime_reason: str,
     usable_authoritative_results: int,
     candidate_urls: tuple[str, ...],
+    requested_source_explicit: bool = False,
 ) -> OfficialWebFallbackDecision:
     if usable_authoritative_results > 0:
         return OfficialWebFallbackDecision(
@@ -41,6 +62,14 @@ def official_web_fallback_policy(
             accepted_urls=(),
             separate_section=False,
             reason_code="PARTIAL_RESULT",
+            disclosure="",
+        )
+    if requested_source_explicit:
+        return OfficialWebFallbackDecision(
+            web_call_budget=0,
+            accepted_urls=(),
+            separate_section=False,
+            reason_code="EXPLICIT_SOURCE_NO_FALLBACK",
             disclosure="",
         )
     if runtime_reason != "UPSTREAM_UNAVAILABLE" or not _official_web_fallback_enabled():
@@ -56,7 +85,7 @@ def official_web_fallback_policy(
         dict.fromkeys(
             url
             for url in candidate_urls
-            if _is_official_web_url(url, source_domain=source_domain)
+            if is_official_web_url(url, source_domain=source_domain)
         )
     )
     return OfficialWebFallbackDecision(
@@ -79,17 +108,6 @@ def _official_web_fallback_enabled() -> bool:
 
 def official_web_fallback_call_cap() -> int:
     return 1 if _official_web_fallback_enabled() else 0
-
-
-def _is_official_web_url(url: str, *, source_domain: str) -> bool:
-    parsed = urlparse(url)
-    hostname = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.scheme != "https" or not hostname:
-        return False
-    return any(
-        hostname == domain or hostname.endswith(f".{domain}")
-        for domain in _OFFICIAL_WEB_DOMAINS.get(source_domain, ())
-    )
 
 
 def _official_web_disclosure(source_domain: str) -> str:
