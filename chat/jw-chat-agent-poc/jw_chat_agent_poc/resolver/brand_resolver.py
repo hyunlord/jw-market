@@ -40,14 +40,15 @@ class BrandResolution:
 
     @property
     def has_market_membership_mismatch(self) -> bool:
-        return (
-            self.requested_market_id is not None
-            and self.requested_market_id not in self.market_ids
-        )
+        return self.requested_market_id is not None and self.market_id is None
 
 
 class UnsupportedBrandError(LookupError):
     """Raised when a brand-required question is outside the supported catalog."""
+
+
+class AmbiguousBrandError(LookupError):
+    """Raised when one exact alias maps to multiple canonical brands."""
 
 
 class BrandMembershipReader(Protocol):
@@ -78,52 +79,50 @@ class BrandResolver:
         self._catalog_lock = threading.Lock()
         self._catalog_sources: tuple[object, ...] | None = None
         self._catalog_items: tuple[dict[str, Any], ...] | None = None
+        self._alias_index_source: object | None = None
+        self._alias_index: dict[str, tuple[dict[str, Any], ...]] = {}
+        self._alias_window_size = 1
         ttl = ttl_seconds or int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
         self._cache = TtlMetricsCache(brand_reader, ttl_seconds=ttl) if brand_reader is not None else shared_metrics_cache(ttl)
 
     def resolve(self, question_or_brand: str, allow_default: bool = False) -> BrandResolution:
-        normalized = self._normalize(question_or_brand)
         with trace_span("brand_catalog_load", f"mode={self._mode}; operation=resolve", category="resolver"):
             raw_items = self._items()
         with trace_span("brand_alias_match_one", f"catalog_size={len(raw_items)}", category="resolver"):
             market_universe = self._market_universe(raw_items, self._fixture_items)
-            items = sorted(
-                raw_items,
-                key=lambda item: max(len(self._normalize(alias)) for alias in [item["canonical_brand"], *item.get("aliases", [])]),
-                reverse=True,
-            )
-            for item in items:
-                aliases = [item["canonical_brand"], *item.get("aliases", [])]
-                if any(self._normalize(alias) in normalized for alias in aliases):
-                    return self._to_resolution(
-                        item,
-                        question_or_brand,
-                        market_universe=market_universe,
+            matches = self._matching_spans(question_or_brand, raw_items)
+            if matches:
+                _, _, key, candidates = matches[0]
+                canonical = {str(item["canonical_brand"]) for item in candidates}
+                if len(canonical) != 1:
+                    raise AmbiguousBrandError(
+                        f"Ambiguous brand alias: {key}; candidates={','.join(sorted(canonical))}"
                     )
+                return self._to_resolution(
+                    candidates[0],
+                    question_or_brand,
+                    market_universe=market_universe,
+                )
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brand}")
 
     def resolve_many(self, question_or_brands: str, allow_default: bool = False) -> tuple[BrandResolution, ...]:
-        normalized = self._normalize(question_or_brands)
         with trace_span("brand_catalog_load", f"mode={self._mode}; operation=resolve_many", category="resolver"):
             items = self._items()
         with trace_span("brand_alias_match_many", f"catalog_size={len(items)}", category="resolver"):
             market_universe = self._market_universe(items, self._fixture_items)
-            spans: list[tuple[int, int, dict[str, Any]]] = []
-            for item in items:
-                aliases = [item["canonical_brand"], *item.get("aliases", [])]
-                for alias in aliases:
-                    normalized_alias = self._normalize(str(alias))
-                    start = normalized.find(normalized_alias)
-                    while normalized_alias and start >= 0:
-                        spans.append((start, start + len(normalized_alias), item))
-                        start = normalized.find(normalized_alias, start + 1)
+            spans = self._matching_spans(question_or_brands, items)
             selected: list[tuple[int, dict[str, Any]]] = []
             occupied: list[tuple[int, int]] = []
-            for start, end, item in sorted(spans, key=lambda span: (-(span[1] - span[0]), span[0])):
+            for start, end, key, candidates in spans:
                 if any(start < used_end and end > used_start for used_start, used_end in occupied):
                     continue
+                canonical = {str(item["canonical_brand"]) for item in candidates}
+                if len(canonical) != 1:
+                    raise AmbiguousBrandError(
+                        f"Ambiguous brand alias: {key}; candidates={','.join(sorted(canonical))}"
+                    )
                 occupied.append((start, end))
-                selected.append((start, item))
+                selected.append((start, candidates[0]))
             seen: set[str] = set()
             out: list[BrandResolution] = []
             for _, item in sorted(selected, key=lambda pair: pair[0]):
@@ -164,14 +163,7 @@ class BrandResolver:
         return True
 
     def has_fixture_alias(self, question: str) -> bool:
-        normalized = self._normalize(question)
-        return any(
-            any(
-                self._normalize(str(alias)) in normalized
-                for alias in (item["canonical_brand"], *item.get("aliases", []))
-            )
-            for item in self._fixture_items
-        )
+        return bool(self._matching_spans(question, self._fixture_items))
 
     def portfolio_brands(self) -> tuple[BrandResolution, ...]:
         """Return only the JW sidecar portfolio, not the global resolver universe."""
@@ -225,6 +217,8 @@ class BrandResolver:
                 items = self._assemble_items(cache_brands, memberships, brand_molecules)
             self._catalog_items = tuple(items)
             self._catalog_sources = sources
+            self._alias_index_source = None
+            self._alias_index = {}
             return list(self._catalog_items)
 
     def _same_catalog_sources(self, sources: tuple[object, ...]) -> bool:
@@ -283,10 +277,12 @@ class BrandResolver:
                         "support_source": membership_source,
                     },
                 )
-                if membership_source == "strategic_mart" and item["support_source"] in {
-                    "catalog_alias",
-                    "catalog_membership",
-                }:
+                alias = str(membership.get("brand_alias") or "").strip()
+                if alias and alias != name and alias not in item["aliases"]:
+                    item["aliases"].append(alias)
+                if membership_source == "strategic_mart" and not str(item["support_source"]).startswith(
+                    "cache_brands"
+                ):
                     item["support_source"] = membership_source
                 pair = (str(membership.get("market_id") or ""), str(membership.get("market_name") or ""))
                 if pair[0] and pair not in item["market_memberships"]:
@@ -316,6 +312,57 @@ class BrandResolver:
                     item["support_source"] = f"{item['support_source']}+mart_brand_molecule"
         return list(merged.values())
 
+    def _matching_spans(
+        self,
+        text: str,
+        items: list[dict[str, Any]],
+    ) -> list[tuple[int, int, str, tuple[dict[str, Any], ...]]]:
+        index, max_window = self._alias_lookup(items)
+        normalized_text = unicodedata.normalize("NFKC", text)
+        tokens = tuple(re.finditer(r"[0-9A-Za-z가-힣+_.-]+", normalized_text))
+        matches: dict[tuple[int, int, str], tuple[dict[str, Any], ...]] = {}
+        for start_index, token in enumerate(tokens):
+            for end_index in range(start_index, min(len(tokens), start_index + max_window)):
+                start = token.start()
+                end = tokens[end_index].end()
+                candidate = self._normalize(normalized_text[start:end])
+                keys = [candidate]
+                for particle in _BRAND_PARTICLES:
+                    if candidate.endswith(particle) and len(candidate) > len(particle) + 1:
+                        keys.append(candidate[: -len(particle)])
+                for key in keys:
+                    candidates = index.get(key)
+                    if candidates:
+                        matches[(start, end, key)] = candidates
+        return sorted(
+            ((start, end, key, candidates) for (start, end, key), candidates in matches.items()),
+            key=lambda match: (-len(match[2]), match[0], match[1]),
+        )
+
+    def _alias_lookup(
+        self,
+        items: list[dict[str, Any]],
+    ) -> tuple[dict[str, tuple[dict[str, Any], ...]], int]:
+        source: object = self._fixture_items if items is self._fixture_items else (self._catalog_items or items)
+        if source is self._alias_index_source:
+            return self._alias_index, self._alias_window_size
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        max_window = 1
+        for item in items:
+            for raw_alias in (item["canonical_brand"], *item.get("aliases", [])):
+                alias = str(raw_alias).strip()
+                key = self._normalize(alias)
+                if not key:
+                    continue
+                bucket = grouped.setdefault(key, [])
+                if item not in bucket:
+                    bucket.append(item)
+                max_window = max(max_window, len(re.findall(r"[0-9A-Za-z가-힣+_.-]+", alias)))
+        self._alias_index = {key: tuple(value) for key, value in grouped.items()}
+        self._alias_window_size = max(4, max_window)
+        self._alias_index_source = source
+        return self._alias_index, self._alias_window_size
+
     @staticmethod
     def _to_resolution(
         item: dict[str, Any],
@@ -330,11 +377,14 @@ class BrandResolver:
             question,
             market_universe or memberships,
         )
-        requested_market_id = requested_market[0] if requested_market is not None else None
+        requested_market_id = (
+            BrandResolver._explicit_market_token(question)
+            or (requested_market[0] if requested_market is not None else None)
+        )
         requested_market_name = requested_market[1] if requested_market is not None else None
         explicit_membership = (
-            requested_market_id
-            if requested_market_id in market_ids
+            requested_market[0]
+            if requested_market is not None and requested_market[0] in market_ids
             else None
         )
         has_mismatch = requested_market_id is not None and explicit_membership is None
@@ -389,16 +439,33 @@ class BrandResolver:
         for item in alias_items or ():
             for market_id, market_name in BrandResolver._item_memberships(item):
                 pair = (market_id, market_name)
-                if market_id in runtime_ids and pair not in seen:
+                if BrandResolver._equivalent_market_id(market_id, runtime_ids) and pair not in seen:
                     markets.append(pair)
                     seen.add(pair)
         return tuple(markets)
+
+    @staticmethod
+    def _equivalent_market_id(market_id: str, candidates: set[str]) -> bool:
+        match = re.fullmatch(r"(?:ml|strategy)_(\d+)", market_id, re.IGNORECASE)
+        if match is None:
+            return market_id in candidates
+        number = int(match.group(1))
+        return any(
+            (candidate_match := re.fullmatch(r"(?:ml|strategy)_(\d+)", candidate, re.IGNORECASE))
+            and int(candidate_match.group(1)) == number
+            for candidate in candidates
+        )
 
     @staticmethod
     def _explicit_market(
         question: str,
         markets: tuple[tuple[str, str], ...],
     ) -> tuple[str, str] | None:
+        requested_id = BrandResolver._explicit_market_token(question)
+        if requested_id is not None:
+            for market_id, market_name in markets:
+                if BrandResolver._equivalent_market_id(requested_id, {market_id}):
+                    return market_id, market_name
         question_casefold = question.casefold()
         normalized_question = BrandResolver._normalize(question)
         for market_id, market_name in markets:
@@ -424,6 +491,15 @@ class BrandResolver:
         return None
 
     @staticmethod
+    def _explicit_market_token(question: str) -> str | None:
+        match = re.search(
+            r"(?<![A-Za-z0-9_])((?:ml|strategy)_\d+)(?![A-Za-z0-9_])",
+            question,
+            re.IGNORECASE,
+        )
+        return match.group(1).lower() if match is not None else None
+
+    @staticmethod
     def _market_query_aliases(market_name: str) -> tuple[str, ...]:
         """Derive only conservative query forms from the canonical market name."""
 
@@ -438,3 +514,33 @@ class BrandResolver:
     def _normalize(text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text)
         return re.sub(r"\s+", "", normalized).casefold()
+
+
+_BRAND_PARTICLES = (
+    "으로부터",
+    "에게서",
+    "한테서",
+    "이라도",
+    "이라면",
+    "이랑",
+    "부터",
+    "까지",
+    "처럼",
+    "보다",
+    "에게",
+    "한테",
+    "께서",
+    "으로",
+    "라고",
+    "와",
+    "과",
+    "은",
+    "는",
+    "이",
+    "가",
+    "의",
+    "을",
+    "를",
+    "랑",
+    "로",
+)

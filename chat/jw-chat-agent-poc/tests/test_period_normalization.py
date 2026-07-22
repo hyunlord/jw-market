@@ -7,6 +7,7 @@ from jw_chat_agent_poc.common.periods import (
     canonical_periods,
     has_explicit_period_cue,
     month_keys,
+    requested_period,
 )
 from jw_chat_agent_poc.service.app import SessionStore, _answer_existing_without_pending
 
@@ -50,6 +51,22 @@ def test_unrecognized_explicit_period_is_not_silently_dropped() -> None:
     assert ("period_month", "2025년 13월") in filters
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("리바로 2024년 매출", "2024"),
+        ("리바로 최근 3년 추이", "최근 3년"),
+        ("리바로 2025년 2분기 매출", "2025-Q2"),
+        ("고지혈증 시장에 어떤 브랜드들이 있어?", None),
+    ),
+)
+def test_requested_period_preserves_year_relative_and_quarter_constraints(
+    text: str,
+    expected: str | None,
+) -> None:
+    assert requested_period(text) == expected
+
+
 class _RecordingMarketResolver:
     def __init__(self) -> None:
         self.periods: list[str] = []
@@ -71,6 +88,8 @@ class _RecordingMarketResolver:
         ("ml_006 2025년 4월 시장규모", "2025-04"),
         ("ml_006 2025-04 시장규모", "2025-04"),
         ("ml_006 2025년 4분기 시장규모", "2025-Q4"),
+        ("ml_006 2024년 시장규모", "2024"),
+        ("ml_006 최근 3년 시장 추이", "최근 3년"),
         ("ml_006 2025년 13월 시장규모", "2025년 13월"),
     ),
 )

@@ -117,7 +117,15 @@ class StrategicQueryLayer:
         actual_period = _display_period(snapshot, record, requested_period, period)
         structure = market_structure(snapshot, market, source)
         if actual_period is None:
-            return _failed_metric_call(brand, metric, requested_period, source, market=market, market_structure=structure)
+            return _failed_metric_call(
+                brand,
+                metric,
+                requested_period,
+                source,
+                snapshot.value_status(record, requested_period),
+                market=market,
+                market_structure=structure,
+            )
         if snapshot.value_or_none(record, actual_period) is None:
             return _failed_metric_call(
                 brand,
@@ -285,6 +293,74 @@ class StrategicQueryLayer:
             "tool": "get_market_landscape",
             "summary_text": f"요청한 전략 시장의 {selected_period} 규모를 전략 mart에서 조회했습니다.",
             "render_data": render_data,
+        }
+
+    def market_members(
+        self,
+        brand: str = "",
+        *,
+        market: str | None = None,
+        period: str = "latest",
+        limit: int = 20,
+        include_other: bool = False,
+    ) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        selected_market = _required_market(snapshot, brand, market) if brand else market
+        if not selected_market or selected_market not in {record.ml_id for record in snapshot.records}:
+            raise LookupError(f"mart market not found: market={selected_market or ''}")
+        source = snapshot.source_for_market(selected_market)
+        selected_period = _actual_period(snapshot, selected_market, source, period)
+        ranked = snapshot.ranked_brands(selected_market, selected_period, source)
+        if not ranked:
+            raise LookupError(
+                f"mart market period not found: market={selected_market} period={selected_period}"
+            )
+        bounded = max(1, min(int(limit), 50))
+        selected = ranked[5 : 5 + bounded] if include_other else ranked[:bounded]
+        data: dict[str, Any] = {
+            "market": selected_market,
+            "market_id": selected_market,
+            "market_name": selected_market,
+            "scope": "market",
+            "scope_label": "시장 구성 브랜드",
+            "level": "Brand",
+            "view_type": "market_landscape",
+            "period": selected_period,
+            "anchor_brand": brand or None,
+            "member_brands": tuple(str(row["brand"]) for row in selected),
+            "displayed_brand_count": len(selected),
+            "total_brands_in_market": len(ranked),
+            "other_members_only": include_other,
+            "market_size_recent_krw": snapshot.market_value_or_none(selected_market, selected_period, source),
+            "market_size_억원": _eok_or_none(
+                snapshot.market_value_or_none(selected_market, selected_period, source)
+            ),
+            "level_segments": level_segments(selected),
+            "source_label": source_label(source),
+            "query_result_id": self._results.put(selected),
+            "query_spec": {
+                "source": source,
+                "view": "market_landscape",
+                "market": selected_market,
+                "filters": {"period": selected_period},
+                "group_by": ["product"],
+                "sort": "sales_desc",
+                "offset": 5 if include_other else 0,
+                "limit": bounded,
+            },
+        }
+        structure = market_structure(snapshot, selected_market, source)
+        if structure:
+            data["market_structure"] = structure
+        qualifier = "상위 5개 밖의" if include_other else ""
+        return {
+            "source": source_label(source),
+            "tool": "get_market_members",
+            "summary_text": (
+                f"{selected_market} 시장의 {qualifier} 구성 브랜드를 전략 mart에서 조회했습니다. "
+                f"총 {len(ranked)}개 중 {len(selected)}개 표시"
+            ),
+            "render_data": data,
         }
 
     def market_member_metric(self, anchor_brand: str, member_brand: str, market: str | None = None) -> dict[str, Any]:
@@ -613,14 +689,7 @@ def _display_period(snapshot: MartSnapshot, record: MartRecord, requested_period
         return snapshot.latest_valid_period(record)
     if snapshot.value_or_none(record, requested_period) is not None:
         return requested_period
-    if _is_quarter_period(raw_period):
-        return None
-    previous = tuple(
-        period
-        for period in sorted(record.metric_history)
-        if period < requested_period and snapshot.value_or_none(record, period) is not None
-    )
-    return previous[-1] if previous else None
+    return None
 
 
 def _blocked_period_message(period: str, status: str) -> dict[str, str]:

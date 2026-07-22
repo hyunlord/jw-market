@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_owner
+from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
@@ -15,6 +16,7 @@ from jw_chat_agent_poc.tools.general_view_backend import (
     GeneralViewBackend,
     GeneralViewBrandMismatchError,
     GeneralViewBackendError,
+    TopBrand,
 )
 from jw_chat_agent_poc.tools.general_view_membership import (
     GeneralMembershipLoadError,
@@ -22,7 +24,7 @@ from jw_chat_agent_poc.tools.general_view_membership import (
     TtlGeneralMembershipCache,
 )
 from jw_chat_agent_poc.tools.general_view_mart import GeneralViewMartBackend, MariaDbGeneralMartReader
-from jw_chat_agent_poc.tools.metrics.market_scope_intent import detect_market_scope_intent
+from jw_chat_agent_poc.tools.metrics.market_scope_intent import asks_market_members, detect_market_scope_intent
 
 
 _ATC4_PATTERN = re.compile(
@@ -89,23 +91,39 @@ class GeneralViewService:
             return GeneralRoute.EXISTING
         if _has_explicit_general_signal(normalized):
             return GeneralRoute.GENERAL_ONLY
+        if "뉴스" in normalized:
+            return GeneralRoute.EXISTING
+        membership_state = self._strategic_membership_state(question)
+        market_intent = detect_market_scope_intent(question)
+        if membership_state is False and (
+            market_intent is not None
+            or asks_market_members(question)
+            or _asks_general_brand_metric(normalized)
+        ):
+            return GeneralRoute.GENERAL_ONLY
+        if market_intent is not None and membership_state is not True:
+            return GeneralRoute.GENERAL_ONLY
         if _has_existing_analytic_signal(normalized):
             return GeneralRoute.EXISTING
         if structured_metric_owner(question) == "brand" and self._explicit_strategic_market(question):
             return GeneralRoute.EXISTING
-        if detect_market_scope_intent(question) is not None:
-            try:
-                self._strategic_membership.resolve(question, allow_default=False)
-            except LookupError:
-                return GeneralRoute.GENERAL_ONLY
+        if market_intent is not None:
             return GeneralRoute.EXISTING
         if not _asks_market_metric(normalized):
             return GeneralRoute.EXISTING
-        try:
-            self._strategic_membership.resolve(question, allow_default=False)
-        except LookupError:
+        if membership_state is not True:
             return GeneralRoute.GENERAL_ONLY
         return GeneralRoute.DUAL
+
+    def _strategic_membership_state(self, question: str) -> bool | None:
+        try:
+            resolution = self._strategic_membership.resolve(question, allow_default=False)
+        except LookupError:
+            return None
+        market_ids = getattr(resolution, "market_ids", None)
+        if market_ids is None:
+            return True
+        return bool(market_ids or getattr(resolution, "market_id", None))
 
     def _explicit_strategic_market(self, question: str) -> bool:
         resolve_market = getattr(self._strategic_membership, "explicit_market", None)
@@ -118,10 +136,22 @@ class GeneralViewService:
 
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         started_at = qa_trace_started_at()
+        member_period = requested_period(question) if asks_market_members(question) else None
+        if member_period is not None:
+            return _unavailable_result(
+                question,
+                f"{member_period} 기준 구성 브랜드 목록은 지원하지 않으며 최신 값으로 대체하지 않습니다",
+                dual=dual,
+                started_at=started_at,
+            )
         requested_source = _requested_source(question)
         source = requested_source or "ubist"
         measure = "sales"
         brand = _brand_hint(question)
+        try:
+            brand = str(self._strategic_membership.resolve(question, allow_default=False).canonical_brand)
+        except (AttributeError, LookupError, OSError, TypeError, ValueError):
+            pass
         resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
         try:
@@ -204,8 +234,14 @@ def _contract(
     question: str,
 ) -> dict[str, Any]:
     window = _requested_market_window(question, market)
-    section = _render_section(market, other_candidates=other_candidates, compact=compact, window=window)
-    return {
+    section = _render_section(
+        market,
+        other_candidates=other_candidates,
+        compact=compact,
+        window=window,
+        question=question,
+    )
+    contract = {
         "mode": "dual" if dual else "general_only",
         "view_type": "general_view",
         "market_basis": "ATC4",
@@ -219,6 +255,16 @@ def _contract(
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
     }
+    if asks_market_members(question):
+        members = _requested_member_rows(market, question)
+        contract.update(
+            {
+                "member_brands": [row.brand for row in members],
+                "displayed_brand_count": len(members),
+                "total_brands_in_market": len(market.member_brands or market.top_brands),
+            }
+        )
+    return contract
 
 
 def _result(
@@ -238,7 +284,7 @@ def _result(
         call,
         started_at=started_at,
         status="ok",
-        row_count=max(1, len(market.top_brands)),
+        row_count=max(1, int(contract.get("displayed_brand_count") or len(market.top_brands))),
         data_as_of=str(contract.get("period") or "") or None,
         cache_hit=False,
     )
@@ -317,6 +363,7 @@ def _render_section(
     other_candidates: list[str],
     compact: bool,
     window: tuple[str, float] | None,
+    question: str,
 ) -> str:
     lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {market.atc4_description}"]
     if window is not None:
@@ -340,6 +387,13 @@ def _render_section(
             for index, row in enumerate(top_rows, 1)
         )
         lines.append(f"- Top 5: {summary}")
+    if asks_market_members(question):
+        members = _requested_member_rows(market, question)
+        if members:
+            lines.append("- 구성 브랜드: " + ", ".join(row.brand for row in members))
+        lines.append(
+            f"- 총 {len(market.member_brands or market.top_brands)}개 중 {len(members)}개 표시"
+        )
     if other_candidates:
         lines.append("- 다른 ATC4 후보: " + ", ".join(other_candidates))
     if not compact:
@@ -355,6 +409,12 @@ def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str,
         raise GeneralViewBackendError("최근 12개월 시장 규모를 계산할 월별 데이터가 부족합니다")
     selected = points[-12:]
     return f"최근 12개월 합계 {selected[0][0]}~{selected[-1][0]}", sum(value for _, value in selected)
+
+
+def _requested_member_rows(market: GeneralMarket, question: str) -> tuple[TopBrand, ...]:
+    population = market.member_brands or market.top_brands
+    selected = population[5:] if "기타" in question else population
+    return selected[:20]
 
 
 def _format_value(value: float, unit: str) -> str:
@@ -376,12 +436,28 @@ def _has_explicit_general_signal(normalized: str) -> bool:
 def _has_explicit_strategic_signal(normalized: str) -> bool:
     return bool(_STRATEGIC_MARKET_ID_PATTERN.search(normalized)) or any(
         token in normalized
-        for token in ("전략뷰", "전략view", "시장조망", "market_landscape", "경쟁군", "경쟁시장", "competitive_dynamics", "cd기준")
+        for token in (
+            "전략뷰",
+            "전략view",
+            "시장조망",
+            "market_landscape",
+            "경쟁군",
+            "경쟁시장",
+            "competitive_dynamics",
+            "cd기준",
+            "hhi",
+            "cr5",
+            "집중도",
+        )
     )
 
 
 def _asks_market_metric(normalized: str) -> bool:
     return any(token in normalized for token in ("시장점유율", "시장규모", "시장순위", "시장에서", "같은시장"))
+
+
+def _asks_general_brand_metric(normalized: str) -> bool:
+    return any(token in normalized for token in ("매출", "실적", "점유율", "추이", "순위", "시장"))
 
 
 def _has_existing_analytic_signal(normalized: str) -> bool:

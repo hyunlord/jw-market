@@ -171,6 +171,81 @@ def test_brand_metric_aggregates_complete_quarter_and_rejects_incomplete_quarter
     assert incomplete["render_data"]["period"] == "2025-Q2"
 
 
+def test_brand_metric_never_falls_back_from_an_explicit_missing_month() -> None:
+    records = (
+        _record_with_market(
+            "ml_006",
+            "리바로",
+            (1_000_000_000.0, 3_000_000_000.0),
+            ("2025-04", "2025-06"),
+            [10_000_000_000.0, 10_000_000_000.0],
+        ),
+        _record_with_market(
+            "ml_006",
+            "경쟁브랜드",
+            (9_000_000_000.0, 7_000_000_000.0),
+            ("2025-04", "2025-06"),
+            [10_000_000_000.0, 10_000_000_000.0],
+        ),
+    )
+
+    call = StrategicQueryLayer(reader=StaticStrategicMartReader(records)).brand_metric(
+        "리바로", "sales", "2025-05"
+    )
+
+    assert call["tool"] == "query_failed"
+    assert call["render_data"]["period"] == "2025-05"
+    assert "fallback_period" not in call["render_data"]
+    assert "2025-04" not in call["summary_text"]
+
+
+def test_market_members_honors_explicit_period_instead_of_latest() -> None:
+    records = (
+        _record_with_market(
+            "ml_006",
+            "과거선두",
+            (9_000_000_000.0, 1_000_000_000.0),
+            ("2025-04", "2026-05"),
+            (10_000_000_000.0, 10_000_000_000.0),
+        ),
+        _record_with_market(
+            "ml_006",
+            "현재선두",
+            (1_000_000_000.0, 9_000_000_000.0),
+            ("2025-04", "2026-05"),
+            (10_000_000_000.0, 10_000_000_000.0),
+        ),
+    )
+
+    call = StrategicQueryLayer(reader=StaticStrategicMartReader(records)).market_members(
+        market="ml_006",
+        period="2025-04",
+    )
+
+    data = call["render_data"]
+    assert data["period"] == "2025-04"
+    assert data["member_brands"] == ("과거선두", "현재선두")
+    assert data["query_spec"]["filters"] == {"period": "2025-04"}
+
+
+def test_market_members_rejects_missing_explicit_period_without_latest_substitution() -> None:
+    records = (
+        _record_with_market(
+            "ml_006",
+            "현재선두",
+            (9_000_000_000.0,),
+            ("2026-05",),
+            (10_000_000_000.0,),
+        ),
+    )
+
+    with pytest.raises(LookupError, match="period not found"):
+        StrategicQueryLayer(reader=StaticStrategicMartReader(records)).market_members(
+            market="ml_006",
+            period="2024",
+        )
+
+
 def test_brand_metric_uses_the_source_that_contains_an_iqvia_only_brand() -> None:
     """Given a mixed-source market, an IQVIA-only brand must not inherit the market UBIST default."""
 
@@ -317,8 +392,8 @@ def test_chat_agent_simple_split_metric_uses_query_layer_structure() -> None:
     assert "Class 2 기준" in fact_md
 
 
-def test_chat_agent_split_metric_period_filter_uses_query_layer_fallback() -> None:
-    """Given a split-market period filter fails, the standard route still surfaces structure and fallback facts."""
+def test_chat_agent_split_metric_period_filter_fails_closed_without_fallback() -> None:
+    """Given an explicit period fails, the route must not substitute a previous period."""
 
     agent = ChatAgent(
         metrics=_metrics_tool(),
@@ -355,14 +430,15 @@ def test_chat_agent_split_metric_period_filter_uses_query_layer_fallback() -> No
     fact_md = result["markdown_response"]["fact_md"]
 
     assert call["source"] == "IQVIA"
-    assert data["period"] == "2025-Q4"
-    assert data["requested_period"] == "2026-04"
-    assert data["fallback_period"] == "2025-Q4"
+    assert call["tool"] == "query_failed"
+    assert data["period"] == "2026-04"
+    assert "fallback_period" not in data
     assert data["market_structure"]["type"] == "class_split"
     assert "Class 구분 존재" in fact_md
     assert "Class 2 기준" in fact_md
-    assert "사용 가능한 최신 기준" in fact_md
-    assert fact_md.count("2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.") == 1
+    assert "사용 가능한 최신 기준" not in fact_md
+    assert "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다." in fact_md
+    assert "2025-Q4" not in fact_md
     assert "2026-04 매출 0.00억원" not in fact_md
     assert "2026-04 MS 0.00%" not in fact_md
 
@@ -433,8 +509,8 @@ def test_query_layer_blocks_failed_latest_zero_metric() -> None:
     assert "MS 0.00%" not in result["summary_text"]
 
 
-def test_query_layer_falls_back_from_failed_requested_period_and_keeps_split_structure() -> None:
-    """Given a requested period failed, the valid prior period and market structure remain surfaceable."""
+def test_query_layer_fails_closed_for_failed_requested_period_and_keeps_split_structure() -> None:
+    """Given an explicit period failed, its status and market structure remain surfaceable without prior values."""
 
     layer = StrategicQueryLayer(
         reader=StaticStrategicMartReader(
@@ -466,33 +542,20 @@ def test_query_layer_falls_back_from_failed_requested_period_and_keeps_split_str
     result = layer.brand_metric("악템라", "sales", "2026-04")
     data = result["render_data"]
 
-    assert result["tool"] == "get_brand_metric"
-    assert data["period"] == "2025-Q4"
-    assert data["requested_period"] == "2026-04"
-    assert data["source_status"] == "OK"
-    assert data["sales_억원"] == 48.19
-    assert data["ms_recent_pct"] == 4.34
+    assert result["tool"] == "query_failed"
+    assert data["period"] == "2026-04"
+    assert data["source_status"] == "mapping_failed"
     assert data["market_structure"]["type"] == "class_split"
     assert data["market_structure"]["display_axis"] == "class_2"
-    assert data["blocked_metric_values"] == [
-        {
-            "period": "2026-04",
-            "status": "mapping_failed",
-            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
-        }
-    ]
-    series_periods = [item["period"] for item in data["brand_value_series_10pt"]]
-    assert series_periods == ["2025-Q3", "2025-Q4", "2026-04"]
-    assert data["brand_value_series_10pt"][-1]["value_krw"] is None
-    assert data["brand_value_series_10pt"][-1]["ms_pct"] is None
+    assert "fallback_period" not in data
     assert "0.00억원" not in result["summary_text"]
     assert "MS 0.00%" not in result["summary_text"]
     fact_md = answer_fact_markdown([result], [result["source"]])
     assert "Class 구분 존재" in fact_md
     assert "Class 2 기준" in fact_md
-    assert "사용 가능한 최신 기준" in fact_md
-    assert "2025-Q4" in fact_md
-    assert fact_md.count("2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.") == 1
+    assert "사용 가능한 최신 기준" not in fact_md
+    assert "2025-Q4" not in fact_md
+    assert "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다." in fact_md
     assert "2026-04 매출 0.00억원" not in fact_md
     assert "2026-04 MS 0.00%" not in fact_md
 

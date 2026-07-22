@@ -138,6 +138,28 @@ def test_parse_general_market_response_uses_current_period_matrix_row() -> None:
     assert market.top_brands[0].value == 15_000_000_000
 
 
+def test_parse_general_market_response_uses_latest_year_by_value_not_payload_order() -> None:
+    payload = _payload()
+    payload["result"]["data"]["brand_ranking"]["yearly"].append(
+        {
+            "year": 2024,
+            "rankings": [
+                {"brand": f"과거브랜드{rank}", "rank": rank, "value": 1, "ms_pct": 1.0}
+                for rank in range(1, 4)
+            ],
+        }
+    )
+
+    market = parse_general_market_response(
+        payload,
+        requested_atc4="C10A1",
+        requested_source="ubist",
+        requested_measure="sales",
+    )
+
+    assert [row.brand for row in market.member_brands] == ["리피토", "리바로"]
+
+
 def test_parse_general_market_response_preserves_zero_current_metrics() -> None:
     payload = _payload()
     payload["result"]["data"]["ei_ms_matrix"]["data"][1].update(
@@ -211,7 +233,11 @@ class StrategicMembership:
     def resolve(self, question: str, allow_default: bool = False):
         for brand in self._brands:
             if brand in question:
-                return type("Resolution", (), {"canonical_brand": brand})()
+                return type(
+                    "Resolution",
+                    (),
+                    {"canonical_brand": brand, "market_id": "ml_test", "market_ids": ("ml_test",)},
+                )()
         raise LookupError(question)
 
 
@@ -460,6 +486,45 @@ def test_market_scope_intent_does_not_hide_general_only_membership() -> None:
     assert service.route("포도당이 속한 시장 매출") is GeneralRoute.GENERAL_ONLY
 
 
+class GeneralOnlyResolvingMembership(StrategicMembership):
+    def resolve(self, question: str, allow_default: bool = False):
+        if "아일리아" in question:
+            return type(
+                "Resolution",
+                (),
+                {"canonical_brand": "아일리아", "market_id": None, "market_ids": ()},
+            )()
+        return super().resolve(question, allow_default=allow_default)
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "아일리아 매출 알려줘",
+        "아일리아 최근 추이",
+        "아일리아 경쟁 순위 기타 포함 제품 목록",
+    ),
+)
+def test_general_only_resolved_brand_routes_to_general_view(question: str) -> None:
+    service = GeneralViewService(
+        FakeBackend(),
+        GeneralOnlyResolvingMembership({"리바로"}),
+        enabled=True,
+    )
+
+    assert service.route(question) is GeneralRoute.GENERAL_ONLY
+
+
+def test_general_only_brand_hhi_stays_on_typed_strategic_unavailable_path() -> None:
+    service = GeneralViewService(
+        FakeBackend(),
+        GeneralOnlyResolvingMembership({"리바로"}),
+        enabled=True,
+    )
+
+    assert service.route("아일리아 시장 HHI") is GeneralRoute.EXISTING
+
+
 def test_general_only_market_scope_resolves_canonical_brand_end_to_end() -> None:
     cache = TtlGeneralMembershipCache(
         StaticGeneralMembershipReader(
@@ -482,18 +547,84 @@ def test_general_only_market_scope_resolves_canonical_brand_end_to_end() -> None
     assert backend.market_calls == [("B05X0", "포도당", "ubist", "sales")]
 
 
-@pytest.mark.parametrize(
-    "question",
-    (
-        "포도당 시장 규모 추이",
-        "포도당 시장 규모 비교",
-        "포도당이 속한 시장 최신 뉴스",
-    ),
-)
-def test_general_only_market_scope_keeps_analytic_questions_on_existing_path(question: str) -> None:
+@pytest.mark.parametrize("question", ("포도당 시장 규모 추이", "포도당 시장 규모 비교"))
+def test_general_only_market_scope_keeps_analytic_questions_on_general_path(question: str) -> None:
     service = GeneralViewService(FakeBackend(), StrategicMembership(set()), enabled=True)
 
-    assert service.route(question) is GeneralRoute.EXISTING
+    assert service.route(question) is GeneralRoute.GENERAL_ONLY
+
+
+def test_general_only_brand_news_keeps_the_existing_external_path() -> None:
+    service = GeneralViewService(FakeBackend(), StrategicMembership(set()), enabled=True)
+
+    assert service.route("포도당이 속한 시장 최신 뉴스") is GeneralRoute.EXISTING
+
+
+def test_general_member_listing_reports_other_members_and_total_population() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    market = _market("S01P0", 10.0)
+    all_members = tuple(
+        replace(market.top_brands[0], brand=f"브랜드{index}", rank=index)
+        for index in range(1, 9)
+    )
+    backend.market_map["S01P0"] = replace(
+        market,
+        brand="아일리아",
+        top_brands=all_members[:5],
+        member_brands=all_members,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer(
+        "아일리아 경쟁 순위 '기타'에 포함된 제품 목록",
+        compact=False,
+        dual=False,
+    )
+
+    contract = result["general_view_contract"]
+    assert contract["total_brands_in_market"] == 8
+    assert contract["displayed_brand_count"] == 3
+    assert contract["member_brands"] == ["브랜드6", "브랜드7", "브랜드8"]
+    assert "총 8개 중 3개 표시" in result["answer"]
+    assert "브랜드6" in result["answer"]
+
+
+def test_general_member_listing_rejects_explicit_historical_period_without_latest_substitution() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["S01P0"] = replace(
+        _market("S01P0", 10.0),
+        brand="아일리아",
+        period="2026-05",
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer(
+        "아일리아 2024년 경쟁 순위 기타 포함 제품 목록",
+        compact=False,
+        dual=False,
+    )
+
+    assert result["tool_calls"][0]["tool"] == "general_view_unavailable"
+    assert "2024" in result["answer"]
+    assert "2026-05" not in result["answer"]
 
 
 @pytest.mark.parametrize("brand", ("가나톤", "가나릴", "가나텍", "가네골드"))

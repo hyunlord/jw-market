@@ -140,6 +140,8 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
             ),
             ("시장점유율", pct_value(data.get("ms_recent_pct", data.get("market_share"))), "render_data.ms_recent_pct"),
             ("순위", rank_value(data.get("rank"), data.get("total_brands_in_market")), "render_data.rank"),
+            ("시장 구성 브랜드 수", number_value(data.get("total_brands_in_market")), "render_data.total_brands_in_market"),
+            ("표시 브랜드 수", number_value(data.get("displayed_brand_count")), "render_data.displayed_brand_count"),
             ("브랜드 CAGR", _surfaceable_cagr_value(data, "brand_cagr_5y_pct"), "render_data.brand_cagr_5y_pct"),
             ("시장 CAGR", _surfaceable_cagr_value(data, "market_cagr_5y_pct"), "render_data.market_cagr_5y_pct"),
             ("Excess growth", _surfaceable_cagr_value(data, "excess_growth_pct"), "render_data.excess_growth_pct"),

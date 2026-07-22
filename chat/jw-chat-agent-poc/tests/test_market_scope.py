@@ -11,6 +11,7 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
     map_market_view_reply,
 )
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
+from jw_chat_agent_poc.resolver.catalog_membership import StaticCatalogMembershipReader, TtlCatalogMembershipReader
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
 
@@ -198,6 +199,164 @@ def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:
     assert call["qa_trace"]["row_count"] > 0
     assert call["qa_trace"]["data_as_of"] == "2026-05"
     assert call["qa_trace"]["cache_hit"] is False
+
+
+def test_strategic_metric_for_general_only_brand_is_typed_as_market_unavailable() -> None:
+    class ExplodingQueryLayer:
+        def market_scope(self, brand: str):
+            raise AssertionError(f"general-only brand must not enter strategic query layer: {brand}")
+
+    memberships = TtlCatalogMembershipReader(
+        StaticCatalogMembershipReader(
+            (
+                {
+                    "brand": "아일리아",
+                    "market_id": "",
+                    "market_name": "",
+                    "support_source": "general_mart",
+                },
+            )
+        ),
+        ttl_seconds=300,
+    )
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        membership_reader=memberships,
+        query_layer=ExplodingQueryLayer(),
+    )
+
+    result = resolver.answer("아일리아 전략뷰 HHI", view_type="market_landscape")
+
+    assert result["router_diagnostics"]["gate"] == "typed_unavailable"
+    assert "전략시장 정의에 포함되지 않아" in result["answer"]
+    assert "브랜드를 확인" not in result["answer"]
+
+
+def test_strategic_other_member_listing_uses_full_population_and_excludes_top_five() -> None:
+    def record(brand: str, value: float) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={"2026-05": {"raw_value": value}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    records = tuple(record("리바로" if rank == 1 else f"브랜드{rank}", 10_000.0 - rank) for rank in range(1, 9))
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(records)),
+    )
+
+    result = resolver.answer(
+        "리바로 경쟁 순위 '기타'에 포함된 제품 목록",
+        view_type="market_landscape",
+    )
+
+    data = result["tool_calls"][0]["render_data"]
+    assert data["total_brands_in_market"] == 8
+    assert data["displayed_brand_count"] == 3
+    assert [row["brand"] for row in data["level_segments"]] == ["브랜드6", "브랜드7", "브랜드8"]
+    assert "총 8개 중 3개 표시" in result["answer"]
+
+
+def test_named_strategic_market_member_listing_needs_no_anchor_brand() -> None:
+    def record(brand: str, value: float) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={"2026-05": {"raw_value": value}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(
+                (record("리바로", 10.0), record("로수젯", 20.0), record("리피토", 15.0))
+            )
+        ),
+    )
+
+    result = resolver.answer_named_market("고지혈증 시장에 어떤 브랜드들이 있어?")
+
+    data = result["tool_calls"][0]["render_data"]
+    assert result["resolution"]["market_id"] == "ml_006"
+    assert data["total_brands_in_market"] == 3
+    assert data["displayed_brand_count"] == 3
+    assert "총 3개 중 3개 표시" in result["answer"]
+
+
+def test_explicit_market_id_member_listing_uses_requested_period() -> None:
+    def record(brand: str, old_value: float, latest_value: float) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={
+                "2025-04": {"raw_value": old_value},
+                "2026-05": {"raw_value": latest_value},
+            },
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(
+                (record("과거선두", 9.0, 1.0), record("현재선두", 1.0, 9.0))
+            )
+        ),
+    )
+
+    result = resolver.answer_market_id(
+        "ml_006 2025년 4월 시장에 어떤 브랜드들이 있어?",
+        market_id="ml_006",
+        period="2025-04",
+    )
+
+    call = result["tool_calls"][0]
+    assert call["tool"] == "get_market_members"
+    assert call["render_data"]["period"] == "2025-04"
+    assert call["render_data"]["member_brands"] == ("과거선두", "현재선두")
+
+
+def test_named_market_member_listing_rejects_missing_explicit_period() -> None:
+    def record(brand: str) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={"2026-05": {"raw_value": 1.0}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status={}),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader((record("리바로"),))),
+    )
+
+    result = resolver.answer_named_market("고지혈증 시장의 2024년 브랜드 목록")
+
+    assert result["tool_calls"][0]["tool"] == "query_failed"
+    assert "2026-05" not in result["answer"]
 
 
 def test_monthly_market_golden_uses_mart_without_touching_backend() -> None:

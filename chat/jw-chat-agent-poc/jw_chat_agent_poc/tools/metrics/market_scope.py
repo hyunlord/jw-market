@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
@@ -24,6 +25,7 @@ from jw_chat_agent_poc.tools.metrics.cd_mart import (
 )
 from jw_chat_agent_poc.tools.metrics.market_scope_intent import (
     MarketView,
+    asks_market_members,
     detect_market_scope_intent,
     map_market_view_reply,
 )
@@ -86,6 +88,12 @@ class MarketScopeResolver:
     def has_explicit_brand_anchor(self, question: str) -> bool:
         return self._resolver.has_explicit_alias(question)
 
+    def has_explicit_named_market(self, question: str) -> bool:
+        try:
+            return self._resolver.explicit_market(question) is not None
+        except Exception:  # noqa: BLE001 - an unavailable catalog must not block unrelated routing
+            return False
+
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)
 
@@ -95,6 +103,8 @@ class MarketScopeResolver:
             return self.answer_general(question, compact=False, dual=False)
         try:
             resolution = self._resolver.resolve(question, allow_default=False)
+            if not resolution.market_ids:
+                return self._strategic_market_unavailable(question, resolution.canonical_brand)
             if self._query_layer is not None:
                 return self._query_layer_answer(
                     question,
@@ -166,6 +176,20 @@ class MarketScopeResolver:
             "sources": ["cache"],
         }
 
+    def answer_named_market(self, question: str) -> dict[str, Any]:
+        started_at = qa_trace_started_at()
+        explicit_market = self._resolver.explicit_market(question)
+        if explicit_market is None:
+            return self._unsupported("전략시장 이름을 해소할 수 없습니다.", question, "market", "unknown")
+        market_id, _ = explicit_market
+        return self._query_layer_answer(
+            question,
+            "",
+            "market_landscape",
+            started_at=started_at,
+            market_id=market_id,
+        )
+
     def answer_monthly_market_golden(
         self,
         question: str,
@@ -199,7 +223,11 @@ class MarketScopeResolver:
         if self._query_layer is None:
             return self._unsupported("전략 시장 조회 계층을 사용할 수 없습니다.", question, "market_id", market_id)
         try:
-            call = self._query_layer.market_scope_by_id(market_id, period)
+            call = (
+                self._query_layer.market_members(market=market_id, period=period)
+                if asks_market_members(question)
+                else self._query_layer.market_scope_by_id(market_id, period)
+            )
         except (LookupError, TypeError, ValueError) as exc:
             return self._unsupported(str(exc), question, "market_id", market_id)
         data = call.get("render_data")
@@ -216,7 +244,13 @@ class MarketScopeResolver:
         return {
             "question": question,
             "resolution": {"market_id": market_id},
-            "decomposition": [{"intent": "market_size", "view_type": "market_landscape", "period": period}],
+            "decomposition": [
+                {
+                    "intent": "market_members" if asks_market_members(question) else "market_size",
+                    "view_type": "market_landscape",
+                    "period": period,
+                }
+            ],
             "router_diagnostics": {
                 "deterministic": True,
                 "mode": "market_scope",
@@ -239,14 +273,23 @@ class MarketScopeResolver:
         *,
         started_at: datetime,
         use_mart: bool = False,
+        market_id: str | None = None,
     ) -> dict[str, Any]:
         assert self._query_layer is not None
         try:
-            call = (
-                self._query_layer.market_scope_from_mart(brand)
-                if view_type == "competitive_dynamics" or use_mart
-                else self._query_layer.market_scope(brand)
-            )
+            if asks_market_members(question):
+                call = self._query_layer.market_members(
+                    brand,
+                    market=market_id,
+                    period=requested_period(question) or "latest",
+                    include_other="기타" in question,
+                )
+            else:
+                call = (
+                    self._query_layer.market_scope_from_mart(brand)
+                    if view_type == "competitive_dynamics" or use_mart
+                    else self._query_layer.market_scope(brand)
+                )
         except (LookupError, TypeError, ValueError) as exc:
             return self._query_failed(exc, question, "get_market_scope", brand, started_at=started_at)
 
@@ -282,28 +325,36 @@ class MarketScopeResolver:
         data["view_type"] = view_type
         data["view_label"] = view_label(view_type)
         call["render_data"] = data
-        call["summary_text"] = (
-            f"{brand} 기준 같은 시장 전체 매출은 {view_label(view_type)} 기준 "
-            f"{eok_value(None, data.get('market_size_recent_krw'))}입니다."
-        )
+        if not asks_market_members(question):
+            call["summary_text"] = (
+                f"{brand} 기준 같은 시장 전체 매출은 {view_label(view_type)} 기준 "
+                f"{eok_value(None, data.get('market_size_recent_krw'))}입니다."
+            )
         attach_tool_qa_trace(
             call,
             started_at=started_at,
             cache_hit=False if view_type == "competitive_dynamics" or use_mart else None,
         )
         markdown = MarkdownResponseBuilder().build(
-            brand=brand,
+            brand=brand or market_name,
             calls=[call],
             sources=[source],
             notices=market_view_notices(view_type),
         )
-        resolution: dict[str, str] = {"canonical_brand": brand, "market_name": market_name}
-        if view_type == "competitive_dynamics" and market_reference:
+        resolution: dict[str, str] = {"market_name": market_name}
+        if brand:
+            resolution["canonical_brand"] = brand
+        if market_reference:
             resolution["market_id"] = market_reference
         return {
             "question": question,
             "resolution": resolution,
-            "decomposition": [{"intent": "same_market_sales", "view_type": view_type}],
+            "decomposition": [
+                {
+                    "intent": "market_members" if asks_market_members(question) else "same_market_sales",
+                    "view_type": view_type,
+                }
+            ],
             "router_diagnostics": {
                 "deterministic": True,
                 "mode": "market_scope",
@@ -445,6 +496,23 @@ class MarketScopeResolver:
             "yoy_growth_pct": yoy,
             "brand_sales_krw": card.get("front", {}).get("value_recent"),
         }
+
+    @staticmethod
+    def _strategic_market_unavailable(question: str, brand: str) -> dict[str, Any]:
+        message = "이 브랜드는 전략시장 정의에 포함되지 않아 해당 분석은 제공되지 않습니다."
+        result = MarketScopeResolver._unsupported(message, question, "brand", brand)
+        result["resolution"] = {
+            "canonical_brand": brand,
+            "market_membership": "general_only",
+        }
+        result["router_diagnostics"] = {
+            "deterministic": True,
+            "mode": "market_scope",
+            "scope": "market_landscape",
+            "gate": "typed_unavailable",
+            "gate_reason": "strategic_market_not_member",
+        }
+        return result
 
     @staticmethod
     def _unsupported(message: str, question: str, field: str, value: str) -> dict[str, Any]:

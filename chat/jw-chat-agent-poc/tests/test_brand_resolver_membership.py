@@ -163,6 +163,76 @@ def test_unknown_brand_remains_unsupported_with_catalog_membership() -> None:
         resolver.resolve("없는브랜드123", allow_default=False)
 
 
+def test_cache_resolver_admits_general_mart_brand_without_strategic_membership() -> None:
+    memberships = StaticMembershipReader(
+        (
+            {
+                "brand": "카나브패밀리",
+                "brand_alias": "카나브 패밀리",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    resolution = resolver.resolve("카나브 패밀리 실적 어때?", allow_default=False)
+
+    assert resolution.canonical_brand == "카나브패밀리"
+    assert resolution.market_id is None
+    assert resolution.market_ids == ()
+    assert resolution.support_source == "general_mart"
+
+
+def test_resolver_does_not_match_a_supported_brand_inside_a_different_name() -> None:
+    resolver = BrandResolver()
+
+    with pytest.raises(UnsupportedBrandError):
+        resolver.resolve("리바로트 최근 매출", allow_default=False)
+
+
+def test_fixture_alias_probe_does_not_replace_the_global_alias_index() -> None:
+    memberships = StaticMembershipReader(
+        (
+            {
+                "brand": "카나브패밀리",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    assert resolver.supported_brand_count() == 2
+    assert resolver.has_fixture_alias("리바로 매출") is True
+    assert resolver.resolve("카나브패밀리 실적").canonical_brand == "카나브패밀리"
+
+
+def test_explicit_strategy_alias_selects_equivalent_runtime_ml_membership() -> None:
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=_cache_reader(),
+        membership_reader=StaticMembershipReader(
+            (
+                {
+                    "brand": "리바로",
+                    "market_id": "ml_006",
+                    "market_name": "스타틴 시장",
+                    "support_source": "strategic_mart",
+                },
+            )
+        ),
+    )
+
+    resolution = resolver.resolve("strategy_006 리바로 매출", allow_default=False)
+
+    assert resolution.requested_market_id == "strategy_006"
+    assert resolution.market_id == "ml_006"
+    assert resolution.has_market_membership_mismatch is False
+
+
 def test_factory_wires_catalog_as_membership_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHAT_METRICS_MODE", "cache")
     dependencies = build_chat_agent_dependencies(external_mode="fixture")
@@ -281,7 +351,7 @@ def test_past_period_metric_uses_query_layer_without_split_market_structure() ->
 
 @pytest.mark.parametrize(
     ("relative_range", "expected_months"),
-    (("최근 3개월", 3), ("최근 12개월", 12), ("최근 1년", 12)),
+    (("최근 3개월", 3), ("최근 12개월", 12), ("최근 1년", 12), ("최근 3년", 36)),
 )
 def test_relative_range_uses_query_layer_trend_without_cache_fallback(
     relative_range: str,

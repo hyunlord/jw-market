@@ -69,18 +69,19 @@ def _period_result(
     market_rows = select_periods(market_source, plan, selected)
     brand_rows = select_periods(brand_source, plan, selected)
     requested_period = _requested_period(plan, selected)
-    fallback_period = ""
     if not market_rows and not brand_rows:
-        fallback_period = _latest_previous_period(market_source, brand_source, requested_period)
-        if not fallback_period:
-            return unsupported_metric(brand, metric, "요청 기간에 해당하는 시계열 데이터가 없습니다.", plan)
-        market_rows = _rows_for_period(market_source, fallback_period)
-        brand_rows = _rows_for_period(brand_source, fallback_period)
+        period_label_text = requested_period or "요청 기간"
+        return unsupported_metric(
+            brand,
+            metric,
+            f"{period_label_text}에 해당하는 시계열 데이터가 없습니다. 다른 기간 값으로 대체하지 않습니다.",
+            plan,
+        )
     target_year = resolved_year(market_rows, brand_rows, plan=plan)
     brand_sum = sum(num(row.get("value_krw")) or 0.0 for row in brand_rows)
     market_sum = sum(num(row.get("value_krw")) or 0.0 for row in market_rows)
     ms_pct = round(brand_sum / market_sum * 100, 4) if market_sum else None
-    label = fallback_period or (relative.label if relative is not None else period_label(market_rows, brand_rows, plan, target_year))
+    label = relative.label if relative is not None else period_label(market_rows, brand_rows, plan, target_year)
     transparency = _transparency_fields(
         plan,
         resolved_year=target_year,
@@ -89,12 +90,11 @@ def _period_result(
         interpretation_notes=relative.interpretation_notes if relative is not None else (),
         data_basis=relative.data_basis if relative is not None else None,
     )
-    blocked_values = _blocked_metric_values(requested_period, fallback_period)
     return {
         "source": "cache",
         "tool": "get_brand_metric",
         "summary_text": (
-            f"{brand}의 {key.source} {_period_summary_label(label, fallback_period)} {metric}는 {format_krw(brand_sum)}입니다. "
+            f"{brand}의 {key.source} {label} {metric}는 {format_krw(brand_sum)}입니다. "
             f"동기간 시장규모는 {format_krw(market_sum)}, MS {format_pct(ms_pct)}입니다."
         ),
         **transparency,
@@ -102,7 +102,6 @@ def _period_result(
             "brand": brand,
             "metric": metric,
             "period": label,
-            **({"requested_period": requested_period, "fallback_period": fallback_period} if fallback_period else {}),
             "market_id": key.market_id,
             "source_label": key.source,
             "measure": key.measure,
@@ -114,7 +113,6 @@ def _period_result(
             "ms_recent_pct": ms_pct,
             "market_size_series": market_rows,
             "brand_value_series_10pt": brand_rows,
-            **({"blocked_metric_values": blocked_values} if blocked_values else {}),
             **transparency,
         },
     }
@@ -123,39 +121,11 @@ def _period_result(
 def _requested_period(plan: MetricFilterPlan, selected: tuple[str, ...]) -> str:
     if plan.period_month:
         return plan.period_month
+    if plan.period_year is not None:
+        return str(plan.period_year)
     if len(selected) == 1:
         return selected[0]
     return ""
-
-
-def _latest_previous_period(row_group_a: list[dict[str, Any]], row_group_b: list[dict[str, Any]], requested_period: str) -> str:
-    if not requested_period:
-        return ""
-    periods = sorted({str(row.get("period")) for rows in (row_group_a, row_group_b) for row in rows if row.get("period")})
-    previous = [period for period in periods if period < requested_period]
-    return previous[-1] if previous else ""
-
-
-def _rows_for_period(rows: list[dict[str, Any]], period: str) -> list[dict[str, Any]]:
-    return [row for row in rows if row.get("period") == period]
-
-
-def _blocked_metric_values(requested_period: str, fallback_period: str) -> list[dict[str, str]]:
-    if not requested_period or not fallback_period or requested_period == fallback_period:
-        return []
-    return [
-        {
-            "period": requested_period,
-            "status": "query_failed",
-            "message": f"{requested_period} 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
-        }
-    ]
-
-
-def _period_summary_label(label: str, fallback_period: str) -> str:
-    if fallback_period:
-        return f"사용 가능한 최신 기준 {label}"
-    return label
 
 
 def _channel_result(

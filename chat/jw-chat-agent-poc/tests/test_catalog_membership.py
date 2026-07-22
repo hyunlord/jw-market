@@ -33,10 +33,11 @@ def test_catalog_membership_snapshot_is_cached_until_ttl() -> None:
     assert source.calls == 1
 
 
-def test_membership_sql_uses_mart_as_presence_truth_and_catalog_as_backed_aliases() -> None:
+def test_membership_sql_uses_all_marts_as_presence_truth_and_catalog_as_backed_aliases() -> None:
     sql = MariaDbCatalogMembershipReader.membership_sql()
 
     assert "mart_strategic_ml_brand_metric" in sql
+    assert "mart_general_brand_metric" in sql
     assert "catalog_strategic_brand" in sql
     assert "catalog_ml_market" in sql
     assert "LEFT JOIN catalog_ml_market" in sql
@@ -44,7 +45,11 @@ def test_membership_sql_uses_mart_as_presence_truth_and_catalog_as_backed_aliase
     assert "brand.ml_id = mart_brand.ml_id" in sql
     assert "is_excluded = 0" in sql
     assert "strategic_mart" in sql
+    assert "general_mart" in sql
     assert "catalog_alias" in sql
+    assert "brand_alias" in sql
+    assert "MAX(NULLIF(membership.brand_alias, ''))" not in sql
+    assert "GROUP BY membership.brand, membership.brand_alias" in sql
     assert "parquet" not in sql.lower()
 
 

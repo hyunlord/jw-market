@@ -55,6 +55,13 @@ def map_market_view_reply(text: str) -> MarketView | None:
     return None
 
 
+def asks_market_members(question: str) -> bool:
+    normalized = _normalize(question)
+    member_noun = any(token in normalized for token in ("브랜드", "제품", "품목", "구성원"))
+    list_cue = any(token in normalized for token in ("목록", "어떤", "뭐", "무엇", "포함", "들어"))
+    return member_noun and list_cue and ("시장" in normalized or "기타" in normalized or "순위" in normalized)
+
+
 def _explicit_view(normalized: str) -> MarketView | None:
     if any(token in normalized for token in ("일반뷰", "일반view", "atc4", "atc기준")):
         return "general_view"

@@ -137,14 +137,14 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         raise GeneralViewMartLoadError("general-view mart rows contain no periods")
     period = max(periods)
     ranking_rows = rows.brand_ranking.get(period, [])
-    top_brands = tuple(
+    member_brands = tuple(
         TopBrand(
             brand=str(item.get("brand") or item.get("brand_key") or ""),
             rank=_as_int(item.get("rank")),
             value=_as_float(item.get("raw_value")),
             share_pct=_as_float(item.get("ms")),
         )
-        for item in ranking_rows[:5]
+        for item in ranking_rows
     )
     metric = rows.brand_metric_history.get(period, {})
     return GeneralMarket(
@@ -161,8 +161,9 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         brand_value=_as_float(metric.get("raw_value")),
         brand_share_pct=_as_float(metric.get("ms")),
         brand_rank=_as_int(metric.get("rank")),
-        top_brands=top_brands,
+        top_brands=member_brands[:5],
         market_size_series=tuple(sorted(rows.market_size_series.items())),
+        member_brands=member_brands,
     )
 
 

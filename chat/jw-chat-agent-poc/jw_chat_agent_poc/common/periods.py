@@ -27,6 +27,13 @@ _EXPLICIT_PERIOD_CUE: Final[re.Pattern[str]] = re.compile(
     r"|(?<!\d)\d{1,2}\s*/\s*20\d{2}(?!\d)",
     re.IGNORECASE,
 )
+_YEAR_ONLY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?<!\d)(?P<year>20\d{2}|\d{2})\s*년"
+    r"(?!\s*(?:[1-4]\s*분기|(?:1[0-2]|0?[1-9])\s*월))"
+)
+_RELATIVE_RANGE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"최근\s*(?P<count>\d{1,2})\s*(?P<unit>년|개월|달)"
+)
 
 
 def canonical_periods(text: str) -> tuple[str, ...]:
@@ -70,6 +77,23 @@ def first_explicit_period_cue(text: str) -> str:
     """Return the first explicit period-like fragment for fail-closed reporting."""
     match = _EXPLICIT_PERIOD_CUE.search(text)
     return " ".join(match.group(0).split()) if match is not None else ""
+
+
+def requested_period(text: str) -> str | None:
+    """Return a normalized explicit period constraint when one is present."""
+    periods = canonical_periods(text)
+    if periods:
+        return periods[0]
+    if has_explicit_period_cue(text):
+        return first_explicit_period_cue(text)
+    year_match = _YEAR_ONLY_PATTERN.search(text)
+    if year_match is not None:
+        return str(_four_digit_year(year_match.group("year")))
+    relative_match = _RELATIVE_RANGE_PATTERN.search(text)
+    if relative_match is not None:
+        unit = "개월" if relative_match.group("unit") == "달" else relative_match.group("unit")
+        return f"최근 {int(relative_match.group('count'))}{unit}"
+    return None
 
 
 def _four_digit_year(raw_year: str) -> int:

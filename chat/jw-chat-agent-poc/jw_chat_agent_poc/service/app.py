@@ -36,9 +36,8 @@ from jw_chat_agent_poc.agent_loop.structured_planner import (
     structured_metric_owner,
 )
 from jw_chat_agent_poc.common.periods import (
-    canonical_periods,
-    first_explicit_period_cue,
     has_explicit_period_cue,
+    requested_period,
 )
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
@@ -156,6 +155,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
+    asks_market_members,
     detect_market_scope_intent,
     map_market_view_reply,
 )
@@ -1604,19 +1604,21 @@ def _answer_existing_without_pending(
 ) -> dict:
     explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
     if explicit_market is not None and "시장" in question:
-        requested_periods = canonical_periods(question)
-        requested_period = requested_periods[0] if requested_periods else "latest"
-        if not requested_periods and has_explicit_period_cue(question):
-            requested_period = first_explicit_period_cue(question)
+        period = requested_period(question) or "latest"
         return market_scope_resolver.answer_market_id(
             question,
             market_id=explicit_market.group(1).lower(),
-            period=requested_period,
+            period=period,
         )
     if requested_unavailable_source(question) is not None and not documents:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
+    if asks_market_members(question) and not documents:
+        if market_scope_resolver.has_explicit_brand_anchor(question):
+            return market_scope_resolver.answer(question, view_type="market_landscape")
+        if market_scope_resolver.has_explicit_named_market(question):
+            return market_scope_resolver.answer_named_market(question)
     agent_loop_required = should_use_agent_loop(question)
     has_brand_anchor = False
     if not agent_loop_required and should_use_agent_loop(question, has_brand_anchor=True):

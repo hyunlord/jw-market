@@ -49,6 +49,7 @@ class GeneralMarket:
     brand_rank: int | None
     top_brands: tuple[TopBrand, ...]
     market_size_series: tuple[tuple[str, float], ...] = ()
+    member_brands: tuple[TopBrand, ...] = ()
 
 
 @dataclass(slots=True)
@@ -229,6 +230,22 @@ def parse_general_market_response(
         if isinstance(row, dict)
         if row.get("brand") or row.get("brand_name")
     ), key=lambda row: row.rank if row.rank is not None else 10_000))
+    ranking = data.get("brand_ranking") if isinstance(data.get("brand_ranking"), dict) else {}
+    yearly = ranking.get("yearly") if isinstance(ranking.get("yearly"), list) else []
+    yearly_rows = tuple(row for row in yearly if isinstance(row, dict))
+    latest_year = max(yearly_rows, key=lambda row: str(row.get("year") or ""), default={})
+    latest_rankings = latest_year.get("rankings") if isinstance(latest_year.get("rankings"), list) else []
+    ranked_members = tuple(sorted((
+        TopBrand(
+            brand=str(row.get("brand") or row.get("brand_name") or ""),
+            rank=_first_int(row, "rank", "rank_overall"),
+            value=None,
+            share_pct=None,
+        )
+        for row in latest_rankings
+        if isinstance(row, dict)
+        if row.get("brand") or row.get("brand_name")
+    ), key=lambda row: row.rank if row.rank is not None else 10_000))
     requested_row = None
     if requested_brand:
         requested_key = _normalize_brand_name(requested_brand)
@@ -272,6 +289,7 @@ def parse_general_market_response(
             and item.get("period")
             and isinstance(item.get("value"), int | float)
         ),
+        member_brands=ranked_members if len(ranked_members) > len(current_brands) else current_brands,
     )
 
 

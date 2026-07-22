@@ -327,7 +327,7 @@ def test_metrics_tool_blocks_failed_cache_card_zero_values() -> None:
     assert "0.00억원" not in result["summary_text"]
 
 
-def test_filtered_metric_falls_back_to_latest_previous_period_when_requested_month_has_no_rows() -> None:
+def test_filtered_metric_fails_closed_when_requested_month_has_no_rows() -> None:
     key = CausePayloadKey(
         brand="악템라",
         view_type="market_landscape",
@@ -367,20 +367,12 @@ def test_filtered_metric_falls_back_to_latest_previous_period_when_requested_mon
     result = filtered_metric_result("악템라", "sales", key, payload, plan)
     data = result["render_data"]
 
-    assert result["tool"] == "get_brand_metric"
-    assert data["period"] == "2025-Q4"
-    assert data["requested_period"] == "2026-04"
-    assert data["fallback_period"] == "2025-Q4"
-    assert data["sales_억원"] == 48.19
-    assert round(data["ms_recent_pct"], 2) == 4.34
-    assert data["blocked_metric_values"] == [
-        {
-            "period": "2026-04",
-            "status": "query_failed",
-            "message": "2026-04 값은 조회 실패/시장 매핑 불완전으로 표시하지 않습니다.",
-        }
-    ]
-    assert "사용 가능한 최신 기준 2025-Q4" in result["summary_text"]
+    assert result["tool"] == "unsupported_metric"
+    assert data["status"] == "unsupported"
+    assert "2026-04에 해당하는 시계열 데이터가 없습니다" in data["message"]
+    assert "다른 기간 값으로 대체하지 않습니다" in data["message"]
+    assert "2025-Q4" not in result["summary_text"]
+    assert "fallback_period" not in data
 
 
 def test_chat_agent_routes_sales_question_to_cache_metrics() -> None:
