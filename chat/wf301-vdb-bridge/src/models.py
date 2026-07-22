@@ -557,8 +557,23 @@ class PublicUploadStatusResponse(BaseModel):
 
 
 class PublicSessionDocument(BaseModel):
-    """A user asset without ledger identifiers or storage topology."""
+    """A user asset with the two document identifiers needed to call /documents/delete.
 
+    Storage topology and session/ledger identifiers stay hidden; only the document
+    identifiers that /documents/delete requires are exposed so the public
+    /documents -> /documents/delete contract pair is usable without internal state.
+    """
+
+    document_id: int = Field(
+        description="정식 GenOS document ID. /documents/delete 호출에 사용합니다. 항상 채워집니다.",
+    )
+    temp_document_id: int | None = Field(
+        default=None,
+        description=(
+            "원본 임시 문서 ID. /documents/delete에 함께 전달할 수 있습니다. "
+            "임시 문서 계보가 없는 문서(예: 레거시 등록)에서는 null입니다."
+        ),
+    )
     file_name: str
     uploaded_at: str
     expires_at: str | None = None

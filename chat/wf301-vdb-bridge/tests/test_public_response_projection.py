@@ -288,13 +288,60 @@ def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> Non
 
     projected = models.PublicDocumentsResponse.model_validate(raw).model_dump()
     encoded = json.dumps(projected)
-    assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    # Contract change (PL): /documents now exposes the two identifiers that
+    # /documents/delete requires, so the public contract pair is usable. Every
+    # OTHER ledger/topology field (source_doc_key, source_collection, session ids,
+    # workflow/vdb ids, errors, ...) MUST stay hidden — regression guard preserved.
+    documents_forbidden = FORBIDDEN_PUBLIC_FIELDS - {"document_id", "temp_document_id"}
+    assert not any(field in encoded for field in documents_forbidden)
     document = projected["documents"][0]
+    assert document["document_id"] == 42
+    assert document["temp_document_id"] == 17
     assert document["file_size_bytes"] == 12345
     assert document["storage_route"] == "hybrid"
     assert document["file_card"]["title"] == "Survey Workbook"
     assert document["file_card"]["sheets"][0]["column_count"] == 4
     assert document["sql_tables"][0]["logical_name"] == "data_abc"
+
+
+def test_documents_contract_pair_exposes_delete_identifiers() -> None:
+    """/documents now carries exactly the identifiers /documents/delete keys deletion on.
+
+    Closes the contract-pair gap: /documents previously hid document_id and
+    temp_document_id while /documents/delete required them, so the public response
+    alone could not delete a document.
+    """
+    delete_identifiers = {"document_id", "temp_document_id"}
+    assert delete_identifiers <= set(models.DeleteDocumentRequest.model_fields)
+    assert delete_identifiers <= set(models.PublicSessionDocument.model_fields)
+
+    document = models.PublicSessionDocument(
+        document_id=42,
+        temp_document_id=17,
+        file_name="survey.xlsx",
+        uploaded_at="2026-07-13T00:00:00Z",
+    )
+    assert document.document_id == 42
+    assert document.temp_document_id == 17
+
+    # A public document builds a valid delete request without any internal ledger lookup.
+    delete_request = models.DeleteDocumentRequest.model_validate(
+        {
+            "app_session_id": "session-a",
+            "workflow_id": 301,
+            "vdb_id": 139,
+            "document_id": document.document_id,
+            "temp_document_id": document.temp_document_id,
+        }
+    )
+    assert delete_request.document_id == 42
+    assert delete_request.temp_document_id == 17
+
+
+def test_documents_public_item_still_hides_topology_identifiers() -> None:
+    """Only the two delete identifiers are opened; storage/session ledger stays hidden."""
+    still_hidden = {"source_doc_key", "source_collection", "session_id", "target_vdb_id", "workflow_id"}
+    assert still_hidden.isdisjoint(set(models.PublicSessionDocument.model_fields))
 
 
 def test_search_projection_hides_ids_and_keeps_provenance() -> None:
@@ -341,14 +388,30 @@ def test_openapi_public_responses_exclude_internal_fields_and_keep_capacity() ->
     spec = app.openapi()
     schemas = spec["components"]["schemas"]
     public_schema_names = {name for name in schemas if name.startswith("Public")}
-    encoded = json.dumps({name: schemas[name] for name in public_schema_names})
 
-    assert not any(f'"{field}"' in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    # PublicSessionDocument intentionally exposes the two /documents/delete identifiers.
+    # Every OTHER public schema stays fully ID-free — check them with the full set.
+    other_public = public_schema_names - {"PublicSessionDocument"}
+    encoded_other = json.dumps({name: schemas[name] for name in other_public})
+    assert not any(f'"{field}"' in encoded_other for field in FORBIDDEN_PUBLIC_FIELDS)
+
+    # The documents contract opens exactly the two identifiers and nothing else.
+    session_doc_props = schemas["PublicSessionDocument"]["properties"]
+    assert "document_id" in session_doc_props
+    assert "temp_document_id" in session_doc_props
+    assert not any(
+        field in session_doc_props
+        for field in (FORBIDDEN_PUBLIC_FIELDS - {"document_id", "temp_document_id"})
+    )
+    # Identifiers stay hidden on the search/file-sql provenance projections.
+    assert "document_id" not in schemas["PublicFileSqlSource"]["properties"]
+    assert "document_id" not in schemas["PublicFileSource"]["properties"]
+
+    encoded = json.dumps({name: schemas[name] for name in public_schema_names})
     assert '"file_size_bytes"' in encoded
     assert '"logical_name"' in encoded
     assert '"route"' in encoded
     assert '"status"' in encoded
-    assert "document_id" not in schemas["PublicFileSqlSource"]["properties"]
     assert "current_bytes" in schemas["QuotaSnapshot"]["properties"]
 
 
