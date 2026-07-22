@@ -15,31 +15,31 @@
     },
     {
       "id": "market_status",
-      "canonical_sha256": "ed7fd426f9c9094a2bbeb3ce37e57b7baafd886f8696e1679afc928d43c5ec2d",
+      "canonical_sha256": "f3cbfae61e90fb7fa38fcead1a8e8fb5bcfbe110133cb6bbdaa3e060e48225a8",
       "request": {
         "method": "GET",
         "path": "/jw-market-backend-api/api/market-status"
       },
-      "truth_basis": "28 source observations independently recalculated from mart source values matched the response.",
-      "measured_at": "2026-07-14",
+      "truth_basis": "Top-level brand_cards and kpi_summary from cache_market_status, plus serving-time baseline labels ubist_recent (YYYY-MM latest UBIST month) and iqvia_recent (YYYY-nQ latest IQVIA quarter) computed from the latest period that actually has mart values. Hash rebased from ed7fd426 to include the two new top-level keys against the current cache content.",
+      "measured_at": "2026-07-22",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "reference runtime sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+      "runtime_provenance": "test2 generation 683, image sha256:fc9a1fc563c18c59ac792855a07d4d0fdb9f243d4279be7a068b60d2ff4db96d (linux/amd64), response-keys-4 commit e448d3b2090d17fa8704f2a96c2b35c2f51df017"
     },
     {
       "id": "cause_livalo",
-      "canonical_sha256": "746247256baa8865e47b4c93afb44eee0e613753487c6ebb17a2a3dde404b91c",
+      "canonical_sha256": "2b79798cb3fcd0a4c723a41140f0b17070c259981fadf3236afa9d1116ea47f5",
       "request": {
         "method": "GET",
         "path": "/jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales"
       },
-      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류; F-123 preserves strategic brand-ranking continuity, expanding the first yearly ranking from 7 to 11 entries.",
-      "measured_at": "2026-07-15",
+      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류; the strategic cause ranking emits exactly the selected brand, five fixed competitors, and 기타 (7 labels), and the brand_ranking/company_ranking series key set equals top_brands (len(series) == len(top_brands) == 7, D-1 visible-cohort trim). data.kpi additionally carries target_brand_sales (the selected brand's latest UBIST sales value) and reports market CAGR in mutually-exclusive market_cagr_5y_pct / market_cagr_3y_pct slots; this is a UBIST market with a full 5-year endpoint, so market_cagr_5y_pct is non-null and market_cagr_3y_pct is null (never both set, null is never 0). The hash changed from 85372d40 purely by adding these two KPI keys.",
+      "measured_at": "2026-07-22",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "test2 generation 530, image sha256:ce95d66f049e3a69c31a16c5df3def1e144c3ec0a3e58e9d0c8715a95de062a0, integrated F-123/F-127 commit 5b7aadfb0884913ad3877bf5d6884e71d8f73ee3, PL re-approved 2026-07-15"
+      "runtime_provenance": "test2 generation 683, image sha256:fc9a1fc563c18c59ac792855a07d4d0fdb9f243d4279be7a068b60d2ff4db96d (linux/amd64), response-keys-4 commit e448d3b2090d17fa8704f2a96c2b35c2f51df017"
     },
     {
       "id": "dynamic_general_c10a1_livalo",
-      "canonical_sha256": "78b8bc3ba22db9bd4216e4b9879be8e5b3feb8e213d2e70b1cb4c416da5d28ca",
+      "canonical_sha256": "2d80ff951438df7ac75f108066964217172b259fc470358b91ba2a574dfd6f3a",
       "request": {
         "method": "POST",
         "path": "/jw-market-backend-api/api/dynamic-market",
@@ -55,10 +55,10 @@
           }
         }
       },
-      "truth_basis": "Payload was re-read unchanged from the reference runtime; F-079 and F-080 do not affect this general-view request path.",
-      "measured_at": "2026-07-14",
+      "truth_basis": "The general-view payload retains its independently defined ATC4 scope and restores the ranking contract to the selected brand, five fixed competitors, and 기타; the series key set exactly equals top_brands. result.data.kpi additionally carries target_brand_sales (selected brand's latest UBIST value) and reports market CAGR in mutually-exclusive market_cagr_5y_pct / market_cagr_3y_pct slots (this UBIST market has a full 5-year endpoint, so 5y non-null and 3y null; never both set). The hash changed from 75046e57 purely by adding these two KPI keys.",
+      "measured_at": "2026-07-22",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "reference runtime sha256:937facd0d30c70e3852d1e57cb0d0a4ba1716a6779865d8a9a7b85f039e7d7b6"
+      "runtime_provenance": "test2 generation 683, image sha256:fc9a1fc563c18c59ac792855a07d4d0fdb9f243d4279be7a068b60d2ff4db96d (linux/amd64), response-keys-4 commit e448d3b2090d17fa8704f2a96c2b35c2f51df017"
     }
   ]
 }

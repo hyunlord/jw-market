@@ -18,12 +18,25 @@ ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mo
 # INGEST_S3_BUCKET (s3_input.ENV_BUCKET): set => submissions read from MinIO/S3
 ENV_LOAD_STAGING_ROOT = "INGEST_LOAD_STAGING_ROOT"  # set => real load -> staging root, mart refresh SKIPPED (isolated verify)
 ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output root (live parquet root); refresh runs
+ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
+
+DEFAULT_LOG_ROOT = "/ingest-logs"                   # container mountPath convention for the durable-log PVC
 
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
     "jw-pipeline-orchestrator@sha256:030f81837d05b8789b879fc04ddf0865a7953ddd2cb9d26fc8b707bf394e5e12"
 )
+
+
+def log_root_hint() -> str:
+    """Durable-log root shown in /ingest/status.log_ref (mountPath convention).
+
+    The Job tees stdout and writes post_gate_report.json under this RWX PVC path so
+    logs survive pod GC (L-1/L-2). Purely a display hint here; the Job manifest owns
+    the actual mount.
+    """
+    return os.environ.get(ENV_LOG_ROOT, DEFAULT_LOG_ROOT).rstrip("/")
 
 
 def input_root() -> Path:

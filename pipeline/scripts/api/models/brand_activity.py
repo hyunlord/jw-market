@@ -340,3 +340,26 @@ class BrandActivityInterestRxRequest(BrandActivityBaseRequest):
         for source, target in (("periodStart", "period_start"), ("periodEnd", "period_end"), ("visitLocation", "visit_location")):
             _rename(data, source, target)
         return data
+
+
+class BrandActivityInterestTimeseriesRequest(BrandActivityBaseRequest):
+    """Request body for the Brand Activity INTEREST 3-category monthly time-series route.
+
+    Carries NO period parameter — the fixed 3-year window is always returned in full and the
+    front end slices it. Data-changing inputs are brand + view + market option + visit_location
+    + specialty only.
+    """
+
+    market_id: str | None = Field(default=None, description="전략뷰 다중 시장 소속을 명시적으로 선택하는 ml_id 또는 cd_id.")
+    visit_location: str | list[str] = Field("전체", description="종별 shortcut. 문자열 또는 OR 리스트. 미지정/전체=전체.")
+    specialty: str | list[str] = Field("전체", description="진료과 shortcut. 문자열 또는 OR 리스트. 미지정/전체=전체.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_bff_keys(cls, value: Any) -> Any:
+        data = _dict(value)
+        if data is None:
+            return value
+        _rename(data, "visitLocation", "visit_location")
+        _rename(data, "marketId", "market_id")
+        return data

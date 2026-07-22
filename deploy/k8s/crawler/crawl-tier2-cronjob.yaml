@@ -249,4 +249,6 @@ spec:
             name: tier2-llm-runner
   schedule: 40 18 * * *
   successfulJobsHistoryLimit: 3
-  suspend: false
+  # PL-gated cutover: retained for rollback, suspended when jw-crawl-chain-daily
+  # becomes active so the old schedule cannot double-run.
+  suspend: true

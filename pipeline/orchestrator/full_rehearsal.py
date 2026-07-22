@@ -16,12 +16,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from pipeline.scripts.utils.mart_config import PROTECTED_MART_DB_NAMES
+
 
 PY = sys.executable or "python3"
 SAFE_DB_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MART_PREFIX = "jw_mart_rehearsal_"
 CACHE_PREFIX = "jw_mart_s6_rehearsal_"
-PROTECTED_DATABASES = {"jw_mart", "jw_mart_d2_stage_20260630_r2"}
 
 
 class RehearsalContractError(ValueError):
@@ -58,7 +59,7 @@ class FullRehearsalConfig:
         ):
             if not SAFE_DB_RE.fullmatch(value) or not value.startswith(prefix):
                 raise RehearsalContractError(f"{label} must start with {prefix!r}: {value!r}")
-            if value in PROTECTED_DATABASES or value == self.source_db:
+            if value in PROTECTED_MART_DB_NAMES or value == self.source_db:
                 raise RehearsalContractError(f"{label} is not isolated: {value!r}")
         if self.target_db == self.cache_db:
             raise RehearsalContractError("target_db and cache_db must be separate schemas")
@@ -408,9 +409,17 @@ def execute_full_rehearsal(config: FullRehearsalConfig, *, dry_run: bool) -> int
         return 0
 
     config.work_dir.mkdir(parents=True, exist_ok=False)
-    for step in plan:
+    total = len(plan)
+    for index, step in enumerate(plan, start=1):
+        # Explicit stage markers so a persisted log can pinpoint the failing
+        # step from the last line alone — even when a step is killed silently
+        # (OOM / eviction) and never prints its own error. flush=True guarantees
+        # the marker reaches the durable evidence log before the child runs.
+        print(f"[stage] {step.key} start ({index}/{total})", flush=True)
         result = subprocess.run(step.argv, check=False, env={**os.environ, **dict(step.env)})
+        print(f"[stage] {step.key} end rc={result.returncode}", flush=True)
         if result.returncode != 0:
-            print(f"rehearsal failed step={step.key} rc={result.returncode}", file=sys.stderr)
+            print(f"rehearsal failed step={step.key} rc={result.returncode}", file=sys.stderr, flush=True)
             return int(result.returncode or 1)
+    print(f"[stage] rehearse-full complete rc=0 ({total}/{total})", flush=True)
     return 0

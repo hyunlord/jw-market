@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -684,3 +685,219 @@ def test_resolve_csd_markets_isjw_filter_blocks_same_ml_competitor_sheet(monkeyp
 
     assert [item.market for item in resolved] == ["LIVALO Market", "LIVALOZET Market"]
     assert resolved[0].market == "LIVALO Market"  # primary anchor unchanged
+
+
+def test_general_franchise_codes_includes_same_ml_jw_sibling(monkeypatch) -> None:
+    # 리바로 -> ml_006; canonical registry ml_006 = {리바로, 리바로젯} (JW franchise).
+    monkeypatch.setattr(
+        service,
+        "iqvia_product_codes_by_brand",
+        lambda names: {"리바로": ("LIVALO",), "리바로젯": ("LIVALOZET",)},
+    )
+    codes = service._general_franchise_codes("리바로", {"LIVALO"})
+    assert "LIVALO" in codes and "LIVALOZET" in codes
+
+
+def test_general_franchise_codes_scopes_to_selected_ml_only(monkeypatch) -> None:
+    # 리바로페노=ml_007, 리바로하이/브이=ml_008 must NOT join 리바로(ml_006) franchise.
+    captured: dict[str, set[str]] = {}
+
+    def fake(names):
+        captured["names"] = set(names.values())
+        return {name: () for name in names}
+
+    monkeypatch.setattr(service, "iqvia_product_codes_by_brand", fake)
+    service._general_franchise_codes("리바로", {"LIVALO"})
+    assert captured["names"] == {"리바로", "리바로젯"}
+
+
+def test_general_franchise_codes_unmapped_brand_falls_back_no_query(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def fake(names):
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(service, "iqvia_product_codes_by_brand", fake)
+    codes = service._general_franchise_codes("존재하지않는브랜드XYZ", {"XCODE"})
+    assert codes == {"XCODE"}  # no ml mapping -> selected-only (legacy)
+    assert calls["n"] == 0  # no extra IQVIA lookup for unmapped brand
+
+
+def test_general_franchise_qualifying_matches_strategic_membership(monkeypatch) -> None:
+    # View-independence: the general franchise brand membership equals the strategic_ml
+    # is_jw membership for the same ml_id (리바로 -> {리바로, 리바로젯}).
+    monkeypatch.setattr(
+        service,
+        "iqvia_product_codes_by_brand",
+        lambda names: {n: (n.upper(),) for n in names},
+    )
+    codes = service._general_franchise_codes("리바로", {"리바로".upper()})
+    # both franchise members contribute; non-ml_006 siblings (페노/하이/브이) absent
+    assert "리바로".upper() in codes and "리바로젯".upper() in codes
+    assert "리바로페노".upper() not in codes and "리바로하이".upper() not in codes
+
+
+def _franchise_helper_fixture():
+    csd = service.CsdProductCodes(
+        selected=frozenset({"LIVALO"}),
+        candidates=frozenset({"LIVALO", "CRESTOR"}),
+        by_brand={
+            "리바로": frozenset({"LIVALO"}),
+            "리바로젯": frozenset({"LIVALOZET"}),
+            "크레스토": frozenset({"CRESTOR"}),
+        },
+    )
+    meta = {
+        "리바로": shared.BrandMeta("리바로", "리바로", ("LIVALO",), True),
+        "리바로젯": shared.BrandMeta("리바로젯", "리바로젯", ("LIVALOZET",), True),
+        "크레스토": shared.BrandMeta("크레스토", "크레스토", ("CRESTOR",), False),
+    }
+    return csd, meta
+
+
+def test_franchise_csd_codes_all_views_share_ml_franchise(monkeypatch) -> None:
+    # ★ single shared gate used by BOTH csd-timeseries and csd-activity-series: general,
+    # strategic_cd and strategic_ml must all qualify the same ml_006 JW franchise
+    # {LIVALO, LIVALOZET}; the non-JW same-market competitor CRESTOR never qualifies.
+    monkeypatch.setattr(
+        service, "iqvia_product_codes_by_brand",
+        lambda names: {"리바로": ("LIVALO",), "리바로젯": ("LIVALOZET",)},
+    )
+    csd, meta = _franchise_helper_fixture()
+    qual = {}
+    for view in ("general", "strategic_cd", "strategic_ml"):
+        sel, cand, q = service._franchise_csd_codes(
+            view=view, csd_codes=csd, brand_meta=meta, selected_brand="리바로"
+        )
+        assert sel == {"LIVALO"}  # primary anchor stays the selected brand
+        assert "CRESTOR" not in q  # non-JW competitor never qualifies
+        qual[view] = q
+    assert qual["general"] == {"LIVALO", "LIVALOZET"}
+    assert qual["strategic_cd"] == {"LIVALO", "LIVALOZET"}
+    assert qual["strategic_ml"] == {"LIVALO", "LIVALOZET"}
+    # general/strategic_cd widen candidate so the sibling sheet is discoverable...
+    for view in ("general", "strategic_cd"):
+        _sel, cand, _q = service._franchise_csd_codes(
+            view=view, csd_codes=csd, brand_meta=meta, selected_brand="리바로"
+        )
+        assert "LIVALOZET" in cand
+    # ...strategic_ml leaves candidate untouched (brand_meta already carries the family).
+    _sel, cand_ml, _q = service._franchise_csd_codes(
+        view="strategic_ml", csd_codes=csd, brand_meta=meta, selected_brand="리바로"
+    )
+    assert cand_ml == {"LIVALO", "CRESTOR"}
+
+
+def test_franchise_csd_codes_unmapped_brand_falls_back_selected_only(monkeypatch) -> None:
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        service, "iqvia_product_codes_by_brand",
+        lambda names: (calls.__setitem__("n", calls["n"] + 1) or {}),
+    )
+    csd, meta = _franchise_helper_fixture()
+    sel, cand, q = service._franchise_csd_codes(
+        view="general", csd_codes=csd, brand_meta=meta, selected_brand="존재하지않는브랜드XYZ"
+    )
+    assert q == {"LIVALO"}  # no ml mapping -> selected-only (legacy gate)
+    assert calls["n"] == 0  # unmapped brand short-circuits before any IQVIA lookup
+
+
+def _capture_qualifying_codes(monkeypatch, *, view: str, market_key: str) -> dict[str, object]:
+    """Drive get_csd_timeseries for one view, capturing the CSD-gate arguments.
+
+    Stubs everything below the view -> qualifying_codes routing so the test observes
+    exactly which qualification signal (and candidate widening) each view feeds into
+    resolve_csd_markets. The DB and every downstream aggregation are stubbed out.
+    """
+
+    months = [{"period_ym": "2025-01"}, {"period_ym": "2025-02"}, {"period_ym": "2025-03"}]
+    monkeypatch.setattr(service.db, "fetch_all", lambda *_a, **_k: months)
+
+    brand_meta = {
+        "리바로": shared.BrandMeta("리바로", "리바로", ("LIVALO",), True),
+        "크레스토": shared.BrandMeta("크레스토", "크레스토", ("CRESTOR",), False),
+    }
+    view_cfg = shared.ViewConfig("brand", "market", market_key, f"{market_key}_name", "brand_ranking_stacked", True)
+    brand_set = SimpleNamespace(
+        selected_brand="리바로",
+        brand_meta=brand_meta,
+        choices=[shared.BrandChoice("리바로", "리바로", 1, True), shared.BrandChoice("크레스토", "크레스토", 2, False)],
+        view=view_cfg,
+        market_id="cd_006" if view == "strategic_cd" else ("ml_006" if view == "strategic_ml" else "C10A1"),
+        market_row={market_key: "M", f"{market_key}_name": "리바로 시장"},
+        ranking_quarter="2025-Q1",
+        applied_filter={},
+    )
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_k: brand_set)
+    # selected/candidate exclude the sibling on purpose (the sibling lives in a separate
+    # cd/atc4 grouping); the franchise gate is what must pull LIVALOZET back in.
+    monkeypatch.setattr(
+        service,
+        "_iqvia_csd_product_codes",
+        lambda meta, *, selected_brand: service.CsdProductCodes(
+            selected=frozenset({"LIVALO"}),
+            candidates=frozenset({"LIVALO", "CRESTOR"}),
+            by_brand={key: frozenset(m.product_codes) for key, m in meta.items()},
+        ),
+    )
+    monkeypatch.setattr(service, "_general_franchise_codes", lambda _brand, codes: set(codes) | {"LIVALOZET"})
+    monkeypatch.setattr(
+        service,
+        "_franchise_qualifying_codes",
+        lambda _csd_codes, _brand_meta: {"LIVALO", "LIVALOZET"},
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_csd_markets(**kwargs):
+        captured.update(kwargs)
+        return (shared.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),)
+
+    monkeypatch.setattr(service, "resolve_csd_markets", fake_resolve_csd_markets)
+
+    def fake_activity_series(_market, choices, _by_brand, months):
+        return {
+            "totals": {month: 0.0 for month in months},
+            "by_brand": {choice.brand_key: {month: 0.0 for month in months} for choice in choices},
+            "matched": {choice.brand_key: False for choice in choices},
+            "observed_months": tuple(months),
+        }
+
+    monkeypatch.setattr(service, "_activity_series", fake_activity_series)
+    monkeypatch.setattr(service, "_fetch_rx_rows", lambda *_a, **_k: [])
+    monkeypatch.setattr(service, "_market_totals", lambda *_a, **_k: {})
+
+    payload = {"view": view, "selected_brand": "리바로"}
+    if view == "general":
+        payload["filter"] = {"atc4": "C10A1"}
+    else:
+        payload["market_id"] = brand_set.market_id
+    service.get_csd_timeseries(payload)
+    return captured
+
+
+def test_csd_timeseries_strategic_cd_uses_ml_franchise_gate(monkeypatch) -> None:
+    # ★ core of this change: strategic_cd is no longer on the legacy selected-only gate; it
+    # takes the registry-derived ml_id franchise path (same as general), so a same-ml_id JW
+    # sibling (LIVALOZET) qualifies and its candidate code is pulled into discovery.
+    captured = _capture_qualifying_codes(monkeypatch, view="strategic_cd", market_key="cd_market_id")
+
+    assert captured["qualifying_product_codes"] == {"LIVALO", "LIVALOZET"}
+    assert "LIVALOZET" in captured["candidate_product_codes"]  # candidate widened for sheet discovery
+    assert captured["selected_product_codes"] == {"LIVALO"}  # primary anchor stays the selected brand
+
+
+def test_csd_timeseries_three_views_qualify_identically(monkeypatch) -> None:
+    # ★ view-independence contract: general, strategic_cd, and strategic_ml all feed the same
+    # {선택 + 동일 ml_id ∩ is_jw} qualification into resolve_csd_markets.
+    general = _capture_qualifying_codes(monkeypatch, view="general", market_key="atc4_code")
+    strategic_cd = _capture_qualifying_codes(monkeypatch, view="strategic_cd", market_key="cd_market_id")
+    strategic_ml = _capture_qualifying_codes(monkeypatch, view="strategic_ml", market_key="ml_id")
+
+    assert general["qualifying_product_codes"] == {"LIVALO", "LIVALOZET"}
+    assert strategic_cd["qualifying_product_codes"] == {"LIVALO", "LIVALOZET"}
+    assert strategic_ml["qualifying_product_codes"] == {"LIVALO", "LIVALOZET"}
+    # general and strategic_cd also widen the candidate set so sibling sheets are discoverable.
+    assert "LIVALOZET" in general["candidate_product_codes"]
+    assert "LIVALOZET" in strategic_cd["candidate_product_codes"]

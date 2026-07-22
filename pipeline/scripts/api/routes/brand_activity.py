@@ -29,6 +29,10 @@ from pipeline.scripts.api.brand_activity_interest_rx_matrix import (
     InterestRxMatrixInputError,
     get_interest_rx_matrix,
 )
+from pipeline.scripts.api.brand_activity_interest_timeseries import (
+    InterestTimeseriesInputError,
+    get_interest_timeseries,
+)
 from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
 from pipeline.scripts.api.brand_activity_topic_matrix import (
     TopicRequestError,
@@ -43,6 +47,7 @@ from pipeline.scripts.api.brand_activity_topics import (
 )
 from pipeline.scripts.api.models.brand_activity import (
     BrandActivityInterestRxRequest,
+    BrandActivityInterestTimeseriesRequest,
     BrandActivityTopicsRequest,
     CsdTimeseriesRequest,
 )
@@ -312,6 +317,54 @@ def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -
     if result is None:
         _raise_market_not_found(payload)
     return _success_response(result, request_normalized=request_normalized)
+
+
+@router.post(
+    "/jw-brand-activity-mock/api/brand-activity/interest-timeseries",
+    include_in_schema=False,
+)
+@router.post(
+    "/api/brand-activity/interest-timeseries",
+    tags=[BRAND_ACTIVITY_TAG],
+    summary="INTEREST 3구분 3년 월간 시계열",
+    description=(
+        "IQVIA CSD keyword INTEREST 3구분(VERY/SOMEWHAT/NOT USEFUL)의 브랜드별 월간 시계열입니다. "
+        "요청에 기간 파라미터는 없으며, 데이터 최신월 기준 3년 전체를 항상 반환합니다(프론트가 절단). "
+        "브랜드별·시점별 3구분 count와 브랜드 내 분모(total_count) 기준 pct를 제공하고, 데이터 없는 시점은 null입니다.\n\n"
+        + BRAND_ACTIVITY_FILTER_DESCRIPTION
+    ),
+    response_model=None,
+    openapi_extra={
+        "requestBody": brand_activity_request_body(
+            {
+                "visit_location": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 종별 필터(HOSPITAL/PRIV. PRACTICE). 미전송/전체=전체."},
+                "specialty": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 진료과 필터(19종). 미전송/전체=전체."},
+            },
+            {
+                "view": "general",
+                "selected_brand": "리바로",
+                "filters": {"atc4": ["C10A1"]},
+                "visit_location": "전체",
+                "specialty": "전체",
+            },
+        )
+    },
+)
+def brand_activity_interest_timeseries(payload: BrandActivityInterestTimeseriesRequest) -> dict[str, JsonValue]:
+    """Return per-brand INTEREST 3-category monthly time series over a fixed 3-year window."""
+
+    service_payload = _service_payload(payload)
+    try:
+        result = get_interest_timeseries(service_payload)
+    except InterestTimeseriesInputError as exc:
+        _raise_brand_set_context_error(exc)
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"error": "invalid_interest_timeseries_request", "message": str(exc)},
+        ) from exc
+    if result is None:
+        _raise_market_not_found(payload)
+    return _success_response(result, request_normalized=False)
 
 
 def _portal_service_request(

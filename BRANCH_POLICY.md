@@ -41,3 +41,25 @@ implementation): it alone carries the `--analysis-variant short|long`
 contract matching the live wf217 short/long lineage. The recovered VM
 snapshot under `pipeline/scripts/ai_analysis/ops/` is a deprecated prior
 generation retained for provenance (see its README).
+
+---
+
+## ⚠️ Deploy warning — response-keys-4 (1d38478e) NOT in production (rolled back 2026-07-22)
+
+`develop` contains the response-keys-4 change (commits `9b5fa13d`/`e448d3b2`/`1d38478e`):
+market-status `ubist_recent`/`iqvia_recent` and cause `data.kpi` `target_brand_sales` +
+mutually-exclusive `market_cagr_5y_pct`/`market_cagr_3y_pct`.
+
+**It was promoted to prod and rolled back the same day.** Production runs the previous
+image `sha256:62d9152a…` (APP_VERSION `74f0d1d7`), which keeps the D-1 series=7 fix.
+
+- **Root cause**: exclusive CAGR makes `market_cagr_5y_pct` **null** for IQVIA markets
+  (market series starts 2021-Q2, so the 2021-Q1 5-year endpoint is absent). The portal
+  calls `market_cagr_5y_pct.toFixed()` without a null guard → `null.toFixed()` →
+  원인분석 ErrorBoundary. Previously the 5y slot always had a value (silent 5y→3y fallback).
+- The CAGR logic is correct and market-level (not brand-launch-based); no code defect.
+- ★ **Do NOT build the backend image from `develop` tip and promote it** until the portal
+  null-guards `market_cagr_5y_pct` and reads `market_cagr_3y_pct` for the 3-year case.
+- ★ **Do NOT revert the code** — it is the asset to re-promote after the portal fix.
+
+See the rollback audit (stage_g rollback, 2026-07-22) for full evidence.

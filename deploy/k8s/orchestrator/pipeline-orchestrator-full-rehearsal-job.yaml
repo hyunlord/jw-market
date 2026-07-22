@@ -1,11 +1,21 @@
 # Canonical suspended template for an isolated R-1 full-pipeline rehearsal.
-# Copy this manifest, give the Job a unique name, set image to the v0.2.9 digest,
+# Copy this manifest, give the Job a unique name, set image to the pinned digest,
 # replace both isolated database placeholders, and set spec.suspend=false only after
 # recording the input pins.
 # Isolated DB naming (rehearse-full contract): R1_TARGET_DB=jw_mart_rehearsal_r1_<date>,
 # R1_CACHE_DB=jw_mart_s6_rehearsal_r1_<date> (jw_mart / *_r2 are PROTECTED). Pre-create
 # both with root before unsuspend (the d2-writer cannot CREATE DATABASE).
 # Source = local/NFS (--source-backend local); no MinIO ingest (PL: MinIO=archive).
+#
+# Log durability: the whole pipeline is teed to /work/evidence/rehearse.log, and
+# /work/evidence is backed by the r1-evidence-nfs RWX PVC (NOT the emptyDir), so
+# the log + evidence survive pod loss. Pre-apply the PVC manifest
+# (pipeline-orchestrator-r1-evidence-pvc.yaml). The orchestrator prints
+# `[stage] <key> start|end rc=` markers, so the failing step is identifiable from
+# the last line even on a silent kill. ttlSecondsAfterFinished keeps the failed
+# pod for 24h so its logs are not GC'd before inspection.
+# ★ node scheduling: R-1 needs the NFS-capable pool. nodeSelector pins
+# knp-jw-agn-dev-genos-api-01 (db-02 pool nodes cannot mount the Filestore).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -17,7 +27,8 @@ metadata:
 spec:
   suspend: true
   backoffLimit: 0
-  activeDeadlineSeconds: 21600
+  activeDeadlineSeconds: 43200
+  ttlSecondsAfterFinished: 86400
   template:
     metadata:
       labels:
@@ -29,11 +40,13 @@ spec:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
       restartPolicy: Never
+      nodeSelector:
+        cloud.google.com/gke-nodepool: knp-jw-agn-dev-genos-api-01
       securityContext:
         fsGroup: 3000
       containers:
         - name: rehearsal
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:2e7943ca232ffe8d040df22297dec791595e62222e60200311408c8d7f0520ae
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator:REPLACE_WITH_PINNED_DIGEST
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-lc"]
           args:
@@ -44,30 +57,37 @@ spec:
               mkdir -p /work/evidence
               test "${R1_TARGET_DB}" != "REPLACE_WITH_NEW_ISOLATED_DB"
               test "${R1_CACHE_DB}" != "REPLACE_WITH_NEW_ISOLATED_CACHE_DB"
-              python -m pipeline.orchestrator materialize-full-inputs \
-                --output-root /work/inputs \
-                --source-backend local \
-                --ubist-source-dir /r1-source/UBIST \
-                --iqvia-source-dir /r1-source/IQVIA \
-                --ubist-parquet-sidecar \
-                  /canonical-ubist/f046-c927ac9d/raw/ubist/year=2026/month=05/data.parquet \
-                  year=2026/month=05/data.parquet \
-                  8798ff1e04f524d59bcdddf42bc4f14f18ffe68b91942d3de970faadec6e2a5c
-              cp /work/inputs/input_manifest.json /work/evidence/
-              cp /work/inputs/input_inventory.json /work/evidence/
-              python -m pipeline.orchestrator rehearse-full \
-                --input-manifest /work/inputs/input_manifest.json \
-                --target-db "${R1_TARGET_DB}" \
-                --cache-db "${R1_CACHE_DB}" \
-                --source-db "${R1_SOURCE_DB}" \
-                --work-dir /work/rehearsal
-              python -m pipeline.orchestrator compare-full \
-                --reference-db "${R1_SOURCE_DB}" \
-                --target-db "${R1_TARGET_DB}" \
-                --reference-cache-db "${R1_SOURCE_DB}" \
-                --target-cache-db "${R1_CACHE_DB}" \
-                --output /work/evidence/r1_compare.json
-              cat /work/evidence/r1_compare.json
+              # Tee the whole pipeline to the durable evidence PVC so the log
+              # survives pod loss. pipefail propagates any stage failure to the
+              # Job exit code (tee returns 0).
+              {
+                echo "[job] start $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                python -m pipeline.orchestrator materialize-full-inputs \
+                  --output-root /work/inputs \
+                  --source-backend local \
+                  --ubist-source-dir /r1-source/UBIST \
+                  --iqvia-source-dir /r1-source/IQVIA \
+                  --ubist-parquet-sidecar \
+                    /canonical-ubist/f046-c927ac9d/raw/ubist/year=2026/month=05/data.parquet \
+                    year=2026/month=05/data.parquet \
+                    8798ff1e04f524d59bcdddf42bc4f14f18ffe68b91942d3de970faadec6e2a5c
+                cp /work/inputs/input_manifest.json /work/evidence/
+                cp /work/inputs/input_inventory.json /work/evidence/
+                python -m pipeline.orchestrator rehearse-full \
+                  --input-manifest /work/inputs/input_manifest.json \
+                  --target-db "${R1_TARGET_DB}" \
+                  --cache-db "${R1_CACHE_DB}" \
+                  --source-db "${R1_SOURCE_DB}" \
+                  --work-dir /work/rehearsal
+                python -m pipeline.orchestrator compare-full \
+                  --reference-db "${R1_SOURCE_DB}" \
+                  --target-db "${R1_TARGET_DB}" \
+                  --reference-cache-db "${R1_SOURCE_DB}" \
+                  --target-cache-db "${R1_CACHE_DB}" \
+                  --output /work/evidence/r1_compare.json
+                cat /work/evidence/r1_compare.json
+                echo "[job] complete $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              } 2>&1 | tee /work/evidence/rehearse.log
           env:
             - name: R1_TARGET_DB
               value: REPLACE_WITH_NEW_ISOLATED_DB
@@ -118,6 +138,8 @@ spec:
           volumeMounts:
             - name: work
               mountPath: /work
+            - name: evidence
+              mountPath: /work/evidence
             - name: r1-source
               mountPath: /r1-source
               readOnly: true
@@ -128,6 +150,11 @@ spec:
         - name: work
           emptyDir:
             sizeLimit: 50Gi
+        # Durable evidence subtree (RWX nfs-client) — survives pod loss so the
+        # teed rehearse.log and compare output are recoverable after a failure.
+        - name: evidence
+          persistentVolumeClaim:
+            claimName: r1-evidence-nfs
         # Canonical R-1 source = local/NFS tree (PL: 인입 정본=NFS/local, MinIO=archive).
         # Before unsuspend: stage /home/GCP/jw-market/data/{UBIST,IQVIA} onto this
         # nfs-client PVC (RWX, same Filestore backend as the ingest hook's

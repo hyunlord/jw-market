@@ -161,6 +161,16 @@ def resolve_brand_set(
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
+    # ① The market_id anchor (atc4[0]) is kept for echo/display, but the brand
+    # set must span every selected ATC4 so competitors that live only in a
+    # secondary code (e.g. C10C) are not silently dropped. market_scope members
+    # resolve to a single ATC4 and keep the single-anchor query.
+    brand_market_ids: str | tuple[str, ...] = resolved_market_id
+    if view_name == "general" and market_scope_market_id is None:
+        requested_atc4 = _requested_general_atc4(raw_filter_payload)
+        if len(requested_atc4) > 1:
+            brand_market_ids = tuple(dict.fromkeys((resolved_market_id, *requested_atc4)))
+
     market_row = None
     ranked_brand_keys: tuple[str, ...] | None = None
     strategic_choice_meta: dict[str, BrandMeta] | None = None
@@ -193,9 +203,9 @@ def resolve_brand_set(
             ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
             ranked_brand_keys = _ranking_brand_keys(ranking, selected_brand=resolved_selected_brand)
     if ranked_brand_keys:
-        brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source, brand_keys=ranked_brand_keys))
+        brand_rows = tuple(_fetch_brand_rows(view, brand_market_ids, source=resolved_source, brand_keys=ranked_brand_keys))
     else:
-        brand_rows = tuple(_fetch_brand_rows(view, resolved_market_id, source=resolved_source))
+        brand_rows = tuple(_fetch_brand_rows(view, brand_market_ids, source=resolved_source))
     if not brand_rows:
         return None
     if market_row is None:
@@ -267,6 +277,18 @@ def _resolve_general_market_id(
         if membership in requested_set:
             return membership
     return requested_market_id
+
+
+def _requested_general_atc4(filter_payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the canonical set of ATC4 codes a general-view request selected."""
+
+    raw_values = filter_payload.get("atc4")
+    values = (
+        raw_values
+        if isinstance(raw_values, Sequence) and not isinstance(raw_values, str | bytes)
+        else (raw_values,)
+    )
+    return canonical_atc4_values(value for value in values if value is not None)
 
 
 def _resolve_general_selected_brand_key(selected_brand: str, brand_meta: Mapping[str, BrandMeta]) -> str:
@@ -414,16 +436,17 @@ def _brand_set_context_error(
 
 def _fetch_brand_rows(
     view: ViewConfig,
-    market_id: str,
+    market_ids: str | Sequence[str],
     *,
     source: str = SOURCE,
     brand_keys: Sequence[str] | None = None,
 ) -> list[JsonMap]:
+    ids = (market_ids,) if isinstance(market_ids, str) else tuple(dict.fromkeys(market_ids))
     is_jw = "is_jw" if view.has_is_jw else "0 AS is_jw"
     overlay = "overlay_data" if view.has_is_jw else "NULL AS overlay_data"
     audit_code_matrix = "audit_code_matrix" if view.brand_table == "mart_general_brand_metric" else "NULL AS audit_code_matrix"
     key_clause = ""
-    params: list[object] = [market_id, source, RANKING_MEASURE]
+    params: list[object] = [*ids, source, RANKING_MEASURE]
     if brand_keys:
         key_clause = f" AND brand_key IN ({_placeholders(brand_keys)})"
         params.extend(brand_keys)
@@ -431,9 +454,9 @@ def _fetch_brand_rows(
         f"""
         SELECT DISTINCT brand_key, brand_name, {is_jw}, by_dimension, {overlay}, metric_history, {audit_code_matrix}
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.brand_table)}
-        WHERE {view.market_key} = %s AND source = %s AND measure = %s
+        WHERE {view.market_key} IN ({_placeholders(ids)}) AND source = %s AND measure = %s
           {key_clause}
-        ORDER BY brand_key
+        ORDER BY brand_key, {view.market_key}
         """,
         tuple(params),
     )
@@ -465,6 +488,7 @@ def _fetch_market_row(view: ViewConfig, market_id: str, *, source: str = SOURCE)
         SELECT {view.market_key}, {view.market_name_column}, market_size_series, {view.ranking_column}
         FROM {quote_identifier(config.db_name)}.{quote_identifier(view.market_table)}
         WHERE {view.market_key} = %s AND source = %s AND measure = %s
+        ORDER BY computed_at DESC, id DESC
         LIMIT 1
         """,
         (market_id, source, RANKING_MEASURE),
@@ -495,21 +519,56 @@ def _brand_candidates(
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
     general_molecules = general_molecules_by_product(metas) if view_name == "general" else {}
     general_sidecar = _general_sidecar_dimensions(rows) if view_name == "general" and source == SOURCE else {}
-    candidates: list[BrandCandidate] = []
+    grouped: dict[str, list[JsonMap]] = {}
+    order: list[str] = []
     for row in rows:
         brand_key = str(row["brand_key"])
+        if brand_key not in grouped:
+            grouped[brand_key] = []
+            order.append(brand_key)
+        grouped[brand_key].append(row)
+    candidates: list[BrandCandidate] = []
+    for brand_key in order:
+        # A brand present in several selected ATC4 markets yields one row per
+        # market. Collapse them into a single candidate: union its dimensions
+        # and sum its sales so the competitor ranking reflects the whole
+        # selected market union. Single-market brands are unchanged.
+        brand_rows = grouped[brand_key]
         meta = metas[brand_key]
         rank_item = rank_by_key.get(brand_key, {})
-        metric = json_map(json_map(row.get("metric_history")).get(ranking["quarter"]))
+        metric_ranks = [
+            int_or_none(json_map(json_map(row.get("metric_history")).get(ranking["quarter"])).get("rank"))
+            for row in brand_rows
+        ]
+        metric_rank = min((rank for rank in metric_ranks if rank is not None), default=None)
         candidates.append(
             BrandCandidate(
                 meta=meta,
-                dimensions=_dimensions(view_name, row, meta, general_molecules, general_sidecar.get(brand_key, {})),
-                sales_rank=int_or_none(rank_item.get("rank")) or int_or_none(metric.get("rank")),
-                sales_value=_candidate_sales_value(row, ranking=ranking, ranking_quarters=ranking_quarters, audit_code_axis=audit_code_axis),
+                dimensions=_merge_dimensions(
+                    _dimensions(view_name, row, meta, general_molecules, general_sidecar.get(brand_key, {}))
+                    for row in brand_rows
+                ),
+                sales_rank=int_or_none(rank_item.get("rank")) or metric_rank,
+                sales_value=sum(
+                    _candidate_sales_value(row, ranking=ranking, ranking_quarters=ranking_quarters, audit_code_axis=audit_code_axis)
+                    for row in brand_rows
+                ),
             )
         )
     return tuple(candidates)
+
+
+def _merge_dimensions(dimensions: Any) -> dict[str, tuple[str, ...]]:
+    """Union per-dimension values across a brand's rows, preserving first-seen order."""
+
+    merged: dict[str, list[str]] = {}
+    for row_dimensions in dimensions:
+        for key, values in row_dimensions.items():
+            bucket = merged.setdefault(key, [])
+            for value in values:
+                if value not in bucket:
+                    bucket.append(value)
+    return {key: tuple(values) for key, values in merged.items()}
 
 
 def _brand_choice_candidates(
@@ -684,7 +743,13 @@ def _brand_meta_by_key(rows: tuple[JsonMap, ...], *, has_is_jw: bool) -> dict[st
         brand_key = str(row["brand_key"])
         products = tuple(sorted({normalize_iqvia_en(code) for code in _product_codes(row.get("by_dimension"))}))
         is_jw = bool(row.get("is_jw")) if has_is_jw else get_display_brand(brand_key) is not None
-        metas[brand_key] = BrandMeta(brand_key, str(row.get("brand_name") or brand_key), products, is_jw)
+        existing = metas.get(brand_key)
+        if existing is None:
+            metas[brand_key] = BrandMeta(brand_key, str(row.get("brand_name") or brand_key), products, is_jw)
+        else:
+            # Same brand across several selected ATC4 markets: union product codes.
+            merged_products = tuple(sorted(set(existing.product_codes) | set(products)))
+            metas[brand_key] = BrandMeta(brand_key, existing.brand_name, merged_products, existing.is_jw or is_jw)
     return metas
 
 

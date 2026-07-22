@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import unicodedata
 from pathlib import Path
 from typing import Any
+
+
+def _nfc(value: object) -> str:
+    # NFC-normalize so validation compares logical content, not Unicode encoding.
+    # Korean strings read from the NFS-staged MI Master can be NFD while the
+    # source-code EXPECTED_* literals are NFC. Applied ONLY at validation sites,
+    # never on the data-build/hash path, so compare-full parity is preserved.
+    return unicodedata.normalize("NFC", str(value))
 
 from pipeline.etl.io.catalog._lib.common import count_by, read_parquet_rows, utc_now_text, write_records_parquet
 from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
@@ -76,11 +85,11 @@ def source_note_for(strategic_market_id: str, jw_product_name: str) -> str:
 
 def _source_file_version_from_market_definition(market_definition_records: list[dict[str, Any]]) -> str:
     versions = {
-        str(record.get("source_file_version"))
+        _nfc(record.get("source_file_version"))
         for record in market_definition_records
         if record.get("source_file_version") not in (None, "")
     }
-    if versions != {EXPECTED_SOURCE_FILE_VERSION}:
+    if versions != {_nfc(EXPECTED_SOURCE_FILE_VERSION)}:
         raise ValueError(
             f"market_definition source_file_version mismatch: "
             f"expected={EXPECTED_SOURCE_FILE_VERSION!r}, actual={sorted(versions)}"
@@ -134,7 +143,7 @@ def load_dim_jw_product_records(
         if market_record is None:
             raise ValueError(f"missing market_definition row: {strategic_market_id}")
         actual_market_name = str(market_record.get("market_name") or "")
-        if actual_market_name != expected_market_name:
+        if _nfc(actual_market_name) != _nfc(expected_market_name):
             raise ValueError(
                 f"{strategic_market_id} market_name mismatch: "
                 f"expected={expected_market_name!r}, actual={actual_market_name!r}"

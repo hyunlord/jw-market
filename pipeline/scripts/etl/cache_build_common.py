@@ -462,6 +462,43 @@ def series_cagr(series: dict[str, Any] | None) -> float | None:
     return None
 
 
+def market_cagr_exclusive(series: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    """Return ``(cagr_5y_pct, cagr_3y_pct)`` under an *exclusive* endpoint policy.
+
+    Unlike :func:`series_cagr`, which silently returns a 3-year CAGR in the
+    ``5y`` slot when the 5-year endpoint is missing, this reports the horizon
+    explicitly so a consumer can tell which window a value describes:
+
+    - 5-year endpoint computable          → ``(5y, None)``
+    - 5-year missing, 3-year computable    → ``(None, 3y)``
+    - neither computable                   → ``(None, None)``
+
+    The two slots are never both non-null. ``None`` means "not computable" and
+    must not be coerced to ``0``.
+    """
+    cagr_5y = _endpoint_cagr(series, 5).get("cagr_pct")
+    if cagr_5y is not None:
+        return round(float(cagr_5y), 2), None
+    cagr_3y = _endpoint_cagr(series, 3).get("cagr_pct")
+    if cagr_3y is not None:
+        return None, round(float(cagr_3y), 2)
+    return None, None
+
+
+def iqvia_period_to_display(period: str | None) -> str | None:
+    """Convert a mart IQVIA quarter label ``YYYY-Qn`` to the portal ``YYYY-nQ``.
+
+    Returns ``None`` when the input is missing or not a recognized quarter
+    label, so callers surface "no data" rather than a malformed string.
+    """
+    if not period:
+        return None
+    match = re.match(r"^(\d{4})-Q([1-4])$", str(period))
+    if not match:
+        return None
+    return f"{match.group(1)}-{match.group(2)}Q"
+
+
 def fetch_all(sql: str, params: Iterable[Any] | None = None) -> list[dict[str, Any]]:
     conn = mariadb_connect()
     try:

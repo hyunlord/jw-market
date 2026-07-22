@@ -669,6 +669,54 @@ def _request(*, period: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def test_activity_series_applies_csd_franchise_gate(monkeypatch) -> None:
+    # ★ core of the closing round: csd-activity-series (the endpoint the portal actually calls)
+    # now feeds the same ml_id franchise qualification into resolve_csd_markets as csd-timeseries,
+    # so a same-ml_id JW sibling (LIVALOZET) qualifies and candidate is widened for discovery.
+    codes = {"리바로": ("LIVALO",), "리바로젯": ("LIVALOZET",), "크레스토": ("CRESTOR",)}
+    monkeypatch.setattr(
+        timeseries_service, "iqvia_product_codes_by_brand",
+        lambda names: {k: codes[k] for k in names if k in codes},
+    )
+    view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
+    brand_set = BrandSetResolution(
+        view_name="general", market_id="C10A1", selected_brand="리바로", view=view,
+        market_row={"atc4_code": "C10A1", "atc4_desc": "STATINS"},
+        brand_rows=(
+            {"brand_key": "리바로", "brand_name": "리바로", "by_dimension": {"company": "JW"}},
+            {"brand_key": "크레스토", "brand_name": "크레스토", "by_dimension": {"company": "AstraZeneca"}},
+        ),
+        brand_meta={
+            "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
+            "크레스토": BrandMeta("크레스토", "크레스토", ("CRESTOR",), False),
+        },
+        choices=(BrandChoice("리바로", "리바로", 1, True), BrandChoice("크레스토", "크레스토", 2, False)),
+        candidates=(), ranking_quarter="2025-Q4", applied_filter={"atc4": ["C10A1"]},
+    )
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: brand_set)
+    captured: dict[str, object] = {}
+
+    def fake_resolve_csd_markets(**kwargs):
+        captured.update(kwargs)
+        return (service.CsdCrosswalk("LIVALO Market", "LIVALO Market", ("LIVALO",), 1),)
+
+    monkeypatch.setattr(service, "resolve_csd_markets", fake_resolve_csd_markets)
+    monkeypatch.setattr(service, "_fetch_activity_rows", lambda *_a: [])
+    monkeypatch.setattr(
+        db, "fetch_all",
+        lambda sql, _params=None: [{"period_ym": m} for m in ("2025-01", "2025-02", "2025-03")]
+        if "SELECT DISTINCT period_ym" in sql else [],
+    )
+
+    payload = service.get_csd_activity_series(
+        {"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}, "entity_level": "brand"}
+    )
+    assert payload is not None
+    assert captured["qualifying_product_codes"] == {"LIVALO", "LIVALOZET"}
+    assert "LIVALOZET" in captured["candidate_product_codes"]  # candidate widened for sheet discovery
+    assert captured["selected_product_codes"] == {"LIVALO"}
+
+
 def _brand_set() -> BrandSetResolution:
     view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     brand_meta = {

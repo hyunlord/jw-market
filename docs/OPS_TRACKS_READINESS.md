@@ -92,4 +92,97 @@
 
 ---
 
-*본 문서는 상태 스냅샷(2026-07-19)이다. 스케줄/suspend/Alertmanager 상태 변경 시 §2·§3·§6 을 라이브 재확인 후 갱신할 것.*
+## §8. 크롤 4단계 체인과 cache cutoff 계약 (PL 승인 후 cutover)
+
+### §8.1 실행 순서
+
+tracked target은 `jw-crawl-chain-daily` 하나이며 매일 03:10 KST에 다음 순서로 실행한다.
+
+1. `tier1_collect` (timeout 180분)
+2. `tier1_classify_incremental` (timeout 15분)
+3. `tier2_collect_exact` (timeout 480분)
+4. `tier2_classify_v2_and_refresh` (timeout 30분)
+
+runner `pipeline/scripts/crawler/crawl_chain.py`가 각 subprocess rc를 확인한다. non-zero 또는 timeout이면 `CHAIN_STAGE_FAILED` JSON marker와 실패 receipt를 기록하고 즉시 비제로 종료하므로 후속 단계는 실행되지 않는다. 전체 Job은 `activeDeadlineSeconds=43200`(12시간), `backoffLimit=0`, `concurrencyPolicy=Forbid`, `startingDeadlineSeconds=900`이다. 관측 중앙값 약 8시간 33분, 상단 약 8시간 58분이므로 03:10 시작 시 11:43~12:08 완료를 예상한다.
+
+`Forbid`는 같은 CronJob의 전일 실행이 남은 경우 새 Job 생성을 건너뛴다. runner의 PVC flock도 수동 resume Job과 정규 Job의 동시 실행을 거부하고 `CHAIN_SCHEDULE_SKIPPED_ACTIVE`를 남긴다. skip을 성공으로 간주하지 말고 운영 확인 대상으로 취급한다.
+
+### §8.2 durable receipt와 멱등 경계
+
+PVC `jw-crawl-chain-state`의 `/var/lib/jw-crawl-chain/runs/<run-id>/`에 단계별 산출물과 receipt를 보존한다. receipt 필드는 `run_id`, `stage`, `attempt`, `status`, `started_at`, `finished_at`, `command_revision`, `input_sha256`, `output_sha256`, `exit_code`, `error_code`다. 첫 단계의 input은 `root`, 이후 단계의 input은 직전 단계 `output_sha256`이므로 단계 간 계보도 끊어지지 않는다. 각 시도는 `attempts/<stage>/attempt-<n>`에 격리하고, rc=0인 시도만 `outputs/<stage>`로 원자 rename한 뒤 receipt를 기록한다. 실패한 부분 산출물은 최종 output으로 승격되지 않는다.
+
+resume은 앞 단계의 `status=complete`, `command_revision`, `input_sha256`, `output_sha256`가 모두 일치할 때만 허용한다. 하나라도 없거나 달라지면 fail closed한다. 이미 완료되고 SHA가 맞는 단계는 `CHAIN_STAGE_SKIPPED_COMPLETE`로 건너뛰므로 같은 run-id의 멱등 replay가 DB 적재를 반복하지 않는다. 실제 loader의 기존 `news_id` duplicate gate, target processor existence skip, `sync-events-raw` missing-only insert도 그대로 유지한다.
+
+### §8.3 PL-gated cutover와 rollback
+
+tracked manifest는 안전을 위해 chain 자체도 `suspend: true`로 저장한다. 승인 후에만 다음 명령을 사용한다.
+
+```bash
+# API dry-run only
+deploy/k8s/crawler/apply-crawl-chain.sh --dry-run
+
+# active legacy Job 0을 확인하고 old 2개 suspend -> chain activate
+deploy/k8s/crawler/apply-crawl-chain.sh --execute-cutover
+
+# chain suspend -> old schedules restore
+deploy/k8s/crawler/apply-crawl-chain.sh --rollback
+```
+
+helper는 새 chain을 suspended 상태로 먼저 적용하고 old tier1/tier2를 suspend한 뒤 마지막에 chain만 activate한다. old CronJob은 삭제하지 않는다. active old Job이 하나라도 있으면 cutover를 거부한다. 이번 코드 라운드에서는 어떤 cluster object도 변경하지 않는다.
+
+### §8.4 실패 조회와 수동 재개
+
+Alertmanager receiver가 `null`인 동안 receipt와 구조화 로그가 자체 확인 수단이다. status Job은 완료 단계와 최초 실패 단계를 JSON으로 반환하며 실패 run이면 rc=1이다.
+
+```bash
+RUN_ID='2026-07-21T03-10-00+09-00'
+
+# 조회 Job 렌더링 후 명시적으로 실행
+deploy/k8s/crawler/render-crawl-chain-control-job.sh status "$RUN_ID" \
+  | kubectl -n llmops apply -f -
+
+# 실패 단계부터 재개. 이전 receipt/SHA가 다르면 실행 전 거부된다.
+deploy/k8s/crawler/render-crawl-chain-control-job.sh resume "$RUN_ID" tier2_collect_exact \
+  | kubectl -n llmops apply -f -
+```
+
+운영 폴링 SLA는 매일 12:30 KST까지 latest chain status 확인으로 둔다. 아래 marker 중 하나가 있으면 실패로 처리한다: `CHAIN_STAGE_FAILED`, `CHAIN_SCHEDULE_SKIPPED_ACTIVE`, 12:30까지 `CHAIN_RUN_COMPLETE` 부재. 외부 paging은 플랫폼 receiver가 연결된 뒤 별도 추가하며, receiver가 없는 상태를 알림 완료로 보고하지 않는다.
+
+### §8.5 stage 4 용량 이슈 (이번 변경 범위 밖)
+
+2026-07-21 실측 pending v2 74건은 순서 결함이 아니라 `append-live --daily-call-limit 60` 제한이다. 기존 증분 query가 target processor 미보유 row를 다음날 다시 읽으므로 영구 누락은 아니다. 같은 workflow 비용 상한(`60 calls = 203.40원`)을 단순 적용하면 74건 일괄 처리 비용은 약 **250.86원**이며 최소 2개 daily quota가 필요하다. 신규 유입이 같은 quota를 사용하므로 실제 해소일은 늘 수 있다. 한도 상향은 호출비 증가와 검수 표본 증가를 동반하지만 모델·prompt·validator는 바뀌지 않아 건당 품질 계약은 동일하다. 한도 변경과 backlog backfill은 PL 별도 승인 사항이며 이 patch는 `60`을 유지한다.
+
+### §8.6 cache = 전일 완결 snapshot
+
+`jw-cache-refresh-daily`는 **05:00 KST 고정**이며 crawl chain의 5단계가 아니다. tier2가 10:31까지 실행된 실측이 있어 같은 날 chain 완료를 기다리면 cache 가용 시점이 정오 이후로 밀린다. 따라서 cache 계약은 다음과 같다.
+
+> 05:00 cache는 refresh 시작 전에 DB에 완결 적재된 마지막 crawl 결과를 publish한다. 당일 03:10에 시작한 crawl 결과는 같은 날 cache에 부분 반영한다고 보장하지 않으며, 익일 05:00 snapshot에서 완결 반영한다. 최대 약 24시간 freshness 지연은 정상 계약이고, 부분 swap이나 DB 손상으로 판정하지 않는다.
+
+2026-07-21 예시: cache는 05:10:22 완료, tier1 loader는 05:16:47 시작해 `news_raw/events/event_brand_scores=38/38/16`을 뒤에 적재했다. 05:00 cache가 이를 포함하지 않은 것은 이 계약에서는 정상이며 익일 반영 대상이다.
+
+cutoff runtime metadata는 응답 계약 승인 전 임의로 추가하지 않는다. 저장안은 live cache 행마다 복제하지 않고 sidecar 테이블 `cache_publication_meta` 1행/run으로 둔다.
+
+| 필드 | 타입/의미 |
+|---|---|
+| `cache_name`, `refresh_run_id` | PK 구성; `cache_deep_analysis`, refresh run identity |
+| `snapshot_policy` | `previous_complete_snapshot` 고정 |
+| `source_cutoff_at` | staging build 직전 `events`에서 실제 읽을 수 있던 최대 source timestamp |
+| `source_max_news_id` | 동률 timestamp 검증용 deterministic high-water mark |
+| `published_at` | 원자 apply/post-verify 완료 시각 |
+| `source_row_count`, `payload_row_count` | cutoff 재검증 및 급락 gate |
+
+`cache_deep_analysis` 자체에는 `updated_at`만 있고 source cutoff lineage가 없으므로 이 sidecar가 기존 응답 payload와 cache PK를 흔들지 않는 최소안이다. writer는 staging build 직전 source high-water mark를 캡처하고 post-verify 성공과 같은 publication 경계에서 insert한다. 실패 swap에서는 publication row를 만들지 않는다. 이 DDL/writer는 별도 승인 전 구현하지 않는다.
+
+소비자 노출 옵션:
+
+| 옵션 | 형태 | 호환성/판정 |
+|---|---|---|
+| A (권고) | 기존 `data` 아래 additive `cache_snapshot_meta={policy,source_cutoff_at,published_at}` | deep-analysis OpenAPI·BFF·portal 소비 확인 후 도입. JSON consumer가 unknown field를 허용하면 가장 명시적 |
+| B | `X-JW-Cache-Source-Cutoff`, `X-JW-Cache-Published-At` 응답 헤더 | payload 무변경이나 BFF/ingress header 전달 보장 필요 |
+| C | 운영 로그/대시보드만 | 소비자 계약 무변경이나 사용자가 freshness를 알 수 없어 최종안으로 부적합 |
+
+이번 patch는 문서·manifest 주석까지만 반영하고 API response, cache schema, refresh swap 명령은 변경하지 않는다. A/B 선택과 consumer 영향 확인 뒤 별도 계약 patch로 진행한다.
+
+---
+
+*§1~§7은 상태 스냅샷(2026-07-19)이고 §8은 PL-gated 구현 계약이다. cutover 후 §2·§3·§6의 라이브 상태와 commit/image digest를 재확인해 갱신할 것.*

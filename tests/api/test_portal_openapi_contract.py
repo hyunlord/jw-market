@@ -17,6 +17,7 @@ def test_openapi_exposes_only_portal_shared_routes() -> None:
         "/api/brand-activity/csd-presence",
         "/api/brand-activity/csd-timeseries",
         "/api/brand-activity/interest-rx-matrix",
+        "/api/brand-activity/interest-timeseries",
         "/api/brand-activity/topics",
         "/api/brands",
         "/api/capabilities",
