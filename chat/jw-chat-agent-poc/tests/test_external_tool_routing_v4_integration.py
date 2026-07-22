@@ -403,6 +403,62 @@ def test_enforce_executes_the_prs_and_emits_ordered_ccs(monkeypatch) -> None:
     assert budget["tool_call_timeouts"][0]["tool_name"] == "mfds_permission_search"
 
 
+def test_enforce_executes_raw_validated_arguments_but_records_normalized_ccs(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    observed_queries: list[str] = []
+
+    def clinical_search(query_intr: str, *, query_type: str = "intervention") -> ExternalCall:
+        observed_queries.append(query_intr)
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="clinicaltrials_mcp",
+            status="live",
+            summary_text="one result",
+            render_data={
+                "payload": {
+                    "studies": [
+                        {
+                            "NCTId": "NCT00000001",
+                            "briefTitle": "DME trial",
+                            "overallStatus": "RECRUITING",
+                        }
+                    ]
+                },
+                "request": {"query": query_intr, "query_type": query_type},
+            },
+        )
+
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "  diabetic   macular edema  ", "query_type": "condition"},
+                "bounded query",
+                call_id="proposal-raw",
+            ),
+        )
+    )
+    monkeypatch.setattr(external, "clinicaltrials_v2_search", clinical_search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+
+    payload = run_external_tool_agent(
+        "당뇨병성 황반부종 관련 임상시험을 찾아줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=provider,
+    )
+
+    assert observed_queries == ["  diabetic   macular edema  "]
+    diagnostics = payload["router_diagnostics"]["routing_v4"]
+    assert diagnostics["input_key"] == "natural_query"
+    assert diagnostics["eligible_tools_count"] == 2
+    assert diagnostics["executed_call_signature"]["executed_calls"][0]["normalized_args"] == {
+        "query": "diabetic macular edema",
+        "query_type": "condition",
+    }
+
+
 def test_enforce_typed_stop_does_not_execute_web_fallback(monkeypatch) -> None:
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
 

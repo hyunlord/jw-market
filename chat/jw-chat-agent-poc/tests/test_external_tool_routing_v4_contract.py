@@ -97,30 +97,69 @@ def test_capability_manifest_uses_exactly_the_four_v4_states() -> None:
         CapabilityStatus.NOT_IMPLEMENTED,
         CapabilityStatus.UNRESOLVED,
     }
-    assert matrix.status_for("hira", "HIRA_DISEASE_PATIENT_STATS") is CapabilityStatus.SUPPORTED
+    assert matrix.status_for(
+        "hira", "HIRA_DISEASE_PATIENT_STATS", input_key="sick_cd"
+    ) is CapabilityStatus.SUPPORTED
+    assert matrix.status_for(
+        "hira", "HIRA_DISEASE_PATIENT_STATS", input_key="disease_name"
+    ) is CapabilityStatus.SUPPORTED
+    assert matrix.status_for(
+        "hira", "HIRA_LABEL_EFFICACY", input_key="product_name"
+    ) is CapabilityStatus.FIELD_NOT_EXPOSED
+    assert matrix.status_for(
+        "regulatory", "REIMBURSEMENT_CRITERIA", input_key="product_name"
+    ) is CapabilityStatus.NOT_IMPLEMENTED
+    assert matrix.status_for(
+        "unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST", input_key="unknown"
+    ) is CapabilityStatus.UNRESOLVED
 
 
 def test_nct_detail_capability_is_supported_by_verified_detail_tool() -> None:
     matrix = default_capability_matrix()
 
-    assert matrix.status_for(
-        "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
-    ) is CapabilityStatus.SUPPORTED
-    assert matrix.resolve(
-        "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
-    ).eligible_tools == ("clinicaltrials_study_details",)
-    assert matrix.status_for("hira", "HIRA_LABEL_EFFICACY") is CapabilityStatus.FIELD_NOT_EXPOSED
-    assert matrix.status_for("regulatory", "REIMBURSEMENT_CRITERIA") is CapabilityStatus.NOT_IMPLEMENTED
-    assert matrix.status_for("unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST") is CapabilityStatus.UNRESOLVED
+    resolution = matrix.resolve(
+        "clinical_trials",
+        "CLINICAL_TRIAL_NCT_DETAIL_FIELDS",
+        input_key="nct_id",
+    )
+
+    assert resolution.status is CapabilityStatus.SUPPORTED
+    assert resolution.eligible_tools == ("clinicaltrials_study_details",)
+
+
+def test_capability_matrix_keeps_identifier_contracts_separate() -> None:
+    matrix = CapabilityMatrix.from_json(CONTRACT_DIR / "capability_matrix.json")
+
+    code = matrix.resolve("hira", "HIRA_DISEASE_PATIENT_STATS", input_key="sick_cd")
+    disease_name = matrix.resolve(
+        "hira", "HIRA_DISEASE_PATIENT_STATS", input_key="disease_name"
+    )
+    nct_detail = matrix.resolve(
+        "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS", input_key="nct_id"
+    )
+    unknown = matrix.resolve(
+        "clinical_trials", "CLINICAL_TRIAL_SEARCH", input_key="unsupported_identifier"
+    )
+
+    assert code.input_key == "sick_cd"
+    assert code.eligible_tools == disease_name.eligible_tools
+    assert nct_detail.status is CapabilityStatus.SUPPORTED
+    assert nct_detail.eligible_tools == ("clinicaltrials_study_details",)
+    assert unknown.status is CapabilityStatus.UNRESOLVED
+    assert unknown.typed_reason_code == "AMBIGUOUS_INPUT"
 
 
 def test_mfds_composition_is_supported_while_easy_drug_fields_remain_unexposed() -> None:
     matrix = default_capability_matrix()
 
-    assert matrix.resolve("regulatory", "MFDS_COMPOSITION").eligible_tools == (
+    assert matrix.resolve(
+        "regulatory", "MFDS_COMPOSITION", input_key="product_name"
+    ).eligible_tools == (
         "mfds_composition",
     )
-    assert matrix.status_for("regulatory", "MFDS_EASY_DRUG_FIELDS") is CapabilityStatus.FIELD_NOT_EXPOSED
+    assert matrix.status_for(
+        "regulatory", "MFDS_EASY_DRUG_FIELDS", input_key="product_name"
+    ) is CapabilityStatus.FIELD_NOT_EXPOSED
 
 
 def test_runtime_default_capability_matrix_matches_the_frozen_manifest() -> None:
@@ -131,6 +170,7 @@ def test_runtime_default_capability_matrix_matches_the_frozen_manifest() -> None
         actual = runtime.resolve(
             expected["source_domain"],
             expected["requested_capability"],
+            input_key=expected["input_key"],
         )
         assert actual.status.value == expected["capability_status"]
         assert actual.eligible_tools == tuple(expected["eligible_tools"])
@@ -276,6 +316,16 @@ def test_a12_precondition_false_deactivates_release_gate_and_forbids_r5_edit() -
     assert gate.release_gate_active is False
     assert gate.r5_edit_allowed is False
     assert gate.classification == "out_of_scope_precondition"
+    assert gate.expected_gap is False
+
+
+def test_a12_precondition_true_activates_release_gate_and_allows_r5_edit() -> None:
+    gate = evaluate_resolver_precondition(exact_unique=True)
+
+    assert gate.active is True
+    assert gate.release_gate_active is True
+    assert gate.r5_edit_allowed is True
+    assert gate.classification == "active"
     assert gate.expected_gap is False
 
 
