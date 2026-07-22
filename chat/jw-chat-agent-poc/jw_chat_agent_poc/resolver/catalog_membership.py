@@ -83,7 +83,7 @@ class MariaDbCatalogMembershipReader:
         default_factory=lambda: int(os.environ.get("CHAT_CATALOG_GENERAL_PAGE_SIZE", "2000"))
     )
     general_max_rows: int = field(
-        default_factory=lambda: int(os.environ.get("CHAT_CATALOG_GENERAL_MAX_ROWS", "100000"))
+        default_factory=lambda: int(os.environ.get("CHAT_CATALOG_GENERAL_MAX_ROWS", "200000"))
     )
 
     @staticmethod

@@ -23,6 +23,14 @@ def test_catalog_reader_uses_catalog_schema_env(monkeypatch) -> None:
     assert reader.database == "jw_mart_d2_stage_20260630_r2"
 
 
+def test_catalog_reader_default_row_cap_covers_the_live_general_mart(monkeypatch) -> None:
+    monkeypatch.delenv("CHAT_CATALOG_GENERAL_MAX_ROWS", raising=False)
+
+    reader = MariaDbCatalogMembershipReader()
+
+    assert reader.general_max_rows == 200_000
+
+
 def test_catalog_membership_snapshot_is_cached_until_ttl() -> None:
     source = StaticCatalogMembershipReader(
         ({"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨 시장"},)
