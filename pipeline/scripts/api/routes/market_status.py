@@ -15,7 +15,7 @@ router = APIRouter()
 def _brand_metric_rows() -> list[dict]:
     return db.fetch_all(
         """
-        SELECT brand_name, source, metric_history
+        SELECT ml_id, brand_name, source, metric_history
         FROM mart_strategic_ml_brand_metric
         WHERE measure = 'sales' AND is_jw = 1
         """
@@ -54,20 +54,24 @@ def _market_recent_periods(rows: list[dict] | None = None) -> dict[str, str | No
     }
 
 
-def _brand_cagr_by_brand(rows: list[dict] | None = None) -> dict[str, tuple[float | None, float | None]]:
-    selected: dict[str, dict] = {}
+def _brand_cagr_by_brand(
+    rows: list[dict] | None = None,
+) -> dict[tuple[str, str], tuple[float | None, float | None]]:
+    selected: dict[tuple[str, str], dict] = {}
     for row in _brand_metric_rows() if rows is None else rows:
         brand = str(row.get("brand_name") or "")
-        if not brand:
+        ml_id = str(row.get("ml_id") or "")
+        if not brand or not ml_id:
             continue
-        current = selected.get(brand)
+        key = (brand, ml_id)
+        current = selected.get(key)
         if current is None or (current.get("source") != "ubist" and row.get("source") == "ubist"):
-            selected[brand] = row
+            selected[key] = row
 
-    result: dict[str, tuple[float | None, float | None]] = {}
-    for brand, row in selected.items():
+    result: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    for key, row in selected.items():
         history = loads_json_maybe(row.get("metric_history")) or {}
-        result[brand] = brand_cagr_exclusive(history if isinstance(history, dict) else {})
+        result[key] = brand_cagr_exclusive(history if isinstance(history, dict) else {})
     return result
 
 
@@ -77,7 +81,10 @@ def _overlay_brand_cagr(payload: dict, rows: list[dict]) -> None:
         if not isinstance(card, dict):
             continue
         extended = card.setdefault("back_extended", {})
-        brand_cagr_5y, brand_cagr_3y = values.get(str(card.get("brand")), (None, None))
+        market_id = str(card.get("market_id") or "")
+        ml_id = f"ml_{market_id.removeprefix('strategy_')}" if market_id else ""
+        key = (str(card.get("brand") or ""), ml_id)
+        brand_cagr_5y, brand_cagr_3y = values.get(key, (None, None))
         extended["brand_cagr_5y_pct"] = brand_cagr_5y
         extended["brand_cagr_3y_pct"] = brand_cagr_3y
 
