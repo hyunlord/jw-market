@@ -515,9 +515,11 @@ def test_a03_exact_code_zero_rows_is_no_record_found_not_parent_substitution(mon
         ("질병코드 H36.0 환자수 통계 알려줘", "H36.0"),
         ("상병코드 E11 환자수 알려줘", "E11"),
         ("상병코드 E11.3 환자수 알려줘", "E11.3"),
+        ("상병코드 D69 환자수 알려줘", "D69"),
+        ("상병코드 I10 환자수 알려줘", "I10"),
     ),
 )
-def test_s2_direct_kcd_allowlist_routes_without_planner_tool_call(
+def test_s2_direct_kcd_routes_without_planner_tool_call(
     monkeypatch,
     question: str,
     expected_sick_cd: str,
@@ -560,28 +562,6 @@ def test_s2_direct_kcd_allowlist_routes_without_planner_tool_call(
             "normalized_args": {"sick_cd": expected_sick_cd, "year": "2024"},
         }
     ]
-
-
-@pytest.mark.parametrize("question", ("상병코드 D69 환자수 알려줘", "상병코드 I10 환자수 알려줘"))
-def test_s2_non_allowlisted_kcd_does_not_direct_route_or_widen(monkeypatch, question: str) -> None:
-    external = ExternalApiClient(mode="fixture")
-
-    def fail_on_hira_call(sick_cd: str, year: str = "2024") -> ExternalCall:
-        raise AssertionError(f"non-allowlisted KCD must not direct route: {sick_cd=} {year=}")
-
-    monkeypatch.setattr(external, "hira_disease_hospitalization_outpatient_stats", fail_on_hira_call)
-    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
-    payload = run_external_tool_agent(
-        question,
-        resolver=BrandResolver(),
-        external=external,
-        provider=_no_tool_provider(),
-    )
-
-    assert payload["tool_calls"] == []
-    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
-    assert ccs["proposed_calls"] == []
-    assert ccs["runtime_status"] == "typed_stop"
 
 
 def test_a01_partial_periods_preserve_official_rows_without_trend_claim(monkeypatch) -> None:

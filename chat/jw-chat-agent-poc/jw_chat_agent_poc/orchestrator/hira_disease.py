@@ -24,6 +24,7 @@ class HiraUnsuitable(TypedDict):
 
 HiraMappingEntry: TypeAlias = HiraMapping | tuple[HiraMapping, ...]
 HIRA_TREND_YEARS = tuple(str(year) for year in range(2020, 2025))
+DISEASE_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(?P<code>[A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 
 
 def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
@@ -194,6 +195,11 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
     return calls
 
 
+def hira_disease_code_calls(question: str, sick_cd: str, external: ExternalApiClient) -> list[ExternalCall]:
+    code = normalize_hira_disease_code(sick_cd)
+    return list(_hira_external_calls(question, external, code))
+
+
 def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
     if "추이" in question:
         return (
@@ -222,14 +228,28 @@ def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMap
 def hira_disease_code_for_text(text: str) -> str | None:
     """Return one authoritative KCD code when the existing mapping is unambiguous."""
 
-    candidate = text.strip().upper()
-    if re.fullmatch(r"[A-Z]\d{2}(?:\.\d{1,2})?", candidate):
-        return candidate
+    direct_code = explicit_hira_disease_code(text)
+    if direct_code is not None:
+        return direct_code
     mappings = _hira_disease_mappings(text, text.strip())
     if mappings is None:
         return None
     codes = {mapping["sick_cd"] for mapping in mappings}
     return next(iter(codes)) if len(codes) == 1 else None
+
+
+def explicit_hira_disease_code(text: str) -> str | None:
+    match = DISEASE_CODE_RE.search(text)
+    if match is None:
+        return None
+    return normalize_hira_disease_code(match.group("code"))
+
+
+def normalize_hira_disease_code(code: str) -> str:
+    compact = code.upper().replace(".", "")
+    if len(compact) == 4:
+        return f"{compact[:3]}.{compact[3]}"
+    return compact
 
 
 def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ...]:
