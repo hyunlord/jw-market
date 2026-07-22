@@ -200,13 +200,29 @@ tier1_collect() {
   local output="${CHAIN_STAGE_OUTPUT_DIR}"
   local raw="${output}/raw"
   local profiles="${output}/drug_profiles"
-  local sites="바이오스펙테이터 히트뉴스 약업신문 데일리팜 메디칼타임즈 팜뉴스 의학신문 한경바이오인사이트 메디칼업저버 약사공론 의약뉴스 메디파나뉴스"
+  local all_sites="바이오스펙테이터 히트뉴스 약업신문 데일리팜 메디칼타임즈 팜뉴스 의학신문 한경바이오인사이트 메디칼업저버 약사공론 의약뉴스 메디파나뉴스"
+  local selected_sites="${CRAWL_CHAIN_TIER1_SITES:-}"
+  local preseed_sites="${all_sites}"
+  local months="${CRAWL_CHAIN_TIER1_MONTHS:-1}"
+  local max_articles="${CRAWL_CHAIN_TIER1_MAX_ARTICLES:-0}"
+  local delay_seconds="${CRAWL_CHAIN_DELAY_SECONDS:-5}"
+  local -a crawl_command=(
+    python crawl/crawler/crawl_2tier.py
+    --tier 1 --run-crawl --months "${months}" --concurrent-sites 4
+    --delay-sec "${delay_seconds}" --output-dir "${raw}"
+    --drug-profile-dir "${profiles}/drug_profiles"
+  )
+  if [[ -n "${selected_sites}" ]]; then
+    preseed_sites="${selected_sites//,/ }"
+    crawl_command+=(--sites "${selected_sites}")
+  fi
+  if [[ "${max_articles}" != "0" ]]; then
+    crawl_command+=(--max-articles "${max_articles}")
+  fi
   mkdir -p "${raw}" "${profiles}"
   python -c 'import sys,zipfile; from pathlib import Path; target=Path(sys.argv[1]); target.mkdir(parents=True, exist_ok=True); zipfile.ZipFile("crawl/config/drug_profiles.zip").extractall(target)' "${profiles}"
-  preseed_urls "${raw}" "${sites}"
-  python crawl/crawler/crawl_2tier.py \
-    --tier 1 --run-crawl --months 1 --concurrent-sites 4 --delay-sec 5 \
-    --output-dir "${raw}" --drug-profile-dir "${profiles}/drug_profiles"
+  preseed_urls "${raw}" "${preseed_sites}"
+  "${crawl_command[@]}"
   RAW="${raw}" OUTPUT="${output}" python - <<'PY'
 import json
 import os
@@ -287,14 +303,29 @@ tier2_collect() {
   local raw="${output}/raw"
   local processed="${output}/processed"
   local weekday
+  local selected_sites="${CRAWL_CHAIN_TIER2_SITES:-}"
+  local days="${CRAWL_CHAIN_TIER2_DAYS:-7}"
+  local max_pages="${CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE:-3}"
+  local max_links="${CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE:-80}"
+  local max_articles="${CRAWL_CHAIN_TIER2_MAX_ARTICLES:-0}"
+  local limit_brands="${CRAWL_CHAIN_TIER2_LIMIT_BRANDS:-0}"
+  local delay_seconds="${CRAWL_CHAIN_DELAY_SECONDS:-5}"
+  local -a crawl_command=(
+    python crawl/crawler/crawl_2tier.py
+    --tier 2 --run-crawl --score --days "${days}"
+    --max-pages-per-site "${max_pages}" --max-links-per-page "${max_links}"
+    --max-articles "${max_articles}" --limit-brands "${limit_brands}"
+    --delay-sec "${delay_seconds}" --output-dir "${raw}"
+    --processed-dir "${processed}" --brand-plan-output "${output}/tier2_brand_plan.json"
+  )
   weekday="$(python -c 'from datetime import datetime; print(datetime.now().weekday())')"
+  crawl_command+=(--weekday-slice "${weekday}")
+  if [[ -n "${selected_sites}" ]]; then
+    crawl_command+=(--sites "${selected_sites}")
+  fi
   mkdir -p "${raw}" "${processed}"
   preseed_urls "${raw}"
-  python crawl/crawler/crawl_2tier.py \
-    --tier 2 --run-crawl --score --weekday-slice "${weekday}" --days 7 \
-    --tier2-concurrent-sites 4 --max-pages-per-site 3 --max-links-per-page 80 \
-    --delay-sec 5 --output-dir "${raw}" --processed-dir "${processed}" \
-    --brand-plan-output "${output}/tier2_brand_plan.json"
+  "${crawl_command[@]}"
   RAW="${raw}" OUTPUT="${output}" python - <<'PY'
 import json
 import os
