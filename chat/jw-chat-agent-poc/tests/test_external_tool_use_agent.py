@@ -659,8 +659,8 @@ def test_mcp_specs_allow_the_client_timeout_to_finish() -> None:
     assert all(spec.timeout_s == expected_wrapper_budget for spec in mcp_specs)
 
 
-def test_hira_registry_reuses_authoritative_disease_code_for_korean_label() -> None:
-    # Given: the planner supplies the Korean disease label while the live HIRA API expects KCD.
+def test_hira_registry_searches_korean_disease_label_without_internal_mapping() -> None:
+    # Given: the planner supplies the Korean disease label and HIRA search owns KCD resolution.
     class _CapturingHiraClient(ExternalApiClient):
         def __init__(self) -> None:
             super().__init__(mode="fixture")
@@ -677,9 +677,9 @@ def test_hira_registry_reuses_authoritative_disease_code_for_korean_label() -> N
     # When: the HIRA grounding tool crosses the registry boundary.
     envelope = spec.execute(spec.input_model.model_validate({"sick_cd": "고지혈증"}))
 
-    # Then: the existing authoritative mapping supplies E78 before the live adapter call.
+    # Then: the label crosses to HIRA search directly instead of using the internal KCD map.
     assert envelope.ok is True
-    assert external.sick_codes == ["E78"]
+    assert external.sick_codes == ["고지혈증"]
 
 
 def test_web_registry_forwards_planner_selected_news_topic() -> None:

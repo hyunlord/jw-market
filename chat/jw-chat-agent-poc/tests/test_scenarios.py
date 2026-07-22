@@ -11,7 +11,7 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.orchestrator.agent import HIRA_DISEASE_MAPPINGS
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.router import BQRouter
-from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 from jw_chat_agent_poc.tools.external.mcp_client import McpClientError
 
 
@@ -41,15 +41,112 @@ def test_hira_disease_question_routes_to_external_disease_stats_without_metrics(
     assert result["decomposition"][0]["bq"] == "Q1"
     assert result["decomposition"][0]["sources"] == ("external_api",)
     tools = {call.get("tool") for call in result["tool_calls"]}
-    assert "hira_disease_mapping" in tools
     assert "hira_disease_name_code" in tools
     assert "hira_disease_hospitalization_outpatient_stats" in tools
     assert "hira_disease_gender_age_stats" in tools
     assert "hira_disease_institution_class_stats" in tools
     assert "get_brand_metric" not in tools
-    mapping = next(call for call in result["tool_calls"] if call.get("tool") == "hira_disease_mapping")
-    assert mapping["render_data"]["sickCd"] == "E78"
+    search = next(call for call in result["tool_calls"] if call.get("tool") == "hira_disease_name_code")
+    assert search["render_data"]["resolved_sickCd"] == "E78"
     assert "지질단백질대사장애" in result["answer"]
+
+
+def test_direct_disease_name_searches_hira_code_before_stats() -> None:
+    class _DiseaseSearchExternal(ExternalApiClient):
+        def __init__(self) -> None:
+            super().__init__(mode="fixture")
+            self.name_code_inputs: list[str] = []
+
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            self.name_code_inputs.append(sick_cd)
+            if sick_cd == "고지혈증":
+                return ExternalCall(
+                    tool="hira_disease_name_code",
+                    source="hira_disease",
+                    status="fixture",
+                    summary_text="HIRA search_disease_code에서 고지혈증 후보 1건을 확인했습니다.",
+                    render_data={
+                        "totalCount": "1",
+                        "items": [
+                            {
+                                "sickCd": "E78",
+                                "sickNm": "지질단백질대사장애 및 기타 지질증",
+                            }
+                        ],
+                        "request": {"searchText": "고지혈증", "diseaseType": "SICK_NM"},
+                    },
+                )
+            return super().hira_disease_name_code(sick_cd)
+
+    external = _DiseaseSearchExternal()
+    result = ChatAgent(external=external).answer("고지혈증 환자수")
+
+    assert external.name_code_inputs == ["고지혈증"]
+    assert result["sources"] == ["hira_disease"]
+    tools = [call.get("tool") for call in result["tool_calls"]]
+    assert tools[:2] == ["hira_disease_name_code", "hira_disease_hospitalization_outpatient_stats"]
+    assert all(
+        call.get("render_data", {}).get("request", {}).get("sickCd") == "E78"
+        for call in result["tool_calls"]
+        if call.get("tool") == "hira_disease_hospitalization_outpatient_stats"
+    )
+
+
+def test_direct_disease_name_ambiguity_stops_before_stats() -> None:
+    class _AmbiguousDiseaseSearchExternal(ExternalApiClient):
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="hira_disease",
+                status="fixture",
+                summary_text="HIRA search_disease_code에서 당뇨병 후보 여러 건을 확인했습니다.",
+                render_data={
+                    "totalCount": "2",
+                    "items": [
+                        {"sickCd": "E10", "sickNm": "1형 당뇨병"},
+                        {"sickCd": "E11", "sickNm": "2형 당뇨병"},
+                    ],
+                    "request": {"searchText": sick_cd, "diseaseType": "SICK_NM"},
+                },
+            )
+
+    result = ChatAgent(external=_AmbiguousDiseaseSearchExternal()).answer("당뇨병 환자수")
+
+    assert result["sources"] == ["hira_disease"]
+    assert result["tool_calls"][0]["tool"] == "hira_disease_code_ambiguous"
+    assert result["tool_calls"][0]["status"] == "ambiguous"
+    assert result["tool_calls"][0]["render_data"]["candidates"] == [
+        {"sickCd": "E10", "sickNm": "1형 당뇨병"},
+        {"sickCd": "E11", "sickNm": "2형 당뇨병"},
+    ]
+    assert all("stats" not in str(call.get("tool")) for call in result["tool_calls"])
+
+
+def test_direct_short_disease_code_absence_does_not_widen_to_e11_stats() -> None:
+    class _AbsentDiseaseSearchExternal(ExternalApiClient):
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="hira_disease",
+                status="no_data",
+                summary_text="HIRA search_disease_code 조회 결과 없음",
+                render_data={
+                    "totalCount": "0",
+                    "items": [],
+                    "request": {"searchText": sick_cd, "diseaseType": "SICK_CD"},
+                },
+            )
+
+    result = ChatAgent(external=_AbsentDiseaseSearchExternal()).answer("상병코드 E11 2024년 환자수")
+
+    assert result["sources"] == ["hira_disease"]
+    assert result["tool_calls"][0]["tool"] == "hira_disease_code_absent"
+    assert result["tool_calls"][0]["status"] == "no_data"
+    assert all(
+        call.get("tool") != "hira_disease_hospitalization_outpatient_stats"
+        for call in result["tool_calls"]
+    )
+    assert "E11" in result["answer"]
 
 
 def test_hira_disease_trend_requests_five_distinct_years() -> None:
@@ -69,8 +166,8 @@ def test_hira_disease_question_accepts_compact_patient_stat_spacing(question):
     result = ChatAgent().answer(question)
 
     assert result["sources"] == ["hira_disease"]
-    mapping = next(call for call in result["tool_calls"] if call.get("tool") == "hira_disease_mapping")
-    assert mapping["render_data"]["sickCd"] == "E78"
+    search = next(call for call in result["tool_calls"] if call.get("tool") == "hira_disease_name_code")
+    assert search["render_data"]["resolved_sickCd"] == "E78"
 
 
 def test_brand_related_hira_disease_question_uses_confirmed_kcd_mapping():

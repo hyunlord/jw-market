@@ -488,6 +488,12 @@ def _disease_query(question: str) -> str | None:
     return subject if subject in _CLINICAL_DISEASE_ALIASES else None
 
 
+def disease_query_from_question(question: str) -> str | None:
+    """Expose the Tier 2 disease phrase recognizer for non-clinical HIRA routing."""
+
+    return _disease_query(question)
+
+
 def _explicit_brand_query(question: str) -> str | None:
     """Keep short brand-only requests usable without treating full sentences as brands."""
 

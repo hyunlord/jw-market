@@ -174,7 +174,14 @@ class ExternalApiClient:
         return self._fixture_or_live("mfds_fda_orangebook", {"ingr_name": ingredient_en.title()}, xml=True)
 
     def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
-        call = self._fixture_or_live("hira_disease_name_code", {"sickCd": sick_cd}, xml=True)
+        disease_type = "SICK_CD" if _is_hira_disease_code(sick_cd) else "SICK_NM"
+        if self.mode != "live":
+            return _fixture_hira_disease_name_code(sick_cd, disease_type, self.fixtures["hira_disease_name_code"])
+        call = self._fixture_or_live(
+            "hira_disease_name_code",
+            {"sickCd": sick_cd, "searchText": sick_cd, "diseaseType": disease_type},
+            xml=True,
+        )
         return self._with_source(call, HIRA_DISEASE_SOURCE)
 
     def hira_disease_hospitalization_outpatient_stats(self, sick_cd: str, year: str = "2024") -> ExternalCall:
@@ -486,7 +493,9 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
         case "mfds_fda_orangebook":
             return _nedrug_spec(tool, "search_fda_orangebook_patent", {"prt_name": params.get("prt_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
         case "hira_disease_name_code":
-            return _hira_spec(tool, "search_disease_code", {"search_text": params.get("sickCd", ""), "disease_type": "SICK_CD", "sick_type": "1", "med_tp": "1", "num_of_rows": 10})
+            search_text = params.get("searchText") or params.get("sickCd", "")
+            disease_type = params.get("diseaseType") or ("SICK_CD" if _is_hira_disease_code(search_text) else "SICK_NM")
+            return _hira_spec(tool, "search_disease_code", {"search_text": search_text, "disease_type": disease_type, "sick_type": "1", "med_tp": "1", "num_of_rows": 10})
         case "hira_disease_hospitalization_outpatient_stats":
             return _hira_spec(tool, "get_disease_stats_by_patient_type", _hira_disease_args(params))
         case "hira_disease_gender_age_stats":
@@ -535,6 +544,42 @@ def _hira_procedure_args(params: dict[str, str]) -> dict[str, Any]:
 
 def _strip_none_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in arguments.items() if value not in {None, ""}}
+
+
+def _is_hira_disease_code(text: str) -> bool:
+    return re.fullmatch(r"\s*[A-Za-z]\d{2}(?:\.?\d{1,2})?\s*", text) is not None
+
+
+def _fixture_hira_disease_name_code(search_text: str, disease_type: str, data: dict[str, Any]) -> ExternalCall:
+    normalized = search_text.strip().upper()
+    e78_aliases = {"E78", "고지혈증", "이상지질혈증", "지질단백질대사장애", "지질단백질대사장애 및 기타 지질증"}
+    if normalized in {alias.upper() for alias in e78_aliases}:
+        return ExternalCall(
+            tool="hira_disease_name_code",
+            source=HIRA_DISEASE_SOURCE,
+            status="fixture",
+            summary_text=data["summary_text"],
+            render_data={
+                **data["render_data"],
+                "request": {"sickCd": search_text, "searchText": search_text, "diseaseType": disease_type},
+            },
+            safe_url=data.get("safe_url"),
+            elapsed_ms=0.0,
+        )
+    return ExternalCall(
+        tool="hira_disease_name_code",
+        source=HIRA_DISEASE_SOURCE,
+        status="no_data",
+        summary_text=f"HIRA search_disease_code fixture has no candidate for {search_text}.",
+        render_data={
+            "totalCount": "0",
+            "items": [],
+            "request": {"sickCd": search_text, "searchText": search_text, "diseaseType": disease_type},
+            "message": "fixture search result absent",
+        },
+        safe_url=data.get("safe_url"),
+        elapsed_ms=0.0,
+    )
 
 
 def _openfda_active_ingredient(params: dict[str, str]) -> str:

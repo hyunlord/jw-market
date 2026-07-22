@@ -12,7 +12,12 @@ from jw_chat_agent_poc.agent_loop.external_tools import (
     _first_matching_mfds_item,
     _matching_mfds_items,
 )
-from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_text
+from jw_chat_agent_poc.orchestrator.hira_disease import (
+    HiraDiseaseCodeAbsent,
+    HiraDiseaseCodeAmbiguous,
+    HiraDiseaseCodeResolved,
+    resolve_hira_disease_code,
+)
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
@@ -38,6 +43,10 @@ _FAILED_STATUSES = frozenset({"error", "unsupported", "inapplicable", "no_data"}
 
 def _clinical_detail_value_present(value: Any) -> bool:
     return value is not None and value != "" and value != () and value != []
+
+
+def _is_hira_disease_code(text: str) -> bool:
+    return re.fullmatch(r"\s*[A-Za-z]\d{2}(?:\.?\d{1,2})?\s*", text) is not None
 
 
 class ExternalToolRegistry:
@@ -334,9 +343,27 @@ class ExternalToolRegistry:
 
     def _disease_call(self, method: str, metric: str, payload: BaseModel) -> ToolEnvelope:
         request = DiseaseCodeInput.model_validate(payload.model_dump())
-        sick_cd = hira_disease_code_for_text(request.sick_cd) or request.sick_cd.strip()
+        requested = request.sick_cd.strip()
+        if method == "hira_disease_name_code":
+            call = self._external.hira_disease_name_code(requested)
+            return _external_call_envelope(call, requested, metric)
+        if _is_hira_disease_code(requested):
+            sick_cd = requested.upper()
+        else:
+            resolution = resolve_hira_disease_code(requested, self._external)
+            match resolution:
+                case HiraDiseaseCodeResolved(candidate=candidate):
+                    sick_cd = candidate.sick_cd
+                case HiraDiseaseCodeAmbiguous(candidates=candidates):
+                    return _error(
+                        "AMBIGUOUS_DISEASE_CODE",
+                        "HIRA search_disease_code 후보가 여러 건입니다: "
+                        + ", ".join(f"{candidate.sick_cd} {candidate.disease_name}" for candidate in candidates),
+                    )
+                case HiraDiseaseCodeAbsent(query=query):
+                    return _error("DISEASE_CODE_NOT_FOUND", f"HIRA search_disease_code에서 상병코드를 확인하지 못했습니다: {query}")
         function = getattr(self._external, method)
-        call = function(sick_cd) if method == "hira_disease_name_code" else function(sick_cd, year=request.year)
+        call = function(sick_cd, year=request.year)
         return _external_call_envelope(call, sick_cd, metric)
 
     def _procedure_call(self, method: str, metric: str, payload: BaseModel) -> ToolEnvelope:

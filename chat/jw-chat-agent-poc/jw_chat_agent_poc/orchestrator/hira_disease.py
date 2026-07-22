@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
-from typing import Protocol, TypeAlias, TypedDict
+from typing import Protocol, TypeAlias, TypedDict, assert_never
 
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 
@@ -25,6 +26,33 @@ class HiraUnsuitable(TypedDict):
 HiraMappingEntry: TypeAlias = HiraMapping | tuple[HiraMapping, ...]
 HIRA_TREND_YEARS = tuple(str(year) for year in range(2020, 2025))
 DISEASE_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(?P<code>[A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
+
+
+@dataclass(frozen=True, slots=True)
+class HiraDiseaseCandidate:
+    sick_cd: str
+    disease_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class HiraDiseaseCodeResolved:
+    search_call: ExternalCall
+    candidate: HiraDiseaseCandidate
+
+
+@dataclass(frozen=True, slots=True)
+class HiraDiseaseCodeAmbiguous:
+    search_call: ExternalCall
+    candidates: tuple[HiraDiseaseCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HiraDiseaseCodeAbsent:
+    search_call: ExternalCall
+    query: str
+
+
+HiraDiseaseCodeResolution: TypeAlias = HiraDiseaseCodeResolved | HiraDiseaseCodeAmbiguous | HiraDiseaseCodeAbsent
 
 
 def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
@@ -200,6 +228,41 @@ def hira_disease_code_calls(question: str, sick_cd: str, external: ExternalApiCl
     return list(_hira_external_calls(question, external, code))
 
 
+def hira_direct_disease_calls(question: str, disease_query: str, external: ExternalApiClient) -> list[ExternalCall]:
+    """Resolve a user disease name/code through HIRA search_disease_code before stats."""
+
+    resolution = resolve_hira_disease_code(disease_query, external)
+    match resolution:
+        case HiraDiseaseCodeResolved(search_call=search_call, candidate=candidate):
+            mapping = _hira_mapping(
+                candidate.sick_cd,
+                candidate.disease_name,
+                f"HIRA search_disease_code 단일 후보({disease_query})",
+            )
+            calls = [_with_hira_direct_search_context(search_call, candidate)]
+            calls.extend(
+                _with_hira_mapping_context(call, disease_query, mapping, 1, 1)
+                for call in _hira_stat_external_calls(question, external, candidate.sick_cd)
+            )
+            return calls
+        case HiraDiseaseCodeAmbiguous(search_call=search_call, candidates=candidates):
+            return [_hira_code_ambiguous_call(disease_query, search_call, candidates)]
+        case HiraDiseaseCodeAbsent(search_call=search_call, query=query):
+            return [_hira_code_absent_call(query, search_call)]
+        case unreachable:
+            assert_never(unreachable)
+
+
+def resolve_hira_disease_code(disease_query: str, external: ExternalApiClient) -> HiraDiseaseCodeResolution:
+    search_call = external.hira_disease_name_code(disease_query)
+    candidates = _hira_candidates(search_call)
+    if not candidates:
+        return HiraDiseaseCodeAbsent(search_call=search_call, query=disease_query)
+    if len(candidates) == 1:
+        return HiraDiseaseCodeResolved(search_call=search_call, candidate=candidates[0])
+    return HiraDiseaseCodeAmbiguous(search_call=search_call, candidates=candidates)
+
+
 def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
     if "추이" in question:
         return (
@@ -208,6 +271,14 @@ def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: st
         )
     return (
         external.hira_disease_name_code(sick_cd),
+        *_hira_stat_external_calls(question, external, sick_cd),
+    )
+
+
+def _hira_stat_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
+    if "추이" in question:
+        return tuple(external.hira_disease_hospitalization_outpatient_stats(sick_cd, year) for year in HIRA_TREND_YEARS)
+    return (
         external.hira_disease_hospitalization_outpatient_stats(sick_cd),
         external.hira_disease_gender_age_stats(sick_cd),
         external.hira_disease_institution_class_stats(sick_cd),
@@ -256,6 +327,86 @@ def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ..
     if isinstance(mapping, dict):
         return (mapping,)
     return tuple(mapping)
+
+
+def _hira_candidates(search_call: ExternalCall) -> tuple[HiraDiseaseCandidate, ...]:
+    raw_items = search_call.render_data.get("items")
+    if not isinstance(raw_items, list):
+        return ()
+    candidates: list[HiraDiseaseCandidate] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_code = item.get("sickCd")
+        raw_name = item.get("sickNm")
+        if not isinstance(raw_code, str) or not isinstance(raw_name, str):
+            continue
+        sick_cd = raw_code.strip().upper()
+        disease_name = raw_name.strip()
+        if not sick_cd or not disease_name:
+            continue
+        candidate = HiraDiseaseCandidate(sick_cd=sick_cd, disease_name=disease_name)
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _candidate_dict(candidate: HiraDiseaseCandidate) -> dict[str, str]:
+    return {"sickCd": candidate.sick_cd, "sickNm": candidate.disease_name}
+
+
+def _hira_code_ambiguous_call(
+    query: str,
+    search_call: ExternalCall,
+    candidates: tuple[HiraDiseaseCandidate, ...],
+) -> ExternalCall:
+    return ExternalCall(
+        tool="hira_disease_code_ambiguous",
+        source="hira_disease",
+        status="ambiguous",
+        summary_text=f"HIRA search_disease_code에서 {query} 후보가 여러 건이라 통계를 조회하지 않았습니다.",
+        render_data={
+            "query": query,
+            "reason": "multiple_hira_disease_code_candidates",
+            "candidates": [_candidate_dict(candidate) for candidate in candidates],
+            "search": search_call.render_data,
+        },
+        safe_url=search_call.safe_url,
+        elapsed_ms=search_call.elapsed_ms,
+    )
+
+
+def _hira_code_absent_call(query: str, search_call: ExternalCall) -> ExternalCall:
+    return ExternalCall(
+        tool="hira_disease_code_absent",
+        source="hira_disease",
+        status="no_data",
+        summary_text=f"HIRA search_disease_code에서 {query} 상병코드를 확인하지 못해 통계를 조회하지 않았습니다.",
+        render_data={
+            "query": query,
+            "reason": "hira_disease_code_search_no_data",
+            "candidates": [],
+            "search": search_call.render_data,
+        },
+        safe_url=search_call.safe_url,
+        elapsed_ms=search_call.elapsed_ms,
+    )
+
+
+def _with_hira_direct_search_context(call: ExternalCall, candidate: HiraDiseaseCandidate) -> ExternalCall:
+    return ExternalCall(
+        tool=call.tool,
+        source=call.source,
+        status=call.status,
+        summary_text=f"HIRA search_disease_code에서 {candidate.sick_cd}({candidate.disease_name}) 단일 후보를 확인했습니다.",
+        render_data={
+            **call.render_data,
+            "resolved_sickCd": candidate.sick_cd,
+            "resolved_disease_name": candidate.disease_name,
+        },
+        safe_url=call.safe_url,
+        elapsed_ms=call.elapsed_ms,
+    )
 
 
 def _with_hira_mapping_context(
