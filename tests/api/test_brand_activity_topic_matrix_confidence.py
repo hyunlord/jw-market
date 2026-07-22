@@ -4,12 +4,23 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api import brand_activity_topic_matrix as topic_matrix
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolution
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, ViewConfig
+
+
+@pytest.fixture(autouse=True)
+def _reset_manufacturer_cache():
+    """The product->manufacturer map is a long-lived module cache; reset it around each test
+    so cache state never leaks across tests (order-independent, full-suite deterministic)."""
+    topic_matrix._manufacturer_cache = None
+    yield
+    topic_matrix._manufacturer_cache = None
 
 
 def test_post_topic_service_emits_event_count_from_assignment_rows(monkeypatch) -> None:
@@ -57,15 +68,16 @@ def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch
     monkeypatch.setattr(
         topic_matrix,
         "iqvia_product_codes_by_brand",
-        lambda _brands: {"리바로": ("LIVALO",), "미매칭": ("NOKW",)},
+        lambda _brands: {"리바로": ("LIVALO", "LIVALOZET"), "미매칭": ("NOKW",)},
     )
-    # Co-promotion: LIVALO carries two companies. JW SHINYAK has more rows than JW
-    # PHARMACEUTICAL, so it sorts first (count desc); NOKW has no keyword rows.
-    keyword_rows = [
-        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "row_count": 19},
-        {"product_name": "LIVALO", "representing_company": "JW SHINYAK", "row_count": 23},
-    ]
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: keyword_rows)
+    # Manufacturer (제조사, MFR NAME KOR) map. Multi-manufacturer retained for CMO/repackaging:
+    # JW SHINYAK is hit by both codes (count 2) so it sorts before JW PHARMACEUTICAL (count 1);
+    # NOKW has no manufacturer -> null.
+    manufacturer_map = {
+        "LIVALO": frozenset({"JW SHINYAK"}),
+        "LIVALOZET": frozenset({"JW PHARMACEUTICAL", "JW SHINYAK"}),
+    }
+    monkeypatch.setattr(topic_matrix, "_cached_manufacturer_by_product", lambda: manufacturer_map)
 
     result = topic_matrix._company_names_by_brand(brand_set, {})
 
@@ -82,13 +94,37 @@ def test_company_names_tie_breaks_on_name_ascending(monkeypatch) -> None:
         candidates=(), ranking_quarter="2026-Q1", applied_filter={},
     )
     monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _b: {"리바로": ("LIVALO",)})
-    # Equal counts -> deterministic name ascending (BETA before GAMMA).
-    rows = [
-        {"product_name": "LIVALO", "representing_company": "GAMMA", "row_count": 5},
-        {"product_name": "LIVALO", "representing_company": "BETA", "row_count": 5},
-    ]
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: rows)
+    # Equal counts (one code hits both once) -> deterministic name ascending (BETA before GAMMA).
+    manufacturer_map = {"LIVALO": frozenset({"GAMMA", "BETA"})}
+    monkeypatch.setattr(topic_matrix, "_cached_manufacturer_by_product", lambda: manufacturer_map)
     assert topic_matrix._company_names_by_brand(brand_set, {}) == {"리바로": "BETA, GAMMA"}
+
+
+def test_fetch_manufacturer_by_product_builds_kor_map_and_skips_null(monkeypatch) -> None:
+    """Source = iqvia_nsa_quarterly_raw MFR NAME KOR; key normalized; null/empty skipped."""
+    rows = [
+        {"product": "LIVALO", "manufacturer": "제이더블유중외제약"},
+        {"product": "CRESTOR", "manufacturer": "아스트라제네카"},
+        {"product": "ATORVA", "manufacturer": "유한양행"},
+        {"product": "NOMFR", "manufacturer": ""},        # empty -> skipped
+        {"product": "NULLMFR", "manufacturer": None},    # null -> skipped
+    ]
+    captured = {}
+
+    def fake_fetch_all(sql, params=None):
+        captured["sql"] = sql
+        return rows
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+    result = topic_matrix._fetch_manufacturer_by_product()
+    assert result == {
+        "LIVALO": frozenset({"제이더블유중외제약"}),
+        "CRESTOR": frozenset({"아스트라제네카"}),
+        "ATORVA": frozenset({"유한양행"}),
+    }
+    # confirm the source table + Korean manufacturer column
+    assert "iqvia_nsa_quarterly_raw" in captured["sql"]
+    assert "MFR NAME KOR" in captured["sql"]
 
 
 def test_post_topic_service_keeps_topic_brand_contract(monkeypatch) -> None:
