@@ -22,7 +22,6 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     JsonMap,
     float_value,
     full_quarters_from_months,
-    json_map,
     months_in_quarter_window,
     ratio,
     text,
@@ -36,19 +35,22 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     _select_csd_markets,
     resolve_csd_markets,
 )
+from pipeline.scripts.api.brand_activity_topic_matrix import (
+    _cached_manufacturer_by_product,
+    _manufacturer_name_for_products,
+)
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 
 
 @dataclass(frozen=True, slots=True)
 class ActivityRows:
-    """Monthly CSD activity values by product and company."""
+    """Monthly CSD activity values by product."""
 
     months: tuple[str, ...]
     all_months: tuple[str, ...]
     totals: dict[str, float]
     by_product: dict[str, dict[str, float]]
-    by_company: dict[str, dict[str, float]]
     observed_months: tuple[str, ...]
 
 
@@ -96,8 +98,13 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
     )
     selected_crosswalks = _select_csd_markets(crosswalks, request.csd_market)
     crosswalk = selected_crosswalks[0]
-    selected_key = _selected_entity_key(request.entity_level, selected_meta, brand_set)
-    entity_keys = _entity_keys(request, selected_key, brand_set)
+    manufacturer_by_brand = (
+        _manufacturer_by_brand(brand_set, csd_codes.by_brand)
+        if request.entity_level == "company"
+        else {}
+    )
+    selected_key = _selected_entity_key(request.entity_level, selected_meta, brand_set, manufacturer_by_brand)
+    entity_keys = _entity_keys(request, selected_key, brand_set, manufacturer_by_brand)
     activity_by_market: dict[str, JsonMap] = {}
     primary_values: dict[str, dict[str, float]] = {}
     primary_totals: dict[str, float] = {}
@@ -108,7 +115,7 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
             all_months,
         )
         values = (
-            _company_activity_by_key(brand_set, activity, csd_codes.by_brand)
+            _company_activity_by_key(brand_set, activity, csd_codes.by_brand, manufacturer_by_brand)
             if request.entity_level == "company"
             else _brand_activity_by_key(brand_set, activity, csd_codes.by_brand)
         )
@@ -127,7 +134,19 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
         "entity_level": request.entity_level,
         "channel": request.csd_channel,
         "period": {"quarters": list(quarters), "months": list(activity_months), "max_quarters": MAX_QUARTERS, "default_quarters": DEFAULT_QUARTERS},
-        "entities": [_entity_payload(key, selected_key, primary_values.get(key, {}), primary_totals, ranks, activity_months, brand_set) for key in entity_keys],
+        "entities": [
+            _entity_payload(
+                key,
+                selected_key,
+                primary_values.get(key, {}),
+                primary_totals,
+                ranks,
+                activity_months,
+                brand_set,
+                manufacturer_by_brand,
+            )
+            for key in entity_keys
+        ],
         "series_by_csd_market": aggregate["series_by_market"],
         "aggregate": {
             "series": aggregate["series"],
@@ -172,39 +191,46 @@ def _fetch_activity_rows(
 def _activity_rows(rows: list[JsonMap], months: tuple[str, ...], all_months: tuple[str, ...]) -> ActivityRows:
     totals = {month: 0.0 for month in months}
     by_product: dict[str, dict[str, float]] = {}
-    by_company: dict[str, dict[str, float]] = {}
     for row in rows:
         month = str(row["period_ym"])
         if month not in all_months or month not in totals:
             continue
         product = normalize_iqvia_en(str(row["master_product"]))
-        company = str(row["representing_company"])
         value = float_value(row.get("value"))
         _add_value(by_product, product, month, value)
-        _add_value(by_company, company, month, value)
         totals[month] += value
     return ActivityRows(
         months=months,
         all_months=all_months,
         totals=totals,
         by_product=by_product,
-        by_company=by_company,
         observed_months=tuple(sorted({str(row["period_ym"]) for row in rows if str(row["period_ym"]) in totals})),
     )
 
 
-def _entity_keys(request: ParsedCsdActivityRequest, selected_key: str, brand_set: BrandSetResolution) -> tuple[str, ...]:
+def _entity_keys(
+    request: ParsedCsdActivityRequest,
+    selected_key: str,
+    brand_set: BrandSetResolution,
+    manufacturer_by_brand: Mapping[str, str | None],
+) -> tuple[str, ...]:
     if request.selected_entities:
         return request.selected_entities
-    ranked = _iqvia_sales_keys(request.entity_level, brand_set)
+    ranked = _iqvia_sales_keys(request.entity_level, brand_set, manufacturer_by_brand)
     ordered = [selected_key, *(key for key in ranked if key != selected_key)]
     return tuple(_unique(ordered)[:MAX_ENTITIES])
 
 
-def _iqvia_sales_keys(entity_level: CsdEntityLevel, brand_set: BrandSetResolution) -> tuple[str, ...]:
+def _iqvia_sales_keys(
+    entity_level: CsdEntityLevel,
+    brand_set: BrandSetResolution,
+    manufacturer_by_brand: Mapping[str, str | None],
+) -> tuple[str, ...]:
     if entity_level == "brand":
         return tuple(choice.brand_key for choice in brand_set.choices)
-    return tuple(_unique(_company_for_brand(choice.brand_key, brand_set) for choice in brand_set.choices))
+    return tuple(
+        _unique(_company_key(choice.brand_key, manufacturer_by_brand) for choice in brand_set.choices)
+    )
 
 
 def _brand_activity_by_key(
@@ -228,35 +254,65 @@ def _company_activity_by_key(
     brand_set: BrandSetResolution,
     activity: ActivityRows,
     product_codes_by_brand: Mapping[str, frozenset[str]] | None = None,
+    manufacturer_by_brand: Mapping[str, str | None] | None = None,
 ) -> dict[str, dict[str, float]]:
+    companies = manufacturer_by_brand or _manufacturer_by_brand(brand_set, product_codes_by_brand)
     brand_values = _brand_activity_by_key(brand_set, activity, product_codes_by_brand)
     values: dict[str, dict[str, float]] = {}
     for choice in brand_set.choices:
-        company = _company_for_brand(choice.brand_key, brand_set)
+        company = _company_key(choice.brand_key, companies)
         for period, value in brand_values.get(choice.brand_key, {}).items():
             _add_value(values, company, period, value)
     return values
 
 
-def _selected_entity_key(entity_level: CsdEntityLevel, selected_meta: BrandMeta, brand_set: BrandSetResolution) -> str:
+def _selected_entity_key(
+    entity_level: CsdEntityLevel,
+    selected_meta: BrandMeta,
+    brand_set: BrandSetResolution,
+    manufacturer_by_brand: Mapping[str, str | None],
+) -> str:
     selected_brand = brand_set.selected_brand
     if entity_level == "company":
-        return _company_for_brand(selected_brand, brand_set)
+        return _company_key(selected_brand, manufacturer_by_brand)
     return selected_brand or normalize_iqvia_en(selected_meta.product_codes[0])
 
 
-def _company_for_brand(brand_key: str, brand_set: BrandSetResolution) -> str:
-    row = next((item for item in brand_set.brand_rows if str(item.get("brand_key")) == brand_key), {})
-    company = text(json_map(row.get("by_dimension")).get("company")) or text(json_map(row.get("by_dimension")).get("manufacturer"))
-    return company or "미분류"
+def _manufacturer_by_brand(
+    brand_set: BrandSetResolution,
+    product_codes_by_brand: Mapping[str, frozenset[str]] | None = None,
+) -> dict[str, str | None]:
+    manufacturer_map = _cached_manufacturer_by_product()
+    return {
+        choice.brand_key: _manufacturer_name_for_products(
+            tuple((product_codes_by_brand or {}).get(choice.brand_key, frozenset())),
+            manufacturer_map,
+        )
+        for choice in brand_set.choices
+    }
 
 
-def _entity_payload(key: str, selected_key: str, values: dict[str, float], totals: dict[str, float], ranks: dict[str, dict[str, int]], months: tuple[str, ...], brand_set: BrandSetResolution) -> JsonMap:
+def _company_key(brand_key: str, manufacturer_by_brand: Mapping[str, str | None]) -> str:
+    """Keep an unmapped entity selectable while exposing its display name as null."""
+
+    return manufacturer_by_brand.get(brand_key) or brand_key
+
+
+def _entity_payload(
+    key: str,
+    selected_key: str,
+    values: dict[str, float],
+    totals: dict[str, float],
+    ranks: dict[str, dict[str, int]],
+    months: tuple[str, ...],
+    brand_set: BrandSetResolution,
+    manufacturer_by_brand: Mapping[str, str | None],
+) -> JsonMap:
     return {
         "key": key,
-        "display_name": key,
+        "display_name": _company_display_name(key, manufacturer_by_brand),
         "is_selected": key == selected_key,
-        "is_jw": _is_jw(key, brand_set),
+        "is_jw": _is_jw(key, brand_set, manufacturer_by_brand),
         "activity": {
             "absolute": [{"period": month, "value": values.get(month, 0.0)} for month in months],
             "share_pct": [{"period": month, "value": ratio(values.get(month, 0.0), totals.get(month, 0.0))} for month in months],
@@ -265,10 +321,24 @@ def _entity_payload(key: str, selected_key: str, values: dict[str, float], total
     }
 
 
-def _is_jw(key: str, brand_set: BrandSetResolution) -> bool:
+def _company_display_name(key: str, manufacturer_by_brand: Mapping[str, str | None]) -> str | None:
+    for brand_key, display_name in manufacturer_by_brand.items():
+        if _company_key(brand_key, manufacturer_by_brand) == key:
+            return display_name
+    return key
+
+
+def _is_jw(
+    key: str,
+    brand_set: BrandSetResolution,
+    manufacturer_by_brand: Mapping[str, str | None],
+) -> bool:
     if key in brand_set.brand_meta:
         return brand_set.brand_meta[key].is_jw
-    return any(meta.is_jw and _company_for_brand(brand_key, brand_set) == key for brand_key, meta in brand_set.brand_meta.items())
+    return any(
+        meta.is_jw and _company_key(brand_key, manufacturer_by_brand) == key
+        for brand_key, meta in brand_set.brand_meta.items()
+    )
 
 
 def _ranks_by_period(values: dict[str, dict[str, float]], periods: tuple[str, ...]) -> dict[str, dict[str, int]]:

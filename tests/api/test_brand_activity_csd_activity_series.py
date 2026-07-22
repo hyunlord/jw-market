@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -29,6 +30,17 @@ def iqvia_product_codes(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr(timeseries_service, "iqvia_product_codes_by_brand", from_brand_meta)
+    monkeypatch.setattr(
+        service,
+        "_cached_manufacturer_by_product",
+        lambda: {
+            "LIVALO": frozenset({"제이더블유중외제약"}),
+            "LIVALOZET": frozenset({"제이더블유중외제약"}),
+            "A": frozenset({"비아트리스"}),
+            "B": frozenset({"아스트라제네카"}),
+            "C": frozenset({"유한양행"}),
+        },
+    )
 
 
 def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypatch) -> None:
@@ -80,7 +92,8 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
         for params in captured_params
     )
     selected = payload["entities"][0]
-    assert selected["key"] == "JW"
+    assert selected["key"] == "제이더블유중외제약"
+    assert selected["display_name"] == "제이더블유중외제약"
     assert selected["is_selected"] is True
     assert {"period": "2025-10", "value": 80.0} in selected["activity"]["absolute"]
     assert {"period": "2025-10", "value": 23.52941176470588} in selected["activity"]["share_pct"]
@@ -118,7 +131,7 @@ def test_activity_query_is_bounded_to_requested_months(monkeypatch: pytest.Monke
     assert activity_params == ("LIVALO Market", "TOTAL", "2025-04", "2025-09")
 
 
-def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypatch) -> None:
+def test_company_axis_uses_iqvia_manufacturers_not_seller_or_mart_labels(monkeypatch) -> None:
     def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
         if "SELECT DISTINCT period_ym" in sql:
             return [{"period_ym": period} for period in _months()]
@@ -143,7 +156,7 @@ def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypat
         raise AssertionError(f"unexpected sql: {sql}")
 
     monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
-    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set_with_korean_companies())
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
 
     brand_payload = service.get_csd_activity_series(
         {**_request(period={"start": "2025-Q4", "end": "2025-Q4"}), "entity_level": "brand"}
@@ -154,7 +167,7 @@ def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypat
 
     assert brand_payload is not None
     assert company_payload is not None
-    assert [entity["key"] for entity in company_payload["entities"]] == ["JW중외제약", "비아트리스", "아스트라제네카", "유한양행"]
+    assert [entity["key"] for entity in company_payload["entities"]] == ["제이더블유중외제약", "비아트리스", "아스트라제네카", "유한양행"]
     for month in company_payload["period"]["months"]:
         brand_total = sum(_point(entity, "absolute", month) for entity in brand_payload["entities"])
         company_total = sum(_point(entity, "absolute", month) for entity in company_payload["entities"])
@@ -162,6 +175,34 @@ def test_company_axis_aggregates_brand_series_with_mart_company_labels(monkeypat
     assert any(_point(entity, "absolute", "2025-10") > 0 for entity in company_payload["entities"])
     assert sum(_point(entity, "share_pct", "2025-10") for entity in company_payload["entities"]) > 0
     assert all(_point(entity, "rank", "2025-10") is not None for entity in company_payload["entities"])
+
+
+def test_company_axis_is_deterministic_across_three_calls(monkeypatch) -> None:
+    def fake_fetch_all(sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
+        if "SELECT DISTINCT period_ym" in sql:
+            return [{"period_ym": period} for period in _months()]
+        if "GROUP BY market, master_product" in sql:
+            return [
+                {"market": "LIVALO Market", "master_product": product}
+                for product in ("LIVALO", "A", "B", "C")
+            ]
+        if "GROUP BY period_ym, master_product, representing_company" in sql:
+            return _activity_rows()
+        raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(db, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    request = {
+        **_request(period={"start": "2025-Q4", "end": "2025-Q4"}),
+        "entity_level": "company",
+    }
+
+    responses = {
+        json.dumps(service.get_csd_activity_series(request), ensure_ascii=False, sort_keys=True)
+        for _ in range(3)
+    }
+
+    assert len(responses) == 1
 
 
 def test_activity_series_uses_resolved_brand_identity_for_entity_axes(monkeypatch) -> None:
@@ -192,12 +233,12 @@ def test_activity_series_uses_resolved_brand_identity_for_entity_axes(monkeypatc
     assert company_payload is not None
     assert brand_payload["entities"][0]["key"] == "LIVALO"
     assert brand_payload["entities"][0]["is_selected"] is True
-    assert company_payload["entities"][0]["key"] == "JW"
+    assert company_payload["entities"][0]["key"] == "제이더블유중외제약"
     assert company_payload["entities"][0]["is_selected"] is True
 
 
-def test_company_axis_keeps_missing_mart_company_in_visible_unclassified_bucket(monkeypatch) -> None:
-    base = _brand_set_with_korean_companies()
+def test_company_axis_keeps_missing_manufacturer_as_null(monkeypatch) -> None:
+    base = _brand_set()
     brand_set = BrandSetResolution(
         view_name=base.view_name,
         market_id=base.market_id,
@@ -228,6 +269,11 @@ def test_company_axis_keeps_missing_mart_company_in_visible_unclassified_bucket(
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: brand_set)
     monkeypatch.setattr(
         service,
+        "_cached_manufacturer_by_product",
+        lambda: {"B": frozenset({"아스트라제네카"})},
+    )
+    monkeypatch.setattr(
+        service,
         "resolve_csd_markets",
         lambda **_kwargs: (service.CsdCrosswalk("LIVALO Market", "LIVALO Market", ("A", "B"), 2),),
     )
@@ -252,9 +298,10 @@ def test_company_axis_keeps_missing_mart_company_in_visible_unclassified_bucket(
         {"view": "general", "selected_brand": "LIVALO", "filters": {"atc4": ["C10A1"]}, "entity_level": "company"}
     )
 
-    assert values["미분류"] == {"2025-01": 10.0}
+    assert values["A"] == {"2025-01": 10.0}
     assert payload is not None
-    unclassified = next(entity for entity in payload["entities"] if entity["key"] == "미분류")
+    unclassified = next(entity for entity in payload["entities"] if entity["key"] == "A")
+    assert unclassified["display_name"] is None
     assert unclassified["activity"]["absolute"][0] == {"period": "2025-01", "value": 10.0}
     assert all(point["value"] == 0.0 for point in unclassified["activity"]["absolute"][1:])
 
@@ -351,7 +398,6 @@ def test_activity_rows_preserve_months_inside_requested_quarter() -> None:
     assert activity.months == ("2025-01", "2025-02", "2025-03")
     assert activity.totals == {"2025-01": 10.0, "2025-02": 20.0, "2025-03": 0.0}
     assert activity.by_product["LIVALO"] == {"2025-01": 10.0, "2025-02": 20.0}
-    assert activity.by_company["JW"] == {"2025-01": 10.0, "2025-02": 20.0}
 
 
 def test_csd_activity_series_route_wraps_success_envelope(monkeypatch) -> None:
@@ -522,7 +568,6 @@ def test_activity_series_brand_join_uses_iqvia_codes_instead_of_ubist_meta() -> 
         all_months=("2025-01",),
         totals={"2025-01": 17.0},
         by_product={"LIVALO": {"2025-01": 17.0}},
-        by_company={"JW": {"2025-01": 17.0}},
         observed_months=("2025-01",),
     )
 
@@ -747,36 +792,6 @@ def _brand_set() -> BrandSetResolution:
         candidates=(),
         ranking_quarter="2025-Q4",
         applied_filter={"atc4": ["C10A1"]},
-    )
-
-
-def _brand_set_with_korean_companies() -> BrandSetResolution:
-    base = _brand_set()
-    companies = {
-        "LIVALO": "JW중외제약",
-        "A": "비아트리스",
-        "B": "아스트라제네카",
-        "C": "유한양행",
-    }
-    return BrandSetResolution(
-        view_name=base.view_name,
-        market_id=base.market_id,
-        selected_brand=base.selected_brand,
-        view=base.view,
-        market_row=base.market_row,
-        brand_rows=tuple(
-            {
-                "brand_key": row["brand_key"],
-                "brand_name": row["brand_name"],
-                "by_dimension": {"company": companies[str(row["brand_key"])]},
-            }
-            for row in base.brand_rows
-        ),
-        brand_meta=base.brand_meta,
-        choices=base.choices,
-        candidates=base.candidates,
-        ranking_quarter=base.ranking_quarter,
-        applied_filter=base.applied_filter,
     )
 
 

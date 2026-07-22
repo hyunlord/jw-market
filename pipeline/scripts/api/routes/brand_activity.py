@@ -330,7 +330,8 @@ def brand_activity_interest_rx_matrix(payload: BrandActivityInterestRxRequest) -
     description=(
         "IQVIA CSD keyword INTEREST 3구분(VERY/SOMEWHAT/NOT USEFUL)의 브랜드별 월간 시계열입니다. "
         "요청에 기간 파라미터는 없으며, 데이터 최신월 기준 3년 전체를 항상 반환합니다(프론트가 절단). "
-        "브랜드별·시점별 3구분 count와 브랜드 내 분모(total_count) 기준 pct를 제공하고, 데이터 없는 시점은 null입니다.\n\n"
+        "브랜드별·시점별 3구분 count와 브랜드 내 분모(total_count) 기준 pct를 제공하고, 데이터 없는 시점은 null입니다. "
+        "companies는 IQVIA MFR NAME KOR 제조사 기준으로 같은 규칙을 적용합니다.\n\n"
         + BRAND_ACTIVITY_FILTER_DESCRIPTION
     ),
     response_model=None,

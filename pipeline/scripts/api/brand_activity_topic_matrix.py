@@ -560,10 +560,8 @@ def _company_names_by_brand(
 ) -> dict[str, str | None]:
     """Return the ", "-joined MANUFACTURER (제조사, MFR NAME KOR) per brand, or None when unmapped.
 
-    Source = iqvia_nsa_quarterly_raw MFR NAME KOR (PL-confirmed). This is the brand's
-    MANUFACTURER — deliberately different from interest-timeseries `companies`, which stays
-    representing_company (판매사, the keyword-row aggregation unit). The two EPs complement:
-    topics shows who makes the brand, interest shows who promotes it.
+    Source = iqvia_nsa_quarterly_raw MFR NAME KOR (PL-confirmed). Brand-activity company
+    displays use this same manufacturer basis across topics and time-series endpoints.
 
     Manufacturer is 1:1 per brand in the measured data, but the combine logic is retained for
     CMO / import-repackaging multiplicity. Order is deterministic: product-hit count desc,
@@ -578,16 +576,31 @@ def _company_names_by_brand(
     manufacturer_map = _cached_manufacturer_by_product()
     result: dict[str, str | None] = {}
     for choice in brand_set.choices:
-        counts: dict[str, int] = {}
-        for code in iqvia.get(choice.brand_key, ()):
-            for manufacturer in manufacturer_map.get(normalize_iqvia_en(code), frozenset()):
-                counts[manufacturer] = counts.get(manufacturer, 0) + 1
-        if not counts:
-            result[choice.brand_key] = None
-            continue
-        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-        result[choice.brand_key] = ", ".join(name for name, _count in ordered)
+        result[choice.brand_key] = _manufacturer_name_for_products(
+            iqvia.get(choice.brand_key, ()), manufacturer_map
+        )
     return result
+
+
+def _manufacturer_name_for_products(
+    product_codes: Sequence[str],
+    manufacturer_map: dict[str, frozenset[str]] | None = None,
+) -> str | None:
+    """Resolve product codes to one deterministic Korean manufacturer display label.
+
+    Multiple manufacturers are retained as one comma-joined company identity so each source
+    row is counted once while CMO/import-repackaging information is not discarded.
+    """
+
+    mapping = manufacturer_map if manufacturer_map is not None else _cached_manufacturer_by_product()
+    counts: dict[str, int] = {}
+    for code in product_codes:
+        for manufacturer in mapping.get(normalize_iqvia_en(code), frozenset()):
+            counts[manufacturer] = counts.get(manufacturer, 0) + 1
+    if not counts:
+        return None
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(name for name, _count in ordered)
 
 
 def _fetch_sliced_topic_rows(
