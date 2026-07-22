@@ -21,6 +21,8 @@ metadata:
     app: jw-market-crawl-temporal-shadow
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: jw-market-crawl-temporal-shadow

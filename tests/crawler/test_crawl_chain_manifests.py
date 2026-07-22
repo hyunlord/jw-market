@@ -113,6 +113,7 @@ def test_shadow_manifest_limits_only_the_manual_shadow_worker() -> None:
     environment = {item["name"]: item.get("value") for item in container["env"]}
 
     # When/Then: one-site, one-day bounds are explicit and cannot affect legacy CronJobs.
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
     assert environment["CRAWL_CHAIN_TIER1_SITES"] == "히트뉴스"
     assert environment["CRAWL_CHAIN_TIER1_MAX_ARTICLES"] == "2"
     assert environment["CRAWL_CHAIN_TIER2_SITES"] == "히트뉴스"
