@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from pydantic import ValidationError
@@ -16,8 +17,8 @@ from jw_chat_agent_poc.tool_use.routing_v4_plan_support import (
     typed_message,
     typed_route_plan,
     validate_proposed_calls,
-    validated_call,
-    validated_llm_choice,
+    validated_llm_tool_call,
+    validated_tool_call,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_rules import QuestionClassification, classify_question
 from jw_chat_agent_poc.tool_use.routing_v4_types import (
@@ -49,9 +50,11 @@ class ExternalRoutePlanner:
         if routing_mode is RoutingMode.OFF:
             raise RoutingV4ContractError("the v4 planner must not run in OFF mode")
         classification = classify_question(question)
+        classification = _with_legacy_input_key(classification)
         capability = self._capability_matrix.resolve(
             classification.source_domain,
             classification.requested_capability,
+            input_key=classification.input_key,
         )
         if classification.unresolved_arguments:
             status = (
@@ -135,14 +138,15 @@ class ExternalRoutePlanner:
                 reason_code="AMBIGUOUS_INPUT",
                 eligible_tools=eligible_tools,
             )
-        call = validated_call(tool_name, arguments, self._by_name)
+        call = validated_tool_call(tool_name, arguments, self._by_name)
         return call_route_plan(
             routing_mode=routing_mode,
             classification=classification,
             capability_status=capability_status,
             selection_source=ToolSelectionSource.DETERMINISTIC_SINGLETON,
-            calls=(call,),
+            calls=(call.proposal,),
             eligible_tools=eligible_tools,
+            execution_args=(call.execution_args,),
         )
 
     def _llm_plan(
@@ -196,13 +200,14 @@ class ExternalRoutePlanner:
                         routing_decision=decision,
                     ),
                     eligible_tools=eligible_tools,
+                    input_key=classification.input_key,
                     reason_code="AMBIGUOUS_INPUT",
                     typed_message=typed_message("AMBIGUOUS_INPUT"),
                     repair_count=repair_count,
                     deterministic_rule_id=classification.deterministic_rule_id,
                 )
             try:
-                call = validated_llm_choice(choice, candidate_specs)
+                call = validated_llm_tool_call(choice, candidate_specs)
             except (KeyError, ValidationError, ValueError) as exc:
                 if attempt == 1:
                     break
@@ -222,8 +227,9 @@ class ExternalRoutePlanner:
                 classification=classification,
                 capability_status=capability_status,
                 selection_source=ToolSelectionSource.LLM,
-                calls=(call,),
+                calls=(call.proposal,),
                 eligible_tools=eligible_tools,
+                execution_args=(call.execution_args,),
                 repair_count=repair_count,
             )
         return typed_route_plan(
@@ -235,3 +241,16 @@ class ExternalRoutePlanner:
             selection_source=ToolSelectionSource.LLM,
             repair_count=repair_count,
         )
+
+
+def _with_legacy_input_key(classification: QuestionClassification) -> QuestionClassification:
+    if classification.input_key != "unknown" or not classification.direct_calls:
+        return classification
+    argument_keys = {
+        key
+        for call in classification.direct_calls
+        for key in call.normalized_args
+    }
+    if "sick_cd" in argument_keys:
+        return replace(classification, input_key="sick_cd")
+    return classification

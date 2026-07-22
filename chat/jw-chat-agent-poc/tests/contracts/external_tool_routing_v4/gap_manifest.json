@@ -13,6 +13,45 @@
         "Phase 0 live HIRA exact H36.0 query returned zero rows"
       ],
       "preserved_gate": "Question-target and canonical-code evidence must agree before patient statistics can support a claim."
+    },
+    {
+      "gap_id": "GAP-R3-NCT-DETAIL-FIELDS",
+      "case_ids": ["A-08", "A-09"],
+      "classification": "server_signature_missing",
+      "external_ticket": "PENDING",
+      "release_blocking": false,
+      "activation_precondition": "authoritative ClinicalTrials adapter exposes direct NCT-ID detail fields including outcomes and dates",
+      "evidence": [
+        "the frozen registry exposes clinicaltrials_v2_search with ClinicalQueryInput only",
+        "no registered NCT-ID detail tool exists"
+      ],
+      "preserved_gate": "Return FIELD_NOT_EXPOSED; do not emulate NCT detail with an unconstrained search query."
+    },
+    {
+      "gap_id": "GAP-R3-BRAND-UNIVERSE-PRECONDITION",
+      "case_ids": ["A-12"],
+      "classification": "parallel_track_precondition",
+      "external_ticket": "TRACK-02-BRAND-UNIVERSE",
+      "release_blocking": true,
+      "activation_precondition": "brand universe expansion is deployed and this branch is rebased onto that live commit",
+      "evidence": [
+        "this track does not modify brand-universe ownership",
+        "non-JW brand eligibility must be measured only after track 02 deployment"
+      ],
+      "preserved_gate": "Keep routing OFF until the deployment precondition is satisfied and local gates are rerun."
+    },
+    {
+      "gap_id": "GAP-R3-UNMAPPED-DISEASE-NAME",
+      "case_ids": [],
+      "classification": "unresolved_input",
+      "external_ticket": "PENDING",
+      "release_blocking": false,
+      "activation_precondition": "an authoritative disease-name-to-KCD mapping resolves exactly one code",
+      "evidence": [
+        "chat reuses only the existing explicit HIRA disease mapping",
+        "unknown disease names are not guessed or substituted with a brand code"
+      ],
+      "preserved_gate": "Return AMBIGUOUS_INPUT for unknown or multi-code disease names."
     }
   ]
 }

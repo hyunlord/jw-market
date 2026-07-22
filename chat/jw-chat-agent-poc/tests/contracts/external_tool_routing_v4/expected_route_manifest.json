@@ -1,5 +1,5 @@
 {
-  "schema": "external_tool_routing_v4_expected_route_manifest_v1",
+  "schema": "external_tool_routing_v4_expected_route_manifest_v2",
   "frozen_before_product_change": true,
   "phase0_baseline_snapshot_sha256": "93f0eddda904ea82e4de192720a2ca8886f26f9b2e627ec7c028d693251c7e01",
   "conditional_gates": {
@@ -47,6 +47,7 @@
         "route_outcome": "CALL"
       },
       "deterministic_rule_id": "DISEASE_CODE",
+      "input_key": "sick_cd",
       "eligible_tools": ["hira_disease_hospitalization_outpatient_stats"],
       "canonical_argument_contract": {"sick_cd": "D69.3", "period_policy": "latest_5_available"},
       "forbidden_tools": ["web_search"]
@@ -74,6 +75,7 @@
         "route_outcome": "CALL"
       },
       "deterministic_rule_id": "DISEASE_CODE",
+      "input_key": "sick_cd",
       "eligible_tools": ["hira_disease_hospitalization_outpatient_stats"],
       "canonical_argument_contract": {"sick_cd": "H36.0"},
       "allowed_terminal_reason": "NO_RECORD_FOUND",
@@ -133,6 +135,7 @@
         "route_outcome": "TYPED_STOP"
       },
       "deterministic_rule_id": "NCT_ID",
+      "input_key": "nct_id",
       "reason_code": "FIELD_NOT_EXPOSED",
       "forbidden_claim": "not publicly available"
     },
@@ -155,6 +158,7 @@
       },
       "eligible_tools": ["clinicaltrials_v2_search", "mfds_clinical_trial_kr"],
       "eligible_tools_count": 2,
+      "input_key": "natural_query",
       "required_disclosures": ["retrieved_count", "displayed_count"],
       "conditional_disclosure": "total_available only when upstream exposes it"
     },
@@ -195,6 +199,54 @@
       "eligible_tools_count": 1,
       "forbidden_tools": ["web_search"],
       "llm_selection_proof": false
+    },
+    {
+      "case_id": "A-14",
+      "question": "고지혈증 환자수 추이 알려줘",
+      "expected_decision_source": "NEW_RULE",
+      "routing_decision": {
+        "source_domain": "hira",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "NEW_RULE",
+        "route_outcome": "CALL"
+      },
+      "deterministic_rule_id": "DISEASE_NAME",
+      "input_key": "disease_name",
+      "eligible_tools": ["hira_disease_hospitalization_outpatient_stats"],
+      "canonical_argument_contract": {"sick_cd": "E78", "period_policy": "latest_5_available"},
+      "forbidden_arguments": ["brand"]
+    },
+    {
+      "case_id": "A-15",
+      "question": "pitavastatin 부작용 알려줘",
+      "expected_decision_source": "NEW_RULE",
+      "routing_decision": {
+        "source_domain": "regulatory",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "NEW_RULE",
+        "route_outcome": "CALL"
+      },
+      "deterministic_rule_id": "INGREDIENT_ADVERSE_EVENT",
+      "input_key": "ingredient",
+      "eligible_tools": ["openfda_label_search"],
+      "canonical_argument_contract": {"ingredient": "Pitavastatin", "evidence_type": "adverse_event"}
+    },
+    {
+      "case_id": "A-16",
+      "question": "pitavastatin 특허 만료일 알려줘",
+      "expected_decision_source": "LLM",
+      "routing_decision": {
+        "source_domain": "regulatory",
+        "domain_decision_source": "INTENT_OWNER",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "LLM",
+        "route_outcome": "CALL"
+      },
+      "input_key": "ingredient",
+      "eligible_tools": ["mfds_patent", "mfds_fda_orangebook"],
+      "eligible_tools_count": 2
     },
     {
       "case_id": "D-01",

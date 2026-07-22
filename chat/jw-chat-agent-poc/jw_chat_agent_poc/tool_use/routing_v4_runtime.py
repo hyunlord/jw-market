@@ -184,6 +184,8 @@ def internal_legacy_route_diagnostics(
         "routing_mode": mode.value,
         "proposed_routing_signature": proposal.model_dump(mode="json"),
         "eligible_tools": [],
+        "eligible_tools_count": 0,
+        "input_key": "market_identifier",
         "reason_code": None,
         "repair_count": 0,
         "deterministic_rule_id": "INTERNAL_MART_LEGACY_ROUTE",
@@ -242,7 +244,7 @@ def execute_enforced_route(
         forced_choices = tuple(
             ToolChoice(
                 call.tool_name,
-                call.normalized_args,
+                plan.execution_args[ordinal - 1],
                 "v4 canonical route",
                 call_id=f"v4-call-{ordinal}",
             )
@@ -308,6 +310,8 @@ def _plan_diagnostics(
         "routing_mode": plan.proposal.routing_mode.value,
         "proposed_routing_signature": plan.proposal.model_dump(mode="json"),
         "eligible_tools": list(plan.eligible_tools),
+        "eligible_tools_count": len(plan.eligible_tools),
+        "input_key": plan.input_key,
         "reason_code": plan.reason_code,
         "repair_count": plan.repair_count,
         "deterministic_rule_id": plan.deterministic_rule_id,
@@ -456,6 +460,7 @@ def _failed_plan() -> RoutePlan:
             routing_decision=decision,
         ),
         eligible_tools=(),
+        input_key="unknown",
         reason_code="INVALID_TOOL_ARGUMENTS",
         typed_message=typed_message("INVALID_TOOL_ARGUMENTS"),
     )

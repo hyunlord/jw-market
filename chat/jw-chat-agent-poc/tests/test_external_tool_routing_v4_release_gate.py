@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jw_chat_agent_poc.tool_use.routing_v4_release_gate import evaluate_release_gate
+from jw_chat_agent_poc.tool_use.routing_v4_release_gate import (
+    ShadowActivationObservation,
+    evaluate_release_gate,
+    evaluate_shadow_activation_gate,
+)
 
 
 CONTRACT_DIR = Path(__file__).parent / "contracts" / "external_tool_routing_v4"
@@ -71,3 +75,44 @@ def test_release_gate_still_fails_closed_for_a_real_blocked_case() -> None:
     assert decision.release_allowed is False
     assert decision.blocking_cases == ("SYNTHETIC-BLOCKER",)
     assert decision.reason_codes == ("RELEASE_CASE_BLOCKED",)
+
+
+def test_shadow_activation_requires_all_five_enforce_conditions() -> None:
+    decision = evaluate_shadow_activation_gate(
+        (
+            ShadowActivationObservation(case_id="D693", eligible_tools_count=1),
+            ShadowActivationObservation(case_id="DME", eligible_tools_count=2),
+        )
+    )
+
+    assert decision.enforce_allowed is True
+    assert decision.checked == 2
+    assert decision.eligible_cases == 2
+    assert decision.blocking_conditions == ()
+
+
+def test_shadow_activation_fails_closed_for_each_violation_and_empty_population() -> None:
+    empty = evaluate_shadow_activation_gate(())
+    blocked = evaluate_shadow_activation_gate(
+        (
+            ShadowActivationObservation(
+                case_id="bad",
+                eligible_tools_count=0,
+                forbidden_tool_calls=1,
+                invalid_argument_calls=1,
+                wrong_source_owner_calls=1,
+                normal_to_typed_unsupported=1,
+            ),
+        )
+    )
+
+    assert empty.enforce_allowed is False
+    assert empty.blocking_conditions == ("EMPTY_SHADOW_POPULATION", "NO_ELIGIBLE_TOOL_CASES")
+    assert blocked.enforce_allowed is False
+    assert blocked.blocking_conditions == (
+        "NO_ELIGIBLE_TOOL_CASES",
+        "FORBIDDEN_TOOL_CALLS",
+        "INVALID_TOOL_ARGUMENTS",
+        "WRONG_SOURCE_OWNER",
+        "NORMAL_TO_TYPED_UNSUPPORTED",
+    )

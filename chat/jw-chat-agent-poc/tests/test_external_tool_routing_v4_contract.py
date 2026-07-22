@@ -97,10 +97,42 @@ def test_capability_manifest_uses_exactly_the_four_v4_states() -> None:
         CapabilityStatus.NOT_IMPLEMENTED,
         CapabilityStatus.UNRESOLVED,
     }
-    assert matrix.status_for("hira", "HIRA_DISEASE_PATIENT_STATS") is CapabilityStatus.SUPPORTED
-    assert matrix.status_for("hira", "HIRA_LABEL_EFFICACY") is CapabilityStatus.FIELD_NOT_EXPOSED
-    assert matrix.status_for("regulatory", "REIMBURSEMENT_CRITERIA") is CapabilityStatus.NOT_IMPLEMENTED
-    assert matrix.status_for("unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST") is CapabilityStatus.UNRESOLVED
+    assert matrix.status_for(
+        "hira", "HIRA_DISEASE_PATIENT_STATS", input_key="sick_cd"
+    ) is CapabilityStatus.SUPPORTED
+    assert matrix.status_for(
+        "hira", "HIRA_DISEASE_PATIENT_STATS", input_key="disease_name"
+    ) is CapabilityStatus.SUPPORTED
+    assert matrix.status_for(
+        "hira", "HIRA_LABEL_EFFICACY", input_key="product_name"
+    ) is CapabilityStatus.FIELD_NOT_EXPOSED
+    assert matrix.status_for(
+        "regulatory", "REIMBURSEMENT_CRITERIA", input_key="product_name"
+    ) is CapabilityStatus.NOT_IMPLEMENTED
+    assert matrix.status_for(
+        "unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST", input_key="unknown"
+    ) is CapabilityStatus.UNRESOLVED
+
+
+def test_capability_matrix_keeps_identifier_contracts_separate() -> None:
+    matrix = CapabilityMatrix.from_json(CONTRACT_DIR / "capability_matrix.json")
+
+    code = matrix.resolve("hira", "HIRA_DISEASE_PATIENT_STATS", input_key="sick_cd")
+    disease_name = matrix.resolve(
+        "hira", "HIRA_DISEASE_PATIENT_STATS", input_key="disease_name"
+    )
+    nct_detail = matrix.resolve(
+        "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS", input_key="nct_id"
+    )
+    unknown = matrix.resolve(
+        "clinical_trials", "CLINICAL_TRIAL_SEARCH", input_key="unsupported_identifier"
+    )
+
+    assert code.input_key == "sick_cd"
+    assert code.eligible_tools == disease_name.eligible_tools
+    assert nct_detail.status is CapabilityStatus.FIELD_NOT_EXPOSED
+    assert unknown.status is CapabilityStatus.UNRESOLVED
+    assert unknown.typed_reason_code == "AMBIGUOUS_INPUT"
 
 
 def test_runtime_default_capability_matrix_matches_the_frozen_manifest() -> None:
@@ -111,6 +143,7 @@ def test_runtime_default_capability_matrix_matches_the_frozen_manifest() -> None
         actual = runtime.resolve(
             expected["source_domain"],
             expected["requested_capability"],
+            input_key=expected["input_key"],
         )
         assert actual.status.value == expected["capability_status"]
         assert actual.eligible_tools == tuple(expected["eligible_tools"])

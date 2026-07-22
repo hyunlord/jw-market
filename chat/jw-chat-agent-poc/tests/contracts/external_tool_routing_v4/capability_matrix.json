@@ -1,5 +1,5 @@
 {
-  "schema": "external_tool_routing_v4_capability_matrix_v1",
+  "schema": "external_tool_routing_v4_capability_matrix_v2",
   "frozen_before_product_change": true,
   "phase0_probe_sha256": "31876862c2c00bee287104166379cc282dd21cc4c10cc972bd848733d254be0a",
   "registry_set_sha256": "50d3fd6ac41fcde76395bd6360f1b994fedbe58db9d949fe9c36cd2e67ca654f",
@@ -13,6 +13,7 @@
     {
       "requested_capability": "HIRA_DISEASE_CODE_LOOKUP",
       "source_domain": "hira",
+      "input_key": "sick_cd",
       "capability_status": "SUPPORTED",
       "eligible_tools": ["hira_disease_name_code"],
       "truth_basis": "live registry and HIRA Phase 0 probe"
@@ -20,6 +21,7 @@
     {
       "requested_capability": "HIRA_DISEASE_PATIENT_STATS",
       "source_domain": "hira",
+      "input_key": "sick_cd",
       "capability_status": "SUPPORTED",
       "eligible_tools": [
         "hira_disease_hospitalization_outpatient_stats",
@@ -30,8 +32,22 @@
       "truth_basis": "live registry and HIRA Phase 0 probe"
     },
     {
+      "requested_capability": "HIRA_DISEASE_PATIENT_STATS",
+      "source_domain": "hira",
+      "input_key": "disease_name",
+      "capability_status": "SUPPORTED",
+      "eligible_tools": [
+        "hira_disease_hospitalization_outpatient_stats",
+        "hira_disease_gender_age_stats",
+        "hira_disease_institution_class_stats",
+        "hira_disease_area_stats"
+      ],
+      "truth_basis": "chat authoritative HIRA disease-name mapping resolves an unambiguous KCD code before the existing HIRA call"
+    },
+    {
       "requested_capability": "HIRA_LABEL_EFFICACY",
       "source_domain": "hira",
+      "input_key": "product_name",
       "capability_status": "FIELD_NOT_EXPOSED",
       "eligible_tools": [],
       "truth_basis": "HIRA registry exposes disease and procedure statistics, not drug-label efficacy"
@@ -39,6 +55,7 @@
     {
       "requested_capability": "MFDS_BASIC_PRODUCT_INFO",
       "source_domain": "regulatory",
+      "input_key": "product_name",
       "capability_status": "SUPPORTED",
       "eligible_tools": ["mfds_permission_search"],
       "truth_basis": "Phase 0 permission search returned item name and manufacturer for four exact-family rows"
@@ -46,6 +63,7 @@
     {
       "requested_capability": "MFDS_LABEL_EFFICACY",
       "source_domain": "regulatory",
+      "input_key": "product_name",
       "capability_status": "FIELD_NOT_EXPOSED",
       "eligible_tools": [],
       "truth_basis": "Phase 0 easy-drug probe field_coverage=NONE"
@@ -53,6 +71,7 @@
     {
       "requested_capability": "MFDS_DOSAGE",
       "source_domain": "regulatory",
+      "input_key": "product_name",
       "capability_status": "FIELD_NOT_EXPOSED",
       "eligible_tools": [],
       "truth_basis": "Phase 0 easy-drug probe field_coverage=NONE"
@@ -60,6 +79,7 @@
     {
       "requested_capability": "MFDS_PRECAUTIONS",
       "source_domain": "regulatory",
+      "input_key": "product_name",
       "capability_status": "FIELD_NOT_EXPOSED",
       "eligible_tools": [],
       "truth_basis": "Phase 0 easy-drug probe field_coverage=NONE"
@@ -67,13 +87,31 @@
     {
       "requested_capability": "REIMBURSEMENT_CRITERIA",
       "source_domain": "regulatory",
+      "input_key": "product_name",
       "capability_status": "NOT_IMPLEMENTED",
       "eligible_tools": [],
       "truth_basis": "no reimbursement tool or operation exists in the frozen 19-tool registry"
     },
     {
+      "requested_capability": "OPENFDA_ADVERSE_EVENT",
+      "source_domain": "regulatory",
+      "input_key": "ingredient",
+      "capability_status": "SUPPORTED",
+      "eligible_tools": ["openfda_label_search"],
+      "truth_basis": "live registry OpenFdaInput accepts ingredient and adverse_event directly"
+    },
+    {
+      "requested_capability": "PATENT_SEARCH",
+      "source_domain": "regulatory",
+      "input_key": "ingredient",
+      "capability_status": "SUPPORTED",
+      "eligible_tools": ["mfds_patent", "mfds_fda_orangebook"],
+      "truth_basis": "live registry exposes two IngredientInput patent tools"
+    },
+    {
       "requested_capability": "CLINICAL_TRIAL_SEARCH",
       "source_domain": "clinical_trials",
+      "input_key": "natural_query",
       "capability_status": "SUPPORTED",
       "eligible_tools": [
         "clinicaltrials_v2_search",
@@ -82,8 +120,20 @@
       "truth_basis": "live registry exposes global and Korean clinical-trial search tools"
     },
     {
+      "requested_capability": "CLINICAL_TRIAL_SEARCH",
+      "source_domain": "clinical_trials",
+      "input_key": "ingredient",
+      "capability_status": "SUPPORTED",
+      "eligible_tools": [
+        "clinicaltrials_v2_search",
+        "mfds_clinical_trial_kr"
+      ],
+      "truth_basis": "both live registry clinical search tools accept a natural query containing an ingredient"
+    },
+    {
       "requested_capability": "CLINICAL_TRIAL_NCT_DETAIL_FIELDS",
       "source_domain": "clinical_trials",
+      "input_key": "nct_id",
       "capability_status": "FIELD_NOT_EXPOSED",
       "eligible_tools": [],
       "truth_basis": "current ClinicalTrials contract exposes search summaries, not eligibility, outcome, or date detail"
@@ -91,6 +141,7 @@
     {
       "requested_capability": "UNCLASSIFIED_EXTERNAL_REQUEST",
       "source_domain": "unresolved",
+      "input_key": "unknown",
       "capability_status": "UNRESOLVED",
       "eligible_tools": [],
       "truth_basis": "catch-all must not be mislabeled as capability absence"
