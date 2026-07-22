@@ -103,6 +103,7 @@ _DATA_ABSENCE_MARKERS = (
     "확인 필요 데이터",
     "확보 시 수행할 분석",
 )
+_HONEST_UNAVAILABLE_SOURCES = frozenset({"unsupported_hira_interface"})
 
 
 def evaluate_response_format_contract(
@@ -114,8 +115,15 @@ def evaluate_response_format_contract(
     claim_bindings: ClaimBindingLookup | None = None,
 ) -> ResponseFormatReport:
     violations: list[ResponseFormatViolation] = []
+    is_honest_unavailable = _is_data_absence_section(answer) or bool(
+        _HONEST_UNAVAILABLE_SOURCES.intersection(sources)
+    )
 
-    if _is_table_or_list_only(answer) and not _TABLE_ONLY_REQUEST_RE.search(question):
+    if (
+        not is_honest_unavailable
+        and _is_table_or_list_only(answer)
+        and not _TABLE_ONLY_REQUEST_RE.search(question)
+    ):
         violations.append(
             ResponseFormatViolation(
                 "C1_TABLE_ONLY",
@@ -155,9 +163,12 @@ def evaluate_response_format_contract(
             )
         )
 
-    provenance_violation = _incomplete_provenance_violation(answer, tool_calls, sources)
-    if provenance_violation is not None:
-        violations.append(provenance_violation)
+    # A typed absence must not invent provenance fields merely to satisfy C5.
+    # Its five-step absence contract is the evidence that no factual row exists.
+    if not is_honest_unavailable:
+        provenance_violation = _incomplete_provenance_violation(answer, tool_calls, sources)
+        if provenance_violation is not None:
+            violations.append(provenance_violation)
 
     return ResponseFormatReport(
         mode=ResponseFormatMode.SHADOW,
