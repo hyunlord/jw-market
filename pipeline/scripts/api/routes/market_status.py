@@ -56,19 +56,17 @@ def _market_recent_periods(rows: list[dict] | None = None) -> dict[str, str | No
 
 def _brand_cagr_by_brand(
     rows: list[dict] | None = None,
-) -> dict[tuple[str, str], tuple[float | None, float | None]]:
-    selected: dict[tuple[str, str], dict] = {}
+) -> dict[tuple[str, str, str], tuple[float | None, float | None]]:
+    selected: dict[tuple[str, str, str], dict] = {}
     for row in _brand_metric_rows() if rows is None else rows:
         brand = str(row.get("brand_name") or "")
         ml_id = str(row.get("ml_id") or "")
-        if not brand or not ml_id:
+        source = str(row.get("source") or "").lower()
+        if not brand or not ml_id or not source:
             continue
-        key = (brand, ml_id)
-        current = selected.get(key)
-        if current is None or (current.get("source") != "ubist" and row.get("source") == "ubist"):
-            selected[key] = row
+        selected[(brand, ml_id, source)] = row
 
-    result: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    result: dict[tuple[str, str, str], tuple[float | None, float | None]] = {}
     for key, row in selected.items():
         history = loads_json_maybe(row.get("metric_history")) or {}
         result[key] = brand_cagr_exclusive(history if isinstance(history, dict) else {})
@@ -83,8 +81,15 @@ def _overlay_brand_cagr(payload: dict, rows: list[dict]) -> None:
         extended = card.setdefault("back_extended", {})
         market_id = str(card.get("market_id") or "")
         ml_id = f"ml_{market_id.removeprefix('strategy_')}" if market_id else ""
-        key = (str(card.get("brand") or ""), ml_id)
-        brand_cagr_5y, brand_cagr_3y = values.get(key, (None, None))
+        brand = str(card.get("brand") or "")
+        default_source = str((card.get("front") or {}).get("default_source") or "").upper()
+        source = {"UBIST": "ubist", "IQVIA": "iqvia_nsa"}.get(default_source)
+        candidates = [source] if source else []
+        candidates.extend(candidate for candidate in ("ubist", "iqvia_nsa") if candidate not in candidates)
+        brand_cagr_5y, brand_cagr_3y = next(
+            (values[(brand, ml_id, candidate)] for candidate in candidates if (brand, ml_id, candidate) in values),
+            (None, None),
+        )
         extended["brand_cagr_5y_pct"] = brand_cagr_5y
         extended["brand_cagr_3y_pct"] = brand_cagr_3y
 

@@ -13,12 +13,14 @@ def test_market_status_overlays_exclusive_brand_cagr_from_mart(monkeypatch) -> N
             {
                 "brand": "리바로",
                 "market_id": "strategy_006",
+                "front": {"default_source": "UBIST"},
                 "back": {"cagr_5y_pct": 3.9056},
                 "back_extended": {"brand_cagr_5y_pct": 3.9056},
             },
             {
                 "brand": "악템라",
-                "market_id": "strategy_001",
+                "market_id": "strategy_011",
+                "front": {"default_source": "IQVIA"},
                 "back": {"cagr_5y_pct": -3.9362},
                 "back_extended": {"brand_cagr_5y_pct": -3.9362},
             },
@@ -39,9 +41,15 @@ def test_market_status_overlays_exclusive_brand_cagr_from_mart(monkeypatch) -> N
         },
         {
             "brand_name": "악템라",
-            "ml_id": "ml_001",
+            "ml_id": "ml_011",
             "source": "iqvia_nsa",
             "metric_history": json.dumps({"2023-Q1": 100.0, "2026-Q1": 90.0}),
+        },
+        {
+            "brand_name": "악템라",
+            "ml_id": "ml_011",
+            "source": "ubist",
+            "metric_history": json.dumps({"2021-05": 100.0, "2026-05": 121.0}),
         },
         {
             "brand_name": "신규브랜드",
@@ -73,7 +81,7 @@ def test_market_status_overlays_exclusive_brand_cagr_from_mart(monkeypatch) -> N
     assert cards["신규브랜드"]["back_extended"]["brand_cagr_3y_pct"] is None
 
 
-def test_market_status_brand_cagr_prefers_ubist_row(monkeypatch) -> None:
+def test_market_status_brand_cagr_keeps_each_source_separate(monkeypatch) -> None:
     rows = [
         {
             "brand_name": "리바로",
@@ -92,7 +100,8 @@ def test_market_status_brand_cagr_prefers_ubist_row(monkeypatch) -> None:
 
     values = market_status._brand_cagr_by_brand()
 
-    assert values[("리바로", "ml_006")] == (pytest.approx(3.886), None)
+    assert values[("리바로", "ml_006", "ubist")] == (pytest.approx(3.886), None)
+    assert values[("리바로", "ml_006", "iqvia_nsa")] == (None, pytest.approx(-7.1682))
 
 
 def test_market_status_brand_cagr_never_crosses_market_scope(monkeypatch) -> None:
@@ -112,7 +121,12 @@ def test_market_status_brand_cagr_never_crosses_market_scope(monkeypatch) -> Non
     ]
     payload = {
         "brand_cards": [
-            {"brand": "악템라", "market_id": "strategy_001", "back_extended": {}},
+            {
+                "brand": "악템라",
+                "market_id": "strategy_001",
+                "front": {"default_source": "IQVIA"},
+                "back_extended": {},
+            },
         ]
     }
 
