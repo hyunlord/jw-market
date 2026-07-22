@@ -13,8 +13,13 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_chat_agent_dependencies,
     build_tool_use_agent,
     field_not_exposed_result,
+    prescription_metric_unavailable_result,
     unsupported_brand_result,
     unsupported_hira_interface_result,
+)
+from jw_chat_agent_poc.agent_loop.bq_slots import (
+    prescription_metric_requires_typed_stop,
+    requested_prescription_metric,
 )
 from jw_chat_agent_poc.agent_loop.bq_planner import preflight_bq_question
 from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
@@ -131,6 +136,19 @@ class ChatAgent:
             )
 
         if not docs:
+            prescription_metric = requested_prescription_metric(question)
+            if (
+                requested_unavailable_source(question) is None
+                and prescription_metric_requires_typed_stop(question)
+                and prescription_metric is not None
+            ):
+                return finish(
+                    prescription_metric_unavailable_result(
+                        question,
+                        prescription_metric,
+                        router_diagnostics(self.router),
+                    )
+                )
             classification = classify_question(question)
             capability = default_capability_matrix().resolve(
                 classification.source_domain,

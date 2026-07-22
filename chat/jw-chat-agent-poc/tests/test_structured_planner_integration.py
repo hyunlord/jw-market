@@ -258,24 +258,22 @@ def test_structured_market_answer_is_fast_deterministic_and_llm_free_for_five_ru
     assert len(set(answers)) == 1
 
 
-def test_twenty_structured_answers_have_verified_evidence_and_no_forbidden_claims() -> None:
+def test_structured_answers_and_prescription_stops_keep_verified_contracts() -> None:
     layer = _layer()
     agent = ChatAgent(
         resolver=BrandResolver(mode="fixture"),
         metrics=MetricsTool(mode="fixture", query_layer=layer),
         query_layer=layer,
     )
-    questions = (
+    structured_questions = (
         "리바로 최근 시장점유율 추이",
         "리바로 시장점유율",
         "리바로 2026-03 점유율",
         "가드렛 점유율 추이",
         "가드렛 시장점유율",
         "리바로 매출 추이",
-        "리바로 처방조제액",
         "리바로 2026-03 매출",
         "가드렛 매출 추이",
-        "가드렛 처방조제액",
         "리바로 성장률",
         "가드렛 성장률",
         "리바로 순위",
@@ -288,7 +286,7 @@ def test_twenty_structured_answers_have_verified_evidence_and_no_forbidden_claim
         "리바로와 가드렛 비교",
     )
 
-    for question in questions:
+    for question in structured_questions:
         result = agent.answer(question)
         assert result["agent_loop_metrics"]["deterministic_plan_hit"] is True
         assert result["agent_loop_metrics"]["llm_plan_calls"] == 0
@@ -304,6 +302,14 @@ def test_twenty_structured_answers_have_verified_evidence_and_no_forbidden_claim
             facts=facts,
             environment="fixture-20",
         ).exit_code == 0
+
+    for question in ("리바로 처방조제액", "가드렛 처방조제액"):
+        result = agent.answer(question)
+        assert result["status"] == "unavailable"
+        assert result["reason_code"] == "FIELD_NOT_EXPOSED"
+        assert result["value"] is None
+        assert result["tool_calls"] == []
+        assert result["proxy"]["substituted"] is False
 
 
 def _layer() -> StrategicQueryLayer:
