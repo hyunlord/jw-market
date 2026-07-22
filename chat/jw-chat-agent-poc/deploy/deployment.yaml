@@ -1,0 +1,235 @@
+# Live-observed baseline: chat commit 998f3519 (2026-07-22).
+# HPA owns replicas. Release automation injects dynamic identity markers and annotations.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-chat-agent-poc
+  namespace: llmops
+  labels:
+    app: jw-chat-agent-poc
+spec:
+  progressDeadlineSeconds: 600
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: jw-chat-agent-poc
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: jw-chat-agent-poc
+    spec:
+      containers:
+      - env:
+        - name: CHAT_QUERY_DB_NAME
+          value: jw_mart_d2_stage_20260630_r2
+        - name: CHAT_CATALOG_DB_NAME
+          value: jw_mart_d2_stage_20260630_r2
+        - name: CHAT_GENERAL_MART_SCHEMA
+          value: jw_mart_d2_stage_20260630_r2
+        - name: CHAT_STARTUP_WARMUP_ENABLED
+          value: 'true'
+        - name: HISTORY_PROJECTION_ENABLED
+          value: 'true'
+        - name: HISTORY_PROJECTION_CHAT_ENDPOINT
+          value: lz0h_sv3e_2qk2
+        - name: WEB_SEARCH_PROVIDER
+          value: tavily
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: TAVILY_API_KEY
+              name: jw-chat-agent-poc-secrets
+        - name: GENOS_BASE_URL
+          value: https://jwai-dev.jwhealthcare.com/api/gateway/rep/serving/163
+        - name: CHAT_METRICS_MODE
+          value: cache
+        - name: CHAT_CACHE_DB_HOST
+          value: llmops-mariadb-service.llmops.svc.cluster.local
+        - name: CHAT_CACHE_DB_PORT
+          value: '3306'
+        - name: CHAT_CACHE_DB_NAME
+          value: jw_mart
+        - name: CHAT_CACHE_DB_USER
+          value: llmops
+        - name: CHAT_METRICS_TTL_SECONDS
+          value: '300'
+        - name: CHAT_CACHE_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: mariadb-password
+              name: galera-mariadb-galera
+        - name: CLINICAL_TRIALS_MCP_URL
+          value: http://mcp-clinicaltrials-standby-svc:8080/json
+        - name: GENERAL_VIEW_ENABLED
+          value: 'true'
+        - name: CHAT_MAX_CONCURRENCY
+          value: '3'
+        - name: CHAT_QUEUE_WAIT_S
+          value: '30'
+        - name: PAYLOAD_CACHE_MAX_KEYS
+          value: '6'
+        - name: SESSION_STORE_MAX
+          value: '500'
+        - name: CHAT_CD_MART_SCHEMA
+          value: jw_mart_d2_stage_20260630_r2
+        - name: CHAT_DEEP_NEWS_MODE
+          value: cache
+        - name: HISTORY_PROJECTION_MONGO_HOST
+          valueFrom:
+            secretKeyRef:
+              key: host
+              name: jw-chat-agent-mongo-projection
+        - name: HISTORY_PROJECTION_MONGO_PORT
+          valueFrom:
+            secretKeyRef:
+              key: port
+              name: jw-chat-agent-mongo-projection
+        - name: HISTORY_PROJECTION_MONGO_DATABASE
+          valueFrom:
+            secretKeyRef:
+              key: database
+              name: jw-chat-agent-mongo-projection
+        - name: HISTORY_PROJECTION_MONGO_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: username
+              name: jw-chat-agent-mongo-projection
+        - name: HISTORY_PROJECTION_MONGO_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: jw-chat-agent-mongo-projection
+        - name: GENOS_SERVING_ID
+          value: '190'
+        - name: GENOS_FINAL_SERVING_ID
+          value: '190'
+        - name: GENOS_PLANNER_SERVING_ID
+          value: '190'
+        - name: JW_CHAT_MODEL_FAMILY
+          value: gemini-3-flash-preview
+        - name: JW_CHAT_FILE_SEARCH_BASE
+          value: http://code-serving-235:8080
+        - name: JW_CHAT_RELEASE_ID
+          value: chat-goal-precision-1dbc02c-20260716
+        - name: DIRECT_ROUTE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: DIRECT_ROUTE_API_KEY
+              name: jw-chat-agent-direct-api-key
+        - name: DIRECT_ROUTE_AUTH_HOSTS
+          value: jwai-dev.jwhealthcare.com,admin.dev.ai.jwhealthcare.com
+        - name: GENERAL_VIEW_READ_TIMEOUT_SECONDS
+          value: '30'
+        - name: GENERAL_VIEW_MEMBERSHIP_TTL_SECONDS
+          value: '300'
+        - name: RELEASE_ID
+          value: chat-goal-precision-1dbc02c-20260716
+        - name: IMAGE_DIGEST
+          value: sha256:a4f3caf85445e3732fcf1488b4210664225969915697d54f379e15dd2a1a693b
+        - name: BUILT_AT
+          value: '2026-07-15T07:11:57Z'
+        - name: JW_CHAT_RELEASE
+          value: chat-goal-precision-1dbc02c-20260716
+        - name: GENOS_FINAL_TIMEOUT_S
+          value: '50'
+        - name: GENOS_GENERATION_ATTEMPTS
+          value: '2'
+        - name: GENOS_FINAL_TOTAL_BUDGET_S
+          value: '100'
+        - name: JW_CHAT_IMAGE_DIGEST
+          value: sha256:3302a54f76ae32d392c0cda202d4b8cca33a2ce4f365a2703299929e2e44ae34
+        - name: JW_CHAT_BUILT_AT
+          value: '2026-07-15T07:11:57Z'
+        - name: JW_CHAT_GIT_COMMIT
+          value: 1dbc02cc7e95326f9a4399e102f8c69e6996c182
+        - name: CHAT_EXTERNAL_TOOL_AGENT_ENABLED
+          value: 'true'
+        - name: OPENFDA_MCP_URL
+          value: http://mcp-openfda-standby-svc:8080/json
+        - name: NEDRUG_MCP_URL
+          value: http://mcp-nedrug-standby-svc:8080/json
+        - name: HIRA_MCP_URL
+          value: http://mcp-hira-standby-svc:8080/json
+        - name: CLINICAL_TRIALS_MCP_RESOURCE_ID
+          value: '169'
+        - name: OPENFDA_MCP_RESOURCE_ID
+          value: '184'
+        - name: NEDRUG_MCP_RESOURCE_ID
+          value: '250'
+        - name: HIRA_MCP_RESOURCE_ID
+          value: '253'
+        - name: CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS
+          value: 'true'
+        - name: HISTORY_PROJECTION_MONGO_SERVER_SELECTION_TIMEOUT_MS
+          value: '5000'
+        - name: HISTORY_PROJECTION_MONGO_CONNECT_TIMEOUT_MS
+          value: '5000'
+        - name: HISTORY_PROJECTION_MONGO_SOCKET_TIMEOUT_MS
+          value: '30000'
+        - name: HISTORY_PROJECTION_MAX_ATTEMPTS
+          value: '8'
+        - name: GENOS_DEEP_SERVING_ID
+          value: '202'
+        - name: CHAT_TOOL_ROUTING_MODE
+          value: 'OFF'
+        - name: CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED
+          value: 'false'
+        envFrom:
+        - secretRef:
+            name: jw-chat-agent-poc-secrets
+        image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-chat-agent-poc:chat-external-routing-v4-998f3519-20260721@sha256:3302a54f76ae32d392c0cda202d4b8cca33a2ce4f365a2703299929e2e44ae34
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 2
+        name: app
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /readyz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 2
+        resources:
+          limits:
+            memory: 10Gi
+          requests:
+            cpu: 500m
+            memory: 6Gi
+        startupProbe:
+          failureThreshold: 30
+          httpGet:
+            path: /readyz
+            port: 8080
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 2
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: knp-jw-agn-dev-genos-api-01
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30

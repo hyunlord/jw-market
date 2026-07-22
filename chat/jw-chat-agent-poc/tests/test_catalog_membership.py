@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+import yaml
+
 from jw_chat_agent_poc.resolver.catalog_membership import (
     MariaDbCatalogMembershipReader,
     StaticCatalogMembershipReader,
@@ -63,16 +65,22 @@ def test_catalog_membership_can_prewarm_without_request_io() -> None:
 
 
 def test_deployment_coordinates_all_chat_readers_on_d2() -> None:
-    deployment_patch = Path(__file__).parents[1] / "deploy" / "d2-database-env-patch.yaml"
-    text = deployment_patch.read_text(encoding="utf-8")
+    deployment = Path(__file__).parents[1] / "deploy" / "deployment.yaml"
+    document = yaml.safe_load(deployment.read_text(encoding="utf-8"))
+    container = next(
+        item
+        for item in document["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "app"
+    )
+    env = {item["name"]: item for item in container["env"]}
 
-    assert text.count("jw_mart_d2_stage_20260630_r2") == 4
-    for variable in (
+    coordinated_readers = (
         "CHAT_QUERY_DB_NAME",
         "CHAT_CATALOG_DB_NAME",
         "CHAT_GENERAL_MART_SCHEMA",
         "CHAT_CD_MART_SCHEMA",
-    ):
-        assert variable in text
-    assert "CHAT_CACHE_DB_NAME" not in text
-    assert "jw_mart\n" not in text
+    )
+    assert {
+        env[variable]["value"]
+        for variable in coordinated_readers
+    } == {"jw_mart_d2_stage_20260630_r2"}

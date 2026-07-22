@@ -1,0 +1,172 @@
+# Live-observed baseline: bridge commit abf6e59a (2026-07-22).
+# FILE_SQL_ENABLED is intentionally omitted pending a separate policy decision.
+# Release automation injects dynamic identity markers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-serving-235
+  namespace: llmops
+  labels:
+    app: code-serving-235
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: code-serving-235
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: code-serving-235
+        auth: external
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: code-serving-235
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      containers:
+      - command:
+        - supervisord
+        - -n
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: mariadb-root-password
+              name: galera-mariadb-galera
+        - name: TZ
+          value: Asia/Seoul
+        - name: PROFILE
+          value: prod
+        - name: CODE_SERVING_ID
+          value: '235'
+        - name: CODE_SERVING_DEPLOYMENT_ID
+          value: '919'
+        - name: COMMIT_HASH
+          value: abf6e59aafa06cf47ef2b31b771207a90627a57e
+        - name: REPOSITORY_URL
+          valueFrom:
+            secretKeyRef:
+              name: code-serving-235-runtime-secrets
+              key: REPOSITORY_URL
+        - name: EXTERNAL_PREPROCESSOR_MAX_FILE_MB
+          value: '100'
+        - name: EXTERNAL_PREPROCESSOR_MAX_PDF_PAGES
+          value: '0'
+        - name: PDF_TEXT_LAYER_MIN_CHARS
+          value: '20'
+        - name: PDF_TEXT_PAGE_SECONDS
+          value: '0.38'
+        - name: PDF_OCR_PAGE_SECONDS
+          value: '3.91'
+        - name: PDF_MAX_ESTIMATED_SECONDS
+          value: '300'
+        - name: PREPROCESSOR_TIMEOUT_S
+          value: '450'
+        - name: EMBED_CHUNKS_PER_PAGE
+          value: '4.3'
+        - name: EMBED_SECONDS_PER_BATCH
+          value: '7.5'
+        - name: EMBED_BATCH_SIZE
+          value: '64'
+        - name: PDF_ADMISSION_SAFETY_FACTOR
+          value: '0.8'
+        - name: COMMIT_ENABLED
+          value: 'true'
+        - name: DB_HOST
+          value: galera-mariadb-galera
+        - name: DB_PORT
+          value: '3306'
+        - name: DB_NAME
+          value: llmops
+        - name: DB_USER
+          value: root
+        - name: TARGET_VDB_ID
+          value: '139'
+        - name: TARGET_VDB_COLLECTION
+          value: Z87cf9950c34b41b48564482b4112613d
+        - name: WEAVIATE_BASE
+          value: http://llmops-weaviate-service:8080
+        - name: EMBEDDING_BASE
+          value: http://llmops-gateway-api-service:8080/rep/serving/25
+        - name: PREPROCESSOR_ID
+          value: '64'
+        - name: EMBEDDING_SERVING_ID
+          value: '25'
+        - name: EMBEDDING_SERVING_REV_ID
+          value: '31'
+        - name: TTL_DAYS
+          value: '7'
+        - name: QUOTA_MAX_FILES
+          value: '10'
+        - name: SEARCH_LIMIT
+          value: '5'
+        - name: SEARCH_CONTEXT_CHAR_LIMIT
+          value: '8000'
+        - name: QUOTA_MAX_PER_REQUEST
+          value: '10'
+        - name: QUOTA_MAX_FILE_MB
+          value: '100'
+        - name: QUOTA_MAX_SESSION_MB
+          value: '100'
+        - name: JW_235_IMAGE_DIGEST
+          value: sha256:285cf2a688ac65e336626d23445643b0bb580a7435f23e6024b1da59f8d77d26
+        - name: JW_235_RELEASE_ID
+          value: bridge-docid-abf6e59a-r5-20260722
+        image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/mnc/wf301-vdb-bridge@sha256:285cf2a688ac65e336626d23445643b0bb580a7435f23e6024b1da59f8d77d26
+        imagePullPolicy: Always
+        name: code-serving-235
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          limits:
+            cpu: '1'
+            memory: 2G
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+        startupProbe:
+          failureThreshold: 120
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 2
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /nfs-root
+          name: nfs-root
+        - mountPath: /etc/pip.conf
+          name: global-configmap
+          subPath: pip.conf
+        workingDir: /app
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        genos: enabled
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: nfs-root
+        persistentVolumeClaim:
+          claimName: llmops-nfs-root
+      - configMap:
+          defaultMode: 511
+          name: llmops-global-configmap
+        name: global-configmap

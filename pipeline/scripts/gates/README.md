@@ -27,6 +27,23 @@ python3 pipeline/scripts/gates/safe_push.py \
 Update `approved_shas.txt` only when a commit has been explicitly approved as
 required release ancestry.
 
+## Required deployment environment
+
+`env_presence_gate.py` is gate 3, after exact image/generation identity and
+required pod-template annotations. It checks the complete tracked key census
+without reading or printing values:
+
+```bash
+kubectl -n llmops get deployment jw-chat-agent-poc -o json \
+  | python3 pipeline/scripts/gates/env_presence_gate.py \
+      --required-file pipeline/scripts/gates/required_env/jw-chat-agent-poc.json
+```
+
+Use the corresponding `code-serving-235.json` set for the bridge. A missing
+key, malformed Deployment JSON, or empty required set fails closed. The 235
+required set intentionally excludes `FILE_SQL_ENABLED` until its policy is
+decided separately.
+
 ## API goldens
 
 Run the four tracked requests directly against the candidate runtime:
