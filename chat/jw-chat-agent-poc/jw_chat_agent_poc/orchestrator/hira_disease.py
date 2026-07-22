@@ -144,6 +144,19 @@ HIRA_DISEASE_TEXT_EVIDENCE_LABELS: dict[str, tuple[str, ...]] = {
     "류마티스": ("류마티스", "류마티스관절염"),
 }
 
+_HIRA_EXACT_DISEASE_ALIASES: dict[str, str] = {
+    "고지혈증": "고지혈",
+    "이상지질혈증": "이상지질",
+    "지질단백질대사장애": "지질단백질",
+    "제2형 당뇨병": "당뇨",
+    "2형 당뇨병": "당뇨",
+    "철결핍성 빈혈": "빈혈",
+    "철결핍빈혈": "빈혈",
+    "A형 혈우병": "혈우",
+    "혈청검사양성 류마티스관절염": "류마티스",
+}
+_HIRA_ALIAS_POSTPOSITION = "의|은|는|이|가|을|를|에서|에|으로|로|와|과|도|만"
+
 
 def hira_disease_anchor_brand(question: str) -> str | None:
     """Resolve a disease-only question through the explicit HIRA mapping."""
@@ -330,6 +343,23 @@ def normalize_hira_disease_code(code: str) -> str:
     if len(compact) == 4:
         return f"{compact[:3]}.{compact[3]}"
     return compact
+
+
+def hira_disease_code_for_exact_name(text: str) -> str | None:
+    """Resolve only complete, unambiguous disease names for evidence binding."""
+
+    normalized = re.sub(r"\s+", " ", text.strip())
+    codes: set[str] = set()
+    for alias, mapping_token in _HIRA_EXACT_DISEASE_ALIASES.items():
+        pattern = (
+            rf"(?<![0-9A-Za-z가-힣]){re.escape(alias)}"
+            rf"(?=(?:(?:{_HIRA_ALIAS_POSTPOSITION}))?(?:\s|[?!.:,]|$))"
+        )
+        if not re.search(pattern, normalized, flags=re.IGNORECASE):
+            continue
+        mappings = _normalize_hira_mappings(HIRA_DISEASE_TEXT_MAPPINGS[mapping_token])
+        codes.update(mapping["sick_cd"] for mapping in mappings)
+    return next(iter(codes)) if len(codes) == 1 else None
 
 
 def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ...]:
