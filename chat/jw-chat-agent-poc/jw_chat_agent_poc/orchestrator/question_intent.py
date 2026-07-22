@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Final
 
+from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
 from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.router.bq_router import BQSubQuestion
 
@@ -32,6 +33,9 @@ def allows_background_news_context(question: str) -> bool:
 
 def metric_from_question(question: str) -> str:
     lower = question.lower()
+    explicit_metrics = explicit_base_metrics_from_question(question)
+    if "prescription_volume" in explicit_metrics:
+        return "prescription_volume"
     if "hhi" in lower:
         return "hhi"
     if any(keyword in question for keyword in ("시장규모", "시장 규모")) or "cagr" in lower:
@@ -44,7 +48,7 @@ def metric_from_question(question: str) -> str:
         return "series"
     if "성장" in question:
         return "growth"
-    if any(keyword in question for keyword in ("매출", "판매", "sales")):
+    if "sales" in explicit_metrics:
         return "sales"
     if any(keyword in question for keyword in ("점유율", "ms", "순위", "경쟁")):
         return "market_share"

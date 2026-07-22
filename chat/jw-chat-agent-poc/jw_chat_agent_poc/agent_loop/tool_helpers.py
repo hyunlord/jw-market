@@ -25,13 +25,20 @@ def ground_news_query(raw_query: str, brand: str) -> str:
 
 
 def metric_measure(value: str) -> str:
-    if value in {"share", "market_share", "ms", "rank"}:
+    key = str(value or "").strip().casefold()
+    if not key:
+        raise ValueError("measure is required; blank measure cannot default to sales")
+    if key in {"share", "market_share", "ms", "rank"}:
         return "market_share"
-    if value in {"hhi", "momentum", "ei", "growth"}:
-        return value
-    if value in {"series", "trend", "trajectory", "추이"}:
+    if key in {"hhi", "momentum", "ei", "growth"}:
+        return key
+    if key in {"series", "trend", "trajectory", "추이"}:
         return "series"
-    return "sales"
+    if key in {"prescription_volume", "volume", "rx_qty"}:
+        return "prescription_volume"
+    if key in {"sales", "sale", "revenue"}:
+        return "sales"
+    raise ValueError(f"unsupported measure: {value}")
 
 
 def market_members(cache_brands: list[dict[str, object]], market_id: str) -> tuple[str, ...]:

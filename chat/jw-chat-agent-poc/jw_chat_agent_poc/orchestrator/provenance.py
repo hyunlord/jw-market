@@ -66,7 +66,7 @@ def evidence_markdown(facts: tuple[EvidenceFact, ...]) -> str:
             continue
         grouped.setdefault(fact.source, set()).add(fact.label)
     rows = tuple(
-        (source, _source_provides(source), ", ".join(sorted(labels)))
+        (source, _source_provides(source, labels), ", ".join(sorted(labels)))
         for source, labels in sorted(grouped.items())
     )
     if not rows:
@@ -122,12 +122,18 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
 
 def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
+    is_volume = data.get("measure") == "volume"
     period = data.get("period")
     if isinstance(period, str) and period:
         rows.append(("기간", period, "render_data.period"))
     rows.extend(
         (
             ("매출", eok_value(data.get("sales_억원"), data.get("sales_krw")), "render_data.sales_krw"),
+            (
+                "처방량",
+                _prescription_volume_value(data.get("prescription_volume")),
+                "render_data.prescription_volume",
+            ),
             (
                 "시장규모",
                 _market_size_value(data) or _latest_market_size(data),
@@ -138,7 +144,11 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
                 eok_value(data.get("market_size_억원"), data.get("market_size_filtered_krw")),
                 "render_data.market_size_filtered_krw",
             ),
-            ("시장점유율", pct_value(data.get("ms_recent_pct", data.get("market_share"))), "render_data.ms_recent_pct"),
+            (
+                "처방량 점유율" if is_volume else "시장점유율",
+                pct_value(data.get("ms_recent_pct", data.get("market_share"))),
+                "render_data.ms_recent_pct",
+            ),
             ("순위", rank_value(data.get("rank"), data.get("total_brands_in_market")), "render_data.rank"),
             ("시장 구성 브랜드 수", number_value(data.get("total_brands_in_market")), "render_data.total_brands_in_market"),
             ("표시 브랜드 수", number_value(data.get("displayed_brand_count")), "render_data.displayed_brand_count"),
@@ -159,6 +169,11 @@ def _metric_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
     )
     rows.extend(_series_insight_values(data.get("series_insight")))
     return rows
+
+
+def _prescription_volume_value(value: Any) -> str:
+    formatted = number_value(value)
+    return f"{formatted} Rx" if formatted else ""
 
 
 def _market_size_value(data: dict[str, Any]) -> str:
@@ -445,5 +460,7 @@ def _fact_source(call: dict[str, Any], data: dict[str, Any]) -> str:
     return source_label(str(source or "tool_result"))
 
 
-def _source_provides(source: str) -> str:
+def _source_provides(source: str, labels: set[str]) -> str:
+    if source == "UBIST" and any("처방량" in label for label in labels):
+        return "처방량·처방량 점유율·순위 등 UBIST 운영 지표"
     return source_description(source)

@@ -34,6 +34,7 @@ class MartRecord:
     specialty_data: dict[str, Any]
     dimension_data: dict[str, Any]
     by_dimension: dict[str, Any]
+    unit_label: str = ""
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "MartRecord":
@@ -47,6 +48,7 @@ class MartRecord:
             specialty_data=_loads(row.get("specialty_data")),
             dimension_data=_loads(row.get("dimension_data")),
             by_dimension=_loads(row.get("by_dimension")),
+            unit_label=str(row.get("unit_label") or ""),
         )
 
     def company(self) -> str:
@@ -103,13 +105,13 @@ class MartSnapshot:
     def sources_for_market(self, market_id: str) -> tuple[str, ...]:
         return tuple(sorted({record.source for record in self.records if record.ml_id == market_id}))
 
-    def sources_for_brand(self, market_id: str, brand: str) -> tuple[str, ...]:
+    def sources_for_brand(self, market_id: str, brand: str, measure: str = "sales") -> tuple[str, ...]:
         return tuple(
             sorted(
                 {
                     record.source
                     for record in self.records
-                    if record.ml_id == market_id and record.brand_name == brand and record.measure == "sales"
+                    if record.ml_id == market_id and record.brand_name == brand and record.measure == measure
                 }
             )
         )
@@ -253,6 +255,8 @@ class MartSnapshot:
                     "ms_recent_pct": share,
                     "company": record.company(),
                     "molecule": record.molecule(),
+                    "measure": measure,
+                    "unit_label": record.unit_label or ("Rx" if measure == "volume" else "KRW"),
                 }
             )
         rows.sort(key=lambda item: item["value"], reverse=True)
@@ -275,29 +279,42 @@ class MartSnapshot:
                     ),
                     None,
                 )
-            rows.append(
-                {
-                    "period": period,
-                    "value_krw": value,
-                    "value_억원": round(value / 100_000_000, 2) if value is not None else None,
-                    "ms_pct": ranked_row["ms_recent_pct"] if ranked_row is not None else None,
-                    "rank": int(ranked_row["rank"]) if ranked_row is not None else None,
-                    "source_status": self.value_status(record, period),
-                }
-            )
+            row: dict[str, Any] = {
+                "period": period,
+                "value": value,
+                "ms_pct": ranked_row["ms_recent_pct"] if ranked_row is not None else None,
+                "rank": int(ranked_row["rank"]) if ranked_row is not None else None,
+                "source_status": self.value_status(record, period),
+                "measure": measure,
+                "unit_label": record.unit_label or ("Rx" if measure == "volume" else "KRW"),
+            }
+            if measure == "sales":
+                row.update(
+                    {
+                        "value_krw": value,
+                        "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                    }
+                )
+            else:
+                row["prescription_volume"] = value
+            rows.append(row)
         return rows
 
     def market_series(self, market_id: str, periods: Iterable[str], source: str = "ubist", measure: str = "sales") -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for period in periods:
             value = self.market_value_or_none(market_id, period, source, measure)
-            rows.append(
-                {
-                    "period": period,
-                    "value_krw": value,
-                    "value_억원": round(value / 100_000_000, 2) if value is not None else None,
-                }
-            )
+            row: dict[str, Any] = {"period": period, "value": value, "measure": measure}
+            if measure == "sales":
+                row.update(
+                    {
+                        "value_krw": value,
+                        "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                    }
+                )
+            else:
+                row.update({"prescription_volume": value, "unit_label": "Rx"})
+            rows.append(row)
         return rows
 
     def hhi(self, market_id: str, period: str, source: str = "ubist", measure: str = "sales") -> float | None:
@@ -340,11 +357,11 @@ class MariaDbStrategicMartReader:
 
         started_at = time.monotonic()
         sql = f"""
-            SELECT ml_id, brand_name, source, measure,
+            SELECT ml_id, brand_name, source, measure, unit_label,
                    metric_history, channel_data, specialty_data, dimension_data, by_dimension
             FROM {self.table}
-            WHERE measure='sales'
-              AND source IN ('ubist', 'iqvia_nsa')
+            WHERE (measure='sales' AND source IN ('ubist', 'iqvia_nsa'))
+               OR (measure='volume' AND source='ubist')
         """
         with pymysql.connect(
             host=self.host,

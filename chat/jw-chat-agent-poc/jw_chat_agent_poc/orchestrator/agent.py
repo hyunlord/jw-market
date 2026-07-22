@@ -47,6 +47,7 @@ from jw_chat_agent_poc.orchestrator.question_intent import (
     metric_from_question,
     requires_brand,
 )
+from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
@@ -67,6 +68,7 @@ from jw_chat_agent_poc.tools.external.policy import (
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer.catalog import metric_definition
 from jw_chat_agent_poc.tool_use.contracts import FallbackCode
 from jw_chat_agent_poc.tool_use.integration import (
     attach_routing_v4_legacy_observation,
@@ -137,9 +139,20 @@ class ChatAgent:
 
         if not docs:
             prescription_metric = requested_prescription_metric(question)
+            exposed_prescription_metrics = (
+                (prescription_metric,)
+                if prescription_metric is not None
+                and self.query_layer is not None
+                and hasattr(self.query_layer, "supports_metric")
+                and self.query_layer.supports_metric(prescription_metric)
+                else ()
+            )
             if (
                 requested_unavailable_source(question) is None
-                and prescription_metric_requires_typed_stop(question)
+                and prescription_metric_requires_typed_stop(
+                    question,
+                    exposed_metrics=exposed_prescription_metrics,
+                )
                 and prescription_metric is not None
             ):
                 return finish(
@@ -293,21 +306,26 @@ class ChatAgent:
 
         if any("metrics" in route.sources for route in routes):
             market = resolution.market_id
-            metric = metric_from_question(question)
             metric_filters = tuple(entry for route in routes if "metrics" in route.sources for entry in route.filters)
+            explicit_metrics = explicit_base_metrics_from_question(question)
+            metrics = explicit_metrics if len(explicit_metrics) > 1 else (metric_from_question(question),)
+            if len(metrics) > 1:
+                metric_filters = tuple(entry for entry in metric_filters if entry[0] != "measure")
             filter_plan = validate_metric_filters(metric_filters)
             effective_filters = metric_filters if filter_plan.has_effective_filter else ()
-            metric_started_at = qa_trace_started_at()
-            with stage(timing, "tool:get_brand_metric", f"metric={metric}"):
-                brand_metric_call = self._metric_call(
-                    resolution.canonical_brand,
-                    metric=metric,
-                    filter_entries=effective_filters,
-                    market=market,
-                    prefer_mart=_prefer_mart_metric(resolution.support_source),
-                )
-            attach_tool_qa_trace(brand_metric_call, started_at=metric_started_at)
-            metric_calls = [brand_metric_call]
+            metric_calls: list[dict[str, Any]] = []
+            for metric in metrics:
+                metric_started_at = qa_trace_started_at()
+                with stage(timing, "tool:get_brand_metric", f"metric={metric}"):
+                    brand_metric_call = self._metric_call(
+                        resolution.canonical_brand,
+                        metric=metric,
+                        filter_entries=effective_filters,
+                        market=market,
+                        prefer_mart=_prefer_mart_metric(resolution.support_source),
+                    )
+                attach_tool_qa_trace(brand_metric_call, started_at=metric_started_at)
+                metric_calls.append(brand_metric_call)
             scope = _answer_scope(question)
             if scope is not None:
                 for metric_call in metric_calls:
@@ -321,7 +339,7 @@ class ChatAgent:
                 self.query_layer is None
                 and market is not None
                 and not effective_filters
-                and metric not in {"hhi", "series", "trend", "momentum", "ei"}
+                and all(metric not in {"hhi", "series", "trend", "momentum", "ei"} for metric in metrics)
             ):
                 landscape_started_at = qa_trace_started_at()
                 with stage(timing, "tool:get_market_landscape", f"market={market}"):
@@ -673,18 +691,27 @@ class ChatAgent:
     ) -> dict[str, Any]:
         if self.query_layer is not None:
             try:
+                plan = validate_metric_filters(filter_entries)
+                definition = metric_definition(metric)
+                if plan.measure is not None and plan.measure != definition.measure:
+                    raise LookupError(
+                        f"metric/measure mismatch: metric={metric} measure={plan.measure}"
+                    )
+                if plan.blocks_results:
+                    raise LookupError("d2 query-layer rejected the requested filters")
                 period = _metric_filter_period(filter_entries)
                 if period is not None:
+                    kwargs: dict[str, Any] = {}
+                    if plan.source is not None:
+                        kwargs["source"] = plan.source
                     if market is None:
-                        return self.query_layer.brand_metric(brand, metric, period)
-                    return self.query_layer.brand_metric(brand, metric, period, market=market)
+                        return self.query_layer.brand_metric(brand, metric, period, **kwargs)
+                    kwargs["market"] = market
+                    return self.query_layer.brand_metric(brand, metric, period, **kwargs)
                 if not filter_entries:
                     if market is None:
                         return self.query_layer.brand_metric(brand, metric, "latest")
                     return self.query_layer.brand_metric(brand, metric, "latest", market=market)
-                plan = validate_metric_filters(filter_entries)
-                if plan.blocks_results:
-                    raise LookupError("d2 query-layer rejected the requested filters")
                 if plan.relative_range is not None:
                     months = _relative_range_months(plan.relative_range)
                     if metric in {"market_share", "share"}:
@@ -699,10 +726,12 @@ class ChatAgent:
 
                     spec = {
                         "group_by": ["product", "period"],
-                        "metrics": ["sales"],
+                        "metrics": [metric],
                         "derive": ["trend"],
                         "filters": {"brand": brand, "periods": months},
                     }
+                    if plan.source is not None:
+                        spec["source"] = plan.source
                     if market is not None:
                         spec["market"] = market
                     return self.query_layer.query(spec, fallback_brand=brand)
@@ -720,10 +749,16 @@ class ChatAgent:
                     kwargs = {
                         "source": plan.source or "",
                         "period": plan.period_month or (str(plan.period_year) if plan.period_year else "latest"),
+                        "metric": metric,
                     }
                     if market is not None:
                         kwargs["market"] = market
                     return self.query_layer.dimension_breakdown(brand, dimension, **kwargs)
+                if plan.measure is not None or plan.source is not None:
+                    kwargs = {"source": plan.source or ""}
+                    if market is not None:
+                        kwargs["market"] = market
+                    return self.query_layer.brand_metric(brand, metric, "latest", **kwargs)
                 raise LookupError(f"d2 query-layer route does not support filters: {filter_entries!r}")
             except (LookupError, TypeError, ValueError) as exc:
                 return _query_failed_metric_call(brand, metric, filter_entries, exc)

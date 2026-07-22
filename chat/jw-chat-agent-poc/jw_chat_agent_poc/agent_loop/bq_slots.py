@@ -121,14 +121,22 @@ def extract_bq_slots(question: str, *, brand: str, period: str) -> BqSlots:
 
 
 def requested_prescription_metric(question: str) -> str | None:
-    return next(
+    matched = next(
         (name for name, pattern in _PRESCRIPTION_METRIC_PATTERNS if pattern.search(question)),
         None,
     )
+    if matched == "prescription" and re.search(r"(?:채널|진료과).*(?:처방)|(?:처방).*(?:채널|진료과)", question):
+        return "prescription_volume"
+    return matched
 
 
-def prescription_metric_requires_typed_stop(question: str) -> bool:
-    return requested_prescription_metric(question) is not None
+def prescription_metric_requires_typed_stop(
+    question: str,
+    *,
+    exposed_metrics: tuple[str, ...] = (),
+) -> bool:
+    requested = requested_prescription_metric(question)
+    return requested is not None and requested not in exposed_metrics
 
 
 def contract_id_for_slots(slots: BqSlots) -> str | None:

@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
+from jw_chat_agent_poc.agent_loop.bq_slots import requested_prescription_metric
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.parallel_execution import (
     TimedExecution,
@@ -1182,18 +1183,21 @@ def _contract_required_tools(question: str) -> tuple[str, ...]:
 
 
 def _required_contract_plan(required_tool: str, question: str, brand: str) -> ToolCallPlan | None:
+    prescription_metric = requested_prescription_metric(question)
     if required_tool == "get_brand_metric":
         requested_periods = canonical_periods(question)
         return ToolCallPlan(
             name="get_metric",
             arguments={
                 "brand": brand,
-                "measure": "sales",
+                "measure": prescription_metric or "sales",
                 "period": requested_periods[0] if requested_periods else "latest",
             },
             reason=required_tool,
         )
     if required_tool == "market_scope":
+        if prescription_metric == "prescription_volume":
+            return None
         return ToolCallPlan(
             name="get_market_scope",
             arguments={"brand": brand, "view": "market_landscape"},

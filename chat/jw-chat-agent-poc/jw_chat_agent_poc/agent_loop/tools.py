@@ -149,7 +149,12 @@ class AgentToolFacade:
             if name == "get_brand_share":
                 return self._query_metric(grounded_arguments, "market_share")
             if name == "get_brand_series":
-                return self._query_metric(grounded_arguments, "series")
+                return self._query_metric(
+                    grounded_arguments,
+                    metric_measure(grounded_arguments["measure"])
+                    if grounded_arguments.get("measure")
+                    else "series",
+                )
             if name == "compare_brands_series":
                 return self._compare_brands_series(grounded_arguments)
             if name == "get_top_brands":
@@ -199,7 +204,7 @@ class AgentToolFacade:
 
     def _metric(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        measure = metric_measure(arguments.get("measure", "sales"))
+        measure = metric_measure(arguments.get("measure", ""))
         period_arg = arguments.get("period")
         if self._query_layer is not None:
             try:

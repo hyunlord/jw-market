@@ -11,6 +11,7 @@ from jw_chat_agent_poc.agent_loop.news_query import normalize_news_query
 from jw_chat_agent_poc.common.timing import trace_span
 from jw_chat_agent_poc.genos_config import resolve_planner_genos_base_url, resolve_planner_genos_token
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
+from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
 from jw_chat_agent_poc.orchestrator.question_intent import metric_from_question
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope_intent import detect_market_scope_intent
@@ -217,6 +218,19 @@ def _deterministic_named_metric_decision(
 ) -> AgentDecision | None:
     if observations or not _has_tool(schemas, "get_metric"):
         return None
+    base_measures = explicit_base_metrics_from_question(question)
+    if len(base_measures) > 1:
+        brand = _brand(question, allowed_brands)
+        return AgentDecision(
+            tool_calls=tuple(
+                ToolCallPlan(
+                    "get_metric",
+                    {"brand": brand, "measure": measure},
+                    "명시 지표별 분리 조회",
+                )
+                for measure in base_measures
+            )
+        )
     measures = _named_metric_measures(question)
     if len(measures) != 1:
         return None
@@ -510,7 +524,7 @@ def _asks_metric_or_analysis(question: str) -> bool:
 def _asks_explicit_metric(question: str) -> bool:
     return bool(
         re.search(
-            r"(?:매출|판매|점유율|순위|시장\s*규모|시계열|추이|HHI|CAGR|momentum|모멘텀|(?<![A-Za-z])M\s*/?\s*S(?![A-Za-z])|(?<![A-Za-z])EI(?![A-Za-z]))",
+            r"(?:매출|판매|처방\s*량|prescription\s+volume|점유율|순위|시장\s*규모|시계열|추이|HHI|CAGR|momentum|모멘텀|(?<![A-Za-z])M\s*/?\s*S(?![A-Za-z])|(?<![A-Za-z])EI(?![A-Za-z]))",
             question,
             re.IGNORECASE,
         )

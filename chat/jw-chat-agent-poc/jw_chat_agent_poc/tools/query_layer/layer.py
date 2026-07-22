@@ -5,7 +5,12 @@ from threading import Lock
 from typing import Any, Mapping
 
 from jw_chat_agent_poc.tools.cause_backend import CauseBackend, CauseMarket
-from jw_chat_agent_poc.tools.query_layer.catalog import QueryCatalog, default_catalog
+from jw_chat_agent_poc.tools.query_layer.catalog import (
+    QueryCatalog,
+    default_catalog,
+    measure_for_metrics,
+    metric_definition,
+)
 from jw_chat_agent_poc.tools.query_layer.compute import (
     brand_average_share_data,
     brand_yoy_data,
@@ -96,6 +101,17 @@ class StrategicQueryLayer:
             for brand, market_id in sorted(memberships)
         )
 
+    def supports_metric(self, metric: str) -> bool:
+        try:
+            definition = metric_definition(metric)
+        except ValueError:
+            return False
+        return any(
+            record.measure == definition.measure
+            and record.source in definition.sources
+            for record in self._snapshot().records
+        )
+
     def brand_metric(
         self,
         brand: str,
@@ -105,17 +121,21 @@ class StrategicQueryLayer:
         source: str = "",
         history_points: int = 10,
     ) -> dict[str, Any]:
+        definition = metric_definition(metric)
+        measure = definition.measure
         if metric.casefold() == "hhi" and self._cause_backend is not None:
             return self._cause_brand_metric(brand, metric, source=source)
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
-        source = source or _default_source_for_metric(snapshot, market, brand, period)
-        record = snapshot.record(market, brand, source)
+        source = source or _default_source_for_metric(snapshot, market, brand, period, measure)
+        if source not in definition.sources:
+            raise LookupError(f"{metric} is unavailable for source={source}")
+        record = snapshot.record(market, brand, source, measure)
         if metric.casefold() in {"hhi", "momentum", "ei", "growth_contribution"}:
             return self.brand_derived_metric(brand, metric, market=market, source=source)
-        requested_period = _actual_period(snapshot, market, source, period)
+        requested_period = _actual_period(snapshot, market, source, period, measure)
         actual_period = _display_period(snapshot, record, requested_period, period)
-        structure = market_structure(snapshot, market, source)
+        structure = market_structure(snapshot, market, source) if measure == "sales" else {}
         if actual_period is None:
             return _failed_metric_call(
                 brand,
@@ -145,7 +165,7 @@ class StrategicQueryLayer:
             actual_period,
             series_points=history_points,
         )
-        if structure:
+        if measure == "sales" and structure:
             render_data["market_structure"] = structure
         if actual_period != requested_period:
             render_data["requested_period"] = requested_period
@@ -159,7 +179,7 @@ class StrategicQueryLayer:
             "view": "market_landscape",
             "market": market,
             "filters": {"brand": brand, "period": actual_period},
-            "metrics": [metric_name(metric)],
+            "metrics": [definition.public_name],
         }
         label = source_label(source)
         return {
@@ -470,18 +490,23 @@ class StrategicQueryLayer:
         period: str = "latest",
         limit: int = 10,
         market: str | None = None,
+        metric: str = "sales",
     ) -> dict[str, Any]:
+        definition = metric_definition(metric)
+        measure = definition.measure
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
-        selected_source = source or snapshot.source_for_market(market)
-        selected_period = _actual_period(snapshot, market, selected_source, period)
+        selected_source = source or _default_source_for_metric(snapshot, market, brand, period, measure)
+        if selected_source not in definition.sources:
+            raise LookupError(f"{metric} is unavailable for source={selected_source}")
+        selected_period = _actual_period(snapshot, market, selected_source, period, measure)
         spec = {
             "source": selected_source,
             "view": "market_landscape",
             "market": market,
             "dimensions": [dimension],
             "group_by": [dimension],
-            "metrics": ["sales"],
+            "metrics": [definition.public_name],
             "filters": {"brand": brand, "period": selected_period},
             "limit": limit,
         }
@@ -561,11 +586,16 @@ class StrategicQueryLayer:
 
     def query(self, raw_spec: str | Mapping[str, Any], fallback_brand: str) -> dict[str, Any]:
         spec = parse_spec(raw_spec)
+        metrics = tuple(as_list(spec.get("metrics")))
+        measure = measure_for_metrics(metrics)
         snapshot = self._snapshot()
         market = str(spec.get("market") or snapshot.market_id_for_brand(fallback_brand) or "")
         if not market:
             raise LookupError(f"market is unresolved for {fallback_brand}")
-        source = _default_source_for_query(snapshot, market, spec, fallback_brand)
+        source = _default_source_for_query(snapshot, market, spec, fallback_brand, measure)
+        for metric in metrics:
+            if source not in metric_definition(metric).sources:
+                raise LookupError(f"{metric} is unavailable for source={source}")
         catalog = QueryCatalog.from_snapshot(snapshot, market, source)
         validate_spec(spec, catalog)
         limit = bounded_limit(spec.get("limit"), 10)
@@ -582,11 +612,14 @@ class StrategicQueryLayer:
         data = {
             "brand": subject_brand,
             "metric": "query_spec",
-            "period": snapshot.latest_period(market, source),
+            "period": snapshot.latest_period(market, source, measure),
             "market_id": market,
             "market_name": market,
             "level": level_name(spec),
-            "level_segments": level_segments(rows),
+            "level_segments": level_segments(rows, measure=measure),
+            "measure": measure,
+            "value_label": "처방량" if measure == "volume" else "매출",
+            "unit_label": "Rx" if measure == "volume" else "KRW",
             "source_label": source_label(source),
             "query_result_id": result_id,
             "query_spec": spec,
@@ -637,14 +670,16 @@ class StrategicQueryLayer:
         return {"source": source_label(source), "tool": "get_brand_metric", "summary_text": f"query(spec) {data['query_result_id']}를 전략 mart에서 실행했습니다.", "render_data": data}
 
 
-def _actual_period(snapshot: MartSnapshot, market: str, source: str, period: str) -> str:
+def _actual_period(snapshot: MartSnapshot, market: str, source: str, period: str, measure: str = "sales") -> str:
     if period in {"", "latest"}:
-        return snapshot.latest_period(market, source)
+        return snapshot.latest_period(market, source, measure)
     return period
 
 
-def _default_source_for_metric(snapshot: MartSnapshot, market: str, brand: str, period: str) -> str:
-    sources = snapshot.sources_for_brand(market, brand) or snapshot.sources_for_market(market)
+def _default_source_for_metric(snapshot: MartSnapshot, market: str, brand: str, period: str, measure: str = "sales") -> str:
+    sources = snapshot.sources_for_brand(market, brand, measure)
+    if not sources:
+        raise LookupError(f"mart measure unavailable: market={market} brand={brand} measure={measure}")
     if _single_source(sources):
         return sources[0]
     if _is_quarter_period(period) and "iqvia_nsa" in sources:
@@ -652,13 +687,15 @@ def _default_source_for_metric(snapshot: MartSnapshot, market: str, brand: str, 
     return snapshot.source_for_market(market)
 
 
-def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any], fallback_brand: str) -> str:
+def _default_source_for_query(snapshot: MartSnapshot, market: str, spec: Mapping[str, Any], fallback_brand: str, measure: str = "sales") -> str:
     explicit_source = str(spec.get("source") or "").strip()
     if explicit_source:
         return explicit_source
     filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
     subject_brand = str(filters.get("brand") or fallback_brand)
-    sources = snapshot.sources_for_brand(market, subject_brand) or snapshot.sources_for_market(market)
+    sources = snapshot.sources_for_brand(market, subject_brand, measure)
+    if not sources:
+        raise LookupError(f"mart measure unavailable: market={market} brand={subject_brand} measure={measure}")
     if _single_source(sources):
         return sources[0]
     if _query_uses_ubist_axes(spec) and "ubist" in sources:

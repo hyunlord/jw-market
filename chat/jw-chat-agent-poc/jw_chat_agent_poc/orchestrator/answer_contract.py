@@ -1043,6 +1043,11 @@ def _is_news_sales_impact_question(question: str) -> bool:
 
 
 def _structural_contract_present(answer: str, contract_type: str) -> bool:
+    if contract_type == "specialty_breakdown":
+        return any(
+            marker in answer
+            for marker in ("## 진료과별 매출 구성", "## 진료과별 처방량 구성")
+        )
     markers = {
         "sales_activity_link": "## 영업-매출 연계 분석 설계",
         "segment_compare": "## 세그먼트 비교 지원 범위",
@@ -1517,8 +1522,9 @@ def _specialty_breakdown_contract_block(fact_md: str) -> str:
     rows = _specialty_breakdown_rows(fact_md)
     if not rows:
         return ""
+    metric_label = "처방량" if "처방량" in fact_md else "매출"
     lines = [
-        "## 진료과별 매출 구성",
+        f"## 진료과별 {metric_label} 구성",
         "| 진료과 | 순위/값 |",
         "| --- | --- |",
         *(f"| {_contract_cell(name)} | {_contract_cell(payload)} |" for name, payload in rows),

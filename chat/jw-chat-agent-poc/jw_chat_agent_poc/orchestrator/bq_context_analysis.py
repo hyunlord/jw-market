@@ -20,9 +20,11 @@ def _distribution_analysis(calls: list[Call]) -> Call | None:
     distributions = {key: value for key, value in distributions.items() if value}
     if not distributions:
         return None
+    is_volume = any(_data(call).get("measure") == "volume" for call in calls)
+    metric_label = "처방량" if is_volume else "매출"
     charts = [
         {
-            "chart_type": "bar", "title": f"{dimension}별 매출 구성", "source": "UBIST",
+            "chart_type": "bar", "title": f"{dimension}별 {metric_label} 구성", "source": "UBIST",
             "scope": "MARKET", "unit": "%", "evidence_refs": [f"UBIST.{dimension}.level_segments"],
             "labels": list(rows),
             "datasets": [{"label": f"{dimension}별 비중(%)", "unit": "%", "data": list(rows.values())}],

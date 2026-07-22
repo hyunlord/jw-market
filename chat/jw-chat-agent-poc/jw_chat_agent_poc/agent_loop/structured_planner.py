@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding
 from jw_chat_agent_poc.common.timing import trace_span
@@ -138,6 +139,8 @@ def plan_structured_market_question(
         "descriptive",
     )
     if answer_mode != "descriptive":
+        return None
+    if len(explicit_base_metrics_from_question(question)) > 1:
         return None
     brands = _resolved_brands(question, resolver)
     if not brands:
