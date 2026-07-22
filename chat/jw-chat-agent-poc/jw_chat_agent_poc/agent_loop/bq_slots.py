@@ -26,11 +26,21 @@ class BqSlotSignature:
     any_axis: frozenset[str] = frozenset()
 
 
+_PRESCRIPTION_METRIC_PATTERNS: Final = (
+    ("prescription_dispensing_amount", re.compile(r"처방\s*조제액")),
+    ("prescription_count", re.compile(r"처방\s*건수")),
+    ("prescription_volume", re.compile(r"처방\s*량")),
+    ("prescription", re.compile(r"처방|조제|prescription", re.IGNORECASE)),
+)
+_EXPLICIT_SALES_RE: Final = re.compile(r"매출|(?<![A-Za-z])sales(?![A-Za-z])", re.IGNORECASE)
+_PRESCRIPTION_RE: Final = _PRESCRIPTION_METRIC_PATTERNS[-1][1]
+
 _METRIC_PATTERNS: Final = (
     ("market", re.compile(r"시장")),
     ("market_size", re.compile(r"시장\s*규모")),
     ("patient_count", re.compile(r"환자\s*수")),
-    ("sales", re.compile(r"매출|처방")),
+    ("sales", _EXPLICIT_SALES_RE),
+    ("prescription", _PRESCRIPTION_RE),
     ("activity", re.compile(r"영업\s*활동")),
     ("competition", re.compile(r"경쟁\s*(?:구도|상대|사)")),
     ("threat", re.compile(r"신규\s*진입|위협\s*브랜드")),
@@ -108,6 +118,17 @@ def extract_bq_slots(question: str, *, brand: str, period: str) -> BqSlots:
         axes=_matches(question, _AXIS_PATTERNS),
         sources=_matches(question, _SOURCE_PATTERNS),
     )
+
+
+def requested_prescription_metric(question: str) -> str | None:
+    return next(
+        (name for name, pattern in _PRESCRIPTION_METRIC_PATTERNS if pattern.search(question)),
+        None,
+    )
+
+
+def prescription_metric_requires_typed_stop(question: str) -> bool:
+    return requested_prescription_metric(question) is not None
 
 
 def contract_id_for_slots(slots: BqSlots) -> str | None:

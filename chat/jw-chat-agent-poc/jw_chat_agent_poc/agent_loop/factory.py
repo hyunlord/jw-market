@@ -6,6 +6,7 @@ from typing import Any
 
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.resolver.catalog_membership import TtlCatalogMembershipReader, shared_catalog_membership_reader
@@ -207,4 +208,49 @@ def field_not_exposed_result(
         "answer": markdown.markdown,
         "markdown_response": markdown.to_dict(),
         "sources": ["field_not_exposed"],
+    }
+
+
+def prescription_metric_unavailable_result(
+    question: str,
+    requested_metric: str,
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    reason = (
+        "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
+        "값은 null로 반환하며 매출 지표로 대체하지 않습니다."
+    )
+    markdown = MarkdownResponseBuilder().field_not_exposed(reason)
+    markdown_payload = markdown.to_dict()
+    markdown_payload["fact_md"] = "현재 채팅 조회 계약에서 처방 지표 미지원"
+    answer = apply_common_unavailable_response(
+        question,
+        markdown.markdown,
+        markdown_payload,
+    )
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [
+            {
+                "intent": "prescription_metric",
+                "metric": requested_metric,
+                "status": "unavailable",
+                "reason_code": "FIELD_NOT_EXPOSED",
+            }
+        ],
+        "router_diagnostics": diagnostics,
+        "tool_calls": [],
+        "answer": answer,
+        "markdown_response": markdown_payload,
+        "sources": ["field_not_exposed"],
+        "status": "unavailable",
+        "reason_code": "FIELD_NOT_EXPOSED",
+        "value": None,
+        "reason": "prescription_metric_not_exposed",
+        "proxy": {
+            "metric": "sales",
+            "status": "separate_request_only",
+            "substituted": False,
+        },
     }
