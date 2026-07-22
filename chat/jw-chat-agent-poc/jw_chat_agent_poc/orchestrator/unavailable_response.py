@@ -131,6 +131,16 @@ _PLANS: tuple[tuple[tuple[str, ...], UnavailablePlan], ...] = (
         ),
     ),
     (
+        ("처방조제액", "처방건수", "처방량", "처방", "조제", "prescription"),
+        UnavailablePlan(
+            missing="현재 채팅 조회 계약에 미노출된 처방량·처방건수·처방조제액과 축별 처방 원천 지표입니다.",
+            proxy="매출·점유율은 별도 요청에서 참고용 proxy로 조회할 수 있지만 처방 지표가 아닙니다.",
+            ceiling="매출로 처방량·처방건수·처방조제액을 역산하거나 처방 추이로 바꾸어 말하지 않습니다.",
+            needed="처방 지표 종류, 기간, 브랜드와 진료과·유통채널 grain의 검증된 원천 필드가 필요합니다.",
+            analysis="확보 시 처방 지표를 기간·축별로 집계하고 매출은 별도 관찰값으로만 나란히 비교합니다.",
+        ),
+    ),
+    (
         ("channel", "채널", "segment", "세그먼트", "class", "molecule", "용량", "제형", "weekly", "monthly"),
         UnavailablePlan(
             missing="요청 축의 세그먼트 원천 행 또는 필요한 grain(주간/월간/축별) 데이터입니다.",
