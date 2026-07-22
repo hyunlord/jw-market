@@ -33,6 +33,7 @@ from jw_chat_agent_poc.orchestrator.market_insights import render_market_narrati
 from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
+from jw_chat_agent_poc.orchestrator.source_grading import is_web_search_call
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.service.answer_safety import (
@@ -745,8 +746,13 @@ def _blocked_metric_notice_lines(fact_md: str) -> tuple[str, ...]:
     return tuple(rows)
 
 
-def _append_web_search_section(answer: str, tool_calls: list[dict[str, Any]] | None) -> str:
-    section = _web_search_unverified_section(tool_calls)
+def _append_web_search_section(
+    answer: str,
+    tool_calls: list[dict[str, Any]] | None,
+    *,
+    question: str | None = None,
+) -> str:
+    section = _web_search_unverified_section(tool_calls, question=question)
     if not section:
         return answer
     body = _ensure_web_search_reference(answer)
@@ -765,12 +771,20 @@ def _ensure_web_search_reference(answer: str) -> str:
     return cleanup_markdown_answer("\n\n".join((answer, reference)))
 
 
-def _web_search_unverified_section(tool_calls: list[dict[str, Any]] | None) -> str:
-    return web_search_mi_section_from_calls(tool_calls or ())
+def _web_search_unverified_section(
+    tool_calls: list[dict[str, Any]] | None,
+    *,
+    question: str | None = None,
+) -> str:
+    return web_search_mi_section_from_calls(tool_calls or (), question=question)
 
 
-def _has_web_search_rows(tool_calls: list[dict[str, Any]] | None) -> bool:
-    return bool(_web_search_unverified_section(tool_calls))
+def _has_web_search_rows(
+    tool_calls: list[dict[str, Any]] | None,
+    *,
+    question: str | None = None,
+) -> bool:
+    return bool(_web_search_unverified_section(tool_calls, question=question))
 
 
 def _is_web_search_only(tool_calls: list[dict[str, Any]] | None) -> bool:
@@ -835,6 +849,42 @@ def _verified_tool_use_agent_answer(agent_result: dict[str, Any]) -> str:
     return cleanup_markdown_answer(answer)
 
 
+def _without_web_fact_context(
+    markdown_response: dict[str, Any],
+    *,
+    calls: list[dict[str, Any]],
+    brand: str,
+    sources: list[str],
+) -> dict[str, Any]:
+    web_calls = [call for call in calls if is_web_search_call(call)]
+    if not web_calls:
+        return markdown_response
+    if not any(_web_call_has_result_items(call) for call in web_calls):
+        return markdown_response
+    fact_calls = [call for call in calls if not is_web_search_call(call)]
+    fact_sources = [source for source in sources if source.strip().lower() != "web_search"]
+    return MarkdownResponseBuilder().build(
+        brand=brand,
+        calls=fact_calls,
+        sources=fact_sources,
+    ).to_dict()
+
+
+def _web_call_has_result_items(call: dict[str, Any]) -> bool:
+    data = call.get("render_data")
+    if not isinstance(data, dict):
+        return False
+    direct = data.get("items")
+    if isinstance(direct, list) and any(isinstance(item, dict) for item in direct):
+        return True
+    nested = data.get("calls")
+    return isinstance(nested, list) and any(
+        _web_call_has_result_items(item)
+        for item in nested
+        if isinstance(item, dict)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class GenosClient:
     base_url: str = field(default_factory=resolve_final_genos_base_url)
@@ -864,6 +914,19 @@ class GenosClient:
         fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
         tool_calls = agent_result.get("tool_calls")
         verified_calls = tool_calls if isinstance(tool_calls, list) else []
+        if isinstance(markdown_response, dict):
+            raw_sources = agent_result.get("sources")
+            source_names = (
+                [str(source) for source in raw_sources if source]
+                if isinstance(raw_sources, list | tuple)
+                else [str(call.get("source") or "") for call in verified_calls if call.get("source")]
+            )
+            markdown_response = _without_web_fact_context(
+                markdown_response,
+                calls=verified_calls,
+                brand=str(agent_result.get("brand") or "시장"),
+                sources=source_names,
+            )
         if self.research_mode != "deep" and self.token and fallback_code is None and isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             single_period_sales_answer = deterministic_single_period_sales_answer(
@@ -1029,8 +1092,8 @@ class GenosClient:
         allowed_numbers = tuple(str(value) for value in markdown_response.get("allowed_numbers", ()) if value is not None)
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
         fact_lookup_md = _fact_lookup_markdown(markdown_response)
-        if _is_web_search_only(tool_calls) and _has_web_search_rows(tool_calls):
-            return _append_web_search_section("", tool_calls)
+        if _is_web_search_only(tool_calls) and _has_web_search_rows(tool_calls, question=question):
+            return _append_web_search_section("", tool_calls, question=question)
         trend_fact_md = single_brand_trend_fact_markdown(fact_lookup_md, tool_calls) if _question_wants_trend_output(question) else ""
         fact_for_safety = "\n\n".join(part for part in (fact_md, trend_fact_md, file_context) if part)
         strict_numbers = strict_allowed_numbers(fact_for_safety, allowed_numbers)
@@ -1136,14 +1199,18 @@ class GenosClient:
         answer = append_competitor_patent_coverage_block(answer, fact_md)
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         if self.research_mode == "deep":
-            answer = _append_web_search_section(answer, tool_calls)
+            answer = _append_web_search_section(answer, tool_calls, question=question)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
         if not file_context:
             answer = apply_common_unavailable_response(question, answer, markdown_response)
             answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
-        return answer if self.research_mode == "deep" else _append_web_search_section(answer, tool_calls)
+        return (
+            answer
+            if self.research_mode == "deep"
+            else _append_web_search_section(answer, tool_calls, question=question)
+        )
 
     @staticmethod
     def _markdown_messages(

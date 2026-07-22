@@ -96,6 +96,11 @@ from jw_chat_agent_poc.service.conversation_context import (
     unresolved_reference_result,
 )
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
+from jw_chat_agent_poc.service.evidence_binding import (
+    evidence_facts_from_result,
+    expected_entities_from_result,
+    verify_claim_bindings,
+)
 from jw_chat_agent_poc.service.context_scope import (
     ContextScope,
     file_reference_terms,
@@ -2360,6 +2365,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             answer,
             result,
         )
+        answer = _apply_evidence_binding_gate(active_question, answer, result)
         trace = trace_envelope(
             question=question,
             result=result,
@@ -2562,6 +2568,8 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     safe_answer = scrub_internal_terminology(safe_answer)
     if not deep_mode and not file_context_fact and market_contract_allowed:
         safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
+    if not file_context_fact and market_contract_allowed:
+        safe_answer = _apply_evidence_binding_gate(active_question, safe_answer, result)
     safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
     trace = trace_envelope(
         question=question,
@@ -2616,6 +2624,48 @@ def _apply_relational_claim_gate(question: str, answer: str, result: dict[str, A
         "blocked_claim_count": int(previous_items.get("blocked_claim_count") or 0) + gate.blocked_claim_count,
         "blocked_reasons": combined_reasons,
         "disposition": disposition,
+    }
+    return gate.answer
+
+
+def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, Any]) -> str:
+    gate = verify_claim_bindings(
+        question=question,
+        answer=answer,
+        facts=evidence_facts_from_result(result),
+        expected_entities=expected_entities_from_result(question, result),
+    )
+    previous = result.get("_qa_claim_gate")
+    previous_items = previous if isinstance(previous, dict) else {}
+    previous_reasons = previous_items.get("blocked_reasons")
+    combined_reasons = tuple(
+        dict.fromkeys(
+            str(item)
+            for item in (
+                *(previous_reasons if isinstance(previous_reasons, (list, tuple)) else ()),
+                *gate.blocked_reasons,
+            )
+            if str(item)
+        )
+    )
+    disposition_priority = {
+        "answered": 0,
+        "partial": 1,
+        "cached_partial": 2,
+        "unavailable": 3,
+    }
+    previous_disposition = str(previous_items.get("disposition") or "")
+    disposition = max(
+        (previous_disposition, gate.disposition),
+        key=lambda item: disposition_priority.get(item, -1),
+    )
+    result["_qa_claim_gate"] = {
+        "blocked_claim_count": int(previous_items.get("blocked_claim_count") or 0)
+        + gate.blocked_claim_count,
+        "blocked_reasons": combined_reasons,
+        "disposition": disposition,
+        "binding_status": gate.status,
+        "blocked_numbers": gate.blocked_numbers,
     }
     return gate.answer
 

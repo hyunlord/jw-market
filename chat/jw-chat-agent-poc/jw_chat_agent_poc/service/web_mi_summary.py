@@ -7,6 +7,8 @@ from datetime import date
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import table
+from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade, grade_web_url
+from jw_chat_agent_poc.service.web_presentation_policy import web_presentation_policy
 
 
 TODAY: date = date(2026, 7, 3)
@@ -19,6 +21,7 @@ class WebSearchItem:
     title: str
     url: str
     snippet: str
+    source_grade: SourceGrade
     event_date: str
     relevance: str
     direction: str
@@ -34,18 +37,46 @@ def web_search_mi_section(raw_items: Sequence[Mapping[str, object]]) -> str:
     visible_stale = tuple(item for item in stale if item.relevance != "잡음")
     if not visible_current and not visible_stale:
         return ""
-    parts = ["### 웹 검색 결과(미검증)"]
+    parts = [
+        "### 웹 검색 결과(미검증)",
+        (
+            "웹 검색 결과는 공식 통계가 아닙니다. 공식 기관 웹은 SUPPLEMENTARY(보조), "
+            "그 밖의 웹은 UNVERIFIED(수치 근거로 사용 불가)로 구분합니다."
+        ),
+    ]
     summary_rows = _summary_rows(visible_current)
     if summary_rows:
-        parts.append(table("#### 주요 MI 요약", ("등급", "방향", "사건일", "요약"), summary_rows))
+        parts.append(
+            table(
+                "#### 주요 MI 요약",
+                ("출처 등급", "관련도", "방향", "사건일", "요약"),
+                summary_rows,
+            )
+        )
     if visible_current:
-        parts.append(table("#### 최신·관련 결과", ("사건일", "등급", "제목", "URL", "스니펫", "비고"), _detail_rows(visible_current)))
+        parts.append(
+            table(
+                "#### 최신·관련 결과",
+                ("사건일", "출처 등급", "관련도", "제목", "URL", "스니펫", "비고"),
+                _detail_rows(visible_current),
+            )
+        )
     if visible_stale:
-        parts.append(table("#### 과거 자료", ("사건일", "등급", "제목", "URL", "스니펫", "비고"), _detail_rows(visible_stale)))
+        parts.append(
+            table(
+                "#### 과거 자료",
+                ("사건일", "출처 등급", "관련도", "제목", "URL", "스니펫", "비고"),
+                _detail_rows(visible_stale),
+            )
+        )
     return "\n\n".join(parts)
 
 
-def web_search_mi_section_from_calls(tool_calls: Sequence[Mapping[str, object]]) -> str:
+def web_search_mi_section_from_calls(
+    tool_calls: Sequence[Mapping[str, object]],
+    *,
+    question: str | None = None,
+) -> str:
     rows: list[Mapping[str, object]] = []
     for call in tool_calls:
         if str(call.get("tool") or "") != "web_search" and str(call.get("source") or "") != "web_search":
@@ -54,7 +85,22 @@ def web_search_mi_section_from_calls(tool_calls: Sequence[Mapping[str, object]])
         if not isinstance(data, Mapping):
             continue
         rows.extend(_web_search_items(data))
-    return web_search_mi_section(rows[:5]) if rows else ""
+    if not rows:
+        return ""
+    disclosure = ""
+    if question is not None:
+        decision = web_presentation_policy(question, tool_calls)
+        if not decision.show_all_results and not decision.accepted_urls:
+            return ""
+        if decision.accepted_urls:
+            accepted_urls = set(decision.accepted_urls)
+            rows = [row for row in rows if str(row.get("url") or "").strip() in accepted_urls]
+        disclosure = decision.disclosure
+    section = web_search_mi_section(rows[:5])
+    if not section or not disclosure:
+        return section
+    heading, remainder = section.split("\n\n", maxsplit=1)
+    return "\n\n".join((heading, disclosure, remainder))
 
 
 def _web_search_items(data: Mapping[str, object]) -> list[Mapping[str, object]]:
@@ -100,6 +146,7 @@ def _parse_item(raw: Mapping[str, object]) -> WebSearchItem:
         title=title or "-",
         url=url or "-",
         snippet=snippet or "-",
+        source_grade=grade_web_url(url),
         event_date=_event_date(raw, basis),
         relevance=_relevance(basis),
         direction=_direction(basis),
@@ -113,6 +160,7 @@ def _merge_item(left: WebSearchItem, right: WebSearchItem) -> WebSearchItem:
         title=left.title if len(left.title) >= len(right.title) else right.title,
         url=left.url if left.url != "-" else right.url,
         snippet=left.snippet if len(left.snippet) >= len(right.snippet) else right.snippet,
+        source_grade=left.source_grade,
         event_date=_latest_event_date(left.event_date, right.event_date),
         relevance=_stronger_relevance(left.relevance, right.relevance),
         direction=left.direction if left.direction != "중립" else right.direction,
@@ -218,12 +266,14 @@ def _has_internal_metric_claim(basis: str) -> bool:
 
 
 def _dedupe_key(item: WebSearchItem) -> str:
+    grade_prefix = item.source_grade.value
     story_key = _story_key(item)
     if story_key:
-        return story_key
+        return f"{grade_prefix}:{story_key}"
     if item.url != "-":
-        return item.url
-    return re.sub(r"[^0-9A-Za-z가-힣]+", "", item.title).lower()
+        return f"{grade_prefix}:{item.url}"
+    title_key = re.sub(r"[^0-9A-Za-z가-힣]+", "", item.title).lower()
+    return f"{grade_prefix}:{title_key}"
 
 
 def _story_key(item: WebSearchItem) -> str:
@@ -259,23 +309,41 @@ def _sort_key(item: WebSearchItem) -> tuple[int, str]:
     return (0 if item.event_date != "날짜 미상" else 1, date_key)
 
 
-def _summary_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, str], ...]:
-    rows: list[tuple[str, str, str, str]] = []
+def _summary_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, str, str], ...]:
+    rows: list[tuple[str, str, str, str, str]] = []
     for item in reversed(items):
         if item.relevance not in {"직접", "패밀리", "시장"}:
             continue
         tag = " → 내부 지표 확인 가능" if item.internal_check else ""
-        rows.append((item.relevance, item.direction, item.event_date, f"{item.snippet}{tag}"))
+        rows.append(
+            (
+                item.source_grade.value,
+                item.relevance,
+                item.direction,
+                item.event_date,
+                f"{item.snippet}{tag}",
+            )
+        )
     return tuple(rows[:5])
 
 
-def _detail_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, str, str, str], ...]:
-    rows: list[tuple[str, str, str, str, str, str]] = []
+def _detail_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, str, str, str, str], ...]:
+    rows: list[tuple[str, str, str, str, str, str, str]] = []
     for item in reversed(items):
         note = []
         if item.source_count > 1:
             note.append(f"매체 병합: {item.source_count}건")
         if item.internal_check:
             note.append("→ 내부 지표 확인 가능")
-        rows.append((item.event_date, item.relevance, item.title, item.url, item.snippet, ", ".join(note) or "-"))
+        rows.append(
+            (
+                item.event_date,
+                item.source_grade.value,
+                item.relevance,
+                item.title,
+                item.url,
+                item.snippet,
+                ", ".join(note) or "-",
+            )
+        )
     return tuple(rows[:8])
