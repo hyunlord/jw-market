@@ -106,7 +106,11 @@ def _official_web_disclosure(source_domain: str) -> str:
 
 
 def safe_execution_failure(result: AgentResult, *, reason_code: str) -> AgentResult:
-    if reason_code == "NO_RECORD_FOUND":
+    if result.answer.startswith("상태: 확인 불가"):
+        answer = result.answer
+    elif clinical_absence := _clinical_absence_message(result):
+        answer = clinical_absence
+    elif reason_code == "NO_RECORD_FOUND":
         answer = (
             "지정한 공식 코드와 조회 범위에서 확인 가능한 기록을 찾지 못했습니다. "
             "코드 또는 기간을 확인해 주세요."
@@ -139,6 +143,19 @@ def safe_execution_failure(result: AgentResult, *, reason_code: str) -> AgentRes
         traces=result.traces,
         fallback_code=None,
     )
+
+
+def _clinical_absence_message(result: AgentResult) -> str | None:
+    for call in result.tool_calls:
+        if call.get("tool") != "clinicaltrials_v2_search":
+            continue
+        render_data = call.get("render_data")
+        if not isinstance(render_data, dict):
+            continue
+        message = str(render_data.get("error_message") or "")
+        if message.startswith("상태: 확인 불가"):
+            return message
+    return None
 
 
 def normalize_execution_result(

@@ -631,6 +631,122 @@ def test_a10_does_not_invent_total_when_upstream_omits_it(monkeypatch) -> None:
     assert "원천 제공 총 건수" not in payload["answer"]
 
 
+def test_s7_clinicaltrials_prefix_runs_dme_condition_list_without_provider(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    studies = [
+        {"NCTId": f"NCT0000000{index}", "briefTitle": f"DME study {index}"}
+        for index in range(1, 8)
+    ]
+
+    def search(query_intr: str, *, query_type: str = "intervention") -> ExternalCall:
+        assert query_intr == "diabetic macular edema"
+        assert query_type == "condition"
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="ok",
+            summary_text="7 retrieved from 700",
+            render_data={
+                "items": studies,
+                "payload": {"totalCount": 700},
+                "request": {"query.condition": query_intr},
+            },
+        )
+
+    monkeypatch.setattr(external, "clinicaltrials_v2_search", search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "ClinicalTrials: 당뇨황반부종(DME) 질환의 임상·허가심사 단계 경쟁약물 현황",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    tools = [call["tool"] for call in payload["tool_calls"]]
+    assert tools == ["clinicaltrials_v2_search"]
+    assert payload["router_diagnostics"]["routing_v4"]["budget"]["planner_calls_used"] == 0
+    assert "NCT00000001" in payload["answer"]
+    assert "NCT00000005" in payload["answer"]
+    assert "NCT00000006" not in payload["answer"]
+    assert "현재 연결 조회 건수 = 7건" in payload["answer"]
+    assert "표시 건수 = 5건" in payload["answer"]
+    assert "원천 제공 총 건수 = 700건" in payload["answer"]
+    assert "등록 목록만 표시합니다" in payload["answer"]
+    assert "의약품별 집계, 순위, 경쟁 분석/서사는 제공하지 않습니다" in payload["answer"]
+    assert not any(
+        phrase in payload["answer"]
+        for phrase in ("1위", "상위 후보", "경쟁 우위", "가장 유망", "시장 선도")
+    )
+
+
+def test_s7_clinicaltrials_zero_rows_returns_typed_absence(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def search(query_intr: str, *, query_type: str = "intervention") -> ExternalCall:
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="ok",
+            summary_text="0 retrieved",
+            render_data={
+                "items": [],
+                "payload": {"totalCount": 0},
+                "request": {"query.condition": query_intr, "query_type": query_type},
+            },
+        )
+
+    monkeypatch.setattr(external, "clinicaltrials_v2_search", search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "ClinicalTrials: 당뇨황반부종(DME) 질환의 임상·허가심사 단계 경쟁약물 현황",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    assert payload["agent_loop_metrics"]["status"] == "typed_stop"
+    assert payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]["reason_code"] == "NO_RECORD_FOUND"
+    assert [call["tool"] for call in payload["tool_calls"]] == ["clinicaltrials_v2_search"]
+    assert payload["answer"].startswith("상태: 확인 불가")
+    assert "ClinicalTrials.gov 질환 조건 검색 결과가 0건입니다" in payload["answer"]
+    assert "등록 목록만 표시합니다" in payload["answer"]
+
+
+def test_s7_clinicaltrials_error_returns_typed_absence(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def search(query_intr: str, *, query_type: str = "intervention") -> ExternalCall:
+        return ExternalCall(
+            tool="clinicaltrials_v2_search",
+            source="external_api",
+            status="error",
+            summary_text="gateway failed",
+            render_data={
+                "message": "injected failure",
+                "request": {"query.condition": query_intr, "query_type": query_type},
+            },
+        )
+
+    monkeypatch.setattr(external, "clinicaltrials_v2_search", search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        "ClinicalTrials: 당뇨황반부종(DME) 질환의 임상·허가심사 단계 경쟁약물 현황",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    assert payload["agent_loop_metrics"]["status"] == "typed_stop"
+    signature = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert signature["reason_code"] == "UPSTREAM_UNAVAILABLE"
+    assert payload["answer"].startswith("상태: 확인 불가")
+    assert "ClinicalTrials.gov 조회에 실패했습니다" in payload["answer"]
+    assert "등록 목록만 표시합니다" in payload["answer"]
+
+
 def test_d13_mutated_rendered_claim_fails_evidence_binding() -> None:
     result = AgentResult(
         status="ok",

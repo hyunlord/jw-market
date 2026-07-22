@@ -32,7 +32,10 @@ from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
     internal_legacy_route_diagnostics,
     shadow_route_diagnostics,
 )
-from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
+from jw_chat_agent_poc.tool_use.routing_v4_rules import (
+    clinical_condition_query,
+    classify_question,
+)
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -277,6 +280,21 @@ def _run_legacy_external_tool_agent(
 def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple[ToolChoice, ...]:
     """Turn explicit evidence contracts into calls before consulting the planner."""
 
+    classification = classify_question(question)
+    if (
+        classification.deterministic_rule_id == "SOURCE_PREFIX_CLINICALTRIALS"
+        and classification.direct_calls
+    ):
+        return tuple(
+            ToolChoice(
+                call.tool_name,
+                dict(call.normalized_args),
+                f"prefix requires {call.tool_name}",
+                call_id=f"prefix-{index}",
+            )
+            for index, call in enumerate(classification.direct_calls, start=1)
+        )
+
     try:
         resolution = resolver.resolve(question, allow_default=False)
     except UnsupportedBrandError:
@@ -463,6 +481,8 @@ def _deterministic_arguments(
 def _disease_query(question: str) -> str | None:
     """Extract a disease phrase without forwarding the full user sentence as a drug name."""
 
+    if clinical_condition_query(question) == "diabetic macular edema":
+        return "diabetic macular edema"
     tokens = re.findall(r"[가-힣A-Za-z0-9]+", question)
     suffixes = ("증", "병", "암", "염", "장애")
     suffixed = next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)

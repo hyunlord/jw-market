@@ -21,6 +21,11 @@ class QuestionClassification:
 PREFIX_RE = re.compile(r"^\s*(?P<prefix>NeDrug|HIRA|ClinicalTrials)\s*:\s*", re.IGNORECASE)
 DISEASE_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(?P<code>[A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 NCT_ID_RE = re.compile(r"(?<![A-Za-z0-9])NCT\d{8}(?![A-Za-z0-9])", re.IGNORECASE)
+_CLINICAL_CONDITION_ALIASES = {
+    "당뇨황반부종": "diabetic macular edema",
+    "당뇨병성황반부종": "diabetic macular edema",
+    "dme": "diabetic macular edema",
+}
 
 
 def classify_question(question: str) -> QuestionClassification:
@@ -56,6 +61,7 @@ def classify_question(question: str) -> QuestionClassification:
         )
     if prefix == "clinicaltrials":
         return _clinical_classification(
+            body,
             nct_id,
             DomainDecisionSource.PREFIX_RULE,
             "SOURCE_PREFIX_CLINICALTRIALS",
@@ -63,7 +69,7 @@ def classify_question(question: str) -> QuestionClassification:
     if code is not None:
         return _hira_classification(body, code, DomainDecisionSource.INTENT_OWNER, "DISEASE_CODE")
     if nct_id is not None:
-        return _clinical_classification(nct_id, DomainDecisionSource.INTENT_OWNER, "NCT_ID")
+        return _clinical_classification(body, nct_id, DomainDecisionSource.INTENT_OWNER, "NCT_ID")
     if any(token in lowered for token in ("급여", "reimbursement")):
         return QuestionClassification(
             source_domain="regulatory",
@@ -104,6 +110,18 @@ def explicit_disease_code(text: str) -> str | None:
     if len(compact) == 4:
         return f"{compact[:3]}.{compact[3]}"
     return compact
+
+
+def clinical_condition_query(text: str) -> str | None:
+    compact = re.sub(r"\s+", "", text.casefold())
+    return next(
+        (
+            condition
+            for token, condition in _CLINICAL_CONDITION_ALIASES.items()
+            if token in compact
+        ),
+        None,
+    )
 
 
 def asks_label_fields(lowered: str) -> bool:
@@ -160,26 +178,34 @@ def _hira_classification(
 
 
 def _clinical_classification(
+    body: str,
     nct_match: re.Match[str] | None,
     decision_source: DomainDecisionSource,
     rule_id: str,
 ) -> QuestionClassification:
     capability = "CLINICAL_TRIAL_NCT_DETAIL_FIELDS" if nct_match is not None else "CLINICAL_TRIAL_SEARCH"
-    calls = (
-        (
+    condition = clinical_condition_query(body)
+    if nct_match is not None:
+        calls = (
             ProposedCall(
                 tool_name="clinicaltrials_study_details",
                 normalized_args={"nct_id": nct_match.group(0).upper()},
             ),
         )
-        if nct_match is not None
-        else ()
-    )
+    elif condition is not None:
+        calls = (
+            ProposedCall(
+                tool_name="clinicaltrials_v2_search",
+                normalized_args={"query": condition, "query_type": "condition"},
+            ),
+        )
+    else:
+        calls = ()
     return QuestionClassification(
         source_domain="clinical_trials",
         domain_decision_source=decision_source,
         requested_capability=capability,
         deterministic_rule_id=rule_id,
         direct_calls=calls,
-        eligible_override=("clinicaltrials_study_details",) if calls else (),
+        eligible_override=(calls[0].tool_name,) if calls else (),
     )
