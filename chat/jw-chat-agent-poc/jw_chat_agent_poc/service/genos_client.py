@@ -644,6 +644,43 @@ def _deterministic_external_relay_answer(markdown_response: dict[str, Any]) -> s
     return cleanup_markdown_answer("\n\n".join(parts))
 
 
+_DETERMINISTIC_TOOL_USE_FACT_TOOLS = frozenset(
+    {"clinicaltrials_study_details", "mfds_composition"}
+)
+_CLINICALTRIALS_STUDY_URL_RE = re.compile(
+    r"https://clinicaltrials\.gov/study/NCT[0-9A-Za-z]+"
+)
+
+
+def _deterministic_tool_use_external_answer(
+    tool_calls: list[dict[str, Any]],
+    markdown_response: dict[str, Any],
+) -> str:
+    successful_tools = {
+        str(call.get("tool") or "")
+        for call in tool_calls
+        if str(call.get("status") or "").casefold() == "ok"
+    }
+    selected_tools = successful_tools & _DETERMINISTIC_TOOL_USE_FACT_TOOLS
+    if not selected_tools:
+        return ""
+
+    answer = _deterministic_external_relay_answer(markdown_response)
+    if "clinicaltrials_study_details" not in selected_tools or not answer:
+        return answer
+
+    url_match = _CLINICALTRIALS_STUDY_URL_RE.search(answer)
+    if url_match is None:
+        return answer
+    disclosure = (
+        "선정·제외기준은 현재 연결에서 앞부분 200자까지만 제공됩니다. "
+        f"전문은 ClinicalTrials.gov에서 확인하십시오: {url_match.group(0)}"
+    )
+    if disclosure not in answer:
+        answer = f"{answer}\n\n{disclosure}"
+    return cleanup_markdown_answer(answer)
+
+
 def _uploaded_file_context(agent_result: dict[str, Any]) -> str:
     value = agent_result.get("file_context")
     return value.strip() if isinstance(value, str) else ""
@@ -869,6 +906,13 @@ class GenosClient:
                                 finalized_fallback_fact_answer(question, markdown_response)
                             )
                         )
+                        return
+                    deterministic_external_answer = _deterministic_tool_use_external_answer(
+                        verified_calls,
+                        markdown_response,
+                    )
+                    if deterministic_external_answer:
+                        yield from chunk_text(deterministic_external_answer)
                         return
                     yield from chunk_text(
                         cleanup_markdown_answer(

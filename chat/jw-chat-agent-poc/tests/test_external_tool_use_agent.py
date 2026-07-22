@@ -1367,6 +1367,66 @@ def test_tool_use_agent_answer_uses_guarded_markdown_generation_when_configured(
     assert calls == [("마운자로 성분", agent_result["markdown_response"]["fact_md"])]
 
 
+def test_clinical_detail_answer_relays_verified_disclosure_without_final_llm(monkeypatch) -> None:
+    def fail_markdown(*_args, **_kwargs) -> str:
+        raise AssertionError("verified ClinicalTrials detail must not be rewritten by the final LLM")
+
+    monkeypatch.setattr(GenosClient, "_markdown_answer", fail_markdown)
+    url = "https://clinicaltrials.gov/study/NCT05151731"
+    fact_md = (
+        "- NCT05151731: 연구 제목 = A Study to Investigate Vamikibart "
+        f"[{url}]\n"
+        "- NCT05151731: 선정·제외 기준 = Adults with diabetic macular edema "
+        "(선정·제외기준은 현재 연결에서 앞부분 200자까지만 제공됩니다.) "
+        f"[{url}]"
+    )
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "tool_calls": [{"tool": "clinicaltrials_study_details", "status": "ok"}],
+        "markdown_response": {"fact_md": fact_md, "data_md": ""},
+    }
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+            agent_result,
+        )
+    )
+
+    assert "A Study to Investigate Vamikibart" in answer
+    assert "선정·제외기준은 현재 연결에서 앞부분 200자까지만 제공됩니다." in answer
+    assert f"전문은 ClinicalTrials.gov에서 확인하십시오: {url}" in answer
+
+
+def test_mfds_composition_answer_relays_verified_facts_without_final_llm(monkeypatch) -> None:
+    def fail_markdown(*_args, **_kwargs) -> str:
+        raise AssertionError("verified MFDS composition must not be rewritten by the final LLM")
+
+    monkeypatch.setattr(GenosClient, "_markdown_answer", fail_markdown)
+    fact_md = (
+        "- 리바로: 성분 조성 = 리바로정1밀리그램 · "
+        "피타바스타틴칼슘수화물 1.0밀리그램 [식약처 의약품 성분 정보]\n"
+        "- 리바로: 성분 조성 = 리바로정2밀리그램 · "
+        "피타바스타틴칼슘수화물 2.00밀리그램 [식약처 의약품 성분 정보]"
+    )
+    agent_result = {
+        "answer": fact_md,
+        "router_diagnostics": {"mode": "tool_use_agent", "fallback_code": None},
+        "tool_calls": [{"tool": "mfds_composition", "status": "ok"}],
+        "markdown_response": {"fact_md": fact_md, "data_md": ""},
+    }
+
+    answer = "".join(
+        GenosClient(token="dummy-token").stream_answer(
+            "NeDrug: 리바로 성분 조성 알려줘",
+            agent_result,
+        )
+    )
+
+    assert answer == fact_md
+
+
 def test_tool_use_agent_answer_without_final_token_remains_natural_and_deterministic() -> None:
     agent_result = {
         "answer": "- 리바로: 성분 = pitavastatin [로컬 시장 DB 성분 정보]",
