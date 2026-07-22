@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, assert_never
 
+from jw_chat_agent_poc.orchestrator.source_fusion_policy import source_family
+
 
 EvidenceValue = str | int | float | None
 
@@ -123,7 +125,7 @@ class BQFusionPlan:
 
     @property
     def has_source_divergence(self) -> bool:
-        return len({_source_family(item.source) for item in self.slices}) > 1
+        return len({source_family(item.source) for item in self.slices}) > 1
 
 
 _AGGREGATION_CONTEXT_FIELDS: Final[tuple[ContextField, ...]] = (
@@ -152,7 +154,7 @@ def _validate_aggregation(slices: tuple[BQEvidenceSlice, ...]) -> None:
     kinds = {item.kind for item in slices}
     if SourceKind.FILE in kinds and SourceKind.MARKET in kinds:
         raise BQFusionError("cannot aggregate FILE+MARKET evidence; render side-by-side")
-    source_families = {_source_family(item.source) for item in slices}
+    source_families = {source_family(item.source) for item in slices}
     if {"ubist", "iqvia"}.issubset(source_families):
         raise BQFusionError("cannot aggregate divergent UBIST+IQVIA market sources")
     if len(kinds) > 1:
@@ -188,20 +190,3 @@ def _context_value(item: BQEvidenceSlice, field_name: ContextField) -> str | Non
             return item.scope
         case unreachable:
             assert_never(unreachable)
-
-
-def _source_family(source: str) -> str:
-    normalized = source.casefold().replace(" ", "_")
-    if normalized.startswith("iqvia"):
-        return "iqvia"
-    if normalized.startswith("ubist"):
-        return "ubist"
-    if "event_brand_scores" in normalized or "deep_analysis" in normalized:
-        return "news"
-    if normalized.startswith("csd"):
-        return "csd"
-    if normalized.startswith("hira"):
-        return "hira"
-    if "file" in normalized or "업로드" in normalized:
-        return "file"
-    return normalized
