@@ -36,6 +36,10 @@ _DESCRIPTIONS = {record.name: record.description for record in TOOL_DESCRIPTION_
 _FAILED_STATUSES = frozenset({"error", "unsupported", "inapplicable", "no_data"})
 
 
+def _clinical_detail_value_present(value: Any) -> bool:
+    return value is not None and value != "" and value != () and value != []
+
+
 class ExternalToolRegistry:
     """Expose the external evidence pack without question-specific routing rules."""
 
@@ -258,6 +262,13 @@ class ExternalToolRegistry:
         if call.status in _FAILED_STATUSES or not isinstance(detail, dict):
             return _external_call_envelope(call, request.nct_id, "임상시험 상세")
         url = str(call.safe_url or "")
+        missing_reasons = {
+            "start_date": "ClinicalTrials 상세 응답에서 시험 시작일을 확인할 수 없습니다.",
+            "primary_completion_date": (
+                "ClinicalTrials 상세 응답에서 일차 완료일을 확인할 수 없습니다."
+            ),
+            "outcomes": "ClinicalTrials 상세 응답에서 결과지표를 확인할 수 없습니다.",
+        }
         facts = tuple(
             EvidenceFact(
                 fact_id=f"{call.tool}:{request.nct_id}:{index}",
@@ -267,7 +278,13 @@ class ExternalToolRegistry:
                 unit=None,
                 period=None,
                 source_name="ClinicalTrials.gov 임상시험 상세",
-                source_locator=f"{value} · {url}" if url else str(value),
+                source_locator=(
+                    f"{value} · {url}"
+                    if _clinical_detail_value_present(value) and url
+                    else str(value)
+                    if _clinical_detail_value_present(value)
+                    else missing_reasons[key]
+                ),
                 raw_ref=f"{call.tool}:{key}",
             )
             for index, (key, label, value) in enumerate(
@@ -278,6 +295,12 @@ class ExternalToolRegistry:
                     ("enrollment", "등록 인원", detail.get("enrollment")),
                     ("interventions", "중재", detail.get("interventions")),
                     ("outcomes", "결과지표", detail.get("outcomes")),
+                    ("start_date", "시험 시작일", detail.get("start_date")),
+                    (
+                        "primary_completion_date",
+                        "일차 완료일",
+                        detail.get("primary_completion_date"),
+                    ),
                     (
                         "eligibility",
                         "선정·제외 기준",
@@ -291,7 +314,7 @@ class ExternalToolRegistry:
                 ),
                 start=1,
             )
-            if value is not None and value != "" and value != () and value != []
+            if _clinical_detail_value_present(value) or key in missing_reasons
         )
         if not facts:
             return _error("NO_EVIDENCE", "ClinicalTrials 상세 응답에 검증 가능한 필드가 없습니다.")
