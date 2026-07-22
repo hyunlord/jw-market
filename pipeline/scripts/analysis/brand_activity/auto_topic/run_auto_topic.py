@@ -41,8 +41,10 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (  #
     SCHEMA,
     connect_mariadb,
     fetch_csd_market_bridge,
+    fetch_keyword_atc4,
     fetch_keyword_rows,
     fetch_snapshot,
+    fetch_topic_covered_atc4,
     load_alias_descriptions,
     load_json_file,
     market_stats,
@@ -62,7 +64,11 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import ( 
     build_market_group_map,
     scope_metadata_from_group_map,
 )
-from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import expected_markets  # noqa: E402
+from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import (  # noqa: E402
+    parse_target_markets,
+    parse_target_mode,
+    select_target_markets,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.models import JsonValue, KeywordRow  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.privacy import redacted_rows_for_audit  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.prompts import prompt_template_manifest  # noqa: E402
@@ -116,6 +122,8 @@ def main(
     audit_dir: Path = typer.Option(DEFAULT_AUDIT_DIR, "--audit-dir", help="Output audit directory or audit root."),
     stage_schema: str = typer.Option(SCHEMA, "--stage-schema", help="Allowed read-only stage schema."),
     save_to_db: bool = typer.Option(True, "--save-to-db/--no-save-to-db", help="Upsert measured execute results into isolated API tables."),
+    target_mode: str = typer.Option("existing", "--target-mode", help="ATC selector: existing, all, uncovered, or explicit."),
+    target_atc4: str = typer.Option("", "--target-atc4", help="Comma-separated ATC4 list used by explicit mode."),
 ) -> None:
     """Run automated Brand Activity LLM topic analysis."""
     result = run_pipeline(
@@ -137,6 +145,8 @@ def main(
         audit_dir=audit_dir,
         stage_schema=stage_schema,
         save_to_db=save_to_db,
+        target_mode=target_mode,
+        target_atc4=target_atc4,
     )
     CONSOLE.print_json(data=result)
 
@@ -161,6 +171,8 @@ def run_pipeline(
     audit_dir: Path,
     stage_schema: str,
     save_to_db: bool,
+    target_mode: str = "existing",
+    target_atc4: str = "",
 ) -> dict[str, JsonValue]:
     """Run read-only data collection, optional bounded GenOS calls, reports, and packaging."""
     _safety_preflight(stage_schema)
@@ -168,12 +180,16 @@ def run_pipeline(
     docs_dir.mkdir(parents=True, exist_ok=True)
     run_audit_dir = _audit_run_dir(audit_dir, tag)
     run_audit_dir.mkdir(parents=True, exist_ok=True)
-    markets = expected_markets()
     dictionary_path, dictionary_source = resolve_dictionary_source()
     dictionary = load_json_file(dictionary_path) if dictionary_path else {}
     alias_path, alias_source = resolve_alias_source()
     alias_payload = load_json_file(alias_path) if alias_path else {}
-    before_snapshot, rows, csd_bridge, after_snapshot = _load_stage_rows(markets, stage_schema)
+    before_snapshot, rows, csd_bridge, after_snapshot, target_selection = _load_stage_rows(
+        target_mode=target_mode,
+        target_atc4=target_atc4,
+        stage_schema=stage_schema,
+    )
+    markets = tuple(str(value) for value in target_selection["selected_atc4"])
     descriptions = load_alias_descriptions(alias_payload, rows)
     group_map = apply_csd_market_names(build_market_group_map(markets), csd_bridge)
     if _dict(group_map.get("sanity_checks")).get("status") != "pass":
@@ -195,7 +211,7 @@ def run_pipeline(
         raise SafetyError(f"missing serving-direct bearer token env: {token_env}")
     auth_mode = "bearer" if token else "dry_run_no_token"
     plan_summary = _plan_summary(call_plan)
-    _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, dictionary_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge)
+    _write_pre_execution_audit(run_audit_dir, before_snapshot, after_snapshot, rows, markets, alias_source, dictionary_source, samples, call_plan, plan_summary, auth_mode, group_map, scope_metadata, csd_bridge, target_selection)
     if should_execute:
         execution = execute_calls(token=token, dictionary=dictionary, axis_samples=axis_samples, brand_samples=brand_samples, brand_axis_samples=brand_axis_samples, descriptions=descriptions, markets=markets, large_markets=large_markets, scope_metadata=scope_metadata, axis_chunk_token_budget=axis_chunk_token_budget, brand_batch_token_budget=brand_batch_token_budget)
     else:
@@ -257,6 +273,7 @@ def run_pipeline(
         "csd_market_missing_atc4": group_map.get("csd_market_missing_atc4"),
         "dropped_atc4_csd_missing": group_map.get("dropped_atc4_csd_missing"),
         "csd_markets_without_keyword_data": group_map.get("csd_markets_without_keyword_data"),
+        "target_selection": target_selection,
         "raw_text_leak_count": scan.get("leak_count"),
         "manifest_entries": len(manifest),
         "static_quality": static_quality,
@@ -284,17 +301,40 @@ def _safety_preflight(stage_schema: str) -> None:
         raise SafetyError(f"refusing schema outside {SCHEMA}: {stage_schema}")
 
 
-def _load_stage_rows(markets: tuple[str, ...], stage_schema: str) -> tuple[dict[str, JsonValue], list[KeywordRow], dict[str, JsonValue], dict[str, JsonValue]]:
-    """Load 17-market Keyword rows, CSD name bridge, and read-only fingerprints."""
+def _load_stage_rows(
+    *,
+    target_mode: str,
+    target_atc4: str,
+    stage_schema: str,
+) -> tuple[dict[str, JsonValue], list[KeywordRow], dict[str, JsonValue], dict[str, JsonValue], dict[str, JsonValue]]:
+    """Resolve ATC targets from live inventories and load their rows read-only."""
     connection = connect_mariadb(read_env_file())
     try:
         before = fetch_snapshot(connection, schema=stage_schema)
+        available_markets = fetch_keyword_atc4(connection, schema=stage_schema)
+        covered_markets = fetch_topic_covered_atc4(connection, schema=stage_schema)
+        mode = parse_target_mode(target_mode)
+        markets = select_target_markets(
+            available_markets=available_markets,
+            covered_markets=covered_markets,
+            mode=mode,
+            explicit_markets=parse_target_markets(target_atc4),
+        )
+        if not markets:
+            raise SafetyError(f"target selector returned no keyword ATC values: mode={mode}")
         rows = fetch_keyword_rows(connection, markets, schema=stage_schema)
         csd_bridge = fetch_csd_market_bridge(connection, markets, schema=stage_schema)
         after = fetch_snapshot(connection, schema=stage_schema)
     finally:
         connection.close()
-    return before, rows, csd_bridge, after
+    selection: dict[str, JsonValue] = {
+        "mode": mode,
+        "available_atc4": list(available_markets),
+        "covered_atc4": list(covered_markets),
+        "selected_atc4": list(markets),
+        "selected_existing_overlap": sorted(set(markets) & set(covered_markets)),
+    }
+    return before, rows, csd_bridge, after, selection
 
 
 def _write_pre_execution_audit(
@@ -312,6 +352,7 @@ def _write_pre_execution_audit(
     group_map: dict[str, JsonValue],
     scope_metadata: dict[str, JsonValue],
     csd_bridge: dict[str, JsonValue],
+    target_selection: dict[str, JsonValue],
 ) -> None:
     """Write data-source and call-plan audit files before any optional GenOS calls."""
     write_json(audit_dir / "db_snapshot.json", {"before": before_snapshot, "after": after_snapshot, "read_only_equal": before_snapshot == after_snapshot})
@@ -320,6 +361,7 @@ def _write_pre_execution_audit(
         {
             "raw_keyword_market_count": len(markets),
             "raw_keyword_markets": list(markets),
+            "target_selection": target_selection,
             "scope_count": len(scope_metadata),
             "final_scope_keys": list(scope_metadata),
             "group_scope_ids": group_map.get("group_scope_ids"),

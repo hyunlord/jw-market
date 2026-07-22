@@ -16,14 +16,13 @@ except ModuleNotFoundError:
     fake_httpx2.HTTPError = RuntimeError
     sys.modules["httpx2"] = fake_httpx2
 
-from pipeline.scripts.analysis.brand_activity.auto_topic import llm
+from pipeline.scripts.analysis.brand_activity.auto_topic import llm, market_scope
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
     MissingMariaDbPasswordError,
     _mariadb_password,
     read_env_file,
     resolve_dictionary_source,
 )
-from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import expected_markets
 from pipeline.etl.io.catalog.master.market_definition import iter_market_definition_rows
 from pipeline.scripts.analysis.brand_activity.auto_topic.market_groups import (
     _read_target_sheet,
@@ -46,6 +45,23 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.chunking import chunk_r
 from pipeline.scripts.analysis.brand_activity.auto_topic.stability import stabilize_axis
 from pipeline.scripts.analysis.brand_activity.auto_topic.prompts import brand_share_prompt, brand_specific_axis_prompt, prompt_template_manifest
 from pipeline.scripts.analysis.brand_activity.auto_topic.label_rules import label_quality_summary
+
+
+CURRENT_MARKETS = (
+    "A02B2",
+    "C10C0",
+    "C10A1",
+    "A10N1",
+    "G04C2",
+    "K01D2",
+    "C11A1",
+    "B03A1",
+    "A03F0",
+    "A10N3",
+    "K01A3",
+    "V03G2",
+    "V06D0",
+)
 
 
 def _row(row_id: int, atc4: str, brand: str, text: str = "sample", period_ym: str = "2025-10") -> KeywordRow:
@@ -79,13 +95,57 @@ def _description(brand: str, atc4: str = "C10C0") -> BrandDescription:
     )
 
 
-def test_expected_market_scope_is_csd_market_backed_13_atc4_for_11_final_markets() -> None:
-    markets = expected_markets()
+def test_target_selector_existing_mode_preserves_current_covered_markets() -> None:
+    markets = market_scope.select_target_markets(
+        available_markets=CURRENT_MARKETS + ("A07E9",),
+        covered_markets=CURRENT_MARKETS,
+        mode="existing",
+    )
 
     assert len(markets) == 13
-    assert markets[:4] == ("A02B2", "C10C0", "C10A1", "A10N1")
+    assert set(markets) == set(CURRENT_MARKETS)
     assert {"K01A3", "V03G2", "V06D0"} <= set(markets)
     assert {"A06B1", "A07E9", "B01C5", "L03A1", "L04B0", "L04D0", "M01C0"}.isdisjoint(markets)
+
+
+def test_target_selector_includes_every_keyword_atc_when_all_requested() -> None:
+    selected = market_scope.select_target_markets(
+        available_markets=("C10A1", "A07E9", "NEW01"),
+        covered_markets=("C10A1",),
+        mode="all",
+    )
+
+    assert selected == ("A07E9", "C10A1", "NEW01")
+
+
+def test_target_selector_returns_only_keyword_atc_without_existing_scope() -> None:
+    selected = market_scope.select_target_markets(
+        available_markets=("C10A1", "A07E9", "L04B0"),
+        covered_markets=("C10A1",),
+        mode="uncovered",
+    )
+
+    assert selected == ("A07E9", "L04B0")
+
+
+def test_target_selector_rejects_explicit_targets_outside_explicit_mode() -> None:
+    with pytest.raises(market_scope.TargetSelectionError, match="requires --target-mode explicit"):
+        market_scope.select_target_markets(
+            available_markets=("C10A1", "A07E9"),
+            covered_markets=("C10A1",),
+            mode="uncovered",
+            explicit_markets=("A07E9",),
+        )
+
+
+def test_target_selector_rejects_explicit_targets_with_existing_scope() -> None:
+    with pytest.raises(market_scope.TargetSelectionError, match="already has topic scope: C10A1"):
+        market_scope.select_target_markets(
+            available_markets=("C10A1", "A07E9"),
+            covered_markets=("C10A1",),
+            mode="explicit",
+            explicit_markets=("A07E9", "C10A1"),
+        )
 
 
 def test_choose_sample_brands_caps_one_to_seven_and_prefers_anchor() -> None:
@@ -156,13 +216,21 @@ def test_build_market_samples_applies_total_axis_rows_cap() -> None:
 
 
 def test_mi_master_group_map_groups_livalo_and_gardlet() -> None:
-    group_map = build_market_group_map(expected_markets())
+    group_map = build_market_group_map(CURRENT_MARKETS)
 
     assert group_map["sanity_checks"]["status"] == "pass"
     assert group_map["atc4_map"]["C10A1"]["group_id"] == group_map["atc4_map"]["C10C0"]["group_id"]
     assert group_map["atc4_map"]["A10N1"]["group_id"] == group_map["atc4_map"]["A10N3"]["group_id"]
     assert set(group_map["group_scope_ids"]) == {"group:livalo_family", "group:gardlet_family"}
     assert "V03G2" in set(group_map["mi_master_missing_atc4"])
+
+
+def test_mi_master_sanity_is_not_applicable_for_delta_without_reference_pairs() -> None:
+    group_map = build_market_group_map(("A07E9", "L04B0"))
+
+    assert group_map["sanity_checks"]["status"] == "pass"
+    assert group_map["sanity_checks"]["livalo_C10A1_C10C0_grouped"] is None
+    assert group_map["sanity_checks"]["gardlet_A10N1_A10N3_grouped"] is None
 
 
 def test_gateway_chat_path_template_supports_external_and_internal_wf(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,10 +291,10 @@ def test_db_market_definition_rows_match_workbook_target_records() -> None:
     assert db_records == workbook_records
 
 
-def test_scope_metadata_uses_mi_master_market_scopes_and_drops_csd_missing() -> None:
+def test_scope_metadata_uses_mi_master_scopes_and_keeps_csd_missing_with_fallback() -> None:
     bridge_map = {
         atc4: {"csd_market": f"{atc4} Market", "csd_market_missing": False, "csd_market_candidates": []}
-        for atc4 in expected_markets()
+        for atc4 in CURRENT_MARKETS
     }
     bridge_map.update(
         {
@@ -238,7 +306,7 @@ def test_scope_metadata_uses_mi_master_market_scopes_and_drops_csd_missing() -> 
         }
     )
     group_map = apply_csd_market_names(
-        build_market_group_map(expected_markets()),
+        build_market_group_map(CURRENT_MARKETS),
         {
             "atc4_map": bridge_map,
             "csd_market_missing_atc4": ["V03G2"],
@@ -257,10 +325,37 @@ def test_scope_metadata_uses_mi_master_market_scopes_and_drops_csd_missing() -> 
     assert "C10C0" not in metadata
     assert "A10N1" not in metadata
     assert "A10N3" not in metadata
-    assert "V03G2" not in metadata
-    assert "V03G2" in group_map["dropped_atc4_csd_missing"]
+    assert metadata["V03G2"]["display_name"] == "V03G2 (CSD market missing)"
+    assert metadata["V03G2"]["csd_market_missing"] is True
+    assert metadata["V03G2"]["csd_market_missing_atc4"] == ["V03G2"]
+    assert metadata["V03G2"]["display_name_source"] == "atc4_fallback"
+    assert group_map["dropped_atc4_csd_missing"] == []
+    assert group_map["csd_optional_fallback_atc4"] == ["V03G2"]
     assert "C10A1" not in group_map["dropped_atc4_csd_missing"]
     assert group_map["csd_markets_without_keyword_data"] == ["FOSRENOL Market"]
+
+
+def test_quality_scope_preserves_csd_missing_metadata_for_topic_store() -> None:
+    quality = quality_summary(
+        {"V03G2": {"status": "ok"}},
+        {},
+        large_markets=(),
+        scope_metadata={
+            "V03G2": {
+                "scope_id": "atc4:V03G2",
+                "scope_type": "standalone",
+                "display_name": "V03G2 (CSD market missing)",
+                "atc4_values": ["V03G2"],
+                "csd_market_missing": True,
+                "csd_market_missing_atc4": ["V03G2"],
+                "display_name_source": "atc4_fallback",
+            }
+        },
+    )
+
+    assert quality["markets"][0]["csd_market_missing"] is True
+    assert quality["markets"][0]["csd_market_missing_atc4"] == ["V03G2"]
+    assert quality["markets"][0]["display_name_source"] == "atc4_fallback"
 
 
 def test_build_market_samples_uses_final_mi_master_market_scopes_only() -> None:
@@ -269,7 +364,7 @@ def test_build_market_samples_uses_final_mi_master_market_scopes_only() -> None:
     rows += [_row(200 + i, "A10N1", "GUARDLET") for i in range(6)]
     rows += [_row(300 + i, "A10N3", "GUARDMET") for i in range(6)]
     group_map = apply_csd_market_names(
-        build_market_group_map(expected_markets()),
+        build_market_group_map(CURRENT_MARKETS),
         {
             "atc4_map": {
                 "C10A1": {"csd_market": "LIVALO Market", "csd_market_missing": False, "csd_market_candidates": []},
@@ -283,7 +378,7 @@ def test_build_market_samples_uses_final_mi_master_market_scopes_only() -> None:
 
     samples = build_market_samples(
         rows,
-        markets=expected_markets(),
+        markets=CURRENT_MARKETS,
         descriptions={},
         axis_per_brand=4,
         axis_rows_cap=20,
@@ -410,7 +505,7 @@ def test_brand_share_prompt_uses_fixed_market_and_brand_specific_vocab_without_g
 
 
 def test_apply_csd_market_names_uses_english_group_union_and_flags_missing() -> None:
-    group_map = build_market_group_map(expected_markets())
+    group_map = build_market_group_map(CURRENT_MARKETS)
     bridge = {
         "atc4_map": {
             "C10A1": {"csd_market": "LIVALO Market", "csd_market_missing": False, "csd_market_candidates": []},
