@@ -1,4 +1,17 @@
-"""Dependency-light IQVIA manufacturer identity resolver for serving paths."""
+"""Canonical IQVIA manufacturer identity resolver for every serving path.
+
+This module is the single source of truth for product-to-manufacturer selection.
+Consumers must import its public API instead of copying the query, normalization,
+selection, or ordering rules.
+
+The in-memory map is process-local and lives for 24 hours. It has no table-change
+trigger: MI Master or ``iqvia_nsa_quarterly_raw`` updates become visible after the
+next TTL refresh or pod restart. Pods can therefore temporarily observe different
+source snapshots for at most one TTL. ``MANUFACTURER_RESOLVER_REVISION`` identifies
+the resolver algorithm and contract, not a source-data snapshot; consumers should
+include it in diagnostic logs when comparing paths. It is intentionally not added
+to public response payloads because this extraction must remain byte-identical.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +36,15 @@ _manufacturer_cache_lock = Lock()
 
 
 def fetch_manufacturer_by_product() -> dict[str, frozenset[str]]:
-    """Load normalized IQVIA product names and their Korean manufacturers."""
+    """Load normalized IQVIA product names and their Korean manufacturers.
+
+    Returns every non-empty ``PRODUCT NAME`` / ``MFR NAME KOR`` pair in the
+    serving database as an immutable manufacturer set keyed by
+    ``normalize_iqvia_en(PRODUCT NAME)``. Duplicate source rows collapse through
+    SQL ``DISTINCT`` and set membership. Database and configuration exceptions
+    propagate unchanged to the caller; an unavailable source must not silently
+    become an empty mapping.
+    """
 
     schema = quote_identifier(config.db_name)
     rows = db.fetch_all(
@@ -47,7 +68,13 @@ def fetch_manufacturer_by_product() -> dict[str, frozenset[str]]:
 
 
 def get_manufacturer_by_product() -> dict[str, frozenset[str]]:
-    """Return the serving-DB manufacturer map, cached once per long-lived pod."""
+    """Return the process-local manufacturer map, refreshing after the 24h TTL.
+
+    The first call loads the serving database. Later calls in the same process
+    reuse that mapping until ``MANUFACTURER_CACHE_TTL_SECONDS`` elapses. There is
+    no external invalidation signal; a pod restart or TTL expiry is the only
+    refresh mechanism. Load exceptions propagate and do not populate the cache.
+    """
 
     global _manufacturer_cache
 
@@ -68,11 +95,19 @@ def resolve_manufacturer_name(
     product_codes: Sequence[str],
     manufacturer_map: ManufacturerMap | None = None,
 ) -> str | None:
-    """Resolve all product rows to one deterministic Korean manufacturer label.
+    """Resolve product codes to one deterministic Korean manufacturer label.
 
-    Each normalized product contributes one hit to every manufacturer attached to that
-    product. Manufacturers sort by hit count descending, then name ascending, and all names
-    are retained as a comma-joined label. An unmapped product set returns ``None``.
+    All supplied product rows participate; this function does not select a period,
+    latest row, or representative product. Each product is normalized with
+    ``normalize_iqvia_en`` and contributes one hit to every manufacturer attached
+    to it. Zero candidates return ``None`` (never an empty string or placeholder),
+    one candidate returns that name, and multiple candidates are all retained as
+    a comma-joined label ordered by hit count descending and then name ascending.
+    Keeping every display candidate is intentional and differs from brand-alias
+    resolution, where ambiguity must be rejected to avoid selecting wrong data.
+
+    When ``manufacturer_map`` is omitted, the process-local cached map is used.
+    Mapping and normalization exceptions propagate unchanged.
     """
 
     mapping = manufacturer_map if manufacturer_map is not None else get_manufacturer_by_product()

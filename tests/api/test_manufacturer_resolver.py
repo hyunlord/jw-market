@@ -75,6 +75,25 @@ def test_cached_map_fetches_once_within_long_ttl(monkeypatch) -> None:
     assert calls == 1
 
 
+def test_cached_map_refreshes_only_after_ttl(monkeypatch) -> None:
+    fetches = iter(
+        (
+            {"LIVALO": frozenset({"OLD"})},
+            {"LIVALO": frozenset({"NEW"})},
+        )
+    )
+    now = 100.0
+
+    monkeypatch.setattr(manufacturer_resolver, "fetch_manufacturer_by_product", lambda: next(fetches))
+    monkeypatch.setattr(manufacturer_resolver.time, "monotonic", lambda: now)
+
+    assert manufacturer_resolver.get_manufacturer_by_product()["LIVALO"] == frozenset({"OLD"})
+    now += manufacturer_resolver.MANUFACTURER_CACHE_TTL_SECONDS - 1
+    assert manufacturer_resolver.get_manufacturer_by_product()["LIVALO"] == frozenset({"OLD"})
+    now += 1
+    assert manufacturer_resolver.get_manufacturer_by_product()["LIVALO"] == frozenset({"NEW"})
+
+
 def test_public_module_has_revision() -> None:
     importlib.reload(manufacturer_resolver)
     assert manufacturer_resolver.MANUFACTURER_RESOLVER_REVISION == "iqvia-mfr-kor-v1"
