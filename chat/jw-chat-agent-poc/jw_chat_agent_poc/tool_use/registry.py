@@ -33,7 +33,7 @@ from jw_chat_agent_poc.tool_use.specs import (
     QueryInput,
     ToolSpec,
 )
-from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, is_hira_disease_code
 from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
 
 
@@ -43,10 +43,6 @@ _FAILED_STATUSES = frozenset({"error", "unsupported", "inapplicable", "no_data"}
 
 def _clinical_detail_value_present(value: Any) -> bool:
     return value is not None and value != "" and value != () and value != []
-
-
-def _is_hira_disease_code(text: str) -> bool:
-    return re.fullmatch(r"\s*[A-Za-z]\d{2}(?:\.?\d{1,2})?\s*", text) is not None
 
 
 class ExternalToolRegistry:
@@ -347,7 +343,7 @@ class ExternalToolRegistry:
         if method == "hira_disease_name_code":
             call = self._external.hira_disease_name_code(requested)
             return _external_call_envelope(call, requested, metric)
-        if _is_hira_disease_code(requested):
+        if is_hira_disease_code(requested):
             sick_cd = requested.upper()
         else:
             resolution = resolve_hira_disease_code(requested, self._external)

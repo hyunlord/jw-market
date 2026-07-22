@@ -677,8 +677,10 @@ def test_hira_registry_searches_korean_disease_label_without_internal_mapping() 
     # When: the HIRA grounding tool crosses the registry boundary.
     envelope = spec.execute(spec.input_model.model_validate({"sick_cd": "고지혈증"}))
 
-    # Then: the label crosses to HIRA search directly instead of using the internal KCD map.
-    assert envelope.ok is True
+    # Then: the label crosses to HIRA search directly instead of using the internal KCD map,
+    # and the generic fixture fails closed instead of inventing a code.
+    assert envelope.ok is False
+    assert envelope.error_code == "NO_DATA"
     assert external.sick_codes == ["고지혈증"]
 
 

@@ -26,6 +26,33 @@ class _McpResponse:
         return None
 
 
+class _DiseaseSearchExternal(ExternalApiClient):
+    def __init__(self) -> None:
+        super().__init__(mode="fixture")
+        self.name_code_inputs: list[str] = []
+
+    def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+        self.name_code_inputs.append(sick_cd)
+        if sick_cd in {"고지혈증", "이상지질혈증"}:
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="hira_disease",
+                status="fixture",
+                summary_text=f"HIRA search_disease_code에서 {sick_cd} 후보 1건을 확인했습니다.",
+                render_data={
+                    "totalCount": "1",
+                    "items": [
+                        {
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                        }
+                    ],
+                    "request": {"searchText": sick_cd, "diseaseType": "SICK_NM"},
+                },
+            )
+        return super().hira_disease_name_code(sick_cd)
+
+
 def test_q1_single_metric_market_size_growth():
     result = ChatAgent().answer("리바로 시장 규모랑 성장 추이는?")
     assert "Q1" in {row["bq"] for row in result["decomposition"]}
@@ -35,7 +62,7 @@ def test_q1_single_metric_market_size_growth():
 
 
 def test_hira_disease_question_routes_to_external_disease_stats_without_metrics():
-    result = ChatAgent().answer("이상지질혈증 환자 통계")
+    result = ChatAgent(external=_DiseaseSearchExternal()).answer("이상지질혈증 환자 통계")
 
     assert result["sources"] == ["hira_disease"]
     assert result["decomposition"][0]["bq"] == "Q1"
@@ -52,32 +79,6 @@ def test_hira_disease_question_routes_to_external_disease_stats_without_metrics(
 
 
 def test_direct_disease_name_searches_hira_code_before_stats() -> None:
-    class _DiseaseSearchExternal(ExternalApiClient):
-        def __init__(self) -> None:
-            super().__init__(mode="fixture")
-            self.name_code_inputs: list[str] = []
-
-        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
-            self.name_code_inputs.append(sick_cd)
-            if sick_cd == "고지혈증":
-                return ExternalCall(
-                    tool="hira_disease_name_code",
-                    source="hira_disease",
-                    status="fixture",
-                    summary_text="HIRA search_disease_code에서 고지혈증 후보 1건을 확인했습니다.",
-                    render_data={
-                        "totalCount": "1",
-                        "items": [
-                            {
-                                "sickCd": "E78",
-                                "sickNm": "지질단백질대사장애 및 기타 지질증",
-                            }
-                        ],
-                        "request": {"searchText": "고지혈증", "diseaseType": "SICK_NM"},
-                    },
-                )
-            return super().hira_disease_name_code(sick_cd)
-
     external = _DiseaseSearchExternal()
     result = ChatAgent(external=external).answer("고지혈증 환자수")
 
@@ -90,6 +91,20 @@ def test_direct_disease_name_searches_hira_code_before_stats() -> None:
         for call in result["tool_calls"]
         if call.get("tool") == "hira_disease_hospitalization_outpatient_stats"
     )
+
+
+def test_fixture_hira_disease_name_code_does_not_map_disease_names_to_codes() -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    name_call = external.hira_disease_name_code("고지혈증")
+    code_call = external.hira_disease_name_code("E78")
+
+    assert name_call.status == "no_data"
+    assert name_call.render_data["items"] == []
+    assert name_call.render_data["request"]["diseaseType"] == "SICK_NM"
+    assert code_call.status == "fixture"
+    assert code_call.render_data["items"][0]["sickCd"] == "E78"
+    assert code_call.render_data["request"]["diseaseType"] == "SICK_CD"
 
 
 def test_direct_disease_name_ambiguity_stops_before_stats() -> None:
@@ -150,7 +165,7 @@ def test_direct_short_disease_code_absence_does_not_widen_to_e11_stats() -> None
 
 
 def test_hira_disease_trend_requests_five_distinct_years() -> None:
-    result = ChatAgent().answer("고지혈증 환자수 추이")
+    result = ChatAgent(external=_DiseaseSearchExternal()).answer("고지혈증 환자수 추이")
 
     calls = [
         call
@@ -163,7 +178,7 @@ def test_hira_disease_trend_requests_five_distinct_years() -> None:
 
 @pytest.mark.parametrize("question", ["이상지질혈증 환자통계", "이상지질혈증 환자분포"])
 def test_hira_disease_question_accepts_compact_patient_stat_spacing(question):
-    result = ChatAgent().answer(question)
+    result = ChatAgent(external=_DiseaseSearchExternal()).answer(question)
 
     assert result["sources"] == ["hira_disease"]
     search = next(call for call in result["tool_calls"] if call.get("tool") == "hira_disease_name_code")
