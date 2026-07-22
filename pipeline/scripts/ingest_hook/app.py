@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from pipeline.scripts.ingest_hook import config, job_launcher
+from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import Ledger, LedgerConnectionError
 
@@ -74,6 +75,12 @@ class IngestService:
             raise HTTPException(status_code=422, detail=f"contract violation: {exc}") from exc
         if not manifest.complete:
             raise HTTPException(status_code=409, detail="manifest is not marked complete; webhook is submit-confirm only")
+        try:
+            resolve_category(manifest.category)
+        except UnknownCategoryError as exc:
+            # Reject retired/unknown categories before they can create new
+            # ledger history. Existing rows remain queryable through status().
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         decision = self.ledger.receive(
             manifest.epoch,
@@ -129,6 +136,10 @@ def create_app(service: IngestService) -> FastAPI:
             events = service.ledger.stage_events(epoch, category, manifest_sha)
         except Exception:  # noqa: BLE001 — observation must not break status
             events = []
+        try:
+            signals = service.ledger.signal_events(epoch, category, manifest_sha)
+        except Exception:  # observation remains additive and best-effort
+            signals = []
         current_stage = next(
             (event.stage for event in reversed(events) if event.status == "running"), None
         )
@@ -156,6 +167,20 @@ def create_app(service: IngestService) -> FastAPI:
                     "duration_ms": event.duration_ms,
                 }
                 for event in events
+            ],
+            "signals": [
+                {
+                    "run_id": signal.run_id,
+                    "event": signal.event,
+                    "mode": signal.mode,
+                    "rows_loaded": signal.rows_loaded,
+                    "delivery_status": signal.delivery_status,
+                    "attempts": signal.attempts,
+                    "reason": signal.reason,
+                    "payload": signal.payload,
+                    "created_at": signal.created_at,
+                }
+                for signal in signals
             ],
             "log_ref": {
                 "job_name": entry.job_name,

@@ -73,6 +73,6 @@ def test_market_whole_missing_for_loaded_period_fails(mart):
 
 def test_category_map_pins_sigma_sources():
     assert resolve_category("ubist").sigma_source == "ubist"
-    assert resolve_category("iqvia").sigma_source == "iqvia_nsa"
-    assert resolve_category("mimaster").sigma_source is None
+    assert resolve_category("iqvia_nsa").sigma_source == "iqvia_nsa"
+    assert resolve_category("mi_master").sigma_source is None
     assert resolve_category("skeleton").sigma_source is None

@@ -63,7 +63,7 @@ class _StageTracker:
     Rows accumulate per run_id (S-3): a retry passes a new run_id, never overwriting.
     """
 
-    STAGES = ("g3", "load", "load_verify", "sigma", "post_gate", "refresh")
+    STAGES = ("g3", "load", "load_verify", "sigma", "post_gate", "refresh", "signal")
 
     def __init__(self, ledger: Ledger, identity: tuple[str, str, str], run_id: str):
         self._ledger = ledger
@@ -175,6 +175,23 @@ def _seed_empty_manifest(target_dir: Path, verify_kind: str | None) -> None:
             manifest.write_text(_EMPTY_UBIST_MANIFEST, encoding="utf-8")
 
 
+def _epoch_rows(target_dir: Path, epoch: str) -> int:
+    manifest_path = target_dir / "_manifest.json"
+    if not manifest_path.is_file():
+        return 0
+    import json
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    return sum(
+        int(item.get("row_count") or 0)
+        for item in payload.get("partitions", [])
+        if str(item.get("period_yyyymm")) == epoch
+    )
+
+
 def _real_load(manifest, spec, input_root: Path) -> dict:
     """Wire the materialized upload into the loader, run it, and prove the epoch
     landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
@@ -196,7 +213,15 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
         )
 
     target_root, staging_verify = config.load_output_root()
+    if spec.staging_only_load and not staging_verify:
+        raise RuntimeError(
+            f"category {manifest.category!r} has only an isolated staging-artifact loader; "
+            "refusing production completion until its table loader and row-count verifier are wired"
+        )
     target_dir = target_root / manifest.category / manifest.epoch
+    if staging_verify:
+        target_dir /= manifest.manifest_sha
+    rows_before = _epoch_rows(target_dir, manifest.epoch)
     _seed_empty_manifest(target_dir, spec.load_verify)
 
     read_files = [str((input_root / entry.path).resolve()) for entry in manifest.files]
@@ -205,6 +230,8 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
         argv.extend([spec.load_input_flag, source])
         if spec.load_target_flag:
             argv.extend([spec.load_target_flag, str(target_dir)])
+        if spec.load_epoch_flag:
+            argv.extend([spec.load_epoch_flag, manifest.epoch])
         print(f"phase=load reading={source} target={target_dir} staging_verify={staging_verify}")
         _run_commands("load", tuple(argv))
 
@@ -214,11 +241,71 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
         epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
         print(f"gate=load_verify status=pass epoch={manifest.epoch} rows={epoch_rows} target={target_dir}")
 
-    return {"target_dir": target_dir, "epoch_rows": epoch_rows, "staging_verify": staging_verify}
+    return {
+        "target_dir": target_dir,
+        "epoch_rows": epoch_rows,
+        "rows_before": rows_before,
+        "staging_verify": staging_verify,
+    }
+
+
+def _emit_completion_signal(
+    *, ledger: Ledger, tracker: _StageTracker, identity: tuple[str, str, str],
+    run_id: str, event: str, mode: str, rows_before: int, rows_after: int,
+    periods: set[str], started_at: str, failure_reason: str | None,
+) -> None:
+    """Best-effort delivery and durable observation; never changes ingest result."""
+    from urllib.parse import urlencode
+
+    from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, PublishResult, publish
+
+    epoch, category, manifest_sha = identity
+    rows_loaded = max(rows_after - rows_before, 0)
+    # A retry after load may observe the already-materialized staging rows and
+    # otherwise emit zero for the same identity. Freeze the first emitted count
+    # tuple so consumers never see one idempotency key with conflicting values.
+    try:
+        prior_signals = ledger.signal_events(*identity)
+    except Exception:  # signal observation is best-effort
+        prior_signals = []
+    if prior_signals:
+        try:
+            prior_payload = prior_signals[0].payload
+            rows_before = int(prior_payload["rows_before"])
+            rows_after = int(prior_payload["rows_after"])
+            rows_loaded = int(prior_payload["rows_loaded"])
+        except (KeyError, TypeError, ValueError) as exc:
+            print(f"[signal] prior payload invalid (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
+    query = urlencode({"epoch": epoch, "category": category, "manifest_sha": manifest_sha})
+    signal = CompletionSignal(
+        event=event, mode=mode, category=category, epoch=epoch,
+        manifest_sha=manifest_sha, rows_before=rows_before, rows_after=rows_after,
+        rows_loaded=rows_loaded, period_from=min(periods) if periods else None,
+        period_to=max(periods) if periods else None, started_at=started_at,
+        finished_at=datetime.now(timezone.utc).isoformat(), failure_reason=failure_reason,
+        log_ref=f"/ingest/status?{query}",
+    )
+    try:
+        endpoint, attempts = config.completion_webhook()
+        result = publish(signal, endpoint=endpoint, attempts=attempts)
+    except Exception as exc:  # malformed delivery config is also non-fatal
+        result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
+    try:
+        ledger.record_signal(
+            *identity, run_id=run_id, event=event, mode=mode,
+            rows_loaded=rows_loaded, delivery_status=result.status,
+            attempts=result.attempts, reason=result.reason, payload=signal.as_dict(),
+        )
+    except Exception as exc:  # signal observation cannot break a successful load
+        print(f"[signal] ledger record failed (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
+    # Stage observation is also best-effort (record_stage swallows DB errors).
+    tracker.complete("signal", reason=f"delivery={result.status}; attempts={result.attempts}")
+    print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")
 
 
 def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root: Path | None) -> int:
     run_id = _run_id()
+    started_at = datetime.now(timezone.utc).isoformat()
     try:
         manifest = load_manifest(manifest_path)
     except ContractError as exc:
@@ -239,6 +326,10 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
 
     tracker = _StageTracker(ledger, identity, run_id)
+    mode = "staging" if rehearsal_root is not None or os.environ.get(config.ENV_LOAD_STAGING_ROOT) else "production"
+    rows_before = 0
+    rows_after = 0
+    periods: set[str] = set()
     try:
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
@@ -246,6 +337,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         # 1) G3 — always first; a failure here has zero DB effect.
         tracker.enter("g3")
         report = validate(manifest, spec, input_root, previous_total_rows=previous_total)
+        periods = set(report.observed_periods)
         print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
         tracker.done()
 
@@ -266,13 +358,15 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     return SigmaEvidence(checked, checked, str(sigma.periods))
 
                 tracker.enter("post_gate")
+                actual_rows = staging_row_count(conn, table)
+                rows_after = actual_rows
                 post = run_post_gates(
                     run_id=run_id,
                     epoch=manifest.epoch,
                     category=manifest.category,
                     sigma_check=rehearsal_sigma,
                     expected_rows=report.total_rows,
-                    actual_rows=staging_row_count(conn, table),
+                    actual_rows=actual_rows,
                     untouched_before=stable,
                     untouched_after=stable,
                     report_path=rehearsal_root / "post_gate_report.json",
@@ -295,6 +389,8 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
             # 2) real load — wire the materialized upload in, prove the epoch landed (M-2).
             tracker.enter("load")
             load_result = _real_load(manifest, spec, input_root)
+            rows_before = int(load_result.get("rows_before") or 0)
+            rows_after = int(load_result.get("epoch_rows") or 0)
             tracker.done()
             if load_result["epoch_rows"] is not None:
                 tracker.complete("load_verify")  # verify_epoch_loaded ran inside _real_load
@@ -359,16 +455,55 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                 report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
 
         ledger.mark_complete(*identity, row_counts=report.file_rows)
+        _emit_completion_signal(
+            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+            event="complete", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            periods=periods, started_at=started_at, failure_reason=None,
+        )
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
     except PostGateError as exc:
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
+        _emit_completion_signal(
+            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+            event="gate_failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            periods=periods, started_at=started_at,
+            failure_reason=f"{type(exc).__name__}: {exc}",
+        )
         print(f"result=gate_failed reason={exc}", file=sys.stderr)
         return 1
-    except (G3Error, SigmaGateError, UnknownCategoryError, RuntimeError) as exc:
+    except (G3Error, SigmaGateError) as exc:
+        tracker.fail(f"{type(exc).__name__}: {exc}")
+        ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
+        _emit_completion_signal(
+            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+            event="gate_failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            periods=periods, started_at=started_at,
+            failure_reason=f"{type(exc).__name__}: {exc}",
+        )
+        print(f"result=gate_failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    except (UnknownCategoryError, RuntimeError) as exc:
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
+        _emit_completion_signal(
+            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+            event="failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            periods=periods, started_at=started_at,
+            failure_reason=f"{type(exc).__name__}: {exc}",
+        )
+        print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # fail loud while preserving ledger/signal evidence
+        tracker.fail(f"{type(exc).__name__}: {exc}")
+        ledger.mark_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
+        _emit_completion_signal(
+            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+            event="failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            periods=periods, started_at=started_at,
+            failure_reason=f"{type(exc).__name__}: {exc}",
+        )
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

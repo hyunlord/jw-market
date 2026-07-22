@@ -96,10 +96,12 @@ def read_message_count_cells(workbook_path: Path, kind: str) -> list[MessageCoun
 
 def _product_index(normalized_headers: list[str]) -> int:
     """Return the first supported product header index or -1."""
-    if "PRODUCT NAME" in normalized_headers:
-        return normalized_headers.index("PRODUCT NAME")
-    if "PRODUCT" in normalized_headers:
-        return normalized_headers.index("PRODUCT")
+    product_name = normalize_key("PRODUCT NAME")
+    product = normalize_key("PRODUCT")
+    if product_name in normalized_headers:
+        return normalized_headers.index(product_name)
+    if product in normalized_headers:
+        return normalized_headers.index(product)
     return -1
 
 

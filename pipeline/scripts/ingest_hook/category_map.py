@@ -51,6 +51,7 @@ class CategorySpec:
     # job_runner fails it closed in real mode rather than load unrelated defaults.
     load_input_flag: str | None = None
     load_target_flag: str | None = None
+    load_epoch_flag: str | None = None
     load_verify: str | None = None
     # G4 — workbook (.xlsx) structural validation reader. None = the workbook's
     # sheet schema is gated downstream (e.g. mimaster -> s2 catalog), so G3 pins
@@ -59,6 +60,11 @@ class CategorySpec:
     # so G3 and the loader can never diverge (one contract, not two). "ubist"
     # reuses ubist_loader.summarize_source (header-area only, fast on 80MB files).
     workbook_reader: str | None = None
+    # True when the command only materializes a parser-verified artifact under
+    # INGEST_LOAD_STAGING_ROOT. Such a category must fail closed if a deployment
+    # switches to INGEST_LOAD_TARGET_ROOT before its production table loader is
+    # wired; a copied workbook is not a successful production load.
+    staging_only_load: bool = False
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -67,6 +73,10 @@ def _etl(*args: str) -> tuple[str, ...]:
 
 def _orchestrator(*args: str) -> tuple[str, ...]:
     return (PY, "-m", "pipeline.orchestrator", "run", "--mode", "incremental", *args)
+
+
+def _category_stage(category: str) -> tuple[str, ...]:
+    return (PY, "-m", "pipeline.scripts.ingest_hook.category_stage", "--category", category)
 
 
 CATEGORIES: tuple[CategorySpec, ...] = (
@@ -92,21 +102,37 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         workbook_reader="ubist",
     ),
     CategorySpec(
-        key="iqvia",
-        description="IQVIA quarterly submission (staging target-db verification load)",
-        required_columns=("period", "brand", "value"),
-        period_column="period",
-        load_argv=_etl("--source", "iqvia"),
-        refresh_argv=_orchestrator(),
-        sigma_source="iqvia_nsa",
+        key="iqvia_nsa", description="IQVIA NSA quarterly workbook",
+        required_columns=(), period_column=None,
+        load_argv=_category_stage("iqvia_nsa"), refresh_argv=_orchestrator(),
+        sigma_source="iqvia_nsa", load_input_flag="--file",
+        load_target_flag="--target-dir", load_epoch_flag="--epoch",
+        load_verify="category_manifest", workbook_reader="iqvia_nsa",
+        staging_only_load=True,
     ),
     CategorySpec(
-        key="mimaster",
-        description="MI Master workbook resubmission (catalog rebuild)",
-        required_columns=(),  # workbook; sheet-level schema belongs to s2 catalog
-        period_column=None,
-        load_argv=_etl("--stage", "s2"),
-        refresh_argv=_orchestrator(),
+        key="iqvia_csd_channel", description="IQVIA CSD channel dynamics workbook",
+        required_columns=(), period_column=None,
+        load_argv=_category_stage("iqvia_csd_channel"), refresh_argv=(),
+        load_input_flag="--file", load_target_flag="--target-dir",
+        load_epoch_flag="--epoch", load_verify="category_manifest",
+        workbook_reader="iqvia_csd_channel", staging_only_load=True,
+    ),
+    CategorySpec(
+        key="iqvia_csd_keyword", description="IQVIA CSD keyword workbook",
+        required_columns=(), period_column=None,
+        load_argv=_category_stage("iqvia_csd_keyword"), refresh_argv=(),
+        load_input_flag="--file", load_target_flag="--target-dir",
+        load_epoch_flag="--epoch", load_verify="category_manifest",
+        workbook_reader="iqvia_csd_keyword", staging_only_load=True,
+    ),
+    CategorySpec(
+        key="mi_master", description="MI Master workbook resubmission",
+        required_columns=(), period_column=None,
+        load_argv=_category_stage("mi_master"), refresh_argv=_orchestrator(),
+        load_input_flag="--file", load_target_flag="--target-dir",
+        load_epoch_flag="--epoch", load_verify="category_manifest",
+        workbook_reader="mi_master", staging_only_load=True,
     ),
     CategorySpec(
         key="skeleton",

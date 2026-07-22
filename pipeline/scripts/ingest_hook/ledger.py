@@ -157,6 +157,45 @@ CREATE TABLE IF NOT EXISTS ingest_stage_event (
 )
 """
 
+_DDL_SIGNAL_SQLITE = """
+CREATE TABLE IF NOT EXISTS ingest_signal_event (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  epoch           TEXT NOT NULL,
+  category        TEXT NOT NULL,
+  manifest_sha    TEXT NOT NULL,
+  run_id          TEXT NOT NULL,
+  event           TEXT NOT NULL,
+  mode            TEXT NOT NULL,
+  rows_loaded     INTEGER NOT NULL,
+  delivery_status TEXT NOT NULL,
+  attempts        INTEGER NOT NULL,
+  reason          TEXT,
+  payload_json    TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  UNIQUE (epoch, category, manifest_sha, event)
+)
+"""
+
+_DDL_SIGNAL_MYSQL = """
+CREATE TABLE IF NOT EXISTS ingest_signal_event (
+  id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+  epoch           VARCHAR(32) NOT NULL,
+  category        VARCHAR(32) NOT NULL,
+  manifest_sha    CHAR(64) NOT NULL,
+  run_id          VARCHAR(64) NOT NULL,
+  event           VARCHAR(16) NOT NULL,
+  mode            VARCHAR(16) NOT NULL,
+  rows_loaded     BIGINT NOT NULL,
+  delivery_status VARCHAR(16) NOT NULL,
+  attempts        INT NOT NULL,
+  reason          TEXT NULL,
+  payload_json    LONGTEXT NOT NULL,
+  created_at      DATETIME NOT NULL,
+  UNIQUE KEY uq_signal_identity (epoch, category, manifest_sha, event),
+  KEY idx_signal_lookup (epoch, category, manifest_sha)
+)
+"""
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -198,6 +237,19 @@ class StageEvent:
     duration_ms: int | None
 
 
+@dataclass(frozen=True)
+class SignalEvent:
+    run_id: str
+    event: str
+    mode: str
+    rows_loaded: int
+    delivery_status: str
+    attempts: int
+    reason: str | None
+    payload: dict
+    created_at: str
+
+
 class Ledger:
     """Dialect-neutral ledger operations over an injected DB-API connection."""
 
@@ -218,6 +270,7 @@ class Ledger:
         cursor = self._conn.cursor()
         cursor.execute(_DDL_SQLITE if self._dialect == "sqlite" else _DDL_MYSQL)
         cursor.execute(_DDL_STAGE_SQLITE if self._dialect == "sqlite" else _DDL_STAGE_MYSQL)
+        cursor.execute(_DDL_SIGNAL_SQLITE if self._dialect == "sqlite" else _DDL_SIGNAL_MYSQL)
         self._conn.commit()
 
     # -- helpers -----------------------------------------------------------
@@ -479,6 +532,72 @@ class Ledger:
                 duration_ms=int(values[7]) if values[7] is not None else None,
             ))
         return events
+
+    # -- completion signal observation --------------------------------------
+    def record_signal(
+        self, epoch: str, category: str, manifest_sha: str, *, run_id: str,
+        event: str, mode: str, rows_loaded: int, delivery_status: str,
+        attempts: int, reason: str | None, payload: dict,
+    ) -> None:
+        """Persist delivery state without permitting identity/count drift."""
+        prior_identity = self._execute(
+            "SELECT rows_loaded FROM ingest_signal_event"
+            " WHERE epoch=? AND category=? AND manifest_sha=? ORDER BY id LIMIT 1",
+            (epoch, category, manifest_sha),
+        ).fetchone()
+        if prior_identity is not None:
+            prior = int(
+                tuple(prior_identity.values())[0]
+                if isinstance(prior_identity, dict)
+                else prior_identity[0]
+            )
+            if prior != rows_loaded:
+                raise ValueError(
+                    f"signal identity count drift: prior rows_loaded={prior}, new={rows_loaded}"
+                )
+
+        existing = self._execute(
+            "SELECT id FROM ingest_signal_event"
+            " WHERE epoch=? AND category=? AND manifest_sha=? AND event=?",
+            (epoch, category, manifest_sha, event),
+        ).fetchone()
+        if existing is not None:
+            self._execute(
+                "UPDATE ingest_signal_event SET run_id=?, mode=?, delivery_status=?, attempts=?,"
+                " reason=?, payload_json=?, created_at=?"
+                " WHERE epoch=? AND category=? AND manifest_sha=? AND event=?",
+                (run_id, mode, delivery_status, attempts, reason,
+                 json.dumps(payload, ensure_ascii=False, sort_keys=True), _now(),
+                 epoch, category, manifest_sha, event),
+            )
+            return
+        self._execute(
+            "INSERT INTO ingest_signal_event"
+            " (epoch, category, manifest_sha, run_id, event, mode, rows_loaded,"
+            " delivery_status, attempts, reason, payload_json, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (epoch, category, manifest_sha, run_id, event, mode, rows_loaded,
+             delivery_status, attempts, reason,
+             json.dumps(payload, ensure_ascii=False, sort_keys=True), _now()),
+        )
+
+    def signal_events(self, epoch: str, category: str, manifest_sha: str) -> list[SignalEvent]:
+        cursor = self._execute(
+            "SELECT run_id, event, mode, rows_loaded, delivery_status, attempts, reason,"
+            " payload_json, created_at FROM ingest_signal_event"
+            " WHERE epoch=? AND category=? AND manifest_sha=? ORDER BY id",
+            (epoch, category, manifest_sha),
+        )
+        result = []
+        for row in cursor.fetchall():
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            result.append(SignalEvent(
+                run_id=str(values[0]), event=str(values[1]), mode=str(values[2]),
+                rows_loaded=int(values[3]), delivery_status=str(values[4]),
+                attempts=int(values[5]), reason=values[6], payload=json.loads(values[7]),
+                created_at=str(values[8]),
+            ))
+        return result
 
 
 def open_sqlite_ledger(path: Path) -> Ledger:

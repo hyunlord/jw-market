@@ -9,6 +9,8 @@ from typing import Final
 
 import openpyxl
 
+from pipeline.etl.io.source_headers import normalize_source_header
+
 
 EXPECTED_HEADERS: Final[tuple[str, ...]] = (
     "Related date",
@@ -141,11 +143,11 @@ def source_month_key(source_file: str) -> tuple[int, int, str]:
 
 
 def _header_index(header_row: tuple[object, ...]) -> dict[str, int]:
-    normalized = {normalize_text(value): index for index, value in enumerate(header_row)}
-    missing = [header for header in EXPECTED_HEADERS if header not in normalized]
+    normalized = {normalize_source_header(value): index for index, value in enumerate(header_row) if value is not None}
+    missing = [header for header in EXPECTED_HEADERS if normalize_source_header(header) not in normalized]
     if missing:
         raise ValueError(f"CSD market sheet header mismatch: missing {missing}")
-    return {header: normalized[header] for header in EXPECTED_HEADERS}
+    return {header: normalized[normalize_source_header(header)] for header in EXPECTED_HEADERS}
 
 
 def iter_market_rows(workbook_path: Path, sheet_name: str) -> list[CsdRow]:

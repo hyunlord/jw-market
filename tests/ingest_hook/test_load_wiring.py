@@ -109,13 +109,21 @@ def test_real_load_silent_failure_is_caught(staging_env, bucket, monkeypatch):
         job_runner._real_load(manifest, UBIST, bucket)
 
 
-def test_real_load_unwired_category_fails_closed(staging_env, bucket, monkeypatch):
-    manifest = _manifest(bucket, category="iqvia", epoch="2026-Q1",
+def test_real_load_iqvia_nsa_injects_file_target_and_epoch(staging_env, bucket, monkeypatch):
+    manifest = _manifest(bucket, category="iqvia_nsa", epoch="2026-Q1",
                          rows=[("2026-Q1", "Class", "x", 1.0), ("2026-Q1", "전체", "-", 1.0)])
-    monkeypatch.setattr(job_runner, "_run_commands", lambda label, argv: None)
-    iqvia = resolve_category("iqvia")
-    with pytest.raises(RuntimeError, match="no upload wiring"):
-        job_runner._real_load(manifest, iqvia, bucket)
+    seen = {}
+
+    def fake_run(_label, argv):
+        seen["argv"] = argv
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_load_manifest(target, "2026-Q1", 2)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+    result = job_runner._real_load(manifest, resolve_category("iqvia_nsa"), bucket)
+    assert seen["argv"][seen["argv"].index("--epoch") + 1] == "2026-Q1"
+    assert seen["argv"][seen["argv"].index("--file") + 1].endswith("data.csv")
+    assert result["epoch_rows"] == 2
 
 
 def test_real_load_skeleton_no_op(staging_env, bucket):

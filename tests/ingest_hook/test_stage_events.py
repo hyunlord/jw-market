@@ -46,7 +46,7 @@ def test_v1_happy_path_records_stages_in_code_order(service, bucket, tmp_path):
     events = _events(service.ledger, "2026-07", sha)
     by_stage = {e.stage: e for e in events}
     # order is the declared code order
-    assert [e.stage for e in events] == ["g3", "load", "load_verify", "sigma", "post_gate", "refresh"]
+    assert [e.stage for e in events] == ["g3", "load", "load_verify", "sigma", "post_gate", "refresh", "signal"]
     assert by_stage["g3"].status == STAGE_COMPLETE
     assert by_stage["load"].status == STAGE_COMPLETE
     assert by_stage["post_gate"].status == STAGE_COMPLETE
@@ -69,8 +69,11 @@ def test_v1_stages_exposed_on_status_api(service, client, bucket, tmp_path):
         params={"epoch": payload["epoch"], "category": "ubist", "manifest_sha": payload["manifest_sha"]},
     ).json()
     stage_names = [s["stage"] for s in status["stages"]]
-    assert stage_names == ["g3", "load", "load_verify", "sigma", "post_gate", "refresh"]
+    assert stage_names == ["g3", "load", "load_verify", "sigma", "post_gate", "refresh", "signal"]
     assert status["current_stage"] is None  # completed run has no in-flight stage
+    assert len(status["signals"]) == 1
+    assert status["signals"][0]["event"] == "complete"
+    assert status["signals"][0]["mode"] == "staging"
 
 
 def test_v2_g3_failure_records_g3_failed_with_reason(sqlite_ledger, bucket, tmp_path):
@@ -84,7 +87,11 @@ def test_v2_g3_failure_records_g3_failed_with_reason(sqlite_ledger, bucket, tmp_
     assert g3.status == STAGE_FAILED
     assert "G3Error" in (g3.reason or "")
     # no later stage should be recorded (failure stopped the run at g3)
-    assert [e.stage for e in events] == ["g3"]
+    assert [e.stage for e in events] == ["g3", "signal"]
+    signals = sqlite_ledger.signal_events("2026-07", "ubist", sha)
+    assert len(signals) == 1
+    assert signals[0].event == "gate_failed"
+    assert "G3Error" in (signals[0].payload["failure_reason"] or "")
 
 
 def test_v2_gate_failure_records_post_gate_failed(sqlite_ledger, bucket, tmp_path):
@@ -102,6 +109,10 @@ def test_v2_gate_failure_records_post_gate_failed(sqlite_ledger, bucket, tmp_pat
     assert by_stage["load"].status == STAGE_COMPLETE
     assert by_stage["post_gate"].status == STAGE_FAILED
     assert "PG-1" in (by_stage["post_gate"].reason or "")
+    signals = sqlite_ledger.signal_events("2026-07", "ubist", sha)
+    assert len(signals) == 1
+    assert signals[0].event == "gate_failed"
+    assert "PG-1" in (signals[0].payload["failure_reason"] or "")
 
 
 def test_v5_retry_accumulates_per_run_id(sqlite_ledger):

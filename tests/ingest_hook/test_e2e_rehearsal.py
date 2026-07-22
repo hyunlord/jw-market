@@ -96,7 +96,7 @@ def test_g2_rejected_submission_loads_nothing(sqlite_ledger, bucket, tmp_path, c
     assert rc == 1
     assert not (staging_root / "staging.db").exists(), "G3 must fail before any staging write"
     entries = [sqlite_ledger.status("2026-07", "ubist", sha) for sha in _all_shas(sqlite_ledger)]
-    failed = [entry for entry in entries if entry and entry.status == "failed"]
+    failed = [entry for entry in entries if entry and entry.status == "gate_failed"]
     assert failed and "G3Error" in failed[0].reason
 
 
