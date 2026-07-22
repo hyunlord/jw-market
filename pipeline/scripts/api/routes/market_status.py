@@ -82,7 +82,10 @@ def _overlay_brand_cagr(payload: dict, rows: list[dict]) -> None:
         market_id = str(card.get("market_id") or "")
         ml_id = f"ml_{market_id.removeprefix('strategy_')}" if market_id else ""
         brand = str(card.get("brand") or "")
+        declared_sources = card.get("sources") or []
         default_source = str((card.get("front") or {}).get("default_source") or "").upper()
+        if isinstance(declared_sources, list) and len(declared_sources) == 1:
+            default_source = str(declared_sources[0]).upper()
         source = {"UBIST": "ubist", "IQVIA": "iqvia_nsa"}.get(default_source)
         candidates = [source] if source else []
         candidates.extend(candidate for candidate in ("ubist", "iqvia_nsa") if candidate not in candidates)

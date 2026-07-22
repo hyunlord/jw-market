@@ -13,6 +13,7 @@ def test_market_status_overlays_exclusive_brand_cagr_from_mart(monkeypatch) -> N
             {
                 "brand": "리바로",
                 "market_id": "strategy_006",
+                "sources": ["UBIST", "IQVIA"],
                 "front": {"default_source": "UBIST"},
                 "back": {"cagr_5y_pct": 3.9056},
                 "back_extended": {"brand_cagr_5y_pct": 3.9056},
@@ -20,7 +21,8 @@ def test_market_status_overlays_exclusive_brand_cagr_from_mart(monkeypatch) -> N
             {
                 "brand": "악템라",
                 "market_id": "strategy_011",
-                "front": {"default_source": "IQVIA"},
+                "sources": ["IQVIA"],
+                "front": {"default_source": "UBIST"},
                 "back": {"cagr_5y_pct": -3.9362},
                 "back_extended": {"brand_cagr_5y_pct": -3.9362},
             },
