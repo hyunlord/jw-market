@@ -45,8 +45,13 @@ not be used after the frontend migration.
 
 - Cause, Livaro: card shows `3.9056%` from `data.kpi.brand_cagr_5y_pct`, label
   `CAGR (5Y)`; market CAGR remains `9.37%` in its existing comparison context.
-- Cause, Actemra: `brand_cagr_5y_pct=null`,
-  `brand_cagr_3y_pct=-3.9362`; card shows `-3.9362%` and `CAGR (3Y)`.
+- Cause, Actemra: the current IQVIA series spans `2021-Q2` through `2026-Q1`.
+  The approved 19-quarter substitute therefore yields
+  `brand_cagr_5y_pct=2.1052`, `brand_cagr_3y_pct=null`; the card shows
+  `2.1052%` and `CAGR (5Y)`.
+- A current 3Y-only example is Livarozet:
+  `brand_cagr_5y_pct=null`, `brand_cagr_3y_pct=23.3769`; the card shows
+  `23.3769%` and `CAGR (3Y)`.
 - A new brand with neither endpoint: both keys null; card shows `—`, not `0%`.
 - Market status repeats the same horizon-selection behavior from
   `brand_cards[].back_extended`.
