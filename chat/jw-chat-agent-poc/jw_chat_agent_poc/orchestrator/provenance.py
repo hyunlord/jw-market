@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from typing import Any
@@ -19,6 +19,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     source_label,
     table,
 )
+from jw_chat_agent_poc.orchestrator.source_grading import grade_evidence_source
 from jw_chat_agent_poc.orchestrator.surface_policy import can_surface_derived_value, cagr_operands_from_data, surface_year
 
 LINK_TARGET_RE = re.compile(r"\]\([^)]*\)")
@@ -35,6 +36,12 @@ class EvidenceFact:
     period: str
     allowed_numbers: tuple[str, ...]
     visible: bool = True
+    entity: str = ""
+    metric: str = ""
+    unit: str = ""
+    source_grade: str = ""
+    view: str = ""
+    operand_fact_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,10 +108,15 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
     source = _fact_source(call, data)
     period = str(data.get("period") or "")
     values = _metric_values(data)
-    values.extend(_hira_values(data))
     facts: list[EvidenceFact] = []
     for label, value, path in values:
         if value:
+            entity, metric, fact_period, unit, view = _metric_binding(
+                data,
+                label,
+                period,
+                path,
+            )
             facts.append(
                 _fact(
                     offset + len(facts),
@@ -113,10 +125,24 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
                     source=source,
                     tool=tool,
                     path=path,
-                    period=period,
+                    period=fact_period,
                     visible=True,
+                    entity=entity,
+                    metric=metric,
+                    unit=unit,
+                    source_grade=grade_evidence_source(tool=tool, source=source).value,
+                    view=view,
                 )
             )
+    facts = _bind_derived_operands(facts)
+    facts.extend(
+        _hira_facts(
+            data,
+            offset=offset + len(facts),
+            source=source,
+            tool=tool,
+        )
+    )
     return facts
 
 
@@ -302,11 +328,18 @@ def _surfaceable_cagr_value(data: dict[str, Any], key: str) -> str:
     return ""
 
 
-def _hira_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
+def _hira_facts(
+    data: dict[str, Any],
+    *,
+    offset: int,
+    source: str,
+    tool: str,
+) -> list[EvidenceFact]:
+    source_grade = grade_evidence_source(tool=tool, source=source).value
     calls = data.get("calls")
     if not isinstance(calls, list):
-        return []
-    rows: list[tuple[str, str, str]] = []
+        calls = [{"render_data": data}] if items(data) else []
+    facts: list[EvidenceFact] = []
     for call_index, call in enumerate(calls):
         if not isinstance(call, dict):
             continue
@@ -316,18 +349,224 @@ def _hira_values(data: dict[str, Any]) -> list[tuple[str, str, str]]:
         for item_index, item in enumerate(items(render_data)):
             count = item.get("ptntCnt")
             year = surface_year(render_data, item)
+            code = str(item.get("sickCd") or render_data.get("sickCd") or "").strip().upper()
+            name = str(item.get("sickNm") or render_data.get("sickNm") or "").strip()
+            entity = code or name
             if can_surface_derived_value(count, required_period=year):
-                rows.append(
-                    (
-                        "환자수",
-                        f"{year}년 {count}",
-                        f"render_data.calls[{call_index}].render_data.items[{item_index}].ptntCnt",
+                facts.append(
+                    _fact(
+                        offset + len(facts),
+                        label="환자수",
+                        value=f"{year}년 {count}명",
+                        source=source,
+                        tool=tool,
+                        path=f"render_data.calls[{call_index}].render_data.items[{item_index}].ptntCnt",
+                        period=str(year),
+                        visible=True,
+                        entity=entity,
+                        metric="환자수",
+                        unit="명",
+                        source_grade=source_grade,
                     )
                 )
-            code = item.get("sickCd")
             if code:
-                rows.append(("질병코드", str(code), f"render_data.calls[{call_index}].render_data.items[{item_index}].sickCd"))
-    return rows
+                facts.append(
+                    _fact(
+                        offset + len(facts),
+                        label="질병코드",
+                        value=code,
+                        source=source,
+                        tool=tool,
+                        path=f"render_data.calls[{call_index}].render_data.items[{item_index}].sickCd",
+                        period=str(year or ""),
+                        visible=True,
+                        entity=entity,
+                        metric="질병코드",
+                        unit="code",
+                        source_grade=source_grade,
+                    )
+                )
+    return facts
+
+
+def _metric_binding(
+    data: dict[str, Any],
+    label: str,
+    default_period: str,
+    path: str,
+) -> tuple[str, str, str, str, str]:
+    entity = _metric_entity(data, path)
+    metric = {
+        "기간": "기간",
+        "매출": "매출",
+        "시장규모": "시장규모",
+        "필터 시장규모": "시장규모",
+        "시장점유율": "시장점유율",
+        "순위": "순위",
+        "브랜드 CAGR": "CAGR",
+        "시장 CAGR": "CAGR",
+        "Excess growth": "초과성장",
+        "HHI": "HHI",
+        "CR5": "CR5",
+        "Momentum": "Momentum",
+        "EI": "EI",
+        "기준 점유율": "시장점유율",
+        "비교 점유율": "시장점유율",
+        "점유율 변화": "점유율 변화",
+        "기준 매출": "매출",
+        "비교 매출": "매출",
+        "매출 변화": "매출 변화",
+        "매출 변화율": "매출 변화율",
+        "점유율 시작": "시장점유율",
+        "점유율 종료": "시장점유율",
+        "최고 점유율": "시장점유율",
+        "최저 점유율": "시장점유율",
+        "경쟁 브랜드 시작 점유율": "시장점유율",
+        "경쟁 브랜드 종료 점유율": "시장점유율",
+        "경쟁 브랜드 점유율 변화": "점유율 변화",
+        "매출 시작": "매출",
+        "매출 종료": "매출",
+        "경쟁 브랜드 매출": "매출",
+        "경쟁 브랜드 매출 변화": "매출 변화",
+        "브랜드 성장률": "매출 변화율",
+        "시장 성장률": "매출 변화율",
+        "브랜드 MoM": "매출 변화율",
+        "시장 MoM": "매출 변화율",
+        "브랜드 YoY": "매출 변화율",
+        "시장 YoY": "매출 변화율",
+        "브랜드 CMGR": "매출 변화율",
+        "시장 CMGR": "매출 변화율",
+        "브랜드 CQGR": "매출 변화율",
+        "시장 CQGR": "매출 변화율",
+        "시작 순위": "순위",
+        "종료 순위": "순위",
+        "경쟁 브랜드 순위": "순위",
+    }.get(label, label)
+    unit = _metric_unit(metric)
+    view = str(data.get("view_type") or data.get("view") or "")
+    return entity, metric, _metric_period(default_period, path), unit, view
+
+
+def _metric_period(default_period: str, path: str) -> str:
+    periods = re.findall(r"20\d{2}-(?:0[1-9]|1[0-2]|Q[1-4])", default_period, re.IGNORECASE)
+    if len(periods) < 2:
+        return default_period
+    if any(token in path for token in ("from_", "_start", "share_start", "sales_start", "rank_start")):
+        return periods[0].upper()
+    if any(token in path for token in ("to_", "_end", "share_end", "sales_end", "rank_end")):
+        return periods[-1].upper()
+    return default_period
+
+
+def _metric_entity(data: dict[str, Any], path: str) -> str:
+    competitor_match = re.search(r"series_insight\.competitors\[(\d+)\]", path)
+    if competitor_match:
+        series_insight = data.get("series_insight")
+        competitors = series_insight.get("competitors") if isinstance(series_insight, dict) else None
+        index = int(competitor_match.group(1))
+        if isinstance(competitors, list | tuple) and index < len(competitors):
+            competitor = competitors[index]
+            if isinstance(competitor, dict):
+                for key in ("brand_key", "brand_name", "brand"):
+                    value = competitor.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+    for key in (
+        "brand_key",
+        "brand_name",
+        "brand",
+        "market_id",
+        "market",
+        "atc4_code",
+        "ml_id",
+        "cd_id",
+    ):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _metric_unit(metric: str) -> str:
+    if metric in {"점유율 변화", "초과성장"}:
+        return "%p"
+    if metric == "CR5":
+        return "%"
+    if "점유율" in metric or "CAGR" in metric or "growth" in metric.lower() or "변화율" in metric:
+        return "%"
+    if "매출" in metric or "시장규모" in metric:
+        return "억원"
+    if "순위" in metric:
+        return "위"
+    if metric == "HHI":
+        return "index"
+    if metric in {"Momentum", "EI"}:
+        return "score"
+    if metric == "기간":
+        return "period"
+    return ""
+
+
+def _bind_derived_operands(facts: list[EvidenceFact]) -> list[EvidenceFact]:
+    by_path = {fact.path: fact for fact in facts}
+    bound: list[EvidenceFact] = []
+    for fact in facts:
+        operand_paths = _derived_operand_paths(fact.path)
+        if not operand_paths:
+            bound.append(fact)
+            continue
+        operand_ids = tuple(
+            by_path[path].fact_id if path in by_path else f"missing:{path}"
+            for path in operand_paths
+        )
+        bound.append(replace(fact, operand_fact_ids=operand_ids))
+    return bound
+
+
+def _derived_operand_paths(path: str) -> tuple[str, ...]:
+    exact = {
+        "render_data.ms_delta_pct": (
+            "render_data.from_ms_pct",
+            "render_data.to_ms_pct",
+        ),
+        "render_data.sales_delta_krw": (
+            "render_data.from_sales_krw",
+            "render_data.to_sales_krw",
+        ),
+        "render_data.sales_delta_pct": (
+            "render_data.from_sales_krw",
+            "render_data.to_sales_krw",
+        ),
+        "render_data.excess_growth_pct": (
+            "render_data.brand_cagr_5y_pct",
+            "render_data.market_cagr_5y_pct",
+        ),
+        "render_data.series_insight.share_delta_pctp": (
+            "render_data.series_insight.share_start_pct",
+            "render_data.series_insight.share_end_pct",
+        ),
+        "render_data.series_insight.sales_delta_krw": (
+            "render_data.series_insight.sales_start_krw",
+            "render_data.series_insight.sales_end_krw",
+        ),
+        "render_data.series_insight.excess_growth_pctp": (
+            "render_data.series_insight.brand_growth_pct",
+            "render_data.series_insight.market_growth_pct",
+        ),
+    }
+    if path in exact:
+        return exact[path]
+    match = re.fullmatch(
+        r"(render_data\.series_insight\.competitors\[\d+\])\.(share|sales)_end_(pct|krw)-(?:share|sales)_start_(?:pct|krw)",
+        path,
+    )
+    if not match:
+        return ()
+    prefix, metric, suffix = match.groups()
+    return (
+        f"{prefix}.{metric}_start_{suffix}",
+        f"{prefix}.{metric}_end_{suffix}",
+    )
 
 
 def _latest_market_size(data: dict[str, Any]) -> str:
@@ -389,12 +628,20 @@ def _fact(
     path: str,
     period: str,
     visible: bool,
+    entity: str = "",
+    metric: str = "",
+    unit: str = "",
+    source_grade: str = "",
+    view: str = "",
+    operand_fact_ids: tuple[str, ...] = (),
 ) -> EvidenceFact:
     allowed = set(number_tokens(value))
     allowed.update(number_tokens(label))
     allowed.update(_period_display_tokens(value))
-    if label == "환자수" and value.isdigit():
-        allowed.update(number_tokens(f"{value}명"))
+    if label == "환자수":
+        for count in re.findall(r"(?<!\d)(\d[\d,]*)(?=명|\s|$)", value):
+            allowed.update(number_tokens(count))
+            allowed.update(number_tokens(f"{count}명"))
     if label in {"매출 변화", "매출 변화율", "점유율 변화"} and value and not value.startswith(("+", "-")):
         allowed.update(number_tokens(f"+{value}"))
     if label in {"매출 변화", "매출 변화율", "점유율 변화"} and value.startswith("-"):
@@ -417,6 +664,12 @@ def _fact(
         period=cell(period),
         allowed_numbers=tuple(sorted(allowed)),
         visible=visible,
+        entity=str(entity).strip(),
+        metric=str(metric).strip(),
+        unit=str(unit).strip(),
+        source_grade=str(source_grade).strip(),
+        view=str(view).strip(),
+        operand_fact_ids=operand_fact_ids,
     )
 
 

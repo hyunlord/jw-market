@@ -19,6 +19,8 @@ def ungrounded_numbers(
     answer: str,
     markdown_response: Mapping[str, Any],
     tool_calls: Sequence[Mapping[str, Any]] = (),
+    *,
+    question: str | None = None,
 ) -> tuple[str, ...]:
     allowed = markdown_response.get("allowed_numbers")
     allowed_set = {str(item) for item in allowed} if isinstance(allowed, (list, tuple)) else set()
@@ -26,6 +28,11 @@ def ungrounded_numbers(
     allowed_set.update(number_tokens(_markdown_field(markdown_response, "data_md")))
     for call in tool_calls:
         if call.get("status") not in PUBLIC_EVIDENCE_STATUSES:
+            continue
+        if call.get("tool") == "web_search" or call.get("source") == "web_search":
+            # Web results remain a separately labelled appendix. They never become
+            # numeric evidence for the generated answer, including official-domain
+            # pages, because those pages are supplementary rather than authoritative.
             continue
         allowed_set.update(number_tokens(BARE_URL_RE.sub("", call_data_md(dict(call)))))
         render_data = call.get("render_data")
@@ -43,7 +50,10 @@ def ungrounded_numbers(
                     )
                 )
             )
-    claim_text = BARE_URL_RE.sub("", _without_deterministic_web_appendix(answer, tool_calls))
+    claim_text = BARE_URL_RE.sub(
+        "",
+        _without_deterministic_web_appendix(answer, tool_calls, question=question),
+    )
     return tuple(sorted(token for token in number_tokens(claim_text) if token not in allowed_set))
 
 
@@ -55,8 +65,10 @@ def _markdown_field(markdown_response: Mapping[str, Any], field: str) -> str:
 def _without_deterministic_web_appendix(
     answer: str,
     tool_calls: Sequence[Mapping[str, Any]],
+    *,
+    question: str | None = None,
 ) -> str:
-    section = web_search_mi_section_from_calls(tool_calls)
+    section = web_search_mi_section_from_calls(tool_calls, question=question)
     if not section:
         return answer
     stripped_answer = answer.rstrip()
