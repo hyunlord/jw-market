@@ -5,6 +5,62 @@ stage="${1:?stage is required}"
 repo_root="${CRAWL_CHAIN_REPO_ROOT:-/app}"
 cd "${repo_root}"
 
+summary_failure_count() {
+  local summary_path="$1"
+  python - "${summary_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(f"missing required summary: {path}")
+payload = json.loads(path.read_text(encoding="utf-8"))
+values = []
+for field in ("failures", "error_count"):
+    value = payload.get(field, 0)
+    if isinstance(value, list):
+        value = len(value)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SystemExit(f"invalid {field} value in {path}: {value!r}")
+    values.append(value)
+errors = payload.get("errors") or []
+if not isinstance(errors, list):
+    raise SystemExit(f"invalid errors value in {path}: {errors!r}")
+values.append(len(errors))
+if payload.get("status") == "partial" and not any(values):
+    values.append(1)
+print(max(values))
+PY
+}
+
+write_stage_gate() {
+  local failures="$1"
+  local events_raw_gap="$2"
+  local pending_gap="$3"
+  STAGE="${stage}" OUTPUT="${CHAIN_STAGE_OUTPUT_DIR}" \
+    FAILURES="${failures}" EVENTS_RAW_GAP="${events_raw_gap}" \
+    PENDING_GAP="${pending_gap}" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "schema": "crawl-stage-gate/v1",
+    "stage": os.environ["STAGE"],
+    "exit_code": 0,
+    "failures": int(os.environ["FAILURES"]),
+    "events_raw_gap": int(os.environ["EVENTS_RAW_GAP"]),
+    "pending_gap": int(os.environ["PENDING_GAP"]),
+}
+Path(os.environ["OUTPUT"], "stage_gate.json").write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+print("STAGE_GATE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+PY
+}
+
 preseed_urls() {
   local raw="$1"
   local sites="${2:-}"
@@ -57,7 +113,8 @@ prepare_new_candidates() {
   local scored="$2"
   local scored_new="$3"
   local summary_path="$4"
-  RAW="${raw}" SCORED="${scored}" SCORED_NEW="${scored_new}" SUMMARY_PATH="${summary_path}" python - <<'PY'
+  RAW="${raw}" SCORED="${scored}" SCORED_NEW="${scored_new}" SUMMARY_PATH="${summary_path}" \
+    REPO_ROOT="${repo_root}" python - <<'PY'
 import json
 import os
 import shutil
@@ -66,7 +123,7 @@ from pathlib import Path
 
 import pymysql
 
-sys.path[:0] = ["/app/crawl/agent1"]
+sys.path[:0] = [str(Path(os.environ["REPO_ROOT"]) / "crawl" / "agent1")]
 from corpus_loader_v2 import generate_news_id, read_json, resolve_news_path, scored_files
 
 raw = Path(os.environ["RAW"])
@@ -182,6 +239,7 @@ if not articles and total_news <= 0:
 print(f"CRAWL_ARTICLE_FILE_COUNT={len(articles)}")
 print(f"CRAWL_REPORT_TOTAL_NEWS={total_news}")
 PY
+  write_stage_gate 0 0 0
 }
 
 tier1_classify() {
@@ -193,6 +251,7 @@ tier1_classify() {
   mkdir -p "${scored}" "${scored_new}"
   if [[ -f "${collect}/NO_NEW_RAW" ]]; then
     printf '{"status":"noop","reason":"no_new_raw"}\n' > "${output}/load_summary.json"
+    write_stage_gate 0 0 0
     return
   fi
   python crawl/agent1/score_v2.py \
@@ -203,12 +262,14 @@ tier1_classify() {
   new_count="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_count"])' "${output}/candidate_gate.json")"
   if [[ "${new_count}" -eq 0 ]]; then
     printf '{"status":"noop","reason":"no_new_candidates"}\n' > "${output}/load_summary.json"
+    write_stage_gate 0 0 0
     return
   fi
   python crawl/agent1/corpus_loader_v2.py \
     --batch-dir "${raw}" --scored-dir "${scored_new}" \
     --catalog crawl/config/_catalog.json --output "${output}/load_summary.json" \
     --db-name "${DB_NAME}" --tier 1 --processed-by workflow_196_rev5674
+  write_stage_gate "$(summary_failure_count "${output}/load_summary.json")" 0 0
 }
 
 tier2_collect() {
@@ -244,6 +305,7 @@ if not articles:
     Path(os.environ["OUTPUT"], "NO_NEW_RAW").write_text("1\n", encoding="utf-8")
 print(f"CRAWL_ARTICLE_FILE_COUNT={len(articles)}")
 PY
+  write_stage_gate 0 0 0
 }
 
 tier2_classify() {
@@ -255,27 +317,41 @@ tier2_classify() {
   mkdir -p "${processed_new}"
   if [[ -f "${collect}/NO_NEW_RAW" ]]; then
     printf '{"status":"noop","reason":"no_new_raw"}\n' > "${output}/load_summary.json"
-    return
-  fi
-  prepare_new_candidates "${raw}" "${processed}" "${processed_new}" "${output}/candidate_gate.json"
-  local new_count
-  new_count="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_count"])' "${output}/candidate_gate.json")"
-  if [[ "${new_count}" -gt 0 ]]; then
-    python crawl/agent1/corpus_loader_v2.py \
-      --batch-dir "${raw}" --scored-dir "${processed_new}" \
-      --catalog crawl/config/_catalog.json --output "${output}/load_summary.json" \
-      --db-name "${DB_NAME}" --tier 2 --processed-by tier2_exact_rule_v1
   else
-    printf '{"status":"noop","reason":"no_new_candidates"}\n' > "${output}/load_summary.json"
+    prepare_new_candidates "${raw}" "${processed}" "${processed_new}" "${output}/candidate_gate.json"
+    local new_count
+    new_count="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_count"])' "${output}/candidate_gate.json")"
+    if [[ "${new_count}" -gt 0 ]]; then
+      python crawl/agent1/corpus_loader_v2.py \
+        --batch-dir "${raw}" --scored-dir "${processed_new}" \
+        --catalog crawl/config/_catalog.json --output "${output}/load_summary.json" \
+        --db-name "${DB_NAME}" --tier 2 --processed-by tier2_exact_rule_v1
+    else
+      printf '{"status":"noop","reason":"no_new_candidates"}\n' > "${output}/load_summary.json"
+    fi
   fi
-  python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw --retries 1
+  python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw --retries 1 \
+    > "${output}/sync_summary.json"
   python /opt/tier2/tier2_full_scoring_runner.py append-live \
     --source-processor tier2_exact_rule_v1 \
     --target-processor tier2_llm_v2_rev5671 \
-    --workflow-url "${WF337_URL}" --daily-call-limit 60 --max-cost-krw 203.40
+    --workflow-url "${WF337_URL}" --daily-call-limit 60 --max-cost-krw 203.40 \
+    > "${output}/append_summary.json"
   # This required final step closes the historical category omission (audit dd41f8aa).
-  python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories
+  python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories \
+    > "${output}/refresh_summary.json"
+  python /opt/tier2/tier2_full_scoring_runner.py gate-status \
+    --source-processor tier2_exact_rule_v1 \
+    --target-processor tier2_llm_v2_rev5671 \
+    > "${output}/gate_status.json"
   printf '{"status":"complete","category_refresh":true}\n' > "${output}/classification_summary.json"
+  local load_failures append_failures failures events_gap pending_gap
+  load_failures="$(summary_failure_count "${output}/load_summary.json")"
+  append_failures="$(summary_failure_count "${output}/append_summary.json")"
+  failures="$((load_failures + append_failures))"
+  events_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["events_raw_gap"]))' "${output}/gate_status.json")"
+  pending_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["pending_gap"]))' "${output}/gate_status.json")"
+  write_stage_gate "${failures}" "${events_gap}" "${pending_gap}"
 }
 
 case "${stage}" in
