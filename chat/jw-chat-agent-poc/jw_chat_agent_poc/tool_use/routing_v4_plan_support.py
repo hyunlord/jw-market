@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider
 from jw_chat_agent_poc.tool_use.routing_v4_rules import PREFIX_RE, QuestionClassification, explicit_disease_code
@@ -35,10 +35,18 @@ class RoutePlan(BaseModel):
 
     proposal: ProposedRoutingSignature
     eligible_tools: tuple[str, ...]
+    input_key: str
+    execution_args: tuple[dict[str, Any], ...] = ()
     reason_code: str | None
     typed_message: str | None
     repair_count: int = 0
     deterministic_rule_id: str | None = None
+
+    @model_validator(mode="after")
+    def _execution_arguments_match_proposed_calls(self) -> RoutePlan:
+        if len(self.execution_args) != len(self.proposal.proposed_calls):
+            raise ValueError("execution arguments must match proposed calls one-for-one")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +55,12 @@ class NoToolPlanRequest:
     routing_mode: RoutingMode
     classification: QuestionClassification
     capability_status: CapabilityStatus
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedToolCall:
+    proposal: ProposedCall
+    execution_args: dict[str, Any]
 
 
 def assert_eligible_tools_exist(
@@ -128,11 +142,24 @@ def validated_call(
     arguments: dict[str, Any],
     by_name: dict[str, ToolSpec],
 ) -> ProposedCall:
+    return validated_tool_call(tool_name, arguments, by_name).proposal
+
+
+def validated_tool_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+    by_name: dict[str, ToolSpec],
+) -> ValidatedToolCall:
     spec = by_name[tool_name]
     payload = spec.input_model.model_validate(arguments)
-    return ProposedCall(
-        tool_name=tool_name,
-        normalized_args=normalize_arguments(payload.model_dump(mode="json")),
+    execution_args = payload.model_dump(mode="json")
+    _validate_domain_arguments(tool_name, execution_args)
+    return ValidatedToolCall(
+        proposal=ProposedCall(
+            tool_name=tool_name,
+            normalized_args=normalize_arguments(execution_args),
+        ),
+        execution_args=execution_args,
     )
 
 
@@ -146,6 +173,16 @@ def validated_llm_choice(
     return validated_call(choice.name, choice.arguments, by_name)
 
 
+def validated_llm_tool_call(
+    choice: ToolChoice,
+    candidate_specs: tuple[ToolSpec, ...],
+) -> ValidatedToolCall:
+    by_name = {spec.name: spec for spec in candidate_specs}
+    if choice.name not in by_name:
+        raise RoutingV4ContractError("planner selected a tool outside the eligible capability set")
+    return validated_tool_call(choice.name, choice.arguments, by_name)
+
+
 def normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in arguments.items():
@@ -157,6 +194,19 @@ def normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         else:
             normalized[key] = value
     return normalized
+
+
+def _validate_domain_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
+    if tool_name.startswith("hira_disease_"):
+        sick_cd = str(arguments.get("sick_cd") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]\d{2}(?:\.\d{1,2})?", sick_cd):
+            raise ValueError("sick_cd must use the canonical KCD form")
+        year = str(arguments.get("year") or "")
+        if year and (not year.isdigit() or not 2000 <= int(year) <= 2100):
+            raise ValueError("year must be a four-digit supported calendar year")
+    for key in ("brand", "ingredient", "query", "item_seq", "st5_cd"):
+        if key in arguments and not str(arguments[key]).strip():
+            raise ValueError(f"{key} must not be blank")
 
 
 def singleton_arguments(tool_name: str, question: str) -> dict[str, Any] | None:
@@ -175,6 +225,7 @@ def call_route_plan(
     selection_source: ToolSelectionSource,
     calls: tuple[ProposedCall, ...],
     eligible_tools: tuple[str, ...],
+    execution_args: tuple[dict[str, Any], ...] | None = None,
     repair_count: int = 0,
 ) -> RoutePlan:
     decision = RoutingDecision(
@@ -191,6 +242,10 @@ def call_route_plan(
             proposed_calls=calls,
         ),
         eligible_tools=eligible_tools,
+        input_key=classification.input_key,
+        execution_args=execution_args
+        if execution_args is not None
+        else tuple(dict(call.normalized_args) for call in calls),
         reason_code=None,
         typed_message=None,
         repair_count=repair_count,
@@ -218,6 +273,7 @@ def no_tool_route_plan(
             routing_decision=decision,
         ),
         eligible_tools=(),
+        input_key=classification.input_key,
         reason_code=None,
         typed_message=message,
         deterministic_rule_id=classification.deterministic_rule_id,
@@ -260,6 +316,7 @@ def typed_route_plan(
             routing_decision=decision,
         ),
         eligible_tools=eligible_tools,
+        input_key=classification.input_key,
         reason_code=reason_code,
         typed_message=typed_message(reason_code),
         repair_count=repair_count,

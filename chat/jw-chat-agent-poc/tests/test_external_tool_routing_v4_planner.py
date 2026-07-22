@@ -88,6 +88,21 @@ def test_a01_direct_disease_code_uses_new_rule_and_five_unique_period_calls() ->
         "2023",
         "2024",
     ]
+    assert plan.input_key == "sick_cd"
+
+
+def test_authoritative_disease_name_mapping_routes_without_brand_substitution() -> None:
+    plan = _planner().plan(
+        "고지혈증 환자수 추이 알려줘",
+        routing_mode=RoutingMode.SHADOW,
+    )
+
+    assert plan.input_key == "disease_name"
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.SUPPORTED
+    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.NEW_RULE
+    assert len(plan.proposal.proposed_calls) == 5
+    assert {call.normalized_args["sick_cd"] for call in plan.proposal.proposed_calls} == {"E78"}
+    assert "brand" not in str(plan.proposal.proposed_calls)
 
 
 def test_period_call_exception_rejects_multiple_authority_tool_types() -> None:
@@ -138,6 +153,17 @@ def test_a03_explicit_compact_code_never_falls_back_to_parent_code() -> None:
         str(call.normalized_args["sick_cd"])
         for call in plan.proposal.proposed_calls
     }
+    assert plan.input_key == "sick_cd"
+
+
+def test_parent_disease_code_is_not_promoted_to_a_child_code() -> None:
+    plan = _planner().plan(
+        "질병코드 H36 환자수 통계 알려줘",
+        routing_mode=RoutingMode.SHADOW,
+    )
+
+    assert plan.proposal.proposed_calls[0].normalized_args["sick_cd"] == "H36"
+    assert plan.proposal.proposed_calls[0].normalized_args["sick_cd"] != "H36.0"
 
 
 @pytest.mark.parametrize(
@@ -207,6 +233,7 @@ def test_nct_detail_requests_use_verified_detail_tool(question: str) -> None:
     assert plan.proposal.routing_decision.route_outcome is RouteOutcome.CALL
     assert plan.reason_code is None
     assert [call.tool_name for call in plan.proposal.proposed_calls] == ["clinicaltrials_study_details"]
+    assert plan.input_key == "nct_id"
 
 
 def test_verified_mfds_composition_uses_the_single_contract_backed_tool() -> None:
@@ -236,6 +263,48 @@ def test_easy_drug_label_fields_remain_field_not_exposed() -> None:
     assert plan.proposal.routing_decision.capability_status is CapabilityStatus.FIELD_NOT_EXPOSED
     assert plan.proposal.routing_decision.route_outcome is RouteOutcome.TYPED_STOP
     assert plan.proposal.proposed_calls == ()
+    assert plan.input_key == "product_name"
+
+
+def test_known_ingredient_routes_openfda_adverse_event_without_brand_gate() -> None:
+    plan = _planner().plan(
+        "pitavastatin 부작용 알려줘",
+        routing_mode=RoutingMode.SHADOW,
+    )
+
+    assert plan.input_key == "ingredient"
+    assert plan.eligible_tools == ("openfda_label_search",)
+    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.NEW_RULE
+    assert plan.proposal.proposed_calls == (
+        ProposedCall(
+            tool_name="openfda_label_search",
+            normalized_args={"ingredient": "Pitavastatin", "evidence_type": "adverse_event"},
+        ),
+    )
+
+
+def test_known_ingredient_patent_question_exposes_only_patent_tools_to_llm() -> None:
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "mfds_patent",
+                {"ingredient": "  Pitavastatin  "},
+                "국내 특허 조회",
+                call_id="proposal-1",
+            ),
+        )
+    )
+
+    plan = _planner(provider).plan(
+        "pitavastatin 특허 만료일 알려줘",
+        routing_mode=RoutingMode.SHADOW,
+    )
+
+    assert plan.input_key == "ingredient"
+    assert provider.visible_tool_names == [("mfds_patent", "mfds_fda_orangebook")]
+    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.LLM
+    assert plan.proposal.proposed_calls[0].normalized_args == {"ingredient": "Pitavastatin"}
+    assert plan.execution_args == ({"ingredient": "  Pitavastatin  "},)
 
 
 def test_a13_one_eligible_tool_is_selected_without_calling_llm_provider() -> None:
@@ -284,6 +353,30 @@ def test_a10_llm_sees_only_the_two_eligible_clinical_trial_tools() -> None:
             tool_name="clinicaltrials_v2_search",
             normalized_args={"query": "diabetic macular edema", "query_type": "condition"},
         ),
+    )
+    assert plan.input_key == "natural_query"
+
+
+def test_llm_execution_arguments_are_not_replaced_by_comparison_normalization() -> None:
+    provider = _ChoiceSequence(
+        (
+            ToolChoice(
+                "clinicaltrials_v2_search",
+                {"query": "  diabetic   macular edema  ", "query_type": "condition"},
+                "bounded query",
+                call_id="proposal-raw",
+            ),
+        )
+    )
+
+    plan = _planner(provider).plan(
+        "당뇨병성 황반부종 관련 임상시험을 찾아줘",
+        routing_mode=RoutingMode.ENFORCE,
+    )
+
+    assert plan.proposal.proposed_calls[0].normalized_args["query"] == "diabetic macular edema"
+    assert plan.execution_args == (
+        {"query": "  diabetic   macular edema  ", "query_type": "condition"},
     )
 
 

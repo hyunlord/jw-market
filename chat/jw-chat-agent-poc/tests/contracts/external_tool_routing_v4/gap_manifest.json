@@ -1,5 +1,17 @@
 {
   "schema": "external_tool_routing_v4_gap_manifest_v1",
+  "resolved_preconditions": [
+    {
+      "gap_id": "GAP-R3-NCT-DETAIL-FIELDS",
+      "resolved_by": "2026-07-22 verified clinicaltrials_study_details contract",
+      "evidence": "The direct NCT-ID adapter exposes outcomes, dates, phase, enrollment, interventions, and eligibility excerpts."
+    },
+    {
+      "gap_id": "GAP-R3-BRAND-UNIVERSE-PRECONDITION",
+      "resolved_by": "d58d6319bd9f3282248283f875b5c5b70c484f2d",
+      "evidence": "Track 03 is rebased onto the ordered Track 02 full-universe resolver commit."
+    }
+  ],
   "gaps": [
     {
       "gap_id": "GAP-R1-HIRA-CODE-ORACLE",
@@ -13,6 +25,19 @@
         "Phase 0 live HIRA exact H36.0 query returned zero rows"
       ],
       "preserved_gate": "Question-target and canonical-code evidence must agree before patient statistics can support a claim."
+    },
+    {
+      "gap_id": "GAP-R3-UNMAPPED-DISEASE-NAME",
+      "case_ids": [],
+      "classification": "unresolved_input",
+      "external_ticket": "PENDING",
+      "release_blocking": false,
+      "activation_precondition": "an authoritative disease-name-to-KCD mapping resolves exactly one code",
+      "evidence": [
+        "chat reuses only the existing explicit HIRA disease mapping",
+        "unknown disease names are not guessed or substituted with a brand code"
+      ],
+      "preserved_gate": "Return AMBIGUOUS_INPUT for unknown or multi-code disease names."
     }
   ]
 }

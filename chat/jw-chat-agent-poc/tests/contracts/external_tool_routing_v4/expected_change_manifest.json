@@ -12,11 +12,6 @@
       "gap_id": "GAP-R1-HIRA-CODE-ORACLE",
       "external_ticket": "PENDING",
       "allowed_changes": []
-    },
-    {
-      "case_id": "A-12",
-      "reason": "P-01 exact/unique full-universe resolver precondition not met",
-      "allowed_changes": []
     }
   ],
   "changes": [
@@ -178,22 +173,22 @@
       "case_id": "A-08",
       "semantic_field": "routing_signature",
       "baseline": "ClinicalTrials search call used as detail evidence",
-      "candidate": "NEW_RULE clinical_trials FIELD_NOT_EXPOSED NONE TYPED_STOP",
+      "candidate": "NEW_RULE clinical_trials SUPPORTED NEW_RULE CALL",
       "oracle": "capability_matrix CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
     },
     {
       "case_id": "A-08",
-      "semantic_field": "reason_code",
-      "baseline": null,
-      "candidate": "FIELD_NOT_EXPOSED",
-      "oracle": "current ClinicalTrials schema"
+      "semantic_field": "canonical_call",
+      "baseline": "ClinicalTrials search query used as NCT detail evidence",
+      "candidate": "clinicaltrials_study_details(nct_id=NCT05151731)",
+      "oracle": "2026-07-22 verified NCT-ID detail tool"
     },
     {
       "case_id": "A-08",
-      "semantic_field": "typed_disclosure",
+      "semantic_field": "evidence_contract",
       "baseline": "search-summary prose",
-      "candidate": "field was not retrieved, never 'not public'",
-      "oracle": "v4 false-absence policy"
+      "candidate": "detail fields must come from the direct NCT-ID response",
+      "oracle": "verified ClinicalTrials detail response fields"
     },
     {
       "case_id": "A-09",
@@ -204,17 +199,17 @@
     },
     {
       "case_id": "A-09",
-      "semantic_field": "reason_code",
-      "baseline": null,
-      "candidate": "FIELD_NOT_EXPOSED",
-      "oracle": "current ClinicalTrials schema"
+      "semantic_field": "canonical_call",
+      "baseline": "ClinicalTrials search query used as NCT detail evidence",
+      "candidate": "clinicaltrials_study_details(nct_id=NCT05151731)",
+      "oracle": "2026-07-22 verified NCT-ID detail tool"
     },
     {
       "case_id": "A-09",
-      "semantic_field": "typed_disclosure",
+      "semantic_field": "evidence_contract",
       "baseline": "search-summary prose",
-      "candidate": "field was not retrieved, never 'not public'",
-      "oracle": "v4 false-absence policy"
+      "candidate": "design fields must come from the direct NCT-ID response",
+      "oracle": "verified ClinicalTrials detail response fields"
     },
     {
       "case_id": "A-10",
