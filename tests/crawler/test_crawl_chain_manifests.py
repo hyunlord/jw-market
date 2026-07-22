@@ -82,4 +82,5 @@ def test_stage_script_preserves_incremental_loader_and_category_refresh_order() 
     append_at = script.index("append-live")
     refresh_at = script.index("refresh-live-categories")
     assert sync_at < append_at < refresh_at
-    assert "--daily-call-limit 60 --max-cost-krw 203.40" in script
+    assert 'CRAWL_CHAIN_LLM_CALL_LIMIT:-60' in script
+    assert '--daily-call-limit "${llm_call_limit}" --max-cost-krw 203.40' in script
