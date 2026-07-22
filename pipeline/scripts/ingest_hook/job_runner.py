@@ -201,7 +201,7 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
         to run it in real mode (it would load unrelated defaults = silent failure).
       * the epoch must appear in the loader's own output with rows > 0.
     """
-    from pipeline.scripts.ingest_hook.load_verify import verify_epoch_loaded
+    from pipeline.scripts.ingest_hook.load_verify import verify_epoch_loaded, verify_table_load
 
     if not spec.load_argv:
         return {"target_dir": None, "epoch_rows": None, "staging_verify": None}  # e.g. skeleton
@@ -213,10 +213,10 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
         )
 
     target_root, staging_verify = config.load_output_root()
-    if spec.staging_only_load and not staging_verify:
+    if not staging_verify and not spec.production_load_supported:
         raise RuntimeError(
-            f"category {manifest.category!r} has only an isolated staging-artifact loader; "
-            "refusing production completion until its table loader and row-count verifier are wired"
+            f"category {manifest.category!r} table loader is isolated-staging only; "
+            "refusing production completion until a separate production activation gate"
         )
     target_dir = target_root / manifest.category / manifest.epoch
     if staging_verify:
@@ -225,26 +225,40 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
     _seed_empty_manifest(target_dir, spec.load_verify)
 
     read_files = [str((input_root / entry.path).resolve()) for entry in manifest.files]
-    for source in read_files:
+    source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
+    for sources in source_batches:
         argv = list(spec.load_argv)
-        argv.extend([spec.load_input_flag, source])
+        for source in sources:
+            argv.extend([spec.load_input_flag, source])
         if spec.load_target_flag:
             argv.extend([spec.load_target_flag, str(target_dir)])
         if spec.load_epoch_flag:
             argv.extend([spec.load_epoch_flag, manifest.epoch])
-        print(f"phase=load reading={source} target={target_dir} staging_verify={staging_verify}")
+        print(
+            f"phase=load files={len(sources)} target={target_dir} "
+            f"staging_verify={staging_verify}"
+        )
         _run_commands("load", tuple(argv))
 
     # M-2: the uploaded epoch must be present in the loader's output.
     epoch_rows = None
+    rows_loaded = 0
     if spec.load_verify:
-        epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
+        if spec.load_verify == "table_manifest":
+            evidence = verify_table_load(target_dir, manifest.epoch)
+            rows_before = evidence.rows_before
+            epoch_rows = evidence.rows_after
+            rows_loaded = evidence.rows_loaded
+        else:
+            epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
+            rows_loaded = max(epoch_rows - rows_before, 0)
         print(f"gate=load_verify status=pass epoch={manifest.epoch} rows={epoch_rows} target={target_dir}")
 
     return {
         "target_dir": target_dir,
         "epoch_rows": epoch_rows,
         "rows_before": rows_before,
+        "rows_loaded": rows_loaded,
         "staging_verify": staging_verify,
     }
 
@@ -252,6 +266,7 @@ def _real_load(manifest, spec, input_root: Path) -> dict:
 def _emit_completion_signal(
     *, ledger: Ledger, tracker: _StageTracker, identity: tuple[str, str, str],
     run_id: str, event: str, mode: str, rows_before: int, rows_after: int,
+    rows_loaded: int,
     periods: set[str], started_at: str, failure_reason: str | None,
 ) -> None:
     """Best-effort delivery and durable observation; never changes ingest result."""
@@ -260,7 +275,6 @@ def _emit_completion_signal(
     from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, PublishResult, publish
 
     epoch, category, manifest_sha = identity
-    rows_loaded = max(rows_after - rows_before, 0)
     # A retry after load may observe the already-materialized staging rows and
     # otherwise emit zero for the same identity. Freeze the first emitted count
     # tuple so consumers never see one idempotency key with conflicting values.
@@ -329,6 +343,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
     mode = "staging" if rehearsal_root is not None or os.environ.get(config.ENV_LOAD_STAGING_ROOT) else "production"
     rows_before = 0
     rows_after = 0
+    rows_loaded = 0
     periods: set[str] = set()
     try:
         spec = resolve_category(manifest.category)
@@ -360,6 +375,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                 tracker.enter("post_gate")
                 actual_rows = staging_row_count(conn, table)
                 rows_after = actual_rows
+                rows_loaded = max(rows_after - rows_before, 0)
                 post = run_post_gates(
                     run_id=run_id,
                     epoch=manifest.epoch,
@@ -391,6 +407,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
             load_result = _real_load(manifest, spec, input_root)
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)
+            rows_loaded = int(load_result.get("rows_loaded") or 0)
             tracker.done()
             if load_result["epoch_rows"] is not None:
                 tracker.complete("load_verify")  # verify_epoch_loaded ran inside _real_load
@@ -458,6 +475,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         _emit_completion_signal(
             ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
             event="complete", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded,
             periods=periods, started_at=started_at, failure_reason=None,
         )
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
@@ -468,6 +486,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         _emit_completion_signal(
             ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
             event="gate_failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded,
             periods=periods, started_at=started_at,
             failure_reason=f"{type(exc).__name__}: {exc}",
         )
@@ -479,6 +498,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         _emit_completion_signal(
             ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
             event="gate_failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded,
             periods=periods, started_at=started_at,
             failure_reason=f"{type(exc).__name__}: {exc}",
         )
@@ -490,6 +510,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         _emit_completion_signal(
             ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
             event="failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded,
             periods=periods, started_at=started_at,
             failure_reason=f"{type(exc).__name__}: {exc}",
         )
@@ -501,6 +522,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         _emit_completion_signal(
             ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
             event="failed", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded,
             periods=periods, started_at=started_at,
             failure_reason=f"{type(exc).__name__}: {exc}",
         )

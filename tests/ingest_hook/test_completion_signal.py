@@ -191,6 +191,7 @@ def test_retry_reuses_first_signal_counts_across_failed_then_complete(monkeypatc
         mode="staging",
         rows_before=7,
         rows_after=7,
+        rows_loaded=0,
         periods={"2026-03"},
         started_at="2026-07-22T00:00:00Z",
         failure_reason=None,
@@ -198,4 +199,35 @@ def test_retry_reuses_first_signal_counts_across_failed_then_complete(monkeypatc
 
     assert published[0]["rows_before"] == 10
     assert published[0]["rows_after"] == 17
+    assert published[0]["rows_loaded"] == 7
+
+
+def test_replace_loader_counts_are_emitted_without_delta_recalculation(
+    monkeypatch, sqlite_ledger
+):
+    identity = ("2026-03", "iqvia_csd_keyword", "b" * 64)
+    published = []
+    monkeypatch.setattr(
+        "pipeline.scripts.ingest_hook.completion_signal.publish",
+        lambda value, **_kwargs: published.append(value.as_dict())
+        or PublishResult("published", 1, None),
+    )
+
+    job_runner._emit_completion_signal(
+        ledger=sqlite_ledger,
+        tracker=type("Tracker", (), {"complete": lambda *_args, **_kwargs: None})(),
+        identity=identity,
+        run_id="replace-1",
+        event="complete",
+        mode="staging",
+        rows_before=20,
+        rows_after=7,
+        rows_loaded=7,
+        periods={"2026-03"},
+        started_at="2026-07-22T00:00:00Z",
+        failure_reason=None,
+    )
+
+    assert published[0]["rows_before"] == 20
+    assert published[0]["rows_after"] == 7
     assert published[0]["rows_loaded"] == 7

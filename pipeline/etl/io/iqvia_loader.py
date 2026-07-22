@@ -1266,14 +1266,19 @@ def dry_run(files: list[Path], out_path: Path | None) -> None:
         raise HeaderContractError(f"IQVIA NSA dry-run failed: {'; '.join(errors)}")
 
 
-def load_source(files: list[Path], batch_size: int, dry: bool = False) -> LoadStats:
+def load_source(
+    files: list[Path],
+    batch_size: int,
+    dry: bool = False,
+    target_database: str | None = None,
+) -> LoadStats:
     stats = LoadStats()
     table = table_for_source()
     if dry:
         dry_run(files, None)
         return stats
 
-    conn = connect()
+    conn = connect(target_database)
     loaded = loaded_sheet_keys(conn, table)
     try:
         pending: list[Path] = []

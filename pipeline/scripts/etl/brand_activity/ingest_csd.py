@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS `{schema}`.`csd_channel_dynamics_stage` (
   KEY `idx_csd_stage_product` (`master_product`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
-BRAND_ACTIVITY_SCHEMA_PATTERN: Final = re.compile(r"^jw_brand_activity_[A-Za-z0-9_]+$")
+BRAND_ACTIVITY_SCHEMA_PATTERN: Final = re.compile(
+    r"^(?:jw_brand_activity_|jw_ingest_)[A-Za-z0-9_]+$"
+)
 
 
 def quote_schema_name(schema: str) -> str:

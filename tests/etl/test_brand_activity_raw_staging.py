@@ -223,6 +223,7 @@ def test_load_sources_csd_scope_skips_keyword_insert_and_refresh(monkeypatch: py
     )
     monkeypatch.setattr(raw_db, "_execute_ddl", lambda *_args: None)
     monkeypatch.setattr(raw_db, "_raw_counts", lambda _cursor, _schema, datasets=("csd", "keyword"): {dataset: 0 for dataset in datasets})
+    monkeypatch.setattr(raw_db, "_stage_counts", lambda _cursor, _schema, datasets=("csd", "keyword"): {"csd_channel_dynamics_stage": 4})
     monkeypatch.setattr(raw_db, "_insert_csd", lambda *_args: calls.append("csd") or 1)
     monkeypatch.setattr(raw_db, "_insert_keyword", lambda *_args: pytest.fail("keyword raw insert should not run in CSD scope"))
     monkeypatch.setattr(raw_db, "refresh_stage", lambda *_args, **kwargs: {"scope": kwargs["stage_scope"]})
@@ -243,8 +244,57 @@ def test_load_sources_csd_scope_skips_keyword_insert_and_refresh(monkeypatch: py
     # Then: CSD inserts and commit happen, but Keyword insert never starts.
     assert calls == ["csd"]
     assert stats.inserted == {"raw_csd_channel_dynamics": 1}
+    assert stats.stage_before == {"csd_channel_dynamics_stage": 4}
     assert stats.stage_rows == {"scope": "csd"}
     assert connection.committed is True
+
+
+def test_load_sources_derives_window_from_the_raw_table_when_unspecified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _FakeConnection()
+    observed: dict[str, tuple[str, str]] = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "pymysql",
+        SimpleNamespace(MySQLError=RuntimeError, connect=lambda **_kwargs: connection),
+    )
+    monkeypatch.setattr(raw_db, "_execute_ddl", lambda *_args: None)
+    monkeypatch.setattr(raw_db, "_raw_counts", lambda *_args, **_kwargs: {"raw_keyword_events": 0})
+    monkeypatch.setattr(raw_db, "_stage_counts", lambda *_args, **_kwargs: {"km_keyword_event_stage": 0})
+    monkeypatch.setattr(raw_db, "_insert_keyword", lambda *_args: 1)
+    monkeypatch.setattr(raw_db, "_max_raw_period", lambda *_args, **_kwargs: "2026-05")
+
+    def fake_refresh(_cursor, _raw, _stage, window, **_kwargs):
+        observed["window"] = window
+        return {"km_keyword_event_stage": 1}
+
+    monkeypatch.setattr(raw_db, "refresh_stage", fake_refresh)
+    config = raw_db.DbConfig(
+        host="localhost",
+        port=3306,
+        user="root",
+        password="",
+        raw_schema="jw_brand_activity_raw_stage",
+        stage_schema="jw_brand_activity_stage",
+    )
+
+    raw_db.load_sources(
+        config,
+        SourceRows(csd=[], keyword=[_keyword_event(source_row_no=2)]),
+        None,
+        stage_scope="keyword",
+    )
+
+    assert observed["window"] == ("2023-06", "2026-05")
+
+
+def test_isolated_ingest_stage_schemas_are_accepted() -> None:
+    from pipeline.scripts.etl.brand_activity.ingest_csd import stage_ddl as csd_stage_ddl
+    from pipeline.scripts.etl.brand_activity.ingest_keyword_stage import stage_ddl as keyword_stage_ddl
+
+    assert "`jw_ingest_contract_stage`" in csd_stage_ddl("jw_ingest_contract_stage")
+    assert "`jw_ingest_contract_stage`" in keyword_stage_ddl("jw_ingest_contract_stage")
 
 
 def test_target_market_coverage_splits_old_and_new_keyword_contributions() -> None:

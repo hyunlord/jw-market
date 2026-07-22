@@ -15,7 +15,11 @@ import pytest
 from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
-from pipeline.scripts.ingest_hook.load_verify import LoadVerifyError, verify_epoch_loaded
+from pipeline.scripts.ingest_hook.load_verify import (
+    LoadVerifyError,
+    verify_epoch_loaded,
+    verify_table_load,
+)
 from ingest_fixtures import write_submission
 
 UBIST = resolve_category("ubist")
@@ -31,6 +35,29 @@ def _write_load_manifest(target_dir: Path, epoch: str, rows: int) -> None:
         json.dumps({"schema_version": "1.0", "partitions": [
             {"period_yyyymm": epoch, "path": f"year={year}/month={month}/data.parquet", "row_count": rows}
         ]}),
+        encoding="utf-8",
+    )
+
+
+def _write_table_manifest(
+    target_dir: Path, epoch: str, *, before: int, after: int, loaded: int
+) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "_manifest.json").write_text(
+        json.dumps({
+            "schema_version": "ingest-table-load-v1",
+            "epoch": epoch,
+            "primary": {
+                "schema": "jw_ingest_stage_test",
+                "table": "iqvia_nsa_quarterly_raw",
+                "kind": "append",
+                "rows_before": before,
+                "rows_after": after,
+                "rows_loaded": loaded,
+                "source_rows": loaded,
+                "difference_reasons": [],
+            },
+        }),
         encoding="utf-8",
     )
 
@@ -70,10 +97,60 @@ def test_verify_fails_when_parquet_missing(tmp_path):
         verify_epoch_loaded("ubist_parquet_manifest", tmp_path, "2026-03")
 
 
+def test_table_manifest_returns_verified_loader_counts(tmp_path):
+    (tmp_path / "_manifest.json").write_text(
+        json.dumps({
+            "schema_version": "ingest-table-load-v1",
+            "epoch": "2026-03",
+            "primary": {
+                "schema": "jw_ingest_stage_test",
+                "table": "raw_events",
+                "kind": "append",
+                "rows_before": 10,
+                "rows_after": 13,
+                "rows_loaded": 3,
+                "source_rows": 3,
+                "difference_reasons": [],
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    evidence = verify_table_load(tmp_path, "2026-03")
+
+    assert evidence.rows_before == 10
+    assert evidence.rows_after == 13
+    assert evidence.rows_loaded == 3
+
+
+def test_table_manifest_rejects_claimed_load_without_growth(tmp_path):
+    (tmp_path / "_manifest.json").write_text(
+        json.dumps({
+            "schema_version": "ingest-table-load-v1",
+            "epoch": "2026-03",
+            "primary": {
+                "schema": "jw_ingest_stage_test",
+                "table": "raw_events",
+                "kind": "append",
+                "rows_before": 10,
+                "rows_after": 10,
+                "rows_loaded": 3,
+                "source_rows": 3,
+                "difference_reasons": [],
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LoadVerifyError, match="did not grow"):
+        verify_table_load(tmp_path, "2026-03")
+
+
 # ─── _real_load wiring tests (loader stubbed) ────────────────────────
 @pytest.fixture
 def staging_env(tmp_path, monkeypatch):
     monkeypatch.setenv(config.ENV_LOAD_STAGING_ROOT, str(tmp_path / "staging"))
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_DB, "jw_ingest_stage_test")
     monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
     return tmp_path
 
@@ -117,13 +194,15 @@ def test_real_load_iqvia_nsa_injects_file_target_and_epoch(staging_env, bucket, 
     def fake_run(_label, argv):
         seen["argv"] = argv
         target = Path(argv[argv.index("--target-dir") + 1])
-        _write_load_manifest(target, "2026-Q1", 2)
+        _write_table_manifest(target, "2026-Q1", before=10, after=12, loaded=2)
 
     monkeypatch.setattr(job_runner, "_run_commands", fake_run)
     result = job_runner._real_load(manifest, resolve_category("iqvia_nsa"), bucket)
     assert seen["argv"][seen["argv"].index("--epoch") + 1] == "2026-Q1"
     assert seen["argv"][seen["argv"].index("--file") + 1].endswith("data.csv")
-    assert result["epoch_rows"] == 2
+    assert result["epoch_rows"] == 12
+    assert result["rows_before"] == 10
+    assert result["rows_loaded"] == 2
 
 
 def test_real_load_skeleton_no_op(staging_env, bucket):

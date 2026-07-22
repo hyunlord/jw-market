@@ -7,6 +7,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ SCHEMA: Final = os.environ.get("MARKET_GROUP_SCHEMA", "jw_brand_activity_stage")
 MARKET_DEFINITION_TABLE: Final = "stg_master_market_definition"
 MAPPING_TABLE: Final = "stg_master_mapping_table"
 ALLOWED_SCHEMAS: Final = frozenset({"jw_brand_activity_stage"})
+ISOLATED_SCHEMA_PATTERN: Final = re.compile(r"^jw_ingest_[A-Za-z0-9_]+$")
 BATCH_SIZE: Final = 200
 DB_TEXT_COLUMNS: Final = {
     "market_atc_codes_json",
@@ -174,8 +176,10 @@ def _chunks(items: Sequence[T], size: int) -> Iterable[Sequence[T]]:
 
 def _validated_schema(schema: str) -> str:
     """Refuse accidental writes outside the isolated brand-activity stage schema."""
-    if schema not in ALLOWED_SCHEMAS:
-        raise MarketGroupLoadError(f"refusing schema {schema!r}; allowed={sorted(ALLOWED_SCHEMAS)}")
+    if schema not in ALLOWED_SCHEMAS and ISOLATED_SCHEMA_PATTERN.fullmatch(schema) is None:
+        raise MarketGroupLoadError(
+            f"refusing schema {schema!r}; allowed={sorted(ALLOWED_SCHEMAS)} or jw_ingest_*"
+        )
     return schema
 
 

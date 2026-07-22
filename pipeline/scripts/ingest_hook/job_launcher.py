@@ -28,6 +28,7 @@ _PASSTHROUGH_VALUES = (
     "AGENT3_WORKFLOW_REV", "AGENT3_EXPECTED_WORKFLOW_REV",
     "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
     "INGEST_LOAD_STAGING_ROOT",  # J5 real-loader staging output (mart refresh skipped)
+    "INGEST_LOAD_STAGING_DB",    # isolated jw_ingest_* target for table adapters
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
     "INGEST_INPUT_BACKEND",
     "INGEST_INPUT_ROOT",

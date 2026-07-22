@@ -8,7 +8,9 @@ from typing import Final
 
 DEFAULT_STAGE_SCHEMA: Final[str] = "jw_brand_activity_stage"
 KEYWORD_TABLE: Final[str] = "km_keyword_event_stage"
-BRAND_ACTIVITY_SCHEMA_PATTERN: Final = re.compile(r"^jw_brand_activity_[A-Za-z0-9_]+$")
+BRAND_ACTIVITY_SCHEMA_PATTERN: Final = re.compile(
+    r"^(?:jw_brand_activity_|jw_ingest_)[A-Za-z0-9_]+$"
+)
 
 
 def quote_schema_name(schema: str) -> str:

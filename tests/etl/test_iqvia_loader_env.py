@@ -104,3 +104,25 @@ def test_connect_still_raises_when_no_password(
 
     with pytest.raises(RuntimeError, match="password is not configured"):
         iqvia_loader.connect()
+
+
+def test_load_source_uses_the_explicit_target_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str | None] = []
+
+    class Connection:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        iqvia_loader,
+        "connect",
+        lambda database=None: captured.append(database) or Connection(),
+    )
+    monkeypatch.setattr(iqvia_loader, "loaded_sheet_keys", lambda *_args: set())
+
+    stats = iqvia_loader.load_source([], 100, target_database="jw_ingest_nsa_test")
+
+    assert captured == ["jw_ingest_nsa_test"]
+    assert stats.rows == 0

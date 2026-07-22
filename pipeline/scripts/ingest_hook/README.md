@@ -31,6 +31,8 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 | `sigma_gate.py` | Σ부분=전체 게이트 (staging 대상) |
 | `post_gate.py` | Σ·row coverage·비대상 source fingerprint JSON 판정 |
 | `load_verify.py` | ★M-2 게이트: 업로드 epoch 이 로더 출력에 실제 적재됐나(조용한 실패 차단) |
+| `category_table_load.py` | NSA/CSD/Keyword/MI Master canonical loader를 격리 `jw_ingest_*` DB에 연결 |
+| `row_count_verifier.py` | append/upsert와 전체교체를 구분해 before/after/loaded 증거 검증 |
 | `sweep.py` | 유실 감시 CronJob 본체 (정상 시 no-op) |
 
 ## 멱등·직렬화
@@ -49,7 +51,22 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 | `INGEST_JOB_NAMESPACE` | 기본 `llmops` |
 | `INGEST_REHEARSAL_ROOT` | 설정 시 job_runner 격리 모드 (sqlite staging, orchestrator 미호출) |
 | `INGEST_LOAD_STAGING_ROOT` | ★J5 실 로더 격리 출력 루트 (설정 시 mart refresh skip = staging-verify) |
+| `INGEST_LOAD_STAGING_DB` | table loader 격리 스키마(필수, `jw_ingest_*`만 허용). 배포 manifest에는 활성화 승인 전 미설정 |
 | `INGEST_LOAD_TARGET_ROOT` | J5 프로덕션 출력 루트 (D-3; refresh 실행). staging 미설정 시 필수 |
+
+## 카테고리 table loader 경계
+
+| 카테고리 | canonical 적재 경로 | 격리 table | 방식 |
+|---|---|---|---|
+| `iqvia_nsa` | `pipeline.etl.io.iqvia_loader.load_source` | `iqvia_nsa_quarterly_raw` | append + source sheet resume |
+| `iqvia_csd_channel` | `brand_activity.raw_db.load_sources` | `raw_csd_channel_dynamics` → `csd_channel_dynamics_stage` | raw append, stage 전체교체 |
+| `iqvia_csd_keyword` | `brand_activity.raw_db.load_sources` | `raw_keyword_events` → `km_keyword_event_stage` | raw append, stage 전체교체 |
+| `mi_master` | `brand_activity.master_market_group_load.load` | `stg_master_market_definition`, `stg_master_mapping_table` | 두 stage table 전체교체 |
+
+CSD/Keyword stage는 raw 전체의 최근 36개월을 `TRUNCATE + INSERT`로 재구축한다.
+따라서 primary 행수 증거는 raw append를 사용하고, stage는 `replace` 증거로 별도
+기록한다. 이 전체교체 경로와 suspend된 기존 CronJob을 동시에 활성화하면 충돌할
+수 있으므로 production 활성화 전 상호배제와 topic assignment 재실행을 별도 승인한다.
 
 ## 격리 리허설 (운영 무접촉 E2E)
 

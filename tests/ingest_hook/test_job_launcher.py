@@ -105,11 +105,13 @@ def test_rendered_job_env_minimal_without_s3(monkeypatch):
 
 def test_rendered_job_passes_load_staging_root(monkeypatch):
     monkeypatch.setenv("INGEST_LOAD_STAGING_ROOT", "/tmp/ingest-load-staging")
+    monkeypatch.setenv("INGEST_LOAD_STAGING_DB", "jw_ingest_stage_hook")
     monkeypatch.setenv("INGEST_COMPLETION_WEBHOOK_URL", "https://agent.invalid/ingest")
     monkeypatch.setenv("INGEST_COMPLETION_WEBHOOK_ATTEMPTS", "5")
     body = render_job(category="ubist", manifest_sha=SHA, manifest_path="_manifests/m.json", namespace="llmops")
     env = {e["name"]: e for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
+    assert env["INGEST_LOAD_STAGING_DB"]["value"] == "jw_ingest_stage_hook"
     assert env["INGEST_COMPLETION_WEBHOOK_URL"]["value"] == "https://agent.invalid/ingest"
     assert env["INGEST_COMPLETION_WEBHOOK_ATTEMPTS"]["value"] == "5"
 

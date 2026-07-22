@@ -20,12 +20,15 @@ from pipeline.scripts.etl.brand_activity.raw_staging import (
     csd_dedup_key,
     datasets_for_stage_scope,
     keyword_dedup_key,
+    recent_month_window,
 )
 
 
 DbValue: TypeAlias = str | int | None
 DbTuple: TypeAlias = tuple[DbValue, ...]
-BRAND_ACTIVITY_SCHEMA_PATTERN: Final = re.compile(r"^jw_brand_activity_[A-Za-z0-9_]+$")
+BRAND_ACTIVITY_SCHEMA_PATTERN: Final = re.compile(
+    r"^(?:jw_brand_activity_|jw_ingest_)[A-Za-z0-9_]+$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,7 @@ class LoadStats:
     raw_before: dict[str, int]
     raw_after: dict[str, int]
     inserted: dict[str, int]
+    stage_before: dict[str, int]
     stage_rows: dict[str, int]
 
 
@@ -65,7 +69,12 @@ def quote_stage_name(schema: str, expected: str) -> str:
     return schema
 
 
-def load_sources(config: DbConfig, rows: SourceRows, window: tuple[str, str], stage_scope: StageScope = "all") -> LoadStats:
+def load_sources(
+    config: DbConfig,
+    rows: SourceRows,
+    window: tuple[str, str] | None,
+    stage_scope: StageScope = "all",
+) -> LoadStats:
     """Insert raw rows idempotently and refresh derived stage tables."""
     import pymysql
 
@@ -89,15 +98,34 @@ def load_sources(config: DbConfig, rows: SourceRows, window: tuple[str, str], st
             if "keyword" in datasets:
                 _execute_ddl(cursor, keyword_stage_ddl(stage_schema))
             before = _raw_counts(cursor, raw_schema, datasets)
+            stage_before = _stage_counts(cursor, stage_schema, datasets)
             inserted: dict[str, int] = {}
             if "csd" in datasets:
                 inserted["raw_csd_channel_dynamics"] = _insert_csd(cursor, raw_schema, rows.csd)
             if "keyword" in datasets:
                 inserted["raw_keyword_events"] = _insert_keyword(cursor, raw_schema, rows.keyword)
             after = _raw_counts(cursor, raw_schema, datasets)
-            stage_rows = refresh_stage(cursor, raw_schema, stage_schema, window, stage_scope=stage_scope)
+            effective_window = window
+            if effective_window is None:
+                max_period = _max_raw_period(cursor, raw_schema, datasets)
+                if max_period is None:
+                    raise ValueError(f"no raw rows available for stage_scope={stage_scope}")
+                effective_window = recent_month_window(max_period)
+            stage_rows = refresh_stage(
+                cursor,
+                raw_schema,
+                stage_schema,
+                effective_window,
+                stage_scope=stage_scope,
+            )
         connection.commit()
-        return LoadStats(raw_before=before, raw_after=after, inserted=inserted, stage_rows=stage_rows)
+        return LoadStats(
+            raw_before=before,
+            raw_after=after,
+            inserted=inserted,
+            stage_before=stage_before,
+            stage_rows=stage_rows,
+        )
     except pymysql.MySQLError:
         connection.rollback()
         raise
@@ -130,6 +158,33 @@ def _raw_tables_for_datasets(datasets: tuple[StageDataset, ...]) -> tuple[str, .
     if "keyword" in datasets:
         tables.append("raw_keyword_events")
     return tuple(tables)
+
+
+def _stage_counts(cursor: object, schema: str, datasets: tuple[StageDataset, ...]) -> dict[str, int]:
+    tables: list[str] = []
+    if "csd" in datasets:
+        tables.append("csd_channel_dynamics_stage")
+    if "keyword" in datasets:
+        tables.append("km_keyword_event_stage")
+    result: dict[str, int] = {}
+    for table in tables:
+        cursor.execute(f"SELECT COUNT(*) FROM `{schema}`.`{table}`")
+        result[table] = int(cursor.fetchone()[0])
+    return result
+
+
+def _max_raw_period(
+    cursor: object,
+    schema: str,
+    datasets: tuple[StageDataset, ...],
+) -> str | None:
+    maxima: list[str] = []
+    for table in _raw_tables_for_datasets(datasets):
+        cursor.execute(f"SELECT MAX(period_ym) FROM `{schema}`.`{table}`")
+        value = cursor.fetchone()[0]
+        if value:
+            maxima.append(str(value))
+    return max(maxima) if maxima else None
 
 
 def _insert_csd(cursor: object, schema: str, rows: list[CsdSourceRow]) -> int:

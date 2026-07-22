@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 
 from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.app import IngestService, create_app
-from pipeline.scripts.ingest_hook.category_stage import DEDUP_POLICIES, TARGET_TABLES
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
@@ -161,27 +160,15 @@ def test_legacy_category_new_upload_is_rejected_but_history_remains_queryable(
         ("mi_master", _mi_master, "2026-03"),
     ],
 )
-def test_v1_real_category_stage_materializes_verified_artifact(
+def test_v1_new_categories_use_the_table_loader_contract(
     tmp_path, monkeypatch, category, builder, epoch
 ):
-    workbook = tmp_path / f"{category}.xlsx"
-    builder(workbook)
-    manifest = load_manifest(_manifest(tmp_path, category, workbook, epoch, None))
-    target_root = tmp_path / "isolated-staging"
-    monkeypatch.setenv(config.ENV_LOAD_STAGING_ROOT, str(target_root))
-    monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
+    spec = resolve_category(category)
 
-    result = job_runner._real_load(manifest, resolve_category(category), tmp_path)
-
-    assert result["staging_verify"] is True
-    assert result["epoch_rows"] >= 1
-    payload = json.loads((result["target_dir"] / "_manifest.json").read_text())
-    assert payload["target_table"] == TARGET_TABLES[category]
-    assert payload["dedup_policy"] == DEDUP_POLICIES[category]
-    staged = result["target_dir"] / payload["partitions"][0]["path"]
-    assert staged.read_bytes() == workbook.read_bytes()
-    metadata = json.loads((result["target_dir"] / payload["partitions"][0]["metadata_path"]).read_text())
-    assert metadata["source_sha256"] == hashlib.sha256(workbook.read_bytes()).hexdigest()
+    assert "pipeline.scripts.ingest_hook.category_table_load" in spec.load_argv
+    assert spec.load_verify == "table_manifest"
+    assert spec.load_batch_files is True
+    assert spec.production_load_supported is False
 
 
 @pytest.mark.parametrize(

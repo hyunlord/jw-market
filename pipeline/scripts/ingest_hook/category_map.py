@@ -60,11 +60,12 @@ class CategorySpec:
     # so G3 and the loader can never diverge (one contract, not two). "ubist"
     # reuses ubist_loader.summarize_source (header-area only, fast on 80MB files).
     workbook_reader: str | None = None
-    # True when the command only materializes a parser-verified artifact under
-    # INGEST_LOAD_STAGING_ROOT. Such a category must fail closed if a deployment
-    # switches to INGEST_LOAD_TARGET_ROOT before its production table loader is
-    # wired; a copied workbook is not a successful production load.
-    staging_only_load: bool = False
+    # True when all files must be passed to one loader invocation so its row
+    # counts describe the submission atomically rather than one workbook.
+    load_batch_files: bool = False
+    # New table adapters are deliberately staging-only until a separate PL gate
+    # provisions production schemas and enables mart refresh.
+    production_load_supported: bool = True
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -75,8 +76,8 @@ def _orchestrator(*args: str) -> tuple[str, ...]:
     return (PY, "-m", "pipeline.orchestrator", "run", "--mode", "incremental", *args)
 
 
-def _category_stage(category: str) -> tuple[str, ...]:
-    return (PY, "-m", "pipeline.scripts.ingest_hook.category_stage", "--category", category)
+def _category_table_load(category: str) -> tuple[str, ...]:
+    return (PY, "-m", "pipeline.scripts.ingest_hook.category_table_load", "--category", category)
 
 
 CATEGORIES: tuple[CategorySpec, ...] = (
@@ -104,35 +105,38 @@ CATEGORIES: tuple[CategorySpec, ...] = (
     CategorySpec(
         key="iqvia_nsa", description="IQVIA NSA quarterly workbook",
         required_columns=(), period_column=None,
-        load_argv=_category_stage("iqvia_nsa"), refresh_argv=_orchestrator(),
+        load_argv=_category_table_load("iqvia_nsa"), refresh_argv=_orchestrator(),
         sigma_source="iqvia_nsa", load_input_flag="--file",
         load_target_flag="--target-dir", load_epoch_flag="--epoch",
-        load_verify="category_manifest", workbook_reader="iqvia_nsa",
-        staging_only_load=True,
+        load_verify="table_manifest", workbook_reader="iqvia_nsa",
+        load_batch_files=True, production_load_supported=False,
     ),
     CategorySpec(
         key="iqvia_csd_channel", description="IQVIA CSD channel dynamics workbook",
         required_columns=(), period_column=None,
-        load_argv=_category_stage("iqvia_csd_channel"), refresh_argv=(),
+        load_argv=_category_table_load("iqvia_csd_channel"), refresh_argv=(),
         load_input_flag="--file", load_target_flag="--target-dir",
-        load_epoch_flag="--epoch", load_verify="category_manifest",
-        workbook_reader="iqvia_csd_channel", staging_only_load=True,
+        load_epoch_flag="--epoch", load_verify="table_manifest",
+        workbook_reader="iqvia_csd_channel", load_batch_files=True,
+        production_load_supported=False,
     ),
     CategorySpec(
         key="iqvia_csd_keyword", description="IQVIA CSD keyword workbook",
         required_columns=(), period_column=None,
-        load_argv=_category_stage("iqvia_csd_keyword"), refresh_argv=(),
+        load_argv=_category_table_load("iqvia_csd_keyword"), refresh_argv=(),
         load_input_flag="--file", load_target_flag="--target-dir",
-        load_epoch_flag="--epoch", load_verify="category_manifest",
-        workbook_reader="iqvia_csd_keyword", staging_only_load=True,
+        load_epoch_flag="--epoch", load_verify="table_manifest",
+        workbook_reader="iqvia_csd_keyword", load_batch_files=True,
+        production_load_supported=False,
     ),
     CategorySpec(
         key="mi_master", description="MI Master workbook resubmission",
         required_columns=(), period_column=None,
-        load_argv=_category_stage("mi_master"), refresh_argv=_orchestrator(),
+        load_argv=_category_table_load("mi_master"), refresh_argv=_orchestrator(),
         load_input_flag="--file", load_target_flag="--target-dir",
-        load_epoch_flag="--epoch", load_verify="category_manifest",
-        workbook_reader="mi_master", staging_only_load=True,
+        load_epoch_flag="--epoch", load_verify="table_manifest",
+        workbook_reader="mi_master",
+        load_batch_files=True, production_load_supported=False,
     ),
     CategorySpec(
         key="skeleton",

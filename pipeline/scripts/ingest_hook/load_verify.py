@@ -18,6 +18,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pipeline.scripts.ingest_hook.row_count_verifier import (
+    LoadKind,
+    RowCountEvidence,
+    RowCountVerificationError,
+    verify_row_counts,
+)
+
 
 class LoadVerifyError(RuntimeError):
     """The uploaded epoch is not present in the load output (silent-failure guard)."""
@@ -65,29 +72,42 @@ _VERIFIERS = {
 }
 
 
-def _verify_category_manifest(target_dir: Path, epoch: str) -> int:
+def verify_table_load(target_dir: Path, epoch: str) -> RowCountEvidence:
+    """Parse and verify count evidence emitted by a real table adapter."""
     manifest_path = target_dir / "_manifest.json"
     if not manifest_path.is_file():
-        raise LoadVerifyError(f"load produced no manifest at {manifest_path}")
+        raise LoadVerifyError(f"table load produced no manifest at {manifest_path}")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as exc:
-        raise LoadVerifyError(f"load manifest unreadable ({manifest_path}): {exc}") from exc
-    partitions = manifest.get("partitions", []) if isinstance(manifest, dict) else []
-    matching = [item for item in partitions if str(item.get("period_yyyymm")) == epoch]
-    if not matching:
-        raise LoadVerifyError(f"epoch {epoch} absent from category staging manifest")
-    rows = sum(item.get("row_count", 0) for item in matching)
-    if not isinstance(rows, int) or rows <= 0:
-        raise LoadVerifyError(f"epoch {epoch} row_count={rows!r} (<= 0): nothing loaded")
-    for item in matching:
-        artifact = target_dir / str(item.get("path", ""))
-        if not artifact.is_file():
-            raise LoadVerifyError(f"category staging artifact missing: {artifact}")
-    return rows
+        if manifest.get("schema_version") != "ingest-table-load-v1":
+            raise LoadVerifyError(f"unexpected table manifest schema: {manifest.get('schema_version')!r}")
+        if str(manifest.get("epoch")) != epoch:
+            raise LoadVerifyError(
+                f"table manifest epoch mismatch: expected={epoch} actual={manifest.get('epoch')!r}"
+            )
+        primary = manifest["primary"]
+        evidence = RowCountEvidence(
+            schema=str(primary["schema"]),
+            table=str(primary["table"]),
+            kind=LoadKind(str(primary["kind"])),
+            rows_before=int(primary["rows_before"]),
+            rows_after=int(primary["rows_after"]),
+            rows_loaded=int(primary["rows_loaded"]),
+            source_rows=int(primary["source_rows"]),
+            difference_reasons=tuple(str(item) for item in primary.get("difference_reasons", [])),
+        )
+        return verify_row_counts(evidence)
+    except LoadVerifyError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError, RowCountVerificationError) as exc:
+        raise LoadVerifyError(f"invalid table load evidence: {exc}") from exc
 
 
-_VERIFIERS["category_manifest"] = _verify_category_manifest
+def _verify_table_manifest(target_dir: Path, epoch: str) -> int:
+    return verify_table_load(target_dir, epoch).rows_after
+
+
+_VERIFIERS["table_manifest"] = _verify_table_manifest
 
 
 def verify_epoch_loaded(kind: str, target_dir: Path, epoch: str) -> int:
