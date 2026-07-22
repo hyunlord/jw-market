@@ -437,7 +437,7 @@ def test_cached_cause_response_nulls_first_growth_point_when_series_is_already_p
 
 
 def test_dynamic_output_changes_invalidate_legacy_response_cache() -> None:
-    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v6-contiguous-rankings-range-baseline"
+    assert CACHE_SCHEMA_VERSION == "dynamic-market-response-v7-exclusive-brand-cagr"
 
 
 def _metrics(

@@ -422,6 +422,7 @@ def _build_market_status_card(
         "market_size_recent": None,
         "market_cagr_5y_pct": None,
         "brand_cagr_5y_pct": None,
+        "brand_cagr_3y_pct": None,
         "excess_growth_pct": None,
         "source_label": _default_source(sources),
         "is_dual_source": bool(meta.is_dual_source),
@@ -460,12 +461,14 @@ def _build_market_status_card(
 
         market_context = _market_context_snapshot(ml_id, latest, market_context_cache)
         brand_cagr = _float_or_none(snapshot.get("cagr_5y"))
+        brand_cagr_3y = _float_or_none(snapshot.get("cagr_3y")) if brand_cagr is None else None
         market_cagr = _float_or_none(snapshot.get("market_cagr_5y"))
         back_extended.update(
             {
                 "market_size_recent": _round_or_none(_float_or_none(market_context.get("market_size_recent")), 2),
                 "market_cagr_5y_pct": _pct(market_cagr),
-                "brand_cagr_5y_pct": _pct(brand_cagr),
+                "brand_cagr_5y_pct": _pct(brand_cagr, 4),
+                "brand_cagr_3y_pct": _pct(brand_cagr_3y, 4),
                 "excess_growth_pct": _round_or_none((brand_cagr - market_cagr) * 100, 2)
                 if brand_cagr is not None and market_cagr is not None
                 else None,
