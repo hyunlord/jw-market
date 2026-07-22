@@ -784,6 +784,65 @@ def events_raw_gap(conn: pymysql.connections.Connection) -> int:
         return int(cursor.fetchone()["gap"] or 0)
 
 
+def pending_exact_gap(
+    conn: pymysql.connections.Connection,
+    *,
+    source_processor: str,
+    target_processor: str,
+) -> int:
+    """Return exact-rule brand pairs that still lack target scoring rows."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS gap
+            FROM event_brand_scores candidate
+            WHERE candidate.source_processor = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM event_brand_scores scored
+                  WHERE scored.news_id = candidate.news_id
+                    AND scored.brand_canonical = candidate.brand_canonical
+                    AND scored.source_processor = %s
+              )
+            """,
+            (source_processor, target_processor),
+        )
+        return int(cursor.fetchone()["gap"] or 0)
+
+
+def _selected_pending_gap(
+    conn: pymysql.connections.Connection,
+    *,
+    items: Sequence[NewsScoringInput],
+    target_processor: str,
+) -> int:
+    required = {
+        (item.news_id, brand.brand_name)
+        for item in items
+        for brand in item.brands
+    }
+    if not required:
+        return 0
+    news_ids = sorted({news_id for news_id, _brand in required})
+    placeholders = ",".join(["%s"] * len(news_ids))
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT news_id, brand_canonical
+            FROM event_brand_scores
+            WHERE source_processor = %s
+              AND news_id IN ({placeholders})
+            """,
+            (target_processor, *news_ids),
+        )
+        present = {
+            (str(row["news_id"]), str(row["brand_canonical"]))
+            for row in cursor.fetchall()
+        }
+    return len(required - present)
+
+
 def sync_missing_events_raw(
     conn: pymysql.connections.Connection,
     *,
@@ -903,6 +962,16 @@ def run_append_live(
         "source_after": source_after,
         "target_before": target_before,
         "target_after": processor_snapshot(conn, target_processor),
+        "pending_gap": _selected_pending_gap(
+            conn,
+            items=items,
+            target_processor=target_processor,
+        ),
+        "pending_global_gap": pending_exact_gap(
+            conn,
+            source_processor=source_processor,
+            target_processor=target_processor,
+        ),
         "elapsed_sec": round(time.time() - started, 3),
     }
 
@@ -1349,6 +1418,10 @@ def main() -> int:
     sync_parser = subparsers.add_parser("sync-events-raw")
     sync_parser.add_argument("--retries", type=int, default=1)
 
+    gate_parser = subparsers.add_parser("gate-status")
+    gate_parser.add_argument("--source-processor", default=TIER2_EXACT_PROCESSOR)
+    gate_parser.add_argument("--target-processor", default=PENDING_SOURCE_PROCESSOR)
+
     refresh_parser = subparsers.add_parser("refresh-live-categories")
     refresh_parser.add_argument("--dry-run", action="store_true")
 
@@ -1392,6 +1465,17 @@ def main() -> int:
             )
         elif args.command == "sync-events-raw":
             summary = sync_missing_events_raw(conn, retries=args.retries)
+        elif args.command == "gate-status":
+            summary = {
+                "events_raw_gap": events_raw_gap(conn),
+                "pending_gap": pending_exact_gap(
+                    conn,
+                    source_processor=args.source_processor,
+                    target_processor=args.target_processor,
+                ),
+                "source_processor": args.source_processor,
+                "target_processor": args.target_processor,
+            }
         elif args.command == "refresh-live-categories":
             dry_run = bool(args.dry_run)
             affected = update_live_tier2_categories(conn, dry_run=dry_run)

@@ -18,6 +18,7 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     find_workflow_text,
     insert_live_rows,
     parse_wf324_response,
+    pending_exact_gap,
     score_tier,
     scoped_event_id,
     sync_missing_events_raw,
@@ -119,6 +120,33 @@ class CategoryConnection:
         self.commits += 1
 
 
+class PendingGapCursor:
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: tuple[object, ...] = ()
+
+    def __enter__(self) -> "PendingGapCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        self.sql = sql
+        self.params = params
+
+    def fetchone(self) -> dict[str, int]:
+        return {"gap": 4}
+
+
+class PendingGapConnection:
+    def __init__(self) -> None:
+        self.cursor_obj = PendingGapCursor()
+
+    def cursor(self) -> PendingGapCursor:
+        return self.cursor_obj
+
+
 def test_default_workflow_targets_ga_rebuild() -> None:
     assert DEFAULT_DEPLOYMENT_ID == 1453
     assert DEFAULT_WORKFLOW_ID == 337
@@ -185,6 +213,23 @@ def test_events_raw_sync_inserts_only_missing_rows_and_requires_zero_gap() -> No
     assert "ON DUPLICATE KEY UPDATE" not in sql
     assert "UPDATE events_raw" not in sql
     assert conn.commits == 1
+
+
+def test_pending_gap_counts_exact_brand_pairs_without_target_scores() -> None:
+    conn = PendingGapConnection()
+
+    gap = pending_exact_gap(
+        conn,
+        source_processor="tier2_exact_rule_v1",
+        target_processor=PENDING_SOURCE_PROCESSOR,
+    )
+
+    assert gap == 4
+    assert "COUNT(*) AS gap" in conn.cursor_obj.sql
+    assert "NOT EXISTS" in conn.cursor_obj.sql
+    assert "scored.news_id = candidate.news_id" in conn.cursor_obj.sql
+    assert "scored.brand_canonical = candidate.brand_canonical" in conn.cursor_obj.sql
+    assert conn.cursor_obj.params == ("tier2_exact_rule_v1", PENDING_SOURCE_PROCESSOR)
 
 
 def test_category_refresh_includes_v1_and_v2_but_excludes_tier1_news() -> None:

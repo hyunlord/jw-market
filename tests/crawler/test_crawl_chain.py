@@ -18,6 +18,7 @@ STAGES = (
 
 
 def _fake_stage_script(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     script = tmp_path / "crawl_chain_steps.sh"
     script.write_text(
         """#!/bin/sh
@@ -29,6 +30,9 @@ printf '%s\\n' "$stage" > "$CHAIN_STAGE_OUTPUT_DIR/result.txt"
 if [ "${CHAIN_TEST_FAIL_STAGE:-}" = "$stage" ]; then
   exit 41
 fi
+cat > "$CHAIN_STAGE_OUTPUT_DIR/stage_gate.json" <<EOF
+{"schema":"crawl-stage-gate/v1","stage":"$stage","exit_code":0,"failures":${CHAIN_TEST_REPORTED_FAILURES:-0},"events_raw_gap":${CHAIN_TEST_EVENTS_RAW_GAP:-0},"pending_gap":${CHAIN_TEST_PENDING_GAP:-0}}
+EOF
 """,
         encoding="utf-8",
     )
@@ -40,6 +44,9 @@ def _run(
     tmp_path: Path,
     *args: str,
     fail_stage: str = "",
+    reported_failures: int = 0,
+    events_raw_gap: int = 0,
+    pending_gap: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     stage_script = _fake_stage_script(tmp_path)
     env = os.environ.copy()
@@ -47,6 +54,9 @@ def _run(
         {
             "CHAIN_TEST_LOG": str(tmp_path / "stages.log"),
             "CHAIN_TEST_FAIL_STAGE": fail_stage,
+            "CHAIN_TEST_REPORTED_FAILURES": str(reported_failures),
+            "CHAIN_TEST_EVENTS_RAW_GAP": str(events_raw_gap),
+            "CHAIN_TEST_PENDING_GAP": str(pending_gap),
             "CRAWL_CHAIN_COMMAND_REVISION": "test-revision",
             "CRAWL_CHAIN_TIMEOUT_TIER1_COLLECT": "5",
             "CRAWL_CHAIN_TIMEOUT_TIER1_CLASSIFY": "5",
@@ -238,3 +248,33 @@ def test_status_fails_cleanly_when_a_receipt_is_corrupt(tmp_path: Path) -> None:
     # Then: operators receive a bounded non-zero result, not a Python traceback.
     assert status.returncode == 2
     assert "Traceback" not in status.stderr
+
+
+def test_chain_rejects_exit_zero_when_stage_reports_failures(tmp_path: Path) -> None:
+    result = _run(tmp_path, reported_failures=1)
+
+    assert result.returncode != 0
+    assert _stage_log(tmp_path) == [STAGES[0]]
+    receipt = json.loads(
+        (
+            tmp_path
+            / "state"
+            / "runs"
+            / "2026-07-21T03-10-00+09-00"
+            / "receipts"
+            / f"{STAGES[0]}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["status"] == "failed"
+    assert receipt["error_code"] == "reported_failures"
+    assert receipt["failures"] == 1
+
+
+def test_chain_rejects_zero_exit_when_either_gap_is_nonzero(tmp_path: Path) -> None:
+    events_gap = _run(tmp_path / "events", events_raw_gap=3)
+    pending = _run(tmp_path / "pending", pending_gap=2)
+
+    assert events_gap.returncode != 0
+    assert pending.returncode != 0
+    assert _stage_log(tmp_path / "events") == [STAGES[0]]
+    assert _stage_log(tmp_path / "pending") == [STAGES[0]]
