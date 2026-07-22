@@ -3969,7 +3969,7 @@ def build_response(
     # Exclusive 5y/3y market CAGR: report the horizon explicitly instead of the
     # legacy silent 5y→3y fallback so the consumer can tell which window applies.
     market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series)
-    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(_metric_history(target))
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(_metric_history(brand_row))
 
     return {
         "brand": brand_row["brand_name"],
