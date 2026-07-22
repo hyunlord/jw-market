@@ -74,6 +74,28 @@ def test_cagr_slots_are_exclusive(start_period: str, expect_5y: bool, expect_3y:
     assert not (has_5y and has_3y)
 
 
+@pytest.mark.parametrize(
+    ("start_period", "expect_5y", "expect_3y"),
+    [
+        ("2021-05", True, False),
+        ("2023-05", False, True),
+        ("2025-05", False, False),
+    ],
+)
+def test_general_cause_brand_cagr_slots_are_present_and_exclusive(
+    start_period: str,
+    expect_5y: bool,
+    expect_3y: bool,
+) -> None:
+    kpi = _kpi(start_period)
+
+    has_5y = kpi["brand_cagr_5y_pct"] is not None
+    has_3y = kpi["brand_cagr_3y_pct"] is not None
+    assert has_5y is expect_5y
+    assert has_3y is expect_3y
+    assert not (has_5y and has_3y)
+
+
 def test_iqvia_uses_only_the_19_quarter_substitute_for_five_year_cagr() -> None:
     # Given: quarterly endpoints at 20, 19, and 18 quarters before 2026-Q1.
     exact_20q = _quarterly_series("2021-Q1", "2026-Q1", 100.0, 200.0)

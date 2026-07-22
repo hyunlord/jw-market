@@ -478,6 +478,22 @@ def series_cagr(series: dict[str, Any] | None) -> float | None:
     return None
 
 
+def _cagr_exclusive(
+    series: dict[str, Any] | None,
+    *,
+    precision: int,
+) -> tuple[float | None, float | None]:
+    """Return exclusive endpoint CAGR slots at the requested JSON precision."""
+
+    cagr_5y = endpoint_cagr(series, 5).get("cagr_pct")
+    if cagr_5y is not None:
+        return round(float(cagr_5y), precision), None
+    cagr_3y = endpoint_cagr(series, 3).get("cagr_pct")
+    if cagr_3y is not None:
+        return None, round(float(cagr_3y), precision)
+    return None, None
+
+
 def market_cagr_exclusive(series: dict[str, Any] | None) -> tuple[float | None, float | None]:
     """Return ``(cagr_5y_pct, cagr_3y_pct)`` under an *exclusive* endpoint policy.
 
@@ -492,13 +508,18 @@ def market_cagr_exclusive(series: dict[str, Any] | None) -> tuple[float | None, 
     The two slots are never both non-null. ``None`` means "not computable" and
     must not be coerced to ``0``.
     """
-    cagr_5y = endpoint_cagr(series, 5).get("cagr_pct")
-    if cagr_5y is not None:
-        return round(float(cagr_5y), 2), None
-    cagr_3y = endpoint_cagr(series, 3).get("cagr_pct")
-    if cagr_3y is not None:
-        return None, round(float(cagr_3y), 2)
-    return None, None
+    return _cagr_exclusive(series, precision=2)
+
+
+def brand_cagr_exclusive(series: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    """Return exclusive brand CAGR slots without losing mart-level precision.
+
+    Endpoint selection is intentionally shared with market CAGR, including the
+    IQVIA-only 19-quarter substitute implemented by :func:`endpoint_cagr`.
+    Monthly histories therefore keep their exact 5y/3y endpoint policy.
+    """
+
+    return _cagr_exclusive(series, precision=4)
 
 
 def iqvia_period_to_display(period: str | None) -> str | None:

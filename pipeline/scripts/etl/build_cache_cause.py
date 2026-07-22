@@ -36,6 +36,7 @@ from cache_build_common import (
     MEASURES_BY_SOURCE,
     active_catalog_member_rows,
     api_source,
+    brand_cagr_exclusive,
     calculate_ei_with_fallback,
     decode_json,
     dump_payload,
@@ -3968,6 +3969,7 @@ def build_response(
     # Exclusive 5y/3y market CAGR: report the horizon explicitly instead of the
     # legacy silent 5y→3y fallback so the consumer can tell which window applies.
     market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series)
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(_metric_history(target))
 
     return {
         "brand": brand_row["brand_name"],
@@ -3983,6 +3985,8 @@ def build_response(
                 "market_size_recent": series_latest_number(market_series),
                 "market_cagr_5y_pct": market_cagr_5y,
                 "market_cagr_3y_pct": market_cagr_3y,
+                "brand_cagr_5y_pct": brand_cagr_5y,
+                "brand_cagr_3y_pct": brand_cagr_3y,
                 "top3_share_pct": top3_share(sibling_rows),
                 "hhi_recent": hhi_recent,
                 "direct_competition_count": direct_competition_count,

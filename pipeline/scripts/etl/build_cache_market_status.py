@@ -11,6 +11,7 @@ from typing import Any
 from cache_build_common import (
     API_TO_SOURCE,
     active_catalog_member_rows,
+    brand_cagr_exclusive,
     catalog_input_manifest,
     CANONICAL_25,
     current_build_sha,
@@ -266,6 +267,7 @@ def build_brand_card(
     sources = _ordered_sources(meta_sources or brand_row["sources"])
     atc_codes = _catalog_atc_codes(market)
     brand_cagr = _ratio_to_pct_5y_then_3y(ext_recent)
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(metric_history)
     # 헤드라인 market CAGR은 "시장 자체" endpoint 기준이다.
     # cause payload의 per-brand EI는 브랜드 시작값이 0이면 3년으로 fallback될 수
     # 있으나, market-status 헤더는 브랜드별 fallback에 오염되면 안 된다.
@@ -325,7 +327,8 @@ def build_brand_card(
         "back_extended": {
             "market_size_recent": market_recent,
             "market_cagr_5y_pct": market_cagr,
-            "brand_cagr_5y_pct": brand_cagr,
+            "brand_cagr_5y_pct": brand_cagr_5y,
+            "brand_cagr_3y_pct": brand_cagr_3y,
             "excess_growth_pct": excess_growth,
             "source_label": _source_label(sources),
             "is_dual_source": len(sources) > 1,

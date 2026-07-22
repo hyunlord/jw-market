@@ -261,6 +261,46 @@ def test_market_status_kpi_total_uses_order_independent_decimal_sum() -> None:
     assert market_status.build_kpi("UBIST", rows)["total_sales_recent_krw"] == 1.0
 
 
+def test_market_status_keeps_legacy_fallback_but_labels_extended_three_year_slot() -> None:
+    metric_history = {
+        "2023-05": {"raw_value": 100.0, "ms": 10.0},
+        "2026-05": {"raw_value": 90.0, "ms": 9.0, "rank": 1},
+    }
+    sales_row = {
+        "source": "ubist",
+        "measure": "sales",
+        "ml_id": "ml_test",
+        "metric_history": metric_history,
+        "extended_metric_history": {
+            "2026-05": {"cagr_5y": None, "cagr_3y": ((90.0 / 100.0) ** (1 / 3) - 1)},
+        },
+    }
+    card = market_status.build_brand_card(
+        brand_row={
+            "brand": "테스트브랜드",
+            "market_id": "general:ml_test",
+            "is_target": True,
+            "sources": ["UBIST"],
+            "catalog_row": {"ml_id": "ml_test"},
+        },
+        market={"name": "테스트시장", "atc_codes_json": []},
+        sales_rows=[sales_row],
+        market_rows={
+            ("ml_test", "ubist", "sales"): {
+                "market_size_series": {
+                    "2023-05": {"raw_value": 1_000.0},
+                    "2026-05": {"raw_value": 1_100.0},
+                }
+            }
+        },
+        strategic_brand=None,
+    )
+
+    assert card["back"]["cagr_5y_pct"] == pytest.approx(((90.0 / 100.0) ** (1 / 3) - 1) * 100)
+    assert card["back_extended"]["brand_cagr_5y_pct"] is None
+    assert card["back_extended"]["brand_cagr_3y_pct"] == pytest.approx(-3.4511)
+
+
 def test_catalog_manifest_records_source_provenance() -> None:
     manifest = cache_build_common.decode_json(cache_build_common.catalog_input_manifest({
         "ml_market": [{

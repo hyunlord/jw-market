@@ -662,6 +662,8 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     )
 
     assert result is not None
+    assert result["data"]["kpi"]["brand_cagr_5y_pct"] is None
+    assert result["data"]["kpi"]["brand_cagr_3y_pct"] is None
     assert len(build_calls) == 1
     assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]
     assert competition_calls[0]["rank_series_cache"] is trend_calls[0]["rank_series_cache"]

@@ -16,7 +16,7 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     safe_pct,
 )
 from pipeline.scripts.api.dynamic_market.types import AggregatedMetrics, BrandMetric
-from pipeline.scripts.etl.cache_build_common import market_cagr_exclusive
+from pipeline.scripts.etl.cache_build_common import brand_cagr_exclusive, market_cagr_exclusive
 
 
 def matrix_growth_value(
@@ -192,10 +192,13 @@ def kpi(
     market_series_points = market_size_series(metrics)
     market_series_map = {str(point["period"]): point for point in market_series_points}
     market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series_map)
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(history(focus))
     return {
         "market_size_recent": latest_market_value(market_series_points),
         "market_cagr_5y_pct": market_cagr_5y,
         "market_cagr_3y_pct": market_cagr_3y,
+        "brand_cagr_5y_pct": brand_cagr_5y,
+        "brand_cagr_3y_pct": brand_cagr_3y,
         "top3_share_pct": top3_share,
         "hhi_recent": hhi_recent,
         "direct_competition_count": len(metrics.all_brands),

@@ -45,6 +45,7 @@ class BackExtendedMetrics(BaseModel):
     market_size_recent: float | None = None
     market_cagr_5y_pct: float | None = None
     brand_cagr_5y_pct: float | None = None
+    brand_cagr_3y_pct: float | None = None
     excess_growth_pct: float | None = None
     source_label: str
     is_dual_source: bool

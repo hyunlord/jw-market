@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pipeline" / "scripts" / "etl"))
 
-from cache_build_common import iqvia_period_to_display, market_cagr_exclusive
+from cache_build_common import brand_cagr_exclusive, iqvia_period_to_display, market_cagr_exclusive
 
 
 def _monthly(start_year: int, end_year: int, start_value: float, end_value: float) -> dict[str, float]:
@@ -60,6 +60,50 @@ def test_exclusivity_invariant_never_both_non_null(series: dict[str, float]) -> 
     # ★ failure injection: a silent 5y→3y fallback would set both slots.
     cagr_5y, cagr_3y = market_cagr_exclusive(series)
     assert not (cagr_5y is not None and cagr_3y is not None)
+
+
+def test_brand_cagr_keeps_four_decimal_precision_and_exclusive_slots() -> None:
+    five_year = _monthly(2021, 2026, 100.0, 121.0)
+    three_year = _monthly(2023, 2026, 100.0, 90.0)
+
+    expected_5y = round(((121.0 / 100.0) ** (1 / 5) - 1) * 100, 4)
+    assert brand_cagr_exclusive(five_year) == (pytest.approx(expected_5y), None)
+    assert brand_cagr_exclusive(three_year) == (None, pytest.approx(-3.4511))
+
+
+def test_brand_iqvia_uses_19_quarters_but_never_18_for_five_year_slot() -> None:
+    periods = _quarter_labels("2021-Q2", "2026-Q1")
+    nineteen_quarters = {period: 100.0 + index for index, period in enumerate(periods)}
+    eighteen_quarters = dict(list(nineteen_quarters.items())[1:])
+    expected = round(((119.0 / 100.0) ** (1 / 4.75) - 1) * 100, 4)
+
+    assert brand_cagr_exclusive(nineteen_quarters) == (pytest.approx(expected), None)
+    assert brand_cagr_exclusive(eighteen_quarters)[0] is None
+
+
+def test_brand_monthly_history_does_not_use_adjacent_month_for_five_year_slot() -> None:
+    months = {
+        f"{2021 + (4 + offset) // 12:04d}-{(4 + offset) % 12 + 1:02d}": 100.0 + offset
+        for offset in range(60)
+    }
+
+    cagr_5y, cagr_3y = brand_cagr_exclusive(months)
+
+    assert cagr_5y is None
+    assert cagr_3y is not None
+
+
+def _quarter_labels(start: str, end: str) -> tuple[str, ...]:
+    year, quarter = (int(item) for item in start.replace("-Q", "-").split("-"))
+    end_year, end_quarter = (int(item) for item in end.replace("-Q", "-").split("-"))
+    result: list[str] = []
+    while (year, quarter) <= (end_year, end_quarter):
+        result.append(f"{year}-Q{quarter}")
+        quarter += 1
+        if quarter == 5:
+            year += 1
+            quarter = 1
+    return tuple(result)
 
 
 @pytest.mark.parametrize(

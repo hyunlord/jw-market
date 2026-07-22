@@ -28,7 +28,7 @@ from pipeline.scripts.api.market_scope.legacy_shape import (
     period_unit,
 )
 from pipeline.scripts.api.market_scope.periods import sort_periods, sorted_period_items
-from pipeline.scripts.etl.cache_build_common import market_cagr_exclusive
+from pipeline.scripts.etl.cache_build_common import brand_cagr_exclusive, market_cagr_exclusive
 
 
 def recompute_strategy_payload(
@@ -221,10 +221,13 @@ def _kpi(
         if latest is not None and history.get(latest, 0.0) > 0
     ]
     market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_size)
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(brand_histories.get(focus_brand_key))
     return {
         "market_size_recent": market_recent,
         "market_cagr_5y_pct": market_cagr_5y,
         "market_cagr_3y_pct": market_cagr_3y,
+        "brand_cagr_5y_pct": brand_cagr_5y,
+        "brand_cagr_3y_pct": brand_cagr_3y,
         "top3_share_pct": _top_share(ei_matrix, limit=3),
         "hhi_recent": hhi_recent,
         "direct_competition_count": len(positive_latest_brands),

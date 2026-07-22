@@ -43,6 +43,8 @@ def test_recompute_handles_iqvia_quarterly_cagr_when_periods_are_yyyy_qn() -> No
     # Then: no YYYY-Qn parsing exception occurs and quarterly endpoint CAGR
     # follows archive rounding.
     assert payload["data"]["kpi"]["brand_cagr_pct"] == pytest.approx(14.8698)
+    assert payload["data"]["kpi"]["brand_cagr_5y_pct"] == pytest.approx(14.8698)
+    assert payload["data"]["kpi"]["brand_cagr_3y_pct"] is None
     assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(4.56)
     assert payload["data"]["kpi"]["target_share_pct"] == pytest.approx(40.0)
     assert _market_size_value(payload, "2025-Q4") == 500.0
@@ -69,6 +71,9 @@ def test_recompute_uses_19_quarter_market_cagr_in_the_five_year_slot() -> None:
     # Then: it uses the same 19-quarter substitute and exclusive slots as dynamic cause.
     assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(round(expected, 2))
     assert payload["data"]["kpi"]["market_cagr_3y_pct"] is None
+    expected_brand = ((focus[periods[-1]] / focus[periods[0]]) ** (1 / 4.75) - 1) * 100
+    assert payload["data"]["kpi"]["brand_cagr_5y_pct"] == pytest.approx(round(expected_brand, 4))
+    assert payload["data"]["kpi"]["brand_cagr_3y_pct"] is None
 
 
 def _ubist_fact(brand_key: str, company: str, raw_value_history: dict[str, float]) -> StrategyFact:
