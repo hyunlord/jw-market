@@ -2405,7 +2405,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if (
         _is_market_clarification_result(result)
         or _is_market_membership_mismatch_result(result)
-        or _is_source_absent_brand_result(result)
+        or _is_terminal_typed_result(result)
     ):
         timing_payload = finish(timing)
         answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
@@ -2883,9 +2883,23 @@ def _is_market_membership_mismatch_result(result: dict) -> bool:
     )
 
 
-def _is_source_absent_brand_result(result: dict) -> bool:
+def _is_terminal_typed_result(result: dict) -> bool:
     sources = result.get("sources")
-    return isinstance(sources, (list, tuple)) and tuple(sources) == ("unsupported_brand",)
+    if isinstance(sources, (list, tuple)) and len(sources) == 1:
+        if str(sources[0] or "") in {
+            "unsupported_brand",
+            "unsupported_hira_interface",
+            "field_not_exposed",
+        }:
+            return True
+
+    diagnostics = result.get("router_diagnostics")
+    if not isinstance(diagnostics, dict) or diagnostics.get("mode") != "tool_use_agent":
+        return False
+    return diagnostics.get("fallback_code") in {
+        "UNSUPPORTED_QUERY",
+        "VERIFICATION_FAIL",
+    }
 
 
 def _sse_delta(token: str) -> str:

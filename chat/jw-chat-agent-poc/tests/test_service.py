@@ -8,7 +8,11 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from jw_chat_agent_poc.agent_loop.factory import unsupported_brand_result
+from jw_chat_agent_poc.agent_loop.factory import (
+    field_not_exposed_result,
+    unsupported_brand_result,
+    unsupported_hira_interface_result,
+)
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.file_search_client import (
     UploadedFileOverview,
@@ -2329,6 +2333,107 @@ def test_compute_final_answer_preserves_strategic_mart_absence(monkeypatch) -> N
     assert "전략 마트 원천에서 확인되지 않습니다" in final.text
     assert "브랜드 목록에서 일치 항목을 찾지 못했습니다" not in final.text
     assert final.sources == ("unsupported_brand",)
+
+
+@pytest.mark.parametrize(
+    ("question", "result_factory", "expected_source", "expected_text"),
+    (
+        (
+            "HIRA: 상병코드 D693 환자수 알려줘",
+            lambda question, routes, diagnostics: unsupported_hira_interface_result(
+                question,
+                routes,
+                diagnostics,
+            ),
+            "unsupported_hira_interface",
+            "상병코드 또는 질환명 직접 조회",
+        ),
+        (
+            "NeDrug: 리바로 e약 효능 알려줘",
+            lambda question, routes, diagnostics: field_not_exposed_result(
+                question,
+                "MFDS_LABEL_EFFICACY",
+                routes,
+                diagnostics,
+            ),
+            "field_not_exposed",
+            "현재 연결에서 제공되지 않습니다",
+        ),
+    ),
+)
+def test_compute_final_answer_preserves_typed_terminal_result(
+    monkeypatch,
+    question: str,
+    result_factory,
+    expected_source: str,
+    expected_text: str,
+) -> None:
+    router = BQRouter()
+    result = result_factory(
+        question,
+        router.route(question, has_documents=False),
+        service_app.router_diagnostics(router),
+    )
+
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("typed terminal results must bypass final LLM synthesis")
+        ),
+    )
+
+    final = compute_final_answer(question, result, "typed-terminal-final")
+
+    assert expected_text in final.text
+    assert final.sources == (expected_source,)
+
+
+def test_compute_final_answer_preserves_external_tool_verification_failure(monkeypatch) -> None:
+    question = "NeDrug: 리바로 성분 조성 알려줘"
+    answer = "식약처 응답에 제품명과 일치하는 성분 조성 근거가 없습니다."
+    result = {
+        "question": question,
+        "resolution": None,
+        "decomposition": [{"intent": "external_tool_agent", "status": "fallback"}],
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "fallback_code": "VERIFICATION_FAIL",
+        },
+        "tool_calls": [
+            {
+                "tool": "mfds_composition",
+                "status": "error",
+                "render_data": {"error_code": "NO_EVIDENCE"},
+            }
+        ],
+        "answer": answer,
+        "markdown_response": {
+            "markdown": answer,
+            "fact_md": "",
+            "data_md": "",
+            "verification": {"status": "fail"},
+        },
+        "sources": [],
+        "agent_loop_metrics": {
+            "status": "fallback",
+            "tool_calls": 1,
+            "fallback_code": "VERIFICATION_FAIL",
+        },
+    }
+
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("verified no-evidence results must bypass final LLM synthesis")
+        ),
+    )
+
+    final = compute_final_answer(question, result, "external-tool-terminal-final")
+
+    assert final.text == answer
+    assert final.sources == ()
 
 
 def test_answer_question_direct_agent_loop_allows_portfolio_scope_without_single_brand_resolution(monkeypatch) -> None:
