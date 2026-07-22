@@ -68,6 +68,58 @@ def test_within_brand_month_pct_and_total_count(monkeypatch):
     assert crestor["total_count"] == 2 and crestor["NOT AT ALL"]["pct"] == 100.0
 
 
+def test_companies_axis_copromotion_pct_null_and_order(monkeypatch):
+    # Co-promotion: LIVALO -> JW PHARMACEUTICAL + JW SHINYAK; CRESTOR -> DAE WOONG.
+    # JW SHINYAK has data only in 2026-05 (null elsewhere); pct uses within-company denom.
+    monkeypatch.setattr(service.db, "fetch_all", _rows([
+        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "NOT AT ALL", "event_count": 1},
+        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 19},
+        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 3},
+        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-04", "interest": "SOMEWHAT USEFUL", "event_count": 10},
+        {"product_name": "LIVALO", "representing_company": "JW SHINYAK", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 8},
+        {"product_name": "CRESTOR", "representing_company": "DAE WOONG", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 8},
+    ]))
+    out = service.get_interest_timeseries({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
+    companies = {c["company_name"]: c for c in out["companies"]}
+    # co-promotion keeps both LIVALO companies + CRESTOR's; >6 allowed, none dropped.
+    assert set(companies) == {"JW PHARMACEUTICAL", "JW SHINYAK", "DAE WOONG"}
+    # order: row count desc (JW PHARM 33 > JW SHINYAK 8 == DAE WOONG 8 -> name asc).
+    assert [c["company_name"] for c in out["companies"]] == ["JW PHARMACEUTICAL", "DAE WOONG", "JW SHINYAK"]
+    jw = companies["JW PHARMACEUTICAL"]["series"]["2026-05"]
+    assert jw["total_count"] == 23
+    assert jw["NOT AT ALL"] == {"count": 1, "pct": 4.3}
+    assert jw["SOMEWHAT USEFUL"] == {"count": 19, "pct": 82.6}
+    assert jw["VERY USEFUL"] == {"count": 3, "pct": 13.0}
+    assert round(sum(jw[l]["pct"] for l in service.INTEREST_LEVELS), 1) == 99.9  # no forced 100
+    # JW SHINYAK: data only 2026-05 -> other months null, not zero-filled.
+    shinyak = companies["JW SHINYAK"]["series"]
+    assert shinyak["2026-05"]["total_count"] == 8
+    assert shinyak["2026-04"] is None and shinyak["2023-06"] is None
+    assert len(shinyak) == 36
+
+
+def test_companies_absent_without_representing_company(monkeypatch):
+    # Rows lacking representing_company yield no companies (brands still populated).
+    monkeypatch.setattr(service.db, "fetch_all", _rows([
+        {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 3},
+    ]))
+    out = service.get_interest_timeseries({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
+    assert out["companies"] == []
+    assert any(b["series"]["2026-05"] for b in out["brands"])
+
+
+def test_companies_denominator_moves_with_filter(monkeypatch):
+    # Only in-window matched rows feed a company; a non-brand product is excluded from
+    # the company set (companies come from the resolved brand rows only).
+    monkeypatch.setattr(service.db, "fetch_all", _rows([
+        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 5},
+        {"product_name": "UNRELATED", "representing_company": "OTHER CO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 99},
+    ]))
+    out = service.get_interest_timeseries({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
+    assert [c["company_name"] for c in out["companies"]] == ["JW PHARMACEUTICAL"]
+    assert out["companies"][0]["series"]["2026-05"]["total_count"] == 5
+
+
 def test_missing_month_is_null(monkeypatch):
     monkeypatch.setattr(service.db, "fetch_all", _rows([
         {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 2},

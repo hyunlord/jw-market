@@ -103,6 +103,9 @@ def get_interest_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     code_sets = {key: frozenset(_canonical_product(code, aliases) for code in codes) for key, codes in iqvia.items()}
     rows = _fetch_rows(brand_set, request, period, raw_codes)
     counts = _counts_by_brand_month(brand_set, rows, code_sets, aliases)
+    company_counts, company_totals = _counts_by_company_month(brand_set, rows, code_sets, aliases)
+    # Deterministic order: keyword row count desc, then company name asc.
+    ordered_companies = sorted(company_counts, key=lambda name: (-company_totals[name], name))
     return {
         "scope": _scope_payload(request, brand_set),
         "filters_applied": {
@@ -112,6 +115,7 @@ def get_interest_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
         "period": _period_payload(period),
         "levels": list(INTEREST_LEVELS),
         "brands": [_brand_payload(choice, brand_set, counts, period) for choice in brand_set.choices],
+        "companies": [_company_payload(name, company_counts[name], period) for name in ordered_companies],
     }
 
 
@@ -191,10 +195,10 @@ def _fetch_rows(brand_set: BrandSetResolution, request: TimeseriesRequest, perio
             params.extend(values)
     return db.fetch_all(
         f"""
-        SELECT product_name, period_ym, interest, COUNT(*) AS event_count
+        SELECT product_name, representing_company, period_ym, interest, COUNT(*) AS event_count
         FROM {quote_identifier(config.brand_activity_db_name)}.`km_keyword_event_stage`
         WHERE {" AND ".join(clauses)}
-        GROUP BY product_name, period_ym, interest
+        GROUP BY product_name, representing_company, period_ym, interest
         """,
         tuple(params),
     )
@@ -224,6 +228,33 @@ def _counts_by_brand_month(
     return result
 
 
+def _series_for_counts(by_month: dict[str, dict[str, int]], period: PeriodWindow) -> dict[str, JsonMap | None]:
+    """Build the 3-category monthly series shared by brand and company payloads.
+
+    Denominator = within-series within-month 3-category count sum (``total_count``). One
+    final round per level (no forced 100 correction). Missing month = null (not zero-filled).
+    """
+
+    series: dict[str, JsonMap | None] = {}
+    for month in period.months:
+        month_counts = by_month.get(month)
+        total = sum(month_counts.values()) if month_counts else 0
+        if not total:
+            series[month] = None
+            continue
+        series[month] = {
+            "total_count": total,
+            **{
+                level: {
+                    "count": month_counts.get(level, 0),
+                    "pct": round(month_counts.get(level, 0) / total * 100, 1),
+                }
+                for level in INTEREST_LEVELS
+            },
+        }
+    return series
+
+
 def _brand_payload(
     choice: BrandChoice,
     brand_set: BrandSetResolution,
@@ -231,33 +262,55 @@ def _brand_payload(
     period: PeriodWindow,
 ) -> JsonMap:
     meta = brand_set.brand_meta.get(choice.brand_key, BrandMeta(choice.brand_key, choice.brand_name, (), False))
-    by_month = counts.get(choice.brand_key, {})
-    series: dict[str, JsonMap | None] = {}
-    for month in period.months:
-        month_counts = by_month.get(month)
-        total = sum(month_counts.values()) if month_counts else 0
-        if not total:
-            # Missing month for this brand: null, not zero-filled.
-            series[month] = None
-            continue
-        series[month] = {
-            "total_count": total,  # pct denominator = within-brand within-month 3-category count sum
-            **{
-                level: {
-                    "count": month_counts.get(level, 0),
-                    # single final round; no forced 100 correction across levels.
-                    "pct": round(month_counts.get(level, 0) / total * 100, 1),
-                }
-                for level in INTEREST_LEVELS
-            },
-        }
     return {
         "brand_key": choice.brand_key,
         "brand_name": meta.brand_name or choice.brand_name,
         "is_selected": choice.is_selected,
         "is_jw": meta.is_jw,
         "sales_rank": choice.sales_rank,
-        "series": series,
+        "series": _series_for_counts(counts.get(choice.brand_key, {}), period),
+    }
+
+
+def _counts_by_company_month(
+    brand_set: BrandSetResolution,
+    rows: list[JsonMap],
+    code_sets: dict[str, frozenset[str]],
+    aliases: dict[str, str],
+) -> tuple[dict[str, dict[str, dict[str, int]]], dict[str, int]]:
+    """representing_company -> month -> interest -> count, plus per-company total row count.
+
+    Companies come from the resolved brand set's keyword rows only (a row counts when its
+    canonical product belongs to any of the brands). Co-promotion keeps every company: a
+    product's rows split across companies are attributed to each. filters flow through the
+    same fetched rows, so a company's denominator moves with the filter (brand rule parity).
+    """
+
+    brand_products: frozenset[str] = frozenset().union(*code_sets.values()) if code_sets else frozenset()
+    result: dict[str, dict[str, dict[str, int]]] = {}
+    totals: dict[str, int] = {}
+    for row in rows:
+        level = text(row.get("interest"))
+        if level not in INTEREST_LEVELS:
+            continue
+        product = _canonical_product(text(row.get("product_name")), aliases)
+        if product not in brand_products:
+            continue
+        company = text(row.get("representing_company")).strip()
+        if not company:
+            continue
+        month = text(row.get("period_ym"))
+        value = int(float_value(row.get("event_count")))
+        month_counts = result.setdefault(company, {}).setdefault(month, {})
+        month_counts[level] = month_counts.get(level, 0) + value
+        totals[company] = totals.get(company, 0) + value
+    return result, totals
+
+
+def _company_payload(company_name: str, by_month: dict[str, dict[str, int]], period: PeriodWindow) -> JsonMap:
+    return {
+        "company_name": company_name,
+        "series": _series_for_counts(by_month, period),
     }
 
 
