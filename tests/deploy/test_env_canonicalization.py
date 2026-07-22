@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
@@ -13,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CHAT_MANIFEST = REPO_ROOT / "chat/jw-chat-agent-poc/deploy/deployment.yaml"
 BRIDGE_MANIFEST = REPO_ROOT / "chat/wf301-vdb-bridge/deploy/deployment.yaml"
 GATE = REPO_ROOT / "pipeline/scripts/gates/env_presence_gate.py"
+OWNERSHIP_GATE = REPO_ROOT / "pipeline/scripts/gates/manifest_field_ownership_gate.py"
 REQUIRED_DIR = REPO_ROOT / "pipeline/scripts/gates/required_env"
 
 
@@ -40,7 +42,18 @@ def _run_gate(manifest: dict, required: list[str]) -> subprocess.CompletedProces
     )
 
 
-def test_complete_deployment_manifests_replace_chat_fragments() -> None:
+def _run_ownership_gate(manifest: dict) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(OWNERSHIP_GATE)],
+        input=json.dumps(manifest),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def test_env_ownership_manifests_replace_chat_fragments() -> None:
     chat = _load_yaml(CHAT_MANIFEST)
     bridge = _load_yaml(BRIDGE_MANIFEST)
 
@@ -48,10 +61,10 @@ def test_complete_deployment_manifests_replace_chat_fragments() -> None:
     assert chat["kind"] == bridge["kind"] == "Deployment"
     assert chat["metadata"]["name"] == "jw-chat-agent-poc"
     assert bridge["metadata"]["name"] == "code-serving-235"
-    assert chat["spec"]["selector"]
-    assert bridge["spec"]["selector"]
-    assert "replicas" not in chat["spec"]
-    assert bridge["spec"]["replicas"] == 1
+    assert set(chat["spec"]) == {"template"}
+    assert set(bridge["spec"]) == {"template"}
+    assert set(_container(chat, "app")) == {"name", "env", "envFrom"}
+    assert set(_container(bridge, "code-serving-235")) == {"name", "env"}
     assert not (CHAT_MANIFEST.parent / "d2-database-env-patch.yaml").exists()
     assert not (CHAT_MANIFEST.parent / "startup-warmup-deployment-patch.yaml").exists()
 
@@ -92,8 +105,20 @@ def test_release_markers_and_stale_markers_are_not_hardcoded() -> None:
     chat_env = _env_by_name(_container(_load_yaml(CHAT_MANIFEST), "app"))
     bridge_env = _env_by_name(_container(_load_yaml(BRIDGE_MANIFEST), "code-serving-235"))
 
-    assert {"JW_CHAT_GIT_SHA", "APP_VERSION", "GIT_SHA", "COMMIT_SHA"}.isdisjoint(chat_env)
-    assert {"JW_235_GIT_SHA", "OPENAPI_VERSION"}.isdisjoint(bridge_env)
+    assert {
+        "APP_VERSION",
+        "COMMIT_SHA",
+        "GIT_SHA",
+        "JW_CHAT_GIT_SHA",
+        "JW_CHAT_IMAGE_DIGEST",
+    }.isdisjoint(chat_env)
+    assert {
+        "COMMIT_HASH",
+        "JW_235_GIT_SHA",
+        "JW_235_IMAGE_DIGEST",
+        "JW_235_RELEASE_ID",
+        "OPENAPI_VERSION",
+    }.isdisjoint(bridge_env)
     assert "FILE_SQL_ENABLED" not in bridge_env
 
 
@@ -102,6 +127,7 @@ def test_235_credential_bearing_repository_url_uses_secret_reference() -> None:
 
     assert bridge_env["REPOSITORY_URL"] == {
         "name": "REPOSITORY_URL",
+        "value": None,
         "valueFrom": {
             "secretKeyRef": {
                 "name": "code-serving-235-runtime-secrets",
@@ -138,8 +164,59 @@ def test_required_sets_cover_release_and_redline_keys() -> None:
     bridge_manifest_keys = set(
         _env_by_name(_container(_load_yaml(BRIDGE_MANIFEST), "code-serving-235"))
     )
-    assert set(chat_required) == chat_manifest_keys | {"JW_CHAT_GIT_SHA", "APP_VERSION"}
-    assert set(bridge_required) == bridge_manifest_keys | {"JW_235_GIT_SHA", "OPENAPI_VERSION"}
+    assert len(chat_manifest_keys) == 64
+    assert len(bridge_manifest_keys) == 36
+    assert set(chat_required) == chat_manifest_keys | {
+        "APP_VERSION",
+        "JW_CHAT_GIT_SHA",
+        "JW_CHAT_IMAGE_DIGEST",
+    }
+    assert set(bridge_required) == bridge_manifest_keys | {
+        "COMMIT_HASH",
+        "JW_235_GIT_SHA",
+        "JW_235_IMAGE_DIGEST",
+        "JW_235_RELEASE_ID",
+        "OPENAPI_VERSION",
+    }
+
+
+def test_manifest_field_ownership_gate_passes_env_only_manifests() -> None:
+    for path in (CHAT_MANIFEST, BRIDGE_MANIFEST):
+        result = _run_ownership_gate(_load_yaml(path))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "failures=0" in result.stdout
+        assert "population=1" in result.stdout
+
+
+def test_manifest_field_ownership_gate_rejects_image_field() -> None:
+    manifest = copy.deepcopy(_load_yaml(CHAT_MANIFEST))
+    _container(manifest, "app")["image"] = "example.invalid/chat@sha256:" + "a" * 64
+    result = _run_ownership_gate(manifest)
+
+    assert result.returncode == 1
+    assert "spec.template.spec.containers[name=app].image" in result.stdout
+    assert "failures=1" in result.stdout
+
+
+def test_manifest_field_ownership_gate_rejects_replicas_field() -> None:
+    manifest = copy.deepcopy(_load_yaml(BRIDGE_MANIFEST))
+    manifest["spec"]["replicas"] = 1
+    result = _run_ownership_gate(manifest)
+
+    assert result.returncode == 1
+    assert "spec.replicas" in result.stdout
+    assert "failures=1" in result.stdout
+
+
+def test_manifest_field_ownership_gate_fails_on_empty_container_population() -> None:
+    manifest = copy.deepcopy(_load_yaml(CHAT_MANIFEST))
+    manifest["spec"]["template"]["spec"]["containers"] = []
+    result = _run_ownership_gate(manifest)
+
+    assert result.returncode == 1
+    assert "error=empty_container_population" in result.stdout
+    assert "population=0" in result.stdout
 
 
 def test_env_presence_gate_passes_complete_fixture() -> None:
