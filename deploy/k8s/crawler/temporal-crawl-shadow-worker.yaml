@@ -58,6 +58,8 @@ spec:
           value: jw_mart_d2_stage_20260630_r2
         - name: WF337_URL
           value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
+        - name: CRAWL_CHAIN_LLM_CALL_LIMIT
+          value: "0"
         - name: DB_USER
           valueFrom:
             secretKeyRef:

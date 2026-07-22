@@ -332,10 +332,16 @@ tier2_classify() {
   fi
   python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw --retries 1 \
     > "${output}/sync_summary.json"
+  local llm_call_limit
+  llm_call_limit="${CRAWL_CHAIN_LLM_CALL_LIMIT:-60}"
+  if [[ ! "${llm_call_limit}" =~ ^[0-9]+$ ]]; then
+    echo "invalid CRAWL_CHAIN_LLM_CALL_LIMIT=${llm_call_limit}" >&2
+    return 64
+  fi
   python /opt/tier2/tier2_full_scoring_runner.py append-live \
     --source-processor tier2_exact_rule_v1 \
     --target-processor tier2_llm_v2_rev5671 \
-    --workflow-url "${WF337_URL}" --daily-call-limit 60 --max-cost-krw 203.40 \
+    --workflow-url "${WF337_URL}" --daily-call-limit "${llm_call_limit}" --max-cost-krw 203.40 \
     > "${output}/append_summary.json"
   # This required final step closes the historical category omission (audit dd41f8aa).
   python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories \

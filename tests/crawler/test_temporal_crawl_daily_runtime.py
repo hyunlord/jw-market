@@ -52,3 +52,13 @@ def test_shadow_manifest_uses_an_isolated_state_claim() -> None:
 
     assert "jw-crawl-temporal-shadow-state" in manifest
     assert "jw-crawl-chain-state" not in manifest
+
+
+def test_shadow_manifest_disables_tier2_llm_calls() -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = (root / "deploy/k8s/crawler/temporal-crawl-shadow-worker.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "name: CRAWL_CHAIN_LLM_CALL_LIMIT" in manifest
+    assert 'value: "0"' in manifest
