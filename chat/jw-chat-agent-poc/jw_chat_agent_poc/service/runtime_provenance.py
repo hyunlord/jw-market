@@ -36,6 +36,7 @@ _VERSIONED_FILES = {
     "claim_policy_version": "orchestrator/claim_policy.py",
     "surface_policy_version": "orchestrator/surface_policy.py",
     "answer_contract_version": "orchestrator/answer_contract.py",
+    "response_format_contract_version": "orchestrator/response_format_contract.py",
     "render_validator_version": "service/sse_protocol.py",
 }
 
@@ -122,6 +123,7 @@ def trace_envelope(
         "claim_policy_fact_types": claim_report["active_fact_types"],
         "claim_policy_blocks": claim_report["forbidden_claims_remaining"],
         "surface_policy_blocks": _surface_policy_blocks(result),
+        "response_format_contract": _response_format_contract(result),
         "render_status": _render_status(answer),
         "ungrounded_numeric_spans": _ungrounded_numbers(
             answer,
@@ -139,6 +141,11 @@ def trace_envelope(
             version=version,
         ),
     }
+
+
+def _response_format_contract(result: Mapping[str, Any]) -> dict[str, Any]:
+    report = result.get("_response_format_contract")
+    return dict(report) if isinstance(report, Mapping) else {}
 
 
 def _qa_trace(

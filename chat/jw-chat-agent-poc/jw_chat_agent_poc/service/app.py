@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache, wraps
 from hmac import compare_digest
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,7 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
 )
 from jw_chat_agent_poc.orchestrator.hira_disease import is_hira_disease_question
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
+from jw_chat_agent_poc.orchestrator.response_format_contract import apply_response_format_contract
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
@@ -2322,26 +2323,37 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         conversation_slots=extract_conversation_slots(result),
     )
     notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
-    if not notice or final_answer.text.startswith(notice):
-        return final_answer
-    answer = f"{notice}\n\n{final_answer.text}" if final_answer.text else notice
+    answer = final_answer.text
+    if notice and not answer.startswith(notice):
+        answer = f"{notice}\n\n{answer}" if answer else notice
+    raw_calls = result.get("tool_calls")
+    tool_calls = (
+        tuple(call for call in raw_calls if isinstance(call, Mapping))
+        if isinstance(raw_calls, list)
+        else ()
+    )
+    format_result = apply_response_format_contract(
+        question,
+        answer,
+        tool_calls=tool_calls,
+        sources=final_answer.sources,
+    )
+    trace_result = {
+        **result,
+        "_response_format_contract": format_result.report.to_dict(),
+    }
     trace = trace_envelope(
         question=question,
-        result=result,
-        answer=answer,
+        result=trace_result,
+        answer=format_result.answer,
         charts=final_answer.charts,
         timing=final_answer.timing,
         conversation_id=conversation_id,
     )
-    return FinalAnswer(
-        text=answer,
-        charts=final_answer.charts,
-        timing=final_answer.timing,
+    return replace(
+        final_answer,
+        text=format_result.answer,
         trace=trace,
-        sources=final_answer.sources,
-        conversation_id=final_answer.conversation_id,
-        file_sources=final_answer.file_sources,
-        conversation_slots=final_answer.conversation_slots,
     )
 
 
