@@ -31,6 +31,7 @@ import pyarrow.parquet as pq
 
 from pipeline.etl.lib.ops_utils import configure_logging, find_project_root
 from pipeline.etl.lib.storage import get_data_path
+from pipeline.etl.io.source_headers import normalize_source_header
 
 
 LOGGER = configure_logging(__name__)
@@ -222,11 +223,16 @@ def parse_period(value: object) -> str:
 
 
 def canonical_header(value: object) -> str | None:
-    header = normalize_text(value)
-    if not header:
+    lookup = normalize_source_header(value)
+    if not lookup:
         return None
-    header = PATENT_ALIASES.get(header, header)
-    if header in CANONICAL_DIMENSIONS or header in PATENT_DIMENSIONS:
+    aliases = {normalize_source_header(source): target for source, target in PATENT_ALIASES.items()}
+    canonical = {
+        normalize_source_header(header): header
+        for header in CANONICAL_DIMENSIONS + PATENT_DIMENSIONS
+    }
+    header = aliases.get(lookup) or canonical.get(lookup)
+    if header:
         return header
     return None
 
@@ -318,9 +324,10 @@ def classify_sheet(sheet_name: str, header1: tuple[object, ...], header2: tuple[
     duplicate_cols: list[tuple[int, str, str]] = []
     metric_cols: list[tuple[int, str, str, str]] = []
     seen_dims: set[str] = set()
+    metric_headers = {normalize_source_header(metric): metric for metric in METRIC_MAP}
 
     for idx in range(max(len(header1), len(header2))):
-        h1 = normalize_text(header1[idx] if idx < len(header1) else None)
+        h1 = metric_headers.get(normalize_source_header(header1[idx] if idx < len(header1) else None))
         h2 = normalize_text(header2[idx] if idx < len(header2) else None)
 
         if h1 in METRIC_MAP:

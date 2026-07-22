@@ -11,6 +11,8 @@ import math
 import os
 import re
 import sys
+import tempfile
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -28,6 +30,7 @@ import pymysql
 
 from pipeline.etl.lib.ops_utils import configure_logging, find_project_root, first_existing, retry
 from pipeline.etl.lib.storage import get_data_path
+from pipeline.etl.io.source_headers import normalize_source_header
 
 
 LOGGER = configure_logging(__name__)
@@ -114,6 +117,82 @@ NSA_PARQUET_METRICS = {
     "Dosage Units": "dosage_units",
     "Price": "price",
 }
+
+NSA_REQUIRED_STATIC_HEADERS = (
+    "AUDIT CODE",
+    "MFR CODE",
+    "PRODUCT NAME",
+    "PACK DESC",
+)
+NSA_PERIOD_HEADER = "DATA PERIOD"
+NSA_OPTIONAL_STATIC_HEADERS = (
+    "AUDIT DESC",
+    "MFR NAME",
+)
+NSA_STATIC_HEADER_NAMES = {
+    "AUDIT CODE",
+    "AUDIT DESC",
+    "PRODUCT NAME",
+    "PRODUCT NAME KOR",
+    "PACK DESC",
+    "OTC/ETHICAL",
+    "MFR CODE",
+    "MFR NAME",
+    "MFR NAME KOR",
+    "MFR TYPE",
+    "MFT TYPE",
+    "MFR TYPE GROUP",
+    "ATC 1",
+    "ATC 1 CODE",
+    "ATC 1 DESC",
+    "ATC 2",
+    "ATC 2 CODE",
+    "ATC 2 DESC",
+    "ATC 3",
+    "ATC 3 CODE",
+    "ATC 3 DESC",
+    "ATC 4",
+    "ATC 4 CODE",
+    "ATC 4 DESC",
+    "NFC 1",
+    "NFC 1 CODE",
+    "NFC 1 DESC",
+    "NFC 2",
+    "NFC 2 CODE",
+    "NFC 2 DESC",
+    "NFC 3",
+    "NFC 3 CODE",
+    "NFC 3 DESC",
+    "STRENGTH",
+    "MOLECULE DESC",
+    "MOLECULE TYPE",
+    "NHI TYPE",
+    "PACK LAUNCH DATE",
+    "PACK LAUNCHDATE",
+    "PRODUCT LAUNCH DATE",
+    "HERBAL",
+    "PRODUCT AGE",
+    "PACK SIZE",
+    "PACK AGE",
+}
+NSA_HEADER_ALIASES = {
+    "PACK DESCRIPTION": "PACK DESC",
+}
+
+
+class HeaderContractError(ValueError):
+    """Raised before loading when an NSA source cannot satisfy its row contract."""
+
+
+@dataclass(frozen=True)
+class NsaDedupReport:
+    period: str
+    rows_before: int
+    rows_after: int
+    duplicate_groups: int
+    duplicate_rows_removed: int
+    conflict_groups: int
+    conflict_rows: int
 
 
 INSERT_SQL = {
@@ -211,14 +290,6 @@ def clean_value(value: Any) -> Any:
     return value
 
 
-def clean_key(value: Any, idx: int) -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
-        return f"__blank_{idx}"
-    text = str(value).strip()
-    text = re.sub(r"\s+", " ", text)
-    return text if text else f"__blank_{idx}"
-
-
 def dedupe_keys(keys: list[str]) -> list[str]:
     counts: dict[str, int] = defaultdict(int)
     result: list[str] = []
@@ -229,6 +300,99 @@ def dedupe_keys(keys: list[str]) -> list[str]:
         else:
             result.append(f"{key}_{counts[key]}")
     return result
+
+
+def _display_source_header(value: object, idx: int) -> str:
+    if value is None:
+        return f"__blank_{idx}"
+    text = unicodedata.normalize("NFKC", str(value))
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or f"__blank_{idx}"
+
+
+def _nsa_header_maps() -> tuple[dict[str, str], dict[str, str]]:
+    static = {
+        normalize_source_header(header): header
+        for header in NSA_STATIC_HEADER_NAMES | {NSA_PERIOD_HEADER}
+    }
+    static.update(
+        {
+            normalize_source_header(alias): canonical
+            for alias, canonical in NSA_HEADER_ALIASES.items()
+        }
+    )
+    metrics = {
+        normalize_source_header(metric): metric
+        for metric in NSA_PARQUET_METRICS
+    }
+    return static, metrics
+
+
+def canonicalize_nsa_headers(
+    headers_raw: Iterable[object], *, source: str
+) -> list[str]:
+    """Canonicalize and validate NSA headers before any source row is emitted."""
+    static_map, metric_map = _nsa_header_maps()
+    headers: list[str] = []
+    unexpected: list[str] = []
+    for idx, value in enumerate(headers_raw):
+        display = _display_source_header(value, idx)
+        lookup = normalize_source_header(value)
+        canonical = static_map.get(lookup) if lookup else None
+        if canonical is None and lookup:
+            canonical = metric_map.get(lookup)
+        if canonical is None and lookup:
+            period_match = re.match(r"^(\d{1,2})/(\d{4})_(.+)$", display)
+            if period_match:
+                metric = metric_map.get(normalize_source_header(period_match.group(3)))
+                if metric:
+                    canonical = f"{int(period_match.group(1)):02d}/{period_match.group(2)}_{metric}"
+        if canonical is None:
+            canonical = display
+            if not canonical.startswith("__blank_"):
+                unexpected.append(canonical)
+        headers.append(canonical)
+
+    headers = dedupe_keys(headers)
+    present = set(headers)
+    missing_static = [header for header in NSA_REQUIRED_STATIC_HEADERS if header not in present]
+    has_long_period = NSA_PERIOD_HEADER in present
+    periods = nsa_period_columns(headers)
+    if not has_long_period and not periods:
+        missing_static.append(NSA_PERIOD_HEADER)
+    if has_long_period:
+        missing_static.extend(
+            f"metric header {metric}"
+            for metric in NSA_PARQUET_METRICS
+            if metric not in present
+        )
+    else:
+        for period, metric_columns in sorted(periods.items()):
+            missing_static.extend(
+                f"metric header {period}_{metric}"
+                for metric in NSA_PARQUET_METRICS
+                if metric not in metric_columns
+            )
+    if missing_static:
+        raise HeaderContractError(
+            f"IQVIA NSA required header missing source={source}: {', '.join(missing_static)}"
+        )
+
+    missing_optional = [header for header in NSA_OPTIONAL_STATIC_HEADERS if header not in present]
+    if missing_optional:
+        LOGGER.warning(
+            "IQVIA NSA optional headers missing source=%s headers=%s",
+            source,
+            missing_optional,
+        )
+    if unexpected:
+        LOGGER.warning(
+            "IQVIA NSA unexpected headers retained as passthrough source=%s headers=%s",
+            source,
+            unexpected,
+        )
+    return headers
 
 
 def row_to_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -441,8 +605,139 @@ def long_format_period_record(path: Path, sheet_name: str, source_row_no: int, r
     }
 
 
+def _nsa_key_value(value: Any) -> Any:
+    value = clean_value(value)
+    if isinstance(value, str):
+        text = unicodedata.normalize("NFC", value.strip())
+        return text or None
+    return value
+
+
+def _nsa_natural_key(record: dict[str, Any]) -> tuple[Any, ...] | None:
+    payload = json.loads(str(record["payload"]))
+    static = payload.get("static", {})
+    key = (
+        _nsa_key_value(record.get("audit_code")),
+        _nsa_key_value(record.get("mfr_code")),
+        _nsa_key_value(payload_lookup(static, "PRODUCT NAME")),
+        _nsa_key_value(payload_lookup(static, "PACK DESC")),
+        _nsa_key_value(record.get("period_label")),
+    )
+    return None if any(value is None for value in key) else key
+
+
+def _nsa_semantic_signature(record: dict[str, Any]) -> str:
+    payload = json.loads(str(record["payload"]))
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _nsa_identity(record: dict[str, Any]) -> tuple[tuple[Any, ...] | None, str]:
+    payload = json.loads(str(record["payload"]))
+    static = payload.get("static", {})
+    key = (
+        _nsa_key_value(record.get("audit_code")),
+        _nsa_key_value(record.get("mfr_code")),
+        _nsa_key_value(payload_lookup(static, "PRODUCT NAME")),
+        _nsa_key_value(payload_lookup(static, "PACK DESC")),
+        _nsa_key_value(record.get("period_label")),
+    )
+    natural_key = None if any(value is None for value in key) else key
+    canonical_payload = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return natural_key, hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+
+
+def _nsa_source_recency(record: dict[str, Any], input_index: int) -> tuple[int, int, int, int, int]:
+    source_file = str(record.get("source_file") or "")
+    match = re.search(r"([A-Za-z]+)-(\d{1,2})-(\d{4})", source_file)
+    if match:
+        month = MONTH_NAME_TO_NUM.get(match.group(1).casefold(), 0)
+        source_date = (int(match.group(3)), month, int(match.group(2)))
+    else:
+        source_date = (0, 0, 0)
+    return (*source_date, int(record.get("source_row_no") or 0), input_index)
+
+
+def deduplicate_nsa_records(
+    records: Iterable[dict[str, Any]], period: str
+) -> tuple[list[dict[str, Any]], NsaDedupReport]:
+    """Collapse exact NSA facts while preserving every natural-key conflict.
+
+    Exact facts keep the last occurrence, so callers that pass canonical files
+    oldest-to-newest retain the latest-file lineage. A natural key with more
+    than one payload signature is never collapsed.
+    """
+    source = list(records)
+    groups: dict[tuple[Any, ...], list[tuple[int, dict[str, Any], str]]] = defaultdict(list)
+    passthrough: list[tuple[int, dict[str, Any]]] = []
+    for index, record in enumerate(source):
+        natural_key = _nsa_natural_key(record)
+        if natural_key is None:
+            passthrough.append((index, record))
+            continue
+        groups[natural_key].append((index, record, _nsa_semantic_signature(record)))
+
+    kept = list(passthrough)
+    duplicate_groups = 0
+    duplicate_rows_removed = 0
+    conflict_groups = 0
+    conflict_rows = 0
+    for group in groups.values():
+        signatures = {signature for _, _, signature in group}
+        if len(signatures) > 1:
+            conflict_groups += 1
+            conflict_rows += len(group)
+            kept.extend((index, record) for index, record, _ in group)
+            continue
+        if len(group) > 1:
+            duplicate_groups += 1
+            duplicate_rows_removed += len(group) - 1
+        index, record, _ = max(
+            group,
+            key=lambda item: _nsa_source_recency(item[1], item[0]),
+        )
+        kept.append((index, record))
+
+    result = [record for _, record in sorted(kept, key=lambda item: item[0])]
+    report = NsaDedupReport(
+        period=period,
+        rows_before=len(source),
+        rows_after=len(result),
+        duplicate_groups=duplicate_groups,
+        duplicate_rows_removed=duplicate_rows_removed,
+        conflict_groups=conflict_groups,
+        conflict_rows=conflict_rows,
+    )
+    if report.conflict_groups:
+        LOGGER.warning(
+            "IQVIA NSA natural-key conflicts preserved period=%s groups=%s rows=%s",
+            period,
+            report.conflict_groups,
+            report.conflict_rows,
+        )
+    if report.duplicate_rows_removed:
+        LOGGER.info(
+            "IQVIA NSA exact-row dedup period=%s groups=%s removed=%s rows_before=%s rows_after=%s",
+            period,
+            report.duplicate_groups,
+            report.duplicate_rows_removed,
+            report.rows_before,
+            report.rows_after,
+        )
+    return result, report
+
+
 def iter_nsa_csv(path: Path, chunk_size: int = 2000) -> Iterator[dict[str, Any]]:
+    canonical_headers: list[str] | None = None
     for chunk in pd.read_csv(path, encoding="utf-8-sig", chunksize=chunk_size, dtype=object):
+        if canonical_headers is None:
+            canonical_headers = canonicalize_nsa_headers(chunk.columns, source=f"{path}:CSV")
+        chunk.columns = canonical_headers
         periods = nsa_period_columns(chunk.columns)
         static_cols = [c for c in chunk.columns if not re.match(r"^\d{1,2}/\d{4}_", str(c)) and c not in NSA_PARQUET_METRICS]
         for offset, row in chunk.iterrows():
@@ -494,7 +789,7 @@ def iter_nsa_xlsx(path: Path) -> Iterator[dict[str, Any]]:
             headers_raw = next(rows)
         except StopIteration:
             continue
-        headers = dedupe_keys([clean_key(v, idx) for idx, v in enumerate(headers_raw)])
+        headers = canonicalize_nsa_headers(headers_raw, source=f"{path}:{ws.title}")
         periods = nsa_period_columns(headers)
         static_cols = [c for c in headers if not re.match(r"^\d{1,2}/\d{4}_", c) and c not in NSA_PARQUET_METRICS]
         for row_no, values in enumerate(rows, start=2):
@@ -605,21 +900,22 @@ def materialize_iqvia_nsa_parquet(files: list[Path], output_dir: Path) -> dict[s
     """Write canonical IQVIA NSA period parquet files for Layer0 consumers.
 
     The local NSA source set can arrive as CSV or workbook extracts.  Keep the
-    source_file lineage column and materialize every discovered NSA source file;
-    source-level deduplication is handled by the downstream mart loaders.
+    source_file lineage column and materialize every discovered NSA source file.
+    Exact row overlap is removed here; natural-key metric conflicts remain.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    rows_by_period: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    records_by_period: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     canonical_files = canonical_nsa_files(files)
     for path in canonical_files:
         LOGGER.info("materializing NSA parquet from %s", path)
         for record in iter_records(path):
-            row = nsa_record_to_parquet_row(record)
-            rows_by_period[str(row["period_label"])].append(row)
+            records_by_period[period_label_to_quarter(record["period_label"])].append(record)
 
     written: dict[str, int] = {}
-    for period, rows in sorted(rows_by_period.items()):
+    for period, records in sorted(records_by_period.items()):
+        deduped, _ = deduplicate_nsa_records(records, period)
+        rows = [nsa_record_to_parquet_row(record) for record in deduped]
         out_path = output_dir / f"{period}.parquet"
         pd.DataFrame(rows).to_parquet(out_path, index=False)
         written[period] = len(rows)
@@ -699,6 +995,110 @@ def _flush_record_parquet_batch(
     rows.clear()
 
 
+@dataclass
+class _NsaDedupState:
+    signature: str
+    total: int
+    winner_index: int
+    winner_recency: tuple[int, int, int, int, int]
+    conflict: bool = False
+
+
+def _iter_record_parquet_rows(path: Path, batch_size: int) -> Iterator[dict[str, Any]]:
+    parquet = pq.ParquetFile(path)
+    columns = list(RECORD_PARQUET_COLUMNS)
+    for batch in parquet.iter_batches(batch_size=batch_size, columns=columns):
+        table = pa.Table.from_batches([batch], schema=record_parquet_schema())
+        yield from table.to_pylist()
+
+
+def _deduplicate_record_parquet(
+    path: Path,
+    period: str,
+    *,
+    batch_size: int,
+) -> NsaDedupReport:
+    states: dict[tuple[Any, ...], _NsaDedupState] = {}
+    rows_before = 0
+    for index, record in enumerate(_iter_record_parquet_rows(path, batch_size)):
+        rows_before += 1
+        natural_key, signature = _nsa_identity(record)
+        if natural_key is None:
+            continue
+        recency = _nsa_source_recency(record, index)
+        state = states.get(natural_key)
+        if state is None:
+            states[natural_key] = _NsaDedupState(
+                signature=signature,
+                total=1,
+                winner_index=index,
+                winner_recency=recency,
+            )
+            continue
+        state.total += 1
+        if signature != state.signature:
+            state.conflict = True
+        if recency > state.winner_recency:
+            state.winner_index = index
+            state.winner_recency = recency
+
+    duplicate_groups = sum(
+        state.total > 1 and not state.conflict for state in states.values()
+    )
+    duplicate_rows_removed = sum(
+        state.total - 1
+        for state in states.values()
+        if state.total > 1 and not state.conflict
+    )
+    conflict_groups = sum(state.conflict for state in states.values())
+    conflict_rows = sum(state.total for state in states.values() if state.conflict)
+    report = NsaDedupReport(
+        period=period,
+        rows_before=rows_before,
+        rows_after=rows_before - duplicate_rows_removed,
+        duplicate_groups=duplicate_groups,
+        duplicate_rows_removed=duplicate_rows_removed,
+        conflict_groups=conflict_groups,
+        conflict_rows=conflict_rows,
+    )
+
+    temp_path = path.with_suffix(".dedup.tmp")
+    writer = pq.ParquetWriter(temp_path, schema=record_parquet_schema(), compression="snappy")
+    output: list[dict[str, Any]] = []
+    try:
+        for index, record in enumerate(_iter_record_parquet_rows(path, batch_size)):
+            natural_key, _ = _nsa_identity(record)
+            state = states.get(natural_key) if natural_key is not None else None
+            if state is None or state.conflict or index == state.winner_index:
+                output.append(record)
+            if len(output) >= batch_size:
+                writer.write_table(pa.Table.from_pylist(output, schema=record_parquet_schema()))
+                output.clear()
+        if output:
+            writer.write_table(pa.Table.from_pylist(output, schema=record_parquet_schema()))
+    finally:
+        writer.close()
+    temp_path.replace(path)
+
+    if report.conflict_groups:
+        LOGGER.warning(
+            "IQVIA NSA natural-key conflicts preserved period=%s groups=%s rows=%s",
+            period,
+            report.conflict_groups,
+            report.conflict_rows,
+        )
+    if report.duplicate_rows_removed:
+        LOGGER.info(
+            "IQVIA NSA exact-row dedup period=%s groups=%s removed=%s rows_before=%s rows_after=%s",
+            period,
+            report.duplicate_groups,
+            report.duplicate_rows_removed,
+            report.rows_before,
+            report.rows_after,
+        )
+    return report
+
+
 def materialize_record_parquet(
     files: list[Path],
     output_dir: Path,
@@ -707,12 +1107,7 @@ def materialize_record_parquet(
     overwrite: bool = False,
     repeat_factor: int = 1,
 ) -> dict[str, int]:
-    """Materialize DB insert records into period parquet files without dedup.
-
-    This record cache intentionally preserves every row emitted by
-    ``iter_records``. For NSA that means both the 2Q CSV and 2Q XLSX overlap are
-    kept, matching the existing raw-table baseline exactly.
-    """
+    """Materialize DB insert records and deduplicate exact facts per period."""
     if repeat_factor < 1:
         raise ValueError(f"repeat_factor must be >= 1, got {repeat_factor}")
     source_dir = output_dir / "nsa"
@@ -730,6 +1125,7 @@ def materialize_record_parquet(
     counts: dict[str, int] = defaultdict(int)
     buffers: dict[str, list[dict[str, Any]]] = defaultdict(list)
     writers: dict[str, pq.ParquetWriter] = {}
+    buffered_rows = 0
     try:
         for path in files:
             LOGGER.info("record-parquet materialize NSA %s", path)
@@ -739,13 +1135,28 @@ def materialize_record_parquet(
                 for _ in range(repeat_factor):
                     buffers[period].append(dict(row))
                     counts[period] += 1
-                    if len(buffers[period]) >= batch_size:
-                        _flush_record_parquet_batch(period, buffers[period], writers, source_dir)
+                    buffered_rows += 1
+                    if buffered_rows >= batch_size:
+                        for buffered_period, buffered in buffers.items():
+                            _flush_record_parquet_batch(
+                                buffered_period,
+                                buffered,
+                                writers,
+                                source_dir,
+                            )
+                        buffered_rows = 0
         for period, rows in list(buffers.items()):
             _flush_record_parquet_batch(period, rows, writers, source_dir)
     finally:
         for writer in writers.values():
             writer.close()
+        writers.clear()
+        buffers.clear()
+
+    for period in sorted(counts):
+        path = source_dir / f"{period}.parquet"
+        report = _deduplicate_record_parquet(path, period, batch_size=batch_size)
+        counts[period] = report.rows_after
 
     for period, count in sorted(counts.items()):
         LOGGER.info("record-parquet wrote nsa/%s.parquet: %s rows", period, f"{count:,}")
@@ -851,6 +1262,8 @@ def dry_run(files: list[Path], out_path: Path | None) -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(text)
     print(text)
+    if errors:
+        raise HeaderContractError(f"IQVIA NSA dry-run failed: {'; '.join(errors)}")
 
 
 def load_source(files: list[Path], batch_size: int, dry: bool = False) -> LoadStats:
@@ -863,6 +1276,7 @@ def load_source(files: list[Path], batch_size: int, dry: bool = False) -> LoadSt
     conn = connect()
     loaded = loaded_sheet_keys(conn, table)
     try:
+        pending: list[Path] = []
         for path in files:
             stats.files += 1
             LOGGER.info("reading NSA %s", path)
@@ -874,14 +1288,28 @@ def load_source(files: list[Path], batch_size: int, dry: bool = False) -> LoadSt
             if all((path.name, sheet_name) in loaded for (sheet_name,) in sheet_keys):
                 LOGGER.info("skip already loaded file: %s", path.name)
                 continue
+            pending.append(path)
+            stats.sheets += len(sheet_keys)
+        if pending:
             try:
-                count = batch_insert(conn, table, iter_records(path), batch_size)
+                with tempfile.TemporaryDirectory(prefix="iqvia-nsa-records-") as temp_dir:
+                    record_dir = Path(temp_dir)
+                    materialize_record_parquet(
+                        pending,
+                        record_dir,
+                        batch_size=batch_size,
+                    )
+                    count = batch_insert(
+                        conn,
+                        table,
+                        iter_record_parquet_records(record_dir, batch_size=batch_size),
+                        batch_size,
+                    )
                 stats.rows += count
-                stats.sheets += len(sheet_keys)
-                LOGGER.info("loaded %s: %s rows", path.name, f"{count:,}")
+                LOGGER.info("loaded IQVIA NSA files=%s rows=%s", len(pending), f"{count:,}")
             except Exception as exc:  # noqa: BLE001
                 conn.rollback()
-                message = f"{path}: {exc}"
+                message = f"IQVIA NSA batch: {exc}"
                 stats.errors.append(message)
                 LOGGER.error("ERROR %s", message)
     finally:
