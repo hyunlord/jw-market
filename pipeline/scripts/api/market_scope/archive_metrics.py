@@ -9,6 +9,7 @@ from typing import Any
 
 from pipeline.etl.io.mart.momentum import compute_market_share_momentum
 from pipeline.scripts.api.market_scope.periods import sort_periods
+from pipeline.scripts.etl.cache_build_common import endpoint_cagr
 
 
 def annual_hhi_series(
@@ -78,16 +79,18 @@ def endpoint_ei_with_fallback(
     """Calculate EI with the archive 5-year endpoint and 3-year fallback."""
 
     for years in (target_years, 3):
-        brand_meta = _endpoint_cagr(brand_series, years)
-        market_meta = _endpoint_cagr(market_series, years)
+        brand_meta = endpoint_cagr(brand_series, years)
+        market_meta = endpoint_cagr(market_series, years)
         brand_cagr = brand_meta.get("cagr_pct")
         market_cagr = market_meta.get("cagr_pct")
         if brand_cagr is None or market_cagr is None or market_cagr == 0:
             continue
+        if brand_meta.get("period_years") != market_meta.get("period_years"):
+            continue
         return {
             "ei": round((float(brand_cagr) / float(market_cagr)) * 100.0, 4),
             "basis": f"endpoint_{years}y",
-            "period_years": years,
+            "period_years": brand_meta.get("period_years"),
             "brand_cagr_pct": round(float(brand_cagr), 4),
             "market_cagr_pct": round(float(market_cagr), 4),
             "brand_start_period": brand_meta.get("start_period"),
@@ -268,36 +271,6 @@ def _latest_trends(
 
 def _selected_value(rows: list[dict[str, Any]], item_id: str, *, label_key: str) -> float:
     return float(next((row.get("raw_value") for row in rows if row.get(label_key) == item_id), 0.0) or 0.0)
-
-
-def _endpoint_cagr(series: dict[str, float], years: int) -> dict[str, Any]:
-    if len(series) < 2:
-        return {"cagr_pct": None, "basis": f"endpoint_{years}y", "period_years": years, "note": "insufficient history"}
-    latest_period = sort_periods(series)[-1]
-    latest_ord = _period_ordinal(latest_period)
-    if latest_ord is None:
-        return {"cagr_pct": None, "basis": f"endpoint_{years}y", "period_years": years, "note": "invalid latest period"}
-    ordinal, periods_per_year = latest_ord
-    target_ordinal = ordinal - (periods_per_year * years)
-    start_period = next((period for period in series if (_period_ordinal(period) or (None, None))[0] == target_ordinal), None)
-    start_value = series.get(start_period or "")
-    latest_value = series[latest_period]
-    if start_period is None or start_value is None or start_value <= 0:
-        return {"cagr_pct": None, "basis": f"endpoint_{years}y", "period_years": years, "start_period": start_period, "end_period": latest_period}
-    cagr = _calculate_cagr(start_value, latest_value, years)
-    return {"cagr_pct": round(cagr, 4) if cagr is not None else None, "basis": f"endpoint_{years}y", "period_years": years, "start_period": start_period, "end_period": latest_period, "start_value": start_value, "end_value": latest_value}
-
-
-def _calculate_cagr(start_value: float, end_value: float, years: int) -> float | None:
-    if start_value == 0 and end_value == 0:
-        return 0.0
-    if start_value == 0 and end_value > 0:
-        return None
-    if start_value > 0 and end_value == 0:
-        return -100.0
-    if start_value < 0 or end_value < 0:
-        return None
-    return (math.pow(end_value / start_value, 1 / years) - 1) * 100.0
 
 
 def _period_year(period: str) -> int | None:

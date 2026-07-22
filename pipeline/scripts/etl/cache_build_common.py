@@ -131,14 +131,15 @@ def _period_ordinal(period: str) -> tuple[int, int] | None:
     return None
 
 
-def _endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
+def endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
     """CAGR using the same latest-vs-exact-endpoint rule as Layer3 marts.
 
     annual sum was rejected for Wave 3a because partial current-year totals
     (for example 2026 Jan-Apr) created fake negative CAGR/EI while the portal
     also displayed a separate positive CAGR. Cache now uses one domain rule:
     latest period vs exactly 5 years ago, falling back to 3 years only when
-    the caller asks for that basis.
+    the caller asks for that basis. The only adjacent endpoint permitted is
+    IQVIA's 19-quarter substitute, calculated over its actual 4.75 years.
     """
     data = series or {}
     if len(data) < 2:
@@ -149,17 +150,19 @@ def _endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
         return {"cagr_pct": None, "basis": f"endpoint_{years}y", "period_years": years, "note": "invalid latest period"}
     ordinal, periods_per_year = latest_ord
     target_ordinal = ordinal - periods_per_year * years
-    start_period = next(
-        (str(period) for period in data if (_period_ordinal(str(period)) or (None, None))[0] == target_ordinal),
-        None,
-    )
-    latest_value = period_value(latest_item)
+    start_period = _period_at_ordinal(data, target_ordinal)
     start_value = period_value(data.get(start_period)) if start_period else None
+    period_years: float | int = years
+    if start_value is None and years == 5 and periods_per_year == 4:
+        start_period = _period_at_ordinal(data, ordinal - 19)
+        start_value = period_value(data.get(start_period)) if start_period else None
+        period_years = 19 / periods_per_year
+    latest_value = period_value(latest_item)
     if start_period is None or start_value is None:
         return {
             "cagr_pct": None,
             "basis": f"endpoint_{years}y",
-            "period_years": years,
+            "period_years": period_years,
             "start_period": start_period,
             "end_period": latest_period,
             "note": "missing endpoint period",
@@ -168,21 +171,32 @@ def _endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
         return {
             "cagr_pct": None,
             "basis": f"endpoint_{years}y",
-            "period_years": years,
+            "period_years": period_years,
             "start_period": start_period,
             "end_period": latest_period,
             "note": "endpoint start value is not positive",
         }
-    cagr = calculate_cagr_v2(start_value, latest_value, years)
+    cagr = calculate_cagr_v2(start_value, latest_value, period_years)
     return {
         "cagr_pct": round(cagr, 4) if cagr is not None else None,
         "basis": f"endpoint_{years}y",
-        "period_years": years,
+        "period_years": period_years,
         "start_period": start_period,
         "end_period": latest_period,
         "start_value": start_value,
         "end_value": latest_value,
     }
+
+
+def _period_at_ordinal(series: dict[str, Any], target_ordinal: int) -> str | None:
+    return next(
+        (
+            str(period)
+            for period in series
+            if (_period_ordinal(str(period)) or (None, None))[0] == target_ordinal
+        ),
+        None,
+    )
 
 
 def calculate_ei_with_fallback(
@@ -202,16 +216,18 @@ def calculate_ei_with_fallback(
     기각한다.
     """
     for years in (target_years, 3):
-        brand_meta = _endpoint_cagr(brand_series, years)
-        market_meta = _endpoint_cagr(market_series, years)
+        brand_meta = endpoint_cagr(brand_series, years)
+        market_meta = endpoint_cagr(market_series, years)
         brand_cagr = brand_meta.get("cagr_pct")
         market_cagr = market_meta.get("cagr_pct")
         if brand_cagr is None or market_cagr is None or market_cagr == 0:
             continue
+        if brand_meta.get("period_years") != market_meta.get("period_years"):
+            continue
         return {
             "ei": round((brand_cagr / market_cagr) * 100, 4),
             "basis": f"endpoint_{years}y",
-            "period_years": years,
+            "period_years": brand_meta.get("period_years"),
             "brand_cagr_pct": round(float(brand_cagr), 4),
             "market_cagr_pct": round(float(market_cagr), 4),
             "brand_start_period": brand_meta.get("start_period"),
@@ -455,7 +471,7 @@ def series_latest_number(series: dict[str, Any] | None) -> float | None:
 def series_cagr(series: dict[str, Any] | None) -> float | None:
     """Display market CAGR using the same 5y→3y endpoint policy as EI."""
     for years in (5, 3):
-        meta = _endpoint_cagr(series, years)
+        meta = endpoint_cagr(series, years)
         cagr = meta.get("cagr_pct")
         if cagr is not None:
             return round(float(cagr), 2)
@@ -476,10 +492,10 @@ def market_cagr_exclusive(series: dict[str, Any] | None) -> tuple[float | None, 
     The two slots are never both non-null. ``None`` means "not computable" and
     must not be coerced to ``0``.
     """
-    cagr_5y = _endpoint_cagr(series, 5).get("cagr_pct")
+    cagr_5y = endpoint_cagr(series, 5).get("cagr_pct")
     if cagr_5y is not None:
         return round(float(cagr_5y), 2), None
-    cagr_3y = _endpoint_cagr(series, 3).get("cagr_pct")
+    cagr_3y = endpoint_cagr(series, 3).get("cagr_pct")
     if cagr_3y is not None:
         return None, round(float(cagr_3y), 2)
     return None, None

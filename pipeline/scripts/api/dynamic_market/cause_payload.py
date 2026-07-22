@@ -527,7 +527,7 @@ def build_market_meta(
         "available_levels": [],
         "direct_competition_count": len(metrics.all_brands),
         "market_size_recent": latest_market_value(data["market_size_series"]),
-        "market_cagr_5y_pct": metrics.cagr,
+        "market_cagr_5y_pct": data.get("kpi", {}).get("market_cagr_5y_pct"),
         "mom_growth_meta": growth_endpoint_meta(growth_values),
         "is_jw": False,
         "is_target": False,

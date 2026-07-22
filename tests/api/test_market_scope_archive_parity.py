@@ -72,7 +72,9 @@ def test_recompute_uses_archive_endpoint_cagr_fallback_for_ei_matrix() -> None:
     assert target["market_cagr_pct"] == pytest.approx(expected_market_cagr)
     assert target["ei_5y"] == pytest.approx(round((expected_brand_cagr / expected_market_cagr) * 100.0, 4))
     assert payload["data"]["kpi"]["brand_cagr_pct"] == pytest.approx(expected_brand_cagr)
-    assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(expected_market_cagr)
+    expected_market_5y = _cagr_pct(100.0, 233.1, 5)
+    assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(round(expected_market_5y, 2))
+    assert payload["data"]["kpi"]["market_cagr_3y_pct"] is None
 
 
 def test_recompute_populates_momentum_from_recent_four_market_share_points() -> None:
