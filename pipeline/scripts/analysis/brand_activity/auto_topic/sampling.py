@@ -65,6 +65,7 @@ def build_market_samples(
     brands_per_market: int | None,
     full_rows: bool = False,
     group_map: dict[str, JsonValue] | None = None,
+    scope_metadata: dict[str, dict[str, JsonValue]] | None = None,
     axis_lookback_months: int = 12,
 ) -> dict[str, JsonValue]:
     """Create deterministic market-axis and brand-share samples for final MI/CSD markets."""
@@ -80,10 +81,10 @@ def build_market_samples(
     axis_fallback_scopes: list[str] = []
     selected: dict[str, tuple[str, ...]] = {}
     selected_pairs: dict[str, tuple[tuple[str, str], ...]] = {}
-    scope_metadata = scope_metadata_from_group_map(group_map or {})
-    scope_keys = tuple(scope_metadata) if scope_metadata else tuple(markets)
+    resolved_scope_metadata = scope_metadata or scope_metadata_from_group_map(group_map or {})
+    scope_keys = tuple(resolved_scope_metadata) if resolved_scope_metadata else tuple(markets)
     for scope_key in scope_keys:
-        atc4_values = _scope_atc4_values(scope_key, scope_metadata)
+        atc4_values = _scope_atc4_values(scope_key, resolved_scope_metadata)
         market_rows = _rows_for_scope(rows_by_market, atc4_values)
         if not market_rows:
             continue
@@ -116,7 +117,7 @@ def build_market_samples(
         "brand_axis_samples": brand_axis_samples,
         "selected_brands": selected,
         "selected_brand_pairs": {key: [list(pair) for pair in pairs] for key, pairs in selected_pairs.items()},
-        "scope_metadata": scope_metadata,
+        "scope_metadata": resolved_scope_metadata,
         "axis_window": axis_window,
         "axis_fallback_scopes": axis_fallback_scopes,
         "sample_summary": _sample_summary(axis_samples, brand_samples, brand_axis_samples, selected, full_rows=full_rows, axis_window=axis_window, axis_sources=axis_sources, axis_fallback_scopes=axis_fallback_scopes),
@@ -165,7 +166,8 @@ def _brand_atc4(rows: Sequence[KeywordRow], brand: str) -> str:
 
 def _brand_sample_key(scope_key: str, atc4: str, brand: str) -> str:
     """Build a brand-share key that preserves both final scope and source ATC4."""
-    return f"{scope_key}:{atc4}:{brand}" if scope_key.startswith("group:") else f"{atc4}:{brand}"
+    special_scope = scope_key.startswith(("group:", "strategic_ml:"))
+    return f"{scope_key}:{atc4}:{brand}" if special_scope else f"{atc4}:{brand}"
 
 
 def _axis_window(rows: Sequence[KeywordRow], *, lookback_months: int) -> dict[str, JsonValue]:

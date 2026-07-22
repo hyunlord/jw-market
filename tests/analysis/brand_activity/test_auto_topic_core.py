@@ -16,7 +16,7 @@ except ModuleNotFoundError:
     fake_httpx2.HTTPError = RuntimeError
     sys.modules["httpx2"] = fake_httpx2
 
-from pipeline.scripts.analysis.brand_activity.auto_topic import llm, market_scope
+from pipeline.scripts.analysis.brand_activity.auto_topic import data_source, llm, market_scope, run_auto_topic
 from pipeline.scripts.analysis.brand_activity.auto_topic.execution import _minimum_axis_topics
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
     MissingMariaDbPasswordError,
@@ -63,6 +63,12 @@ CURRENT_MARKETS = (
     "V03G2",
     "V06D0",
 )
+
+
+def test_catalog_schema_identifier_is_fail_closed() -> None:
+    assert data_source._quote_identifier("jw_mart") == "`jw_mart`"
+    with pytest.raises(ValueError, match="invalid MariaDB identifier"):
+        data_source._quote_identifier("jw_mart; DROP TABLE x")
 
 
 def _row(row_id: int, atc4: str, brand: str, text: str = "sample", period_ym: str = "2025-10") -> KeywordRow:
@@ -147,6 +153,149 @@ def test_target_selector_rejects_explicit_targets_with_existing_scope() -> None:
             mode="explicit",
             explicit_markets=("A07E9", "C10A1"),
         )
+
+
+def test_strategic_scope_selector_reuses_only_exact_atc_coverage() -> None:
+    selection = market_scope.select_missing_strategic_scopes(
+        catalog_rows=(
+            {"ml_id": "ml_001", "ml_name": "P-CAB", "atc_codes_json": '["A2B2"]'},
+            {"ml_id": "ml_003", "ml_name": "GUARDLET", "atc_codes_json": '["A10N1", "A10N3", "A10P5"]'},
+            {"ml_id": "ml_006", "ml_name": "LIVALO", "atc_codes_json": '["C10A1", "C10C"]'},
+            {"ml_id": "ml_007", "ml_name": "LIVALO MONO", "atc_codes_json": '["C10C", "C10D1"]'},
+        ),
+        available_markets=("A02B2", "A10N1", "A10N3", "A10P5", "C10A1", "C10C0"),
+        stored_scopes=(
+            {"scope_id": "atc4:A02B2", "atc4_values": '["A02B2"]'},
+            {"scope_id": "atc4:C10C0", "atc4_values": '["C10C0"]'},
+            {"scope_id": "group:gardlet_family", "atc4_values": '["A10N1", "A10N3"]'},
+            {"scope_id": "group:livalo_family", "atc4_values": '["C10A1", "C10C0"]'},
+        ),
+    )
+
+    assert [row["scope_id"] for row in selection["target_scopes"]] == [
+        "strategic_ml:ml_003",
+    ]
+    assert selection["catalog_census"] == [
+        {
+            "ml_id": "ml_001",
+            "ml_name": "P-CAB",
+            "catalog_atc4_raw": ["A2B2"],
+            "catalog_atc4": ["A02B2"],
+            "keyword_atc4": ["A02B2"],
+            "status": "covered_exact_scope",
+            "reachable_scope_ids": ["atc4:A02B2"],
+        },
+        {
+            "ml_id": "ml_003",
+            "ml_name": "GUARDLET",
+            "catalog_atc4_raw": ["A10N1", "A10N3", "A10P5"],
+            "catalog_atc4": ["A10N1", "A10N3", "A10P5"],
+            "keyword_atc4": ["A10N1", "A10N3", "A10P5"],
+            "status": "target_missing_exact_scope",
+            "reachable_scope_ids": ["group:gardlet_family"],
+        },
+        {
+            "ml_id": "ml_006",
+            "ml_name": "LIVALO",
+            "catalog_atc4_raw": ["C10A1", "C10C"],
+            "catalog_atc4": ["C10A1", "C10C0"],
+            "keyword_atc4": ["C10A1", "C10C0"],
+            "status": "covered_exact_scope",
+            "reachable_scope_ids": ["atc4:C10C0", "group:livalo_family"],
+        },
+        {
+            "ml_id": "ml_007",
+            "ml_name": "LIVALO MONO",
+            "catalog_atc4_raw": ["C10C", "C10D1"],
+            "catalog_atc4": ["C10C0", "C10D1"],
+            "keyword_atc4": ["C10C0"],
+            "status": "covered_exact_scope",
+            "reachable_scope_ids": ["atc4:C10C0"],
+        },
+    ]
+
+
+def test_strategic_target_mode_loads_only_missing_catalog_scopes(monkeypatch) -> None:
+    class FakeConnection:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(run_auto_topic, "connect_mariadb", lambda _env: FakeConnection())
+    monkeypatch.setattr(run_auto_topic, "read_env_file", lambda: {})
+    monkeypatch.setattr(run_auto_topic, "fetch_snapshot", lambda *_args, **_kwargs: {"row_count": 2})
+    monkeypatch.setattr(run_auto_topic, "fetch_keyword_atc4", lambda *_args, **_kwargs: ("A10N1", "A10N3", "A10P5", "C10A1", "C10C0"))
+    monkeypatch.setattr(run_auto_topic, "fetch_topic_covered_atc4", lambda *_args, **_kwargs: ("A10N1", "A10N3", "C10A1", "C10C0"))
+    monkeypatch.setattr(
+        run_auto_topic,
+        "fetch_strategic_ml_catalog",
+        lambda *_args, **_kwargs: (
+            {"ml_id": "ml_003", "ml_name": "GUARDLET", "atc_codes_json": '["A10N1", "A10N3", "A10P5"]'},
+            {"ml_id": "ml_006", "ml_name": "LIVALO", "atc_codes_json": '["C10A1", "C10C0"]'},
+        ),
+    )
+    monkeypatch.setattr(
+        run_auto_topic,
+        "fetch_topic_scope_inventory",
+        lambda *_args, **_kwargs: (
+            {"scope_id": "group:gardlet_family", "atc4_values": '["A10N1", "A10N3"]'},
+            {"scope_id": "group:livalo_family", "atc4_values": '["C10A1", "C10C0"]'},
+        ),
+    )
+    monkeypatch.setattr(
+        run_auto_topic,
+        "fetch_keyword_rows",
+        lambda _connection, markets, **_kwargs: [_row(index + 1, atc4, f"BRAND{index}") for index, atc4 in enumerate(markets)],
+    )
+    monkeypatch.setattr(
+        run_auto_topic,
+        "fetch_csd_market_bridge",
+        lambda *_args, **_kwargs: pytest.fail("strategic catalog selection must not run the CSD bridge join"),
+    )
+
+    _before, _rows, _bridge, _after, selection = run_auto_topic._load_stage_rows(
+        target_mode="strategic",
+        target_atc4="",
+        stage_schema="jw_brand_activity_stage",
+    )
+
+    assert selection["selected_scope_ids"] == ["strategic_ml:ml_003"]
+    assert selection["selected_existing_scope_overlap"] == []
+    assert selection["scope_metadata"]["strategic_ml:ml_003"]["display_name_source"] == "catalog_ml_market"
+    assert selection["catalog_census"][1]["status"] == "covered_exact_scope"
+
+
+def test_parse_target_mode_accepts_strategic_without_explicit_atc() -> None:
+    assert market_scope.parse_target_mode("strategic") == "strategic"
+
+
+def test_build_market_samples_accepts_strategic_scope_metadata() -> None:
+    rows = [_row(1, "L04B0", "HUMIRA"), _row(2, "M01C0", "ACTEMRA")]
+    metadata = {
+        "strategic_ml:ml_011": {
+            "scope_key": "strategic_ml:ml_011",
+            "scope_id": "strategic_ml:ml_011",
+            "scope_type": "strategic_ml",
+            "display_name": "RA MARKET",
+            "atc4_values": ["L04B0", "M01C0"],
+        }
+    }
+
+    samples = build_market_samples(
+        rows,
+        markets=("L04B0", "M01C0"),
+        descriptions={},
+        axis_per_brand=3,
+        axis_rows_cap=10,
+        brand_rows=3,
+        brands_per_market=None,
+        scope_metadata=metadata,
+    )
+
+    assert list(samples["axis_samples"]) == ["strategic_ml:ml_011"]
+    assert set(samples["brand_samples"]) == {
+        "strategic_ml:ml_011:L04B0:HUMIRA",
+        "strategic_ml:ml_011:M01C0:ACTEMRA",
+    }
 
 
 def test_choose_sample_brands_caps_one_to_seven_and_prefers_anchor() -> None:

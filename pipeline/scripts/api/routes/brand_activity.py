@@ -173,7 +173,12 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     response_meta: dict[str, JsonValue] = {"period": period_meta}
     if _period_filter_active(payload) and not _topic_result_has_data(result):
         result = {**result, "brands": []}
-        response_meta["reason"] = "no_data_in_period"
+        result_reason = result.get("reason")
+        response_meta["reason"] = (
+            result_reason
+            if isinstance(result_reason, str) and result_reason
+            else "no_data_in_period"
+        )
     return _success_response(result, request_normalized=request_normalized, metadata=response_meta)
 
 

@@ -194,9 +194,9 @@ def group_scope_keys(group_map: dict[str, JsonValue]) -> tuple[str, ...]:
 
 def source_scope_key_from_brand_sample_key(sample_key: str) -> tuple[str, str, str]:
     """Parse ATC4 and group brand-share sample keys without losing source ATC4."""
-    if sample_key.startswith("group:"):
-        prefix, group_id, atc4, brand = sample_key.split(":", 3)
-        return f"{prefix}:{group_id}", atc4, brand
+    if sample_key.startswith(("group:", "strategic_ml:")):
+        prefix, scope_name, atc4, brand = sample_key.split(":", 3)
+        return f"{prefix}:{scope_name}", atc4, brand
     atc4, brand = sample_key.split(":", 1)
     return atc4, atc4, brand
 
