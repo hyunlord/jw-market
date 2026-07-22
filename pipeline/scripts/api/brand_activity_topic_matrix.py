@@ -328,16 +328,38 @@ def _topic_scope(
     catalog_codes = set(_catalog_atc4_values(brand_set))
     if not catalog_codes:
         return {}
+    if brand_set.view_name == "strategic_ml":
+        expected_scope_id = f"strategic_ml:{brand_set.market_id}"
+        for row in topic_rows:
+            row_codes = set(_atc4_values(row.get("atc4_values")))
+            if _text(row.get("scope_id")) == expected_scope_id and row_codes == catalog_codes:
+                return _scope_catalog_row(row)
     if brand_set.view_name == "general":
-        # A general-view ATC selection identifies competitors, while topics are
-        # stored under reusable group scopes. Prefer the tightest containing
-        # group so topic output remains independent of the requested view.
         containing_groups: list[tuple[int, str, dict[str, JsonValue]]] = []
         for row in topic_rows:
             scope_id = _text(row.get("scope_id"))
             row_codes = set(_atc4_values(row.get("atc4_values")))
             if scope_id.startswith("group:") and row_codes and catalog_codes <= row_codes:
                 containing_groups.append((len(row_codes), scope_id, row))
+        exact_groups = [candidate for candidate in containing_groups if candidate[0] == len(catalog_codes)]
+        if exact_groups:
+            _size, _scope_id, winner = min(exact_groups, key=lambda candidate: candidate[1])
+            return _scope_catalog_row(winner)
+
+        if len(catalog_codes) > 1:
+            exact_strategic = [
+                row
+                for row in topic_rows
+                if _text(row.get("scope_id")).startswith("strategic_ml:")
+                and set(_atc4_values(row.get("atc4_values"))) == catalog_codes
+            ]
+            if len(exact_strategic) == 1:
+                return _scope_catalog_row(exact_strategic[0])
+            if len(exact_strategic) > 1:
+                return {}
+        # A general-view ATC selection identifies competitors, while topics are
+        # stored under reusable group scopes. Prefer the tightest containing
+        # group so topic output remains independent of the requested view.
         if containing_groups:
             _size, _scope_id, winner = min(
                 containing_groups,

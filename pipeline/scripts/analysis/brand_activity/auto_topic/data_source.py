@@ -6,6 +6,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
 
 import pymysql
 
@@ -16,16 +17,25 @@ from .privacy import estimate_tokens
 REPO_ROOT = Path(__file__).resolve().parents[5]
 ENV_PATH = REPO_ROOT / "pipeline/docker/.env"
 SCHEMA = "jw_brand_activity_stage"
+CATALOG_SCHEMA = "jw_mart"
 KEYWORD_TABLE = "km_keyword_event_stage"
 CSD_TABLE = "csd_channel_dynamics_stage"
 PRIMARY_ALIAS_PATH = REPO_ROOT / "docs/research/brand_activity/alias/ALIAS_01_MAPPING.json"
 FALLBACK_ALIAS_PATH = REPO_ROOT / "docs/design/brand_activity/alias/ALIAS_01_MAPPING.json"
 DICTIONARY_PATH = REPO_ROOT / "docs/research/brand_activity/topic_redesign/REDESIGN_03_DICTIONARY_DRAFT.json"
 JW_COMPANY_PREFIX = "JW"
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 class MissingMariaDbPasswordError(RuntimeError):
     """Raised when neither environment variables nor .env provide a MariaDB password."""
+
+
+def _quote_identifier(identifier: str) -> str:
+    """Quote a MariaDB identifier after fail-closed validation."""
+    if not IDENTIFIER_PATTERN.fullmatch(identifier):
+        raise ValueError(f"invalid MariaDB identifier: {identifier!r}")
+    return f"`{identifier}`"
 
 
 def read_env_file(path: Path = ENV_PATH) -> dict[str, str]:
@@ -126,6 +136,40 @@ def fetch_topic_covered_atc4(connection: pymysql.connections.Connection, *, sche
         if isinstance(values, list):
             covered.update(str(value) for value in values if isinstance(value, str) and value)
     return tuple(sorted(covered))
+
+
+def fetch_topic_scope_inventory(
+    connection: pymysql.connections.Connection,
+    *,
+    schema: str = SCHEMA,
+) -> tuple[dict[str, JsonValue], ...]:
+    """Return persisted topic scope IDs and their exact ATC membership read-only."""
+    with connection.cursor() as cursor:
+        cursor.execute("START TRANSACTION READ ONLY")
+        cursor.execute(
+            f"SELECT scope_id, atc4_values FROM {schema}.mart_brand_activity_topics ORDER BY scope_id"
+        )
+        rows = tuple(dict(row) for row in cursor.fetchall())
+        cursor.execute("COMMIT")
+    return rows
+
+
+def fetch_strategic_ml_catalog(
+    connection: pymysql.connections.Connection,
+    *,
+    schema: str | None = None,
+) -> tuple[dict[str, JsonValue], ...]:
+    """Return every strategic ML catalog ATC combination read-only."""
+    catalog_schema = _quote_identifier(schema or os.environ.get("DB_NAME", CATALOG_SCHEMA))
+    with connection.cursor() as cursor:
+        cursor.execute("START TRANSACTION READ ONLY")
+        cursor.execute(
+            f"SELECT ml_id, name AS ml_name, atc_codes_json "
+            f"FROM {catalog_schema}.catalog_ml_market ORDER BY ml_id"
+        )
+        rows = tuple(dict(row) for row in cursor.fetchall())
+        cursor.execute("COMMIT")
+    return rows
 
 
 def fetch_csd_market_bridge(connection: pymysql.connections.Connection, markets: Sequence[str], *, schema: str = SCHEMA) -> dict[str, JsonValue]:

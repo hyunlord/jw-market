@@ -329,6 +329,35 @@ def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatc
     assert response.json()["meta"]["reason"] == "no_data_in_period"
 
 
+def test_post_topics_route_preserves_scope_failure_reason_when_period_is_present(monkeypatch) -> None:
+    failure_reason = "no_topic_scope:no_reachable_scope"
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda _payload: {"scope": {}, "brands": [], "reason": failure_reason},
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "악템라",
+            "filters": {"atc4": ["L01G1", "L04B0", "L04D0", "M01C0"]},
+            "start_date": "2025-04",
+            "end_date": "2026-03",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["reason"] == failure_reason
+    assert response.json()["meta"]["reason"] == failure_reason
+
+
 def test_topic_period_bounds_reads_indexable_month_extrema(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -840,6 +869,67 @@ def test_general_containing_group_scope_still_wins_over_member_scope() -> None:
     )
 
     assert scope["scope_id"] == "group:livalo_family"
+
+
+def test_strategic_topic_scope_prefers_its_own_catalog_scope_over_equal_atc_peer(monkeypatch) -> None:
+    strategic = replace(_strategic_brand_set(), market_id="ml_011")
+    atc4_values = ["L01G1", "L04B0", "L04D0", "M01C0"]
+    monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: tuple(atc4_values))
+
+    scope = topic_matrix._topic_scope(
+        brand_set=strategic,
+        topic_rows=[
+            _topic_row_for_scope("strategic_ml:ml_999", atc4_values),
+            _topic_row_for_scope("strategic_ml:ml_011", atc4_values),
+        ],
+    )
+
+    assert scope["scope_id"] == "strategic_ml:ml_011"
+
+
+def test_general_topic_scope_keeps_equal_strategic_scope_tie_fail_closed() -> None:
+    atc4_values = ["L01G1", "L04B0", "L04D0", "M01C0"]
+    brand_set = replace(_brand_set(), applied_filter={"atc4": atc4_values})
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[
+            _topic_row_for_scope("strategic_ml:ml_011", atc4_values),
+            _topic_row_for_scope("strategic_ml:ml_999", atc4_values),
+        ],
+    )
+
+    assert scope == {}
+
+
+def test_general_multi_atc_prefers_exact_strategic_scope_over_containing_group() -> None:
+    requested_atc4 = ["L01G1", "L04B0", "L04D0", "M01C0"]
+    brand_set = replace(_brand_set(), applied_filter={"atc4": requested_atc4})
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[
+            _topic_row_for_scope("group:broader_market", [*requested_atc4, "M01A1"]),
+            _topic_row_for_scope("strategic_ml:strategy_011", requested_atc4),
+        ],
+    )
+
+    assert scope["scope_id"] == "strategic_ml:strategy_011"
+
+
+def test_general_multi_atc_preserves_exact_group_precedence() -> None:
+    requested_atc4 = ["L01G1", "L04B0", "L04D0", "M01C0"]
+    brand_set = replace(_brand_set(), applied_filter={"atc4": requested_atc4})
+
+    scope = topic_matrix._topic_scope(
+        brand_set=brand_set,
+        topic_rows=[
+            _topic_row_for_scope("strategic_ml:ml_011", requested_atc4),
+            _topic_row_for_scope("group:actemra_market", requested_atc4),
+        ],
+    )
+
+    assert scope["scope_id"] == "group:actemra_market"
 
 
 def test_general_and_strategic_views_return_identical_topic_sets_and_ranks(monkeypatch) -> None:
