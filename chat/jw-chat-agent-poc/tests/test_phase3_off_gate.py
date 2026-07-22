@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from scripts.phase3_off_gate import _numeric_tokens_comparison, _tool_contracts
+from scripts.phase3_off_gate import (
+    APPROVED_PRESENTATION_EXCEPTIONS,
+    _numeric_tokens_comparison,
+    _tool_contracts,
+)
 
 
 def test_phase3_tool_contract_ignores_cache_state_only() -> None:
@@ -48,6 +52,23 @@ def test_phase3_approved_presentation_compares_numeric_multisets() -> None:
         "owner_brand_share",
         ["3.76", "2026", "05", "3.76"],
         ["05", "3.76", "3.76", "2026"],
+    )
+
+    assert comparison["passed"] is True
+    assert comparison["mode"] == "approved_presentation_numeric_multiset"
+
+
+def test_phase3_inherits_all_pl_approved_presentation_exceptions() -> None:
+    assert APPROVED_PRESENTATION_EXCEPTIONS == {
+        "B-07",
+        "C_03",
+        "owner_brand_share",
+    }
+
+    comparison = _numeric_tokens_comparison(
+        "B-07",
+        ["10.019", "0.213"],
+        ["0.213", "10.019"],
     )
 
     assert comparison["passed"] is True
