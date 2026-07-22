@@ -47,3 +47,18 @@ def test_full_rehearsal_job_requires_an_isolated_target_database() -> None:
         env["R1_TARGET_DB"],
         env["R1_CACHE_DB"],
     }
+
+
+def test_full_rehearsal_job_pins_the_source_snapshot_and_evidence_run() -> None:
+    job = _job()
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    mounts = {entry["name"]: entry for entry in container["volumeMounts"]}
+    script = container["args"][0]
+
+    assert env["R1_SOURCE_SUBPATH"] == "REPLACE_WITH_PINNED_SOURCE_SUBPATH"
+    assert env["R1_RUN_ID"] == "REPLACE_WITH_UNIQUE_RUN_ID"
+    assert mounts["r1-source"]["subPathExpr"] == "$(R1_SOURCE_SUBPATH)"
+    assert mounts["r1-source"]["readOnly"] is True
+    assert 'EVIDENCE_DIR="/work/evidence/${R1_RUN_ID}"' in script
+    assert 'tee "${EVIDENCE_DIR}/rehearse.log"' in script

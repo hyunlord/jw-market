@@ -7,7 +7,7 @@
 # both with root before unsuspend (the d2-writer cannot CREATE DATABASE).
 # Source = local/NFS (--source-backend local); no MinIO ingest (PL: MinIO=archive).
 #
-# Log durability: the whole pipeline is teed to /work/evidence/rehearse.log, and
+# Log durability: every run writes under /work/evidence/${R1_RUN_ID}, and
 # /work/evidence is backed by the r1-evidence-nfs RWX PVC (NOT the emptyDir), so
 # the log + evidence survive pod loss. Pre-apply the PVC manifest
 # (pipeline-orchestrator-r1-evidence-pvc.yaml). The orchestrator prints
@@ -54,9 +54,12 @@ spec:
               set -euo pipefail
               umask 077
               cd /app
-              mkdir -p /work/evidence
+              EVIDENCE_DIR="/work/evidence/${R1_RUN_ID}"
+              mkdir -p "${EVIDENCE_DIR}"
               test "${R1_TARGET_DB}" != "REPLACE_WITH_NEW_ISOLATED_DB"
               test "${R1_CACHE_DB}" != "REPLACE_WITH_NEW_ISOLATED_CACHE_DB"
+              test "${R1_SOURCE_SUBPATH}" != "REPLACE_WITH_PINNED_SOURCE_SUBPATH"
+              test "${R1_RUN_ID}" != "REPLACE_WITH_UNIQUE_RUN_ID"
               # Tee the whole pipeline to the durable evidence PVC so the log
               # survives pod loss. pipefail propagates any stage failure to the
               # Job exit code (tee returns 0).
@@ -71,8 +74,8 @@ spec:
                     /canonical-ubist/f046-c927ac9d/raw/ubist/year=2026/month=05/data.parquet \
                     year=2026/month=05/data.parquet \
                     8798ff1e04f524d59bcdddf42bc4f14f18ffe68b91942d3de970faadec6e2a5c
-                cp /work/inputs/input_manifest.json /work/evidence/
-                cp /work/inputs/input_inventory.json /work/evidence/
+                cp /work/inputs/input_manifest.json "${EVIDENCE_DIR}/"
+                cp /work/inputs/input_inventory.json "${EVIDENCE_DIR}/"
                 python -m pipeline.orchestrator rehearse-full \
                   --input-manifest /work/inputs/input_manifest.json \
                   --target-db "${R1_TARGET_DB}" \
@@ -84,11 +87,15 @@ spec:
                   --target-db "${R1_TARGET_DB}" \
                   --reference-cache-db "${R1_SOURCE_DB}" \
                   --target-cache-db "${R1_CACHE_DB}" \
-                  --output /work/evidence/r1_compare.json
-                cat /work/evidence/r1_compare.json
+                  --output "${EVIDENCE_DIR}/r1_compare.json"
+                cat "${EVIDENCE_DIR}/r1_compare.json"
                 echo "[job] complete $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              } 2>&1 | tee /work/evidence/rehearse.log
+              } 2>&1 | tee "${EVIDENCE_DIR}/rehearse.log"
           env:
+            - name: R1_RUN_ID
+              value: REPLACE_WITH_UNIQUE_RUN_ID
+            - name: R1_SOURCE_SUBPATH
+              value: REPLACE_WITH_PINNED_SOURCE_SUBPATH
             - name: R1_TARGET_DB
               value: REPLACE_WITH_NEW_ISOLATED_DB
             - name: R1_CACHE_DB
@@ -142,6 +149,7 @@ spec:
               mountPath: /work/evidence
             - name: r1-source
               mountPath: /r1-source
+              subPathExpr: $(R1_SOURCE_SUBPATH)
               readOnly: true
             - name: canonical-ubist
               mountPath: /canonical-ubist
