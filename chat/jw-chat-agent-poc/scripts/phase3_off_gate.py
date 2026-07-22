@@ -29,7 +29,7 @@ STABLE_TOOL_FIELDS: Final[tuple[str, ...]] = (
     "built_at",
 )
 APPROVED_PRESENTATION_EXCEPTIONS: Final[frozenset[str]] = frozenset(
-    {"C_03", "owner_brand_share"}
+    {"B-07", "C_03", "owner_brand_share"}
 )
 EXPECTED_CANDIDATE_ROUTES: Final[dict[str, dict[str, str | None]]] = {
     "B-03": {"mode": "guard", "deterministic_execution": None},
