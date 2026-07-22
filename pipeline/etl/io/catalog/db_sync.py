@@ -10,6 +10,8 @@ from typing import Iterable, Sequence
 import pyarrow.parquet as pq
 import pymysql
 
+from pipeline.etl.io.catalog.paths import catalog_file
+
 CATALOG_TABLE_BATCH_LIMIT = 200
 
 
@@ -191,7 +193,7 @@ def _catalog_batch_size(batch_size: int) -> int:
 
 
 def _catalog_path(catalog_root: Path, parquet_name: str) -> Path:
-    return catalog_root / parquet_name / f"{parquet_name}.parquet"
+    return catalog_file(catalog_root, parquet_name)
 
 
 def _load_catalog_rows(catalog_root: Path, spec: CatalogTableSpec) -> tuple[list[dict[str, object]], Path, str]:

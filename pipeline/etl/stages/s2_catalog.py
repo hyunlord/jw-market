@@ -11,6 +11,12 @@ from pipeline.etl.io.catalog.db_sync import sync_catalog_tables
 from pipeline.etl.io.catalog.postfix.catalog_postfix import run_postfix
 from pipeline.etl.io.catalog.master.extracts import run_master_extracts
 from pipeline.etl.io.catalog.market.catalog import run_market_catalog
+from pipeline.etl.io.catalog.paths import (
+    S2_REQUIRED_CATALOGS,
+    build_catalog_root,
+    publish_catalog_outputs,
+    resolve_catalog_root,
+)
 from pipeline.etl.io.catalog.target.target_priority import run_target_priority
 from pipeline.etl.io.iqvia_loader import connect
 
@@ -48,7 +54,7 @@ def run(params: dict[str, Any]) -> int:
     inputs_dir = _path_param(params, "inputs_dir")
     ubist_dir = _path_param(params, "ubist_dir")
     iqvia_nsa_dir = _path_param(params, "iqvia_nsa_dir")
-    catalog_root = _path_param(params, "catalog_root") or output_root / "output" / "catalog"
+    catalog_root = resolve_catalog_root(output_root, _path_param(params, "catalog_root"))
     ingested_at = _str_param(params, "ingested_at")
     sync_catalog_db = bool(params.get("sync_catalog_db"))
     target_db = _str_param(params, "target_db")
@@ -90,6 +96,18 @@ def run(params: dict[str, Any]) -> int:
             ingested_at=ingested_at,
         )
         postfix_results = run_postfix(output_root=output_root, inputs_dir=inputs_dir, ubist_dir=ubist_dir)
+        catalog_publish_results = publish_catalog_outputs(
+            [
+                *master_results,
+                *dimension_results,
+                *target_priority_results,
+                *market_catalog_results,
+                *brand_product_catalog_results,
+            ],
+            build_root=build_catalog_root(output_root),
+            catalog_root=catalog_root,
+            required_names=S2_REQUIRED_CATALOGS,
+        )
         catalog_sync_results = []
         if sync_catalog_db:
             if not target_db:
@@ -136,6 +154,11 @@ def run(params: dict[str, Any]) -> int:
         print(
             f"[{STAGE}] catalog_db {result.table_name}: mode={mode} rows={result.rows} "
             f"batch={result.batch_size} checksum={result.source_checksum} path={result.parquet_path}"
+        )
+    for result in catalog_publish_results:
+        print(
+            f"[{STAGE}] catalog_publish {result.name}: sha256={result.sha256} "
+            f"source={result.source_path} path={result.output_path}"
         )
     return 0
 

@@ -12,6 +12,7 @@ from pipeline.etl.io.catalog.postfix.molecule import apply_molecule_worklist
 from pipeline.etl.io.catalog.postfix.oxgx import apply_ox_gx
 from pipeline.etl.io.catalog.postfix.rebuild_cd import rebuild_cd_brand
 from pipeline.etl.io.catalog.postfix.rebuild_strategic import rebuild_strategic_brand
+from pipeline.etl.io.catalog.paths import build_catalog_root, catalog_file
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ class PostfixResult:
 
 
 def _catalog_file(catalog_dir: Path, name: str) -> Path:
-    return catalog_dir / name / f"{name}.parquet"
+    return catalog_file(catalog_dir, name)
 
 
 def _result(catalog_dir: Path, name: str, stats: dict[str, Any]) -> PostfixResult:
@@ -40,7 +41,7 @@ def run_postfix(
     ubist_dir: Path | None = None,
 ) -> list[PostfixResult]:
     """Run the six archive run_layer0_postfix stages against parquet catalog."""
-    catalog_dir = output_root / "parquet"
+    catalog_dir = build_catalog_root(output_root)
     ubist_source_dir = ubist_dir or output_root / "output" / "ubist"
     worklist_path = (inputs_dir or output_root / "inputs") / "molecule_v4_worklist.csv"
     if not worklist_path.exists():

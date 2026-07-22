@@ -180,6 +180,21 @@ def test_catalog_step_seeds_target_priority_and_molecule_inputs(tmp_path: Path) 
     assert inputs_dir.endswith("inputs")
 
 
+def test_catalog_consumers_share_one_canonical_catalog_root(tmp_path: Path) -> None:
+    manifest = _write_sources(tmp_path)
+    plan = build_full_rehearsal_plan(_config(tmp_path, manifest))
+    expected = str((tmp_path / "work" / "output" / "catalog").resolve())
+
+    for key in ("catalog", "enrich", "general_mart", "strategic_mart", "bridge"):
+        step = next(item for item in plan if item.key == key)
+        assert "--catalog-root" in step.argv, f"{key} lost the canonical catalog contract"
+        index = step.argv.index("--catalog-root")
+        assert step.argv[index + 1] == expected
+
+    cache = next(item for item in plan if item.key == "cache")
+    assert "--catalog-root" not in cache.argv
+
+
 def test_plan_installs_pinned_ubist_sidecar_before_downstream_stages(tmp_path: Path) -> None:
     manifest = _write_sources(tmp_path, with_sidecar=True)
     plan = build_full_rehearsal_plan(_config(tmp_path, manifest))
