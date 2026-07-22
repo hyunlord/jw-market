@@ -843,8 +843,9 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                             "company_name": {
                                                 "type": ["string", "null"],
                                                 "description": (
-                                                    "대표 제조사(representing_company). co-promotion 시 행수 내림차순·이름 오름차순으로 "
-                                                    "\", \"로 결합합니다. 미매핑이면 null."
+                                                    "제조사(manufacturer, IQVIA MFR NAME KOR). 브랜드 귀속 표기이며 "
+                                                    "interest-timeseries의 companies(판매사, representing_company)와는 다른 기준입니다. "
+                                                    "복수 시 제품 매칭 수 내림차순·이름 오름차순으로 \", \"로 결합합니다. 미매핑이면 null."
                                                 ),
                                             },
                                             "is_jw": {"type": "boolean", "description": "JW 자사 브랜드 여부."},
