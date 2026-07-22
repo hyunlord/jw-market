@@ -15,6 +15,7 @@ from jw_chat_agent_poc.service.evidence_binding import (
     expected_entities_from_result,
     verify_claim_bindings,
 )
+from jw_chat_agent_poc.service.evidence_binding_rules import claim_metrics_for_token
 from jw_chat_agent_poc.service.genos_client import _without_web_fact_context
 from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers
 from jw_chat_agent_poc.service.web_mi_summary import (
@@ -830,6 +831,16 @@ def test_normal_authoritative_hhi_facts_remain_answerable() -> None:
 
     assert result.status == "pass"
     assert result.blocked_claim_count == 0
+
+
+def test_provenance_denominator_uses_its_table_header_metric() -> None:
+    answer = """시장규모는 2,139.25억원입니다.
+
+| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UBIST | 2026-05 | 전략뷰 | 요청 브랜드의 전략 시장 | 555 | 전체 | 억원 |"""
+
+    assert claim_metrics_for_token(answer, "555") == ("시장 구성 브랜드 수",)
 
 
 def test_hhi_fact_from_wrong_market_is_blocked_even_when_value_matches() -> None:
