@@ -58,8 +58,10 @@ def classify_question(question: str) -> QuestionClassification:
     if prefix == "nedrug":
         if asks_composition_fields(lowered):
             capability = "MFDS_COMPOSITION"
+        elif asks_easy_drug_fields(lowered):
+            capability = "MFDS_EASY_DRUG_FIELDS"
         elif asks_label_fields(lowered):
-            capability = "MFDS_LABEL_EFFICACY"
+            capability = "MFDS_PERMISSION_DETAIL_FIELDS"
         else:
             capability = "MFDS_BASIC_PRODUCT_INFO"
         return QuestionClassification(
@@ -68,7 +70,6 @@ def classify_question(question: str) -> QuestionClassification:
             requested_capability=capability,
             input_key="product_name",
             deterministic_rule_id="SOURCE_PREFIX_NEDRUG",
-            unresolved_arguments=capability == "MFDS_LABEL_EFFICACY" and _uses_product_family_reference(lowered),
         )
     if prefix == "clinicaltrials":
         return _clinical_classification(
@@ -90,7 +91,7 @@ def classify_question(question: str) -> QuestionClassification:
         return QuestionClassification(
             source_domain="regulatory",
             domain_decision_source=DomainDecisionSource.INTENT_OWNER,
-            requested_capability="REIMBURSEMENT_CRITERIA",
+            requested_capability="MFDS_PERMISSION_DETAIL_FIELDS",
             input_key="product_name",
         )
     if asks_basic_permission_fields(lowered):
@@ -166,14 +167,14 @@ def asks_composition_fields(lowered: str) -> bool:
     return any(token in lowered for token in ("성분 조성", "성분·함량", "성분 함량"))
 
 
+def asks_easy_drug_fields(lowered: str) -> bool:
+    return any(token in lowered for token in ("e약", "이약", "e약은요", "이약은요"))
+
+
 def asks_basic_permission_fields(lowered: str) -> bool:
     asks_permission = any(token in lowered for token in ("허가", "permission", "approval"))
     asks_basic_field = any(token in lowered for token in ("품목명", "업체명", "제조사", "manufacturer"))
     return asks_permission and asks_basic_field
-
-
-def _uses_product_family_reference(lowered: str) -> bool:
-    return any(token in lowered for token in ("제품의", "제품군", "제품별"))
 
 
 def _hira_classification(

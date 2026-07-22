@@ -107,8 +107,8 @@ def test_capability_manifest_uses_exactly_the_four_v4_states() -> None:
         "hira", "HIRA_LABEL_EFFICACY", input_key="product_name"
     ) is CapabilityStatus.FIELD_NOT_EXPOSED
     assert matrix.status_for(
-        "regulatory", "REIMBURSEMENT_CRITERIA", input_key="product_name"
-    ) is CapabilityStatus.NOT_IMPLEMENTED
+        "regulatory", "MFDS_PERMISSION_DETAIL_FIELDS", input_key="product_name"
+    ) is CapabilityStatus.SUPPORTED
     assert matrix.status_for(
         "unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST", input_key="unknown"
     ) is CapabilityStatus.UNRESOLVED
@@ -147,6 +147,17 @@ def test_capability_matrix_keeps_identifier_contracts_separate() -> None:
     assert nct_detail.eligible_tools == ("clinicaltrials_study_details",)
     assert unknown.status is CapabilityStatus.UNRESOLVED
     assert unknown.typed_reason_code == "AMBIGUOUS_INPUT"
+
+
+def test_reimbursement_capability_uses_nedrug_permission_detail() -> None:
+    matrix = default_capability_matrix()
+
+    resolution = matrix.resolve(
+        "regulatory", "MFDS_PERMISSION_DETAIL_FIELDS", input_key="product_name"
+    )
+
+    assert resolution.status is CapabilityStatus.SUPPORTED
+    assert resolution.eligible_tools == ("mfds_permission_search",)
 
 
 def test_mfds_composition_is_supported_while_easy_drug_fields_remain_unexposed() -> None:

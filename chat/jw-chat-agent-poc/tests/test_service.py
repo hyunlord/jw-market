@@ -705,9 +705,9 @@ def test_direct_agent_loop_shadow_attaches_regulatory_typed_stop_prs(monkeypatch
     assert decision == {
         "source_domain": "regulatory",
         "domain_decision_source": "INTENT_OWNER",
-        "capability_status": "NOT_IMPLEMENTED",
-        "tool_selection_source": "NONE",
-        "route_outcome": "TYPED_STOP",
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "DETERMINISTIC_SINGLETON",
+        "route_outcome": "CALL",
     }
 
 

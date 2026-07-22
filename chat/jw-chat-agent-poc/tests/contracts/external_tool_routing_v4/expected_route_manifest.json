@@ -84,27 +84,28 @@
     {
       "case_id": "A-04",
       "question": "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
-      "expected_decision_source": "NO_CAPABILITY",
+      "expected_decision_source": "DETERMINISTIC_SINGLETON",
       "routing_decision": {
         "source_domain": "regulatory",
         "domain_decision_source": "INTENT_OWNER",
-        "capability_status": "NOT_IMPLEMENTED",
-        "tool_selection_source": "NONE",
-        "route_outcome": "TYPED_STOP"
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "DETERMINISTIC_SINGLETON",
+        "route_outcome": "CALL"
       },
-      "reason_code": "CAPABILITY_NOT_IMPLEMENTED",
+      "eligible_tools": ["mfds_permission_search"],
+      "canonical_argument_contract": {"brand": "아일리아"},
       "forbidden_tools": ["web_search"]
     },
     {
       "case_id": "A-05",
       "question": "Eylea 급여기준 알려줘",
-      "expected_decision_source": "NO_CAPABILITY",
+      "expected_decision_source": "DETERMINISTIC_SINGLETON",
       "same_route_as": "A-04"
     },
     {
       "case_id": "A-06",
       "question": "Aflibercept 급여기준 알려줘",
-      "expected_decision_source": "NO_CAPABILITY",
+      "expected_decision_source": "DETERMINISTIC_SINGLETON",
       "same_route_as": "A-04"
     },
     {
@@ -114,13 +115,12 @@
       "routing_decision": {
         "source_domain": "regulatory",
         "domain_decision_source": "PREFIX_RULE",
-        "capability_status": "FIELD_NOT_EXPOSED",
-        "tool_selection_source": "NONE",
-        "route_outcome": "TYPED_STOP"
+        "capability_status": "SUPPORTED",
+        "tool_selection_source": "DETERMINISTIC_SINGLETON",
+        "route_outcome": "CALL"
       },
-      "phase0_field_coverage": "NONE",
-      "phase0_cardinality": "MANY",
-      "reason_code": "AMBIGUOUS_INPUT",
+      "eligible_tools": ["mfds_permission_search"],
+      "canonical_argument_contract": {"brand": "아일리아"},
       "forbidden_behaviors": ["arbitrary first candidate", "web field completion"]
     },
     {

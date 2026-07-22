@@ -155,15 +155,21 @@ class ExternalToolRegistry:
                 error_code="NO_EVIDENCE",
                 error_message="식약처 검색에서 canonical 제품군 근거를 찾지 못했습니다.",
             )
+        detail_call = _permission_detail_call(self._external, items[0])
         facts = tuple(
             _row_fact(call, canonical, "허가 품목", item, index)
             for index, item in enumerate(items, start=1)
         )
+        detail_facts = (
+            _permission_detail_facts(detail_call, canonical)
+            if detail_call is not None
+            else ()
+        )
         return ToolEnvelope(
             ok=True,
             preview=call.summary_text,
-            evidence=facts,
-            raw=asdict(call),
+            evidence=(*facts, *detail_facts),
+            raw=_permission_search_raw(call, detail_call),
             error_code=None,
             error_message=None,
         )
@@ -388,6 +394,78 @@ def _external_call_envelope(call: ExternalCall, subject: str, metric: str) -> To
             error_message=error_message,
         )
     return ToolEnvelope(ok=True, preview=call.summary_text, evidence=evidence, raw=asdict(call), error_code=None, error_message=None)
+
+
+def _permission_detail_call(
+    external: ExternalApiClient,
+    item: dict[str, Any],
+) -> ExternalCall | None:
+    item_seq = str(item.get("ITEM_SEQ") or item.get("itemSeq") or "").strip()
+    if not item_seq:
+        return None
+    return external.mfds_permission_detail(item_seq)
+
+
+def _permission_search_raw(
+    search_call: ExternalCall,
+    detail_call: ExternalCall | None,
+) -> dict[str, Any]:
+    calls = [asdict(search_call)]
+    if detail_call is not None:
+        calls.append(asdict(detail_call))
+    raw = asdict(search_call)
+    render_data = dict(raw["render_data"])
+    render_data["calls"] = calls
+    raw["render_data"] = render_data
+    return raw
+
+
+def _permission_detail_facts(
+    call: ExternalCall,
+    subject: str,
+) -> tuple[EvidenceFact, ...]:
+    items = _matching_mfds_items(call, subject)
+    return tuple(
+        fact
+        for row_index, item in enumerate(items[:1], start=1)
+        for fact in _permission_detail_row_facts(call, subject, item, row_index)
+    )
+
+
+def _permission_detail_row_facts(
+    call: ExternalCall,
+    subject: str,
+    item: dict[str, Any],
+    row_index: int,
+) -> tuple[EvidenceFact, ...]:
+    fields = (
+        ("NB_DOC_DATA", "급여 기준"),
+        ("REIMBURSEMENT_CRITERIA", "급여 기준"),
+        ("EE_DOC_DATA", "효능·효과"),
+        ("EFFICACY_EFFECT", "효능·효과"),
+        ("UD_DOC_DATA", "용법·용량"),
+        ("DOSAGE_USAGE", "용법·용량"),
+        ("WARNING_DOC_DATA", "사용상 주의사항"),
+        ("WARNING", "사용상 주의사항"),
+        ("MAIN_ITEM_INGR", "적응증"),
+        ("INDICATION", "적응증"),
+    )
+    product = str(item.get("ITEM_NAME") or item.get("itemName") or "").strip()
+    return tuple(
+        EvidenceFact(
+            fact_id=f"{call.tool}:{subject}:{row_index}:{key}",
+            subject=subject,
+            metric=label,
+            value=None,
+            unit=None,
+            period=None,
+            source_name="식약처 의약품 허가 상세",
+            source_locator=f"{product} · {value}" if product else value,
+            raw_ref=f"{call.tool}:{row_index}:{key}",
+        )
+        for key, label in fields
+        if (value := str(item.get(key) or "").strip())
+    )
 
 
 def _truncated_result_envelope(call: ExternalCall) -> ToolEnvelope | None:

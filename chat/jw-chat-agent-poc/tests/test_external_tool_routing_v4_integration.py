@@ -459,24 +459,160 @@ def test_enforce_executes_raw_validated_arguments_but_records_normalized_ccs(mon
     }
 
 
-def test_enforce_typed_stop_does_not_execute_web_fallback(monkeypatch) -> None:
+def test_enforce_reimbursement_uses_nedrug_permission_detail(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def permission_search(brand: str) -> ExternalCall:
+        assert brand == "아일리아"
+        return ExternalCall(
+            tool="mfds_permission_search",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 품목 1건",
+            render_data={
+                "resultCode": "00",
+                "items": [{"ITEM_SEQ": "201306324", "ITEM_NAME": "아일리아주사"}],
+            },
+        )
+
+    def permission_detail(item_seq: str) -> ExternalCall:
+        assert item_seq == "201306324"
+        return ExternalCall(
+            tool="mfds_permission_detail",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 상세 1건",
+            render_data={
+                "resultCode": "00",
+                "items": [
+                    {
+                        "ITEM_SEQ": item_seq,
+                        "ITEM_NAME": "아일리아주사",
+                        "NB_DOC_DATA": "신생혈관성 연령관련 황반변성 급여 기준",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(external, "mfds_permission_search", permission_search)
+    monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
 
     payload = run_external_tool_agent(
         "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
         resolver=BrandResolver(),
-        external=ExternalApiClient(mode="fixture"),
+        external=external,
         provider=_no_tool_provider(),
         routing_provider=_TimeoutProvider(),
     )
 
-    assert payload["tool_calls"] == []
-    assert "web" not in payload["answer"].casefold()
+    assert [call["tool"] for call in payload["tool_calls"]] == ["mfds_permission_search"]
+    assert "신생혈관성 연령관련 황반변성 급여 기준" in payload["answer"]
+    evidence = payload["tool_calls"][0]["render_data"]["evidence"]
+    assert [fact["raw_ref"] for fact in evidence] == [
+        "mfds_permission_search:1",
+        "mfds_permission_detail:1:NB_DOC_DATA",
+    ]
     ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
-    assert ccs["routing_decision"]["capability_status"] == "NOT_IMPLEMENTED"
-    assert ccs["routing_decision"]["route_outcome"] == "TYPED_STOP"
-    assert ccs["reason_code"] == "CAPABILITY_NOT_IMPLEMENTED"
-    assert ccs["executed_calls"] == []
+    assert ccs["routing_decision"]["capability_status"] == "SUPPORTED"
+    assert ccs["routing_decision"]["route_outcome"] == "CALL"
+    assert ccs["reason_code"] is None
+    assert ccs["executed_calls"][0]["tool_name"] == "mfds_permission_search"
+
+
+def test_enforce_label_fields_use_nedrug_permission_detail(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def permission_search(brand: str) -> ExternalCall:
+        assert brand == "아일리아"
+        return ExternalCall(
+            tool="mfds_permission_search",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 품목 1건",
+            render_data={
+                "resultCode": "00",
+                "items": [{"ITEM_SEQ": "201306324", "ITEM_NAME": "아일리아주사"}],
+            },
+        )
+
+    def permission_detail(item_seq: str) -> ExternalCall:
+        assert item_seq == "201306324"
+        return ExternalCall(
+            tool="mfds_permission_detail",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 상세 1건",
+            render_data={
+                "resultCode": "00",
+                "items": [
+                    {
+                        "ITEM_SEQ": item_seq,
+                        "ITEM_NAME": "아일리아주사",
+                        "EE_DOC_DATA": "신생혈관성 연령관련 황반변성의 치료",
+                        "UD_DOC_DATA": "4주마다 1회 유리체내 투여",
+                        "WARNING_DOC_DATA": "안내염 징후를 관찰하십시오.",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(external, "mfds_permission_search", permission_search)
+    monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+
+    payload = run_external_tool_agent(
+        "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == ["mfds_permission_search"]
+    assert "신생혈관성 연령관련 황반변성의 치료" in payload["answer"]
+    assert "4주마다 1회 유리체내 투여" in payload["answer"]
+    assert "안내염 징후를 관찰하십시오." in payload["answer"]
+    proposal = payload["router_diagnostics"]["routing_v4"]["proposed_routing_signature"]
+    assert proposal["proposed_calls"] == [
+        {"tool_name": "mfds_permission_search", "normalized_args": {"brand": "아일리아"}}
+    ]
+
+
+def test_enforce_reimbursement_nedrug_absence_is_typed_no_evidence(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def no_rows(brand: str) -> ExternalCall:
+        assert brand == "아일리아"
+        return ExternalCall(
+            tool="mfds_permission_search",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 품목 없음",
+            render_data={"resultCode": "00", "items": [], "request": {"brand": brand}},
+        )
+
+    def permission_detail(item_seq: str) -> ExternalCall:
+        raise AssertionError(f"detail lookup must not run without ITEM_SEQ: {item_seq}")
+
+    monkeypatch.setattr(external, "mfds_permission_search", no_rows)
+    monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+
+    payload = run_external_tool_agent(
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == ["mfds_permission_search"]
+    assert "mart" not in payload["answer"].casefold()
+    ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
+    assert ccs["runtime_status"] == "typed_stop"
+    assert ccs["reason_code"] == "NO_RECORD_FOUND"
+    assert ccs["routing_decision"]["source_domain"] == "regulatory"
 
 
 def test_a13_preserves_all_exact_family_rows_and_binds_each_claim(monkeypatch) -> None:
