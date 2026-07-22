@@ -163,8 +163,16 @@ def singleton_arguments(tool_name: str, question: str) -> dict[str, Any] | None:
     if tool_name in {"mfds_permission_search", "mfds_composition"}:
         body = PREFIX_RE.sub("", question, count=1).strip()
         match = re.match(r"(?P<subject>[A-Za-z가-힣0-9+_-]{2,80}?)(?:의|\s)", body)
-        return {"brand": match.group("subject").strip()} if match else None
+        return {"brand": _nedrug_brand_alias(match.group("subject").strip())} if match else None
     return None
+
+
+def _nedrug_brand_alias(subject: str) -> str:
+    aliases = {
+        "eylea": "아일리아",
+        "aflibercept": "아일리아",
+    }
+    return aliases.get(subject.casefold(), subject)
 
 
 def call_route_plan(

@@ -110,7 +110,9 @@ def test_nct_detail_capability_is_supported_by_verified_detail_tool() -> None:
         "clinical_trials", "CLINICAL_TRIAL_NCT_DETAIL_FIELDS"
     ).eligible_tools == ("clinicaltrials_study_details",)
     assert matrix.status_for("hira", "HIRA_LABEL_EFFICACY") is CapabilityStatus.FIELD_NOT_EXPOSED
-    assert matrix.status_for("regulatory", "REIMBURSEMENT_CRITERIA") is CapabilityStatus.NOT_IMPLEMENTED
+    assert matrix.status_for(
+        "regulatory", "MFDS_PERMISSION_DETAIL_FIELDS"
+    ) is CapabilityStatus.SUPPORTED
     assert matrix.status_for("unresolved", "UNCLASSIFIED_EXTERNAL_REQUEST") is CapabilityStatus.UNRESOLVED
 
 

@@ -112,7 +112,12 @@ def default_capability_matrix() -> CapabilityMatrix:
         _entry("regulatory", "MFDS_LABEL_EFFICACY", "FIELD_NOT_EXPOSED"),
         _entry("regulatory", "MFDS_DOSAGE", "FIELD_NOT_EXPOSED"),
         _entry("regulatory", "MFDS_PRECAUTIONS", "FIELD_NOT_EXPOSED"),
-        _entry("regulatory", "REIMBURSEMENT_CRITERIA", "NOT_IMPLEMENTED"),
+        _entry(
+            "regulatory",
+            "MFDS_PERMISSION_DETAIL_FIELDS",
+            "SUPPORTED",
+            ("mfds_permission_search",),
+        ),
         _entry(
             "clinical_trials",
             "CLINICAL_TRIAL_SEARCH",

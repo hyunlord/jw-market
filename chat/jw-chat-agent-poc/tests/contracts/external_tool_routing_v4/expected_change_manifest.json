@@ -87,22 +87,22 @@
       "case_id": "A-04",
       "semantic_field": "routing_signature",
       "baseline": "brand-absent typed stop before capability ownership",
-      "candidate": "INTENT_OWNER regulatory NOT_IMPLEMENTED NONE TYPED_STOP",
-      "oracle": "capability_matrix REIMBURSEMENT_CRITERIA"
+      "candidate": "INTENT_OWNER regulatory SUPPORTED DETERMINISTIC_SINGLETON CALL",
+      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
     },
     {
       "case_id": "A-04",
       "semantic_field": "reason_code",
       "baseline": "SOURCE_ABSENT",
-      "candidate": "CAPABILITY_NOT_IMPLEMENTED",
-      "oracle": "frozen 19-tool registry"
+      "candidate": null,
+      "oracle": "existing NEDrug permission search/detail contracts"
     },
     {
       "case_id": "A-04",
       "semantic_field": "typed_disclosure",
       "baseline": "brand lookup failure language",
-      "candidate": "reimbursement capability is not implemented plus a safe alternative",
-      "oracle": "v4 typed-stop contract"
+      "candidate": "NEDrug permission detail evidence or typed NO_RECORD_FOUND on absence",
+      "oracle": "v4 NEDrug evidence contract"
     },
     {
       "case_id": "A-05",
@@ -115,15 +115,15 @@
       "case_id": "A-05",
       "semantic_field": "reason_code",
       "baseline": "SOURCE_ABSENT",
-      "candidate": "CAPABILITY_NOT_IMPLEMENTED",
-      "oracle": "capability_matrix REIMBURSEMENT_CRITERIA"
+      "candidate": null,
+      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
     },
     {
       "case_id": "A-05",
       "semantic_field": "typed_disclosure",
       "baseline": "brand lookup failure language",
-      "candidate": "same disclosure semantics as A-04",
-      "oracle": "v4 typed-stop contract"
+      "candidate": "same NEDrug evidence semantics as A-04",
+      "oracle": "v4 NEDrug evidence contract"
     },
     {
       "case_id": "A-06",
@@ -136,29 +136,29 @@
       "case_id": "A-06",
       "semantic_field": "reason_code",
       "baseline": "SOURCE_ABSENT",
-      "candidate": "CAPABILITY_NOT_IMPLEMENTED",
-      "oracle": "capability_matrix REIMBURSEMENT_CRITERIA"
+      "candidate": null,
+      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
     },
     {
       "case_id": "A-06",
       "semantic_field": "typed_disclosure",
       "baseline": "brand lookup failure language",
-      "candidate": "same disclosure semantics as A-04",
-      "oracle": "v4 typed-stop contract"
+      "candidate": "same NEDrug evidence semantics as A-04",
+      "oracle": "v4 NEDrug evidence contract"
     },
     {
       "case_id": "A-07",
       "semantic_field": "routing_signature",
       "baseline": "MFDS search error followed by web_search",
-      "candidate": "PREFIX_RULE regulatory FIELD_NOT_EXPOSED NONE TYPED_STOP",
-      "oracle": "Phase 0 MFDS field-coverage and cardinality probe"
+      "candidate": "PREFIX_RULE regulatory SUPPORTED DETERMINISTIC_SINGLETON CALL",
+      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
     },
     {
       "case_id": "A-07",
       "semantic_field": "reason_code",
       "baseline": "mixed tool failure without typed cardinality verdict",
-      "candidate": "AMBIGUOUS_INPUT",
-      "oracle": "Phase 0 cardinality=MANY precedence"
+      "candidate": null,
+      "oracle": "existing NEDrug permission search/detail contracts"
     },
     {
       "case_id": "A-07",

@@ -148,14 +148,16 @@ def test_a03_explicit_compact_code_never_falls_back_to_parent_code() -> None:
         "Aflibercept 급여기준 알려줘",
     ),
 )
-def test_reimbursement_requests_stop_as_not_implemented_without_web(question: str) -> None:
+def test_reimbursement_requests_route_to_nedrug_permission_search(question: str) -> None:
     plan = _planner().plan(question, routing_mode=RoutingMode.ENFORCE)
 
-    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.NOT_IMPLEMENTED
-    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.NONE
-    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.TYPED_STOP
-    assert plan.proposal.proposed_calls == ()
-    assert plan.reason_code == "CAPABILITY_NOT_IMPLEMENTED"
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.SUPPORTED
+    assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.DETERMINISTIC_SINGLETON
+    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.CALL
+    assert plan.proposal.proposed_calls == (
+        ProposedCall(tool_name="mfds_permission_search", normalized_args={"brand": "아일리아"}),
+    )
+    assert plan.reason_code is None
     assert "web_search" not in plan.eligible_tools
 
 
@@ -173,7 +175,7 @@ def test_hira_prefix_does_not_switch_source_to_answer_an_unsupported_field() -> 
     assert plan.proposal.proposed_calls == ()
 
 
-def test_a07_many_product_family_stops_as_ambiguous_before_field_gap() -> None:
+def test_a07_label_fields_route_to_nedrug_permission_search() -> None:
     plan = _planner().plan(
         "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘",
         routing_mode=RoutingMode.ENFORCE,
@@ -182,13 +184,14 @@ def test_a07_many_product_family_stops_as_ambiguous_before_field_gap() -> None:
     assert plan.proposal.routing_decision == RoutingDecision(
         source_domain="regulatory",
         domain_decision_source=DomainDecisionSource.PREFIX_RULE,
-        capability_status=CapabilityStatus.FIELD_NOT_EXPOSED,
-        tool_selection_source=ToolSelectionSource.NONE,
-        route_outcome=RouteOutcome.TYPED_STOP,
+        capability_status=CapabilityStatus.SUPPORTED,
+        tool_selection_source=ToolSelectionSource.DETERMINISTIC_SINGLETON,
+        route_outcome=RouteOutcome.CALL,
     )
-    assert plan.reason_code == "AMBIGUOUS_INPUT"
-    assert plan.proposal.proposed_calls == ()
-    assert "제품명" in str(plan.typed_message)
+    assert plan.reason_code is None
+    assert plan.proposal.proposed_calls == (
+        ProposedCall(tool_name="mfds_permission_search", normalized_args={"brand": "아일리아"}),
+    )
     assert "web_search" not in plan.eligible_tools
 
 

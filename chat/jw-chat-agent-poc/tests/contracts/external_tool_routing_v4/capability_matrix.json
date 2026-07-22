@@ -79,11 +79,11 @@
       "truth_basis": "Phase 0 easy-drug probe field_coverage=NONE"
     },
     {
-      "requested_capability": "REIMBURSEMENT_CRITERIA",
+      "requested_capability": "MFDS_PERMISSION_DETAIL_FIELDS",
       "source_domain": "regulatory",
-      "capability_status": "NOT_IMPLEMENTED",
-      "eligible_tools": [],
-      "truth_basis": "no reimbursement tool or operation exists in the frozen 19-tool registry"
+      "capability_status": "SUPPORTED",
+      "eligible_tools": ["mfds_permission_search"],
+      "truth_basis": "existing NEDrug search_drug_permission_list resolves ITEM_SEQ and get_drug_permission_detail exposes permission detail fields without registry changes"
     },
     {
       "requested_capability": "CLINICAL_TRIAL_SEARCH",
