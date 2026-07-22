@@ -840,6 +840,13 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                         "properties": {
                                             "brand_key": {"type": "string", "description": "브랜드 식별 키."},
                                             "brand_name": {"type": "string", "description": "브랜드 표시명."},
+                                            "company_name": {
+                                                "type": ["string", "null"],
+                                                "description": (
+                                                    "대표 제조사(representing_company). co-promotion 시 행수 내림차순·이름 오름차순으로 "
+                                                    "\", \"로 결합합니다. 미매핑이면 null."
+                                                ),
+                                            },
                                             "is_jw": {"type": "boolean", "description": "JW 자사 브랜드 여부."},
                                             "is_selected": {"type": "boolean", "description": "선택 브랜드 여부."},
                                             "event_count": {"type": "integer", "description": "키워드 설문 응답 행 수 N."},
