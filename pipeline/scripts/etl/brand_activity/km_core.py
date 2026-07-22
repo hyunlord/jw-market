@@ -13,6 +13,8 @@ import unicodedata
 from openpyxl.worksheet._read_only import ReadOnlyWorksheet
 from openpyxl.worksheet.worksheet import Worksheet
 
+from pipeline.etl.io.source_headers import normalize_source_header
+
 
 CellValue: TypeAlias = str | int | float | bool | datetime | date | None
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -127,7 +129,7 @@ def normalize_spaces(value: str) -> str:
 
 def normalize_key(value: str) -> str:
     """Build a case-insensitive key for workbook product matching."""
-    return normalize_spaces(value).upper()
+    return normalize_source_header(value) or ""
 
 
 def text_sha256(value: str) -> str:
@@ -223,12 +225,12 @@ def row_is_empty(values: tuple[CellValue, ...]) -> bool:
 
 
 def header_index(headers: list[str], required_headers: tuple[str, ...]) -> dict[str, int]:
-    """Map exact headers to indexes and fail loudly if a source column is absent."""
-    indexes = {header: index for index, header in enumerate(headers) if header}
-    missing = [header for header in required_headers if header not in indexes]
+    """Map normalized headers to indexes and fail loudly if a source column is absent."""
+    indexes = {normalize_key(header): index for index, header in enumerate(headers) if header}
+    missing = [header for header in required_headers if normalize_key(header) not in indexes]
     if missing:
         raise KmParseError(f"missing workbook headers: {missing}")
-    return {header: indexes[header] for header in required_headers}
+    return {header: indexes[normalize_key(header)] for header in required_headers}
 
 
 def alias_header_index(headers: list[str], aliases: dict[str, tuple[str, ...]]) -> dict[str, int]:

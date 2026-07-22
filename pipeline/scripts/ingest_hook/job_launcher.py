@@ -31,6 +31,8 @@ _PASSTHROUGH_VALUES = (
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
     "INGEST_INPUT_BACKEND",
     "INGEST_INPUT_ROOT",
+    "INGEST_COMPLETION_WEBHOOK_URL",
+    "INGEST_COMPLETION_WEBHOOK_ATTEMPTS",
 )
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)

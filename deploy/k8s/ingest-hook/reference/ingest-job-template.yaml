@@ -46,6 +46,12 @@ spec:
               value: local
             - name: INGEST_INPUT_ROOT
               value: /nfs-root/autoIngestion
+            # Optional receiver supplied at activation; empty means delivery is
+            # explicitly disabled while ledger/status evidence is still kept.
+            - name: INGEST_COMPLETION_WEBHOOK_URL
+              value: ""
+            - name: INGEST_COMPLETION_WEBHOOK_ATTEMPTS
+              value: "4"
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT

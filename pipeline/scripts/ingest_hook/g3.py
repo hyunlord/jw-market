@@ -17,6 +17,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pipeline.etl.io.source_headers import normalize_source_header
 from pipeline.scripts.ingest_hook.category_map import CategorySpec
 from pipeline.scripts.ingest_hook.contract import Manifest, ManifestFile
 
@@ -71,17 +72,16 @@ def _read_csv_header_and_count(path: Path) -> tuple[list[str], int]:
         except StopIteration:
             return [], 0
         rows = sum(1 for row in reader if any(cell.strip() for cell in row))
-    return [column.strip().lower() for column in header], rows
+    return [normalize_source_header(column) for column in header], rows
 
 
 def _period_values(path: Path, column: str) -> set[str]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
-        return {
-            (row.get(column) or "").strip()
-            for row in reader
-            if (row.get(column) or "").strip()
-        }
+        rows = list(reader)
+        header_map = {normalize_source_header(name): name for name in (reader.fieldnames or [])}
+        actual = header_map.get(normalize_source_header(column), column)
+        return {(row.get(actual) or "").strip() for row in rows if (row.get(actual) or "").strip()}
 
 
 def _check_declared_period(entry: ManifestFile, epoch: str, failures: list[str]) -> None:
@@ -108,10 +108,28 @@ def _validate_workbook(
     if spec.workbook_reader == "ubist":
         _validate_ubist_workbook(path, entry, epoch, failures, report)
         return
-    # Unknown reader name = fail closed rather than silently skip validation.
-    failures.append(
-        f"{entry.path}: no workbook validator for reader {spec.workbook_reader!r} (fail-closed)"
-    )
+    from pipeline.scripts.ingest_hook.workbook_contracts import summarize
+
+    try:
+        summary = summarize(spec.workbook_reader or "", path, epoch)
+    except Exception as exc:  # noqa: BLE001 - parser rejection is a G3 rejection
+        failures.append(f"{entry.path}: {spec.workbook_reader} workbook structure invalid ({exc})")
+        return
+    if summary.rows <= 0:
+        failures.append(f"{entry.path}: zero data rows")
+        return
+    periods = set(summary.periods)
+    report.observed_periods.update(periods)
+    if periods and epoch not in periods:
+        failures.append(f"{entry.path}: epoch {epoch} absent from workbook periods {sorted(periods)[:6]}")
+    future = sorted(value for value in periods if value > epoch)
+    if future:
+        failures.append(f"{entry.path}: periods beyond epoch {epoch}: {future[:6]}")
+    _check_declared_period(entry, epoch, failures)
+    if entry.rows is not None and entry.rows != summary.rows:
+        failures.append(f"{entry.path}: manifest declares rows={entry.rows}, actual {summary.rows}")
+    report.file_rows[entry.path] = summary.rows
+    report.notes.append(f"{entry.path}: validated via {spec.workbook_reader} loader contract")
 
 
 def _validate_ubist_workbook(
@@ -215,7 +233,7 @@ def validate(
 
         # 2) schema
         header, row_count = _read_csv_header_and_count(path)
-        missing = [column for column in spec.required_columns if column not in header]
+        missing = [column for column in spec.required_columns if normalize_source_header(column) not in header]
         if missing:
             failures.append(f"{entry.path}: missing required columns {missing} (header={header})")
             continue

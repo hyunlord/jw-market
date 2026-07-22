@@ -19,6 +19,8 @@ ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mo
 ENV_LOAD_STAGING_ROOT = "INGEST_LOAD_STAGING_ROOT"  # set => real load -> staging root, mart refresh SKIPPED (isolated verify)
 ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output root (live parquet root); refresh runs
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
+ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
+ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
 
 DEFAULT_LOG_ROOT = "/ingest-logs"                   # container mountPath convention for the durable-log PVC
 
@@ -37,6 +39,12 @@ def log_root_hint() -> str:
     the actual mount.
     """
     return os.environ.get(ENV_LOG_ROOT, DEFAULT_LOG_ROOT).rstrip("/")
+
+
+def completion_webhook() -> tuple[str, int]:
+    endpoint = os.environ.get(ENV_COMPLETION_WEBHOOK_URL, "").strip()
+    attempts = int(os.environ.get(ENV_COMPLETION_WEBHOOK_ATTEMPTS, "4"))
+    return endpoint, min(max(attempts, 3), 5)
 
 
 def input_root() -> Path:
