@@ -33,6 +33,64 @@ def test_post_topic_service_emits_event_count_from_assignment_rows(monkeypatch) 
     assert brands["플라주오피"]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "수액", "share_pct": 100.0, "row_count": 1}]
 
 
+def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch) -> None:
+    view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
+    brand_set = BrandSetResolution(
+        view_name="general",
+        market_id="C10A1",
+        selected_brand="리바로",
+        view=view,
+        market_row={"atc4_desc": "STATIN"},
+        brand_rows=(),
+        brand_meta={
+            "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
+            "미매칭": BrandMeta("미매칭", "미매칭", ("NOKW",), False),
+        },
+        choices=(
+            BrandChoice("리바로", "리바로", 1, True),
+            BrandChoice("미매칭", "미매칭", 2, False),
+        ),
+        candidates=(),
+        ranking_quarter="2026-Q1",
+        applied_filter={"atc4": ["C10A1"]},
+    )
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda _brands: {"리바로": ("LIVALO",), "미매칭": ("NOKW",)},
+    )
+    # Co-promotion: LIVALO carries two companies. JW SHINYAK has more rows than JW
+    # PHARMACEUTICAL, so it sorts first (count desc); NOKW has no keyword rows.
+    keyword_rows = [
+        {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "row_count": 19},
+        {"product_name": "LIVALO", "representing_company": "JW SHINYAK", "row_count": 23},
+    ]
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: keyword_rows)
+
+    result = topic_matrix._company_names_by_brand(brand_set, {})
+
+    assert result == {"리바로": "JW SHINYAK, JW PHARMACEUTICAL", "미매칭": None}
+
+
+def test_company_names_tie_breaks_on_name_ascending(monkeypatch) -> None:
+    view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
+    brand_set = BrandSetResolution(
+        view_name="general", market_id="C10A1", selected_brand="리바로", view=view,
+        market_row={}, brand_rows=(),
+        brand_meta={"리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True)},
+        choices=(BrandChoice("리바로", "리바로", 1, True),),
+        candidates=(), ranking_quarter="2026-Q1", applied_filter={},
+    )
+    monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _b: {"리바로": ("LIVALO",)})
+    # Equal counts -> deterministic name ascending (BETA before GAMMA).
+    rows = [
+        {"product_name": "LIVALO", "representing_company": "GAMMA", "row_count": 5},
+        {"product_name": "LIVALO", "representing_company": "BETA", "row_count": 5},
+    ]
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", lambda _sql, _params=None: rows)
+    assert topic_matrix._company_names_by_brand(brand_set, {}) == {"리바로": "BETA, GAMMA"}
+
+
 def test_post_topic_service_keeps_topic_brand_contract(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _confidence_brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
@@ -44,6 +102,7 @@ def test_post_topic_service_keeps_topic_brand_contract(monkeypatch) -> None:
     assert set(payload["brands"][0]) == {
         "brand_key",
         "brand_name",
+        "company_name",
         "is_jw",
         "is_selected",
         "sales_rank",

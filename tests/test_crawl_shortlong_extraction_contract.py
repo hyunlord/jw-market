@@ -14,7 +14,10 @@ PROTECTED_BLOB_SHA256 = {
     "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "48eec25ef65943c1cd1ff8213c635f9dece3051a87033710f359aa389b26ed0c",
     "pipeline/scripts/api/main.py": "5ada140bfdf2213a23dfbf885be70257cd185518f714876cf314933c9c401272",
     "pipeline/scripts/api/market_definition_display.py": "36cd88d6b0ada9718ddf959f2b8172c0443fb52843ebca64ca8340e1b6bbd269",
-    "pipeline/scripts/api/openapi_docs.py": "b97fbb588593ad657efbfbb53a886480351f1b4a5b96c885464e5f4f2cb936ab",
+    # Repinned 2026-07-22: additive `company_name` field in the brand-activity topics
+    # schema (task C). This forward, additive edit does not revert the crawl-shortlong
+    # extraction lineage the blob set guards against.
+    "pipeline/scripts/api/openapi_docs.py": "3f8fea884f93905eab63db846e76e19c30bb64fac29891e83d3eb2b093687c18",
     "pipeline/scripts/api/routes/cause.py": "d5d2ba035d49bc8ac9f5951becc2a38dfe7e7217d8c75e8d2c64945371a70edb",
     "pipeline/scripts/api/routes/deep_analysis.py": "4dc23b1e6dcd6afea9a8937288f34b3ba230504c2bad7417edbe145bebbc82b7",
 }

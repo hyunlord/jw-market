@@ -85,6 +85,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
         if topic_scope
         else {}
     )
+    company_names = _company_names_by_brand(brand_set, aliases)
     payload_source = "row_topic_assignment_filtered" if is_sliced else "row_topic_assignment_unfiltered"
     result: dict[str, JsonValue] = {
         "scope": {
@@ -121,9 +122,14 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                     aliases=aliases,
                     product_codes=product_codes_by_brand.get(choice.brand_key, ()),
                     top_n=int(request["top_n"]),
+                    company_name=company_names.get(choice.brand_key),
                 )
                 if topic_scope
-                else _empty_topic_brand_item(brand_set, choice_key=choice.brand_key)
+                else _empty_topic_brand_item(
+                    brand_set,
+                    choice_key=choice.brand_key,
+                    company_name=company_names.get(choice.brand_key),
+                )
             )
             for choice in brand_set.choices
         ],
@@ -181,12 +187,14 @@ def _empty_topic_brand_item(
     brand_set: BrandSetResolution,
     *,
     choice_key: str,
+    company_name: str | None = None,
 ) -> dict[str, JsonValue]:
     """Project an empty topic payload when no assignment scope is available."""
     choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
     return {
         "brand_key": choice.brand_key,
         "brand_name": choice.brand_name,
+        "company_name": company_name,
         "is_jw": brand_set.brand_meta[choice_key].is_jw,
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
@@ -208,6 +216,7 @@ def _sliced_topic_brand_item(
     aliases: dict[str, str],
     product_codes: Sequence[str],
     top_n: int,
+    company_name: str | None = None,
 ) -> dict[str, JsonValue]:
     """Project one brand from row-topic assignments under keyword filters."""
     meta = brand_set.brand_meta[choice_key]
@@ -262,6 +271,7 @@ def _sliced_topic_brand_item(
     return {
         "brand_key": choice.brand_key,
         "brand_name": choice.brand_name,
+        "company_name": company_name,
         "is_jw": meta.is_jw,
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
@@ -487,6 +497,65 @@ def _topic_product_codes_by_brand(
         fallback = _normalized_topic_product_codes(raw_codes, aliases)
         resolved[brand_key] = tuple(dict.fromkeys((*resolved.get(brand_key, ()), *fallback)))
     return resolved
+
+
+def _canonical_keyword_product(value: str, aliases: dict[str, str]) -> str:
+    """Normalize a keyword product_name to the same code space as brand product codes."""
+    normalized = normalize_iqvia_en(value)
+    return aliases.get(normalized, normalized)
+
+
+def _company_names_by_brand(
+    brand_set: BrandSetResolution,
+    aliases: dict[str, str],
+) -> dict[str, str | None]:
+    """Return the ", "-joined representing_company string per brand, or None when unmapped.
+
+    Source = km_keyword_event_stage.representing_company (the same axis interest-timeseries
+    companies use). Co-promotion keeps every company (a product's rows can carry more than
+    one). Order is deterministic: keyword row count desc, then company name asc.
+    """
+
+    iqvia = iqvia_product_codes_by_brand(
+        {choice.brand_key: brand_set.brand_meta[choice.brand_key].brand_name for choice in brand_set.choices}
+    )
+    code_sets = {
+        brand_key: frozenset(_canonical_keyword_product(code, aliases) for code in codes)
+        for brand_key, codes in iqvia.items()
+    }
+    raw_codes = tuple(sorted({code for codes in iqvia.values() for code in codes}))
+    per_brand: dict[str, dict[str, int]] = {choice.brand_key: {} for choice in brand_set.choices}
+    if raw_codes:
+        placeholders = ", ".join(["%s"] * len(raw_codes))
+        schema = quote_identifier(config.brand_activity_db_name)
+        rows = db.fetch_all(
+            f"""
+            SELECT product_name, representing_company, COUNT(*) AS row_count
+            FROM {schema}.`km_keyword_event_stage`
+            WHERE product_name IN ({placeholders})
+            GROUP BY product_name, representing_company
+            """,
+            raw_codes,
+        )
+        for row in rows:
+            company = _text(row.get("representing_company")).strip()
+            if not company:
+                continue
+            product = _canonical_keyword_product(_text(row.get("product_name")), aliases)
+            count = _integer(row.get("row_count"))
+            for choice in brand_set.choices:
+                if product in code_sets.get(choice.brand_key, frozenset()):
+                    counts = per_brand[choice.brand_key]
+                    counts[company] = counts.get(company, 0) + count
+                    break
+    result: dict[str, str | None] = {}
+    for brand_key, companies in per_brand.items():
+        if not companies:
+            result[brand_key] = None
+            continue
+        ordered = sorted(companies.items(), key=lambda item: (-item[1], item[0]))
+        result[brand_key] = ", ".join(name for name, _count in ordered)
+    return result
 
 
 def _fetch_sliced_topic_rows(
