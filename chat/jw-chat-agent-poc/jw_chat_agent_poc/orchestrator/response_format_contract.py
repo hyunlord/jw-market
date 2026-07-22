@@ -155,9 +155,12 @@ def evaluate_response_format_contract(
             )
         )
 
-    provenance_violation = _incomplete_provenance_violation(answer, tool_calls, sources)
-    if provenance_violation is not None:
-        violations.append(provenance_violation)
+    # A typed absence must not invent provenance fields merely to satisfy C5.
+    # Its five-step absence contract is the evidence that no factual row exists.
+    if not _is_data_absence_section(answer):
+        provenance_violation = _incomplete_provenance_violation(answer, tool_calls, sources)
+        if provenance_violation is not None:
+            violations.append(provenance_violation)
 
     return ResponseFormatReport(
         mode=ResponseFormatMode.SHADOW,
