@@ -3,11 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import os
+import re
 import time
 from typing import Any
 
 from jw_chat_agent_poc.common.timing import Timing
-from jw_chat_agent_poc.tool_use.contracts import AgentResult
+from jw_chat_agent_poc.orchestrator.source_grading import (
+    requested_authority_source_explicit,
+)
+from jw_chat_agent_poc.tool_use.contracts import AgentResult, EvidenceFact
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor, CompletionPolicy
 from jw_chat_agent_poc.tool_use.provider import (
     DEFAULT_TOOL_ROUTING_PLANNER_MAX_TOKENS,
@@ -22,6 +26,9 @@ from jw_chat_agent_poc.tool_use.routing_v4_execution import (
     claim_evidence_bindings,
     normalize_execution_result,
     official_web_fallback_call_cap,
+    official_web_fallback_eligible,
+    official_web_fallback_policy,
+    official_web_fallback_query,
     safe_execution_failure,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan, typed_message
@@ -47,10 +54,12 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import (
     parse_routing_mode,
 )
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
+from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 
 
 LOGGER = logging.getLogger(__name__)
 ROUTING_MODE_FLAG = "CHAT_TOOL_ROUTING_MODE"
+_HTTPS_URL_RE = re.compile(r"https://[^\s\])>]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +247,9 @@ def execute_enforced_route(
     planner_latency_ms = _elapsed_ms(planner_started)
 
     tool_execution_latency_ms = 0.0
+    web_fallback_diagnostics = _web_fallback_diagnostics(
+        runtime_reason=plan.reason_code,
+    )
     if plan.proposal.routing_decision.route_outcome is not RouteOutcome.CALL:
         result = _typed_result(plan)
     else:
@@ -261,6 +273,17 @@ def execute_enforced_route(
         ).run(user_text=question, tools=tools)
         tool_execution_latency_ms = _elapsed_ms(tool_execution_started)
         result, runtime_reason = normalize_execution_result(plan, result)
+        result, web_fallback_diagnostics, web_fallback_latency_ms = (
+            _apply_official_web_fallback(
+                question,
+                plan=plan,
+                result=result,
+                runtime_reason=runtime_reason,
+                tools=tools,
+                timing=timing,
+            )
+        )
+        tool_execution_latency_ms += web_fallback_latency_ms
 
     if plan.proposal.routing_decision.route_outcome is not RouteOutcome.CALL:
         runtime_reason = plan.reason_code
@@ -285,7 +308,197 @@ def execute_enforced_route(
     diagnostics["executed_call_signature"] = signature.model_dump(mode="json")
     diagnostics["claim_evidence_binding_status"] = binding_status
     diagnostics["claim_evidence_bindings"] = bindings
+    diagnostics["official_web_fallback"] = web_fallback_diagnostics
     return EnforcedRouteResult(result=result, diagnostics=diagnostics)
+
+
+def _apply_official_web_fallback(
+    question: str,
+    *,
+    plan: RoutePlan,
+    result: AgentResult,
+    runtime_reason: str | None,
+    tools: tuple[ToolSpec, ...],
+    timing: Timing | None,
+) -> tuple[AgentResult, dict[str, Any], float]:
+    source_domain = plan.proposal.routing_decision.source_domain
+    reason = runtime_reason or plan.reason_code or ""
+    usable_authoritative_results = sum(
+        str(call.get("status") or "").lower() in {"ok", "partial"}
+        for call in result.tool_calls
+    )
+    requested_source_explicit = requested_authority_source_explicit(
+        question,
+        source_domain=source_domain,
+    )
+    eligible = official_web_fallback_eligible(
+        source_domain=source_domain,
+        runtime_reason=reason,
+        usable_authoritative_results=usable_authoritative_results,
+        requested_source_explicit=requested_source_explicit,
+    )
+    diagnostics = _web_fallback_diagnostics(
+        runtime_reason=(
+            "PARTIAL_RESULT"
+            if usable_authoritative_results
+            else "EXPLICIT_SOURCE_NO_FALLBACK"
+            if requested_source_explicit
+            else reason
+        ),
+        eligible=eligible,
+        requested_source_explicit=requested_source_explicit,
+    )
+    if not eligible:
+        return result, diagnostics, 0.0
+
+    web_tool = next((tool for tool in tools if tool.name == "web_search"), None)
+    if web_tool is None:
+        diagnostics["reason_code"] = "WEB_TOOL_UNAVAILABLE"
+        return result, diagnostics, 0.0
+
+    started = time.perf_counter()
+    web_result = AgentExecutor(
+        provider=_StopAfterPlanProvider(),
+        completion_policy=None,
+        best_effort=False,
+        forced_choices=(
+            ToolChoice(
+                "web_search",
+                {
+                    "query": official_web_fallback_query(
+                        question,
+                        source_domain=source_domain,
+                    ),
+                    "brand": None,
+                    "topic": "general",
+                },
+                "official web fallback after authoritative upstream failure",
+                call_id="v4-official-web-fallback",
+            ),
+        ),
+        timing=timing,
+    ).run(user_text=question, tools=(web_tool,))
+    latency_ms = _elapsed_ms(started)
+    diagnostics["calls_executed"] = 1
+
+    decision = official_web_fallback_policy(
+        source_domain=source_domain,
+        runtime_reason=reason,
+        usable_authoritative_results=usable_authoritative_results,
+        candidate_urls=_web_result_urls(web_result),
+        requested_source_explicit=requested_source_explicit,
+    )
+    diagnostics.update(
+        {
+            "accepted_urls": list(decision.accepted_urls),
+            "separate_section": decision.separate_section,
+            "reason_code": decision.reason_code,
+        }
+    )
+    if not decision.accepted_urls:
+        return result, diagnostics, latency_ms
+
+    return (
+        _combine_official_web_result(
+            result,
+            web_result,
+            accepted_urls=decision.accepted_urls,
+            disclosure=decision.disclosure,
+        ),
+        diagnostics,
+        latency_ms,
+    )
+
+
+def _web_fallback_diagnostics(
+    *,
+    runtime_reason: str | None,
+    eligible: bool = False,
+    requested_source_explicit: bool = False,
+) -> dict[str, Any]:
+    return {
+        "enabled": official_web_fallback_call_cap() == 1,
+        "eligible": eligible,
+        "requested_source_explicit": requested_source_explicit,
+        "calls_executed": 0,
+        "accepted_urls": [],
+        "separate_section": False,
+        "reason_code": runtime_reason,
+    }
+
+
+def _web_result_urls(result: AgentResult) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            url
+            for call in result.tool_calls
+            for fact in _call_evidence(call)
+            for url in _HTTPS_URL_RE.findall(str(fact.get("source_locator") or ""))
+        )
+    )
+
+
+def _combine_official_web_result(
+    authority_result: AgentResult,
+    web_result: AgentResult,
+    *,
+    accepted_urls: tuple[str, ...],
+    disclosure: str,
+) -> AgentResult:
+    accepted = set(accepted_urls)
+    facts: list[EvidenceFact] = []
+    filtered_calls: list[dict[str, Any]] = []
+    for call in web_result.tool_calls:
+        filtered_evidence: list[dict[str, Any]] = []
+        for raw_fact in _call_evidence(call):
+            locator = str(raw_fact.get("source_locator") or "")
+            if not any(url in accepted for url in _HTTPS_URL_RE.findall(locator)):
+                continue
+            fact = EvidenceFact.model_validate(raw_fact).model_copy(
+                update={"source_name": "[SUPPLEMENTARY] 웹 검색 결과"}
+            )
+            facts.append(fact)
+            filtered_evidence.append(fact.model_dump(mode="json"))
+        if not filtered_evidence:
+            continue
+        filtered_call = dict(call)
+        render_data = dict(filtered_call.get("render_data") or {})
+        render_data["evidence"] = filtered_evidence
+        filtered_call["render_data"] = render_data
+        filtered_calls.append(filtered_call)
+
+    appendix = render_evidence_answer(tuple(facts))
+    answer = "\n\n".join(
+        part
+        for part in (
+            disclosure,
+            f"### 공식 도메인 보조 자료\n{appendix}",
+        )
+        if part
+    )
+    trace_offset = len(authority_result.traces)
+    web_traces = tuple(
+        trace.model_copy(update={"step": trace_offset + ordinal})
+        for ordinal, trace in enumerate(web_result.traces, start=1)
+    )
+    return AgentResult(
+        status="partial",
+        answer=answer,
+        tool_calls=authority_result.tool_calls + tuple(filtered_calls),
+        sources=("[SUPPLEMENTARY] 웹 검색 결과",),
+        traces=authority_result.traces + web_traces,
+        fallback_code=None,
+    )
+
+
+def _call_evidence(call: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, dict):
+        return ()
+    evidence = render_data.get("evidence")
+    if not isinstance(evidence, list):
+        return ()
+    return tuple(fact for fact in evidence if isinstance(fact, dict))
 
 
 def _planner(
