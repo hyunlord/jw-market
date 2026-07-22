@@ -68,7 +68,7 @@ Transport = Callable[[str, dict], dict]
 
 
 def job_name(category: str, manifest_sha: str) -> str:
-    return f"jw-ingest-{category}-{manifest_sha[:8]}"
+    return f"jw-ingest-{category.replace('_', '-')}-{manifest_sha[:8]}"
 
 
 def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespace: str | None = None) -> dict:

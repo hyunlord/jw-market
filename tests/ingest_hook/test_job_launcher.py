@@ -33,6 +33,18 @@ def test_submit_uses_injected_transport(fake_transport):
     assert body["metadata"]["name"] == name
 
 
+def test_rendered_job_sanitizes_category_for_kubernetes_name():
+    body = render_job(
+        category="iqvia_nsa",
+        manifest_sha=SHA,
+        manifest_path="/data/nsa.manifest.json",
+        namespace="llmops",
+    )
+
+    assert body["metadata"]["name"] == f"jw-ingest-iqvia-nsa-{SHA[:8]}"
+    assert body["metadata"]["labels"]["jw-ingest/category"] == "iqvia_nsa"
+
+
 def test_ingest_manifests_pin_the_default_job_image():
     """Internal identity: every tracked ingest manifest runs config.DEFAULT_JOB_IMAGE.
 
