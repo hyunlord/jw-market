@@ -79,7 +79,7 @@ def fetch_snapshot(connection: pymysql.connections.Connection, *, schema: str = 
 
 
 def fetch_keyword_rows(connection: pymysql.connections.Connection, markets: Sequence[str], *, schema: str = SCHEMA) -> list[KeywordRow]:
-    """Fetch Keyword rows for the 17-market scope inside a read-only transaction."""
+    """Fetch Keyword rows for selected ATCs inside a read-only transaction."""
     placeholders = ",".join(["%s"] * len(markets))
     sql = (
         "SELECT id, period_ym, visit_location, specialty, product_name, therapeutic_class, "
@@ -97,6 +97,35 @@ def fetch_keyword_rows(connection: pymysql.connections.Connection, markets: Sequ
             rows.append(_keyword_row(record))
         cursor.execute("COMMIT")
     return rows
+
+
+def fetch_keyword_atc4(connection: pymysql.connections.Connection, *, schema: str = SCHEMA) -> tuple[str, ...]:
+    """Return every ATC4 with non-empty keyword data from the current stage."""
+    with connection.cursor() as cursor:
+        cursor.execute("START TRANSACTION READ ONLY")
+        cursor.execute(
+            f"SELECT DISTINCT therapeutic_class AS atc4 FROM {schema}.{KEYWORD_TABLE} "
+            "WHERE keyword_text <> '' ORDER BY therapeutic_class"
+        )
+        markets = tuple(str(row["atc4"]) for row in cursor.fetchall())
+        cursor.execute("COMMIT")
+    return markets
+
+
+def fetch_topic_covered_atc4(connection: pymysql.connections.Connection, *, schema: str = SCHEMA) -> tuple[str, ...]:
+    """Return ATC4 values already represented by persisted topic scopes."""
+    with connection.cursor() as cursor:
+        cursor.execute("START TRANSACTION READ ONLY")
+        cursor.execute(f"SELECT atc4_values FROM {schema}.mart_brand_activity_topics ORDER BY scope_id")
+        records = cursor.fetchall()
+        cursor.execute("COMMIT")
+    covered: set[str] = set()
+    for record in records:
+        raw = record["atc4_values"]
+        values = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(values, list):
+            covered.update(str(value) for value in values if isinstance(value, str) and value)
+    return tuple(sorted(covered))
 
 
 def fetch_csd_market_bridge(connection: pymysql.connections.Connection, markets: Sequence[str], *, schema: str = SCHEMA) -> dict[str, JsonValue]:

@@ -121,9 +121,10 @@ def apply_csd_market_names(group_map: dict[str, JsonValue], csd_bridge: dict[str
     renamed["groups"] = groups
     renamed["csd_market_name_source"] = csd_bridge
     renamed["csd_market_missing_atc4"] = _list(csd_bridge.get("csd_market_missing_atc4"))
-    renamed["dropped_atc4_csd_missing"] = _dropped_atc4(atc4_map)
+    renamed["dropped_atc4_csd_missing"] = []
+    renamed["csd_optional_fallback_atc4"] = _csd_missing_atc4(atc4_map)
     renamed["csd_markets_without_keyword_data"] = _csd_markets_without_keyword_data(csd_bridge, atc4_map)
-    renamed["rule"] = f"{group_map.get('rule')} Final markets use MI Master membership; CSD supplies English names and allowed range. Missing CSD markets are dropped from execution, not silently inferred."
+    renamed["rule"] = f"{group_map.get('rule')} Final markets use MI Master membership; CSD supplies optional English display names. Missing CSD names use an explicit ATC fallback and remain executable."
     return renamed
 
 
@@ -143,10 +144,11 @@ def scope_metadata_from_group_map(group_map: dict[str, JsonValue]) -> dict[str, 
     covered_atc4: set[str] = set()
     for item in _list(group_map.get("groups")):
         group = _dict(item)
-        current_atc4 = _covered_atc4(_strings(group.get("current_atc4")), atc4_map)
+        current_atc4 = _requested_atc4(_strings(group.get("current_atc4")), atc4_map)
         if not current_atc4:
             continue
         scope_key = f"group:{group.get('group_id')}" if len(current_atc4) > 1 else current_atc4[0]
+        missing_atc4 = _missing_csd_values(current_atc4, atc4_map)
         metadata[scope_key] = {
             "scope_key": scope_key,
             "scope_id": scope_key if scope_key.startswith("group:") else scope_id(scope_key),
@@ -158,11 +160,14 @@ def scope_metadata_from_group_map(group_map: dict[str, JsonValue]) -> dict[str, 
             "atc4_values": current_atc4,
             "filter_options": [_market_filter_option(scope_key, _scope_display_name(scope_key, current_atc4, group, atc4_map), current_atc4)],
             "source": "mi_master_market_scope",
+            "csd_market_missing": bool(missing_atc4),
+            "csd_market_missing_atc4": missing_atc4,
+            "display_name_source": "mi_master_group" if scope_key.startswith("group:") else _display_name_source(current_atc4, atc4_map),
         }
         covered_atc4.update(current_atc4)
     for atc4, value in atc4_map.items():
         row = _dict(value)
-        if atc4 in covered_atc4 or row.get("csd_market_missing"):
+        if atc4 in covered_atc4:
             continue
         metadata[atc4] = {
             "scope_key": atc4,
@@ -175,6 +180,9 @@ def scope_metadata_from_group_map(group_map: dict[str, JsonValue]) -> dict[str, 
             "atc4_values": [atc4],
             "filter_options": [_market_filter_option(atc4, str(row.get("friendly_name") or row.get("submarket_name") or atc4), [atc4])],
             "source": row.get("source"),
+            "csd_market_missing": bool(row.get("csd_market_missing")),
+            "csd_market_missing_atc4": [atc4] if row.get("csd_market_missing") else [],
+            "display_name_source": "atc4_fallback" if row.get("csd_market_missing") else "csd_market",
         }
     return metadata
 
@@ -193,9 +201,19 @@ def source_scope_key_from_brand_sample_key(sample_key: str) -> tuple[str, str, s
     return atc4, atc4, brand
 
 
-def _covered_atc4(values: list[str], atc4_map: dict[str, JsonValue]) -> list[str]:
-    """Return group member ATC4 values with CSD coverage in the requested order."""
-    return [atc4 for atc4 in values if not _dict(atc4_map.get(atc4)).get("csd_market_missing")]
+def _requested_atc4(values: list[str], atc4_map: dict[str, JsonValue]) -> list[str]:
+    """Return requested group members regardless of optional CSD display coverage."""
+    return [atc4 for atc4 in values if atc4 in atc4_map]
+
+
+def _missing_csd_values(atc4_values: list[str], atc4_map: dict[str, JsonValue]) -> list[str]:
+    """Return scope members whose CSD display-name bridge is absent."""
+    return [atc4 for atc4 in atc4_values if _dict(atc4_map.get(atc4)).get("csd_market_missing")]
+
+
+def _display_name_source(atc4_values: list[str], atc4_map: dict[str, JsonValue]) -> str:
+    """Describe whether one standalone label came from CSD or ATC fallback."""
+    return "atc4_fallback" if _missing_csd_values(atc4_values, atc4_map) else "csd_market"
 
 
 def _scope_display_name(scope_key: str, atc4_values: list[str], group: dict[str, JsonValue], atc4_map: dict[str, JsonValue]) -> str:
@@ -433,13 +451,20 @@ def _submarket_name(group: dict[str, JsonValue], atc4: str) -> str:
 
 def _sanity_checks(atc4_map: dict[str, dict[str, JsonValue]]) -> dict[str, JsonValue]:
     """Record the two PL-mandated sanity checks with exact ATC4 evidence."""
-    livalo = _same_group(atc4_map, "C10A1", "C10C0")
-    gardlet = _same_group(atc4_map, "A10N1", "A10N3")
+    livalo = _pair_group_check(atc4_map, "C10A1", "C10C0")
+    gardlet = _pair_group_check(atc4_map, "A10N1", "A10N3")
     return {
         "livalo_C10A1_C10C0_grouped": livalo,
         "gardlet_A10N1_A10N3_grouped": gardlet,
-        "status": "pass" if livalo and gardlet else "fail",
+        "status": "pass" if livalo is not False and gardlet is not False else "fail",
     }
+
+
+def _pair_group_check(atc4_map: dict[str, dict[str, JsonValue]], left: str, right: str) -> bool | None:
+    """Check grouping only when both reference ATC values are execution targets."""
+    if left not in atc4_map or right not in atc4_map:
+        return None
+    return _same_group(atc4_map, left, right)
 
 
 def _same_group(atc4_map: dict[str, dict[str, JsonValue]], left: str, right: str) -> bool:
@@ -494,8 +519,8 @@ def _combine_csd_markets(names: list[str]) -> str:
     return "+".join(stems) + " Market"
 
 
-def _dropped_atc4(atc4_map: dict[str, dict[str, JsonValue]]) -> list[str]:
-    """List Keyword ATC4 markets dropped because CSD has no corresponding market sheet."""
+def _csd_missing_atc4(atc4_map: dict[str, dict[str, JsonValue]]) -> list[str]:
+    """List executable Keyword ATC4 values using fallback display metadata."""
     return sorted(atc4 for atc4, row in atc4_map.items() if row.get("csd_market_missing"))
 
 
