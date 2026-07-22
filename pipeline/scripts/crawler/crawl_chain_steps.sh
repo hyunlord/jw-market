@@ -201,8 +201,8 @@ tier1_collect() {
   local raw="${output}/raw"
   local profiles="${output}/drug_profiles"
   local all_sites="바이오스펙테이터 히트뉴스 약업신문 데일리팜 메디칼타임즈 팜뉴스 의학신문 한경바이오인사이트 메디칼업저버 약사공론 의약뉴스 메디파나뉴스"
-  local selected_sites="${CRAWL_CHAIN_TIER1_SITES:-}"
-  local preseed_sites="${all_sites}"
+  local selected_sites="${CRAWL_CHAIN_TIER1_SITES:-${all_sites// /,}}"
+  local preseed_sites="${selected_sites//,/ }"
   local months="${CRAWL_CHAIN_TIER1_MONTHS:-1}"
   local max_articles="${CRAWL_CHAIN_TIER1_MAX_ARTICLES:-0}"
   local delay_seconds="${CRAWL_CHAIN_DELAY_SECONDS:-5}"
@@ -212,10 +212,7 @@ tier1_collect() {
     --delay-sec "${delay_seconds}" --output-dir "${raw}"
     --drug-profile-dir "${profiles}/drug_profiles"
   )
-  if [[ -n "${selected_sites}" ]]; then
-    preseed_sites="${selected_sites//,/ }"
-    crawl_command+=(--sites "${selected_sites}")
-  fi
+  crawl_command+=(--sites "${selected_sites}")
   if [[ "${max_articles}" != "0" ]]; then
     crawl_command+=(--max-articles "${max_articles}")
   fi

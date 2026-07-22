@@ -102,7 +102,12 @@ def tier2_sites(selected_sites: str | None) -> list[str]:
     if not selected_sites:
         return available
     requested = [site.strip() for site in selected_sites.split(",") if site.strip()]
-    return [site for site in requested if site in available]
+    unknown = sorted(set(requested) - set(available))
+    if unknown:
+        raise ValueError(f"unknown tier2 site(s): {', '.join(unknown)}")
+    if not requested:
+        raise ValueError("explicit tier2 site set is empty")
+    return requested
 
 
 def run_tier2_crawl(args: argparse.Namespace, brands: list[Tier2Brand]) -> int:
@@ -175,22 +180,23 @@ def score_tier2_corpus(input_dir: Path, output_dir: Path, brands: list[Tier2Bran
 
 
 def run_tier1_existing_flow(args: argparse.Namespace) -> int:
+    if not args.sites:
+        raise ValueError("tier1 crawl requires an explicit tier1 site set")
     command = [
         sys.executable,
         str(CRAWLER_DIR / "crawl_news_full_orchestrator.py"),
-        "--profile-dir",
+        "--drug-profile-dir",
         args.drug_profile_dir,
-        "--output-base-dir",
+        "--output-base",
         args.output_dir,
         "--months",
         str(args.months),
-        "--delay-sec",
+        "--delay",
         str(args.delay_sec),
         "--concurrent-sites",
         str(args.concurrent_sites),
     ]
-    if args.sites:
-        command.extend(["--sites", args.sites])
+    command.extend(["--sites", args.sites])
     if args.max_articles:
         command.extend(["--max-articles", str(args.max_articles)])
     completed = subprocess.run(command, check=False)
