@@ -25,6 +25,8 @@ class CsdPresence(TypedDict):
     brand: str
     resolved: bool
     csd_present: bool
+    csd_source: bool
+    keyword_source: bool
     reason: str | None
 
 
@@ -38,20 +40,32 @@ class _BrandRowIndex:
 
 _csd_product_cache: tuple[float, frozenset[str]] | None = None
 _csd_product_cache_lock = Lock()
+_keyword_product_cache: tuple[float, frozenset[str]] | None = None
+_keyword_product_cache_lock = Lock()
 
 
 def get_csd_presence(brand: str) -> CsdPresence:
-    """Return whether one resolved brand has a product in the CSD source."""
+    """Return whether one resolved brand has activity in the CSD or keyword source."""
 
     return get_csd_presences((brand,))[0]
 
 
 def get_csd_presences(brands: tuple[str, ...]) -> list[CsdPresence]:
-    """Resolve up to one request batch with one mart read and one cached CSD read."""
+    """Resolve one request batch with one mart read plus one cached read per source axis.
+
+    ``csd_present`` is the union gate (CSD ∪ keyword): the front end enables the whole
+    Brand Activity tab on it. ``csd_source``/``keyword_source`` expose each axis so a
+    chart with an empty axis renders empty state instead of blocking the tab. Both source
+    sets share the same cache lifetime so a stale half cannot flip the gate.
+    """
 
     rows = _index_brand_rows(_fetch_brand_rows(brands))
     csd_products = _cached_csd_products()
-    return [_presence_for_rows(brand, _rows_for_brand(rows, brand), csd_products) for brand in brands]
+    keyword_products = _cached_keyword_products()
+    return [
+        _presence_for_rows(brand, _rows_for_brand(rows, brand), csd_products, keyword_products)
+        for brand in brands
+    ]
 
 
 def iqvia_product_codes_by_brand(brands: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
@@ -140,6 +154,36 @@ def _cached_csd_products() -> frozenset[str]:
         return products
 
 
+def _fetch_keyword_products() -> frozenset[str]:
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT product_name
+        FROM {quote_identifier(config.brand_activity_db_name)}.`km_keyword_event_stage`
+        """
+    )
+    return frozenset(
+        normalize_iqvia_en(str(row["product_name"]))
+        for row in rows
+        if row.get("product_name")
+    )
+
+
+def _cached_keyword_products() -> frozenset[str]:
+    global _keyword_product_cache
+
+    now = time.monotonic()
+    cached = _keyword_product_cache
+    if cached is not None and now - cached[0] < CSD_PRODUCT_CACHE_TTL_SECONDS:
+        return cached[1]
+    with _keyword_product_cache_lock:
+        cached = _keyword_product_cache
+        if cached is not None and now - cached[0] < CSD_PRODUCT_CACHE_TTL_SECONDS:
+            return cached[1]
+        products = _fetch_keyword_products()
+        _keyword_product_cache = (time.monotonic(), products)
+        return products
+
+
 def _index_brand_rows(rows: list[dict[str, object]]) -> _BrandRowIndex:
     index = _BrandRowIndex({}, {}, {}, {})
     for row in rows:
@@ -176,23 +220,52 @@ def _presence_for_rows(
     brand: str,
     rows: list[dict[str, object]],
     csd_products: frozenset[str],
+    keyword_products: frozenset[str],
 ) -> CsdPresence:
     if not rows:
-        return _result(brand, resolved=False, csd_present=False, reason="brand_not_found")
+        return _result(
+            brand,
+            resolved=False,
+            csd_present=False,
+            csd_source=False,
+            keyword_source=False,
+            reason="brand_not_found",
+        )
     product_codes = {
         normalize_iqvia_en(code)
         for row in rows
         for code in _product_codes(row.get("by_dimension"))
     }
-    if not product_codes.intersection(csd_products):
-        return _result(brand, resolved=True, csd_present=False, reason="no_csd_mapping")
-    return _result(brand, resolved=True, csd_present=True, reason=None)
+    csd_source = bool(product_codes & csd_products)
+    keyword_source = bool(product_codes & keyword_products)
+    csd_present = csd_source or keyword_source
+    # Gate is the union; reason is null when either axis has data. "no_csd_mapping" is
+    # removed because it ignored the keyword axis and read like a mapping defect.
+    reason = None if csd_present else "no_activity_any_source"
+    return _result(
+        brand,
+        resolved=True,
+        csd_present=csd_present,
+        csd_source=csd_source,
+        keyword_source=keyword_source,
+        reason=reason,
+    )
 
 
-def _result(brand: str, *, resolved: bool, csd_present: bool, reason: str | None) -> CsdPresence:
+def _result(
+    brand: str,
+    *,
+    resolved: bool,
+    csd_present: bool,
+    csd_source: bool,
+    keyword_source: bool,
+    reason: str | None,
+) -> CsdPresence:
     return {
         "brand": brand,
         "resolved": resolved,
         "csd_present": csd_present,
+        "csd_source": csd_source,
+        "keyword_source": keyword_source,
         "reason": reason,
     }

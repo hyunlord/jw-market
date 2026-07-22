@@ -1096,6 +1096,7 @@ def test_missing_catalog_topic_scope_returns_explicit_reason(monkeypatch, caplog
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
     monkeypatch.setattr(topic_matrix, "_fetch_topic_rows", lambda: [])
     monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1",))
+    monkeypatch.setattr(topic_matrix, "_company_names_by_brand", lambda *_a, **_k: {})
 
     with caplog.at_level("WARNING"):
         result = topic_matrix.get_topic_brand_payload(

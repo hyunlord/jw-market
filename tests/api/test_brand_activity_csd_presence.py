@@ -44,11 +44,14 @@ def test_presence_uses_the_same_product_overlap_as_csd_market_resolution(
         ],
     )
     monkeypatch.setattr(service, "_cached_csd_products", lambda: frozenset({"LIVALO"}))
+    monkeypatch.setattr(service, "_cached_keyword_products", lambda: frozenset())
 
     assert service.get_csd_presence("리바로") == {
         "brand": "리바로",
         "resolved": True,
         "csd_present": True,
+        "csd_source": True,
+        "keyword_source": False,
         "reason": None,
     }
     monkeypatch.setattr(
@@ -77,11 +80,14 @@ def test_presence_maps_no_mapping_without_diverging(
         ],
     )
     monkeypatch.setattr(service, "_cached_csd_products", lambda: frozenset({"LIVALO"}))
+    monkeypatch.setattr(service, "_cached_keyword_products", lambda: frozenset())
     assert service.get_csd_presence("헴리브라") == {
         "brand": "헴리브라",
         "resolved": True,
         "csd_present": False,
-        "reason": "no_csd_mapping",
+        "csd_source": False,
+        "keyword_source": False,
+        "reason": "no_activity_any_source",
     }
 
     monkeypatch.setattr(
@@ -96,14 +102,73 @@ def test_presence_maps_no_mapping_without_diverging(
         )
 
 
+def test_presence_union_gate_true_on_keyword_only_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A brand with no CSD product but keyword activity gates true (the 32-brand fix)."""
+
+    monkeypatch.setattr(
+        service,
+        "_fetch_brand_rows",
+        lambda brands: [
+            {
+                "brand_key": brands[0],
+                "brand_name": brands[0],
+                "by_dimension": {"products": [{"product_code": "ACTEMRA"}]},
+            }
+        ],
+    )
+    monkeypatch.setattr(service, "_cached_csd_products", lambda: frozenset({"LIVALO"}))
+    monkeypatch.setattr(service, "_cached_keyword_products", lambda: frozenset({"ACTEMRA"}))
+    assert service.get_csd_presence("악템라") == {
+        "brand": "악템라",
+        "resolved": True,
+        "csd_present": True,
+        "csd_source": False,
+        "keyword_source": True,
+        "reason": None,
+    }
+
+
+def test_presence_reports_both_axes_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Livalo has both CSD and keyword data: both source flags true, reason null."""
+
+    monkeypatch.setattr(
+        service,
+        "_fetch_brand_rows",
+        lambda brands: [
+            {
+                "brand_key": brands[0],
+                "brand_name": brands[0],
+                "by_dimension": {"products": [{"product_code": "LIVALO"}]},
+            }
+        ],
+    )
+    monkeypatch.setattr(service, "_cached_csd_products", lambda: frozenset({"LIVALO"}))
+    monkeypatch.setattr(service, "_cached_keyword_products", lambda: frozenset({"LIVALO"}))
+    assert service.get_csd_presence("리바로") == {
+        "brand": "리바로",
+        "resolved": True,
+        "csd_present": True,
+        "csd_source": True,
+        "keyword_source": True,
+        "reason": None,
+    }
+
+
 def test_presence_returns_unresolved_for_unknown_brand(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service, "_fetch_brand_rows", lambda _brands: [])
     monkeypatch.setattr(service, "_cached_csd_products", lambda: frozenset())
+    monkeypatch.setattr(service, "_cached_keyword_products", lambda: frozenset())
 
     assert service.get_csd_presence("없는브랜드") == {
         "brand": "없는브랜드",
         "resolved": False,
         "csd_present": False,
+        "csd_source": False,
+        "keyword_source": False,
         "reason": "brand_not_found",
     }
 
@@ -137,7 +202,9 @@ def test_presence_route_supports_single_and_batch(monkeypatch: pytest.MonkeyPatc
             "brand": brand,
             "resolved": brand != "없는브랜드",
             "csd_present": brand == "리바로",
-            "reason": None if brand == "리바로" else "no_csd_mapping",
+            "csd_source": brand == "리바로",
+            "keyword_source": False,
+            "reason": None if brand == "리바로" else "no_activity_any_source",
         }
 
     monkeypatch.setattr(brand_activity, "get_csd_presence", presence)
@@ -156,6 +223,8 @@ def test_presence_route_supports_single_and_batch(monkeypatch: pytest.MonkeyPatc
         "brand": "리바로",
         "resolved": True,
         "csd_present": True,
+        "csd_source": True,
+        "keyword_source": False,
         "reason": None,
     }
     assert batch.status_code == 200
@@ -182,7 +251,14 @@ def test_presence_route_accepts_batch_of_fifty(monkeypatch: pytest.MonkeyPatch) 
         brand_activity,
         "get_csd_presences",
         lambda brands: [
-            {"brand": brand, "resolved": True, "csd_present": True, "reason": None}
+            {
+                "brand": brand,
+                "resolved": True,
+                "csd_present": True,
+                "csd_source": True,
+                "keyword_source": False,
+                "reason": None,
+            }
             for brand in brands
         ],
     )
