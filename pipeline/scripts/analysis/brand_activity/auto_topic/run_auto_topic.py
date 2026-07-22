@@ -44,7 +44,9 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (  #
     fetch_keyword_atc4,
     fetch_keyword_rows,
     fetch_snapshot,
+    fetch_strategic_ml_catalog,
     fetch_topic_covered_atc4,
+    fetch_topic_scope_inventory,
     load_alias_descriptions,
     load_json_file,
     market_stats,
@@ -68,6 +70,8 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.market_scope import (  
     parse_target_markets,
     parse_target_mode,
     select_target_markets,
+    select_missing_strategic_scopes,
+    strategic_scope_metadata,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.models import JsonValue, KeywordRow  # noqa: E402
 from pipeline.scripts.analysis.brand_activity.auto_topic.privacy import redacted_rows_for_audit  # noqa: E402
@@ -122,7 +126,7 @@ def main(
     audit_dir: Path = typer.Option(DEFAULT_AUDIT_DIR, "--audit-dir", help="Output audit directory or audit root."),
     stage_schema: str = typer.Option(SCHEMA, "--stage-schema", help="Allowed read-only stage schema."),
     save_to_db: bool = typer.Option(True, "--save-to-db/--no-save-to-db", help="Upsert measured execute results into isolated API tables."),
-    target_mode: str = typer.Option("existing", "--target-mode", help="ATC selector: existing, all, uncovered, or explicit."),
+    target_mode: str = typer.Option("existing", "--target-mode", help="Scope selector: existing, all, uncovered, explicit, or strategic."),
     target_atc4: str = typer.Option("", "--target-atc4", help="Comma-separated ATC4 list used by explicit mode."),
 ) -> None:
     """Run automated Brand Activity LLM topic analysis."""
@@ -191,11 +195,24 @@ def run_pipeline(
     )
     markets = tuple(str(value) for value in target_selection["selected_atc4"])
     descriptions = load_alias_descriptions(alias_payload, rows)
-    group_map = apply_csd_market_names(build_market_group_map(markets), csd_bridge)
+    if target_selection["mode"] == "strategic":
+        group_map: dict[str, JsonValue] = {
+            "rule": "strategic ML catalog ATC combinations; CSD is display-only metadata",
+            "sanity_checks": {"status": "pass"},
+            "groups": [],
+            "group_scope_ids": [],
+            "atc4_map": csd_bridge.get("atc4_map"),
+            "csd_market_missing_atc4": csd_bridge.get("csd_market_missing_atc4"),
+            "dropped_atc4_csd_missing": [],
+            "csd_markets_without_keyword_data": [],
+        }
+        scope_metadata = _dict(target_selection.get("scope_metadata"))
+    else:
+        group_map = apply_csd_market_names(build_market_group_map(markets), csd_bridge)
+        scope_metadata = scope_metadata_from_group_map(group_map)
     if _dict(group_map.get("sanity_checks")).get("status") != "pass":
         raise SafetyError(f"MI Master group sanity failed: {group_map.get('sanity_checks')}")
-    scope_metadata = scope_metadata_from_group_map(group_map)
-    samples = build_market_samples(rows, markets, descriptions, axis_per_brand=axis_per_brand, axis_rows_cap=axis_rows_cap, brand_rows=brand_rows, brands_per_market=brands_per_market, full_rows=full_rows, group_map=group_map, axis_lookback_months=axis_lookback_months)
+    samples = build_market_samples(rows, markets, descriptions, axis_per_brand=axis_per_brand, axis_rows_cap=axis_rows_cap, brand_rows=brand_rows, brands_per_market=brands_per_market, full_rows=full_rows, group_map=group_map, scope_metadata=scope_metadata, axis_lookback_months=axis_lookback_months)
     axis_samples = _typed_samples(samples["axis_samples"])
     brand_samples = _typed_samples(samples["brand_samples"])
     brand_axis_samples = _typed_samples(samples["brand_axis_samples"])
@@ -314,16 +331,57 @@ def _load_stage_rows(
         available_markets = fetch_keyword_atc4(connection, schema=stage_schema)
         covered_markets = fetch_topic_covered_atc4(connection, schema=stage_schema)
         mode = parse_target_mode(target_mode)
-        markets = select_target_markets(
-            available_markets=available_markets,
-            covered_markets=covered_markets,
-            mode=mode,
-            explicit_markets=parse_target_markets(target_atc4),
-        )
+        strategic_selection: dict[str, object] = {}
+        if mode == "strategic":
+            if target_atc4.strip():
+                raise SafetyError("--target-atc4 is not accepted with --target-mode strategic")
+            stored_scopes = fetch_topic_scope_inventory(connection, schema=stage_schema)
+            catalog_rows = fetch_strategic_ml_catalog(connection)
+            strategic_selection = select_missing_strategic_scopes(
+                catalog_rows=catalog_rows,
+                available_markets=available_markets,
+                stored_scopes=stored_scopes,
+            )
+            target_scopes = strategic_selection["target_scopes"]
+            if not isinstance(target_scopes, list) or not target_scopes:
+                raise SafetyError("strategic target selector returned no missing exact scopes")
+            markets = tuple(
+                sorted(
+                    {
+                        str(atc4)
+                        for target in target_scopes
+                        if isinstance(target, dict)
+                        for atc4 in target.get("atc4_values", [])
+                    }
+                )
+            )
+        else:
+            stored_scopes = ()
+            target_scopes = []
+            markets = select_target_markets(
+                available_markets=available_markets,
+                covered_markets=covered_markets,
+                mode=mode,
+                explicit_markets=parse_target_markets(target_atc4),
+            )
         if not markets:
             raise SafetyError(f"target selector returned no keyword ATC values: mode={mode}")
         rows = fetch_keyword_rows(connection, markets, schema=stage_schema)
-        csd_bridge = fetch_csd_market_bridge(connection, markets, schema=stage_schema)
+        if mode == "strategic":
+            csd_bridge = {
+                "source_table": None,
+                "join_rule": "not_run_for_strategic_catalog_scope",
+                "atc4_map": {},
+                "csd_market_missing_atc4": [],
+                "all_csd_markets": [],
+                "excluded_csd_markets": [],
+            }
+        else:
+            csd_bridge = fetch_csd_market_bridge(connection, markets, schema=stage_schema)
+        selected_scope_metadata = strategic_scope_metadata(
+            target_scopes,
+            csd_missing_atc4=tuple(str(value) for value in csd_bridge.get("csd_market_missing_atc4", [])),
+        ) if mode == "strategic" else {}
         after = fetch_snapshot(connection, schema=stage_schema)
     finally:
         connection.close()
@@ -333,7 +391,12 @@ def _load_stage_rows(
         "covered_atc4": list(covered_markets),
         "selected_atc4": list(markets),
         "selected_existing_overlap": sorted(set(markets) & set(covered_markets)),
+        "selected_scope_ids": list(selected_scope_metadata),
+        "selected_existing_scope_overlap": sorted(set(selected_scope_metadata) & {str(row.get("scope_id") or "") for row in stored_scopes}),
+        "scope_metadata": selected_scope_metadata,
     }
+    if mode == "strategic":
+        selection["catalog_census"] = strategic_selection["catalog_census"]
     return before, rows, csd_bridge, after, selection
 
 
