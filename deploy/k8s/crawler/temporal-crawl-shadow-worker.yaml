@@ -60,6 +60,24 @@ spec:
           value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
         - name: CRAWL_CHAIN_LLM_CALL_LIMIT
           value: "0"
+        - name: CRAWL_CHAIN_TIER1_SITES
+          value: 히트뉴스
+        - name: CRAWL_CHAIN_TIER1_MAX_ARTICLES
+          value: "2"
+        - name: CRAWL_CHAIN_TIER2_SITES
+          value: 히트뉴스
+        - name: CRAWL_CHAIN_TIER2_DAYS
+          value: "1"
+        - name: CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE
+          value: "1"
+        - name: CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE
+          value: "10"
+        - name: CRAWL_CHAIN_TIER2_MAX_ARTICLES
+          value: "2"
+        - name: CRAWL_CHAIN_TIER2_LIMIT_BRANDS
+          value: "10"
+        - name: CRAWL_CHAIN_DELAY_SECONDS
+          value: "0.1"
         - name: DB_USER
           valueFrom:
             secretKeyRef:

@@ -84,3 +84,41 @@ def test_stage_script_preserves_incremental_loader_and_category_refresh_order() 
     assert sync_at < append_at < refresh_at
     assert 'CRAWL_CHAIN_LLM_CALL_LIMIT:-60' in script
     assert '--daily-call-limit "${llm_call_limit}" --max-cost-krw 203.40' in script
+
+
+def test_stage_script_supports_bounded_shadow_crawls_without_changing_defaults() -> None:
+    # Given: the shared stage script used by both the dormant full chain and shadow worker.
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    # When/Then: limits are opt-in, while the normal production windows remain the defaults.
+    assert 'CRAWL_CHAIN_TIER1_SITES:-' in script
+    assert 'CRAWL_CHAIN_TIER1_MONTHS:-1' in script
+    assert 'CRAWL_CHAIN_TIER1_MAX_ARTICLES:-0' in script
+    assert 'CRAWL_CHAIN_TIER2_SITES:-' in script
+    assert 'CRAWL_CHAIN_TIER2_DAYS:-7' in script
+    assert 'CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE:-3' in script
+    assert 'CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE:-80' in script
+    assert 'CRAWL_CHAIN_TIER2_MAX_ARTICLES:-0' in script
+    assert 'CRAWL_CHAIN_TIER2_LIMIT_BRANDS:-0' in script
+    assert "--tier2-concurrent-sites" not in script
+
+
+def test_shadow_manifest_limits_only_the_manual_shadow_worker() -> None:
+    # Given: the dedicated Temporal shadow worker manifest.
+    manifest = _yaml_documents("temporal-crawl-shadow-worker.yaml")
+    deployment = next(document for document in manifest if document["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    environment = {item["name"]: item.get("value") for item in container["env"]}
+
+    # When/Then: one-site, one-day bounds are explicit and cannot affect legacy CronJobs.
+    assert environment["CRAWL_CHAIN_TIER1_SITES"] == "히트뉴스"
+    assert environment["CRAWL_CHAIN_TIER1_MAX_ARTICLES"] == "2"
+    assert environment["CRAWL_CHAIN_TIER2_SITES"] == "히트뉴스"
+    assert environment["CRAWL_CHAIN_TIER2_DAYS"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE"] == "10"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_ARTICLES"] == "2"
+    assert environment["CRAWL_CHAIN_TIER2_LIMIT_BRANDS"] == "10"
+    assert environment["CRAWL_CHAIN_DELAY_SECONDS"] == "0.1"
