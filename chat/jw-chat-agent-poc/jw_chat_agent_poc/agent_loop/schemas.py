@@ -8,7 +8,7 @@ from jw_chat_agent_poc.tools.query_layer import QueryCatalog
 
 def tool_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...], query_catalog: QueryCatalog | None = None) -> tuple[dict[str, Any], ...]:
     base = (
-        _schema("get_metric", "브랜드 지표(매출, 점유율, 순위, HHI)를 cache에서 조회합니다.", ("brand", "measure"), allowed_brands, allowed_periods),
+        _schema("get_metric", "브랜드 지표(매출, 점유율, 순위, HHI, UBIST 처방량)를 조회합니다.", ("brand", "measure"), allowed_brands, allowed_periods),
         _schema("get_market_scope", "브랜드가 속한 시장 scope와 같은 시장 브랜드 후보를 조회합니다.", ("brand",), allowed_brands, allowed_periods),
         _schema("resolve_relative_date", "3달전 같은 상대 날짜를 월 단위 period로 해석합니다.", ("expression",), allowed_brands, allowed_periods),
         _schema("search_news", "curated deep-analysis 뉴스/이슈를 브랜드와 텍스트 query로 검색합니다.", ("brand",), allowed_brands, allowed_periods),
@@ -65,7 +65,8 @@ def _properties(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, ...
         "brand": brand_schema,
         "measure": {
             "type": "string",
-            "enum": ["sales", "market_share", "rank", "hhi", "series", "trend", "momentum", "ei", "growth"],
+            "enum": ["sales", "market_share", "rank", "hhi", "series", "trend", "momentum", "ei", "growth", "prescription_volume"],
+            "description": "prescription_volume is UBIST rx_qty volume in Rx units; it is not sales or prescription count.",
         },
         "period": {
             "type": "string",
@@ -113,7 +114,7 @@ def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, 
         ),
         _schema_with_props(
             "get_brand_series",
-            "전략뷰 브랜드 월별 매출·점유율 시계열과 시장규모 맥락을 조회합니다. 성장률과 변곡은 원시 시계열에서 계산합니다.",
+            "전략뷰 브랜드 월별 매출 또는 UBIST 처방량 시계열을 조회합니다. 처방량은 measure=prescription_volume으로 명시하며 매출과 합산하지 않습니다.",
             ("brand",),
             props,
         ),
@@ -124,8 +125,8 @@ def _query_schemas(allowed_brands: tuple[str, ...], allowed_periods: tuple[str, 
             ("brand",),
             props,
         ),
-        _schema_with_props("get_brand_channel_breakdown", "query layer로 브랜드의 채널별 매출 구성을 조회합니다.", ("brand",), props),
-        _schema_with_props("get_brand_specialty_breakdown", "query layer로 브랜드의 진료과별 매출 구성을 조회합니다.", ("brand",), props),
+        _schema_with_props("get_brand_channel_breakdown", "query layer로 브랜드의 채널별 매출 또는 UBIST 처방량 구성을 조회합니다.", ("brand",), props),
+        _schema_with_props("get_brand_specialty_breakdown", "query layer로 브랜드의 진료과별 매출 또는 UBIST 처방량 구성을 조회합니다.", ("brand",), props),
         _schema_with_props("query", "catalog enum에 맞는 query(spec)를 전략 mart에 실행합니다.", ("spec",), props),
     )
 

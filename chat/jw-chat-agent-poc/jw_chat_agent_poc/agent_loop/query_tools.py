@@ -99,6 +99,7 @@ def dimension_breakdown(
         period=arguments.get("period", "latest"),
         limit=int_arg(arguments.get("limit"), 10),
         market=market,
+        metric=arguments.get("measure") or "sales",
     )
     return QueryToolResult(f"{brand} {dimension} breakdown query-layer", call)
 

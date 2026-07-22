@@ -7,7 +7,15 @@ from jw_chat_agent_poc.tools.query_layer.market_structure import CLASS_2_KEY, st
 from jw_chat_agent_poc.tools.query_layer.store import MartRecord, MartSnapshot
 
 
-METRICS: Final[tuple[str, ...]] = ("sales", "share", "rank", "hhi", "growth")
+PRESCRIPTION_VOLUME_METRIC: Final = "prescription_volume"
+METRICS: Final[tuple[str, ...]] = (
+    "sales",
+    "share",
+    "rank",
+    "hhi",
+    "growth",
+    PRESCRIPTION_VOLUME_METRIC,
+)
 DERIVATIONS: Final[tuple[str, ...]] = ("share", "hhi", "growth", "rank", "delta", "trend", "top_n", "mix", "gap", "yoy", "average")
 SORTS: Final[tuple[str, ...]] = ("sales_desc", "share_desc", "rank_asc", "period_asc")
 BASE_DIMENSIONS: Final[tuple[str, ...]] = (
@@ -39,6 +47,56 @@ METADATA_DIMENSIONS: Final[frozenset[str]] = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class MetricDefinition:
+    public_name: str
+    measure: str
+    display_name: str
+    unit_label: str
+    sources: tuple[str, ...]
+
+
+_METRIC_DEFINITIONS: Final[dict[str, MetricDefinition]] = {
+    "sales": MetricDefinition("sales", "sales", "매출", "KRW", ("ubist", "iqvia_nsa")),
+    "share": MetricDefinition("share", "sales", "점유율", "%", ("ubist", "iqvia_nsa")),
+    "market_share": MetricDefinition("market_share", "sales", "점유율", "%", ("ubist", "iqvia_nsa")),
+    "rank": MetricDefinition("rank", "sales", "순위", "위", ("ubist", "iqvia_nsa")),
+    "series": MetricDefinition("series", "sales", "매출", "KRW", ("ubist", "iqvia_nsa")),
+    "trend": MetricDefinition("series", "sales", "매출", "KRW", ("ubist", "iqvia_nsa")),
+    "hhi": MetricDefinition("hhi", "sales", "HHI", "index", ("ubist", "iqvia_nsa")),
+    "growth": MetricDefinition("growth", "sales", "성장률", "%", ("ubist", "iqvia_nsa")),
+    "momentum": MetricDefinition("momentum", "sales", "모멘텀", "score", ("ubist", "iqvia_nsa")),
+    "ei": MetricDefinition("ei", "sales", "EI", "index", ("ubist", "iqvia_nsa")),
+    "growth_contribution": MetricDefinition("growth_contribution", "sales", "성장기여", "%", ("ubist", "iqvia_nsa")),
+    PRESCRIPTION_VOLUME_METRIC: MetricDefinition(
+        PRESCRIPTION_VOLUME_METRIC,
+        "volume",
+        "처방량",
+        "Rx",
+        ("ubist",),
+    ),
+}
+
+
+def metric_definition(metric: str) -> MetricDefinition:
+    key = str(metric or "").strip().casefold()
+    if not key:
+        raise ValueError("metric is required; blank metric cannot default to sales")
+    try:
+        return _METRIC_DEFINITIONS[key]
+    except KeyError as exc:
+        raise ValueError(f"unsupported metric: {metric}") from exc
+
+
+def measure_for_metrics(metrics: tuple[str, ...] | list[str]) -> str:
+    if not metrics:
+        raise ValueError("metrics is required; blank metrics cannot default to sales")
+    measures = {metric_definition(metric).measure for metric in metrics}
+    if len(measures) != 1:
+        raise ValueError("cannot mix metrics from more than one measure in a single query")
+    return next(iter(measures))
+
+
+@dataclass(frozen=True, slots=True)
 class QueryCatalog:
     """Market-specific enum catalog injected into tool schemas."""
 
@@ -56,6 +114,9 @@ class QueryCatalog:
     @classmethod
     def from_snapshot(cls, snapshot: MartSnapshot, market: str, source: str = "ubist") -> "QueryCatalog":
         records = snapshot.market_records(market, source, "sales")
+        metrics = METRICS[:-1]
+        if snapshot.market_records(market, "ubist", "volume"):
+            metrics = METRICS
         structure = structure_from_records(records)
         sources = snapshot.sources_for_market(market)
         available: list[str] = []
@@ -80,6 +141,7 @@ class QueryCatalog:
             view="market_landscape",
             dimensions=dimensions,
             group_by=(*dimensions, "period"),
+            metrics=metrics,
             market_structure=structure or None,
         )
 

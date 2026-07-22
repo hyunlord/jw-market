@@ -1255,7 +1255,10 @@ def _metric_facts(
     _append(rows, "지표", data.get("metric"))
     _append(rows, _fact_period_row_label(data), data.get("period"))
     _append(rows, "매출", eok_value(data.get("sales_억원"), data.get("sales_krw")))
-    _append(rows, "시장점유율", pct_value(data.get("ms_recent_pct", data.get("market_share"))))
+    if data.get("measure") == "volume":
+        _append(rows, "처방량", _prescription_volume_value(data.get("prescription_volume")))
+    share_label = "처방량 점유율" if data.get("measure") == "volume" else "시장점유율"
+    _append(rows, share_label, pct_value(data.get("ms_recent_pct", data.get("market_share"))))
     _append(rows, "순위", rank_value(data.get("rank"), data.get("total_brands_in_market")))
     rows.extend(_blocked_metric_rows(data))
     _append(rows, "시장규모", eok_value(data.get("market_size_억원"), data.get("market_size_recent_krw")))
@@ -1337,31 +1340,48 @@ def _level_segments(data: dict[str, Any], subject: str) -> str:
     if not isinstance(segments, list):
         return ""
     level = str(data.get("level") or "분석 기준")
+    is_volume = data.get("measure") == "volume"
     rows = tuple(
             (
                 rank_value(item.get("rank"), None),
                 _segment_display_name(item.get("name")),
                 pct_value(item.get("ms_recent_pct")),
-                eok_value(None, item.get("value")),
+                _prescription_volume_value(item.get("value")) if is_volume else eok_value(None, item.get("value")),
             )
         for item in segments[:TABLE_LIMIT]
         if isinstance(item, dict)
     )
-    return table(f"### {cell(subject)} {cell(level)}별 점유율 fact", ("순위", "구분", "시장점유율", "매출"), rows)
+    value_header = "처방량" if is_volume else "매출"
+    share_header = "처방량 점유율" if is_volume else "시장점유율"
+    title = f"### {cell(subject)} {cell(level)}별 {'처방량 점유율' if is_volume else '점유율'} fact"
+    return table(title, ("순위", "구분", share_header, value_header), rows)
 
 
 def _brand_series(data: dict[str, Any], subject: str) -> str:
     series = data.get("brand_value_series_10pt")
     if not isinstance(series, list):
         return ""
+    is_volume = data.get("measure") == "volume"
     rows = tuple(
-        (item.get("period"), eok_value(item.get("value_억원"), item.get("value_krw")), pct_value(item.get("ms_pct")))
+        (
+            item.get("period"),
+            _prescription_volume_value(item.get("value"))
+            if is_volume
+            else eok_value(item.get("value_억원"), item.get("value_krw")),
+            pct_value(item.get("ms_pct")),
+        )
         for item in sorted(
             (item for item in series if isinstance(item, dict) and str(item.get("period") or "").strip()),
             key=lambda item: _period_sort_key(str(item.get("period") or "")),
         )
     )
-    return table(f"### {cell(subject)} 매출 시계열 fact", ("기간", "매출", "MS"), rows)
+    metric_label = "처방량" if is_volume else "매출"
+    return table(f"### {cell(subject)} {metric_label} 시계열 fact", ("기간", metric_label, "MS"), rows)
+
+
+def _prescription_volume_value(value: Any) -> str:
+    formatted = number_value(value)
+    return f"{formatted} Rx" if formatted else ""
 
 
 def _top_brand_trends(data: dict[str, Any]) -> str:

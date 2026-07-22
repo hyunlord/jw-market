@@ -5,6 +5,7 @@ import re
 from typing import Callable, Final, TypeAlias
 
 from jw_chat_agent_poc.agentic.sales_filter_aliases import CHANNEL_ALIASES, match_channel_in_text
+from jw_chat_agent_poc.agent_loop.bq_slots import requested_prescription_metric
 
 
 QuerySpec: TypeAlias = dict[str, object]
@@ -219,7 +220,16 @@ def _channel_share_plan(question: str, brand: str, _channel: str) -> StrictQuery
 
 def _channel_distribution_plan(question: str, brand: str, _channel: str) -> StrictQueryPlan | None:
     if _asks_channel_distribution(question, brand):
-        return StrictQueryPlan(specs=(_spec("channel", source="", metric="sales", filters={"brand": brand}),))
+        return StrictQueryPlan(
+            specs=(
+                _spec(
+                    "channel",
+                    source="ubist" if _requested_measure(question) == "prescription_volume" else "",
+                    metric=_requested_measure(question),
+                    filters={"brand": brand},
+                ),
+            )
+        )
     return None
 
 
@@ -231,8 +241,22 @@ def _origin_generic_plan(question: str, _brand: str, _channel: str) -> StrictQue
 
 def _specialty_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
     if "진료과" in question:
-        return StrictQueryPlan(specs=(_spec("specialty", source="", metric="sales", filters={"brand": _brand}),))
+        metric = _requested_measure(question)
+        return StrictQueryPlan(
+            specs=(
+                _spec(
+                    "specialty",
+                    source="ubist" if metric == "prescription_volume" else "",
+                    metric=metric,
+                    filters={"brand": _brand},
+                ),
+            )
+        )
     return None
+
+
+def _requested_measure(question: str) -> str:
+    return "prescription_volume" if requested_prescription_metric(question) == "prescription_volume" else "sales"
 
 
 def _dosage_form_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:

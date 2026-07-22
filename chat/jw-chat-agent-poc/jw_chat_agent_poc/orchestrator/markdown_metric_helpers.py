@@ -9,12 +9,20 @@ def metric_level_segments_md(data: dict[str, Any]) -> str:
     segments = data.get("level_segments")
     if not isinstance(segments, list):
         return ""
+    is_volume = data.get("measure") == "volume"
     rows = tuple(
-        (rank_value(item.get("rank"), None), item.get("name"), pct_value(item.get("ms_recent_pct")), eok_value(None, item.get("value")))
+        (
+            rank_value(item.get("rank"), None),
+            item.get("name"),
+            pct_value(item.get("ms_recent_pct")),
+            number_value(item.get("value")) if is_volume else eok_value(None, item.get("value")),
+        )
         for item in segments[:TABLE_LIMIT]
         if isinstance(item, dict)
     )
-    return table("### 분석 기준별 점유율", ("순위", "구분", "MS", "매출"), rows)
+    value_header = "처방량(Rx)" if is_volume else "매출"
+    share_header = "처방량 점유율" if is_volume else "MS"
+    return table("### 분석 기준별 점유율", ("순위", "구분", share_header, value_header), rows)
 
 
 def metric_filter_rows(data: dict[str, Any]) -> tuple[tuple[str, Any], ...]:

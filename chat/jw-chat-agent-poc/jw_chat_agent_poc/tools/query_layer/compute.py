@@ -6,6 +6,7 @@ from dataclasses import asdict
 import math
 from typing import Any, Mapping
 
+from jw_chat_agent_poc.tools.query_layer.catalog import measure_for_metrics, metric_definition
 from jw_chat_agent_poc.tools.query_layer.render import level_segments, metric_name, source_label
 from jw_chat_agent_poc.tools.query_layer.market_structure import market_structure
 from jw_chat_agent_poc.tools.query_layer.spec import as_list, dimension_value
@@ -22,39 +23,76 @@ def metric_render_data(
     *,
     series_points: int = 10,
 ) -> dict[str, Any]:
+    definition = metric_definition(metric)
+    measure = definition.measure
+    if record.measure != measure:
+        raise LookupError(
+            f"mart measure mismatch: requested={metric} expected={measure} actual={record.measure}"
+        )
     value = snapshot.value_or_none(record, period)
     if value is None:
         raise LookupError(f"mart metric row missing or failed: market={market} source={source} brand={record.brand_name} period={period}")
-    market_value = snapshot.market_value_or_none(market, period, source)
-    hhi = snapshot.hhi(market, period, source)
+    market_value = snapshot.market_value_or_none(market, period, source, measure)
+    hhi = snapshot.hhi(market, period, source, measure) if measure == "sales" else None
     bounded_series_points = max(2, min(int(series_points), 60))
-    series_periods = snapshot.periods(market, source)[-bounded_series_points:]
-    structure = market_structure(snapshot, market, source)
-    data = {
+    series_periods = snapshot.periods(market, source, measure)[-bounded_series_points:]
+    data: dict[str, Any] = {
         "brand": record.brand_name,
         "metric": metric_name(metric),
         "period": period,
         "market_id": market,
         "market_name": market,
         "source_label": source_label(source),
-        "sales_krw": value,
-        "sales_억원": round(value / 100_000_000, 2),
-        "ms_recent_pct": snapshot.share_or_none(market, record, period, source),
-        "rank": snapshot.rank(market, record.brand_name, period, source),
-        "total_brands_in_market": len(snapshot.market_records(market, source)),
+        "measure": measure,
+        "value": value,
+        "value_label": definition.display_name,
+        "unit_label": record.unit_label or definition.unit_label,
+        "ms_recent_pct": snapshot.share_or_none(market, record, period, source, measure),
+        "rank": snapshot.rank(market, record.brand_name, period, source, measure),
+        "total_brands_in_market": len(snapshot.market_records(market, source, measure)),
         "source_status": snapshot.value_status(record, period),
-        "market_size_recent_krw": market_value,
-        "market_size_억원": round(market_value / 100_000_000, 2) if market_value is not None else None,
+        "market_value": market_value,
         "hhi_recent": round(hhi, 4) if hhi is not None else None,
-        "brand_value_series_10pt": snapshot.brand_series(market, record.brand_name, series_periods, source),
-        "market_size_series": snapshot.market_series(market, series_periods, source),
+        "brand_value_series_10pt": snapshot.brand_series(market, record.brand_name, series_periods, source, measure),
+        "market_size_series": snapshot.market_series(market, series_periods, source, measure),
         "level": "Brand",
-        "level_segments": level_segments(snapshot.ranked_brands(market, period, source)[:10]),
-        "level_top5_trend_series": top_trend(snapshot, market, source, period, record.brand_name),
-        "series_insight": asdict(snapshot.derived.brand_insight(market, source, record.measure, record.brand_name)),
+        "level_segments": level_segments(snapshot.ranked_brands(market, period, source, measure)[:10], measure=measure),
     }
-    if structure:
-        data["market_structure"] = structure
+    if measure == "sales":
+        structure = market_structure(snapshot, market, source)
+        data.update(
+            {
+                "sales_krw": value,
+                "sales_억원": round(value / 100_000_000, 2),
+                "market_size_recent_krw": market_value,
+                "market_size_억원": round(market_value / 100_000_000, 2) if market_value is not None else None,
+                "level_top5_trend_series": top_trend(
+                    snapshot,
+                    market,
+                    source,
+                    period,
+                    record.brand_name,
+                    measure=measure,
+                ),
+                "series_insight": asdict(
+                    snapshot.derived.brand_insight(
+                        market,
+                        source,
+                        record.measure,
+                        record.brand_name,
+                    )
+                ),
+            }
+        )
+        if structure:
+            data["market_structure"] = structure
+    else:
+        data.update(
+            {
+                "prescription_volume": value,
+                "market_prescription_volume": market_value,
+            }
+        )
     if bounded_series_points != 10:
         data["history_points"] = bounded_series_points
     return data
@@ -210,9 +248,18 @@ def _period_years_before(period: str, years: int) -> str:
     return f"{year - years}{period[4:]}" if year is not None else ""
 
 
-def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anchor_brand: str, limit: int = 5) -> list[dict[str, Any]]:
-    periods = snapshot.periods(market, source)[-10:]
-    ranked = snapshot.ranked_brands(market, period, source)
+def top_trend(
+    snapshot: MartSnapshot,
+    market: str,
+    source: str,
+    period: str,
+    anchor_brand: str,
+    limit: int = 5,
+    *,
+    measure: str = "sales",
+) -> list[dict[str, Any]]:
+    periods = snapshot.periods(market, source, measure)[-10:]
+    ranked = snapshot.ranked_brands(market, period, source, measure)
     selected = [row["brand"] for row in ranked[:limit]]
     if anchor_brand not in selected:
         selected.append(anchor_brand)
@@ -220,8 +267,8 @@ def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anc
     for brand in selected:
         if not brand:
             continue
-        record = snapshot.record(market, brand, source)
-        series = snapshot.brand_series(market, brand, periods, source)
+        record = snapshot.record(market, brand, source, measure)
+        series = snapshot.brand_series(market, brand, periods, source, measure)
         if not series:
             continue
         latest = series[-1]
@@ -236,38 +283,48 @@ def top_trend(snapshot: MartSnapshot, market: str, source: str, period: str, anc
                 "to_period": latest.get("period"),
                 "to_ms_pct": latest.get("ms_pct"),
                 "share_delta_pctp": _difference_or_none(latest.get("ms_pct"), first.get("ms_pct"), digits=4),
-                "value_recent": latest.get("value_krw"),
-                "value_recent_억원": latest.get("value_억원"),
-                "value_delta_krw": _difference_or_none(latest.get("value_krw"), first.get("value_krw")),
+                "value_recent": _series_value(latest),
+                "value_delta": _difference_or_none(_series_value(latest), _series_value(first)),
+                "measure": measure,
+                "unit_label": record.unit_label or ("Rx" if measure == "volume" else "KRW"),
                 "series": series,
                 "company": record.company(),
                 **_missing_period_metadata(series),
             }
         )
+        if measure == "sales":
+            out[-1].update(
+                {
+                    "value_recent_억원": latest.get("value_억원"),
+                    "value_delta_krw": _difference_or_none(latest.get("value_krw"), first.get("value_krw")),
+                }
+            )
     return out
 
 
 def grouped_rows(snapshot: MartSnapshot, market: str, source: str, spec: Mapping[str, Any], limit: int) -> list[dict[str, Any]]:
+    measure = _measure_from_spec(spec)
     group_by = as_list(spec.get("group_by")) or as_list(spec.get("dimensions")) or ["product"]
     key = group_by[0]
-    period = _period_from_filters(snapshot, market, source, spec)
+    period = _period_from_filters(snapshot, market, source, spec, measure)
     filters = _filters(spec)
     if key in {"product", "brand"} and not filters:
-        return snapshot.ranked_brands(market, period, source)[:limit]
-    rows = _ranked_group_rows(snapshot, market, source, key, period, filters)
+        return snapshot.ranked_brands(market, period, source, measure)[:limit]
+    rows = _ranked_group_rows(snapshot, market, source, key, period, filters, measure)
     return rows[:limit]
 
 
 def grouped_trends(snapshot: MartSnapshot, market: str, source: str, spec: Mapping[str, Any], limit: int) -> list[dict[str, Any]]:
+    measure = _measure_from_spec(spec)
     group_by = as_list(spec.get("group_by")) or as_list(spec.get("dimensions")) or ["product"]
     key = next((item for item in group_by if item != "period"), group_by[0])
     filters = _filters(spec)
-    periods = _trend_periods(snapshot, market, source, spec)
-    latest_rows = _ranked_group_rows(snapshot, market, source, key, periods[-1], filters)[:limit]
+    periods = _trend_periods(snapshot, market, source, spec, measure)
+    latest_rows = _ranked_group_rows(snapshot, market, source, key, periods[-1], filters, measure)[:limit]
     selected = [str(row["name"]) for row in latest_rows]
     out: list[dict[str, Any]] = []
     for label in selected:
-        series = _series_for_group(snapshot, market, source, key, label, periods, filters)
+        series = _series_for_group(snapshot, market, source, key, label, periods, filters, measure)
         if not series:
             continue
         first = series[0]
@@ -283,14 +340,22 @@ def grouped_trends(snapshot: MartSnapshot, market: str, source: str, spec: Mappi
                 "to_period": latest.get("period"),
                 "to_ms_pct": latest.get("ms_pct"),
                 "share_delta_pctp": _difference_or_none(latest.get("ms_pct"), first.get("ms_pct"), digits=4),
-                "value_recent": latest.get("value_krw"),
-                "value_recent_억원": latest.get("value_억원"),
-                "value_delta_krw": _difference_or_none(latest.get("value_krw"), first.get("value_krw")),
-                "value_delta_억원": _scaled_difference_or_none(latest.get("value_krw"), first.get("value_krw"), 100_000_000, 2),
+                "value_recent": _series_value(latest),
+                "value_delta": _difference_or_none(_series_value(latest), _series_value(first)),
+                "measure": measure,
+                "unit_label": "Rx" if measure == "volume" else "KRW",
                 "series": series,
                 **_missing_period_metadata(series),
             }
         )
+        if measure == "sales":
+            out[-1].update(
+                {
+                    "value_recent_억원": latest.get("value_억원"),
+                    "value_delta_krw": _difference_or_none(latest.get("value_krw"), first.get("value_krw")),
+                    "value_delta_억원": _scaled_difference_or_none(latest.get("value_krw"), first.get("value_krw"), 100_000_000, 2),
+                }
+            )
     return out
 
 
@@ -347,21 +412,21 @@ def brand_average_share_data(snapshot: MartSnapshot, market: str, source: str, b
     return result
 
 
-def _ranked_group_rows(snapshot: MartSnapshot, market: str, source: str, key: str, period: str, filters: Mapping[str, Any]) -> list[dict[str, Any]]:
-    grouped = _group_values(snapshot, market, source, key, period, filters)
+def _ranked_group_rows(snapshot: MartSnapshot, market: str, source: str, key: str, period: str, filters: Mapping[str, Any], measure: str = "sales") -> list[dict[str, Any]]:
+    grouped = _group_values(snapshot, market, source, key, period, filters, measure)
     rows = []
     for name, value in grouped.items():
-        denominator = _share_denominator(snapshot, market, source, key, period, filters, name, grouped)
-        rows.append({"brand": name, "name": name, "value": value, "ms_recent_pct": value / denominator * 100 if denominator is not None and denominator != 0 else None})
+        denominator = _share_denominator(snapshot, market, source, key, period, filters, name, grouped, measure)
+        rows.append({"brand": name, "name": name, "value": value, "ms_recent_pct": value / denominator * 100 if denominator is not None and denominator != 0 else None, "measure": measure, "unit_label": "Rx" if measure == "volume" else "KRW"})
     rows.sort(key=lambda item: item["value"], reverse=True)
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
     return rows
 
 
-def _group_values(snapshot: MartSnapshot, market: str, source: str, key: str, period: str, filters: Mapping[str, Any]) -> dict[str, float]:
+def _group_values(snapshot: MartSnapshot, market: str, source: str, key: str, period: str, filters: Mapping[str, Any], measure: str = "sales") -> dict[str, float]:
     grouped: dict[str, float] = {}
-    for record in snapshot.market_records(market, source):
+    for record in snapshot.market_records(market, source, measure):
         if not _record_matches(record, filters):
             continue
         for label, value in _record_group_values(snapshot, record, key, period, filters):
@@ -408,19 +473,20 @@ def _share_denominator(
     filters: Mapping[str, Any],
     label: str,
     grouped: Mapping[str, float],
+    measure: str = "sales",
 ) -> float | None:
     if key in {"product", "brand"} and filters.get("brand"):
-        return snapshot.market_value_or_none(market, period, source)
+        return snapshot.market_value_or_none(market, period, source, measure)
     if key == "channel" and filters.get("brand"):
-        return _sum_known(_period_value_or_none(_nested(record.channel_data, label), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.channel_data, label), period) for record in snapshot.market_records(market, source, measure))
     if key == "specialty" and filters.get("brand"):
-        return _sum_known(_period_value_or_none(_nested(record.specialty_data, label), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.specialty_data, label), period) for record in snapshot.market_records(market, source, measure))
     if filters.get("channel"):
         channel = str(filters["channel"])
-        return _sum_known(_period_value_or_none(_nested(record.channel_data, channel), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.channel_data, channel), period) for record in snapshot.market_records(market, source, measure))
     if filters.get("specialty"):
         specialty = str(filters["specialty"])
-        return _sum_known(_period_value_or_none(_nested(record.specialty_data, specialty), period) for record in snapshot.market_records(market, source))
+        return _sum_known(_period_value_or_none(_nested(record.specialty_data, specialty), period) for record in snapshot.market_records(market, source, measure))
     return sum(grouped.values())
 
 
@@ -432,27 +498,33 @@ def _series_for_group(
     label: str,
     periods: tuple[str, ...],
     filters: Mapping[str, Any],
+    measure: str = "sales",
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for period in periods:
-        rows = _ranked_group_rows(snapshot, market, source, key, period, filters)
+        rows = _ranked_group_rows(snapshot, market, source, key, period, filters, measure)
         row = next((item for item in rows if item["name"] == label), None)
         value = float(row["value"]) if row is not None and isinstance(row.get("value"), int | float) else None
-        rank = snapshot.rank(market, label, period, source) if key in {"product", "brand"} and value is not None else row.get("rank") if row else None
-        out.append({"period": period, "value_krw": value, "value_억원": round(value / 100_000_000, 2) if value is not None else None, "ms_pct": row.get("ms_recent_pct") if row else None, "rank": rank})
+        rank = snapshot.rank(market, label, period, source, measure) if key in {"product", "brand"} and value is not None else row.get("rank") if row else None
+        item: dict[str, Any] = {"period": period, "value": value, "ms_pct": row.get("ms_recent_pct") if row else None, "rank": rank, "measure": measure, "unit_label": "Rx" if measure == "volume" else "KRW"}
+        if measure == "sales":
+            item.update({"value_krw": value, "value_억원": round(value / 100_000_000, 2) if value is not None else None})
+        else:
+            item["prescription_volume"] = value
+        out.append(item)
     return out
 
 
-def _period_from_filters(snapshot: MartSnapshot, market: str, source: str, spec: Mapping[str, Any]) -> str:
+def _period_from_filters(snapshot: MartSnapshot, market: str, source: str, spec: Mapping[str, Any], measure: str = "sales") -> str:
     filters = _filters(spec)
     period = str(filters.get("period") or "")
-    return period if period else snapshot.latest_period(market, source)
+    return period if period else snapshot.latest_period(market, source, measure)
 
 
-def _trend_periods(snapshot: MartSnapshot, market: str, source: str, spec: Mapping[str, Any]) -> tuple[str, ...]:
+def _trend_periods(snapshot: MartSnapshot, market: str, source: str, spec: Mapping[str, Any], measure: str = "sales") -> tuple[str, ...]:
     filters = _filters(spec)
     count = _int(filters.get("periods"), 12)
-    periods = snapshot.periods(market, source)
+    periods = snapshot.periods(market, source, measure)
     return periods[-max(1, min(count, len(periods))):]
 
 
@@ -514,16 +586,25 @@ def _scaled_difference_or_none(current: Any, previous: Any, scale: float, digits
 
 
 def _missing_period_metadata(series: list[dict[str, Any]]) -> dict[str, Any]:
-    missing = [str(point["period"]) for point in series if point.get("value_krw") is None]
+    missing = [str(point["period"]) for point in series if _series_value(point) is None]
     ratio_unavailable = [
         str(point["period"])
         for point in series
-        if point.get("value_krw") is not None and point.get("ms_pct") is None
+        if _series_value(point) is not None and point.get("ms_pct") is None
     ]
     return {
         **_missing_period_metadata_from_periods(missing),
         **_ratio_unavailable_metadata(ratio_unavailable),
     }
+
+
+def _measure_from_spec(spec: Mapping[str, Any]) -> str:
+    return measure_for_metrics(as_list(spec.get("metrics")))
+
+
+def _series_value(point: Mapping[str, Any]) -> float | None:
+    value = point.get("value", point.get("value_krw"))
+    return float(value) if isinstance(value, int | float) else None
 
 
 def _missing_period_metadata_from_periods(

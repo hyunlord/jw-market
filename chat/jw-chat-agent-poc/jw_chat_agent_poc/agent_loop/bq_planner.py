@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from typing import Final
 
 from jw_chat_agent_poc.agent_loop.bq_contracts import BqContract, contract_for
+from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
 from jw_chat_agent_poc.agent_loop.bq_slots import (
     BqSlots,
     contract_id_for_slots,
     extract_bq_slots,
+    requested_prescription_metric,
 )
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, ToolCallPlan
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding, build_period_grounding
@@ -113,18 +115,61 @@ def _tool_calls(
     variants = _SOURCE_VARIANTS.get((contract.contract_id, tool), ("",))
     if available_sources is not None:
         variants = tuple(source for source in variants if not source or source in available_sources)
-    return tuple(
+    explicit_metrics = explicit_base_metrics_from_question(slots.question)
+    mixed_sales_volume = {"sales", "prescription_volume"}.issubset(explicit_metrics)
+    calls = [
         ToolCallPlan(
             name=tool,
-            arguments=_arguments(tool, slots, source),
+            arguments=_arguments(
+                tool,
+                slots,
+                source,
+                forced_measure="sales" if mixed_sales_volume and tool in _MEASURE_TOOLS else None,
+            ),
             reason=f"BQ contract {contract.contract_id}",
         )
         for source in variants
-    )
+    ]
+    if (
+        mixed_sales_volume
+        and tool in _MEASURE_TOOLS
+        and "ubist" in variants
+    ):
+        calls.append(
+            ToolCallPlan(
+                name=tool,
+                arguments=_arguments(tool, slots, "ubist", forced_measure="prescription_volume"),
+                reason=f"BQ contract {contract.contract_id}: UBIST prescription volume",
+            )
+        )
+    return tuple(calls)
 
 
-def _arguments(tool: str, slots: BqSlots, source: str) -> dict[str, str]:
+_MEASURE_TOOLS = frozenset(
+    {
+        "get_metric",
+        "get_brand_series",
+        "get_brand_channel_breakdown",
+        "get_brand_specialty_breakdown",
+    }
+)
+
+
+def _arguments(
+    tool: str,
+    slots: BqSlots,
+    source: str,
+    *,
+    forced_measure: str | None = None,
+) -> dict[str, str]:
     arguments = {"brand": slots.brand}
+    if forced_measure is not None:
+        arguments["measure"] = forced_measure
+    elif (
+        requested_prescription_metric(slots.question) == "prescription_volume"
+        and tool in _MEASURE_TOOLS
+    ):
+        arguments["measure"] = "prescription_volume"
     if tool in _PERIOD_TOOLS:
         arguments["period"] = slots.period
     if tool == "get_top_brands":

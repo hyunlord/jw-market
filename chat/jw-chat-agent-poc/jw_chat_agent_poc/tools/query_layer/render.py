@@ -19,6 +19,15 @@ def source_label(source: str) -> str:
 
 
 def metric_summary(brand: str, data: Mapping[str, Any], label: str) -> str:
+    if data.get("measure") == "volume" or data.get("metric") == "prescription_volume":
+        value = data.get("prescription_volume", data.get("value"))
+        rendered = f"{float(value):,.0f} Rx" if isinstance(value, int | float) else MISSING_VALUE_LABEL
+        share = format_pct(data.get("ms_recent_pct"))
+        rank = format_rank(data.get("rank"))
+        return (
+            f"{brand} {data.get('period')} {label} 전략 mart 지표: "
+            f"처방량 {rendered}, 처방량 점유율 {share}, 순위 {rank}."
+        )
     sales = format_eok(data.get("sales_억원"))
     share = format_pct(data.get("ms_recent_pct"))
     rank = format_rank(data.get("rank"))
@@ -28,22 +37,27 @@ def metric_summary(brand: str, data: Mapping[str, Any], label: str) -> str:
     )
 
 
-def level_segments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def level_segments(rows: list[dict[str, Any]], *, measure: str = "sales") -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
         name = row.get("name") or row.get("brand")
         raw_value = row.get("value")
         value = float(raw_value) if isinstance(raw_value, int | float) else None
-        out.append(
-            {
+        item = {
                 "name": name,
                 "brand": name,
                 "rank": row.get("rank"),
                 "ms_recent_pct": row.get("ms_recent_pct"),
                 "value": value,
-                "value_억원": round(value / 100_000_000, 2) if value is not None else None,
+                "measure": measure,
+                "unit_label": "Rx" if measure == "volume" else "KRW",
+                "value_label": "처방량" if measure == "volume" else "매출",
             }
-        )
+        if measure == "sales":
+            item["value_억원"] = round(value / 100_000_000, 2) if value is not None else None
+        else:
+            item["prescription_volume"] = value
+        out.append(item)
     return out
 
 

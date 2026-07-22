@@ -77,6 +77,7 @@ def market_members_md(data: dict[str, Any]) -> str:
 
 def metrics_md(tool: str, data: dict[str, Any]) -> str:
     value_header = "수치(단위 포함)" if data.get("_semantic_value_header") else "값"
+    is_volume = data.get("measure") == "volume"
     if data.get("status") in {"error", "query_failed"}:
         blocks = [table(f"### {cell(tool)}", ("지표", value_header), (("상태", data.get("message")),))]
         filter_rows = metric_filter_rows(data)
@@ -105,9 +106,12 @@ def metrics_md(tool: str, data: dict[str, Any]) -> str:
     sales = eok_value(data.get("sales_억원"), data.get("sales_krw"))
     if sales:
         rows.append(("매출", sales))
+    prescription_volume = number_value(data.get("prescription_volume"))
+    if prescription_volume:
+        rows.append(("처방량", f"{prescription_volume} Rx"))
     market_share = pct_value(data.get("ms_recent_pct", data.get("market_share")))
     if market_share:
-        rows.append(("시장점유율", market_share))
+        rows.append(("처방량 점유율" if is_volume else "시장점유율", market_share))
     rank = rank_value(data.get("rank"), data.get("total_brands_in_market"))
     if rank:
         rows.append(("순위", rank))
@@ -292,6 +296,21 @@ def series_md(data: dict[str, Any]) -> str:
         return table("### HHI 추이", ("기간", "HHI"), rows)
     brand_series = data.get("brand_value_series_10pt")
     if isinstance(brand_series, list):
+        if data.get("measure") == "volume":
+            rows = tuple(
+                (
+                    item.get("period"),
+                    pct_value(item.get("ms_pct")) or "—",
+                    number_value(item.get("value")),
+                )
+                for item in brand_series[-10:]
+                if isinstance(item, dict)
+            )
+            return table(
+                "### 브랜드 처방량 시계열",
+                ("기간", "처방량 점유율(%)", "처방량(Rx)"),
+                rows,
+            )
         market_series = data.get("market_size_series")
         market_by_period = {
             item.get("period"): item
