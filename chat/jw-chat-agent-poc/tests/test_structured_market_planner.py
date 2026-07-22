@@ -131,6 +131,8 @@ def test_explanatory_metric_question_is_not_misclassified_as_descriptive() -> No
     (
         ("리바로 2025년 4월 매출", "2025-04"),
         ("리바로 2025년 2분기 매출", "2025-Q2"),
+        ("리바로 2024년 매출", "2024"),
+        ("리바로 2035-01 매출", "2035-01"),
     ),
 )
 def test_structured_plan_preserves_canonical_explicit_period(
@@ -175,6 +177,24 @@ def test_exact_period_sales_plan_fetches_only_the_requested_metric(question: str
     assert plan is not None
     assert plan.kind == "brand_sales"
     assert [call.name for call in plan.decision.tool_calls] == ["get_brand_sales"]
+
+
+def test_recent_three_year_plan_requests_only_a_bounded_36_month_series() -> None:
+    question = "리바로 최근 3년 매출 추이"
+    resolver = BrandResolver(mode="fixture")
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
+
+    plan = plan_structured_market_question(question, resolver, grounding, schemas)
+
+    assert plan is not None
+    assert grounding.pre_resolved_periods[0] == "최근 3년"
+    assert [call.name for call in plan.decision.tool_calls] == ["get_brand_series"]
+    assert plan.decision.tool_calls[0].arguments == {
+        "brand": "리바로",
+        "period": "latest",
+        "history_points": "36",
+    }
 
 
 def test_query_tool_descriptions_require_context_companions() -> None:

@@ -14,7 +14,7 @@ _MARKET_SCOPE_RE = re.compile(
     r"동일(?:한)?\s*시장|"
     r"해당\s*시장|"
     r"(?:속한|소속(?:된)?|포함(?:된)?)\s*시장|"
-    r"시장\s*(?:의\s*)?(?:전체\s*)?(?:규모|총\s*매출|전체\s*매출)"
+    r"시장\s*(?:의\s*)?(?:전체\s*)?(?:규모|총\s*매출|전체\s*매출|HHI|CR\s*5|집중도)"
     r")",
     re.IGNORECASE,
 )
@@ -38,7 +38,7 @@ def detect_market_scope_intent(question: str) -> MarketScopeIntent | None:
     view_type = _explicit_view(normalized)
     return MarketScopeIntent(
         brand_hint=_brand_hint(question, scope_match),
-        metric="sales",
+        metric=_metric(normalized),
         view_type=view_type or "market_landscape",
         requires_clarification=False,
     )
@@ -70,6 +70,16 @@ def _explicit_view(normalized: str) -> MarketView | None:
     if any(token in normalized for token in ("전략뷰", "전략view", "market_landscape", "ml기준")):
         return "market_landscape"
     return None
+
+
+def _metric(normalized: str) -> str:
+    if "hhi" in normalized:
+        return "hhi"
+    if "cr5" in normalized:
+        return "cr5"
+    if "집중도" in normalized:
+        return "concentration"
+    return "sales"
 
 
 def _brand_hint(question: str, scope_match: re.Match[str]) -> str:

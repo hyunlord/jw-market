@@ -5,7 +5,11 @@ import pytest
 from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
 from jw_chat_agent_poc.common.timing import request_span_scope
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent, _prefer_mart_metric
-from jw_chat_agent_poc.resolver.brand_resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver.brand_resolver import (
+    AmbiguousBrandError,
+    BrandResolver,
+    UnsupportedBrandError,
+)
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 
 
@@ -183,6 +187,101 @@ def test_cache_resolver_admits_general_mart_brand_without_strategic_membership()
     assert resolution.market_id is None
     assert resolution.market_ids == ()
     assert resolution.support_source == "general_mart"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    (
+        ("라베칸듀오 매출", "라베칸듀오"),
+        ("라베칸 듀오 매출", "라베칸 듀오"),
+        ("위너프A+ 매출", "위너프A+"),
+    ),
+)
+def test_exact_canonical_spelling_wins_normalized_catalog_collision(
+    question: str,
+    expected: str,
+) -> None:
+    memberships = StaticMembershipReader(
+        (
+            {
+                "brand": "라베칸듀오",
+                "market_id": "ml_001",
+                "market_name": "위식도역류질환 시장",
+                "support_source": "strategic_mart",
+            },
+            {
+                "brand": "라베칸 듀오",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+            {
+                "brand": "위너프A+",
+                "market_id": "ml_014",
+                "market_name": "영양수액 시장",
+                "support_source": "strategic_mart",
+            },
+            {
+                "brand": "위너프에이플러스",
+                "brand_alias": "위너프A+",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    assert resolver.resolve(question, allow_default=False).canonical_brand == expected
+
+
+def test_shared_alias_with_no_exact_canonical_remains_ambiguous() -> None:
+    memberships = StaticMembershipReader(
+        (
+            {
+                "brand": "서로다른제품A",
+                "brand_alias": "공통별칭",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+            {
+                "brand": "서로다른제품B",
+                "brand_alias": "공통별칭",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    with pytest.raises(AmbiguousBrandError):
+        resolver.resolve("공통별칭 매출", allow_default=False)
+
+
+def test_resolve_many_keeps_exact_canonical_when_normalized_catalog_keys_collide() -> None:
+    memberships = StaticMembershipReader(
+        (
+            {
+                "brand": "리바로하이",
+                "market_id": "ml_008",
+                "market_name": "복합제 Class",
+                "support_source": "strategic_mart",
+            },
+            {
+                "brand": "리바로 하이",
+                "market_id": "",
+                "market_name": "",
+                "support_source": "general_mart",
+            },
+        )
+    )
+    resolver = BrandResolver(mode="cache", brand_reader=_cache_reader(), membership_reader=memberships)
+
+    resolutions = resolver.resolve_many("리바로와 리바로하이 매출 비교", allow_default=False)
+
+    assert tuple(item.canonical_brand for item in resolutions) == ("리바로", "리바로하이")
 
 
 def test_resolver_does_not_match_a_supported_brand_inside_a_different_name() -> None:

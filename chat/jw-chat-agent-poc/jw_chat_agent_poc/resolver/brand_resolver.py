@@ -92,14 +92,10 @@ class BrandResolver:
             market_universe = self._market_universe(raw_items, self._fixture_items)
             matches = self._matching_spans(question_or_brand, raw_items)
             if matches:
-                _, _, key, candidates = matches[0]
-                canonical = {str(item["canonical_brand"]) for item in candidates}
-                if len(canonical) != 1:
-                    raise AmbiguousBrandError(
-                        f"Ambiguous brand alias: {key}; candidates={','.join(sorted(canonical))}"
-                    )
+                start, end, key, candidates = matches[0]
+                selected = self._select_candidate(question_or_brand, start, end, key, candidates)
                 return self._to_resolution(
-                    candidates[0],
+                    selected,
                     question_or_brand,
                     market_universe=market_universe,
                 )
@@ -116,13 +112,9 @@ class BrandResolver:
             for start, end, key, candidates in spans:
                 if any(start < used_end and end > used_start for used_start, used_end in occupied):
                     continue
-                canonical = {str(item["canonical_brand"]) for item in candidates}
-                if len(canonical) != 1:
-                    raise AmbiguousBrandError(
-                        f"Ambiguous brand alias: {key}; candidates={','.join(sorted(canonical))}"
-                    )
+                item = self._select_candidate(question_or_brands, start, end, key, candidates)
                 occupied.append((start, end))
-                selected.append((start, candidates[0]))
+                selected.append((start, item))
             seen: set[str] = set()
             out: list[BrandResolution] = []
             for _, item in sorted(selected, key=lambda pair: pair[0]):
@@ -362,6 +354,36 @@ class BrandResolver:
         self._alias_window_size = max(4, max_window)
         self._alias_index_source = source
         return self._alias_index, self._alias_window_size
+
+    @staticmethod
+    def _select_candidate(
+        text: str,
+        start: int,
+        end: int,
+        key: str,
+        candidates: tuple[dict[str, Any], ...],
+    ) -> dict[str, Any]:
+        canonical = {str(item["canonical_brand"]) for item in candidates}
+        if len(canonical) == 1:
+            return candidates[0]
+
+        normalized_text = unicodedata.normalize("NFKC", text)
+        literal = normalized_text[start:end].strip().casefold()
+        literal_forms = {literal}
+        for particle in _BRAND_PARTICLES:
+            if literal.endswith(particle) and len(literal) > len(particle) + 1:
+                literal_forms.add(literal[: -len(particle)].rstrip())
+        exact = [
+            item
+            for item in candidates
+            if unicodedata.normalize("NFKC", str(item["canonical_brand"])).strip().casefold()
+            in literal_forms
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        raise AmbiguousBrandError(
+            f"Ambiguous brand alias: {key}; candidates={','.join(sorted(canonical))}"
+        )
 
     @staticmethod
     def _to_resolution(

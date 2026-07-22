@@ -18,6 +18,7 @@ class QuerySlots:
     period: str
     axis: str | None
     limit: int
+    history_points: int
     answer_mode: str
 
 
@@ -97,7 +98,7 @@ _MARKET_STATUS_PATTERN: Final[re.Pattern[str]] = re.compile(
 _TOOL_ARGUMENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "get_brand_sales": ("brand", "period"),
     "get_brand_share": ("brand", "period"),
-    "get_brand_series": ("brand", "period"),
+    "get_brand_series": ("brand", "period", "history_points"),
     "compare_brands_series": ("brand", "comparison_brand"),
     "get_top_brands": ("brand", "limit"),
     "get_brand_channel_breakdown": ("brand",),
@@ -147,7 +148,8 @@ def plan_structured_market_question(
     comparison = len(brands) > 1
     if axis is None and metric is None and not comparison:
         return None
-    period = _period(question, grounding)
+    history_points = _relative_history_points(question)
+    period = "latest" if history_points is not None else _period(question, grounding)
     limit = _limit(question)
     if comparison:
         kind = "brand_comparison"
@@ -158,11 +160,14 @@ def plan_structured_market_question(
     else:
         assert metric is not None
         kind = metric.name
-        tools = (
-            ("get_brand_sales",)
-            if _is_exact_period_sales_question(question, metric, grounding)
-            else metric.tools
-        )
+        if history_points is not None and metric.owner == "brand":
+            tools = ("get_brand_series",)
+        else:
+            tools = (
+                ("get_brand_sales",)
+                if _is_exact_period_sales_question(question, metric, grounding)
+                else metric.tools
+            )
     if not set(tools).issubset(available_tools):
         return None
     slots = QuerySlots(
@@ -171,6 +176,7 @@ def plan_structured_market_question(
         period=period,
         axis=axis[0] if axis else None,
         limit=limit,
+        history_points=history_points or 10,
         answer_mode=answer_mode,
     )
     calls = tuple(_call(tool, slots) for tool in tools)
@@ -219,6 +225,15 @@ def _limit(question: str) -> int:
     return max(1, min(int(match.group(1)), 20)) if match else 5
 
 
+def _relative_history_points(question: str) -> int | None:
+    match = re.search(r"최근\s*(\d{1,2})\s*(년|개월|달)", question)
+    if match is None:
+        return None
+    count = int(match.group(1))
+    months = count * 12 if match.group(2) == "년" else count
+    return months if 2 <= months <= 60 else None
+
+
 def _is_exact_period_sales_question(
     question: str,
     metric: MetricSpec,
@@ -250,6 +265,7 @@ def _call(tool: str, slots: QuerySlots) -> ToolCallPlan:
         "comparison_brand": slots.brands[1] if len(slots.brands) > 1 else "",
         "period": slots.period,
         "limit": str(slots.limit),
+        "history_points": str(slots.history_points),
     }
     arguments = {field: values[field] for field in _TOOL_ARGUMENT_FIELDS[tool]}
     return ToolCallPlan(name=tool, arguments=arguments, reason=f"deterministic slots: {slots.metric}")

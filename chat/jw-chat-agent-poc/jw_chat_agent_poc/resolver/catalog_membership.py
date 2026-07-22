@@ -10,6 +10,12 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
+_SOURCE_PRIORITY = {
+    "general_mart": 0,
+    "catalog_alias": 1,
+    "strategic_mart": 2,
+}
+
 
 class CatalogMembershipSource(Protocol):
     def load(self) -> tuple[dict[str, str], ...]: ...
@@ -69,30 +75,22 @@ class MariaDbCatalogMembershipReader:
     )
 
     @staticmethod
-    def membership_sql() -> str:
-        return """
-            SELECT membership.brand,
-                   membership.brand_alias,
-                   membership.market_id,
-                   market.name AS market_name,
-                   CASE
-                       WHEN MAX(membership.source_rank) = 2 THEN 'strategic_mart'
-                       WHEN MAX(membership.source_rank) = 1 THEN 'catalog_alias'
-                       ELSE 'general_mart'
-                   END AS support_source
-            FROM (
+    def membership_queries() -> tuple[str, ...]:
+        return (
+            """
                 SELECT DISTINCT
                        mart.brand_name AS brand,
                        NULL AS brand_alias,
                        mart.ml_id AS market_id,
-                       2 AS source_rank
+                       COALESCE(market.name, mart.ml_id) AS market_name,
+                       'strategic_mart' AS support_source
                 FROM mart_strategic_ml_brand_metric AS mart
+                LEFT JOIN catalog_ml_market AS market ON market.ml_id = mart.ml_id
                 WHERE mart.brand_name IS NOT NULL
                   AND mart.brand_name <> ''
                   AND mart.ml_id IS NOT NULL
-
-                UNION ALL
-
+            """,
+            """
                 SELECT DISTINCT
                        COALESCE(
                            NULLIF(brand.general_brand_key, ''),
@@ -102,7 +100,8 @@ class MariaDbCatalogMembershipReader:
                        ) AS brand,
                        NULLIF(brand.name, '') AS brand_alias,
                        brand.ml_id AS market_id,
-                       1 AS source_rank
+                       COALESCE(market.name, brand.ml_id) AS market_name,
+                       'catalog_alias' AS support_source
                 FROM catalog_strategic_brand AS brand
                 INNER JOIN (
                     SELECT DISTINCT brand_id, ml_id
@@ -112,6 +111,7 @@ class MariaDbCatalogMembershipReader:
                 ) AS mart_brand
                     ON brand.brand_id = mart_brand.brand_id
                    AND brand.ml_id = mart_brand.ml_id
+                LEFT JOIN catalog_ml_market AS market ON market.ml_id = brand.ml_id
                 WHERE brand.is_excluded = 0
                   AND COALESCE(
                         NULLIF(brand.general_brand_key, ''),
@@ -119,22 +119,19 @@ class MariaDbCatalogMembershipReader:
                         NULLIF(brand.merge_name, ''),
                         brand.name
                       ) IS NOT NULL
-
-                UNION ALL
-
+            """,
+            """
                 SELECT DISTINCT
                        general.brand_name AS brand,
                        NULLIF(general.brand_key, '') AS brand_alias,
                        NULL AS market_id,
-                       0 AS source_rank
+                       NULL AS market_name,
+                       'general_mart' AS support_source
                 FROM mart_general_brand_metric AS general
                 WHERE general.brand_name IS NOT NULL
                   AND general.brand_name <> ''
-            ) AS membership
-            LEFT JOIN catalog_ml_market AS market ON market.ml_id = membership.market_id
-            GROUP BY membership.brand, membership.brand_alias, membership.market_id, market.name
-            ORDER BY membership.brand, membership.market_id, membership.brand_alias
-        """
+            """,
+        )
 
     def load(self) -> tuple[dict[str, str], ...]:
         import pymysql
@@ -153,18 +150,30 @@ class MariaDbCatalogMembershipReader:
             autocommit=True,
         ) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(self.membership_sql())
-                rows = cursor.fetchall()
-        return tuple(
-            {
-                "brand": str(row["brand"]),
-                "brand_alias": str(row.get("brand_alias") or ""),
-                "market_id": str(row.get("market_id") or ""),
-                "market_name": str(row.get("market_name") or row.get("market_id") or ""),
-                "support_source": str(row.get("support_source") or "strategic_mart"),
-            }
-            for row in rows
-        )
+                rows = []
+                for query in self.membership_queries():
+                    cursor.execute(query)
+                    rows.extend(cursor.fetchall())
+        return _merge_membership_rows(tuple(rows))
+
+
+def _merge_membership_rows(rows: tuple[dict[str, object], ...]) -> tuple[dict[str, str], ...]:
+    merged: dict[tuple[str, str, str, str], dict[str, str]] = {}
+    for raw in rows:
+        row = {
+            "brand": str(raw["brand"]),
+            "brand_alias": str(raw.get("brand_alias") or ""),
+            "market_id": str(raw.get("market_id") or ""),
+            "market_name": str(raw.get("market_name") or raw.get("market_id") or ""),
+            "support_source": str(raw.get("support_source") or "general_mart"),
+        }
+        key = (row["brand"], row["brand_alias"], row["market_id"], row["market_name"])
+        current = merged.get(key)
+        if current is None or _SOURCE_PRIORITY.get(row["support_source"], -1) > _SOURCE_PRIORITY.get(
+            current["support_source"], -1
+        ):
+            merged[key] = row
+    return tuple(merged[key] for key in sorted(merged))
 
 
 class TtlCatalogMembershipReader:

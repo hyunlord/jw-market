@@ -88,6 +88,13 @@ class MarketScopeResolver:
     def has_explicit_brand_anchor(self, question: str) -> bool:
         return self._resolver.has_explicit_alias(question)
 
+    def is_general_only_brand(self, question: str) -> bool:
+        try:
+            resolution = self._resolver.resolve(question, allow_default=False)
+        except (LookupError, OSError, TypeError, ValueError):
+            return False
+        return not bool(resolution.market_ids or resolution.market_id)
+
     def has_explicit_named_market(self, question: str) -> bool:
         try:
             return self._resolver.explicit_market(question) is not None

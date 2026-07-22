@@ -525,6 +525,31 @@ def test_general_only_brand_hhi_stays_on_typed_strategic_unavailable_path() -> N
     assert service.route("아일리아 시장 HHI") is GeneralRoute.EXISTING
 
 
+def test_general_membership_hit_routes_unknown_strategic_brand_to_general_view() -> None:
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(
+            (
+                GeneralBrandMembership(
+                    "카나브패밀리",
+                    "카나브패밀리",
+                    "C09C0",
+                    "혈압강하제",
+                    "ubist",
+                ),
+            )
+        ),
+        ttl_seconds=300,
+    )
+    service = GeneralViewService(
+        FakeBackend(),
+        StrategicMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    assert service.route("카나브패밀리 실적 어때?") is GeneralRoute.GENERAL_ONLY
+
+
 def test_general_only_market_scope_resolves_canonical_brand_end_to_end() -> None:
     cache = TtlGeneralMembershipCache(
         StaticGeneralMembershipReader(

@@ -746,6 +746,40 @@ def test_enforce_external_question_bypasses_direct_legacy_loop(monkeypatch) -> N
     assert captured == ["아일리아의 급여기준에 대해서 적응증 별로 설명해줘"]
 
 
+def test_general_only_strategic_metric_stops_before_agent_loop(monkeypatch) -> None:
+    class Resolver:
+        def is_general_only_brand(self, question: str) -> bool:
+            assert question == "아일리아 시장 HHI"
+            return True
+
+        def answer(self, question: str, *, view_type: str) -> dict:
+            assert view_type == "market_landscape"
+            return {
+                "question": question,
+                "answer": "이 브랜드는 전략시장 정의에 포함되지 않아 해당 분석은 제공되지 않습니다.",
+                "sources": [],
+                "tool_calls": [],
+            }
+
+    def agent_factory(*, external_mode: str = "fixture"):
+        del external_mode
+        raise AssertionError("general-only strategic metric must stop before the agent loop")
+
+    monkeypatch.setattr(service_app, "should_use_agent_loop", lambda *_args, **_kwargs: True)
+
+    result = service_app._answer_existing_without_pending(
+        Resolver(),
+        agent_factory,
+        "general-only-hhi",
+        "아일리아 시장 HHI",
+        "fixture",
+        None,
+        SessionStore(),
+    )
+
+    assert "전략시장 정의에 포함되지 않아" in result["answer"]
+
+
 def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -3344,6 +3378,28 @@ def test_structured_same_market_sales_intent_closes_without_llm() -> None:
     assert "리바로가 속한 전략 시장" in answer
     assert "2026-05" in answer
     assert "2,139.25억원" in answer
+
+
+def test_market_member_listing_keeps_deterministic_total_count_markdown() -> None:
+    markdown = (
+        "## 전략 시장 구성 브랜드\n\n"
+        "- 구성 브랜드: 브랜드A, 브랜드B, 브랜드C\n"
+        "- 총 8개 중 3개 표시"
+    )
+    result = {
+        "decomposition": [{"intent": "market_members", "view_type": "market_landscape"}],
+        "tool_calls": [{"tool": "get_market_members", "render_data": {"total_brands_in_market": 8}}],
+        "markdown_response": {"markdown": markdown},
+        "answer": markdown,
+    }
+
+    answer = service_app._deterministic_simple_market_answer(
+        "고지혈증 시장에 어떤 브랜드들이 있어?",
+        result,
+    )
+
+    assert answer == markdown
+    assert "총 8개 중 3개 표시" in answer
 
 
 def test_stream_endpoint_unanchored_market_size_falls_through_to_general_path() -> None:

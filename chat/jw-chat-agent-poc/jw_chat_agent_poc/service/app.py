@@ -1614,6 +1614,16 @@ def _answer_existing_without_pending(
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
+    intent = detect_market_scope_intent(question)
+    general_only_check = getattr(market_scope_resolver, "is_general_only_brand", None)
+    if (
+        intent is not None
+        and intent.metric in {"hhi", "cr5", "concentration"}
+        and not documents
+        and callable(general_only_check)
+        and general_only_check(question)
+    ):
+        return market_scope_resolver.answer(question, view_type=intent.view_type or "market_landscape")
     if asks_market_members(question) and not documents:
         if market_scope_resolver.has_explicit_brand_anchor(question):
             return market_scope_resolver.answer(question, view_type="market_landscape")
@@ -1636,7 +1646,6 @@ def _answer_existing_without_pending(
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
-    intent = detect_market_scope_intent(question)
     if intent is not None and not has_brand_anchor:
         has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
     if intent is not None and has_brand_anchor:
@@ -2738,6 +2747,26 @@ def _compute_mixed_final_answer(
 def _deterministic_simple_market_answer(question: str, result: dict) -> str:
     normalized = re.sub(r"\s+", " ", question).strip()
     decomposition = result.get("decomposition")
+    market_members = isinstance(decomposition, list) and any(
+        isinstance(item, dict) and item.get("intent") == "market_members"
+        for item in decomposition
+    )
+    if market_members:
+        calls = result.get("tool_calls")
+        if not isinstance(calls, list) or not calls:
+            return ""
+        if any(not isinstance(call, dict) or call.get("tool") != "get_market_members" for call in calls):
+            return ""
+        markdown_response = result.get("markdown_response")
+        deterministic_markdown = (
+            str(markdown_response.get("markdown") or "")
+            if isinstance(markdown_response, dict)
+            else ""
+        )
+        contracted = (deterministic_markdown or str(result.get("answer") or "")).strip()
+        if not re.search(r"총\s*[0-9,]+개\s*중\s*[0-9,]+개\s*표시", contracted):
+            return ""
+        return contracted
     same_market_sales = isinstance(decomposition, list) and any(
         isinstance(item, dict) and item.get("intent") == "same_market_sales"
         for item in decomposition

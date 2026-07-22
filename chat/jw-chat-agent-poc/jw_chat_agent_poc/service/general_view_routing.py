@@ -94,6 +94,12 @@ class GeneralViewService:
         if "뉴스" in normalized:
             return GeneralRoute.EXISTING
         membership_state = self._strategic_membership_state(question)
+        if (
+            membership_state is None
+            and _asks_general_brand_metric(normalized)
+            and self._has_general_membership(question)
+        ):
+            return GeneralRoute.GENERAL_ONLY
         market_intent = detect_market_scope_intent(question)
         if membership_state is False and (
             market_intent is not None
@@ -132,6 +138,23 @@ class GeneralViewService:
         try:
             return resolve_market(question) is not None
         except (LookupError, OSError, TypeError, ValueError):
+            return False
+
+    def _has_general_membership(self, question: str) -> bool:
+        if self._general_membership is None:
+            return False
+        brand = _brand_hint(question)
+        if not brand:
+            return False
+        requested_source = _requested_source(question)
+        sources = (requested_source,) if requested_source is not None else ("ubist", "iqvia")
+        try:
+            resolve = getattr(self._general_membership, "resolve", None)
+            if callable(resolve):
+                return any(resolve(brand, source) is not None for source in sources)
+            candidates = getattr(self._general_membership, "candidates", None)
+            return callable(candidates) and any(candidates(brand, source) for source in sources)
+        except (GeneralMembershipLoadError, LookupError, OSError, TypeError, ValueError):
             return False
 
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
@@ -508,7 +531,12 @@ def _brand_hint(question: str) -> str:
         return market_scope.brand_hint
     text = _SOURCE_PATTERN.sub(" ", question)
     text = _ATC4_PATTERN.sub(" ", text)
-    text = re.split(r"시장|점유율|매출|순위|규모|top\s*\d*", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    text = re.split(
+        r"시장|점유율|매출|실적|최근|추이|순위|규모|top\s*\d*",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
     text = re.sub(r"일반뷰|전략뷰|ATC4?|기준|으로|에서|의", " ", text, flags=re.IGNORECASE)
     hint = re.sub(r"\s+", " ", text).strip(" ?")
     return re.sub(r"(?:은|는|이|가|을|를)$", "", hint)

@@ -88,6 +88,15 @@ def test_detect_market_scope_intent_answers_strong_view_question_with_default_vi
     assert intent.view_type == "market_landscape"
 
 
+def test_detect_market_scope_intent_recognizes_explicit_strategic_metric() -> None:
+    intent = detect_market_scope_intent("아일리아 시장 HHI")
+
+    assert intent is not None
+    assert intent.brand_hint == "아일리아"
+    assert intent.metric == "hhi"
+    assert intent.view_type == "market_landscape"
+
+
 def test_map_market_view_reply_is_deterministic_and_bounded() -> None:
     assert map_market_view_reply("전략뷰") == "market_landscape"
     assert map_market_view_reply("경쟁군 기준으로") == "competitive_dynamics"
@@ -227,6 +236,7 @@ def test_strategic_metric_for_general_only_brand_is_typed_as_market_unavailable(
 
     result = resolver.answer("아일리아 전략뷰 HHI", view_type="market_landscape")
 
+    assert resolver.is_general_only_brand("아일리아 전략뷰 HHI") is True
     assert result["router_diagnostics"]["gate"] == "typed_unavailable"
     assert "전략시장 정의에 포함되지 않아" in result["answer"]
     assert "브랜드를 확인" not in result["answer"]

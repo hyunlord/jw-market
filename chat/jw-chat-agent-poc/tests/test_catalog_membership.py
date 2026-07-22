@@ -7,6 +7,7 @@ from jw_chat_agent_poc.resolver.catalog_membership import (
     MariaDbCatalogMembershipReader,
     StaticCatalogMembershipReader,
     TtlCatalogMembershipReader,
+    _merge_membership_rows,
 )
 
 
@@ -33,24 +34,87 @@ def test_catalog_membership_snapshot_is_cached_until_ttl() -> None:
     assert source.calls == 1
 
 
-def test_membership_sql_uses_all_marts_as_presence_truth_and_catalog_as_backed_aliases() -> None:
-    sql = MariaDbCatalogMembershipReader.membership_sql()
+def test_membership_queries_read_each_presence_source_without_cross_mart_sorting() -> None:
+    queries = MariaDbCatalogMembershipReader.membership_queries()
 
-    assert "mart_strategic_ml_brand_metric" in sql
-    assert "mart_general_brand_metric" in sql
-    assert "catalog_strategic_brand" in sql
-    assert "catalog_ml_market" in sql
-    assert "LEFT JOIN catalog_ml_market" in sql
-    assert "brand.brand_id = mart_brand.brand_id" in sql
-    assert "brand.ml_id = mart_brand.ml_id" in sql
-    assert "is_excluded = 0" in sql
-    assert "strategic_mart" in sql
-    assert "general_mart" in sql
-    assert "catalog_alias" in sql
-    assert "brand_alias" in sql
-    assert "MAX(NULLIF(membership.brand_alias, ''))" not in sql
-    assert "GROUP BY membership.brand, membership.brand_alias" in sql
-    assert "parquet" not in sql.lower()
+    assert len(queries) == 3
+    joined = "\n".join(queries)
+    assert "mart_strategic_ml_brand_metric" in joined
+    assert "mart_general_brand_metric" in joined
+    assert "catalog_strategic_brand" in joined
+    assert "catalog_ml_market" in joined
+    assert "brand.brand_id = mart_brand.brand_id" in joined
+    assert "brand.ml_id = mart_brand.ml_id" in joined
+    assert "is_excluded = 0" in joined
+    assert "strategic_mart" in joined
+    assert "general_mart" in joined
+    assert "catalog_alias" in joined
+    assert "brand_alias" in joined
+    assert "parquet" not in joined.lower()
+    for query in queries:
+        normalized = query.upper()
+        assert "UNION" not in normalized
+        assert "GROUP BY" not in normalized
+        assert "ORDER BY" not in normalized
+
+
+def test_membership_merge_preserves_all_markets_and_prefers_stronger_duplicate_source() -> None:
+    rows = (
+        {
+            "brand": "리바로",
+            "brand_alias": "",
+            "market_id": "ml_006",
+            "market_name": "고지혈증 시장",
+            "support_source": "general_mart",
+        },
+        {
+            "brand": "리바로",
+            "brand_alias": "",
+            "market_id": "ml_006",
+            "market_name": "고지혈증 시장",
+            "support_source": "strategic_mart",
+        },
+        {
+            "brand": "리바로",
+            "brand_alias": "리바로정",
+            "market_id": "ml_006",
+            "market_name": "고지혈증 시장",
+            "support_source": "catalog_alias",
+        },
+        {
+            "brand": "리바로",
+            "brand_alias": "",
+            "market_id": "",
+            "market_name": "",
+            "support_source": "general_mart",
+        },
+    )
+
+    merged = _merge_membership_rows(rows)
+
+    assert merged == (
+        {
+            "brand": "리바로",
+            "brand_alias": "",
+            "market_id": "",
+            "market_name": "",
+            "support_source": "general_mart",
+        },
+        {
+            "brand": "리바로",
+            "brand_alias": "",
+            "market_id": "ml_006",
+            "market_name": "고지혈증 시장",
+            "support_source": "strategic_mart",
+        },
+        {
+            "brand": "리바로",
+            "brand_alias": "리바로정",
+            "market_id": "ml_006",
+            "market_name": "고지혈증 시장",
+            "support_source": "catalog_alias",
+        },
+    )
 
 
 def test_catalog_membership_can_prewarm_without_request_io() -> None:
