@@ -15,31 +15,31 @@
     },
     {
       "id": "market_status",
-      "canonical_sha256": "f3cbfae61e90fb7fa38fcead1a8e8fb5bcfbe110133cb6bbdaa3e060e48225a8",
+      "canonical_sha256": "dc98c7ce1f7ee9e27b2cea7e89c69975811860fbe524e10dc896e06b3ff47ccf",
       "request": {
         "method": "GET",
         "path": "/jw-market-backend-api/api/market-status"
       },
-      "truth_basis": "Top-level brand_cards and kpi_summary from cache_market_status, plus serving-time baseline labels ubist_recent (YYYY-MM latest UBIST month) and iqvia_recent (YYYY-nQ latest IQVIA quarter) computed from the latest period that actually has mart values. Hash rebased from ed7fd426 to include the two new top-level keys against the current cache content.",
+      "truth_basis": "Top-level brand_cards and kpi_summary from cache_market_status, plus serving-time baseline labels ubist_recent (YYYY-MM latest UBIST month) and iqvia_recent (YYYY-nQ latest IQVIA quarter). Each card now additively exposes mutually-exclusive back_extended.brand_cagr_5y_pct / brand_cagr_3y_pct from the mart row scoped by brand_name, ml_id, and the card's declared/default source. All 25 cards satisfy exclusivity; Livaro is 5Y 3.9056, Livarozet is 3Y 23.3769, and Actemra uses the IQVIA 19-quarter 4.75-year substitute at 2.1052.",
       "measured_at": "2026-07-22",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "test2 generation 683, image sha256:fc9a1fc563c18c59ac792855a07d4d0fdb9f243d4279be7a068b60d2ff4db96d (linux/amd64), response-keys-4 commit e448d3b2090d17fa8704f2a96c2b35c2f51df017"
+      "runtime_provenance": "test2 generation 725, image sha256:e75cca401ee8fb8f49f835c587ea7ee78b000a9476cf9ef8c116f967d553bcb7 (linux/amd64), exclusive brand CAGR commit 339cc3fdf06500d369483c69a43f4afb2c711094"
     },
     {
       "id": "cause_livalo",
-      "canonical_sha256": "2b79798cb3fcd0a4c723a41140f0b17070c259981fadf3236afa9d1116ea47f5",
+      "canonical_sha256": "4e528de0c19ef2728e99b2f8285d7c8d673d23160bdae32a2760ee5b77725d08",
       "request": {
         "method": "GET",
         "path": "/jw-market-backend-api/api/cause/%EB%A6%AC%EB%B0%94%EB%A1%9C?view=market_landscape&source=UBIST&measure=sales"
       },
-      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류; the strategic cause ranking emits exactly the selected brand, five fixed competitors, and 기타 (7 labels), and the brand_ranking/company_ranking series key set equals top_brands (len(series) == len(top_brands) == 7, D-1 visible-cohort trim). data.kpi additionally carries target_brand_sales (the selected brand's latest UBIST sales value) and reports market CAGR in mutually-exclusive market_cagr_5y_pct / market_cagr_3y_pct slots; this is a UBIST market with a full 5-year endpoint, so market_cagr_5y_pct is non-null and market_cagr_3y_pct is null (never both set, null is never 0). The hash changed from 85372d40 purely by adding these two KPI keys.",
+      "truth_basis": "Class, Molecule, and Ox/Gx values reconcile to the same complete market total; omitted value 898614483.36 is exposed as 미분류; the strategic cause ranking emits exactly the selected brand, five fixed competitors, and 기타 (7 labels), and the brand_ranking/company_ranking series key set equals top_brands. data.kpi preserves target_brand_sales and mutually-exclusive market_cagr_5y_pct / market_cagr_3y_pct, and additively exposes selected-brand brand_cagr_5y_pct / brand_cagr_3y_pct. Livaro is brand 5Y 3.9056 and brand 3Y null while market 5Y remains 9.37 and market 3Y null; existing KPI values are unchanged.",
       "measured_at": "2026-07-22",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "test2 generation 683, image sha256:fc9a1fc563c18c59ac792855a07d4d0fdb9f243d4279be7a068b60d2ff4db96d (linux/amd64), response-keys-4 commit e448d3b2090d17fa8704f2a96c2b35c2f51df017"
+      "runtime_provenance": "test2 generation 725, image sha256:e75cca401ee8fb8f49f835c587ea7ee78b000a9476cf9ef8c116f967d553bcb7 (linux/amd64), exclusive brand CAGR commit 339cc3fdf06500d369483c69a43f4afb2c711094"
     },
     {
       "id": "dynamic_general_c10a1_livalo",
-      "canonical_sha256": "2d80ff951438df7ac75f108066964217172b259fc470358b91ba2a574dfd6f3a",
+      "canonical_sha256": "e8d218449b35a24523afcd0a42c3f05840e57fc22c15b26c7647828e57b2ba7c",
       "request": {
         "method": "POST",
         "path": "/jw-market-backend-api/api/dynamic-market",
@@ -55,10 +55,10 @@
           }
         }
       },
-      "truth_basis": "The general-view payload retains its independently defined ATC4 scope and restores the ranking contract to the selected brand, five fixed competitors, and 기타; the series key set exactly equals top_brands. result.data.kpi additionally carries target_brand_sales (selected brand's latest UBIST value) and reports market CAGR in mutually-exclusive market_cagr_5y_pct / market_cagr_3y_pct slots (this UBIST market has a full 5-year endpoint, so 5y non-null and 3y null; never both set). The hash changed from 75046e57 purely by adding these two KPI keys.",
+      "truth_basis": "The general-view payload retains its independently defined ATC4 scope and ranking contract; the series key set exactly equals top_brands. result.data.kpi preserves target_brand_sales and mutually-exclusive market CAGR keys, and additively exposes selected-brand brand_cagr_5y_pct / brand_cagr_3y_pct. Livaro is brand 5Y 3.9056 and brand 3Y null. The same brand values were measured in general, strategic ML, and strategic CD paths.",
       "measured_at": "2026-07-22",
       "database": "jw_mart_d2_stage_20260630_r2",
-      "runtime_provenance": "test2 generation 683, image sha256:fc9a1fc563c18c59ac792855a07d4d0fdb9f243d4279be7a068b60d2ff4db96d (linux/amd64), response-keys-4 commit e448d3b2090d17fa8704f2a96c2b35c2f51df017"
+      "runtime_provenance": "test2 generation 725, image sha256:e75cca401ee8fb8f49f835c587ea7ee78b000a9476cf9ef8c116f967d553bcb7 (linux/amd64), exclusive brand CAGR commit 339cc3fdf06500d369483c69a43f4afb2c711094"
     }
   ]
 }
