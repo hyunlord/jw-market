@@ -9,6 +9,11 @@ def render_evidence_answer(facts: tuple[EvidenceFact, ...]) -> str:
     lines = [render_evidence_claim(fact) for fact in facts]
     if any(fact.source_name == "FDA 이상반응 보고 정보" for fact in facts):
         lines.append("주의: FAERS 자발보고는 약물과 반응의 인과관계를 입증하지 않습니다.")
+    if _has_clinical_trials_list_counts(facts):
+        lines.append(
+            "범위: 등록 목록만 표시합니다. "
+            "의약품별 집계, 순위, 경쟁 분석/서사는 제공하지 않습니다."
+        )
     return "\n".join(lines)
 
 
@@ -22,3 +27,8 @@ def render_evidence_claim(fact: EvidenceFact) -> str:
         f"- {fact.subject}{period}: {fact.metric} = {value}{unit} "
         f"[{fact.source_name}{locator}]"
     )
+
+
+def _has_clinical_trials_list_counts(facts: tuple[EvidenceFact, ...]) -> bool:
+    metrics = {fact.metric for fact in facts if fact.source_name == "ClinicalTrials.gov 임상시험 정보"}
+    return {"현재 연결 조회 건수", "표시 건수"}.issubset(metrics)

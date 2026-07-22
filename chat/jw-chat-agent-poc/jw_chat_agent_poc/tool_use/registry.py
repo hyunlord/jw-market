@@ -264,7 +264,10 @@ class ExternalToolRegistry:
     def _clinical_global(self, payload: BaseModel) -> ToolEnvelope:
         request = ClinicalQueryInput.model_validate(payload.model_dump())
         call = self._external.clinicaltrials_v2_search(request.query, query_type=request.query_type)
-        return _external_call_envelope(call, request.query, "글로벌 임상시험")
+        envelope = _external_call_envelope(call, request.query, "글로벌 임상시험")
+        if request.query_type == "condition" and not envelope.ok:
+            return _clinical_condition_absence_envelope(call, envelope)
+        return envelope
 
     def _clinical_detail(self, payload: BaseModel) -> ToolEnvelope:
         request = NctIdInput.model_validate(payload.model_dump())
@@ -468,6 +471,14 @@ def _permission_detail_row_facts(
     )
 
 
+def _clinical_condition_absence_envelope(call: ExternalCall, envelope: ToolEnvelope) -> ToolEnvelope:
+    if call.status == "error":
+        message = _clinical_list_scope_note("ClinicalTrials.gov 조회에 실패했습니다.")
+    else:
+        message = _clinical_list_scope_note("ClinicalTrials.gov 질환 조건 검색 결과가 0건입니다.")
+    return envelope.model_copy(update={"error_message": message})
+
+
 def _truncated_result_envelope(call: ExternalCall) -> ToolEnvelope | None:
     if call.render_data.get("truncated") is not True:
         return None
@@ -554,6 +565,14 @@ def _clinical_trial_facts(
             _count_fact(call, subject, "원천 제공 총 건수", total_available, "upstream totalCount")
         )
     return tuple(facts)
+
+
+def _clinical_list_scope_note(prefix: str) -> str:
+    return (
+        f"상태: 확인 불가\n사유: {prefix}\n"
+        "범위: 등록 목록만 표시합니다. "
+        "의약품별 집계, 순위, 경쟁 분석/서사는 제공하지 않습니다."
+    )
 
 
 def _clinical_total_available(data: dict[str, Any]) -> int | None:
