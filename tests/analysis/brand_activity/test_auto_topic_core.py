@@ -17,6 +17,7 @@ except ModuleNotFoundError:
     sys.modules["httpx2"] = fake_httpx2
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import llm, market_scope
+from pipeline.scripts.analysis.brand_activity.auto_topic.execution import _minimum_axis_topics
 from pipeline.scripts.analysis.brand_activity.auto_topic.data_source import (
     MissingMariaDbPasswordError,
     _mariadb_password,
@@ -482,6 +483,13 @@ def test_brand_specific_axis_prompt_defines_zero_to_two_topics_only() -> None:
     assert "0~2개" in joined
     assert "정의만" in joined
     assert "affected_row_count" not in joined
+
+
+def test_one_row_scope_accepts_two_topics_without_weakening_other_thresholds() -> None:
+    assert _minimum_axis_topics(1) == 2
+    assert _minimum_axis_topics(2) == 3
+    assert _minimum_axis_topics(44) == 3
+    assert _minimum_axis_topics(45) == 5
 
 
 def test_brand_share_prompt_uses_fixed_market_and_brand_specific_vocab_without_generation() -> None:
