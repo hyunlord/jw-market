@@ -174,7 +174,7 @@ class ExternalApiClient:
         return self._fixture_or_live("mfds_fda_orangebook", {"ingr_name": ingredient_en.title()}, xml=True)
 
     def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
-        disease_type = "SICK_CD" if _is_hira_disease_code(sick_cd) else "SICK_NM"
+        disease_type = "SICK_CD" if is_hira_disease_code(sick_cd) else "SICK_NM"
         if self.mode != "live":
             return _fixture_hira_disease_name_code(sick_cd, disease_type, self.fixtures["hira_disease_name_code"])
         call = self._fixture_or_live(
@@ -494,7 +494,7 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
             return _nedrug_spec(tool, "search_fda_orangebook_patent", {"prt_name": params.get("prt_name"), "ingr_name": params.get("ingr_name"), "limit": 5})
         case "hira_disease_name_code":
             search_text = params.get("searchText") or params.get("sickCd", "")
-            disease_type = params.get("diseaseType") or ("SICK_CD" if _is_hira_disease_code(search_text) else "SICK_NM")
+            disease_type = params.get("diseaseType") or ("SICK_CD" if is_hira_disease_code(search_text) else "SICK_NM")
             return _hira_spec(tool, "search_disease_code", {"search_text": search_text, "disease_type": disease_type, "sick_type": "1", "med_tp": "1", "num_of_rows": 10})
         case "hira_disease_hospitalization_outpatient_stats":
             return _hira_spec(tool, "get_disease_stats_by_patient_type", _hira_disease_args(params))
@@ -546,14 +546,26 @@ def _strip_none_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in arguments.items() if value not in {None, ""}}
 
 
-def _is_hira_disease_code(text: str) -> bool:
+def is_hira_disease_code(text: str) -> bool:
+    """Return whether text is exactly a KCD-like HIRA disease code, not a free-form query."""
+
     return re.fullmatch(r"\s*[A-Za-z]\d{2}(?:\.?\d{1,2})?\s*", text) is not None
 
 
 def _fixture_hira_disease_name_code(search_text: str, disease_type: str, data: dict[str, Any]) -> ExternalCall:
     normalized = search_text.strip().upper()
-    e78_aliases = {"E78", "고지혈증", "이상지질혈증", "지질단백질대사장애", "지질단백질대사장애 및 기타 지질증"}
-    if normalized in {alias.upper() for alias in e78_aliases}:
+    items = data.get("render_data", {}).get("items", [])
+    matched_code = next(
+        (
+            item
+            for item in items
+            if isinstance(item, dict)
+            and is_hira_disease_code(search_text)
+            and str(item.get("sickCd") or "").strip().upper() == normalized
+        ),
+        None,
+    )
+    if matched_code is not None:
         return ExternalCall(
             tool="hira_disease_name_code",
             source=HIRA_DISEASE_SOURCE,

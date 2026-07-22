@@ -62,6 +62,29 @@ from jw_chat_agent_poc.service.genos_client import (
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
+
+
+class _MarkdownHiraDiseaseSearchExternal(ExternalApiClient):
+    def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+        if sick_cd == "이상지질혈증":
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="hira_disease",
+                status="fixture",
+                summary_text="HIRA search_disease_code에서 이상지질혈증 후보 1건을 확인했습니다.",
+                render_data={
+                    "totalCount": "1",
+                    "items": [
+                        {
+                            "sickCd": "E78",
+                            "sickNm": "지질단백질대사장애 및 기타 지질증",
+                        }
+                    ],
+                    "request": {"searchText": sick_cd, "diseaseType": "SICK_NM"},
+                },
+            )
+        return super().hira_disease_name_code(sick_cd)
 
 
 def _relational_series_call(brand: str = "리바로") -> dict[str, object]:
@@ -442,7 +465,7 @@ def test_metric_cagr_scalars_are_blocked_without_reproducible_operands() -> None
 
 
 def test_hira_answer_is_markdown_with_disease_tables() -> None:
-    result = ChatAgent().answer("이상지질혈증 환자 통계")
+    result = ChatAgent(external=_MarkdownHiraDiseaseSearchExternal()).answer("이상지질혈증 환자 통계")
 
     answer = result["answer"]
 
@@ -4321,7 +4344,7 @@ def test_genos_markdown_interpretation_filters_unlisted_kcd_codes(monkeypatch) -
 
     monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
     client = GenosClient(token="dummy-token")
-    result = ChatAgent().answer("이상지질혈증 환자 통계")
+    result = ChatAgent(external=_MarkdownHiraDiseaseSearchExternal()).answer("이상지질혈증 환자 통계")
 
     answer = "".join(client.stream_answer("이상지질혈증 환자 통계", result))
 
@@ -4336,7 +4359,7 @@ def test_genos_markdown_interpretation_filters_mixed_kcd_codes_on_same_line(monk
 
     monkeypatch.setattr(GenosClient, "_stream_chat", stream_chat)
     client = GenosClient(token="dummy-token")
-    result = ChatAgent().answer("이상지질혈증 환자 통계")
+    result = ChatAgent(external=_MarkdownHiraDiseaseSearchExternal()).answer("이상지질혈증 환자 통계")
 
     answer = "".join(client.stream_answer("이상지질혈증 환자 통계", result))
     body = answer.split("## 출처", 1)[0]
