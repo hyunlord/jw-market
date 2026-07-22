@@ -276,3 +276,17 @@ def test_orchestrator_image_contains_repository_mi_master() -> None:
         'COPY ["data/JW 주요 약품 수동 매핑", '
         '"/app/data/JW 주요 약품 수동 매핑"]'
     ) in dockerfile
+
+
+def test_orchestrator_image_contains_s2_catalog_seeds() -> None:
+    # The two git-tracked s2 seeds must be COPYed into the image, or the R-1
+    # rehearse-full catalog step cannot find them at /app/{data/cache,inputs}.
+    dockerfile = Path("deploy/docker/pipeline-orchestrator.Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "COPY data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv "
+        "/app/data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv"
+    ) in dockerfile
+    assert (
+        "COPY inputs/molecule_v4_worklist.csv /app/inputs/molecule_v4_worklist.csv"
+    ) in dockerfile

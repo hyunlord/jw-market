@@ -166,6 +166,20 @@ def test_plan_builds_raw_to_mart_then_separate_cache_chain(tmp_path: Path) -> No
     assert plan[13].argv[-1] == "jw_mart_d2_stage_20260630_r2"
 
 
+def test_catalog_step_seeds_target_priority_and_molecule_inputs(tmp_path: Path) -> None:
+    # The s2 catalog stage must be told where the two git-tracked seeds live, or a
+    # fresh work_dir aborts in run_target_priority / catalog_postfix (R-1 blocker).
+    manifest = _write_sources(tmp_path)
+    plan = build_full_rehearsal_plan(_config(tmp_path, manifest))
+    catalog = next(step for step in plan if step.key == "catalog")
+    assert "--cache-dir" in catalog.argv
+    assert "--inputs-dir" in catalog.argv
+    cache_dir = catalog.argv[catalog.argv.index("--cache-dir") + 1]
+    inputs_dir = catalog.argv[catalog.argv.index("--inputs-dir") + 1]
+    assert cache_dir.endswith("data/cache")
+    assert inputs_dir.endswith("inputs")
+
+
 def test_plan_installs_pinned_ubist_sidecar_before_downstream_stages(tmp_path: Path) -> None:
     manifest = _write_sources(tmp_path, with_sidecar=True)
     plan = build_full_rehearsal_plan(_config(tmp_path, manifest))

@@ -26,7 +26,20 @@ data/*
 data/JW 주요 약품 수동 매핑/*
 !data/JW 주요 약품 수동 매핑/MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx
 !data/JW 주요 약품 수동 매핑/SOURCE_PINS.sha256
-inputs/molecule_v4_worklist.csv
+# target_priority skeleton (s2 catalog): pinned so a fresh clone can rerun the s2
+# build. pipeline/etl/io/catalog/target/records.py:read_required_csv reads it via
+# --cache-dir with a HARDCODED path and NO object-storage fallback (unlike MI
+# Master). Deleted in bb9f3d63 "reset to s1 ingest base" and intentionally
+# restored to git. DO NOT re-ignore or delete — see BRANCH_POLICY.md.
+!data/cache/
+data/cache/*
+!data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv
+# molecule worklist (s2 catalog postfix): pinned so a fresh clone can rerun the s2
+# build. pipeline/etl/io/catalog/postfix/catalog_postfix.py:run_postfix reads it via
+# --inputs-dir with a HARDCODED path and NO object-storage fallback. Deleted in
+# bb9f3d63 and intentionally restored to git. DO NOT re-ignore or delete — see
+# BRANCH_POLICY.md.
+!inputs/molecule_v4_worklist.csv
 
 # Documentation and audit artifacts moved out of source git
 docs/*

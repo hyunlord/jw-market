@@ -50,6 +50,13 @@ RUN python -c "import urllib.request; urllib.request.urlretrieve('https://dl.k8s
 COPY pipeline /app/pipeline
 COPY docs/crawl /app/docs/crawl
 COPY ["data/JW 주요 약품 수동 매핑", "/app/data/JW 주요 약품 수동 매핑"]
+# Git-tracked s2 catalog seeds (target_priority skeleton + molecule worklist). The
+# R-1 rehearse-full catalog step reads them via --cache-dir /app/data/cache and
+# --inputs-dir /app/inputs; without them a fresh isolated rebuild aborts in
+# run_target_priority / catalog_postfix. Explicit single-file COPYs (not the whole
+# data/cache or inputs dir) so untracked local artifacts never enter the image.
+COPY data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv /app/data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv
+COPY inputs/molecule_v4_worklist.csv /app/inputs/molecule_v4_worklist.csv
 
 RUN mkdir -p /var/lib/jw-pipeline && chown -R app:app /app /var/lib/jw-pipeline
 

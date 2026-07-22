@@ -44,6 +44,34 @@ generation retained for provenance (see its README).
 
 ---
 
+## Canonical s2 catalog input files — DO NOT DELETE (PL decision, 2026-07-22)
+
+Two files are **canonical, git-tracked inputs** required to rebuild the serving
+catalog through `s2_catalog`. They are NOT generated data — the s2 chain reads
+them via hardcoded paths with **no object-storage fallback** (unlike MI Master):
+
+- `inputs/molecule_v4_worklist.csv`
+  — read by `pipeline/etl/io/catalog/postfix/catalog_postfix.py:run_postfix`
+    (`--inputs-dir`). Raises `FileNotFoundError` if missing.
+- `data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv`
+  — read by `pipeline/etl/io/catalog/target/records.py:read_required_csv`
+    via `run_target_priority` (`--cache-dir`). Raises if missing.
+
+Both were deleted in `bb9f3d63` ("reset to s1 ingest base") and **intentionally
+restored to git** on 2026-07-22 so a fresh clone / the R-1 `full_rehearsal` image
+can rerun the catalog build without out-of-band provisioning. `.gitignore` carries
+negation exceptions for exactly these two paths; the
+`deploy/docker/pipeline-orchestrator.Dockerfile` COPYs them into the image at
+`/app/data/cache` and `/app/inputs`; and `full_rehearsal.build_full_rehearsal_plan`
+passes `--cache-dir`/`--inputs-dir` at those locations.
+
+**Do not re-ignore, delete, or "clean up" these files.** Removing either one
+re-opens the R-1 catalog-build blocker. Confirmed provenance: serving r2 catalog
+(`catalog_manifest_hash` single-valued, MI Master 2026.05.18) was produced by this
+same s2 path — see audit `R1_canonical_path_audit_20260722`.
+
+---
+
 ## ⚠️ Deploy warning — response-keys-4 (1d38478e) NOT in production (rolled back 2026-07-22)
 
 `develop` contains the response-keys-4 change (commits `9b5fa13d`/`e448d3b2`/`1d38478e`):

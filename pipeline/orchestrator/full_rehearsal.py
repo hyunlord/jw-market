@@ -20,6 +20,12 @@ from pipeline.scripts.utils.mart_config import PROTECTED_MART_DB_NAMES
 
 
 PY = sys.executable or "python3"
+# Repo root (pipeline/orchestrator/full_rehearsal.py -> parents[2]); == /app in the
+# jw-pipeline-orchestrator image (PROJECT_ROOT=/app). The s2 catalog stage reads two
+# git-tracked seeds from here via --cache-dir/--inputs-dir (see build_full_rehearsal_plan):
+#   data/cache/prototype_11_step_c4_target_priority_precompute_sample.csv (target_priority)
+#   inputs/molecule_v4_worklist.csv                                       (catalog_postfix)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SAFE_DB_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MART_PREFIX = "jw_mart_rehearsal_"
 CACHE_PREFIX = "jw_mart_s6_rehearsal_"
@@ -282,6 +288,11 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
                 "--stage", "s2", "--mi-master", str(inputs.mi_master),
                 "--target-dir", str(work), "--ubist-dir", str(ubist_parquet),
                 "--iqvia-nsa-dir", str(iqvia_nsa),
+                # Git-tracked s2 seeds (target_priority skeleton + molecule worklist).
+                # Without these the fresh work_dir has neither, so run_target_priority
+                # and catalog_postfix abort before the catalog DB sync (R-1 blocker).
+                "--cache-dir", str(REPO_ROOT / "data" / "cache"),
+                "--inputs-dir", str(REPO_ROOT / "inputs"),
                 "--catalog-root", str(catalog_root), "--sync-catalog-db", *common,
             ),
         ),
