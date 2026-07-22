@@ -6,13 +6,23 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.openapi_docs import MARKET_STATUS_RESPONSES, PORTAL_CORE_TAG
 from pipeline.scripts.api.utils import loads_json_maybe
-from pipeline.scripts.etl.cache_build_common import iqvia_period_to_display, period_key
+from pipeline.scripts.etl.cache_build_common import brand_cagr_exclusive, iqvia_period_to_display, period_key
 
 
 router = APIRouter()
 
 
-def _market_recent_periods() -> dict[str, str | None]:
+def _brand_metric_rows() -> list[dict]:
+    return db.fetch_all(
+        """
+        SELECT brand_name, source, metric_history
+        FROM mart_strategic_ml_brand_metric
+        WHERE measure = 'sales' AND is_jw = 1
+        """
+    )
+
+
+def _market_recent_periods(rows: list[dict] | None = None) -> dict[str, str | None]:
     """Return the latest period that actually has mart values, per source.
 
     Serving-time computation (the market-status route serves cache_market_status
@@ -26,13 +36,7 @@ def _market_recent_periods() -> dict[str, str | None]:
     Kept route-local (imports only db + cache_build_common) so the market-status
     startup path does not pull heavy optional deps.
     """
-    rows = db.fetch_all(
-        """
-        SELECT source, metric_history
-        FROM mart_strategic_ml_brand_metric
-        WHERE measure = 'sales' AND is_jw = 1
-        """
-    )
+    rows = _brand_metric_rows() if rows is None else rows
     keys_by_source: dict[str, set[str]] = {}
     for row in rows:
         history = loads_json_maybe(row.get("metric_history")) or {}
@@ -48,6 +52,34 @@ def _market_recent_periods() -> dict[str, str | None]:
         "ubist_recent": _latest("ubist"),
         "iqvia_recent": iqvia_period_to_display(_latest("iqvia_nsa")),
     }
+
+
+def _brand_cagr_by_brand(rows: list[dict] | None = None) -> dict[str, tuple[float | None, float | None]]:
+    selected: dict[str, dict] = {}
+    for row in _brand_metric_rows() if rows is None else rows:
+        brand = str(row.get("brand_name") or "")
+        if not brand:
+            continue
+        current = selected.get(brand)
+        if current is None or (current.get("source") != "ubist" and row.get("source") == "ubist"):
+            selected[brand] = row
+
+    result: dict[str, tuple[float | None, float | None]] = {}
+    for brand, row in selected.items():
+        history = loads_json_maybe(row.get("metric_history")) or {}
+        result[brand] = brand_cagr_exclusive(history if isinstance(history, dict) else {})
+    return result
+
+
+def _overlay_brand_cagr(payload: dict, rows: list[dict]) -> None:
+    values = _brand_cagr_by_brand(rows)
+    for card in payload.get("brand_cards") or []:
+        if not isinstance(card, dict):
+            continue
+        extended = card.setdefault("back_extended", {})
+        brand_cagr_5y, brand_cagr_3y = values.get(str(card.get("brand")), (None, None))
+        extended["brand_cagr_5y_pct"] = brand_cagr_5y
+        extended["brand_cagr_3y_pct"] = brand_cagr_3y
 
 
 @router.get(
@@ -72,7 +104,7 @@ def market_status() -> dict:
     payload = compose_cached_json(row["response_json"])
     if not isinstance(payload, dict):
         raise HTTPException(status_code=500, detail={"error": "invalid_cache_payload", "cache": "cache_market_status"})
-    # Serving-time baseline labels (mart latest period per source); the cached
-    # payload is otherwise returned verbatim.
-    payload.update(_market_recent_periods())
+    rows = _brand_metric_rows()
+    _overlay_brand_cagr(payload, rows)
+    payload.update(_market_recent_periods(rows))
     return payload
