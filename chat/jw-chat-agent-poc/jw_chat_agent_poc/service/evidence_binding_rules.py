@@ -19,6 +19,7 @@ IDENTIFIER_KEYS: Final[tuple[str, ...]] = (
 )
 
 _METRIC_TERMS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("시장 구성 브랜드 수", ("시장 구성 브랜드 수", "브랜드 수", "분모")),
     ("초과성장", ("초과성장", "excess growth")),
     ("매출 변화율", ("매출 변화율", "성장률")),
     ("점유율 변화", ("점유율 변화", "점유율 증감")),
@@ -30,6 +31,7 @@ _METRIC_TERMS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("CR5", ("cr5", "집중도")),
     ("CAGR", ("cagr", "연평균")),
     ("순위", ("순위", "rank")),
+    ("기간", ("기준기간", "기간")),
 )
 _ORDERED_LIST_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^\s*\d+[.)]\s+")
 _SAME_ENTITY_OPERAND_METRICS: Final[frozenset[str]] = frozenset(
@@ -72,8 +74,41 @@ def claim_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
     segments = re.split(r"(?<=[.!?。])\s+|\n+", answer)
     for segment in segments:
         if token in number_tokens(segment):
-            return question_metrics(segment)
+            metrics = question_metrics(segment)
+            if metrics:
+                return metrics
+    return _table_header_metrics_for_token(answer, token)
+
+
+def _table_header_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
+    lines = answer.splitlines()
+    for row_index, line in enumerate(lines):
+        cells = _markdown_table_cells(line)
+        if not cells or not any(token in number_tokens(cell) for cell in cells):
+            continue
+
+        table_start = row_index
+        while table_start > 0 and _markdown_table_cells(lines[table_start - 1]):
+            table_start -= 1
+        if table_start == row_index:
+            continue
+
+        headers = _markdown_table_cells(lines[table_start])
+        metrics: list[str] = []
+        for column, cell in enumerate(cells):
+            if column >= len(headers) or token not in number_tokens(cell):
+                continue
+            metrics.extend(question_metrics(headers[column]))
+        if metrics:
+            return tuple(dict.fromkeys(metrics))
     return ()
+
+
+def _markdown_table_cells(line: str) -> tuple[str, ...]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return ()
+    return tuple(cell.strip() for cell in stripped[1:-1].split("|"))
 
 
 def claim_number_tokens(text: str) -> tuple[str, ...]:
