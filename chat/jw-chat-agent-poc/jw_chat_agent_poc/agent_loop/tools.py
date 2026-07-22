@@ -42,6 +42,13 @@ QUERY_FAILED_STATUS = "query_failed"
 UNSUPPORTED_STATUS = "unsupported"
 
 
+def _execution_status(call: Mapping[str, Any]) -> str:
+    render_data = call.get("render_data")
+    if isinstance(render_data, Mapping) and render_data.get("status"):
+        return str(render_data["status"]).casefold()
+    return str(call.get("status") or "ok").casefold()
+
+
 @dataclass(frozen=True, slots=True)
 class ToolExecution:
     status: str
@@ -206,7 +213,7 @@ class AgentToolFacade:
                     error=exc,
                 )
             else:
-                return ToolExecution("ok", f"{brand} {measure} query-layer", call, arguments)
+                return ToolExecution(_execution_status(call), f"{brand} {measure} query-layer", call, arguments)
         call = self._metrics.get_brand_metric(brand, metric=measure, period=display_period(period_arg, self._periods), filter_entries=period_filters(period_arg))
         data = call.get("render_data", {})
         period = data.get("period") if isinstance(data, dict) else ""
@@ -378,7 +385,7 @@ class AgentToolFacade:
             arguments.get("source", ""),
             int_arg(arguments.get("history_points"), 10),
         )
-        return ToolExecution("ok", result.preview, result.call, arguments)
+        return ToolExecution(_execution_status(result.call), result.preview, result.call, arguments)
 
     def _compare_brands_series(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)

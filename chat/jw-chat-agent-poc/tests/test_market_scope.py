@@ -304,8 +304,11 @@ def test_named_strategic_market_member_listing_needs_no_anchor_brand() -> None:
 
     data = result["tool_calls"][0]["render_data"]
     assert result["resolution"]["market_id"] == "ml_006"
+    assert "고지혈증" in result["resolution"]["market_name"]
+    assert "고지혈증" in data["market_name"]
     assert data["total_brands_in_market"] == 3
     assert data["displayed_brand_count"] == 3
+    assert "고지혈증" in result["answer"]
     assert "총 3개 중 3개 표시" in result["answer"]
 
 

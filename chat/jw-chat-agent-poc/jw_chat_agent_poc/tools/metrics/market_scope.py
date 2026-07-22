@@ -188,13 +188,14 @@ class MarketScopeResolver:
         explicit_market = self._resolver.explicit_market(question)
         if explicit_market is None:
             return self._unsupported("전략시장 이름을 해소할 수 없습니다.", question, "market", "unknown")
-        market_id, _ = explicit_market
+        market_id, market_name = explicit_market
         return self._query_layer_answer(
             question,
             "",
             "market_landscape",
             started_at=started_at,
             market_id=market_id,
+            market_display_name=market_name,
         )
 
     def answer_monthly_market_golden(
@@ -281,6 +282,7 @@ class MarketScopeResolver:
         started_at: datetime,
         use_mart: bool = False,
         market_id: str | None = None,
+        market_display_name: str | None = None,
     ) -> dict[str, Any]:
         assert self._query_layer is not None
         try:
@@ -304,7 +306,7 @@ class MarketScopeResolver:
         if not isinstance(data, dict):
             return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "brand", brand)
         market_reference = str(data.get("market_id") or data.get("market") or "")
-        market_name = str(data.get("market_name") or market_reference)
+        market_name = str(market_display_name or data.get("market_name") or market_reference)
         source = str(data.get("source_label") or call.get("source") or "")
         if view_type == "competitive_dynamics":
             period, market_size, yoy = self._view_market_size(
@@ -329,10 +331,18 @@ class MarketScopeResolver:
                     "yoy_growth_pct": yoy,
                 }
             )
+        data["market_name"] = market_name
         data["view_type"] = view_type
         data["view_label"] = view_label(view_type)
         call["render_data"] = data
-        if not asks_market_members(question):
+        if asks_market_members(question):
+            qualifier = "상위 5개 밖의 " if data.get("other_members_only") else ""
+            call["summary_text"] = (
+                f"{market_name} 시장의 {qualifier}구성 브랜드를 전략 mart에서 조회했습니다. "
+                f"총 {int(data.get('total_brands_in_market') or 0):,}개 중 "
+                f"{int(data.get('displayed_brand_count') or 0):,}개 표시"
+            )
+        else:
             call["summary_text"] = (
                 f"{brand} 기준 같은 시장 전체 매출은 {view_label(view_type)} 기준 "
                 f"{eok_value(None, data.get('market_size_recent_krw'))}입니다."

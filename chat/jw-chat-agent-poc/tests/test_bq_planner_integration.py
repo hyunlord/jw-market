@@ -7,7 +7,12 @@ from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.resolver.catalog_membership import (
+    StaticCatalogMembershipReader,
+    TtlCatalogMembershipReader,
+)
 from jw_chat_agent_poc.tools.metrics import MetricsTool
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 
 
@@ -70,6 +75,45 @@ def test_bq_question_bypasses_llm_question_router() -> None:
 
     assert result["agent_loop_metrics"]["deterministic_plan_kind"] == "BQ:C3"
     assert result["router_diagnostics"]["question_decomposition_bypassed"] is True
+
+
+def test_bq_preflight_returns_typed_ambiguity_for_product_family() -> None:
+    class RouterBomb:
+        def route(self, _question: str, has_documents: bool = False):
+            raise AssertionError("ambiguous family must stop before routing")
+
+    memberships = TtlCatalogMembershipReader(
+        StaticCatalogMembershipReader(
+            tuple(
+                {
+                    "brand": brand,
+                    "market_id": "",
+                    "market_name": "",
+                    "support_source": "general_mart",
+                }
+                for brand in ("카나브", "카나브젯", "카나브플러스")
+            )
+        )
+    )
+    resolver = BrandResolver(
+        mode="cache",
+        brand_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        membership_reader=memberships,
+    )
+    layer = _layer()
+    agent = ChatAgent(
+        router=RouterBomb(),
+        resolver=resolver,
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        query_layer=layer,
+    )
+
+    result = agent.answer("카나브패밀리 실적 어때?")
+
+    assert result["sources"] == ["ambiguous_brand"]
+    assert result["tool_calls"] == []
+    assert all(candidate in result["answer"] for candidate in ("카나브", "카나브젯", "카나브플러스"))
+    assert "하나를 지정" in result["answer"]
 
 
 def test_bq_independent_support_tools_execute_in_parallel(monkeypatch) -> None:

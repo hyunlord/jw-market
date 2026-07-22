@@ -8,6 +8,7 @@ import pytest
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
+from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade
 from jw_chat_agent_poc.orchestrator.insight_acceptance import verify_insight_answer
 from jw_chat_agent_poc.orchestrator.market_insights import forbidden_claims
@@ -122,6 +123,33 @@ def test_explicit_quarter_sales_bypasses_injected_llm_planner() -> None:
     assert metrics["deterministic_plan_kind"] == "brand_sales"
     assert metrics["llm_plan_calls"] == 0
     assert metrics["selected_tools"] == ["get_brand_sales"]
+
+
+def test_explicit_missing_period_stops_with_typed_no_data_without_llm(monkeypatch) -> None:
+    layer = _layer()
+    monkeypatch.setattr(
+        GenosToolPlanner,
+        "decide",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit missing period must not enter the LLM planner")
+        ),
+    )
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 2035-01 매출")
+
+    assert result["agent_loop_metrics"]["llm_plan_calls"] == 0
+    assert result["router_diagnostics"]["gate"] == "typed_unavailable"
+    assert result["decomposition"][0]["status"] == "no_data"
+    assert len(result["tool_calls"]) == 1
+    assert result["tool_calls"][0]["status"] == "no_data"
+    assert result["tool_calls"][0]["render_data"]["status"] == "no_data"
+    assert "요청하신 2035-01 데이터를 조회할 수 없습니다" in result["answer"]
+    assert "다른 기간 값으로 대체하지 않습니다" in result["answer"]
 
 
 def test_feature_flag_off_preserves_legacy_planner_path(monkeypatch) -> None:

@@ -173,16 +173,23 @@ class ChatAgent:
                 if tool_result is not None:
                     return finish(tool_result)
 
-        if (
-            not docs
-            and source_trap is None
-            and self.agent_loop is None
-            and self.query_layer is not None
-            and (
-                preflight_bq_question(question, self.resolver) is not None
-                or preflight_structured_market_question(question, self.resolver) is not None
-            )
-        ):
+        preflight_plan_available = False
+        if not docs and source_trap is None and self.agent_loop is None and self.query_layer is not None:
+            try:
+                preflight_plan_available = (
+                    preflight_bq_question(question, self.resolver) is not None
+                    or preflight_structured_market_question(question, self.resolver) is not None
+                )
+            except AmbiguousBrandError as exc:
+                return finish(
+                    ambiguous_brand_result(
+                        question,
+                        (),
+                        router_diagnostics(self.router),
+                        exc.candidates,
+                    )
+                )
+        if preflight_plan_available:
             loop = build_tool_use_agent(self._agent_loop_dependencies)
             result = loop.answer(question)
             diagnostics = result.setdefault("router_diagnostics", {})

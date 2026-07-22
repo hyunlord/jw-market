@@ -33,6 +33,8 @@ def call_data_md(call: dict[str, Any]) -> str:
         return csd_activity_md(render_data)
     if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
         return metrics_md(tool, render_data)
+    if tool == "get_market_members":
+        return market_members_md(render_data)
     if tool.startswith("hira_disease") or str(call.get("source")) == "hira_disease":
         return hira_md(tool, render_data)
     if tool.startswith("hira_procedure") or tool == "get_procedure_stats" or str(call.get("source")) == "hira_procedure":
@@ -50,6 +52,27 @@ def call_data_md(call: dict[str, Any]) -> str:
     if tool == "document_rag":
         return document_md(render_data)
     return generic_external_md(tool, render_data)
+
+
+def market_members_md(data: dict[str, Any]) -> str:
+    members = data.get("member_brands")
+    member_names = tuple(str(member) for member in members) if isinstance(members, (list, tuple)) else ()
+    total = int(data.get("total_brands_in_market") or 0)
+    displayed = int(data.get("displayed_brand_count") or len(member_names))
+    overview = table(
+        "### 시장 구성",
+        ("항목", "내용"),
+        (
+            ("시장", data.get("market_name") or data.get("market") or "-"),
+            ("기준기간", data.get("period") or "-"),
+            ("표시 범위", f"총 {total:,}개 중 {displayed:,}개 표시"),
+        ),
+    )
+    if not member_names:
+        return overview
+    start_rank = 6 if data.get("other_members_only") else 1
+    member_rows = tuple((start_rank + index, member) for index, member in enumerate(member_names))
+    return "\n\n".join((overview, table("### 구성 브랜드", ("순위", "브랜드"), member_rows)))
 
 
 def metrics_md(tool: str, data: dict[str, Any]) -> str:

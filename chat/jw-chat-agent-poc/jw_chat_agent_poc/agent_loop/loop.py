@@ -22,6 +22,7 @@ from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
+from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_call_status
 from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
 from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidationError, validate_bq_analysis_call
@@ -348,6 +349,8 @@ class ToolUseAgent:
             trace.append(_trace_step(step, decision, tuple(batch)))
             if duplicate:
                 break
+            if _explicit_period_metric_no_data(question, tuple(item.call for item in batch)):
+                break
             if is_bq_batch:
                 break
             if _observation_is_sufficient_for_final_answer(question, tuple(observations), tuple(batch)):
@@ -355,6 +358,39 @@ class ToolUseAgent:
         else:
             status = "budget_exceeded"
             notices.append("agent loop step 예산을 초과해 확인된 도구 결과만 표시했습니다.")
+        terminal_no_data_call = _explicit_period_metric_no_data(question, tuple(calls))
+        if terminal_no_data_call is not None:
+            data = terminal_no_data_call.get("render_data")
+            message = str(data.get("message") or terminal_no_data_call.get("summary_text") or "")
+            brand = base_allowed_brands[0] if base_allowed_brands else _answer_brand(question, self.resolver)
+            markdown = MarkdownResponseBuilder().no_data(message)
+            sources = _sources(calls)
+            return {
+                "question": question,
+                "resolution": {"canonical_brand": brand},
+                "decomposition": [{"intent": "agent_loop", "status": "no_data", "max_steps": self.max_steps}],
+                "router_diagnostics": {
+                    "mode": "agent_loop",
+                    "deterministic_execution": True,
+                    "gate": "typed_unavailable",
+                    "gate_reason": "explicit_period_no_data",
+                },
+                "agent_trace": [item.to_dict() for item in trace],
+                "agent_loop_metrics": {
+                    "status": "no_data",
+                    "steps": len(trace),
+                    "tool_calls": len(calls),
+                    "deterministic_plan_hit": deterministic_plan_hit,
+                    "deterministic_plan_kind": deterministic_plan_kind,
+                    "llm_plan_calls": llm_plan_calls,
+                    "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
+                },
+                "tool_calls": calls,
+                "answer": markdown.markdown,
+                "markdown_response": markdown.to_dict(),
+                "sources": sources or [str(terminal_no_data_call.get("source") or "none")],
+                "timing": timing,
+            }
         observed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
         brand = observed_brands[0] if observed_brands else _answer_brand(question, self.resolver)
         with stage(timing, "strict_query_plan", "population-sensitive spec mapping"):
@@ -2162,6 +2198,25 @@ def _observation_is_sufficient_for_final_answer(
     if any(token in question for token in _FOLLOWUP_CONTEXT_TOKENS):
         return False
     return any(_metric_observation_has_answer_fact(item) for item in batch)
+
+
+def _explicit_period_metric_no_data(
+    question: str,
+    calls: tuple[dict[str, Any], ...],
+) -> dict[str, Any] | None:
+    if not canonical_periods(question):
+        return None
+    return next(
+        (
+            call
+            for call in calls
+            if str(call.get("tool") or "") == "get_brand_metric"
+            and tool_call_status(call) == "no_data"
+            and isinstance(call.get("render_data"), dict)
+            and bool(call["render_data"].get("message"))
+        ),
+        None,
+    )
 
 
 def _metric_observation_has_answer_fact(item: AgentObservation) -> bool:

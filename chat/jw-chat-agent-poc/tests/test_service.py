@@ -3492,6 +3492,91 @@ def test_market_member_listing_keeps_deterministic_total_count_markdown() -> Non
     assert "총 8개 중 3개 표시" in answer
 
 
+def test_market_member_listing_survives_finalization_with_named_market_and_count(monkeypatch) -> None:
+    def record(rank: int) -> MartRecord:
+        return MartRecord(
+            ml_id="ml_006",
+            brand_name=f"브랜드{rank}",
+            source="ubist",
+            measure="sales",
+            metric_history={"2026-05": {"raw_value": float(100 - rank)}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS),
+        query_layer=StrategicQueryLayer(
+            reader=StaticStrategicMartReader(tuple(record(rank) for rank in range(1, 26)))
+        ),
+    )
+    result = resolver.answer_named_market("고지혈증 시장에 어떤 브랜드들이 있어?")
+
+    def unexpected_stream(*_args):
+        raise AssertionError("market member listing must close without synthesis LLM")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_stream)
+    final = compute_final_answer(
+        "고지혈증 시장에 어떤 브랜드들이 있어?",
+        result,
+        "market-members-final-contract",
+    )
+
+    assert "고지혈증" in final.text
+    assert "총 25개 중 20개 표시" in final.text
+    assert "브랜드1" in final.text
+    assert "조회된 수치로 요약하면" not in final.text
+    assert "ml_006" not in final.text
+
+
+def test_explicit_period_no_data_survives_finalization_without_generic_error(monkeypatch) -> None:
+    message = (
+        "요청하신 2035-01 데이터를 조회할 수 없습니다. "
+        "해당하는 시계열 데이터가 없습니다. 다른 기간 값으로 대체하지 않습니다."
+    )
+    result = {
+        "question": "리바로 2035-01 매출",
+        "resolution": {"canonical_brand": "리바로"},
+        "decomposition": [{"intent": "agent_loop", "status": "no_data", "max_steps": 1}],
+        "router_diagnostics": {
+            "mode": "agent_loop",
+            "deterministic_execution": True,
+            "gate": "typed_unavailable",
+            "gate_reason": "explicit_period_no_data",
+        },
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "status": "no_data",
+                "source": "UBIST",
+                "summary_text": message,
+                "render_data": {
+                    "brand": "리바로",
+                    "metric": "sales",
+                    "period": "2035-01",
+                    "status": "no_data",
+                    "message": message,
+                },
+            }
+        ],
+        "answer": message,
+        "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+        "sources": ["UBIST"],
+    }
+
+    def unexpected_stream(*_args):
+        raise AssertionError("typed no-data must not invoke synthesis LLM")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_stream)
+    final = compute_final_answer("리바로 2035-01 매출", result, "period-no-data-final-contract")
+
+    assert message in final.text
+    assert "데이터 존재 여부를 확인하지 못했습니다" not in final.text
+    assert "도구 상태 ok" not in final.text
+
+
 def test_stream_endpoint_unanchored_market_size_falls_through_to_general_path() -> None:
     FakeAgent.calls = []
     app = create_app(agent_factory=_fake_agent_factory, market_scope_resolver=_market_scope_resolver())

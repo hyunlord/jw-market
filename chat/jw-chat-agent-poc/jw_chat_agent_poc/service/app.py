@@ -2966,6 +2966,14 @@ def _is_terminal_typed_result(result: dict) -> bool:
             return True
 
     diagnostics = result.get("router_diagnostics")
+    decomposition = result.get("decomposition")
+    if (
+        isinstance(diagnostics, dict)
+        and diagnostics.get("gate") == "typed_unavailable"
+        and isinstance(decomposition, list)
+        and any(isinstance(item, dict) and item.get("status") == "no_data" for item in decomposition)
+    ):
+        return True
     if not isinstance(diagnostics, dict) or diagnostics.get("mode") != "tool_use_agent":
         return False
     return diagnostics.get("fallback_code") in {
