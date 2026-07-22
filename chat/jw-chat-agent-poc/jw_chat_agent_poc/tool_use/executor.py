@@ -40,6 +40,7 @@ class AgentExecutor:
     best_effort: bool = False
     forced_choices: tuple[ToolChoice, ...] = ()
     parallel_forced_choices: bool = False
+    authoritative_forced_choices: bool = False
     timing: Timing | None = None
 
     def run(self, *, user_text: str, tools: tuple[ToolSpec, ...]) -> AgentResult:
@@ -65,6 +66,7 @@ class AgentExecutor:
         by_name = {tool.name: tool for tool in tools}
         answer_complete = False
         forced_choices = list(self.forced_choices)
+        authoritative_forced_plan = self.authoritative_forced_choices and bool(forced_choices)
         if self.parallel_forced_choices and len(forced_choices) > 1:
             prepared: list[tuple[ToolChoice, ToolSpec, BaseModel]] = []
             for step, choice in enumerate(forced_choices, start=1):
@@ -197,7 +199,13 @@ class AgentExecutor:
                 tool_calls=tuple(tool_calls),
             )
             if answer_complete:
+                if authoritative_forced_plan and any(
+                    not envelope.ok for envelope in ledger.envelopes
+                ):
+                    return _verified_result(ledger, traces, tool_calls, status="partial")
                 return _verified_result(ledger, traces, tool_calls, status="ok")
+            if authoritative_forced_plan:
+                return _authoritative_forced_result(ledger, traces, tool_calls)
         total_steps = max(self.max_steps, len(forced_choices) + 1)
         for step in range(1, total_steps + 1):
             if forced_choices:
@@ -286,6 +294,8 @@ class AgentExecutor:
                 if self.best_effort:
                     call_id = choice.call_id or f"tool-call-{step}"
                     messages.extend(_tool_exchange(choice, spec, safe_envelope, call_id))
+                    if authoritative_forced_plan and not forced_choices:
+                        return _authoritative_forced_result(ledger, traces, tool_calls)
                     continue
                 return _terminal(envelope.error_message or "도구 근거가 비었습니다.", FallbackCode.VERIFICATION_FAIL, traces, tool_calls)
             answer_complete = _is_complete(
@@ -296,9 +306,15 @@ class AgentExecutor:
                 tool_calls=tuple(tool_calls),
             )
             if answer_complete and not forced_choices:
+                if authoritative_forced_plan and any(
+                    not forced_envelope.ok for forced_envelope in ledger.envelopes
+                ):
+                    return _verified_result(ledger, traces, tool_calls, status="partial")
                 return _verified_result(ledger, traces, tool_calls, status="ok")
             call_id = choice.call_id or f"tool-call-{step}"
             messages.extend(_tool_exchange(choice, spec, safe_envelope, call_id))
+            if authoritative_forced_plan and not forced_choices:
+                return _authoritative_forced_result(ledger, traces, tool_calls)
         if self.best_effort and ledger.is_complete():
             return _verified_result(ledger, traces, tool_calls, status="ok")
         return _terminal("tool-use step limit exceeded", FallbackCode.STEP_LIMIT, traces, tool_calls)
@@ -319,6 +335,24 @@ def _is_complete(
 
 def _terminal(message: str, code: FallbackCode, traces: list[ToolTrace], calls: list[dict]) -> AgentResult:
     return AgentResult(status="fallback", answer=message, tool_calls=tuple(calls), sources=(), traces=tuple(traces), fallback_code=code)
+
+
+def _authoritative_forced_result(
+    ledger: EvidenceLedger,
+    traces: list[ToolTrace],
+    calls: list[dict],
+) -> AgentResult:
+    if ledger.is_complete():
+        return _verified_result(ledger, traces, calls, status="partial")
+    message = next(
+        (
+            envelope.error_message
+            for envelope in reversed(ledger.envelopes)
+            if envelope.error_message
+        ),
+        "요청한 근거를 확인하지 못했습니다.",
+    )
+    return _terminal(message, FallbackCode.VERIFICATION_FAIL, traces, calls)
 
 
 def _verified_result(

@@ -245,6 +245,7 @@ def _run_legacy_external_tool_agent(
         best_effort=True,
         forced_choices=forced_choices,
         parallel_forced_choices=bool(forced_choices),
+        authoritative_forced_choices=bool(forced_choices),
         timing=timing,
     ).run(user_text=question, tools=registry.list_for_query(question))
     if result.fallback_code is not None:

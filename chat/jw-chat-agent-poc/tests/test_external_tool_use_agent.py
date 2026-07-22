@@ -194,6 +194,82 @@ def test_agent_executor_runs_all_forced_tools_before_accepting_complete_evidence
     assert provider.calls == 0
 
 
+def test_authoritative_forced_tool_no_evidence_does_not_consult_planner() -> None:
+    provider = _ChoiceSequence((ToolChoice("unrelated", {}, "wrong fallback", call_id="planner-1"),))
+    spec = ToolSpec(
+        name="mfds_composition",
+        description="verified composition contract",
+        input_model=_NoInput,
+        execute=lambda _payload: ToolEnvelope(
+            ok=False,
+            preview="no matching product",
+            evidence=(),
+            raw=None,
+            error_code="NO_EVIDENCE",
+            error_message="식약처 응답에 제품명과 일치하는 성분 조성 근거가 없습니다.",
+        ),
+        timeout_s=1.0,
+        tags=("external", "mfds"),
+    )
+
+    result = AgentExecutor(
+        provider=provider,
+        best_effort=True,
+        forced_choices=(
+            ToolChoice("mfds_composition", {}, "required composition", call_id="forced-1"),
+        ),
+        authoritative_forced_choices=True,
+    ).run(user_text="NeDrug: 리바로 성분 조성 알려줘", tools=(spec,))
+
+    assert result.status == "fallback"
+    assert result.fallback_code is not None
+    assert result.fallback_code.value == "VERIFICATION_FAIL"
+    assert "제품명과 일치하는 성분 조성 근거" in result.answer
+    assert [call["tool"] for call in result.tool_calls] == ["mfds_composition"]
+    assert provider.calls == 0
+
+
+def test_authoritative_forced_tools_preserve_partial_evidence_without_planner() -> None:
+    provider = _ChoiceSequence((ToolChoice("unrelated", {}, "wrong fallback", call_id="planner-1"),))
+
+    def spec(name: str, *, ok: bool) -> ToolSpec:
+        return ToolSpec(
+            name=name,
+            description=name,
+            input_model=_NoInput,
+            execute=lambda _payload: ToolEnvelope(
+                ok=ok,
+                preview=name,
+                evidence=(_fact(),) if ok else (),
+                raw=None,
+                error_code=None if ok else "NO_EVIDENCE",
+                error_message=None if ok else "확인 가능한 근거가 없습니다.",
+            ),
+            timeout_s=1.0,
+            tags=("external",),
+        )
+
+    result = AgentExecutor(
+        provider=provider,
+        best_effort=True,
+        forced_choices=(
+            ToolChoice("clinical", {}, "required clinical", call_id="forced-1"),
+            ToolChoice("permission", {}, "required permission", call_id="forced-2"),
+        ),
+        parallel_forced_choices=True,
+        authoritative_forced_choices=True,
+    ).run(
+        user_text="임상과 허가",
+        tools=(spec("clinical", ok=True), spec("permission", ok=False)),
+    )
+
+    assert result.status == "partial"
+    assert result.fallback_code is None
+    assert "pitavastatin" in result.answer
+    assert [call["tool"] for call in result.tool_calls] == ["clinical", "permission"]
+    assert provider.calls == 0
+
+
 def test_agent_executor_runs_preplanned_independent_tools_in_parallel() -> None:
     provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))
     barrier = threading.Barrier(3)
@@ -454,7 +530,7 @@ def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> No
         "mfds_clinical_trial_kr",
         "web_search",
     ]
-    assert provider.calls == 1
+    assert provider.calls == 0
     assert all(
         left[0] < right[1] and right[0] < left[1]
         for index, left in enumerate(intervals.values())

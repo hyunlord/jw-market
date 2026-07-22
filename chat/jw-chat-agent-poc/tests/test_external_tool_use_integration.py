@@ -197,6 +197,20 @@ def test_empty_evidence_failure_is_terminal_before_legacy_generation(monkeypatch
     assert result["router_diagnostics"]["fallback_code"] == "VERIFICATION_FAIL"
 
 
+def test_mfds_composition_no_evidence_cannot_fall_back_to_market_metric(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "OFF")
+
+    result = ChatAgent(router=BQRouter()).answer("NeDrug: 리바로 성분 조성 알려줘")
+
+    assert result["router_diagnostics"]["mode"] == "tool_use_agent"
+    assert result["router_diagnostics"]["fallback_code"] == "VERIFICATION_FAIL"
+    assert [call["tool"] for call in result["tool_calls"]] == ["mfds_composition"]
+    assert "제품명과 일치하는 성분 조성 근거" in result["answer"]
+    assert "get_brand_metric" not in str(result["tool_calls"])
+
+
 def test_known_no_data_boundary_does_not_enter_external_tool_agent(monkeypatch) -> None:
     # Given: the tool agent is enabled, but the router has a deliberate no-data contract.
     monkeypatch.setenv("CHAT_EXTERNAL_TOOL_AGENT_ENABLED", "1")
