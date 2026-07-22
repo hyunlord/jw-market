@@ -12,6 +12,7 @@ from pipeline.scripts.crawler.crawl_temporal_contract import (
     CrawlDailyInput,
     StageGateError,
     activity_command,
+    orchestrator_failure_count,
     read_stage_gate,
     run_dependency_sequence,
     write_content_addressed_baseline,
@@ -83,6 +84,25 @@ def test_stage_gate_rejects_missing_or_non_numeric_fields(tmp_path: Path) -> Non
         read_stage_gate(missing)
     with pytest.raises(StageGateError, match="integer"):
         read_stage_gate(malformed)
+
+
+def test_orchestrator_failure_count_rejects_partial_site_results() -> None:
+    report = {
+        "results": [
+            {"site": "ok", "exit_code": 0},
+            {"site": "nonzero", "exit_code": 7},
+            {"site": "worker-error", "exit_code": -1, "error": "worker failed"},
+            {"site": "error-only", "exit_code": 0, "error": "partial"},
+        ]
+    }
+
+    assert orchestrator_failure_count(report) == 3
+
+
+@pytest.mark.parametrize("report", [None, {}, {"results": "invalid"}])
+def test_orchestrator_failure_count_fails_closed_for_missing_schema(report: object) -> None:
+    with pytest.raises(ValueError):
+        orchestrator_failure_count(report)
 
 
 def test_activity_command_runs_one_durable_stage_only(tmp_path: Path) -> None:

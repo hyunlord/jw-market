@@ -212,12 +212,15 @@ import json
 import os
 from pathlib import Path
 
+from pipeline.scripts.crawler.crawl_temporal_contract import orchestrator_failure_count
+
 raw = Path(os.environ["RAW"])
 report_path = raw / "orchestrator_report.json"
-total_news = 0
-if report_path.exists():
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    total_news = int(report.get("total_news") or (report.get("summary") or {}).get("total_news") or 0)
+if not report_path.is_file():
+    raise SystemExit(f"missing required orchestrator report: {report_path}")
+report = json.loads(report_path.read_text(encoding="utf-8"))
+total_news = int(report.get("total_news") or (report.get("summary") or {}).get("total_news") or 0)
+failures = orchestrator_failure_count(report)
 articles = []
 for path in raw.rglob("*.json"):
     if path.name in {"orchestrator_report.json", "crawl_summary.json", "score_run_log.json"}:
@@ -230,7 +233,11 @@ for path in raw.rglob("*.json"):
         payload.get("title") or payload.get("body") or payload.get("content")
     ):
         articles.append(str(path.relative_to(raw)))
-summary = {"article_file_count": len(articles), "report_total_news": total_news}
+summary = {
+    "article_file_count": len(articles),
+    "report_total_news": total_news,
+    "failures": failures,
+}
 Path(os.environ["OUTPUT"], "collect_summary.json").write_text(
     json.dumps(summary, sort_keys=True, indent=2), encoding="utf-8"
 )
@@ -238,8 +245,11 @@ if not articles and total_news <= 0:
     Path(os.environ["OUTPUT"], "NO_NEW_RAW").write_text("1\n", encoding="utf-8")
 print(f"CRAWL_ARTICLE_FILE_COUNT={len(articles)}")
 print(f"CRAWL_REPORT_TOTAL_NEWS={total_news}")
+print(f"CRAWL_REPORTED_FAILURES={failures}")
 PY
-  write_stage_gate 0 0 0
+  local failures
+  failures="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["failures"])' "${output}/collect_summary.json")"
+  write_stage_gate "${failures}" 0 0
 }
 
 tier1_classify() {
