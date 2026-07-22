@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: jw-crawl-chain-state
+  name: jw-crawl-temporal-shadow-state
   namespace: llmops
   labels:
     app: jw-market-crawl-temporal-shadow
@@ -83,5 +83,5 @@ spec:
       volumes:
       - name: chain-state
         persistentVolumeClaim:
-          claimName: jw-crawl-chain-state
+          claimName: jw-crawl-temporal-shadow-state
       restartPolicy: Always
