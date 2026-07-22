@@ -32,7 +32,7 @@ def iqvia_product_codes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(timeseries_service, "iqvia_product_codes_by_brand", from_brand_meta)
     monkeypatch.setattr(
         service,
-        "_cached_manufacturer_by_product",
+        "get_manufacturer_by_product",
         lambda: {
             "LIVALO": frozenset({"제이더블유중외제약"}),
             "LIVALOZET": frozenset({"제이더블유중외제약"}),
@@ -269,7 +269,7 @@ def test_company_axis_keeps_missing_manufacturer_as_null(monkeypatch) -> None:
     monkeypatch.setattr(service, "resolve_brand_set", lambda **_kwargs: brand_set)
     monkeypatch.setattr(
         service,
-        "_cached_manufacturer_by_product",
+        "get_manufacturer_by_product",
         lambda: {"B": frozenset({"아스트라제네카"})},
     )
     monkeypatch.setattr(

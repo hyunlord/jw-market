@@ -35,12 +35,12 @@ from pipeline.scripts.api.brand_activity_csd_timeseries import (
     _select_csd_markets,
     resolve_csd_markets,
 )
-from pipeline.scripts.api.brand_activity_topic_matrix import (
-    _cached_manufacturer_by_product,
-    _manufacturer_name_for_products,
-)
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.manufacturer_resolver import (
+    get_manufacturer_by_product,
+    resolve_manufacturer_name,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,9 +282,9 @@ def _manufacturer_by_brand(
     brand_set: BrandSetResolution,
     product_codes_by_brand: Mapping[str, frozenset[str]] | None = None,
 ) -> dict[str, str | None]:
-    manufacturer_map = _cached_manufacturer_by_product()
+    manufacturer_map = get_manufacturer_by_product()
     return {
-        choice.brand_key: _manufacturer_name_for_products(
+        choice.brand_key: resolve_manufacturer_name(
             tuple((product_codes_by_brand or {}).get(choice.brand_key, frozenset())),
             manufacturer_map,
         )

@@ -25,13 +25,15 @@ from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes
 from pipeline.scripts.api.brand_activity_interest_rx_source import _market_clause
 from pipeline.scripts.api.brand_activity_topic_matrix import (
     _alias_lookup,
-    _cached_manufacturer_by_product,
     _keyword_filter_domain,
-    _manufacturer_name_for_products,
 )
 from pipeline.scripts.api.brand_activity_interest_rx_matrix import _canonical_product
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.manufacturer_resolver import (
+    get_manufacturer_by_product,
+    resolve_manufacturer_name,
+)
 
 
 def _period_minus_months(period: str, months: int) -> str:
@@ -295,7 +297,7 @@ def _counts_by_company_month(
     """
 
     brand_products: frozenset[str] = frozenset().union(*code_sets.values()) if code_sets else frozenset()
-    manufacturer_map = _cached_manufacturer_by_product()
+    manufacturer_map = get_manufacturer_by_product()
     result: dict[str | None, dict[str, dict[str, int]]] = {}
     totals: dict[str | None, int] = {}
     for row in rows:
@@ -305,7 +307,7 @@ def _counts_by_company_month(
         product = _canonical_product(text(row.get("product_name")), aliases)
         if product not in brand_products:
             continue
-        company = _manufacturer_name_for_products((product,), manufacturer_map)
+        company = resolve_manufacturer_name((product,), manufacturer_map)
         month = text(row.get("period_ym"))
         value = int(float_value(row.get("event_count")))
         month_counts = result.setdefault(company, {}).setdefault(month, {})

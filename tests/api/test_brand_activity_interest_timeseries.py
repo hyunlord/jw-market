@@ -47,7 +47,7 @@ def _stub_common(monkeypatch):
     monkeypatch.setattr(service.db, "fetch_one", lambda *_a, **_k: {"available_start": "2023-06", "available_end": "2026-05"})
     monkeypatch.setattr(
         service,
-        "_cached_manufacturer_by_product",
+        "get_manufacturer_by_product",
         lambda: {
             "LIVALO": frozenset({"제이더블유중외제약"}),
             "CRESTOR": frozenset({"아스트라제네카"}),
@@ -105,7 +105,7 @@ def test_companies_axis_merges_sellers_by_manufacturer_and_preserves_natural_pct
 
 
 def test_companies_use_null_manufacturer_without_dropping_rows(monkeypatch):
-    monkeypatch.setattr(service, "_cached_manufacturer_by_product", lambda: {})
+    monkeypatch.setattr(service, "get_manufacturer_by_product", lambda: {})
     monkeypatch.setattr(service.db, "fetch_all", _rows([
         {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 3},
     ]))

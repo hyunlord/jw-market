@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api import brand_activity_topic_matrix as topic_matrix
+from pipeline.scripts.api import manufacturer_resolver
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolution
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, ViewConfig
 
@@ -18,9 +19,9 @@ from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMet
 def _reset_manufacturer_cache():
     """The product->manufacturer map is a long-lived module cache; reset it around each test
     so cache state never leaks across tests (order-independent, full-suite deterministic)."""
-    topic_matrix._manufacturer_cache = None
+    manufacturer_resolver._manufacturer_cache = None
     yield
-    topic_matrix._manufacturer_cache = None
+    manufacturer_resolver._manufacturer_cache = None
 
 
 def test_post_topic_service_emits_event_count_from_assignment_rows(monkeypatch) -> None:
@@ -77,7 +78,7 @@ def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch
         "LIVALO": frozenset({"JW SHINYAK"}),
         "LIVALOZET": frozenset({"JW PHARMACEUTICAL", "JW SHINYAK"}),
     }
-    monkeypatch.setattr(topic_matrix, "_cached_manufacturer_by_product", lambda: manufacturer_map)
+    monkeypatch.setattr(topic_matrix, "get_manufacturer_by_product", lambda: manufacturer_map)
 
     result = topic_matrix._company_names_by_brand(brand_set, {})
 
@@ -96,7 +97,7 @@ def test_company_names_tie_breaks_on_name_ascending(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _b: {"리바로": ("LIVALO",)})
     # Equal counts (one code hits both once) -> deterministic name ascending (BETA before GAMMA).
     manufacturer_map = {"LIVALO": frozenset({"GAMMA", "BETA"})}
-    monkeypatch.setattr(topic_matrix, "_cached_manufacturer_by_product", lambda: manufacturer_map)
+    monkeypatch.setattr(topic_matrix, "get_manufacturer_by_product", lambda: manufacturer_map)
     assert topic_matrix._company_names_by_brand(brand_set, {}) == {"리바로": "BETA, GAMMA"}
 
 
@@ -116,7 +117,7 @@ def test_fetch_manufacturer_by_product_builds_kor_map_and_skips_null(monkeypatch
         return rows
 
     monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
-    result = topic_matrix._fetch_manufacturer_by_product()
+    result = manufacturer_resolver.fetch_manufacturer_by_product()
     assert result == {
         "LIVALO": frozenset({"제이더블유중외제약"}),
         "CRESTOR": frozenset({"아스트라제네카"}),
