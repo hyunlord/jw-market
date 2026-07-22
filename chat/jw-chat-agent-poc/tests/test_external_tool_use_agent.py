@@ -371,7 +371,6 @@ def test_exact_clinical_permission_competitor_question_forces_valid_contract_too
     assert [choice.name for choice in choices] == [
         "clinicaltrials_v2_search",
         "mfds_clinical_trial_kr",
-        "web_search",
     ]
     assert all(choice.call_id and choice.call_id.startswith("contract-") for choice in choices)
     assert [choice.name for choice in _deterministic_tool_choices("리바로 임상실험", BrandResolver())] == [
@@ -395,10 +394,6 @@ def test_unbranded_stroke_clinical_review_preplans_independent_tools() -> None:
         (
             "mfds_clinical_trial_kr",
             {"query": "뇌경색", "query_type": "condition"},
-        ),
-        (
-            "web_search",
-            {"query": question, "brand": None, "topic": "general"},
         ),
     ]
 
@@ -446,7 +441,6 @@ def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug(
     assert [(choice.name, choice.arguments) for choice in choices] == [
         ("clinicaltrials_v2_search", {"query": "hyperlipidemia", "query_type": "condition"}),
         ("mfds_clinical_trial_kr", {"query": "고지혈증", "query_type": "condition"}),
-        ("web_search", {"query": question, "brand": None, "topic": "general"}),
     ]
 
 
@@ -469,21 +463,21 @@ def test_force_contract_flag_prevents_empty_tool_calls_for_exact_live_question(m
     assert [call["tool"] for call in payload["tool_calls"]] == [
         "clinicaltrials_v2_search",
         "mfds_clinical_trial_kr",
-        "web_search",
     ]
     assert payload["tool_calls"]
+    assert payload["agent_loop_metrics"]["status"] == "partial"
+    assert "식약처 허가정보" in payload["answer"]
 
 
 def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> None:
     question = "뇌경색 임상·허가 경쟁약물"
     provider = _ChoiceSequence((ToolChoice(None, {}, "done", call_id=None),))
     external = ExternalApiClient(mode="fixture")
-    barrier = threading.Barrier(3)
+    barrier = threading.Barrier(2)
     intervals: dict[str, tuple[float, float]] = {}
     events: list[dict[str, object]] = []
     original_clinical = external.clinicaltrials_v2_search
     original_domestic = external.mfds_clinical_trial_kr
-    original_web = external.web_search
 
     def concurrent_call(name: str, call):
         def wrapped(*args, **kwargs):
@@ -512,12 +506,6 @@ def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> No
         "mfds_clinical_trial_kr",
         concurrent_call("mfds_clinical_trial_kr", original_domestic),
     )
-    monkeypatch.setattr(
-        external,
-        "web_search",
-        concurrent_call("web_search", original_web),
-    )
-
     with stage_event_sink(events.append):
         payload = run_external_tool_agent(
             question,
@@ -528,7 +516,6 @@ def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> No
     assert [call["tool"] for call in payload["tool_calls"]] == [
         "clinicaltrials_v2_search",
         "mfds_clinical_trial_kr",
-        "web_search",
     ]
     assert provider.calls == 0
     assert all(
@@ -540,13 +527,12 @@ def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> No
         event
         for event in events
         if event.get("name")
-        in {"임상 데이터 조회", "국내 임상 정보 확인", "최신 웹 자료 검색"}
+        in {"임상 데이터 조회", "국내 임상 정보 확인"}
     ]
-    assert [event["status"] for event in tool_events[:3]] == ["started"] * 3
-    assert {event["name"] for event in tool_events[:3]} == {
+    assert [event["status"] for event in tool_events[:2]] == ["started"] * 2
+    assert {event["name"] for event in tool_events[:2]} == {
         "임상 데이터 조회",
         "국내 임상 정보 확인",
-        "최신 웹 자료 검색",
     }
 
 
