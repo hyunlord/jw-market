@@ -148,9 +148,22 @@ deploy/k8s/crawler/render-crawl-chain-control-job.sh resume "$RUN_ID" tier2_coll
 
 운영 폴링 SLA는 매일 12:30 KST까지 latest chain status 확인으로 둔다. 아래 marker 중 하나가 있으면 실패로 처리한다: `CHAIN_STAGE_FAILED`, `CHAIN_SCHEDULE_SKIPPED_ACTIVE`, 12:30까지 `CHAIN_RUN_COMPLETE` 부재. 외부 paging은 플랫폼 receiver가 연결된 뒤 별도 추가하며, receiver가 없는 상태를 알림 완료로 보고하지 않는다.
 
-### §8.5 stage 4 용량 이슈 (이번 변경 범위 밖)
+### §8.5 stage 4 용량과 backlog gate
 
-2026-07-21 실측 pending v2 74건은 순서 결함이 아니라 `append-live --daily-call-limit 60` 제한이다. 기존 증분 query가 target processor 미보유 row를 다음날 다시 읽으므로 영구 누락은 아니다. 같은 workflow 비용 상한(`60 calls = 203.40원`)을 단순 적용하면 74건 일괄 처리 비용은 약 **250.86원**이며 최소 2개 daily quota가 필요하다. 신규 유입이 같은 quota를 사용하므로 실제 해소일은 늘 수 있다. 한도 상향은 호출비 증가와 검수 표본 증가를 동반하지만 모델·prompt·validator는 바뀌지 않아 건당 품질 계약은 동일하다. 한도 변경과 backlog backfill은 PL 별도 승인 사항이며 이 patch는 `60`을 유지한다.
+2026-07-21 실측 pending v2 74건은 순서 결함이 아니라
+`append-live --daily-call-limit 60` 제한이었다. 2026-07-23 PL 승인으로 일일
+한도는 100콜, 비용 상한은 339.00원으로 조정됐다. 승인된 과거 10일 유입량
+(55·57·29·100·99·92·91·18·44·50) 재생에서 current-run hard-gate 실패는
+60콜에서 4/10, 100콜과 120콜에서 각각 0/10이었다. 120콜은 같은 입력에서
+추가 처리량이 없고 최대 예산만 406.80원으로 늘어 제외했다.
+
+실행 성공의 hard gate는 누적 backlog가 0인지가 아니라 실행 전후 pending
+pair 집합을 비교해 이번 실행이 만든 미해결 pair가 0이고 총 pending이
+증가하지 않았는지를 본다. 누적 backlog는 별도 SLO로 관리한다:
+oldest age 2일 warning/4일 failure, 연속 비감소 2회 warning/4회 failure.
+warning은 실행을 막지 않지만 failure는 stage gate를 실패시킨다. baseline과
+평가 receipt는 Temporal 14일 history 밖의 crawl state PVC에 content-addressed
+snapshot과 run별 receipt로 보존한다.
 
 ### §8.6 cache = 전일 완결 snapshot
 
