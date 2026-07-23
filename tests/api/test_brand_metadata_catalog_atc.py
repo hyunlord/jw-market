@@ -8,6 +8,16 @@ import pytest
 from pipeline.scripts.api.metadata import BRAND_METADATA, build_brand_metadata_payload
 
 
+def test_mobilia_uses_stem_cell_mobilization_label_without_changing_neutrogin() -> None:
+    labels_by_brand = {
+        metadata.brand: metadata.market_label_kor
+        for metadata in BRAND_METADATA
+    }
+
+    assert labels_by_brand["모빌리아"] == "조혈모세포 가동화 촉진"
+    assert labels_by_brand["뉴트로진"] == "G-CSF"
+
+
 def test_brand_metadata_response_uses_catalog_atc_codes_without_changing_other_fields() -> None:
     metadata = next(item for item in BRAND_METADATA if item.brand == "리바로")
 
