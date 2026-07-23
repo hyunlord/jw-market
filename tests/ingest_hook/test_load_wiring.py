@@ -524,6 +524,13 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
     monkeypatch.delenv(ubist_mart_activation.ENV_PROMOTION_APPROVED, raising=False)
     monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, str(shadow_root))
+    catalog_root = shadow_root / "catalog"
+    catalog_file = catalog_root / "strategic_brand" / "strategic_brand.parquet"
+    catalog_file.parent.mkdir(parents=True)
+    catalog_file.write_bytes(b"isolated-catalog")
+    monkeypatch.setenv(
+        ubist_mart_activation.ENV_SHADOW_CATALOG_ROOT, str(catalog_root)
+    )
     monkeypatch.setenv(
         ubist_mart_activation.ENV_SOURCE_DB, "jw_mart_d2_stage_20260630_r2"
     )

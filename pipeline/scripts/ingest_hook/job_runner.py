@@ -572,12 +572,19 @@ def run(
                     from pipeline.scripts.ingest_hook import ubist_mart_activation
 
                     tracker.enter("mart_build")
+                    catalog_root = (
+                        ubist_mart_activation.shadow_catalog_root_from_env(target_root)
+                        if is_shadow
+                        else None
+                    )
                     print(
                         f"phase=mart_build status=start build_db={mart_activation.build_db} "
-                        f"ubist_dir={load_result['target_dir']}"
+                        f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"
                     )
                     ubist_mart_activation.build_shadow(
-                        mart_activation, ubist_dir=load_result["target_dir"]
+                        mart_activation,
+                        catalog_root=catalog_root,
+                        ubist_dir=load_result["target_dir"],
                     )
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")

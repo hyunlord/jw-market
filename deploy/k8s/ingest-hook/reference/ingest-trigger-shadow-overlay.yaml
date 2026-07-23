@@ -23,6 +23,8 @@ spec:
               value: jw_mart_ingest_shadow_build
             - name: INGEST_SHADOW_SEED_ROOT
               value: /market-output/ubist
+            - name: INGEST_SHADOW_CATALOG_ROOT
+              value: /market-output/shadow/catalog
           volumeMounts:
             - name: market-output
               mountPath: /market-output

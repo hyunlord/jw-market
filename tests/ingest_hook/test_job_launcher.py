@@ -209,6 +209,20 @@ def test_rendered_job_passes_load_staging_root(monkeypatch):
     assert env["INGEST_COMPLETION_WEBHOOK_ATTEMPTS"]["value"] == "5"
 
 
+def test_rendered_shadow_job_passes_isolated_catalog_root(monkeypatch):
+    monkeypatch.setenv("INGEST_SHADOW_CATALOG_ROOT", "/market-output/shadow/catalog")
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/m.json",
+        namespace="llmops",
+    )
+
+    env = {e["name"]: e for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["INGEST_SHADOW_CATALOG_ROOT"]["value"] == "/market-output/shadow/catalog"
+
+
 def test_rendered_local_job_inherits_backend_root_and_read_only_nfs(monkeypatch):
     monkeypatch.setenv("INGEST_INPUT_BACKEND", "local")
     monkeypatch.setenv("INGEST_INPUT_ROOT", "/nfs-root/autoIngestion")

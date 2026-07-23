@@ -30,6 +30,7 @@ ENV_TARGET_DB = "INGEST_MART_TARGET_DB"
 ENV_BUILD_PREFIX = "INGEST_MART_BUILD_PREFIX"
 ENV_SHADOW_TARGET_DB = "INGEST_SHADOW_TARGET_DB"
 ENV_SHADOW_BUILD_PREFIX = "INGEST_SHADOW_BUILD_PREFIX"
+ENV_SHADOW_CATALOG_ROOT = "INGEST_SHADOW_CATALOG_ROOT"
 ENV_SHADOW_CRASH_AT = "INGEST_SHADOW_CRASH_AT"
 ENV_SHADOW_FAILURE_AT = "INGEST_SHADOW_FAILURE_AT"
 SHADOW_FAILURE_SIGMA_PARTS_WHOLE = "sigma_parts_whole"
@@ -129,6 +130,20 @@ def shadow_lock_name(target_db: str) -> str:
     if not target_db.startswith(SHADOW_DB_PREFIX):
         raise RuntimeError(f"shadow writer lock requires isolated target DB: {target_db}")
     return f"jw-market:ubist-shadow:{target_db}"
+
+
+def shadow_catalog_root_from_env(shadow_root: Path) -> Path:
+    value = os.environ.get(ENV_SHADOW_CATALOG_ROOT, "").strip()
+    if not value:
+        raise RuntimeError(f"isolated shadow build requires {ENV_SHADOW_CATALOG_ROOT}")
+    root = Path(value).resolve()
+    boundary = shadow_root.resolve()
+    if not root.is_relative_to(boundary):
+        raise RuntimeError("isolated shadow catalog must be inside the shadow root")
+    required = root / "strategic_brand" / "strategic_brand.parquet"
+    if not required.is_file():
+        raise RuntimeError(f"isolated shadow catalog is missing strategic_brand.parquet: {required}")
+    return root
 
 
 def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
@@ -389,13 +404,15 @@ def maybe_inject_shadow_sigma_mismatch(
         cursor.close()
 
 
-def build_shadow(config: MartActivation, *, ubist_dir: Path) -> None:
+def build_shadow(
+    config: MartActivation, *, catalog_root: Path | None, ubist_dir: Path
+) -> None:
     previous = {key: os.environ.get(key) for key in _S4_MUTATED_ENV}
     try:
         run_s4_general(
             build_db=config.build_db,
             source_db=config.source_db,
-            catalog_root=None,
+            catalog_root=catalog_root,
             ubist_dir=ubist_dir,
             input_mode="raw",
         )

@@ -61,6 +61,7 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 | `INGEST_SHADOW_TARGET_DB` | 격리 publish DB. `jw_mart_ingest_shadow_` prefix 필수 |
 | `INGEST_SHADOW_BUILD_PREFIX` | 격리 S4 build DB prefix. `jw_mart_ingest_shadow_` prefix 필수 |
 | `INGEST_SHADOW_SEED_ROOT` | 첫 shadow corpus를 seed할 read-only UBIST corpus root |
+| `INGEST_SHADOW_CATALOG_ROOT` | shadow root 아래에 격리 seed한 S4 catalog root |
 | `INGEST_SHADOW_CRASH_AT` | shadow-only deterministic recovery injection point. production에서는 fail-closed |
 | `INGEST_LOAD_TARGET_ROOT` | J5 프로덕션 출력 루트 (D-3; refresh 실행). staging 미설정 시 필수 |
 

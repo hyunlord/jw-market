@@ -80,7 +80,7 @@ def test_writer_lock_release_rejects_non_owner() -> None:
         activation.release_writer_lock(Connection())
 
 
-def test_build_shadow_uses_candidate_ubist_root(monkeypatch) -> None:
+def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
     target = activation.MartActivation("jw_mart", "jw_mart", "jw_mart_ingest_run1")
     monkeypatch.setattr(
@@ -89,15 +89,44 @@ def test_build_shadow_uses_candidate_ubist_root(monkeypatch) -> None:
         lambda **kwargs: calls.append(kwargs),
     )
 
-    activation.build_shadow(target, ubist_dir=Path("/market-output/.ubist-candidate-run1"))
+    activation.build_shadow(
+        target,
+        catalog_root=Path("/market-output/shadow/catalog"),
+        ubist_dir=Path("/market-output/.ubist-candidate-run1"),
+    )
 
     assert calls == [{
         "build_db": "jw_mart_ingest_run1",
         "source_db": "jw_mart",
-        "catalog_root": None,
+        "catalog_root": Path("/market-output/shadow/catalog"),
         "ubist_dir": Path("/market-output/.ubist-candidate-run1"),
         "input_mode": "raw",
     }]
+
+
+def test_shadow_catalog_root_requires_isolated_canonical_catalog(tmp_path, monkeypatch) -> None:
+    shadow_root = tmp_path / "shadow"
+    catalog_root = shadow_root / "catalog"
+    required = catalog_root / "strategic_brand" / "strategic_brand.parquet"
+    required.parent.mkdir(parents=True)
+    required.write_bytes(b"canonical-catalog")
+    monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(catalog_root))
+
+    assert activation.shadow_catalog_root_from_env(shadow_root) == catalog_root.resolve()
+
+
+def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monkeypatch) -> None:
+    shadow_root = tmp_path / "shadow"
+    external = tmp_path / "external"
+    monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(external))
+
+    with pytest.raises(RuntimeError, match="inside the shadow root"):
+        activation.shadow_catalog_root_from_env(shadow_root)
+
+    internal = shadow_root / "catalog"
+    monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(internal))
+    with pytest.raises(RuntimeError, match="strategic_brand.parquet"):
+        activation.shadow_catalog_root_from_env(shadow_root)
 
 
 def test_shadow_activation_isolated_without_production_approval(monkeypatch) -> None:
@@ -382,7 +411,11 @@ def test_build_shadow_restores_s4_mutated_environment(monkeypatch) -> None:
         monkeypatch.setenv("S4_UBIST_DIR", "/candidate")
 
     monkeypatch.setattr(activation, "run_s4_general", mutate)
-    activation.build_shadow(target, ubist_dir=Path("/candidate"))
+    activation.build_shadow(
+        target,
+        catalog_root=Path("/market-output/shadow/catalog"),
+        ubist_dir=Path("/candidate"),
+    )
 
     assert activation.os.environ["MARIADB_DATABASE"] == "jw_mart"
     assert "S4_UBIST_DIR" not in activation.os.environ
