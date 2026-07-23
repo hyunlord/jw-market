@@ -159,6 +159,28 @@ def test_failed_submission_retry_uses_a_new_job_name(client, service, bucket, fa
     assert len(fake_transport.submitted) == 2
 
 
+def test_job_submission_failure_does_not_leave_an_orphaned_queue(service, bucket):
+    from pipeline.scripts.ingest_hook.contract import load_manifest
+
+    manifest_path = write_submission(bucket)
+    manifest = load_manifest(manifest_path)
+
+    def reject(_path, _job):
+        raise RuntimeError("injected Kubernetes 409")
+
+    service.transport = reject
+
+    with pytest.raises(RuntimeError, match="409"):
+        service.receive_webhook(str(manifest_path.relative_to(bucket)))
+
+    entry = service.ledger.status(
+        manifest.epoch, manifest.category, manifest.manifest_sha
+    )
+    assert entry is not None
+    assert entry.status == "failed"
+    assert "job submission failed" in (entry.reason or "")
+
+
 def test_same_category_serialises_distinct_submissions(client, bucket, fake_transport):
     first = write_submission(bucket, epoch="2026-06", rows=GOOD_ROWS[:3])
     second = write_submission(bucket, epoch="2026-07")

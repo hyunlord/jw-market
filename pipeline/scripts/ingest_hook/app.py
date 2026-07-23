@@ -46,13 +46,22 @@ class IngestService:
         if entry is None:
             return None
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-        name = job_launcher.submit_job(
-            category=category,
-            manifest_sha=entry.manifest_sha,
-            manifest_path=entry.manifest_path,
-            transport=self.transport,
-            run_id=run_id,
-        )
+        try:
+            name = job_launcher.submit_job(
+                category=category,
+                manifest_sha=entry.manifest_sha,
+                manifest_path=entry.manifest_path,
+                transport=self.transport,
+                run_id=run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - transport is an external boundary
+            self.ledger.mark_failed(
+                entry.epoch,
+                category,
+                entry.manifest_sha,
+                reason=f"job submission failed: {type(exc).__name__}: {exc}",
+            )
+            raise
         self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
 
