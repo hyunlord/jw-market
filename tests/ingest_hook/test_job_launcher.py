@@ -11,6 +11,24 @@ from pipeline.scripts.ingest_hook.job_launcher import render_job, submit_job
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA = "f" * 64
+EXPECTED_API_NODE_AFFINITY = {
+    "nodeAffinity": {
+        "preferredDuringSchedulingIgnoredDuringExecution": [
+            {
+                "weight": 100,
+                "preference": {
+                    "matchExpressions": [
+                        {
+                            "key": "cloud.google.com/gke-nodepool",
+                            "operator": "In",
+                            "values": ["knp-jw-agn-dev-genos-api-01"],
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+}
 
 
 def test_rendered_job_pins_orchestrator_image_and_runner():
@@ -23,6 +41,36 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     assert body["metadata"]["name"] == f"jw-ingest-ubist-{SHA[:8]}"
     assert body["spec"]["backoffLimit"] == 0
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
+
+
+def test_rendered_job_prefers_api_node_pool_without_forcing_scheduling():
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+    )
+
+    pod_spec = body["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod_spec
+    assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
+
+
+def test_reference_job_prefers_same_api_node_pool():
+    template = yaml.safe_load(
+        (
+            REPO_ROOT
+            / "deploy"
+            / "k8s"
+            / "ingest-hook"
+            / "reference"
+            / "ingest-job-template.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    pod_spec = template["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod_spec
+    assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
 
 
 def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):

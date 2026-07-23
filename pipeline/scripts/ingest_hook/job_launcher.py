@@ -190,6 +190,31 @@ def render_job(
             "template": {
                 "metadata": {"labels": {"app": "jw-ingest"}},
                 "spec": {
+                    # Temporary mitigation from
+                    # ubist_shadow_nfs_identity_audit_20260723T2239KST:
+                    # api-01 can mount the NFS volumes while db-02 times out.
+                    # Keep this preferred so capacity can still schedule Jobs;
+                    # route/firewall/NFSv3 policy remains an infrastructure fix.
+                    "affinity": {
+                        "nodeAffinity": {
+                            "preferredDuringSchedulingIgnoredDuringExecution": [
+                                {
+                                    "weight": 100,
+                                    "preference": {
+                                        "matchExpressions": [
+                                            {
+                                                "key": "cloud.google.com/gke-nodepool",
+                                                "operator": "In",
+                                                "values": [
+                                                    "knp-jw-agn-dev-genos-api-01"
+                                                ],
+                                            }
+                                        ]
+                                    },
+                                }
+                            ]
+                        }
+                    },
                     "restartPolicy": "Never",
                     "containers": [
                         {
