@@ -114,6 +114,21 @@ def test_shadow_activation_isolated_without_production_approval(monkeypatch) -> 
     assert result.build_db.startswith("jw_mart_ingest_shadow_build_")
 
 
+def test_shadow_activation_uses_configured_mart_database_when_source_is_implicit(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(activation.ENV_PROMOTION_APPROVED, raising=False)
+    monkeypatch.delenv(activation.ENV_SOURCE_DB, raising=False)
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.setenv(activation.ENV_SHADOW_TARGET_DB, "jw_mart_ingest_shadow_demo")
+    monkeypatch.setenv(activation.ENV_SHADOW_BUILD_PREFIX, "jw_mart_ingest_shadow_build")
+
+    result = activation.shadow_from_env(run_id="run-1")
+
+    assert result.source_db == "jw_mart_d2_stage_20260630_r2"
+
+
 @pytest.mark.parametrize("target", ["jw_mart", "jw_mart_d2_stage_20260630_r2", "not_shadow"])
 def test_shadow_activation_rejects_serving_or_unscoped_target(monkeypatch, target) -> None:
     monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")

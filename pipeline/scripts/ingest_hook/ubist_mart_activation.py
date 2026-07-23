@@ -97,7 +97,9 @@ def shadow_from_env(*, run_id: str) -> MartActivation:
 
     if not os.environ.get("INGEST_LOAD_SHADOW_ROOT", "").strip():
         raise RuntimeError("isolated shadow activation requires INGEST_LOAD_SHADOW_ROOT")
-    source_db = os.environ.get(ENV_SOURCE_DB, "jw_mart").strip()
+    source_db = os.environ.get(
+        ENV_SOURCE_DB, os.environ.get("MARIADB_DATABASE", "jw_mart")
+    ).strip()
     target_db = os.environ.get(ENV_SHADOW_TARGET_DB, "").strip()
     prefix = os.environ.get(ENV_SHADOW_BUILD_PREFIX, f"{SHADOW_DB_PREFIX}build").strip()
     safe_run_id = re.sub(r"[^A-Za-z0-9_]", "_", run_id)
