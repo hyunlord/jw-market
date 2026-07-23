@@ -126,11 +126,17 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
     if ml is None and os.environ.get("S4_INPUT_MODE", "raw") != "enriched":
         query = _raw_ubist_aggregate_query(max_rows)
         LOGGER.info("[ubist] aggregating raw UBIST parquet for all ATC4")
-        con = duckdb.connect()
-        try:
-            frame = con.execute(query).df()
-        finally:
-            con.close()
+        with tempfile.TemporaryDirectory(prefix="ubist-aggregate-") as work_dir:
+            spill_dir = Path(work_dir) / "spill"
+            spill_dir.mkdir()
+            con = duckdb.connect()
+            try:
+                con.execute("SET memory_limit='4GB'")
+                con.execute("SET threads=2")
+                con.execute("SET temp_directory=?", [str(spill_dir)])
+                frame = con.execute(query).df()
+            finally:
+                con.close()
         return _normalize_raw_ubist_frame(frame)
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
