@@ -275,6 +275,26 @@
           "sickCd": "E78",
           "sickEngNm": "Disorders of lipoprotein metabolism and other lipidaemias",
           "sickNm": "지질단백질대사장애 및 기타 지질증"
+        },
+        {
+          "sickCd": "D69.3",
+          "sickEngNm": "Immune thrombocytopenic purpura",
+          "sickNm": "면역성 혈소판감소성 자반"
+        },
+        {
+          "sickCd": "H36.0",
+          "sickEngNm": "Diabetic retinopathy",
+          "sickNm": "당뇨병성 망막병증"
+        },
+        {
+          "sickCd": "I10",
+          "sickEngNm": "Essential hypertension",
+          "sickNm": "본태성 고혈압"
+        },
+        {
+          "sickCd": "E11",
+          "sickEngNm": "Type 2 diabetes mellitus",
+          "sickNm": "2형 당뇨병"
         }
       ],
       "request_note": "고지혈증/이상지질혈증 명칭 검색은 0건이며 SICK_CD=E78 또는 공식명 일부인 '지질' 검색을 사용합니다."

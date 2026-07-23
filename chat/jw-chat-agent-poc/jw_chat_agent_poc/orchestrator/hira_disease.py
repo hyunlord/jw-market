@@ -225,7 +225,7 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
 
 def hira_disease_code_calls(question: str, sick_cd: str, external: ExternalApiClient) -> list[ExternalCall]:
     code = normalize_hira_disease_code(sick_cd)
-    return list(_hira_external_calls(question, external, code))
+    return hira_direct_disease_calls(question, code, external)
 
 
 def hira_direct_disease_calls(question: str, disease_query: str, external: ExternalApiClient) -> list[ExternalCall]:

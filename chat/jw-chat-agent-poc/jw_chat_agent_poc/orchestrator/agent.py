@@ -188,7 +188,7 @@ class ChatAgent:
                     pre_resolved = self.resolver.resolve(question, allow_default=False)
                 except UnsupportedBrandError:
                     disease_code = explicit_hira_disease_code(question)
-                    direct_hira_subject = disease_query_from_question(question)
+                    direct_hira_subject = _direct_hira_subject(question)
                     if disease_code is not None:
                         pre_resolved = _hira_code_resolution(disease_code)
                     elif direct_hira_subject is not None:
@@ -1103,6 +1103,9 @@ def _is_known_ingredient_patent_question(question: str) -> bool:
 
 
 def _direct_hira_subject(question: str) -> str | None:
+    direct_subject = re.search(r"(?:상병|질병)코드\s*(?P<subject>[A-Za-z0-9.]+)", question)
+    if direct_subject is not None:
+        return direct_subject.group("subject")
     return explicit_disease_code(question) or disease_query_from_question(question)
 
 

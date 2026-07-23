@@ -573,6 +573,8 @@ def _fixture_hira_disease_name_code(search_text: str, disease_type: str, data: d
             summary_text=data["summary_text"],
             render_data={
                 **data["render_data"],
+                "totalCount": "1",
+                "items": [matched_code],
                 "request": {"sickCd": search_text, "searchText": search_text, "diseaseType": disease_type},
             },
             safe_url=data.get("safe_url"),
