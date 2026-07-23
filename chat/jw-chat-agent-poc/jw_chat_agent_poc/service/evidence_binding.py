@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+import re
 from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_exact_name
@@ -41,6 +43,13 @@ _SUPPLEMENTARY_NOTICE: Final = (
     "이 값은 공식 통계 원문이 아닌 공식 기관 웹의 보조 정보이며, 공식 통계로 사용해서는 안 됩니다."
 )
 
+_PARTIAL_EXCLUSION_NOTICE: Final = (
+    "근거 정합을 확인하지 못한 항목은 제외하고, 확인된 항목만 제공합니다."
+)
+
+_PARTIAL_EXCLUSION_CELL: Final = "근거 불일치로 제외"
+
+
 @dataclass(frozen=True, slots=True)
 class BindingVerification:
     answer: str
@@ -57,6 +66,7 @@ def verify_claim_bindings(
     answer: str,
     facts: Sequence[EvidenceFact],
     expected_entities: Sequence[str] = (),
+    _allow_partial_exclusion: bool = True,
 ) -> BindingVerification:
     expected = expected_entity_set(question, expected_entities)
     metrics = question_metrics(question)
@@ -94,6 +104,7 @@ def verify_claim_bindings(
             and (
                 token in fact.allowed_numbers
                 or token.upper() in explicit_periods(fact.period)
+                or _matches_display_rounding(token, fact)
             )
         )
         if not candidates:
@@ -184,13 +195,41 @@ def verify_claim_bindings(
 
     blocked_reasons = tuple(dict.fromkeys(blocked))
     if blocked_reasons:
+        unique_blocked_numbers = tuple(dict.fromkeys(blocked_numbers))
+        if _allow_partial_exclusion:
+            partial_answer = _exclude_blocked_claims(answer, unique_blocked_numbers)
+            remaining_claims = claim_number_tokens(
+                without_bound_identifiers(partial_answer, expected)
+            )
+            if partial_answer != answer and remaining_claims:
+                remainder = verify_claim_bindings(
+                    question=question,
+                    answer=partial_answer,
+                    facts=facts,
+                    expected_entities=expected_entities,
+                    _allow_partial_exclusion=False,
+                )
+                if remainder.status != "fail":
+                    revised = remainder.answer.rstrip()
+                    if _PARTIAL_EXCLUSION_NOTICE not in revised:
+                        revised = f"{revised}\n\n{_PARTIAL_EXCLUSION_NOTICE}"
+                    return BindingVerification(
+                        answer=revised,
+                        status="partial",
+                        disposition="partial",
+                        blocked_claim_count=len(unique_blocked_numbers),
+                        blocked_reasons=tuple(
+                            dict.fromkeys((*blocked_reasons, *remainder.blocked_reasons))
+                        ),
+                        blocked_numbers=unique_blocked_numbers,
+                    )
         return BindingVerification(
             answer=_BINDING_FAILURE_ANSWER,
             status="fail",
             disposition="unavailable",
-            blocked_claim_count=len(tuple(dict.fromkeys(blocked_numbers))),
+            blocked_claim_count=len(unique_blocked_numbers),
             blocked_reasons=blocked_reasons,
-            blocked_numbers=tuple(dict.fromkeys(blocked_numbers)),
+            blocked_numbers=unique_blocked_numbers,
         )
 
     unique_partial = tuple(dict.fromkeys(partial_reasons))
@@ -221,6 +260,89 @@ def verify_claim_bindings(
         blocked_reasons=(),
         blocked_numbers=(),
     )
+
+
+def _matches_display_rounding(token: str, fact: EvidenceFact) -> bool:
+    unit = _roundable_unit(token)
+    if not unit or fact.unit != unit:
+        return False
+    claimed_text = _numeric_text(token, unit)
+    claimed_places = _decimal_places(claimed_text)
+    if claimed_places < 1:
+        return False
+    try:
+        claimed = Decimal(claimed_text)
+    except InvalidOperation:
+        return False
+    tolerance = Decimal(1).scaleb(-claimed_places) / 2
+    for allowed in fact.allowed_numbers:
+        if _roundable_unit(allowed) != unit:
+            continue
+        source_text = _numeric_text(allowed, unit)
+        if _decimal_places(source_text) <= claimed_places:
+            continue
+        try:
+            source = Decimal(source_text)
+        except InvalidOperation:
+            continue
+        if abs(source - claimed) <= tolerance:
+            return True
+    return False
+
+
+def _roundable_unit(value: str) -> str:
+    compact = value.replace(" ", "")
+    for unit in ("억원", "%p", "%", "원"):
+        if compact.endswith(unit):
+            return unit
+    return ""
+
+
+def _numeric_text(value: str, unit: str) -> str:
+    return value.replace(" ", "").removesuffix(unit).replace(",", "")
+
+
+def _decimal_places(value: str) -> int:
+    return len(value.rsplit(".", 1)[1]) if "." in value else 0
+
+
+def _exclude_blocked_claims(answer: str, blocked_numbers: Sequence[str]) -> str:
+    blocked = set(blocked_numbers)
+    revised_lines: list[str] = []
+    for line in answer.splitlines():
+        cells = _markdown_cells(line)
+        if cells and not _markdown_divider(cells):
+            revised_cells = [
+                _PARTIAL_EXCLUSION_CELL
+                if blocked.intersection(claim_number_tokens(cell))
+                else cell
+                for cell in cells
+            ]
+            revised_lines.append("| " + " | ".join(revised_cells) + " |")
+            continue
+        if blocked.intersection(claim_number_tokens(line)):
+            kept = [
+                sentence
+                for sentence in re.split(r"(?<=[.!?。])\s+", line)
+                if sentence
+                and not blocked.intersection(claim_number_tokens(sentence))
+            ]
+            if kept:
+                revised_lines.append(" ".join(kept))
+            continue
+        revised_lines.append(line)
+    return "\n".join(revised_lines).strip()
+
+
+def _markdown_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return []
+    return [cell.strip() for cell in stripped[1:-1].split("|")]
+
+
+def _markdown_divider(cells: Sequence[str]) -> bool:
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
 
 
 def evidence_facts_from_result(result: Mapping[str, Any]) -> tuple[EvidenceFact, ...]:

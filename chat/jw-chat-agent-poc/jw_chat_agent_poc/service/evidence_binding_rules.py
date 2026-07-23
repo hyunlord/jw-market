@@ -73,7 +73,7 @@ def question_metrics(question: str) -> tuple[str, ...]:
 def claim_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
     segments = re.split(r"(?<=[.!?。])\s+|\n+", answer)
     for segment in segments:
-        if token in number_tokens(segment):
+        if token in claim_number_tokens(segment):
             metrics = question_metrics(segment)
             if metrics:
                 return metrics
@@ -84,7 +84,7 @@ def _table_header_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
     lines = answer.splitlines()
     for row_index, line in enumerate(lines):
         cells = _markdown_table_cells(line)
-        if not cells or not any(token in number_tokens(cell) for cell in cells):
+        if not cells or not any(token in claim_number_tokens(cell) for cell in cells):
             continue
 
         table_start = row_index
@@ -96,7 +96,7 @@ def _table_header_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
         headers = _markdown_table_cells(lines[table_start])
         metrics: list[str] = []
         for column, cell in enumerate(cells):
-            if column >= len(headers) or token not in number_tokens(cell):
+            if column >= len(headers) or token not in claim_number_tokens(cell):
                 continue
             metrics.extend(question_metrics(headers[column]))
         if metrics:
@@ -112,11 +112,37 @@ def _markdown_table_cells(line: str) -> tuple[str, ...]:
 
 
 def claim_number_tokens(text: str) -> tuple[str, ...]:
-    return number_tokens(_ORDERED_LIST_MARKER_RE.sub("", text))
+    without_markers = _ORDERED_LIST_MARKER_RE.sub("", text)
+    periods = explicit_periods(without_markers)
+    without_periods = without_markers
+    for period in sorted(periods, key=len, reverse=True):
+        without_periods = re.sub(
+            re.escape(period),
+            " ",
+            without_periods,
+            flags=re.IGNORECASE,
+        )
+    return tuple(dict.fromkeys((*number_tokens(without_periods), *periods)))
 
 
 def explicit_periods(text: str) -> tuple[str, ...]:
     periods: list[str] = []
+    quarter_matches = tuple(
+        re.finditer(
+            r"(?<!\d)(20\d{2})\s*(?:년\s*)?(?:Q\s*([1-4])|([1-4])\s*분기)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    for match in quarter_matches:
+        year = match.group(1)
+        quarter = int(match.group(2) or match.group(3))
+        first_month = (quarter - 1) * 3 + 1
+        periods.append(f"{year}-Q{quarter}")
+        periods.extend(
+            f"{year}-{month:02d}"
+            for month in range(first_month, first_month + 3)
+        )
     periods.extend(
         re.findall(
             r"(?<!\d)20\d{2}-(?:0[1-9]|1[0-2]|Q[1-4])(?!\d)",
@@ -144,6 +170,8 @@ def entity_matches(fact: EvidenceFact, expected: set[str]) -> bool:
 
 def metric_matches(fact: EvidenceFact, expected: tuple[str, ...]) -> bool:
     if not expected:
+        return True
+    if expected == ("기간",):
         return True
     return fact.metric in expected or fact.metric in {"기간", "질병코드"}
 
