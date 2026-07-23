@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_owner
 from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
+from jw_chat_agent_poc.orchestrator.markdown_renderers import market_members_md
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
@@ -24,7 +25,11 @@ from jw_chat_agent_poc.tools.general_view_membership import (
     TtlGeneralMembershipCache,
 )
 from jw_chat_agent_poc.tools.general_view_mart import GeneralViewMartBackend, MariaDbGeneralMartReader
-from jw_chat_agent_poc.tools.metrics.market_scope_intent import asks_market_members, detect_market_scope_intent
+from jw_chat_agent_poc.tools.metrics.market_scope_intent import (
+    asks_market_members,
+    asks_other_market_members,
+    detect_market_scope_intent,
+)
 
 
 _ATC4_PATTERN = re.compile(
@@ -257,12 +262,14 @@ def _contract(
     question: str,
 ) -> dict[str, Any]:
     window = _requested_market_window(question, market)
+    member_fields = _member_contract_fields(market, question) if asks_market_members(question) else {}
     section = _render_section(
         market,
         other_candidates=other_candidates,
         compact=compact,
         window=window,
         question=question,
+        member_fields=member_fields,
     )
     contract = {
         "mode": "dual" if dual else "general_only",
@@ -278,15 +285,7 @@ def _contract(
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
     }
-    if asks_market_members(question):
-        members = _requested_member_rows(market, question)
-        contract.update(
-            {
-                "member_brands": [row.brand for row in members],
-                "displayed_brand_count": len(members),
-                "total_brands_in_market": len(market.member_brands or market.top_brands),
-            }
-        )
+    contract.update(member_fields)
     return contract
 
 
@@ -297,10 +296,19 @@ def _result(
     *,
     started_at: datetime,
 ) -> dict[str, Any]:
+    member_query = "member_brands" in contract
+    tool = "get_market_members" if member_query else "general_view_dynamic_market"
+    summary = (
+        f"ATC4 {market.atc4_code} 일반뷰의 구성 브랜드를 조회했습니다. "
+        f"총 {int(contract.get('total_brands_in_market') or 0):,}개 중 "
+        f"{int(contract.get('displayed_brand_count') or 0):,}개 표시"
+        if member_query
+        else f"ATC4 {market.atc4_code} 일반뷰를 조회했습니다."
+    )
     call = {
         "source": "jw-market-backend-api",
-        "tool": "general_view_dynamic_market",
-        "summary_text": f"ATC4 {market.atc4_code} 일반뷰를 조회했습니다.",
+        "tool": tool,
+        "summary_text": summary,
         "render_data": dict(contract),
     }
     attach_tool_qa_trace(
@@ -314,7 +322,12 @@ def _result(
     return {
         "question": question,
         "resolution": {"canonical_brand": market.brand, "atc4_code": market.atc4_code},
-        "decomposition": [{"intent": "general_view_market_metric", "view_type": "general_view"}],
+        "decomposition": [
+            {
+                "intent": "market_members" if member_query else "general_view_market_metric",
+                "view_type": "general_view",
+            }
+        ],
         "router_diagnostics": {
             "mode": "general_view",
             "reason": "general_view_dynamic_market",
@@ -387,7 +400,13 @@ def _render_section(
     compact: bool,
     window: tuple[str, float] | None,
     question: str,
+    member_fields: dict[str, Any],
 ) -> str:
+    if member_fields:
+        blocks = ["## 일반뷰 (ATC4)", market_members_md(member_fields)]
+        if not compact:
+            blocks.append(f"점유율 분모: ATC4 {market.atc4_code} 시장 전체 {market.measure}")
+        return "\n\n".join(blocks)
     lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {market.atc4_description}"]
     if window is not None:
         label, value = window
@@ -410,13 +429,6 @@ def _render_section(
             for index, row in enumerate(top_rows, 1)
         )
         lines.append(f"- Top 5: {summary}")
-    if asks_market_members(question):
-        members = _requested_member_rows(market, question)
-        if members:
-            lines.append("- 구성 브랜드: " + ", ".join(row.brand for row in members))
-        lines.append(
-            f"- 총 {len(market.member_brands or market.top_brands)}개 중 {len(members)}개 표시"
-        )
     if other_candidates:
         lines.append("- 다른 ATC4 후보: " + ", ".join(other_candidates))
     if not compact:
@@ -436,8 +448,44 @@ def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str,
 
 def _requested_member_rows(market: GeneralMarket, question: str) -> tuple[TopBrand, ...]:
     population = market.member_brands or market.top_brands
-    selected = population[5:] if "기타" in question else population
+    selected = population[5:] if asks_other_market_members(question) else population
     return selected[:20]
+
+
+def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, Any]:
+    population = market.member_brands or market.top_brands
+    other_only = asks_other_market_members(question)
+    members = _requested_member_rows(market, question)
+    other_rows = population[5:]
+    other_share: float | None
+    if not other_rows:
+        other_share = 0.0
+    elif all(row.share_pct is not None for row in other_rows):
+        other_share = sum(float(row.share_pct) for row in other_rows if row.share_pct is not None)
+    else:
+        other_share = None
+    fields: dict[str, Any] = {
+        "status": "ok",
+        "market": market.atc4_code,
+        "market_id": market.atc4_code,
+        "market_name": market.atc4_description,
+        "scope": "market",
+        "scope_label": "시장 구성 브랜드",
+        "level": "Brand",
+        "view_type": "general_view",
+        "period": market.period,
+        "anchor_brand": market.brand,
+        "member_brands": [row.brand for row in members],
+        "displayed_brand_count": len(members),
+        "total_brands_in_market": len(population),
+        "other_members_only": other_only,
+        "other_member_count": len(other_rows),
+        "sort": "sales_desc",
+        "limit": 20,
+    }
+    if other_only and other_share is not None:
+        fields["other_total_share_pct"] = other_share
+    return fields
 
 
 def _format_value(value: float, unit: str) -> str:
