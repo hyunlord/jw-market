@@ -12,7 +12,8 @@ from typing import Protocol
 
 from pipeline.etl.io.mart.filter_dimension_metric import DIMENSION_REGISTRY
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
-from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_value
+from pipeline.etl.io.mart.filter_dimension_metric import DimensionSpec
+from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_spec_value
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
 from pipeline.scripts.api import db
@@ -271,7 +272,7 @@ class GeneralViewResolver:
             spec = registry[dimension_type]
             if not spec.enabled:
                 raise DynamicMarketInputError(f"analysis_level dimension is disabled for D-1: {api_name}")
-            normalized = _normalize_dimension_values(values)
+            normalized = _normalize_dimension_values(values, spec)
             if normalized:
                 filters.append(DimensionFilter(dimension_type=dimension_type, values=normalized))
         return tuple(filters)
@@ -484,7 +485,7 @@ def build_dimension_filters(
         spec = registry[dimension_type]
         if not spec.enabled:
             raise DynamicMarketInputError(f"analysis_level dimension is disabled for dynamic filters: {api_name}")
-        normalized = _normalize_dimension_values(values)
+        normalized = _normalize_dimension_values(values, spec)
         if normalized:
             filters.append(DimensionFilter(dimension_type=dimension_type, values=normalized))
     return tuple(filters)
@@ -569,11 +570,11 @@ def _api_dimension_names(source: str) -> dict[str, str]:
     }
 
 
-def _normalize_dimension_values(values: list[str]) -> tuple[str, ...]:
+def _normalize_dimension_values(values: list[str], spec: DimensionSpec) -> tuple[str, ...]:
     normalized: list[str] = []
     seen: set[str] = set()
     for value in values:
-        item = normalize_dimension_value(value)
+        item = normalize_dimension_spec_value(value, spec)
         if item and item not in seen:
             seen.add(item)
             normalized.append(item)

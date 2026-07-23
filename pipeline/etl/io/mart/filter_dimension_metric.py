@@ -14,7 +14,7 @@ general mart.
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 import re
 
 from .general_config import MEASURES_BY_SOURCE
@@ -48,6 +48,7 @@ class DimensionSpec:
     enabled: bool
     source: str
     notes: str
+    normalization: Literal["collapse_whitespace", "trim"] = "collapse_whitespace"
 
 
 DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
@@ -83,6 +84,7 @@ DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
             enabled=True,
             source="ubist",
             notes="원천 molecule 값을 분해하지 않고 양끝 공백만 제거해 하나의 성분 값으로 보존한다.",
+            normalization="trim",
         ),
         "molecule_strength": DimensionSpec(
             dimension_type="molecule_strength",
@@ -222,7 +224,7 @@ def build_filter_dimension_rows(
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
         working[label_col] = _dimension_display_series(working, spec)
-        working[norm_col] = working[label_col].map(lambda value: _normalize_spec_value(value, spec))
+        working[norm_col] = working[label_col].map(lambda value: normalize_dimension_spec_value(value, spec))
         dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
             continue
@@ -401,15 +403,17 @@ def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Se
     for column in spec.source_columns:
         if column not in frame:
             continue
-        values = frame[column].map(lambda value: _normalize_spec_value(value, spec))
+        values = frame[column].map(lambda value: normalize_dimension_spec_value(value, spec))
         if spec.dimension_type == "atc3":
             values = values.map(_atc3_from_atc4)
         result = result.where(result.notna(), values)
     return result
 
 
-def _normalize_spec_value(value: object, spec: DimensionSpec) -> str | None:
-    if spec.source == "ubist" and spec.dimension_type == "molecule":
+def normalize_dimension_spec_value(value: object, spec: DimensionSpec) -> str | None:
+    """Normalize one value according to its registry-owned dimension contract."""
+
+    if spec.normalization == "trim":
         if value is None:
             return None
         try:

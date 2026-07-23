@@ -85,6 +85,9 @@ def build_cause_payload(
         "unit_label": metrics.unit_label,
         "view": definition.view,
     }
+    if not data.get("market_size_series") and not metrics.all_brands:
+        payload["reason"] = "no_data"
+        payload["data_quality"] = {"available": False, "reason": "no_data"}
     return normalize_portal_read_payload(payload)
 
 

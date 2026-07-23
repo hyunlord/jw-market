@@ -2611,6 +2611,84 @@ def test_build_dimension_filters_accepts_raw_ubist_molecule() -> None:
     assert filters == (DimensionFilter("molecule", ("PITAVASTATIN / EZETIMIBE",)),)
 
 
+def test_build_dimension_filters_preserves_registry_whitespace_for_raw_ubist_molecule() -> None:
+    raw = "ezetimibe,  rosuvastatin calcium  ( as rosuvastatin)"
+
+    filters = resolvers.build_dimension_filters(
+        analysis_level={"ubist": {"molecule": [raw]}},
+        source="ubist",
+    )
+
+    assert filters == (DimensionFilter("molecule", (raw,)),)
+
+
+def test_empty_general_payload_marks_no_data_without_removing_existing_shape() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+        focus_brand_key="로수젯",
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=0.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=(),
+        brands=(),
+        all_brands=(),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    assert payload["reason"] == "no_data"
+    assert payload["data_quality"] == {"available": False, "reason": "no_data"}
+    assert payload["data"]["kpi"] == {}
+    assert payload["data"]["market_size_series"] == []
+
+
+def test_missing_focus_does_not_mark_nonempty_market_as_no_data() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={"source": "ubist", "measure": "sales"},
+        source="ubist",
+        measure="sales",
+        focus_brand_key="missing-brand",
+    )
+    market_brand = BrandMetric(
+        "market-brand",
+        "Market Brand",
+        "C10C",
+        100.0,
+        100.0,
+        1,
+        "2026-01",
+        100.0,
+        ({"period": "2026-01", "value": 100.0},),
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-01", "market_size": 100.0},),
+        brands=(market_brand,),
+        all_brands=(market_brand,),
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    assert payload["data"]["kpi"] == {}
+    assert payload["data"]["kpi_reason"] == "focus_not_found"
+    assert "reason" not in payload
+    assert "data_quality" not in payload
+
+
 def test_build_dimension_filters_accepts_ubist_atc_narrowing_dimensions() -> None:
     filters = resolvers.build_dimension_filters(
         analysis_level={"ubist": {"atc3": ["A10N"], "atc4": ["A10N1", "A10N3"]}},

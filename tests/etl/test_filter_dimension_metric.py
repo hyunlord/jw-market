@@ -31,6 +31,44 @@ def test_dimension_value_normalization_collapses_whitespace_and_excludes_empty_v
     assert sidecar.normalize_dimension_value(" - ") is None
 
 
+def test_registry_normalizer_keeps_raw_ubist_molecule_spacing() -> None:
+    spec = sidecar.DIMENSION_REGISTRY["ubist"]["molecule"]
+    raw = "  ezetimibe,  rosuvastatin calcium  ( as rosuvastatin)  "
+
+    assert sidecar.normalize_dimension_spec_value(raw, spec) == (
+        "ezetimibe,  rosuvastatin calcium  ( as rosuvastatin)"
+    )
+
+
+def test_registry_normalizer_matches_producer_and_request_round_trip() -> None:
+    spec = sidecar.DIMENSION_REGISTRY["ubist"]["molecule"]
+    raw = "  metformin  /  sitagliptin  "
+
+    producer_value = sidecar.normalize_dimension_spec_value(raw, spec)
+    request_value = sidecar.normalize_dimension_spec_value(producer_value, spec)
+
+    assert request_value == producer_value
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        spec
+        for registry in sidecar.DIMENSION_REGISTRY.values()
+        for spec in registry.values()
+        if spec.enabled
+    ],
+    ids=lambda spec: f"{spec.source}-{spec.dimension_type}",
+)
+def test_registry_normalizer_is_idempotent_for_every_enabled_dimension(
+    spec: sidecar.DimensionSpec,
+) -> None:
+    producer_value = sidecar.normalize_dimension_spec_value("  alpha  beta  ", spec)
+
+    assert producer_value is not None
+    assert sidecar.normalize_dimension_spec_value(producer_value, spec) == producer_value
+
+
 def test_build_filter_dimension_rows_keeps_ubist_product_level_grain() -> None:
     frame = pd.DataFrame(
         [
