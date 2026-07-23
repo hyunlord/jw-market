@@ -38,6 +38,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_runtime import (
     shadow_route_diagnostics,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
+from jw_chat_agent_poc.tool_use.routing_v4_plan_support import singleton_arguments
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -298,6 +299,13 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
     except UnsupportedBrandError:
         resolution = None
     brand = resolution.canonical_brand if resolution is not None else _explicit_brand_query(question)
+    if (
+        brand is None
+        and classification.requested_capability
+        in {"MFDS_BASIC_PRODUCT_INFO", "MFDS_PERMISSION_DETAIL_FIELDS"}
+    ):
+        arguments = singleton_arguments("mfds_permission_search", question)
+        brand = str(arguments["brand"]) if arguments is not None else None
     ingredient = (
         resolution.molecule_en[0]
         if resolution is not None and resolution.molecule_en

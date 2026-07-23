@@ -439,6 +439,8 @@ def test_nedrug_composition_forces_contract_backed_tool_in_off_mode() -> None:
     (
         "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
         "NeDrug: 아일리아 제품의 효능 효과, 용병 용량, 사용상 주의사항을 알려줘",
+        "Eylea 급여기준 알려줘",
+        "Aflibercept 급여기준 알려줘",
     ),
 )
 def test_nedrug_permission_fields_force_contract_backed_tool_in_off_mode(question: str) -> None:
