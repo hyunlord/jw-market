@@ -29,6 +29,7 @@ from jw_chat_agent_poc.tools.metrics.market_scope_intent import (
     asks_market_members,
     asks_other_market_members,
     detect_market_scope_intent,
+    requested_market_member_limit,
 )
 
 
@@ -207,7 +208,10 @@ class GeneralViewService:
             contract = _contract(selected, other_candidates=others, compact=compact, dual=dual, question=question)
             return _result(question, selected, contract, started_at=started_at)
         except GeneralViewBackendError as exc:
-            return _unavailable_result(question, str(exc), dual=dual, started_at=started_at)
+            reason = str(exc)
+            if asks_market_members(question) and "ATC4 후보" in reason:
+                reason = "시장 매핑이 확인되지 않습니다"
+            return _unavailable_result(question, reason, dual=dual, started_at=started_at)
 
     def _membership_resolution(self, brand: str, source: str) -> tuple[tuple[AtcCandidate, ...], str]:
         if self._general_membership is not None:
@@ -449,12 +453,13 @@ def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str,
 def _requested_member_rows(market: GeneralMarket, question: str) -> tuple[TopBrand, ...]:
     population = market.member_brands or market.top_brands
     selected = population[5:] if asks_other_market_members(question) else population
-    return selected[:20]
+    return selected[: requested_market_member_limit(question).applied]
 
 
 def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, Any]:
     population = market.member_brands or market.top_brands
     other_only = asks_other_market_members(question)
+    limit = requested_market_member_limit(question)
     members = _requested_member_rows(market, question)
     other_rows = population[5:]
     other_share: float | None
@@ -481,8 +486,11 @@ def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, A
         "other_members_only": other_only,
         "other_member_count": len(other_rows),
         "sort": "sales_desc",
-        "limit": 20,
+        "limit": limit.applied,
     }
+    if limit.requested is not None:
+        fields["requested_limit"] = limit.requested
+        fields["limit_capped"] = limit.capped
     if other_only and other_share is not None:
         fields["other_total_share_pct"] = other_share
     return fields
