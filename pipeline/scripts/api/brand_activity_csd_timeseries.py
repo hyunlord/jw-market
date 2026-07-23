@@ -60,7 +60,6 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
             market_id=request["market_id"],
             selected_brand=request["selected_brand"],
             filter_payload=request["filter"],
-            ranking_quarters=quarters,
             prefilter_strategic_choices=True,
         )
     except BrandSetInputError as exc:

@@ -11,6 +11,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandCandidate,
     BrandSetInputError,
     _brand_candidates,
+    _candidate_sales_value,
     _resolve_strategic_brand_context,
     _select_choices,
     resolve_brand_set,
@@ -30,6 +31,7 @@ from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContextError
     (
         ("pipeline.scripts.api.brand_activity_topic_matrix", "get_topic_brand_payload"),
         ("pipeline.scripts.api.brand_activity_interest_rx_matrix", "get_interest_rx_matrix"),
+        ("pipeline.scripts.api.brand_activity_interest_timeseries", "get_interest_timeseries"),
         ("pipeline.scripts.api.brand_activity_csd_timeseries", "get_csd_timeseries"),
         ("pipeline.scripts.api.brand_activity_csd_activity_series", "get_csd_activity_series"),
     ),
@@ -56,6 +58,28 @@ def test_brand_activity_routes_enable_strategic_choice_prefilter(
     assert keyword is not None
     assert isinstance(keyword.value, ast.Constant)
     assert keyword.value.value is True
+    assert all(item.arg != "ranking_quarters" for item in calls[0].keywords)
+
+
+def test_brand_set_resolver_owns_the_ranking_period_contract() -> None:
+    assert "ranking_quarters" not in inspect.signature(resolve_brand_set).parameters
+
+
+def test_candidate_sales_uses_only_the_canonical_ranking_quarter() -> None:
+    row = {
+        "metric_history": {
+            "2025-Q4": {"raw_value": 1_000.0},
+            "2026-Q1": {"raw_value": 25.0},
+        }
+    }
+
+    value = _candidate_sales_value(
+        row,
+        ranking={"quarter": "2026-Q1", "items": []},
+        audit_code_axis=None,
+    )
+
+    assert value == 25.0
 
 
 def test_brand_filter_uses_or_within_dimension_and_and_across_dimensions() -> None:
@@ -382,7 +406,7 @@ def test_strategic_resolution_can_restrict_rows_to_market_ranking(monkeypatch) -
     assert [kind for kind, _ in calls] == ["market", "brand"]
 
 
-def test_strategic_resolution_prefilters_exact_multi_period_choices_before_loading_full_rows(monkeypatch) -> None:
+def test_strategic_resolution_prefilters_latest_ranking_period_before_loading_full_rows(monkeypatch) -> None:
     calls: list[tuple[str, str, tuple[object, ...]]] = []
     metric_history = {
         "선택": {"2026-Q1": {"raw_value": 1.0}, "2026-Q2": {"raw_value": 1.0}},
@@ -460,14 +484,13 @@ def test_strategic_resolution_prefilters_exact_multi_period_choices_before_loadi
         market_id="ml_008",
         selected_brand="선택",
         filter_payload={},
-        ranking_quarters=("2026-Q1", "2026-Q2"),
         prefilter_strategic_choices=True,
     )
 
     assert result is not None
-    assert [choice.brand_key for choice in result.choices] == ["선택", "b1", "b2", "b3", "b4", "b6"]
+    assert [choice.brand_key for choice in result.choices] == ["선택", "b1", "b2", "b3", "b4", "b5"]
     assert [phase for phase, _sql, _params in calls] == ["market", "light", "full"]
-    assert set(calls[-1][2][3:]) == {"선택", "b1", "b2", "b3", "b4", "b6"}
+    assert set(calls[-1][2][3:]) == {"선택", "b1", "b2", "b3", "b4", "b5"}
     assert set(result.brand_meta) == set(metric_history)
     assert result.brand_meta["b5"].product_codes == ("B5",)
 
@@ -653,7 +676,6 @@ def test_general_market_scope_member_resolves_livalo_to_member_atc4(monkeypatch)
         market_id=None,
         selected_brand="리바로",
         filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "리바로"}},
-        ranking_quarters=("2026-Q2",),
     )
 
     assert result is not None
@@ -675,7 +697,6 @@ def test_general_market_scope_preserves_explicit_group_atc4_membership(monkeypat
             "atc4": ["C10A1", "C10C0"],
             "market_scope": {"option_id": "group:livalo_family", "member": "리바로"},
         },
-        ranking_quarters=("2026-Q2",),
     )
 
     assert result is not None
@@ -714,7 +735,6 @@ def test_general_market_scope_member_resolves_livalozet_to_member_atc4(monkeypat
         market_id=None,
         selected_brand="리바로젯",
         filter_payload={"market_scope": {"option_id": "group:livalo_family", "member": "리바로젯"}},
-        ranking_quarters=("2026-Q2",),
     )
 
     assert result is not None

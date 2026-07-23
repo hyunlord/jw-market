@@ -115,7 +115,6 @@ def resolve_brand_set(
     market_id: str | None,
     selected_brand: str,
     filter_payload: Mapping[str, Any] | None = None,
-    ranking_quarters: Sequence[str] | None = None,
     source: str = SOURCE,
     rank_by_latest_period: bool = False,
     resolved_context: DeepAnalysisContext | None = None,
@@ -178,7 +177,7 @@ def resolve_brand_set(
     if prefilter_strategic_choices and is_unfiltered_strategic and not rank_by_latest_period:
         market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
         if market_row is not None:
-            ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+            ranking = _ranking_for_quarter(market_row, view.ranking_column)
             choice_rows = tuple(_fetch_brand_choice_rows(view, resolved_market_id, source=resolved_source))
             strategic_choice_meta = _brand_choice_meta_by_key(choice_rows, has_is_jw=view.has_is_jw)
             if resolved_selected_brand in strategic_choice_meta:
@@ -186,7 +185,6 @@ def resolve_brand_set(
                     choice_rows,
                     strategic_choice_meta,
                     ranking,
-                    ranking_quarters=ranking_quarters,
                 )
                 choices = _select_choices(
                     choice_candidates,
@@ -200,7 +198,7 @@ def resolve_brand_set(
     elif restrict_strategic_to_ranking and is_unfiltered_strategic:
         market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
         if market_row is not None:
-            ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+            ranking = _ranking_for_quarter(market_row, view.ranking_column)
             ranked_brand_keys = _ranking_brand_keys(ranking, selected_brand=resolved_selected_brand)
     if ranked_brand_keys:
         brand_rows = tuple(_fetch_brand_rows(view, brand_market_ids, source=resolved_source, brand_keys=ranked_brand_keys))
@@ -212,7 +210,7 @@ def resolve_brand_set(
         market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
     if market_row is None:
         return None
-    ranking = _ranking_for_quarter(market_row, view.ranking_column, ranking_quarters)
+    ranking = _ranking_for_quarter(market_row, view.ranking_column)
     brand_meta = strategic_choice_meta or _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
     if view_name == "general":
         resolved_selected_brand = _resolve_general_selected_brand_key(resolved_selected_brand, brand_meta)
@@ -227,7 +225,6 @@ def resolve_brand_set(
         brand_rows,
         brand_meta,
         ranking,
-        ranking_quarters=ranking_quarters,
         audit_code_axis=channel_axis,
         source=resolved_source,
     )
@@ -512,7 +509,6 @@ def _brand_candidates(
     metas: dict[str, BrandMeta],
     ranking: JsonMap,
     *,
-    ranking_quarters: Sequence[str] | None = None,
     audit_code_axis: ChannelAxisFilter | None = None,
     source: str = SOURCE,
 ) -> tuple[BrandCandidate, ...]:
@@ -550,7 +546,7 @@ def _brand_candidates(
                 ),
                 sales_rank=int_or_none(rank_item.get("rank")) or metric_rank,
                 sales_value=sum(
-                    _candidate_sales_value(row, ranking=ranking, ranking_quarters=ranking_quarters, audit_code_axis=audit_code_axis)
+                    _candidate_sales_value(row, ranking=ranking, audit_code_axis=audit_code_axis)
                     for row in brand_rows
                 ),
             )
@@ -575,21 +571,19 @@ def _brand_choice_candidates(
     rows: tuple[JsonMap, ...],
     metas: dict[str, BrandMeta],
     ranking: JsonMap,
-    *,
-    ranking_quarters: Sequence[str] | None = None,
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
     candidates: list[BrandCandidate] = []
     for row in rows:
         brand_key = str(row["brand_key"])
         raw_history = json_map(row.get("raw_value_history"))
-        periods = tuple(ranking_quarters or sorted(raw_history))
+        period = str(ranking["quarter"])
         candidates.append(
             BrandCandidate(
                 meta=metas[brand_key],
                 dimensions={},
                 sales_rank=int_or_none(rank_by_key.get(brand_key, {}).get("rank")),
-                sales_value=sum(float_value(raw_history.get(period)) for period in periods),
+                sales_value=float_value(raw_history.get(period)),
             )
         )
     return tuple(candidates)
@@ -644,14 +638,13 @@ def _candidate_sales_value(
     row: JsonMap,
     *,
     ranking: JsonMap,
-    ranking_quarters: Sequence[str] | None,
     audit_code_axis: ChannelAxisFilter | None,
 ) -> float:
     metric_history = json_map(row.get("metric_history"))
-    periods = tuple(ranking_quarters or sorted(metric_history) or (str(ranking["quarter"]),))
+    period = str(ranking["quarter"])
     if audit_code_axis:
-        return sum(audit_code_sales_value(row, audit_code_axis, period) for period in periods)
-    return sum(float_value(json_map(metric_history.get(period)).get("raw_value")) or 0.0 for period in periods)
+        return audit_code_sales_value(row, audit_code_axis, period)
+    return float_value(json_map(metric_history.get(period)).get("raw_value"))
 
 
 def _passes_filter(candidate: BrandCandidate, applied_filter: JsonMap) -> bool:
@@ -790,14 +783,9 @@ def _product_codes(value: Any) -> list[str]:
     return [str(item.get("product_code")) for item in products if isinstance(item, dict) and item.get("product_code")]
 
 
-def _ranking_for_quarter(row: JsonMap, ranking_column: str, quarters: Sequence[str] | None) -> JsonMap:
+def _ranking_for_quarter(row: JsonMap, ranking_column: str) -> JsonMap:
     ranking = json_map(row.get(ranking_column))
-    if quarters:
-        quarter = next((quarter for quarter in reversed(tuple(quarters)) if quarter in ranking), "")
-    else:
-        quarter = ""
-    if not quarter:
-        quarter = sorted(ranking)[-1] if ranking else ""
+    quarter = sorted(ranking)[-1] if ranking else ""
     items = ranking.get(quarter, [])
     return {"quarter": quarter, "items": items if isinstance(items, list) else []}
 
