@@ -185,6 +185,8 @@ def run_tier1_existing_flow(args: argparse.Namespace) -> int:
     command = [
         sys.executable,
         str(CRAWLER_DIR / "crawl_news_full_orchestrator.py"),
+        "--crawler",
+        str(CRAWLER_DIR / "crawl_news_v2.py"),
         "--drug-profile-dir",
         args.drug_profile_dir,
         "--output-base",
