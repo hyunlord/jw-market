@@ -129,6 +129,102 @@ def test_shadow_activation_uses_configured_mart_database_when_source_is_implicit
     assert result.source_db == "jw_mart_d2_stage_20260630_r2"
 
 
+def test_shadow_post_gate_row_count_failure_is_shadow_only(monkeypatch) -> None:
+    monkeypatch.setenv(
+        activation.ENV_SHADOW_FAILURE_AT,
+        activation.SHADOW_FAILURE_POST_GATE_ROW_COUNT,
+    )
+    monkeypatch.delenv("INGEST_LOAD_SHADOW_ROOT", raising=False)
+
+    with pytest.raises(RuntimeError, match="shadow mode only"):
+        activation.shadow_post_gate_actual_rows(9)
+
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+
+    assert activation.shadow_post_gate_actual_rows(9) == 10
+
+
+def test_shadow_sigma_failure_injection_mutates_only_isolated_build(monkeypatch) -> None:
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.setenv(
+        activation.ENV_SHADOW_FAILURE_AT,
+        activation.SHADOW_FAILURE_SIGMA_PARTS_WHOLE,
+    )
+    statements: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            statements.append((sql, params))
+
+        def fetchone(self):
+            sql = statements[-1][0]
+            if sql == "SELECT DATABASE()":
+                return ("jw_mart_ingest_shadow_build_run1",)
+            return (
+                "LIVALO",
+                "C10C0",
+                json.dumps({"2026-05": {"raw_value": 100.0}}),
+            )
+
+        def close(self):
+            return None
+
+    class Connection:
+        committed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.committed = True
+
+    conn = Connection()
+    evidence = activation.maybe_inject_shadow_sigma_mismatch(
+        conn,
+        source="ubist",
+        periods=("2026-05",),
+    )
+
+    assert evidence == {
+        "atc4_code": "C10C0",
+        "brand_key": "LIVALO",
+        "period": "2026-05",
+    }
+    assert conn.committed is True
+    update_sql, update_params = statements[-1]
+    assert update_sql.startswith("UPDATE mart_general_brand_metric SET metric_history=%s")
+    assert update_params is not None
+    mutated = json.loads(str(update_params[0]))
+    assert mutated["2026-05"]["raw_value"] > 100.0
+
+
+def test_shadow_sigma_failure_injection_refuses_serving_database(monkeypatch) -> None:
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.setenv(
+        activation.ENV_SHADOW_FAILURE_AT,
+        activation.SHADOW_FAILURE_SIGMA_PARTS_WHOLE,
+    )
+
+    class Cursor:
+        def execute(self, _sql, _params=None):
+            return None
+
+        def fetchone(self):
+            return ("jw_mart",)
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    with pytest.raises(RuntimeError, match="refused non-isolated database"):
+        activation.maybe_inject_shadow_sigma_mismatch(
+            Connection(), source="ubist", periods=("2026-05",)
+        )
+
+
 @pytest.mark.parametrize("target", ["jw_mart", "jw_mart_d2_stage_20260630_r2", "not_shadow"])
 def test_shadow_activation_rejects_serving_or_unscoped_target(monkeypatch, target) -> None:
     monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")

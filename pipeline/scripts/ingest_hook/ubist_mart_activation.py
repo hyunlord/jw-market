@@ -31,6 +31,9 @@ ENV_BUILD_PREFIX = "INGEST_MART_BUILD_PREFIX"
 ENV_SHADOW_TARGET_DB = "INGEST_SHADOW_TARGET_DB"
 ENV_SHADOW_BUILD_PREFIX = "INGEST_SHADOW_BUILD_PREFIX"
 ENV_SHADOW_CRASH_AT = "INGEST_SHADOW_CRASH_AT"
+ENV_SHADOW_FAILURE_AT = "INGEST_SHADOW_FAILURE_AT"
+SHADOW_FAILURE_SIGMA_PARTS_WHOLE = "sigma_parts_whole"
+SHADOW_FAILURE_POST_GATE_ROW_COUNT = "post_gate_row_count"
 SHADOW_DB_PREFIX = "jw_mart_ingest_shadow_"
 WRITER_LOCK_NAME = "jw-market:ubist-ingest:single-writer"
 GENERAL_TABLES = (
@@ -253,6 +256,101 @@ def maybe_inject_shadow_crash(point: str) -> None:
         raise RuntimeError(f"{ENV_SHADOW_CRASH_AT} is valid in shadow mode only")
     if configured == point:
         raise RuntimeError(f"deterministic shadow crash injected at {point}")
+
+
+def _shadow_failure_at() -> str:
+    point = os.environ.get(ENV_SHADOW_FAILURE_AT, "").strip()
+    if not point:
+        return ""
+    if not os.environ.get("INGEST_LOAD_SHADOW_ROOT", "").strip():
+        raise RuntimeError(f"{ENV_SHADOW_FAILURE_AT} is valid in shadow mode only")
+    allowed = {
+        SHADOW_FAILURE_SIGMA_PARTS_WHOLE,
+        SHADOW_FAILURE_POST_GATE_ROW_COUNT,
+    }
+    if point not in allowed:
+        raise RuntimeError(f"unsupported {ENV_SHADOW_FAILURE_AT} value: {point}")
+    return point
+
+
+def shadow_post_gate_actual_rows(actual_rows: int) -> int:
+    """Return a deterministic row-count mismatch for an isolated gate exercise."""
+
+    if _shadow_failure_at() == SHADOW_FAILURE_POST_GATE_ROW_COUNT:
+        return actual_rows + 1
+    return actual_rows
+
+
+def maybe_inject_shadow_sigma_mismatch(
+    conn: Any, *, source: str, periods: tuple[str, ...]
+) -> dict[str, str] | None:
+    """Corrupt one disposable build-row so the real Sigma gate must reject it."""
+
+    if _shadow_failure_at() != SHADOW_FAILURE_SIGMA_PARTS_WHOLE:
+        return None
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DATABASE()")
+        database_row = cursor.fetchone()
+        database = (
+            next(iter(database_row.values()))
+            if isinstance(database_row, dict)
+            else database_row[0]
+        )
+        if not str(database).startswith(SHADOW_DB_PREFIX):
+            raise RuntimeError(
+                f"shadow Sigma injection refused non-isolated database: {database}"
+            )
+        cursor.execute(
+            "SELECT brand_key, atc4_code, metric_history "
+            "FROM mart_general_brand_metric "
+            "WHERE source=%s AND measure='sales' ORDER BY atc4_code, brand_key",
+            (source,),
+        )
+        while row := cursor.fetchone():
+            if isinstance(row, dict):
+                brand_key = str(row["brand_key"])
+                atc4_code = str(row["atc4_code"])
+                raw_history = row["metric_history"]
+            else:
+                brand_key, atc4_code, raw_history = str(row[0]), str(row[1]), row[2]
+            try:
+                history = json.loads(raw_history) if raw_history else {}
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(history, dict):
+                continue
+            for period in periods:
+                entry = history.get(period)
+                raw_value = entry.get("raw_value") if isinstance(entry, dict) else None
+                if not isinstance(raw_value, (int, float)):
+                    continue
+                entry["raw_value"] = (
+                    float(raw_value)
+                    + max(abs(float(raw_value)), 1.0) * 1000
+                    + 1e12
+                )
+                cursor.execute(
+                    "UPDATE mart_general_brand_metric SET metric_history=%s "
+                    "WHERE source=%s AND measure='sales' AND atc4_code=%s AND brand_key=%s",
+                    (
+                        json.dumps(history, ensure_ascii=False, separators=(",", ":")),
+                        source,
+                        atc4_code,
+                        brand_key,
+                    ),
+                )
+                conn.commit()
+                return {
+                    "atc4_code": atc4_code,
+                    "brand_key": brand_key,
+                    "period": period,
+                }
+        raise RuntimeError(
+            f"shadow Sigma injection found no numeric brand cell for periods={periods}"
+        )
+    finally:
+        cursor.close()
 
 
 def build_shadow(config: MartActivation, *, ubist_dir: Path) -> None:

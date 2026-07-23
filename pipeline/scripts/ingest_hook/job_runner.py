@@ -589,6 +589,14 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                         mart_conn, source=spec.sigma_source, excluded=affected
                     )
                     periods = tuple(sorted(set(affected + sampled)))
+                    if is_shadow:
+                        injected = ubist_mart_activation.maybe_inject_shadow_sigma_mismatch(
+                            mart_conn,
+                            source=spec.sigma_source,
+                            periods=periods,
+                        )
+                        if injected:
+                            print(f"shadow_failure=sigma_parts_whole evidence={injected}")
 
                     def mart_sigma() -> SigmaEvidence:
                         sigma = check_market_sigma(
@@ -604,13 +612,20 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     if mart_conn is None or before_snapshot is None:
                         raise RuntimeError("live post-gate requires a mart connection and baseline")
                     tracker.enter("post_gate")
+                    post_gate_actual_rows = int(load_result["epoch_rows"] or 0)
+                    if is_shadow:
+                        post_gate_actual_rows = (
+                            ubist_mart_activation.shadow_post_gate_actual_rows(
+                                post_gate_actual_rows
+                            )
+                        )
                     post = run_post_gates(
                         run_id=run_id,
                         epoch=manifest.epoch,
                         category=manifest.category,
                         sigma_check=mart_sigma,
                         expected_rows=report.total_rows,
-                        actual_rows=int(load_result["epoch_rows"] or 0),
+                        actual_rows=post_gate_actual_rows,
                         untouched_before=before_snapshot,
                         untouched_after=fingerprint_untouched_sources(
                             mart_conn, touched_source=spec.sigma_source
