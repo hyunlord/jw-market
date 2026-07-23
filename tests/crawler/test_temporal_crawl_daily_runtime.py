@@ -62,3 +62,13 @@ def test_shadow_manifest_disables_tier2_llm_calls() -> None:
 
     assert "name: CRAWL_CHAIN_LLM_CALL_LIMIT" in manifest
     assert 'value: "0"' in manifest
+
+
+def test_shadow_manifest_uses_the_live_tier1_classifier_endpoint() -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = (root / "deploy/k8s/crawler/temporal-crawl-shadow-worker.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "name: WF196_DIRECT_RUN_URL" in manifest
+    assert "http://workflow-196.llmops.svc.cluster.local:8080/run/v2" in manifest
