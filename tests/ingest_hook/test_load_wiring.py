@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.ingest_hook import config, job_runner
+from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
 from pipeline.scripts.ingest_hook.load_verify import (
@@ -178,6 +179,41 @@ def test_real_load_injects_file_and_target(staging_env, bucket, monkeypatch):
     assert result["staging_verify"] is True
 
 
+def test_real_load_keeps_manifest_isolation_in_staging(staging_env, bucket, monkeypatch):
+    manifest = _manifest(bucket, epoch="2026-03")
+    seen = {}
+
+    def fake_run(_label, argv):
+        target = Path(argv[argv.index("--target-dir") + 1])
+        seen["target"] = target
+        _write_load_manifest(target, "2026-03", 7)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+    job_runner._real_load(manifest, UBIST, bucket)
+
+    assert seen["target"] == staging_env / "staging" / "ubist" / "2026-03" / manifest.manifest_sha
+
+
+def test_real_load_flattens_production_ubist_to_reader_root(tmp_path, bucket, monkeypatch):
+    manifest = _manifest(bucket, epoch="2026-03")
+    target_root = tmp_path / "market-output"
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(target_root))
+    seen = {}
+
+    def fake_run(_label, argv):
+        target = Path(argv[argv.index("--target-dir") + 1])
+        seen["target"] = target
+        _write_load_manifest(target, "2026-03", 7)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+    result = job_runner._real_load(manifest, UBIST, bucket)
+
+    assert seen["target"] == target_root / "ubist"
+    assert result["target_dir"] == target_root / "ubist"
+    assert result["staging_verify"] is False
+
+
 def test_real_load_silent_failure_is_caught(staging_env, bucket, monkeypatch):
     manifest = _manifest(bucket, epoch="2026-03")
     # loader runs but writes nothing to the target (the exact silent-failure shape)
@@ -218,6 +254,15 @@ def test_load_output_root_fail_closed_without_env(monkeypatch):
         config.load_output_root()
 
 
+def test_load_output_root_rejects_staging_and_target_together(monkeypatch, tmp_path):
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_ROOT, str(tmp_path / "staging"))
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "target"))
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        config.load_output_root()
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        config.load_target_mount_root()
+
+
 # ─── full run() in staging-verify mode (loader stubbed) ──────────────
 def test_run_real_staging_verify_completes(staging_env, bucket, sqlite_ledger, monkeypatch):
     manifest_path = write_submission(bucket)  # default epoch 2026-07 matches GOOD_ROWS periods
@@ -248,3 +293,163 @@ def test_run_real_silent_failure_marks_failed(staging_env, bucket, sqlite_ledger
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
     assert entry.status == "failed"
     assert "LoadVerifyError" in entry.reason
+
+
+def test_production_ubist_orders_shadow_gate_publish_then_refresh(
+    tmp_path, bucket, sqlite_ledger, monkeypatch
+):
+    manifest_path = write_submission(bucket)
+    manifest = load_manifest(manifest_path)
+    target_root = tmp_path / "market-output"
+    live_root = target_root / "ubist"
+    live_root.mkdir(parents=True)
+    (live_root / "_manifest.json").write_text(
+        json.dumps({"schema_version": "1.0", "partitions": []}), encoding="utf-8"
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(target_root))
+    monkeypatch.setenv(ubist_mart_activation.ENV_PROMOTION_APPROVED, "1")
+    order: list[str] = []
+
+    class Connection:
+        def close(self):
+            order.append("close")
+
+    connection = Connection()
+    monkeypatch.setattr(config, "open_mart_connection", lambda *_args: connection)
+    stable_snapshot = object()
+    monkeypatch.setattr(
+        job_runner, "fingerprint_untouched_sources", lambda *_args, **_kwargs: stable_snapshot
+    )
+    monkeypatch.setattr(job_runner, "sample_existing_periods", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        job_runner,
+        "run_post_gates",
+        lambda **_kwargs: order.append("post_gate") or type("Post", (), {"status": "pass", "duration_ms": 1})(),
+    )
+    from pipeline.scripts.ingest_hook import sigma_market
+
+    monkeypatch.setattr(
+        sigma_market,
+        "check_market_sigma",
+        lambda *_args, **_kwargs: type(
+            "Sigma", (), {"cells_checked": 1, "markets_checked": 1, "worst_rel": 0.0}
+        )(),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "acquire_writer_lock",
+        lambda *_args, **_kwargs: order.append("lock"),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "release_writer_lock",
+        lambda *_args, **_kwargs: order.append("unlock"),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "require_writer_lock_owner",
+        lambda *_args, **_kwargs: order.append("lock_owner"),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "recover_incomplete_activations",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "build_shadow",
+        lambda *_args, **_kwargs: order.append("mart_build"),
+    )
+    real_promote = ubist_mart_activation.promote_candidate_corpus
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "promote_candidate_corpus",
+        lambda corpus: order.append("corpus_promote") or real_promote(corpus),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "publish_shadow",
+        lambda *_args, **_kwargs: order.append("mart_publish") or (),
+    )
+    original_update_journal = ubist_mart_activation.update_activation_journal
+
+    def update_journal(path, phase):
+        order.append(f"journal:{phase}")
+        original_update_journal(path, phase)
+
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "update_activation_journal",
+        update_journal,
+    )
+    original_mark_complete = sqlite_ledger.mark_complete
+
+    def mark_complete(*args, **kwargs):
+        order.append("ledger:complete")
+        original_mark_complete(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite_ledger, "mark_complete", mark_complete)
+
+    def fake_run(label, argv):
+        if label == "load":
+            order.append("load")
+            target = Path(argv[argv.index("--target-dir") + 1])
+            _write_load_manifest(target, "2026-07", 9)
+        elif label == "refresh":
+            order.append("refresh")
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    assert job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
+    ) == 0
+    assert order.index("load") < order.index("mart_build")
+    assert order.index("mart_build") < order.index("post_gate")
+    assert order.index("post_gate") < order.index("corpus_promote")
+    assert order.index("corpus_promote") < order.index("mart_publish")
+    assert order.index("mart_publish") < order.index("refresh")
+    assert order.index("refresh") < order.index("journal:refresh_succeeded")
+    assert order.index("journal:refresh_succeeded") < order.index("ledger:complete")
+    assert order.index("ledger:complete") < order.index("journal:ledger_complete")
+    assert order.index("journal:ledger_complete") < order.index("journal:signal_complete")
+    entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
+    assert entry.row_counts.get("epoch:2026-07") == 9
+
+
+def test_production_ubist_does_not_release_unacquired_writer_lock(
+    tmp_path, bucket, sqlite_ledger, monkeypatch
+):
+    manifest_path = write_submission(bucket)
+    target_root = tmp_path / "market-output"
+    live_root = target_root / "ubist"
+    live_root.mkdir(parents=True)
+    (live_root / "_manifest.json").write_text(
+        json.dumps({"schema_version": "1.0", "partitions": []}), encoding="utf-8"
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(target_root))
+    monkeypatch.setenv(ubist_mart_activation.ENV_PROMOTION_APPROVED, "1")
+
+    class Connection:
+        def close(self):
+            return None
+
+    released: list[object] = []
+    monkeypatch.setattr(config, "open_mart_connection", lambda *_args: Connection())
+    monkeypatch.setattr(job_runner, "fingerprint_untouched_sources", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "acquire_writer_lock",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("lock busy")),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "release_writer_lock",
+        lambda conn: released.append(conn),
+    )
+
+    assert job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
+    ) == 1
+    assert released == []

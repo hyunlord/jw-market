@@ -40,6 +40,7 @@ class DirectBuildImportConfig:
     manifest_json: Path
     audit_json: Path | None
     catalog_root: Path | None
+    ubist_dir: Path | None
     input_mode: str
     include_strategic_ml_market: bool
     allow_operating_target: bool
@@ -80,6 +81,7 @@ def run_build_dump_import(config: DirectBuildImportConfig) -> dict[str, Any]:
         build_db=config.build_db,
         source_db=config.source_db,
         catalog_root=config.catalog_root,
+        ubist_dir=config.ubist_dir,
         input_mode=config.input_mode,
     )
     if config.include_strategic_ml_market:

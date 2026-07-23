@@ -1,0 +1,34 @@
+# Human-reviewable production activation overlay. NOT applied directly.
+#
+# This contract is mutually exclusive with ingest-job-template.yaml's
+# INGEST_LOAD_STAGING_ROOT. job_launcher renders these fields only when the
+# explicit STAGE 5 environment is armed after the PL gate.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jw-ingest-<category>-<sha8>
+  namespace: llmops
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingest
+          env:
+            - name: INGEST_LOAD_TARGET_ROOT
+              value: /market-output
+            - name: INGEST_MART_PROMOTION_APPROVED
+              value: "1"
+            - name: INGEST_MART_SOURCE_DB
+              value: jw_mart
+            - name: INGEST_MART_TARGET_DB
+              value: jw_mart
+            - name: INGEST_MART_BUILD_PREFIX
+              value: jw_mart_ingest
+          volumeMounts:
+            - name: market-output
+              mountPath: /market-output
+              readOnly: false
+      volumes:
+        - name: market-output
+          persistentVolumeClaim:
+            claimName: llmops-market-output

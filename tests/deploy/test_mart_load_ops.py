@@ -5,6 +5,8 @@ import io
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from pipeline.etl.io.mart import molecule_bridge_build
 from pipeline.etl.io.mart.molecule_bridge_schema import BRIDGE_INSERT_COLUMNS
 from pipeline.scripts.deploy import mart_import_ops
@@ -94,6 +96,30 @@ def test_run_bridge_reads_from_source_db_and_writes_build_db(monkeypatch) -> Non
     mart_load_ops.run_bridge(build_db="scratch_build", source_db="jw_mart", catalog_root=None)
 
     assert calls == [{"source_db": "jw_mart", "target_db": "scratch_build", "catalog_root": Path("/tmp/catalog")}]
+
+
+def test_run_s4_general_passes_explicit_ubist_root(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(mart_load_ops.s4_mart, "run", lambda params: calls.append(params) or 0)
+
+    mart_load_ops.run_s4_general(
+        build_db="jw_mart_ingest_build",
+        source_db="jw_mart",
+        catalog_root=Path("/catalog"),
+        ubist_dir=Path("/market-output/ubist"),
+        input_mode="raw",
+    )
+
+    assert calls == [
+        {
+            "target_db": "jw_mart_ingest_build",
+            "source_db": "jw_mart",
+            "catalog_root": "/catalog",
+            "ubist_dir": "/market-output/ubist",
+            "input_mode": "raw",
+        }
+    ]
 
 
 def test_bridge_insert_payloads_are_batched() -> None:
@@ -283,6 +309,92 @@ def test_publish_retries_transient_partial_count_before_atomic_rename(monkeypatc
 
     assert action.mode == "atomic_rename"
     assert any(statement.startswith("RENAME TABLE") for statement in executed)
+
+
+def test_publish_selected_tables_rolls_back_completed_moves_on_failure(monkeypatch) -> None:
+    published = mart_load_ops.PublishAction(
+        table="mart_general_brand_metric",
+        mode="atomic_rename",
+        target_table="mart_general_brand_metric",
+        backup_table="mart_general_brand_metric__old_run1",
+        row_count=10,
+    )
+    calls = iter([published, RuntimeError("second table failed")])
+    restored: list[tuple[str, ...]] = []
+
+    def fake_publish(*_args, **_kwargs):
+        result = next(calls)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(mart_load_ops, "_publish_one", fake_publish)
+    monkeypatch.setattr(
+        mart_load_ops,
+        "restore_published_tables",
+        lambda _conn, *, target_db, actions, run_id: restored.append(
+            (target_db, run_id, *(action.table for action in actions))
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="second table failed"):
+        mart_load_ops.publish_tables(
+            object(),
+            build_db="build",
+            target_db="serving",
+            run_id="run1",
+            include_strategic_ml_market=False,
+            tables=("mart_general_brand_metric", "mart_general_market_metric"),
+        )
+
+    assert restored == [("serving", "run1", "mart_general_brand_metric")]
+
+
+def test_publish_table_group_uses_one_atomic_rename(monkeypatch) -> None:
+    executed: list[str] = []
+    tables = ("mart_general_brand_metric", "mart_general_market_metric")
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql):
+            executed.append(sql)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    def exists(_conn, db_name, table_name):
+        if db_name == "build":
+            return table_name in tables
+        return table_name in tables
+
+    monkeypatch.setattr(mart_load_ops, "table_exists", exists)
+    monkeypatch.setattr(mart_load_ops, "_copy_table", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *_args: 10)
+    monkeypatch.setattr(
+        mart_load_ops, "_table_row_count_with_bounded_retry", lambda *_args, **_kwargs: 10
+    )
+
+    actions = mart_load_ops.publish_table_group_atomically(
+        Connection(),
+        build_db="build",
+        target_db="serving",
+        run_id="run1",
+        tables=tables,
+    )
+
+    rename = [sql for sql in executed if sql.startswith("RENAME TABLE")]
+    assert len(rename) == 1
+    assert all(table in rename[0] for table in tables)
+    assert tuple(action.mode for action in actions) == (
+        "atomic_group_rename",
+        "atomic_group_rename",
+    )
 
 
 def test_direct_import_manifest_verifies_canonical_digest(monkeypatch) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+import pytest
 
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.job_launcher import render_job, submit_job
@@ -93,6 +94,30 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert role["rules"] == [{"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create", "get", "list"]}]
 
 
+def test_reference_jobs_separate_staging_from_activation_contracts():
+    reference = REPO_ROOT / "deploy" / "k8s" / "ingest-hook" / "reference"
+    staging = yaml.safe_load((reference / "ingest-job-template.yaml").read_text(encoding="utf-8"))
+    activation = yaml.safe_load(
+        (reference / "ingest-job-activation-overlay.yaml").read_text(encoding="utf-8")
+    )
+
+    staging_spec = staging["spec"]["template"]["spec"]
+    staging_container = staging_spec["containers"][0]
+    staging_env = {item["name"] for item in staging_container["env"]}
+    assert "INGEST_LOAD_STAGING_ROOT" in staging_env
+    assert "INGEST_LOAD_TARGET_ROOT" not in staging_env
+    assert "market-output" not in {item["name"] for item in staging_container["volumeMounts"]}
+    assert "market-output" not in {item["name"] for item in staging_spec["volumes"]}
+
+    activation_spec = activation["spec"]["template"]["spec"]
+    activation_container = activation_spec["containers"][0]
+    activation_env = {item["name"] for item in activation_container["env"]}
+    assert "INGEST_LOAD_STAGING_ROOT" not in activation_env
+    assert "INGEST_LOAD_TARGET_ROOT" in activation_env
+    assert "INGEST_MART_PROMOTION_APPROVED" in activation_env
+    assert "market-output" in {item["name"] for item in activation_container["volumeMounts"]}
+
+
 def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     monkeypatch.setenv("MARIADB_HOST", "db.example")
     monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
@@ -157,3 +182,57 @@ def test_rendered_local_job_inherits_backend_root_and_read_only_nfs(monkeypatch)
     assert pod_spec["volumes"] == [
         {"name": "ingest-input", "persistentVolumeClaim": {"claimName": "llmops-nfs-root"}}
     ]
+
+
+def test_rendered_production_job_mounts_dedicated_output_pvc_read_write(monkeypatch):
+    monkeypatch.setenv("INGEST_INPUT_BACKEND", "local")
+    monkeypatch.setenv("INGEST_INPUT_ROOT", "/nfs-root/autoIngestion")
+    monkeypatch.delenv("INGEST_LOAD_STAGING_ROOT", raising=False)
+    monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output")
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/nfs-root/autoIngestion/_manifests/ubist/2026-03/manifest.json",
+        namespace="llmops",
+    )
+
+    pod_spec = body["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    mounts = {item["name"]: item for item in container["volumeMounts"]}
+    volumes = {item["name"]: item for item in pod_spec["volumes"]}
+    assert mounts["market-output"] == {
+        "name": "market-output",
+        "mountPath": "/market-output",
+        "readOnly": False,
+    }
+    assert volumes["market-output"]["persistentVolumeClaim"]["claimName"] == "llmops-market-output"
+
+
+def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
+    monkeypatch.delenv("INGEST_LOAD_STAGING_ROOT", raising=False)
+    monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output")
+    monkeypatch.setenv("INGEST_MART_PROMOTION_APPROVED", "1")
+    monkeypatch.setenv("INGEST_MART_SOURCE_DB", "jw_mart")
+    monkeypatch.setenv("INGEST_MART_TARGET_DB", "jw_mart")
+    monkeypatch.setenv("INGEST_MART_BUILD_PREFIX", "jw_mart_ingest")
+
+    body = render_job(
+        category="ubist", manifest_sha=SHA, manifest_path="/m.json", namespace="llmops"
+    )
+    env = {
+        item["name"]: item
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["INGEST_MART_PROMOTION_APPROVED"]["value"] == "1"
+    assert env["INGEST_MART_SOURCE_DB"]["value"] == "jw_mart"
+    assert env["INGEST_MART_TARGET_DB"]["value"] == "jw_mart"
+    assert env["INGEST_MART_BUILD_PREFIX"]["value"] == "jw_mart_ingest"
+
+
+def test_rendered_job_rejects_staging_and_target_roots(monkeypatch):
+    monkeypatch.setenv("INGEST_LOAD_STAGING_ROOT", "/tmp/staging")
+    monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output")
+
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        render_job(category="ubist", manifest_sha=SHA, manifest_path="/m.json")

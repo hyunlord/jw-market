@@ -54,6 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", help="Stable run id used for scratch/backup table names.")
     parser.add_argument("--env-file", type=Path, help="Optional env file with MariaDB connection values.")
     parser.add_argument("--catalog-root", type=Path, help="Catalog parquet root. Defaults to output/catalog.")
+    parser.add_argument("--ubist-dir", type=Path, help="UBIST parquet root consumed by S4 (year=*/month=*/data.parquet).")
     parser.add_argument("--input-mode", choices=["raw", "enriched"], default="raw", help="S4 general mart input mode.")
     parser.add_argument("--dump-path", type=Path, help="Optional SQL or .sql.gz dump path for published staging tables.")
     parser.add_argument("--audit-json", type=Path, help="Optional JSON summary path.")
@@ -118,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                     manifest_json=args.manifest_json,
                     audit_json=args.audit_json,
                     catalog_root=args.catalog_root,
+                    ubist_dir=args.ubist_dir,
                     input_mode=args.input_mode,
                     include_strategic_ml_market=include_strategic,
                     allow_operating_target=bool(args.allow_operating_target),
@@ -178,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             build_db=build_db,
             source_db=args.source_db,
             catalog_root=args.catalog_root,
+            ubist_dir=args.ubist_dir,
             input_mode=args.input_mode,
         )
         if include_strategic:

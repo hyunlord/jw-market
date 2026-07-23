@@ -46,13 +46,18 @@ def test_v1_happy_path_records_stages_in_code_order(service, bucket, tmp_path):
     events = _events(service.ledger, "2026-07", sha)
     by_stage = {e.stage: e for e in events}
     # order is the declared code order
-    assert [e.stage for e in events] == ["g3", "load", "load_verify", "sigma", "post_gate", "refresh", "signal"]
+    assert [e.stage for e in events] == [
+        "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
+        "mart_publish", "refresh", "signal",
+    ]
     assert by_stage["g3"].status == STAGE_COMPLETE
     assert by_stage["load"].status == STAGE_COMPLETE
     assert by_stage["post_gate"].status == STAGE_COMPLETE
     # rehearsal skips these three with a reason (V-4)
     assert by_stage["load_verify"].status == STAGE_SKIPPED
+    assert by_stage["mart_build"].status == STAGE_SKIPPED
     assert by_stage["sigma"].status == STAGE_SKIPPED
+    assert by_stage["mart_publish"].status == STAGE_SKIPPED
     assert by_stage["refresh"].status == STAGE_SKIPPED
     assert "rehearsal" in (by_stage["refresh"].reason or "")
 
@@ -69,7 +74,10 @@ def test_v1_stages_exposed_on_status_api(service, client, bucket, tmp_path):
         params={"epoch": payload["epoch"], "category": "ubist", "manifest_sha": payload["manifest_sha"]},
     ).json()
     stage_names = [s["stage"] for s in status["stages"]]
-    assert stage_names == ["g3", "load", "load_verify", "sigma", "post_gate", "refresh", "signal"]
+    assert stage_names == [
+        "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
+        "mart_publish", "refresh", "signal",
+    ]
     assert status["current_stage"] is None  # completed run has no in-flight stage
     assert len(status["signals"]) == 1
     assert status["signals"][0]["event"] == "complete"

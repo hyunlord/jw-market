@@ -30,6 +30,10 @@ _PASSTHROUGH_VALUES = (
     "INGEST_LOAD_STAGING_ROOT",  # J5 real-loader staging output (mart refresh skipped)
     "INGEST_LOAD_STAGING_DB",    # isolated jw_ingest_* target for table adapters
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
+    "INGEST_MART_PROMOTION_APPROVED",
+    "INGEST_MART_SOURCE_DB",
+    "INGEST_MART_TARGET_DB",
+    "INGEST_MART_BUILD_PREFIX",
     "INGEST_INPUT_BACKEND",
     "INGEST_INPUT_ROOT",
     "INGEST_COMPLETION_WEBHOOK_URL",
@@ -41,6 +45,7 @@ _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentia
 _LOCAL_INPUT_VOLUME = "ingest-input"
 _LOCAL_INPUT_PVC = "llmops-nfs-root"
 _LOCAL_INPUT_SUB_PATH = "autoIngestion"
+_MARKET_OUTPUT_VOLUME = "market-output"
 
 
 def _job_env() -> list[dict]:
@@ -95,6 +100,21 @@ def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespac
         if local_root is not None
         else []
     )
+    output_root = config.load_target_mount_root()
+    if output_root is not None:
+        volume_mounts.append(
+            {
+                "name": _MARKET_OUTPUT_VOLUME,
+                "mountPath": str(output_root),
+                "readOnly": False,
+            }
+        )
+        volumes.append(
+            {
+                "name": _MARKET_OUTPUT_VOLUME,
+                "persistentVolumeClaim": {"claimName": config.MARKET_OUTPUT_PVC},
+            }
+        )
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",

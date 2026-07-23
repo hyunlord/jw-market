@@ -1,4 +1,4 @@
-# Reference template for the incremental ingest Job.
+# Staging-only reference template for the incremental ingest Job.
 #
 # The trigger service renders the equivalent body in code
 # (pipeline/scripts/ingest_hook/job_launcher.py::render_job); this file is the
@@ -38,8 +38,8 @@ spec:
             # Job step 1 is ALWAYS G3 (job_runner enforces the order in code).
             # J5: the real load writes parquet under INGEST_LOAD_STAGING_ROOT and
             # the M-2 gate confirms the uploaded epoch landed; the mart refresh is
-            # skipped in this staging-verify posture (D-3 swaps to
-            # INGEST_LOAD_TARGET_ROOT under PL gate). Injected by job_launcher.
+            # skipped in this staging-verify posture. Production activation has
+            # a separate, mutually exclusive reference overlay.
             - name: INGEST_LOAD_STAGING_ROOT
               value: /tmp/ingest-load-staging
             - name: INGEST_INPUT_BACKEND

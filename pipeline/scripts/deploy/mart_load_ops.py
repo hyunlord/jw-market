@@ -159,12 +159,14 @@ def run_s4_general(
     build_db: str,
     source_db: str,
     catalog_root: Path | None,
+    ubist_dir: Path | None,
     input_mode: str,
 ) -> None:
     params = {
         "target_db": build_db,
         "source_db": source_db,
         "catalog_root": str(catalog_root) if catalog_root else None,
+        "ubist_dir": str(ubist_dir) if ubist_dir else None,
         "input_mode": input_mode,
     }
     rc = s4_mart.run(params)
@@ -242,12 +244,145 @@ def publish_tables(
     target_db: str,
     run_id: str,
     include_strategic_ml_market: bool,
+    tables: tuple[str, ...] | None = None,
 ) -> tuple[PublishAction, ...]:
-    tables = list(MART_TABLES)
-    if include_strategic_ml_market:
-        tables.append(STRATEGIC_MARKET_TABLE)
-    actions = [_publish_one(conn, build_db, target_db, table, run_id) for table in tables]
+    selected = list(tables or MART_TABLES)
+    if tables is None and include_strategic_ml_market:
+        selected.append(STRATEGIC_MARKET_TABLE)
+    actions: list[PublishAction] = []
+    try:
+        for table in selected:
+            actions.append(_publish_one(conn, build_db, target_db, table, run_id))
+    except Exception:
+        restore_published_tables(
+            conn,
+            target_db=target_db,
+            actions=tuple(reversed(actions)),
+            run_id=run_id,
+        )
+        raise
     return tuple(actions)
+
+
+def publish_table_group_atomically(
+    conn: pymysql.connections.Connection,
+    *,
+    build_db: str,
+    target_db: str,
+    run_id: str,
+    tables: tuple[str, ...],
+) -> tuple[PublishAction, ...]:
+    """Prepare every replacement, then swap the complete table group in one DDL."""
+
+    if not tables:
+        raise ValueError("atomic publish requires at least one table")
+    prepared: list[tuple[str, str, str, int]] = []
+    scratch_tables: list[str] = []
+    try:
+        for table in tables:
+            if not table_exists(conn, build_db, table):
+                raise RuntimeError(f"build table missing: {build_db}.{table}")
+            if not table_exists(conn, target_db, table):
+                raise RuntimeError(
+                    f"atomic publish requires existing serving table: {target_db}.{table}"
+                )
+            new_table = f"{table}__new_{run_id}"
+            backup_table = f"{table}__old_{run_id}"
+            if table_exists(conn, target_db, new_table) or table_exists(conn, target_db, backup_table):
+                raise RuntimeError(f"publish scratch table already exists for run_id={run_id}: {table}")
+            build_rows = _table_row_count(conn, build_db, table)
+            scratch_tables.append(new_table)
+            _copy_table(conn, build_db, target_db, table, new_table)
+            copied_rows = _table_row_count_with_bounded_retry(
+                conn, target_db, new_table, expected=build_rows
+            )
+            if copied_rows != build_rows:
+                raise RuntimeError(
+                    f"{target_db}.{new_table} row count mismatch after copy: "
+                    f"{copied_rows} != {build_rows}"
+                )
+            prepared.append((table, new_table, backup_table, build_rows))
+        moves: list[str] = []
+        for table, new_table, backup_table, _rows in prepared:
+            moves.extend(
+                (
+                    f"{quote_id(target_db)}.{quote_id(table)} TO "
+                    f"{quote_id(target_db)}.{quote_id(backup_table)}",
+                    f"{quote_id(target_db)}.{quote_id(new_table)} TO "
+                    f"{quote_id(target_db)}.{quote_id(table)}",
+                )
+            )
+        with conn.cursor() as cur:
+            cur.execute("RENAME TABLE " + ", ".join(moves))
+    except Exception:
+        for new_table in scratch_tables:
+            if table_exists(conn, target_db, new_table):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DROP TABLE {quote_id(target_db)}.{quote_id(new_table)}"
+                    )
+        raise
+    return tuple(
+        PublishAction(table, "atomic_group_rename", table, backup_table, rows)
+        for table, _new_table, backup_table, rows in prepared
+    )
+
+
+def restore_table_group_atomically(
+    conn: pymysql.connections.Connection,
+    *,
+    target_db: str,
+    actions: tuple[PublishAction, ...],
+    run_id: str,
+) -> None:
+    """Restore a table group in one RENAME TABLE statement."""
+
+    restorable = tuple(action for action in actions if action.backup_table)
+    if not restorable:
+        return
+    moves: list[str] = []
+    for action in restorable:
+        failed_table = f"{action.table}__failed_{run_id}"
+        if table_exists(conn, target_db, failed_table):
+            raise RuntimeError(f"rollback scratch table already exists: {target_db}.{failed_table}")
+        if not table_exists(conn, target_db, action.backup_table):
+            raise RuntimeError(f"rollback backup table missing: {target_db}.{action.backup_table}")
+        moves.extend(
+            (
+                f"{quote_id(target_db)}.{quote_id(action.table)} TO "
+                f"{quote_id(target_db)}.{quote_id(failed_table)}",
+                f"{quote_id(target_db)}.{quote_id(action.backup_table)} TO "
+                f"{quote_id(target_db)}.{quote_id(action.table)}",
+            )
+        )
+    with conn.cursor() as cur:
+        cur.execute("RENAME TABLE " + ", ".join(moves))
+
+
+def restore_published_tables(
+    conn: pymysql.connections.Connection,
+    *,
+    target_db: str,
+    actions: tuple[PublishAction, ...],
+    run_id: str,
+) -> None:
+    """Restore tables already swapped by a partially failed publish."""
+
+    for action in actions:
+        if not action.backup_table:
+            continue
+        failed_table = f"{action.table}__failed_{run_id}"
+        if table_exists(conn, target_db, failed_table):
+            raise RuntimeError(f"rollback scratch table already exists: {target_db}.{failed_table}")
+        if not table_exists(conn, target_db, action.backup_table):
+            raise RuntimeError(f"rollback backup table missing: {target_db}.{action.backup_table}")
+        with conn.cursor() as cur:
+            cur.execute(
+                f"RENAME TABLE {quote_id(target_db)}.{quote_id(action.table)} TO "
+                f"{quote_id(target_db)}.{quote_id(failed_table)}, "
+                f"{quote_id(target_db)}.{quote_id(action.backup_table)} TO "
+                f"{quote_id(target_db)}.{quote_id(action.table)}"
+            )
 
 
 def dump_tables(

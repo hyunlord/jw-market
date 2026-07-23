@@ -24,6 +24,8 @@ ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
 
 DEFAULT_LOG_ROOT = "/ingest-logs"                   # container mountPath convention for the durable-log PVC
+MARKET_OUTPUT_ROOT = Path("/market-output")
+MARKET_OUTPUT_PVC = "llmops-market-output"
 
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
@@ -96,7 +98,7 @@ def open_configured_ledger():
     return Ledger(conn, dialect="mysql")
 
 
-def open_mart_connection():
+def open_mart_connection(database: str | None = None):
     """pymysql connection to the mart DB the Job env points at (MARIADB_* family)."""
     import os
 
@@ -109,7 +111,7 @@ def open_mart_connection():
         port=int(os.environ.get("MARIADB_PORT") or os.environ.get("DB_PORT", "3306")),
         user=os.environ.get("MARIADB_USER") or os.environ.get("DB_USER", ""),
         password=os.environ.get("MARIADB_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
-        database=resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
+        database=database or resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
         charset="utf8mb4",
     )
 
@@ -154,12 +156,28 @@ def load_output_root() -> tuple[Path, bool]:
         path that the refresh never reads.
     """
     staging = os.environ.get(ENV_LOAD_STAGING_ROOT, "").strip()
+    target = os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip()
+    if staging and target:
+        raise RuntimeError(
+            f"{ENV_LOAD_STAGING_ROOT} and {ENV_LOAD_TARGET_ROOT} are mutually exclusive"
+        )
     if staging:
         return Path(staging), True
-    target = os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip()
     if target:
         return Path(target), False
     raise RuntimeError(
         f"neither {ENV_LOAD_STAGING_ROOT} nor {ENV_LOAD_TARGET_ROOT} is set; "
         "the real load has no output root (fail-closed to avoid a silently unread parquet path)"
     )
+
+
+def load_target_mount_root() -> Path | None:
+    """Return the production PVC mount root, or None in staging-only mode."""
+
+    staging = os.environ.get(ENV_LOAD_STAGING_ROOT, "").strip()
+    target = os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip()
+    if staging and target:
+        raise RuntimeError(
+            f"{ENV_LOAD_STAGING_ROOT} and {ENV_LOAD_TARGET_ROOT} are mutually exclusive"
+        )
+    return Path(target) if target else None
