@@ -138,13 +138,23 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
     period = max(periods)
     ranking_rows = rows.brand_ranking.get(period, [])
     member_brands = tuple(
-        TopBrand(
-            brand=str(item.get("brand") or item.get("brand_key") or ""),
-            rank=_as_int(item.get("rank")),
-            value=_as_float(item.get("raw_value")),
-            share_pct=_as_float(item.get("ms")),
+        sorted(
+            (
+                TopBrand(
+                    brand=str(item.get("brand") or item.get("brand_key") or ""),
+                    rank=_as_int(item.get("rank")),
+                    value=_as_float(item.get("raw_value")),
+                    share_pct=_as_float(item.get("ms")),
+                )
+                for item in ranking_rows
+            ),
+            key=lambda row: (
+                row.rank is None,
+                row.rank if row.rank is not None else 10_000,
+                -(row.value or 0.0),
+                row.brand,
+            ),
         )
-        for item in ranking_rows
     )
     metric = rows.brand_metric_history.get(period, {})
     return GeneralMarket(

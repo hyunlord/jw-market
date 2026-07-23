@@ -60,3 +60,17 @@ def test_mart_backend_keeps_candidate_fallback_contract() -> None:
     backend = GeneralViewMartBackend(FakeGeneralMartReader(), CandidateOnlyBackend())
 
     assert backend.candidates("마운자로", "iqvia") == (AtcCandidate("A10S0", "GLP-1"),)
+
+
+def test_mart_backend_sorts_full_member_population_by_rank() -> None:
+    class UnsortedReader(FakeGeneralMartReader):
+        def read(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMartRows:
+            rows = super().read(atc4, brand, source, measure)
+            rows.brand_ranking["2026-Q1"].reverse()
+            return rows
+
+    backend = GeneralViewMartBackend(UnsortedReader(), CandidateOnlyBackend())
+
+    market = backend.market("A10S0", "마운자로", "iqvia", "sales")
+
+    assert [row.brand for row in market.member_brands] == ["마운자로", "오젠픽"]

@@ -58,8 +58,22 @@ def map_market_view_reply(text: str) -> MarketView | None:
 def asks_market_members(question: str) -> bool:
     normalized = _normalize(question)
     member_noun = any(token in normalized for token in ("브랜드", "제품", "품목", "구성원"))
-    list_cue = any(token in normalized for token in ("목록", "어떤", "뭐", "무엇", "포함", "들어"))
-    return member_noun and list_cue and ("시장" in normalized or "기타" in normalized or "순위" in normalized)
+    list_cue = any(
+        token in normalized
+        for token in ("목록", "어떤", "뭐", "무엇", "포함", "들어", "나열", "전부", "전체")
+    )
+    market_context = any(token in normalized for token in ("시장", "기타", "순위", "상위"))
+    terse_market_members = "시장" in normalized and normalized.endswith(("브랜드", "제품", "품목", "구성원"))
+    return (member_noun and market_context and (list_cue or terse_market_members)) or asks_other_market_members(
+        question
+    )
+
+
+def asks_other_market_members(question: str) -> bool:
+    normalized = _normalize(question)
+    if "기타" in normalized:
+        return any(token in normalized for token in ("브랜드", "제품", "품목", "구성원", "시장", "순위", "목록"))
+    return "나머지" in normalized and any(token in normalized for token in ("상위", "시장", "브랜드", "제품"))
 
 
 def _explicit_view(normalized: str) -> MarketView | None:

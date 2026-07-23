@@ -33,6 +33,7 @@ from jw_chat_agent_poc.resolver.catalog_membership import (
 )
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
+from jw_chat_agent_poc.tools.metrics.market_scope_intent import asks_market_members
 
 
 def _payload(*, atc4: str = "C10A1", source: str = "ubist", measure: str = "sales") -> dict:
@@ -503,6 +504,8 @@ class GeneralOnlyResolvingMembership(StrategicMembership):
         "아일리아 매출 알려줘",
         "아일리아 최근 추이",
         "아일리아 경쟁 순위 기타 포함 제품 목록",
+        "아일리아 시장 브랜드",
+        "아일리아 시장 기타 브랜드",
     ),
 )
 def test_general_only_resolved_brand_routes_to_general_view(question: str) -> None:
@@ -616,11 +619,174 @@ def test_general_member_listing_reports_other_members_and_total_population() -> 
     )
 
     contract = result["general_view_contract"]
+    assert result["decomposition"] == [{"intent": "market_members", "view_type": "general_view"}]
+    assert result["tool_calls"][0]["tool"] == "get_market_members"
     assert contract["total_brands_in_market"] == 8
     assert contract["displayed_brand_count"] == 3
     assert contract["member_brands"] == ["브랜드6", "브랜드7", "브랜드8"]
-    assert "총 8개 중 3개 표시" in result["answer"]
+    assert contract["other_member_count"] == 3
+    assert "기타 3개 중 3개 표시" in result["answer"]
     assert "브랜드6" in result["answer"]
+
+
+def test_general_member_listing_uses_existing_bounded_market_member_contract() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    market = _market("S01P0", 10.0)
+    all_members = tuple(
+        replace(
+            market.top_brands[0],
+            brand=f"브랜드{index}",
+            rank=index,
+            share_pct=float(26 - index),
+        )
+        for index in range(1, 31)
+    )
+    backend.market_map["S01P0"] = replace(
+        market,
+        brand="아일리아",
+        top_brands=all_members[:5],
+        member_brands=all_members,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("아일리아 시장 브랜드", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert result["tool_calls"][0]["tool"] == "get_market_members"
+    assert contract["total_brands_in_market"] == 30
+    assert contract["displayed_brand_count"] == 20
+    assert contract["member_brands"] == [f"브랜드{index}" for index in range(1, 21)]
+    assert "총 30개 중 20개 표시" in result["answer"]
+    assert "브랜드21" not in result["answer"]
+
+
+def test_general_other_listing_starts_after_top_five_and_reports_share_total() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    market = _market("S01P0", 10.0)
+    shares = (51.38, 19.17, 9.60, 6.43, 5.05, 3.50, 2.25, 1.12, 0.87, 0.63)
+    all_members = tuple(
+        replace(
+            market.top_brands[0],
+            brand=f"브랜드{index}",
+            rank=index,
+            share_pct=share,
+        )
+        for index, share in enumerate(shares, 1)
+    )
+    backend.market_map["S01P0"] = replace(
+        market,
+        brand="아일리아",
+        top_brands=all_members[:5],
+        member_brands=all_members,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("아일리아 시장 기타 브랜드", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["member_brands"] == [f"브랜드{index}" for index in range(6, 11)]
+    assert contract["other_member_count"] == 5
+    assert contract["other_total_share_pct"] == pytest.approx(8.37)
+    assert "기타 5개 중 5개 표시" in result["answer"]
+    assert "기타 합계 점유율" in result["answer"]
+    assert "8.37%" in result["answer"]
+    assert "| 6 | 브랜드6 |" in result["answer"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "아일리아 시장 기타 브랜드",
+        "기타에 포함된 제품 목록",
+        "상위 5개 외 나머지",
+    ),
+)
+def test_general_other_member_phrases_are_recognized(question: str) -> None:
+    assert asks_market_members(question) is True
+
+
+def test_general_other_listing_reports_none_when_market_has_only_top_five() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    market = _market("S01P0", 10.0)
+    backend.market_map["S01P0"] = replace(
+        market,
+        brand="아일리아",
+        member_brands=market.top_brands,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("아일리아 시장 기타 브랜드", compact=False, dual=False)
+
+    assert result["general_view_contract"]["other_member_count"] == 0
+    assert "상위 5개 외 기타 브랜드가 없습니다" in result["answer"]
+
+
+def test_general_member_full_listing_request_stays_bounded() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    market = _market("S01P0", 10.0)
+    all_members = tuple(
+        replace(market.top_brands[0], brand=f"브랜드{index}", rank=index)
+        for index in range(1, 101)
+    )
+    backend.market_map["S01P0"] = replace(
+        market,
+        brand="아일리아",
+        top_brands=all_members[:5],
+        member_brands=all_members,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("아일리아 시장 브랜드 전부 나열해줘", compact=False, dual=False)
+
+    assert result["general_view_contract"]["displayed_brand_count"] == 20
+    assert "총 100개 중 20개 표시" in result["answer"]
+    assert "브랜드21" not in result["answer"]
+
+
+def test_exact_strategic_member_question_keeps_strategic_route_priority() -> None:
+    service = GeneralViewService(
+        FakeBackend(),
+        StrategicMembershipWithExplicitMarket({"리바로"}),
+        enabled=True,
+    )
+
+    assert service.route("고지혈증 시장에 어떤 브랜드들이 있어?") is GeneralRoute.EXISTING
 
 
 def test_general_member_listing_rejects_explicit_historical_period_without_latest_substitution() -> None:
