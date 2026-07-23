@@ -284,6 +284,8 @@ def test_rendered_shadow_job_mounts_output_without_production_unlock(monkeypatch
     monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
     monkeypatch.setenv("INGEST_SHADOW_TARGET_DB", "jw_mart_ingest_shadow_demo")
     monkeypatch.setenv("INGEST_SHADOW_LEDGER_SQLITE", "/market-output/shadow/ledger.sqlite")
+    monkeypatch.setenv("INGEST_SHADOW_FAILURE_AT", "sigma_parts_whole")
+    monkeypatch.setenv("INGEST_SHADOW_CRASH_AT", "after_mart_publish")
 
     body = render_job(
         category="ubist", manifest_sha=SHA, manifest_path="/m.json", namespace="llmops"
@@ -295,6 +297,8 @@ def test_rendered_shadow_job_mounts_output_without_production_unlock(monkeypatch
     mounts = {item["name"]: item for item in container["volumeMounts"]}
     assert env["INGEST_LOAD_SHADOW_ROOT"]["value"] == "/market-output/shadow"
     assert env["INGEST_SHADOW_TARGET_DB"]["value"] == "jw_mart_ingest_shadow_demo"
+    assert env["INGEST_SHADOW_FAILURE_AT"]["value"] == "sigma_parts_whole"
+    assert env["INGEST_SHADOW_CRASH_AT"]["value"] == "after_mart_publish"
     assert "INGEST_LOAD_TARGET_ROOT" not in env
     assert "INGEST_MART_PROMOTION_APPROVED" not in env
     assert mounts["market-output"]["mountPath"] == "/market-output"
