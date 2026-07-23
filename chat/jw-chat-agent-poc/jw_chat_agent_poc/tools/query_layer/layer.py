@@ -410,32 +410,56 @@ class StrategicQueryLayer:
         limit: int = 5,
         market: str | None = None,
         source: str = "",
+        metric: str = "sales",
     ) -> dict[str, Any]:
         if self._cause_backend is not None:
             return self._cause_top_brands(brand, limit=limit, source=source)
+        definition = metric_definition(metric)
+        measure = definition.measure
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
-        selected_source = source or snapshot.source_for_market(market)
-        latest = snapshot.latest_period(market, selected_source)
-        ranked = snapshot.ranked_brands(market, latest, selected_source)[: max(1, min(limit, 20))]
-        structure = market_structure(snapshot, market, selected_source)
+        selected_source = source or _default_source_for_metric(snapshot, market, brand, "latest", measure)
+        if selected_source not in definition.sources:
+            raise LookupError(f"{metric} is unavailable for source={selected_source}")
+        latest = snapshot.latest_period(market, selected_source, measure)
+        ranked = snapshot.ranked_brands(market, latest, selected_source, measure)[: max(1, min(limit, 20))]
+        structure = market_structure(snapshot, market, selected_source) if measure == "sales" else {}
+        market_value = snapshot.market_value_or_none(market, latest, selected_source, measure)
         data = {
             "brand": brand,
             "metric": "market_top_brands",
+            "measure": measure,
             "period": latest,
             "market_id": market,
             "market_name": market,
             "source_label": source_label(selected_source),
+            "value_label": definition.display_name,
+            "unit_label": definition.unit_label,
             "level": "Brand",
-            "level_segments": level_segments(ranked),
-            "level_top5_trend_series": top_trend(snapshot, market, selected_source, latest, brand, limit=max(limit, 5)),
-            "market_size_recent_krw": snapshot.market_value_or_none(market, latest, selected_source),
-            "market_size_억원": _eok_or_none(snapshot.market_value_or_none(market, latest, selected_source)),
+            "level_segments": level_segments(ranked, measure=measure),
+            "level_top5_trend_series": top_trend(snapshot, market, selected_source, latest, brand, limit=max(limit, 5), measure=measure),
         }
+        if measure == "sales":
+            data.update(
+                {
+                    "market_size_recent_krw": market_value,
+                    "market_size_억원": _eok_or_none(market_value),
+                }
+            )
+        else:
+            data["market_prescription_volume"] = market_value
         if structure:
             data["market_structure"] = structure
         data["query_result_id"] = self._results.put(ranked)
-        data["query_spec"] = {"source": selected_source, "view": "market_landscape", "market": market, "group_by": ["product"], "sort": "sales_desc", "limit": limit}
+        data["query_spec"] = {
+            "source": selected_source,
+            "view": "market_landscape",
+            "market": market,
+            "group_by": ["product"],
+            "metrics": [definition.public_name],
+            "sort": "prescription_volume_desc" if measure == "volume" else "sales_desc",
+            "limit": limit,
+        }
         return {"source": source_label(selected_source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
 
     def _cause_market_scope(self, brand: str) -> dict[str, Any]:

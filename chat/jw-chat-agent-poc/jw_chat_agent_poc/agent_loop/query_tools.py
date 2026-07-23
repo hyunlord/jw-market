@@ -78,9 +78,10 @@ def top_brands(
     limit: str | None,
     market: str | None = None,
     source: str = "",
+    metric: str = "sales",
 ) -> QueryToolResult:
     active_layer = required_layer(layer)
-    call = active_layer.top_brands(brand, int_arg(limit, 5), market=market, source=source)
+    call = active_layer.top_brands(brand, int_arg(limit, 5), market=market, source=source, metric=metric)
     return QueryToolResult(f"{brand} top brands query-layer", call)
 
 

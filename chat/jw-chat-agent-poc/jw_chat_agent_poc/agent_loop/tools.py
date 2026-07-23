@@ -405,6 +405,7 @@ class AgentToolFacade:
             arguments.get("limit"),
             self._market(brand),
             arguments.get("source", ""),
+            arguments.get("measure", "sales"),
         )
         return ToolExecution("ok", result.preview, result.call, arguments)
 

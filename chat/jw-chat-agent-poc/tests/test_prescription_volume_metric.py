@@ -90,6 +90,27 @@ def test_prescription_volume_breakdown_uses_volume_grain_and_rx_label(
     assert all("value_억원" not in segment for segment in data["level_segments"])
 
 
+def test_prescription_volume_top_brands_uses_volume_grain_and_rx_label() -> None:
+    call = _layer().top_brands(
+        "리바로젯",
+        limit=2,
+        market="ml_006",
+        source="ubist",
+        metric="prescription_volume",
+    )
+    data = call["render_data"]
+
+    assert data["measure"] == "volume"
+    assert data["value_label"] == "처방량"
+    assert data["unit_label"] == "Rx"
+    assert data["query_spec"]["metrics"] == ["prescription_volume"]
+    assert data["query_spec"]["sort"] == "prescription_volume_desc"
+    assert data["level_segments"][0]["prescription_volume"] == 3_500.0
+    assert data["level_segments"][1]["prescription_volume"] == 1_500.0
+    assert all(segment["unit_label"] == "Rx" for segment in data["level_segments"])
+    assert all("value_억원" not in segment for segment in data["level_segments"])
+
+
 def test_iqvia_cannot_serve_ubist_prescription_volume() -> None:
     with pytest.raises(LookupError, match="prescription_volume.*iqvia_nsa|iqvia_nsa.*prescription_volume"):
         _layer().brand_metric(
