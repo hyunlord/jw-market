@@ -77,6 +77,7 @@ def build_general_analysis_level_sections(
     focus: BrandMetric | None,
     mart_db: str,
     period_range: PeriodRange = PeriodRange(),
+    brand_cohort: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     specs = GENERAL_LEVEL_SPECS.get(metrics.source)
     if not specs:
@@ -165,6 +166,7 @@ def build_general_analysis_level_sections(
             use_latest_valid_share=True,
             series_value_cache=series_value_cache,
             channel_rows_cache=channel_rows_cache,
+            brand_cohort=brand_cohort,
         ),
         specs,
     )

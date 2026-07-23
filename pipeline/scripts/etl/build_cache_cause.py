@@ -2511,6 +2511,8 @@ def _display_brand_rows(
     include_others: bool,
     market_series: dict[str, Any] | None = None,
     ei_market_key: Any = None,
+    brand_cohort: tuple[str, ...] | None = None,
+    cohort_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     def first_float(*values: Any) -> float | None:
         for value in values:
@@ -2605,25 +2607,72 @@ def _display_brand_rows(
     for index, row in enumerate(ranked, start=1):
         row["rank"] = index
 
-    target = next((row for row in normalized if row["is_target"]), None)
-    target_id = row_identity(target, "brand")
-    competitors = [
-        row
-        for row in sorted(
-            normalized,
-            key=lambda item: (
-                safe_float(item.get("value_recent")) is not None,
-                safe_float(item.get("value_recent")) or 0.0,
-            ),
-            reverse=True,
-        )
-        if row_identity(row, "brand") != target_id
-    ]
-    # B1: 채널/세그먼트 내 표시 브랜드도 선택 브랜드를 선두에 고정하고,
-    # 경쟁 top5와 기타를 뒤에 붙인다. 선택 브랜드가 competitors에 이미 있으면
-    # target_id로 제거해 중복을 막는다. 기타에 선택 브랜드를 남기는 대안은
-    # double counting을 만들었기 때문에 기각했다.
-    selected = ([target] if target else []) + competitors[:top_n]
+    if brand_cohort is None:
+        target = next((row for row in normalized if row["is_target"]), None)
+        target_id = row_identity(target, "brand")
+        competitors = [
+            row
+            for row in sorted(
+                normalized,
+                key=lambda item: (
+                    safe_float(item.get("value_recent")) is not None,
+                    safe_float(item.get("value_recent")) or 0.0,
+                ),
+                reverse=True,
+            )
+            if row_identity(row, "brand") != target_id
+        ]
+        # B1: 채널/세그먼트 내 표시 브랜드도 선택 브랜드를 선두에 고정하고,
+        # 경쟁 top5와 기타를 뒤에 붙인다. 선택 브랜드가 competitors에 이미 있으면
+        # target_id로 제거해 중복을 막는다. 기타에 선택 브랜드를 남기는 대안은
+        # double counting을 만들었기 때문에 기각했다.
+        selected = ([target] if target else []) + competitors[:top_n]
+    else:
+        normalized_by_brand = {str(row["brand"]): row for row in normalized}
+        reference_by_brand = {
+            brand: row
+            for row in (cohort_rows or rows)
+            if (brand := _row_brand(row))
+        }
+        selected = []
+        for brand in brand_cohort:
+            item = normalized_by_brand.get(brand)
+            if item is None:
+                reference = reference_by_brand.get(brand, {})
+                item = {
+                    "brand": brand,
+                    "brand_key": reference.get("brand_key") or brand,
+                    "company": _row_company(reference) if reference else None,
+                    "is_target": bool(target_name and brand == target_name),
+                    "is_jw": bool(reference.get("is_jw")) or bool(target_name and brand == target_name),
+                    "is_others": False,
+                    "rank": None,
+                    "rank_overall": None,
+                    "value_recent": 0.0,
+                    "raw_value": 0.0,
+                    "share_pct": 0.0,
+                    "ms_pct": 0.0,
+                    "ms_recent_pct": 0.0,
+                    "ei": None,
+                    "ei_5y": None,
+                    "cagr_5y_pct": None,
+                    "brand_cagr_pct": None,
+                    "market_cagr_pct": None,
+                    "ei_basis": None,
+                    "ei_period_years": None,
+                    "ei_note": None,
+                    "cagr_basis": None,
+                    "momentum_score": None,
+                    "growth_contribution": 0.0,
+                    "growth_contribution_pct": 0.0,
+                    "contribution": 0.0,
+                    "contribution_pct": 0.0,
+                    "data_quality": {
+                        "available": False,
+                        "reason": "no_data_in_widget_scope",
+                    },
+                }
+            selected.append(item)
     selected_ids = {row_identity(row, "brand") for row in selected}
     others = [row for row in normalized if row_identity(row, "brand") not in selected_ids]
     if include_others and others:
@@ -3204,6 +3253,7 @@ def _target_customer_competition(
     series_value_cache: _SeriesValueCache | None = None,
     channel_rows_cache: _ChannelRowsCache | None = None,
     rank_series_cache: _RankSeriesCache | None = None,
+    brand_cohort: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     targets = channels or _channels_for_source(source)
     target_type = "채널"
@@ -3218,7 +3268,14 @@ def _target_customer_competition(
             series_value_cache=series_value_cache,
             channel_rows_cache=channel_rows_cache,
         )
-        selected = _display_brand_rows(channel_rows, target_name=target_name, top_n=5, include_others=True)
+        selected = _display_brand_rows(
+            channel_rows,
+            target_name=target_name,
+            top_n=5,
+            include_others=True,
+            brand_cohort=brand_cohort,
+            cohort_rows=rows,
+        )
         row_by_brand = {_row_brand(row): row for row in channel_rows if _row_brand(row)}
         total_series = _total_series_for_rows(channel_rows, period_tail)
         rank_series_by_brand = _period_rank_series_by_brand(
@@ -3272,6 +3329,11 @@ def _target_customer_competition(
                     "ms_series": ms_series,
                     "ms_recent_pct": ms_recent_pct,
                     "volume_ms_series": ms_series,
+                    **(
+                        {"data_quality": deepcopy(item["data_quality"])}
+                        if isinstance(item.get("data_quality"), dict)
+                        else {}
+                    ),
                 }
             )
             composition.append(
@@ -3349,12 +3411,16 @@ def _level_trend_brand_payloads(
     total_series: list[float],
     use_latest_valid_share: bool = False,
     rank_series_cache: _RankSeriesCache | None = None,
+    brand_cohort: tuple[str, ...] | None = None,
+    cohort_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     brand_entries = _display_brand_rows(
         option_rows,
         target_name=target_name,
         top_n=5,
         include_others=True,
+        brand_cohort=brand_cohort,
+        cohort_rows=cohort_rows,
     ) if option_rows else []
     row_by_brand = {_row_brand(row): row for row in option_rows if _row_brand(row)}
     rank_series_by_brand = _period_rank_series_by_brand(
@@ -3377,11 +3443,12 @@ def _level_trend_brand_payloads(
                     else None
                 )
         else:
-            series = (
-                _optional_series_for_row(source_row, periods, scaled_sales=True)
-                if source_row
-                else [None] * len(periods)
-            )
+            if source_row:
+                series = _optional_series_for_row(source_row, periods, scaled_sales=True)
+            elif brand_cohort is not None:
+                series = [0.0] * len(periods)
+            else:
+                series = [None] * len(periods)
             selected_series.append(series)
         # D3도 D2와 같은 회귀를 막는다. 표시 멤버십은 최근 segment top5로
         # 고정하지만, rank_series_10pt는 각 기간의 segment 전체 브랜드 값을
@@ -3425,7 +3492,9 @@ def _level_trend_brand_payloads(
             ],
             "volume_series_10pt": series,
         }
-        if recent_value is None:
+        if isinstance(entry.get("data_quality"), dict):
+            payload["data_quality"] = deepcopy(entry["data_quality"])
+        elif recent_value is None:
             payload["data_quality"] = {"available": False, "reason": "no_data"}
         brands_in_value.append(payload)
     return brands_in_value
@@ -3444,6 +3513,7 @@ def _level_top5_trend(
     series_value_cache: _SeriesValueCache | None = None,
     channel_rows_cache: _ChannelRowsCache | None = None,
     rank_series_cache: _RankSeriesCache | None = None,
+    brand_cohort: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if series_value_cache is None:
         series_value_cache = {}
@@ -3510,6 +3580,8 @@ def _level_top5_trend(
                     total_series=overall_value_series,
                     use_latest_valid_share=use_latest_valid_share,
                     rank_series_cache=rank_series_cache,
+                    brand_cohort=brand_cohort,
+                    cohort_rows=full_market_rows,
                 )
                 overall_brand_payload_cache[overall_series_key] = overall_brands_in_value
             overall_item = {
@@ -3580,6 +3652,8 @@ def _level_top5_trend(
                         total_series=segment_total_series,
                         use_latest_valid_share=use_latest_valid_share,
                         rank_series_cache=rank_series_cache,
+                        brand_cohort=brand_cohort,
+                        cohort_rows=full_market_rows,
                     ),
                 }
             if total_value is None:
