@@ -301,11 +301,42 @@ def test_post_topics_route_rejects_invalid_or_reversed_period() -> None:
     assert reversed_period.status_code == 422
 
 
-def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("start_date", "end_date"),
+    [
+        ("2025-06", "2026-05"),
+        ("2025-04", "2026-03"),
+    ],
+)
+def test_post_topics_route_preserves_guardlet_cohort_for_period_without_data(
+    monkeypatch,
+    start_date: str,
+    end_date: str,
+) -> None:
+    cohort = [
+        "가드렛",
+        "마운자로",
+        "제미메트",
+        "트루리시티",
+        "트레시바플렉스터치",
+        "자디앙",
+    ]
     monkeypatch.setattr(
         brand_activity,
         "get_topic_brand_payload",
-        lambda _payload: {"scope": {"sliced": True}, "brands": [{"event_count": 0, "topic_shares": []}]},
+        lambda _payload: {
+            "scope": {"sliced": True},
+            "brands": [
+                {
+                    "brand": brand,
+                    "brand_key": f"brand-{index}",
+                    "event_count": 0,
+                    "topic_shares": [],
+                    "brand_specific_topics": [],
+                }
+                for index, brand in enumerate(cohort)
+            ],
+        },
     )
     monkeypatch.setattr(
         brand_activity,
@@ -317,15 +348,45 @@ def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatc
         "/api/brand-activity/topics",
         json={
             "view": "general",
-            "selected_brand": "리바로",
-            "filters": {"atc4": ["C10A1"]},
-            "start_date": "2023-01",
-            "end_date": "2023-02",
+            "selected_brand": "가드렛",
+            "filters": {
+                "atc4": [
+                    "A10C1",
+                    "A10C2",
+                    "A10C3",
+                    "A10C5",
+                    "A10C9",
+                    "A10H0",
+                    "A10J1",
+                    "A10J2",
+                    "A10J9",
+                    "A10K1",
+                    "A10K2",
+                    "A10K3",
+                    "A10L0",
+                    "A10M1",
+                    "A10M3",
+                    "A10N1",
+                    "A10N3",
+                    "A10N9",
+                    "A10P1",
+                    "A10P3",
+                    "A10P5",
+                    "A10P9",
+                    "A10S0",
+                ]
+            },
+            "start_date": start_date,
+            "end_date": end_date,
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["brands"] == []
+    brands = response.json()["data"]["brands"]
+    assert [brand["brand"] for brand in brands] == cohort
+    assert all(brand["event_count"] == 0 for brand in brands)
+    assert all(brand["topic_shares"] == [] for brand in brands)
+    assert all(brand["brand_specific_topics"] == [] for brand in brands)
     assert response.json()["meta"]["reason"] == "no_data_in_period"
 
 

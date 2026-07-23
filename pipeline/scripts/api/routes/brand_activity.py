@@ -172,7 +172,6 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
     period_meta = _topic_period_metadata(payload, get_topic_period_bounds())
     response_meta: dict[str, JsonValue] = {"period": period_meta}
     if _period_filter_active(payload) and not _topic_result_has_data(result):
-        result = {**result, "brands": []}
         response_meta["reason"] = "no_data_in_period"
     return _success_response(result, request_normalized=request_normalized, metadata=response_meta)
 
