@@ -45,6 +45,9 @@ def test_tier1_wrapper_uses_the_orchestrator_cli_contract(
     assert command[command.index("--output-base") + 1] == "/output"
     assert command[command.index("--delay") + 1] == "0.1"
     assert command[command.index("--sites") + 1] == "히트뉴스"
+    assert command[command.index("--crawler") + 1] == str(
+        crawl_2tier.CRAWLER_DIR / "crawl_news_v2.py"
+    )
     assert command[command.index("--max-articles") + 1] == "2"
     assert "--profile-dir" not in command
     assert "--output-base-dir" not in command
