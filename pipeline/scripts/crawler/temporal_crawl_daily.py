@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import time
 from collections import deque
@@ -24,6 +23,7 @@ from pipeline.scripts.crawler.crawl_temporal_contract import (
     CrawlDailyInput,
     StageGateError,
     activity_command,
+    resolve_execution_config,
     write_content_addressed_baseline,
 )
 
@@ -267,6 +267,7 @@ ACTIVITY_FUNCTIONS = {
 class CrawlDailyWorkflow:
     @workflow.run
     async def run(self, config: CrawlDailyInput) -> dict[str, Any]:
+        config = resolve_execution_config(config, temporal_run_id=workflow.info().run_id)
         stages: list[dict[str, Any]] = []
         for stage in ACTIVITY_STAGES:
             policy = ACTIVITY_POLICIES[stage]

@@ -7,9 +7,10 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
+from uuid import UUID
 
 
 ACTIVITY_STAGES: Final[tuple[str, ...]] = (
@@ -67,6 +68,7 @@ class CrawlDailyInput:
     stage_script: str = "/work/pipeline/scripts/crawler/crawl_chain_steps.sh"
     repo_root: str = "/work"
     command_revision: str = ""
+    use_temporal_run_id: bool = False
     inject_failure_stage: str | None = None
     inject_reported_failures_stage: str | None = None
     inject_heartbeat_stall_stage: str | None = None
@@ -90,6 +92,24 @@ class CrawlDailyInput:
         ):
             raise ValueError("test heartbeat timeout must be between 1 and 30 seconds")
         return self
+
+
+def resolve_execution_config(
+    config: CrawlDailyInput,
+    *,
+    temporal_run_id: str,
+) -> CrawlDailyInput:
+    """Resolve one durable run key while preserving fixed shadow identifiers."""
+
+    config = config.validated()
+    if not config.use_temporal_run_id:
+        return config
+    execution_id = str(UUID(temporal_run_id))
+    return replace(
+        config,
+        run_id=f"{config.run_id}-{execution_id}",
+        use_temporal_run_id=False,
+    ).validated()
 
 
 @dataclass(frozen=True, slots=True)
