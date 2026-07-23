@@ -45,13 +45,14 @@ class IngestService:
         entry = self.ledger.next_queued(category)
         if entry is None:
             return None
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         name = job_launcher.submit_job(
             category=category,
             manifest_sha=entry.manifest_sha,
             manifest_path=entry.manifest_path,
             transport=self.transport,
+            run_id=run_id,
         )
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
 

@@ -78,12 +78,25 @@ def _job_env() -> list[dict]:
 Transport = Callable[[str, dict], dict]
 
 
-def job_name(category: str, manifest_sha: str) -> str:
-    return f"jw-ingest-{category.replace('_', '-')}-{manifest_sha[:8]}"
+def job_name(category: str, manifest_sha: str, run_id: str | None = None) -> str:
+    base = f"jw-ingest-{category.replace('_', '-')}-{manifest_sha[:8]}"
+    if run_id is None:
+        return base
+    suffix = "".join(char.lower() for char in run_id if char.isalnum() or char == "-")
+    if not suffix:
+        raise ValueError("run_id must contain a Kubernetes name character")
+    return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
 
 
-def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespace: str | None = None) -> dict:
-    name = job_name(category, manifest_sha)
+def render_job(
+    *,
+    category: str,
+    manifest_sha: str,
+    manifest_path: str,
+    namespace: str | None = None,
+    run_id: str | None = None,
+) -> dict:
+    name = job_name(category, manifest_sha, run_id)
     local_root = (
         config.input_root()
         if os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
@@ -196,10 +209,15 @@ def submit_job(
     manifest_path: str,
     transport: Transport | None = None,
     namespace: str | None = None,
+    run_id: str | None = None,
 ) -> str:
     """Create the Job and return its name."""
     body = render_job(
-        category=category, manifest_sha=manifest_sha, manifest_path=manifest_path, namespace=namespace
+        category=category,
+        manifest_sha=manifest_sha,
+        manifest_path=manifest_path,
+        namespace=namespace,
+        run_id=run_id,
     )
     send = transport or _in_cluster_transport
     send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)

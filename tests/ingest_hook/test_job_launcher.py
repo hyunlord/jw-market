@@ -34,6 +34,29 @@ def test_submit_uses_injected_transport(fake_transport):
     assert body["metadata"]["name"] == name
 
 
+def test_submit_scopes_job_name_to_retry_run_id(fake_transport):
+    first = submit_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        run_id="20260723032031000001",
+        transport=fake_transport,
+        namespace="llmops",
+    )
+    second = submit_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        run_id="20260723034015000002",
+        transport=fake_transport,
+        namespace="llmops",
+    )
+
+    assert first == f"jw-ingest-ubist-{SHA[:8]}-20260723032031000001"
+    assert second == f"jw-ingest-ubist-{SHA[:8]}-20260723034015000002"
+    assert first != second
+
+
 def test_rendered_job_sanitizes_category_for_kubernetes_name():
     body = render_job(
         category="iqvia_nsa",

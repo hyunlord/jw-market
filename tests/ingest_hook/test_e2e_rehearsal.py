@@ -145,6 +145,20 @@ def test_g3_gate_same_webhook_three_times_one_job(client, bucket, fake_transport
     assert len(fake_transport.submitted) == 1, "exactly one Job for three identical webhooks"
 
 
+def test_failed_submission_retry_uses_a_new_job_name(client, service, bucket, fake_transport):
+    manifest_path = write_submission(bucket)
+    first = _webhook(client, manifest_path, bucket).json()
+    service.ledger.mark_failed(
+        first["epoch"], first["category"], first["manifest_sha"], reason="injected failure"
+    )
+
+    second = _webhook(client, manifest_path, bucket).json()
+
+    assert second["decision"] == "queued"
+    assert second["job_name"] != first["job_name"]
+    assert len(fake_transport.submitted) == 2
+
+
 def test_same_category_serialises_distinct_submissions(client, bucket, fake_transport):
     first = write_submission(bucket, epoch="2026-06", rows=GOOD_ROWS[:3])
     second = write_submission(bucket, epoch="2026-07")
