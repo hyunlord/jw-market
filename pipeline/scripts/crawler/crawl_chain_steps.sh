@@ -470,13 +470,38 @@ tier2_classify() {
     --source-processor tier2_exact_rule_v1 \
     --target-processor tier2_llm_v2_rev5671 \
     > "${output}/gate_status.json"
-  printf '{"status":"complete","category_refresh":true}\n' > "${output}/classification_summary.json"
   local load_failures append_failures failures events_gap pending_gap
+  local selected_pending_gap global_pending_gap pending_scope workflow_calls
   load_failures="$(summary_failure_count "${output}/load_summary.json")"
   append_failures="$(summary_failure_count "${output}/append_summary.json")"
   failures="$((load_failures + append_failures))"
   events_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["events_raw_gap"]))' "${output}/gate_status.json")"
-  pending_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["pending_gap"]))' "${output}/gate_status.json")"
+  selected_pending_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["pending_gap"]))' "${output}/append_summary.json")"
+  global_pending_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["pending_gap"]))' "${output}/gate_status.json")"
+  workflow_calls="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["workflow_calls"]))' "${output}/append_summary.json")"
+  pending_scope="global"
+  pending_gap="${global_pending_gap}"
+  if [[ -n "${CRAWL_CHAIN_SHADOW_KEYWORD:-}" && "${llm_call_limit}" -eq 0 ]]; then
+    pending_scope="selected_no_llm_shadow"
+    pending_gap="${selected_pending_gap}"
+  fi
+  python - "${output}/classification_summary.json" "${pending_scope}" \
+    "${selected_pending_gap}" "${global_pending_gap}" "${workflow_calls}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+output, scope, selected, global_gap, workflow_calls = sys.argv[1:]
+payload = {
+    "status": "complete",
+    "category_refresh": True,
+    "pending_scope": scope,
+    "pending_selected_gap": int(selected),
+    "pending_global_gap": int(global_gap),
+    "workflow_calls": int(workflow_calls),
+}
+Path(output).write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+PY
   write_stage_gate "${failures}" "${events_gap}" "${pending_gap}"
 }
 
