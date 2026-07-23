@@ -171,6 +171,87 @@ def test_market_scope_backend_failure_returns_typed_unavailable_without_trend() 
     assert "연속 하락" not in result["answer"]
 
 
+def test_market_member_mapping_failure_is_typed_without_generic_query_error() -> None:
+    class MissingMemberQueryLayer:
+        def market_members(self, *args, **kwargs):
+            raise LookupError("mart market not found: market=ml_003")
+
+    memberships = TtlCatalogMembershipReader(
+        StaticCatalogMembershipReader(
+            ({"brand": "마운자로", "market_id": "ml_003", "market_name": "당뇨 시장"},)
+        ),
+        ttl_seconds=300,
+    )
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        membership_reader=memberships,
+        query_layer=MissingMemberQueryLayer(),  # type: ignore[arg-type]
+    )
+
+    result = resolver.answer("마운자로 시장에 있는 브랜드 알려줘", view_type="market_landscape")
+
+    assert result["router_diagnostics"]["gate"] == "typed_unavailable"
+    assert result["router_diagnostics"]["gate_reason"] == "market_members_mapping_unavailable"
+    assert "시장 매핑이 확인되지 않습니다" in result["answer"]
+    assert "조회 오류" not in result["answer"]
+
+
+def test_named_market_member_count_is_forwarded_as_a_bounded_limit() -> None:
+    class RecordingMemberQueryLayer:
+        def __init__(self) -> None:
+            self.limits: list[int] = []
+
+        def market_members(
+            self,
+            brand: str = "",
+            *,
+            market: str | None = None,
+            period: str = "latest",
+            limit: int = 20,
+            include_other: bool = False,
+        ) -> dict:
+            self.limits.append(limit)
+            return {
+                "source": "UBIST",
+                "tool": "get_market_members",
+                "render_data": {
+                    "status": "ok",
+                    "market": market,
+                    "market_id": market,
+                    "market_name": "고지혈증 시장",
+                    "period": "2026-05",
+                    "member_brands": tuple(f"브랜드{index}" for index in range(1, limit + 1)),
+                    "displayed_brand_count": limit,
+                    "total_brands_in_market": 555,
+                    "source_label": "UBIST",
+                },
+            }
+
+    memberships = TtlCatalogMembershipReader(
+        StaticCatalogMembershipReader(
+            ({"brand": "리바로", "market_id": "ml_006", "market_name": "고지혈증 시장"},)
+        ),
+        ttl_seconds=300,
+    )
+    query_layer = RecordingMemberQueryLayer()
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        membership_reader=memberships,
+        query_layer=query_layer,  # type: ignore[arg-type]
+    )
+
+    result = resolver.answer_named_market("고지혈증 시장 브랜드 50개")
+
+    assert query_layer.limits == [20]
+    data = result["tool_calls"][0]["render_data"]
+    assert data["total_brands_in_market"] == 555
+    assert data["displayed_brand_count"] == 20
+    assert data["requested_limit"] == 50
+    assert data["limit_capped"] is True
+    assert "총 555개 중 20개 표시" in result["answer"]
+    assert "표시 상한 20개" in result["answer"]
+
+
 def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:
     def record(brand: str, value: float) -> MartRecord:
         return MartRecord(

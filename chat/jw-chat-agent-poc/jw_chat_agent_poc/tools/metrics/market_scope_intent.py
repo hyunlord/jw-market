@@ -20,6 +20,13 @@ _MARKET_SCOPE_RE = re.compile(
 )
 _BRAND_TOKEN_RE = re.compile(r"([가-힣A-Za-z0-9+_-]{2,80})\s*$")
 _BRAND_PARTICLES = ("이랑", "랑", "와", "과", "은", "는", "이", "가", "의")
+_MARKET_MEMBER_DISPLAY_DEFAULT = 20
+_MARKET_MEMBER_DISPLAY_MAX = 20
+_MARKET_MEMBER_COUNT_PATTERNS = (
+    re.compile(r"(?:브랜드|제품|품목|구성원)\s*(-?\d+)\s*개", re.IGNORECASE),
+    re.compile(r"(?:상위|top)\s*(-?\d+)\s*(?:개)?(?:\s*(?:브랜드|제품|품목|구성원))?", re.IGNORECASE),
+    re.compile(r"(-?\d+)\s*개(?:만)?(?:\s*(?:알려|보여|표시|나열))?", re.IGNORECASE),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +35,13 @@ class MarketScopeIntent:
     metric: str
     view_type: MarketView | None
     requires_clarification: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MarketMemberLimit:
+    requested: int | None
+    applied: int
+    capped: bool
 
 
 def detect_market_scope_intent(question: str) -> MarketScopeIntent | None:
@@ -60,13 +74,30 @@ def asks_market_members(question: str) -> bool:
     member_noun = any(token in normalized for token in ("브랜드", "제품", "품목", "구성원"))
     list_cue = any(
         token in normalized
-        for token in ("목록", "어떤", "뭐", "무엇", "포함", "들어", "나열", "전부", "전체")
+        for token in ("목록", "어떤", "뭐", "무엇", "포함", "들어", "있는", "알려", "나열", "전부", "전체")
     )
     market_context = any(token in normalized for token in ("시장", "기타", "순위", "상위"))
     terse_market_members = "시장" in normalized and normalized.endswith(("브랜드", "제품", "품목", "구성원"))
+    counted_market_members = "시장" in normalized and requested_market_member_limit(question).requested is not None
     return (member_noun and market_context and (list_cue or terse_market_members)) or asks_other_market_members(
         question
-    )
+    ) or counted_market_members
+
+
+def requested_market_member_limit(question: str) -> MarketMemberLimit:
+    requested = _requested_market_member_count(question)
+    if requested is None or requested <= 0:
+        return MarketMemberLimit(requested=requested, applied=_MARKET_MEMBER_DISPLAY_DEFAULT, capped=False)
+    applied = min(requested, _MARKET_MEMBER_DISPLAY_MAX)
+    return MarketMemberLimit(requested=requested, applied=applied, capped=requested > applied)
+
+
+def _requested_market_member_count(question: str) -> int | None:
+    for pattern in _MARKET_MEMBER_COUNT_PATTERNS:
+        match = pattern.search(question)
+        if match is not None:
+            return int(match.group(1))
+    return None
 
 
 def asks_other_market_members(question: str) -> bool:
