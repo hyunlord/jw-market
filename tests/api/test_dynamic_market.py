@@ -3580,6 +3580,43 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
     assert any("mart_general_filter_dimension_metric" in sql for sql in calls)
 
 
+def test_ubist_molecule_filter_hash_preserves_registry_whitespace(monkeypatch) -> None:
+    raw = "ezetimibe,  rosuvastatin calcium  ( as rosuvastatin)"
+    expected_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    collapsed_hash = hashlib.sha256(
+        "ezetimibe, rosuvastatin calcium ( as rosuvastatin)".encode("utf-8")
+    ).hexdigest()
+
+    def fake_fetch_all(sql: str, params: tuple[str, ...]) -> list[dict]:
+        if "mart_general_filter_dimension_metric" in sql:
+            assert expected_hash in params
+            assert collapsed_hash not in params
+            return [
+                {
+                    "brand_key": "로수젯",
+                    "brand_name": "로수젯",
+                    "atc4_code": "C10C",
+                    "product_code": "p1",
+                    "dimension_type": "molecule",
+                    "raw_value_history": json.dumps({"2026-05": 10}),
+                }
+            ]
+        return [{"brand_key": "로수젯", "atc4_code": "C10C", "unit_label": "KRW"}]
+
+    monkeypatch.setattr("pipeline.scripts.api.dynamic_market.aggregator.db.fetch_all", fake_fetch_all)
+
+    metrics = MetricAggregator(mart_db="jw_mart").aggregate(
+        brands=(BrandRef("로수젯", "로수젯", "C10C"),),
+        source="ubist",
+        measure="sales",
+        period_range=PeriodRange(),
+        top_n=20,
+        dimension_filters=(DimensionFilter("molecule", (raw,)),),
+    )
+
+    assert metrics.market_size == 10.0
+
+
 def test_iqvia_pack_desc_filter_uses_pack_sidecar_dimension(monkeypatch) -> None:
     calls: list[tuple[str, tuple[str, ...]]] = []
     expected_hash = hashlib.sha256("PFS 162MG/0.9ML".encode("utf-8")).hexdigest()

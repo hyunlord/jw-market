@@ -11,7 +11,11 @@ import math
 import re
 from typing import Any
 
-from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
+from pipeline.etl.io.mart.filter_dimension_metric import (
+    DIMENSION_REGISTRY,
+    FILTER_DIMENSION_TABLE,
+    normalize_dimension_spec_value,
+)
 from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
 from pipeline.scripts.api import db
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT, CompetitorRankItem, select_top_competitors
@@ -228,7 +232,11 @@ class MetricAggregator:
     ) -> list[dict]:
         dimension_db = quote_identifier(self.strategic_dimension_db or self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters, casefold_values=True)
+        dimension_sql, dimension_params = dimension_filter_predicate(
+            dimension_filters,
+            source=source,
+            casefold_values=True,
+        )
         market_kind = strategic_kind_for_view(view)
         rows = db.fetch_all(
             f"""
@@ -370,7 +378,11 @@ class MetricAggregator:
     ) -> list[dict]:
         mart_db = quote_identifier(self.mart_db)
         scope_sql, scope_params = brand_scope_predicate(brands)
-        dimension_sql, dimension_params = dimension_filter_predicate(dimension_filters, casefold_values=False)
+        dimension_sql, dimension_params = dimension_filter_predicate(
+            dimension_filters,
+            source=source,
+            casefold_values=False,
+        )
         rows = db.fetch_all(
             f"""
             SELECT brand_key, brand_name, atc4_code, product_code, dimension_type, raw_value_history
@@ -774,6 +786,7 @@ def brand_matrix_summary_scope(brands: tuple[BrandRef, ...]) -> tuple[str, tuple
 def dimension_filter_predicate(
     filters: tuple[DimensionFilter, ...],
     *,
+    source: str,
     casefold_values: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     """Return sidecar SQL implementing OR within each dimension."""
@@ -781,7 +794,15 @@ def dimension_filter_predicate(
     parts: list[str] = []
     params: list[str] = []
     for item in filters:
-        hashes = tuple(_dimension_value_hash(value, casefold=casefold_values) for value in item.values)
+        hashes = tuple(
+            _dimension_value_hash(
+                value,
+                source=source,
+                dimension_type=item.dimension_type,
+                casefold=casefold_values,
+            )
+            for value in item.values
+        )
         if not hashes:
             continue
         parts.append(f"(dimension_type = %s AND dimension_value_hash IN ({placeholders(hashes)}))")
@@ -926,10 +947,20 @@ def strategic_table_for_view(view: str) -> str:
     return "mart_strategic_ml_brand_metric" if strategic_kind_for_view(view) == "ml" else "mart_strategic_cd_brand_metric"
 
 
-def _dimension_value_hash(value: str, *, casefold: bool = False) -> str:
-    normalized = re.sub(r"\s+", " ", value.strip()).casefold()
-    if not casefold:
-        normalized = re.sub(r"\s+", " ", value.strip())
+def _dimension_value_hash(
+    value: str,
+    *,
+    source: str,
+    dimension_type: str,
+    casefold: bool = False,
+) -> str:
+    if casefold:
+        normalized = re.sub(r"\s+", " ", value.strip()).casefold()
+    else:
+        spec = DIMENSION_REGISTRY[source][dimension_type]
+        normalized = normalize_dimension_spec_value(value, spec)
+        if normalized is None:
+            raise ValueError(f"empty dimension value for {source}.{dimension_type}")
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
