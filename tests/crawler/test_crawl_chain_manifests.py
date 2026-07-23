@@ -86,6 +86,14 @@ def test_stage_script_preserves_incremental_loader_and_category_refresh_order() 
     assert '--daily-call-limit "${llm_call_limit}" --max-cost-krw 203.40' in script
 
 
+def test_stage_script_uses_the_tier1_direct_run_endpoint() -> None:
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert '--direct-run-url "${WF196_DIRECT_RUN_URL}"' in script
+
+
 def test_stage_script_supports_bounded_shadow_crawls_without_changing_defaults() -> None:
     # Given: the shared stage script used by both the dormant full chain and shadow worker.
     script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(

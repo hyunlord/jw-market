@@ -336,7 +336,8 @@ tier1_classify() {
   fi
   python crawl/agent1/score_v2.py \
     "${raw}" --catalog crawl/config/_catalog.json --output-root "${scored}" \
-    --limit 2000 --run-log "${output}/score_run_log.json"
+    --limit 2000 --run-log "${output}/score_run_log.json" \
+    --direct-run-url "${WF196_DIRECT_RUN_URL}"
   prepare_new_candidates "${raw}" "${scored}" "${scored_new}" "${output}/candidate_gate.json"
   local new_count
   new_count="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_count"])' "${output}/candidate_gate.json")"
