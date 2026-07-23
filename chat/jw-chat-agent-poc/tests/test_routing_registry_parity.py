@@ -127,6 +127,22 @@ def test_news_sales_impact_is_not_rejected_before_fact_backfill() -> None:
     assert should_use_agent_loop(question) is True
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        "NeDrug: 아일리아 제품의 효능 효과, 용병 용량, 사용상 주의사항을 알려줘",
+    ),
+)
+def test_regulatory_nedrug_questions_do_not_route_to_nhi_strategic_mart_stop(question: str) -> None:
+    assert strict_query_plan(question, "아일리아") is None
+
+
+def test_sales_question_does_not_route_to_nedrug_contract() -> None:
+    assert strict_query_plan("아일리아 매출 알려줘", "아일리아") is None
+    assert should_use_agent_loop("아일리아 매출 알려줘") is False
+
+
 def test_market_concentration_uses_deterministic_agent_loop() -> None:
     assert should_use_agent_loop("리바로 시장 집중도는 어때?") is True
 

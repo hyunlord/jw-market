@@ -62,7 +62,7 @@ def strict_query_plan(question: str, brand: str) -> StrictQueryPlan | None:
 
 
 def _nhi_plan(question: str, _brand: str, _channel: str) -> StrictQueryPlan | None:
-    if _asks_nhi(question):
+    if _asks_nhi(question) and not _asks_regulatory_reimbursement(question):
         return StrictQueryPlan(unsupported_message="nhi_type dimension absent in strategic mart for this market.")
     return None
 
@@ -331,6 +331,12 @@ def _asks_channel_distribution(question: str, brand: str) -> bool:
 
 def _asks_nhi(question: str) -> bool:
     return any(token in question for token in ("급여", "비급여", "nhi", "NHI"))
+
+
+def _asks_regulatory_reimbursement(question: str) -> bool:
+    return any(token in question for token in ("급여기준", "급여 기준")) and any(
+        token in question for token in ("적응증", "허가", "기준")
+    )
 
 
 def _asks_yoy(question: str) -> bool:
