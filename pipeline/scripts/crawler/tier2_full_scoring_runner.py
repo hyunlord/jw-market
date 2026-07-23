@@ -519,7 +519,7 @@ def load_pending_exact_inputs(
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT s.news_id,
+            SELECT pending.news_id,
                    COALESCE(g.brand_key, s.brand_canonical) AS brand_key,
                    s.brand_canonical,
                    'tier2_exact_rule_v1' AS match_source,
@@ -532,24 +532,29 @@ def load_pending_exact_inputs(
                    n.collected_at,
                    n.expire_at
             FROM (
-                SELECT MIN(candidate.id) AS first_id, candidate.news_id
+                SELECT MIN(candidate.id) AS first_id,
+                       COALESCE(candidate.news_id, candidate.event_id) AS news_id
                 FROM event_brand_scores candidate
+                JOIN news_raw source_news
+                  ON source_news.news_id =
+                     COALESCE(candidate.news_id, candidate.event_id)
                 WHERE candidate.source_processor = %s
                   AND NOT EXISTS (
                       SELECT 1
                       FROM event_brand_scores scored
-                      WHERE scored.news_id = candidate.news_id
+                      WHERE scored.news_id =
+                            COALESCE(candidate.news_id, candidate.event_id)
                         AND scored.brand_canonical = candidate.brand_canonical
                         AND scored.source_processor = %s
                   )
-                GROUP BY candidate.news_id
+                GROUP BY COALESCE(candidate.news_id, candidate.event_id)
                 ORDER BY first_id
                 LIMIT %s
             ) pending
             JOIN event_brand_scores s
-              ON s.news_id = pending.news_id
+              ON COALESCE(s.news_id, s.event_id) = pending.news_id
              AND s.source_processor = %s
-            JOIN news_raw n ON n.news_id = s.news_id
+            JOIN news_raw n ON n.news_id = pending.news_id
             LEFT JOIN (
                 SELECT REPLACE(brand_name, ' ', '') AS normalized_brand,
                        MIN(brand_key) AS brand_key
@@ -561,7 +566,7 @@ def load_pending_exact_inputs(
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM event_brand_scores scored
-                WHERE scored.news_id = s.news_id
+                WHERE scored.news_id = COALESCE(s.news_id, s.event_id)
                   AND scored.brand_canonical = s.brand_canonical
                   AND scored.source_processor = %s
             )
@@ -824,11 +829,15 @@ def pending_exact_gap(
             """
             SELECT COUNT(*) AS gap
             FROM event_brand_scores candidate
+            JOIN news_raw source_news
+              ON source_news.news_id =
+                 COALESCE(candidate.news_id, candidate.event_id)
             WHERE candidate.source_processor = %s
               AND NOT EXISTS (
                   SELECT 1
                   FROM event_brand_scores scored
-                  WHERE scored.news_id = candidate.news_id
+                  WHERE scored.news_id =
+                        COALESCE(candidate.news_id, candidate.event_id)
                     AND scored.brand_canonical = candidate.brand_canonical
                     AND scored.source_processor = %s
               )
@@ -850,21 +859,26 @@ def pending_exact_snapshot(
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT candidate.news_id,
+            SELECT COALESCE(candidate.news_id, candidate.event_id) AS news_id,
                    candidate.brand_canonical,
                    MIN(COALESCE(candidate.collected_at, source_news.collected_at)) AS first_seen_at
             FROM event_brand_scores candidate
-            LEFT JOIN news_raw source_news ON source_news.news_id = candidate.news_id
+            JOIN news_raw source_news
+              ON source_news.news_id =
+                 COALESCE(candidate.news_id, candidate.event_id)
             WHERE candidate.source_processor = %s
               AND NOT EXISTS (
                   SELECT 1
                   FROM event_brand_scores scored
-                  WHERE scored.news_id = candidate.news_id
+                  WHERE scored.news_id =
+                        COALESCE(candidate.news_id, candidate.event_id)
                     AND scored.brand_canonical = candidate.brand_canonical
                     AND scored.source_processor = %s
               )
-            GROUP BY candidate.news_id, candidate.brand_canonical
-            ORDER BY candidate.news_id, candidate.brand_canonical
+            GROUP BY COALESCE(candidate.news_id, candidate.event_id),
+                     candidate.brand_canonical
+            ORDER BY COALESCE(candidate.news_id, candidate.event_id),
+                     candidate.brand_canonical
             """,
             (source_processor, target_processor),
         )

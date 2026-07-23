@@ -22,6 +22,7 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     build_workflow_payload,
     find_workflow_text,
     insert_live_rows,
+    load_pending_exact_inputs,
     parse_wf324_response,
     pending_exact_gap,
     pending_exact_snapshot,
@@ -264,7 +265,16 @@ def test_pending_gap_counts_exact_brand_pairs_without_target_scores() -> None:
     assert gap == 4
     assert "COUNT(*) AS gap" in conn.cursor_obj.sql
     assert "NOT EXISTS" in conn.cursor_obj.sql
-    assert "scored.news_id = candidate.news_id" in conn.cursor_obj.sql
+    assert "COALESCE(candidate.news_id, candidate.event_id)" in conn.cursor_obj.sql
+    assert (
+        "JOIN news_raw source_news"
+        " ON source_news.news_id = COALESCE(candidate.news_id, candidate.event_id)"
+        in " ".join(conn.cursor_obj.sql.split())
+    )
+    assert (
+        "scored.news_id = COALESCE(candidate.news_id, candidate.event_id)"
+        in " ".join(conn.cursor_obj.sql.split())
+    )
     assert "scored.brand_canonical = candidate.brand_canonical" in conn.cursor_obj.sql
     assert conn.cursor_obj.params == ("tier2_exact_rule_v1", PENDING_SOURCE_PROCESSOR)
 
@@ -291,8 +301,33 @@ def test_pending_snapshot_uses_distinct_pair_identity_and_source_age() -> None:
     assert snapshot.count == 1
     assert snapshot.items[0].key == ("n1", "리바로")
     assert snapshot.oldest_pending_at == first_seen
-    assert "GROUP BY candidate.news_id, candidate.brand_canonical" in conn.cursor_obj.sql
+    assert (
+        "COALESCE(candidate.news_id, candidate.event_id) AS news_id"
+        in conn.cursor_obj.sql
+    )
+    assert (
+        "GROUP BY COALESCE(candidate.news_id, candidate.event_id),"
+        " candidate.brand_canonical"
+        in " ".join(conn.cursor_obj.sql.split())
+    )
     assert "MIN(COALESCE(candidate.collected_at, source_news.collected_at))" in conn.cursor_obj.sql
+
+
+def test_pending_loader_recovers_news_identity_from_exact_event_id() -> None:
+    conn = PendingSnapshotConnection([])
+
+    items = load_pending_exact_inputs(
+        conn,
+        source_processor="tier2_exact_rule_v1",
+        target_processor=PENDING_SOURCE_PROCESSOR,
+        limit=3,
+    )
+
+    assert items == []
+    sql = " ".join(conn.cursor_obj.sql.split())
+    assert "COALESCE(candidate.news_id, candidate.event_id) AS news_id" in sql
+    assert "JOIN news_raw n ON n.news_id = pending.news_id" in sql
+    assert "scored.news_id = COALESCE(candidate.news_id, candidate.event_id)" in sql
 
 
 def test_opt_runner_imports_packaged_backlog_policy_without_repo_package(
