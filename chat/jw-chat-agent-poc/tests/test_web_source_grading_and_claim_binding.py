@@ -795,6 +795,198 @@ def test_explicit_period_mismatch_is_blocked() -> None:
     assert "PERIOD_MISMATCH" in result.blocked_reasons
 
 
+def test_period_column_uses_the_bound_fact_period_without_retyping_its_metric() -> None:
+    answer = """| 기준기간 | 매출 |
+| --- | --- |
+| 2026-05 | 80.39억원 |"""
+    result = verify_claim_bindings(
+        question="리바로 매출 알려줘",
+        answer=answer,
+        facts=(
+            _fact(
+                value="80.39억원",
+                entity="리바로",
+                metric="매출",
+                period="2026-05",
+                unit="억원",
+            ),
+        ),
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "pass"
+    assert result.disposition == "answered"
+    assert "80.39억원" in result.answer
+    assert "근거 불일치로 제외" not in result.answer
+    assert result.blocked_reasons == ()
+
+
+def test_wrong_table_value_is_removed_while_verified_value_remains() -> None:
+    answer = """| 브랜드 | 매출 |
+| --- | --- |
+| 리바로 | 80.39억원 |
+| 조작값 | 999.99억원 |"""
+    result = verify_claim_bindings(
+        question="리바로 매출 알려줘",
+        answer=answer,
+        facts=(
+            _fact(
+                value="80.39억원",
+                entity="리바로",
+                metric="매출",
+                period="2026-05",
+                unit="억원",
+            ),
+        ),
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "partial"
+    assert "80.39억원" in result.answer
+    assert "999.99억원" not in result.answer
+    assert "근거 불일치로 제외" in result.answer
+    assert result.blocked_claim_count == 1
+
+
+def test_only_unsupported_numeric_claim_still_fails_closed() -> None:
+    result = verify_claim_bindings(
+        question="리바로 매출 알려줘",
+        answer="리바로 매출은 999.99억원입니다.",
+        facts=(
+            _fact(
+                value="80.39억원",
+                entity="리바로",
+                metric="매출",
+                period="2026-05",
+                unit="억원",
+            ),
+        ),
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "fail"
+    assert result.disposition == "unavailable"
+    assert "999.99억원" not in result.answer
+
+
+def test_manipulated_rank_is_removed_while_verified_sales_remains() -> None:
+    answer = """| 브랜드 | 매출 | 순위 |
+| --- | --- | --- |
+| 리바로 | 80.39억원 | 999위 |"""
+    result = verify_claim_bindings(
+        question="리바로 매출과 순위 알려줘",
+        answer=answer,
+        facts=(
+            _fact(
+                value="80.39억원",
+                entity="리바로",
+                metric="매출",
+                period="2026-05",
+                unit="억원",
+            ),
+        ),
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "partial"
+    assert "80.39억원" in result.answer
+    assert "999위" not in result.answer
+    assert "근거 불일치로 제외" in result.answer
+
+
+def test_unverified_value_is_removed_while_authoritative_value_remains() -> None:
+    answer = """| 구분 | 환자수 |
+| --- | --- |
+| 공식 | 12345명 |
+| 일반 웹 | 99999명 |"""
+    result = verify_claim_bindings(
+        question="H36.0의 2024년 환자수는?",
+        answer=answer,
+        facts=(
+            _fact(
+                value="12345명",
+                entity="H36.0",
+                metric="환자수",
+                period="2024",
+                unit="명",
+            ),
+            _fact(
+                value="99999명",
+                entity="H36.0",
+                metric="환자수",
+                period="2024",
+                unit="명",
+                source_grade=SourceGrade.UNVERIFIED,
+            ),
+        ),
+        expected_entities=("H36.0",),
+    )
+
+    assert result.status == "partial"
+    assert "12345명" in result.answer
+    assert "99999명" not in result.answer
+    assert "SOURCE_GRADE_MISMATCH" in result.blocked_reasons
+
+
+def test_child_diabetes_code_cannot_use_parent_code_fact() -> None:
+    result = verify_claim_bindings(
+        question="E11.3의 2024년 환자수는?",
+        answer="E11.3의 2024년 환자수는 67890명입니다.",
+        facts=(
+            _fact(
+                value="67890명",
+                entity="E11",
+                metric="환자수",
+                period="2024",
+                unit="명",
+            ),
+        ),
+        expected_entities=("E11.3",),
+    )
+
+    assert result.status == "fail"
+    assert "ENTITY_MISMATCH" in result.blocked_reasons
+    assert "67890명" not in result.answer
+
+
+def test_display_rounding_matches_higher_precision_fact_with_same_unit() -> None:
+    result = verify_claim_bindings(
+        question="리바로 매출 알려줘",
+        answer="리바로 매출은 80.39억원입니다.",
+        facts=(
+            _fact(
+                value="80.385988억원",
+                entity="리바로",
+                metric="매출",
+                period="2026-05",
+                unit="억원",
+            ),
+        ),
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "pass"
+
+
+def test_korean_quarter_request_matches_months_inside_that_quarter() -> None:
+    result = verify_claim_bindings(
+        question="리바로 2025년 2분기 매출",
+        answer="리바로의 2025-04 매출은 83.18억원입니다.",
+        facts=(
+            _fact(
+                value="83.18억원",
+                entity="리바로",
+                metric="매출",
+                period="2025-04",
+                unit="억원",
+            ),
+        ),
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "pass"
+
+
 def test_annual_period_cannot_be_supported_by_a_single_month_fact() -> None:
     result = verify_claim_bindings(
         question="H36.0의 2024년 환자수는?",
