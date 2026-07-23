@@ -100,6 +100,131 @@ def test_build_shadow_uses_candidate_ubist_root(monkeypatch) -> None:
     }]
 
 
+def test_shadow_activation_isolated_without_production_approval(monkeypatch) -> None:
+    monkeypatch.delenv(activation.ENV_PROMOTION_APPROVED, raising=False)
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.setenv(activation.ENV_SOURCE_DB, "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.setenv(activation.ENV_SHADOW_TARGET_DB, "jw_mart_ingest_shadow_demo")
+    monkeypatch.setenv(activation.ENV_SHADOW_BUILD_PREFIX, "jw_mart_ingest_shadow_build")
+
+    result = activation.shadow_from_env(run_id="run-1")
+
+    assert result.source_db == "jw_mart_d2_stage_20260630_r2"
+    assert result.target_db == "jw_mart_ingest_shadow_demo"
+    assert result.build_db.startswith("jw_mart_ingest_shadow_build_")
+
+
+@pytest.mark.parametrize("target", ["jw_mart", "jw_mart_d2_stage_20260630_r2", "not_shadow"])
+def test_shadow_activation_rejects_serving_or_unscoped_target(monkeypatch, target) -> None:
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.setenv(activation.ENV_SOURCE_DB, "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.setenv(activation.ENV_SHADOW_TARGET_DB, target)
+
+    with pytest.raises(RuntimeError, match="isolated shadow"):
+        activation.shadow_from_env(run_id="run-1")
+
+
+def test_shadow_crash_injection_is_explicit_and_shadow_only(monkeypatch) -> None:
+    monkeypatch.setenv(activation.ENV_SHADOW_CRASH_AT, "after_mart_publish")
+    monkeypatch.delenv("INGEST_LOAD_SHADOW_ROOT", raising=False)
+    with pytest.raises(RuntimeError, match="shadow mode only"):
+        activation.maybe_inject_shadow_crash("after_mart_publish")
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    activation.maybe_inject_shadow_crash("after_corpus_publish")
+    with pytest.raises(RuntimeError, match="deterministic shadow crash"):
+        activation.maybe_inject_shadow_crash("after_mart_publish")
+
+
+def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None:
+    statements: list[str] = []
+    counts = iter(((10,), (10,), (20,), (20,)))
+
+    class Cursor:
+        def execute(self, sql, _params=None):
+            statements.append(sql)
+
+        def fetchone(self):
+            return next(counts)
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            statements.append("COMMIT")
+
+    config = activation.MartActivation(
+        "jw_mart_d2_stage_20260630_r2",
+        "jw_mart_ingest_shadow_demo",
+        "jw_mart_ingest_shadow_build_run1",
+    )
+    monkeypatch.setattr(
+        activation,
+        "table_exists",
+        lambda _conn, db, _table: db == config.source_db,
+    )
+    activation.ensure_shadow_target_baseline(Connection(), config)
+
+    assert statements[0] == "CREATE DATABASE IF NOT EXISTS `jw_mart_ingest_shadow_demo`"
+    assert statements[-1] == "COMMIT"
+    for table in activation.GENERAL_TABLES:
+        scratch = f"{table}__shadow_seed"
+        assert any(
+            f"CREATE TABLE `jw_mart_ingest_shadow_demo`.`{scratch}` LIKE "
+            f"`jw_mart_d2_stage_20260630_r2`.`{table}`" == sql
+            for sql in statements
+        )
+        assert any(
+            f"INSERT INTO `jw_mart_ingest_shadow_demo`.`{scratch}` SELECT * FROM "
+            f"`jw_mart_d2_stage_20260630_r2`.`{table}`" == sql
+            for sql in statements
+        )
+    assert any(sql.startswith("RENAME TABLE ") for sql in statements)
+
+
+def test_shadow_target_bootstrap_rejects_partial_state(monkeypatch) -> None:
+    class Cursor:
+        def execute(self, _sql, _params=None):
+            return None
+
+        def close(self):
+            return None
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    config = activation.MartActivation(
+        "jw_mart_d2_stage_20260630_r2",
+        "jw_mart_ingest_shadow_demo",
+        "jw_mart_ingest_shadow_build_run1",
+    )
+    monkeypatch.setattr(
+        activation,
+        "table_exists",
+        lambda _conn, db, table: db == config.target_db
+        and table == activation.GENERAL_TABLES[0],
+    )
+
+    with pytest.raises(RuntimeError, match="partially initialized"):
+        activation.ensure_shadow_target_baseline(Connection(), config)
+
+
+@pytest.mark.parametrize("target", ["jw_mart", "jw_mart_d2_stage_20260630_r2"])
+def test_shadow_target_bootstrap_refuses_serving_schema(target) -> None:
+    config = activation.MartActivation(
+        "jw_mart_d2_stage_20260630_r2",
+        target,
+        "jw_mart_ingest_shadow_build_run1",
+    )
+
+    with pytest.raises(RuntimeError, match="isolated shadow"):
+        activation.ensure_shadow_target_baseline(object(), config)
+
+
 def test_build_shadow_restores_s4_mutated_environment(monkeypatch) -> None:
     target = activation.MartActivation("jw_mart", "jw_mart", "jw_mart_ingest_run1")
     monkeypatch.setenv("MARIADB_DATABASE", "jw_mart")
@@ -286,6 +411,40 @@ def test_activation_journal_rejects_partial_mart_backup(tmp_path, monkeypatch) -
 
     with pytest.raises(RuntimeError, match="ambiguous partial mart backup"):
         activation.recover_incomplete_activations(object(), output_root=tmp_path)
+
+
+def test_shadow_recovery_rejects_journal_targeting_serving_db(tmp_path) -> None:
+    live = tmp_path / "ubist"
+    candidate = tmp_path / ".ubist_candidate_run1"
+    backup = tmp_path / ".ubist_backup_run1"
+    for path in (live, candidate, backup):
+        path.mkdir()
+    journal = tmp_path / ".ubist_activation_run1.json"
+    journal.write_text(
+        json.dumps({
+            "version": 2,
+            "run_id": "run1",
+            "phase": "prepared",
+            "epoch": "2026-05",
+            "category": "ubist",
+            "manifest_sha": "f" * 64,
+            "source_db": "jw_mart_d2_stage_20260630_r2",
+            "target_db": "jw_mart_d2_stage_20260630_r2",
+            "build_db": "jw_mart_ingest_shadow_build_run1",
+            "live_root": str(live),
+            "candidate_root": str(candidate),
+            "backup_root": str(backup),
+            "tables": list(activation.GENERAL_TABLES),
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="escapes required prefix"):
+        activation.recover_incomplete_activations(
+            object(),
+            output_root=tmp_path,
+            required_target_prefix=activation.SHADOW_DB_PREFIX,
+        )
 
 
 def test_recovery_keeps_promoted_state_when_ledger_is_already_complete(

@@ -18,6 +18,8 @@ ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mo
 # INGEST_S3_BUCKET (s3_input.ENV_BUCKET): set => submissions read from MinIO/S3
 ENV_LOAD_STAGING_ROOT = "INGEST_LOAD_STAGING_ROOT"  # set => real load -> staging root, mart refresh SKIPPED (isolated verify)
 ENV_LOAD_STAGING_DB = "INGEST_LOAD_STAGING_DB"      # required isolated DB for category table adapters (jw_ingest_*)
+ENV_LOAD_SHADOW_ROOT = "INGEST_LOAD_SHADOW_ROOT"    # set => full UBIST gates + isolated mart publish
+ENV_SHADOW_LEDGER_SQLITE = "INGEST_SHADOW_LEDGER_SQLITE"  # shadow-only ledger on the RWX output volume
 ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output root (live parquet root); refresh runs
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
@@ -77,6 +79,15 @@ def open_configured_ledger():
     creation in the production mart is an activation-time, PL-gated step.
     """
     from pipeline.scripts.ingest_hook.ledger import Ledger, open_sqlite_ledger
+
+    shadow_ledger = os.environ.get(ENV_SHADOW_LEDGER_SQLITE, "").strip()
+    if load_mode(required=False) == "shadow":
+        if not shadow_ledger:
+            raise RuntimeError(
+                f"shadow mode requires {ENV_SHADOW_LEDGER_SQLITE}; "
+                "the operational mart ledger must remain untouched"
+            )
+        return open_sqlite_ledger(Path(shadow_ledger))
 
     sqlite_path = ledger_sqlite_path()
     if sqlite_path is not None:
@@ -141,43 +152,84 @@ def open_input_source():
     )
 
 
+def _configured_load_roots() -> dict[str, str]:
+    roots = {
+        "staging": os.environ.get(ENV_LOAD_STAGING_ROOT, "").strip(),
+        "shadow": os.environ.get(ENV_LOAD_SHADOW_ROOT, "").strip(),
+        "production": os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip(),
+    }
+    enabled = {mode: root for mode, root in roots.items() if root}
+    if len(enabled) > 1:
+        names = {
+            "staging": ENV_LOAD_STAGING_ROOT,
+            "shadow": ENV_LOAD_SHADOW_ROOT,
+            "production": ENV_LOAD_TARGET_ROOT,
+        }
+        raise RuntimeError(
+            f"{', '.join(names[mode] for mode in enabled)} are mutually exclusive"
+        )
+    return enabled
+
+
+def load_mode(*, required: bool = True) -> str | None:
+    """Return staging, shadow, or production after enforcing exclusivity."""
+
+    enabled = _configured_load_roots()
+    if enabled:
+        return next(iter(enabled))
+    if required:
+        raise RuntimeError(
+            f"neither {ENV_LOAD_STAGING_ROOT}, {ENV_LOAD_SHADOW_ROOT}, nor "
+            f"{ENV_LOAD_TARGET_ROOT} is set; the real load has no output root"
+        )
+    return None
+
+
 def load_output_root() -> tuple[Path, bool]:
     """Return (target_root, staging_verify) for the real load's parquet output.
 
-    Precedence:
-      * INGEST_LOAD_STAGING_ROOT set -> (that root, staging_verify=True):
+    Exactly one mode must be configured:
+      * INGEST_LOAD_STAGING_ROOT -> (that root, staging_verify=True):
         the load writes parquet under an isolated staging root and the
         mart-writing downstream refresh is SKIPPED. This is the J5 isolated
         verification mode (real loader, zero mart write).
-      * else INGEST_LOAD_TARGET_ROOT set -> (that root, staging_verify=False):
+      * INGEST_LOAD_SHADOW_ROOT -> (that root, staging_verify=False):
+        the complete UBIST gate/publish path runs against an isolated corpus,
+        shadow-prefixed schemas, and a separate ledger. Serving refresh is
+        structurally unavailable.
+      * INGEST_LOAD_TARGET_ROOT -> (that root, staging_verify=False):
         production output root (the live parquet root); refresh runs.
       * neither set -> fail closed. There is no implicit default so a
         mis-provisioned Job cannot silently write parquet to an image-local
         path that the refresh never reads.
     """
-    staging = os.environ.get(ENV_LOAD_STAGING_ROOT, "").strip()
-    target = os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip()
-    if staging and target:
-        raise RuntimeError(
-            f"{ENV_LOAD_STAGING_ROOT} and {ENV_LOAD_TARGET_ROOT} are mutually exclusive"
-        )
-    if staging:
-        return Path(staging), True
-    if target:
-        return Path(target), False
-    raise RuntimeError(
-        f"neither {ENV_LOAD_STAGING_ROOT} nor {ENV_LOAD_TARGET_ROOT} is set; "
-        "the real load has no output root (fail-closed to avoid a silently unread parquet path)"
-    )
+    enabled = _configured_load_roots()
+    if not enabled:
+        load_mode()
+    mode, root = next(iter(enabled.items()))
+    return Path(root), mode == "staging"
 
 
 def load_target_mount_root() -> Path | None:
-    """Return the production PVC mount root, or None in staging-only mode."""
+    """Return the RWX mount root for shadow/production, else None."""
 
-    staging = os.environ.get(ENV_LOAD_STAGING_ROOT, "").strip()
-    target = os.environ.get(ENV_LOAD_TARGET_ROOT, "").strip()
-    if staging and target:
-        raise RuntimeError(
-            f"{ENV_LOAD_STAGING_ROOT} and {ENV_LOAD_TARGET_ROOT} are mutually exclusive"
-        )
-    return Path(target) if target else None
+    enabled = _configured_load_roots()
+    if not enabled:
+        return None
+    mode, root = next(iter(enabled.items()))
+    if mode == "staging":
+        return None
+    if mode == "shadow":
+        shadow_root = Path(root)
+        try:
+            shadow_root.relative_to(MARKET_OUTPUT_ROOT)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{ENV_LOAD_SHADOW_ROOT} must be below {MARKET_OUTPUT_ROOT}"
+            ) from exc
+        if shadow_root == MARKET_OUTPUT_ROOT:
+            raise RuntimeError(
+                f"{ENV_LOAD_SHADOW_ROOT} must be a child of {MARKET_OUTPUT_ROOT}"
+            )
+        return MARKET_OUTPUT_ROOT
+    return Path(root)

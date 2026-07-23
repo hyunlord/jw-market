@@ -13,6 +13,7 @@ from typing import Any, Callable
 from pipeline.scripts.deploy.mart_load_ops import (
     PublishAction,
     publish_table_group_atomically,
+    quote_id,
     restore_table_group_atomically,
     run_s4_general,
 )
@@ -27,6 +28,10 @@ ENV_PROMOTION_APPROVED = "INGEST_MART_PROMOTION_APPROVED"
 ENV_SOURCE_DB = "INGEST_MART_SOURCE_DB"
 ENV_TARGET_DB = "INGEST_MART_TARGET_DB"
 ENV_BUILD_PREFIX = "INGEST_MART_BUILD_PREFIX"
+ENV_SHADOW_TARGET_DB = "INGEST_SHADOW_TARGET_DB"
+ENV_SHADOW_BUILD_PREFIX = "INGEST_SHADOW_BUILD_PREFIX"
+ENV_SHADOW_CRASH_AT = "INGEST_SHADOW_CRASH_AT"
+SHADOW_DB_PREFIX = "jw_mart_ingest_shadow_"
 WRITER_LOCK_NAME = "jw-market:ubist-ingest:single-writer"
 GENERAL_TABLES = (
     "mart_general_brand_metric",
@@ -87,41 +92,165 @@ def from_env(*, run_id: str) -> MartActivation:
     return MartActivation(source_db, target_db, build_db)
 
 
-def acquire_writer_lock(conn: Any, *, timeout_seconds: int = 0) -> None:
+def shadow_from_env(*, run_id: str) -> MartActivation:
+    """Build an activation that cannot address the serving mart."""
+
+    if not os.environ.get("INGEST_LOAD_SHADOW_ROOT", "").strip():
+        raise RuntimeError("isolated shadow activation requires INGEST_LOAD_SHADOW_ROOT")
+    source_db = os.environ.get(ENV_SOURCE_DB, "jw_mart").strip()
+    target_db = os.environ.get(ENV_SHADOW_TARGET_DB, "").strip()
+    prefix = os.environ.get(ENV_SHADOW_BUILD_PREFIX, f"{SHADOW_DB_PREFIX}build").strip()
+    safe_run_id = re.sub(r"[^A-Za-z0-9_]", "_", run_id)
+    build_db = f"{prefix}_{safe_run_id}"
+    for label, value in (
+        (ENV_SOURCE_DB, source_db),
+        (ENV_SHADOW_TARGET_DB, target_db),
+        (ENV_SHADOW_BUILD_PREFIX, prefix),
+        ("build_db", build_db),
+    ):
+        if not value or not _SCHEMA_RE.fullmatch(value):
+            raise RuntimeError(f"isolated shadow {label} is not a safe schema identifier: {value!r}")
+    if not target_db.startswith(SHADOW_DB_PREFIX) or not build_db.startswith(SHADOW_DB_PREFIX):
+        raise RuntimeError(
+            f"isolated shadow schemas must start with {SHADOW_DB_PREFIX!r}"
+        )
+    if source_db in {target_db, build_db} or target_db == build_db:
+        raise RuntimeError("isolated shadow source, target, and build schemas must be distinct")
+    return MartActivation(source_db, target_db, build_db)
+
+
+def shadow_lock_name(target_db: str) -> str:
+    if not target_db.startswith(SHADOW_DB_PREFIX):
+        raise RuntimeError(f"shadow writer lock requires isolated target DB: {target_db}")
+    return f"jw-market:ubist-shadow:{target_db}"
+
+
+def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
+    """Atomically seed the isolated publish baseline from the serving source."""
+
+    if (
+        not config.target_db.startswith(SHADOW_DB_PREFIX)
+        or not config.build_db.startswith(SHADOW_DB_PREFIX)
+        or config.target_db in {config.source_db, "jw_mart"}
+    ):
+        raise RuntimeError(
+            f"isolated shadow baseline refused target DB: {config.target_db}"
+        )
+    cursor = conn.cursor()
+    scratch_tables: list[str] = []
+    try:
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {quote_id(config.target_db)}")
+        existing = tuple(
+            table_exists(conn, config.target_db, table) for table in GENERAL_TABLES
+        )
+        if all(existing):
+            return
+        if any(existing):
+            raise RuntimeError(
+                f"shadow baseline is partially initialized: {config.target_db}"
+            )
+        moves: list[str] = []
+        for table in GENERAL_TABLES:
+            if not table_exists(conn, config.source_db, table):
+                raise RuntimeError(
+                    f"shadow baseline source is missing: {config.source_db}.{table}"
+                )
+            scratch = f"{table}__shadow_seed"
+            if table_exists(conn, config.target_db, scratch):
+                raise RuntimeError(
+                    f"shadow baseline scratch table already exists: "
+                    f"{config.target_db}.{scratch}"
+                )
+            scratch_tables.append(scratch)
+            cursor.execute(
+                f"CREATE TABLE {quote_id(config.target_db)}.{quote_id(scratch)} LIKE "
+                f"{quote_id(config.source_db)}.{quote_id(table)}"
+            )
+            cursor.execute(
+                f"INSERT INTO {quote_id(config.target_db)}.{quote_id(scratch)} SELECT * FROM "
+                f"{quote_id(config.source_db)}.{quote_id(table)}"
+            )
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {quote_id(config.source_db)}.{quote_id(table)}"
+            )
+            source_row = cursor.fetchone()
+            source_rows = next(iter(source_row.values())) if isinstance(source_row, dict) else source_row[0]
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {quote_id(config.target_db)}.{quote_id(scratch)}"
+            )
+            copied_row = cursor.fetchone()
+            copied_rows = next(iter(copied_row.values())) if isinstance(copied_row, dict) else copied_row[0]
+            if int(copied_rows) != int(source_rows):
+                raise RuntimeError(
+                    f"shadow baseline copy mismatch for {table}: "
+                    f"{copied_rows} != {source_rows}"
+                )
+            moves.append(
+                f"{quote_id(config.target_db)}.{quote_id(scratch)} TO "
+                f"{quote_id(config.target_db)}.{quote_id(table)}"
+            )
+        cursor.execute("RENAME TABLE " + ", ".join(moves))
+        conn.commit()
+    except Exception:
+        for scratch in scratch_tables:
+            if table_exists(conn, config.target_db, scratch):
+                cursor.execute(
+                    f"DROP TABLE {quote_id(config.target_db)}.{quote_id(scratch)}"
+                )
+        raise
+    finally:
+        cursor.close()
+
+
+def acquire_writer_lock(
+    conn: Any, *, timeout_seconds: int = 0, lock_name: str = WRITER_LOCK_NAME
+) -> None:
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT GET_LOCK(%s, %s)", (WRITER_LOCK_NAME, timeout_seconds))
+        cursor.execute("SELECT GET_LOCK(%s, %s)", (lock_name, timeout_seconds))
         row = cursor.fetchone()
     finally:
         cursor.close()
     value = next(iter(row.values())) if isinstance(row, dict) else row[0]
     if int(value or 0) != 1:
-        raise RuntimeError(f"single-writer lock is busy: {WRITER_LOCK_NAME}")
+        raise RuntimeError(f"single-writer lock is busy: {lock_name}")
 
 
-def release_writer_lock(conn: Any) -> None:
-    require_writer_lock_owner(conn)
+def release_writer_lock(conn: Any, *, lock_name: str = WRITER_LOCK_NAME) -> None:
+    require_writer_lock_owner(conn, lock_name=lock_name)
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT RELEASE_LOCK(%s)", (WRITER_LOCK_NAME,))
+        cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
         cursor.fetchone()
     finally:
         cursor.close()
 
 
-def require_writer_lock_owner(conn: Any) -> None:
+def require_writer_lock_owner(conn: Any, *, lock_name: str = WRITER_LOCK_NAME) -> None:
     cursor = conn.cursor()
     try:
         cursor.execute(
             "SELECT IS_USED_LOCK(%s), CONNECTION_ID()",
-            (WRITER_LOCK_NAME,),
+            (lock_name,),
         )
         row = cursor.fetchone()
     finally:
         cursor.close()
     values = list(row.values()) if isinstance(row, dict) else list(row)
     if len(values) < 2 or values[0] is None or int(values[0]) != int(values[1]):
-        raise RuntimeError(f"single-writer lock ownership lost: {WRITER_LOCK_NAME}")
+        raise RuntimeError(f"single-writer lock ownership lost: {lock_name}")
+
+
+def maybe_inject_shadow_crash(point: str) -> None:
+    """Raise only at an explicitly configured shadow-only recovery boundary."""
+
+    configured = os.environ.get(ENV_SHADOW_CRASH_AT, "").strip()
+    if not configured:
+        return
+    if not os.environ.get("INGEST_LOAD_SHADOW_ROOT", "").strip():
+        raise RuntimeError(f"{ENV_SHADOW_CRASH_AT} is valid in shadow mode only")
+    if configured == point:
+        raise RuntimeError(f"deterministic shadow crash injected at {point}")
 
 
 def build_shadow(config: MartActivation, *, ubist_dir: Path) -> None:
@@ -154,6 +283,27 @@ def prepare_candidate_corpus(live_root: Path, *, run_id: str) -> CorpusCandidate
         raise RuntimeError(f"corpus scratch path already exists for run_id={run_id}")
     shutil.copytree(live_root, candidate)
     return CorpusCandidate(live_root, candidate, backup)
+
+
+def ensure_shadow_corpus(shadow_live_root: Path, *, seed_root: Path) -> None:
+    """Atomically seed an absent isolated corpus from the read-only production corpus."""
+
+    shadow = shadow_live_root.resolve()
+    seed = seed_root.resolve()
+    if shadow == seed or shadow in seed.parents or seed in shadow.parents:
+        raise RuntimeError("shadow corpus must be physically separate from its seed corpus")
+    if shadow.exists():
+        corpus_manifest_sha(shadow)
+        return
+    if not seed.is_dir():
+        raise RuntimeError(f"shadow seed corpus is missing: {seed}")
+    shadow.parent.mkdir(parents=True, exist_ok=True)
+    temp = shadow.parent / f".{shadow.name}_seed_tmp"
+    if temp.exists():
+        raise RuntimeError(f"shadow seed scratch path already exists: {temp}")
+    shutil.copytree(seed, temp)
+    corpus_manifest_sha(temp)
+    temp.rename(shadow)
 
 
 def corpus_manifest_sha(root: Path) -> str:
@@ -240,6 +390,7 @@ def recover_incomplete_activations(
     *,
     output_root: Path,
     ledger_status: Callable[[str, str, str], str | None] | None = None,
+    required_target_prefix: str | None = None,
 ) -> tuple[Path, ...]:
     """Restore interrupted corpus/table promotions; caller must refresh old caches."""
 
@@ -254,6 +405,11 @@ def recover_incomplete_activations(
         tables = tuple(str(value) for value in payload.get("tables") or ())
         if not run_id or not _SCHEMA_RE.fullmatch(target_db) or tables != GENERAL_TABLES:
             raise RuntimeError(f"invalid activation recovery journal: {path}")
+        if required_target_prefix and not target_db.startswith(required_target_prefix):
+            raise RuntimeError(
+                f"activation recovery target escapes required prefix "
+                f"{required_target_prefix!r}: {target_db}"
+            )
         identity = (
             str(payload.get("epoch") or ""),
             str(payload.get("category") or ""),
@@ -401,8 +557,10 @@ def publish_shadow(
     run_id: str,
     epoch: str,
     ingest_run_id: str,
+    require_ledger_gate: bool = True,
 ) -> tuple[Any, ...]:
-    require_completed_post_gate(conn, ingest_run_id=ingest_run_id)
+    if require_ledger_gate:
+        require_completed_post_gate(conn, ingest_run_id=ingest_run_id)
     actions = publish_table_group_atomically(
         conn,
         build_db=config.build_db,
@@ -436,3 +594,25 @@ def publish_shadow(
         )
         raise
     return actions
+
+
+def validate_shadow_publish(conn: Any, config: MartActivation) -> dict[str, int]:
+    """Read back the isolated publish without invoking serving cache builders."""
+
+    if not config.target_db.startswith(SHADOW_DB_PREFIX):
+        raise RuntimeError(f"shadow refresh refused non-isolated target DB: {config.target_db}")
+    counts: dict[str, int] = {}
+    cursor = conn.cursor()
+    try:
+        for table in GENERAL_TABLES:
+            if not table_exists(conn, config.target_db, table):
+                raise RuntimeError(f"shadow refresh target is missing: {config.target_db}.{table}")
+            cursor.execute(f"SELECT COUNT(*) FROM `{config.target_db}`.`{table}`")
+            row = cursor.fetchone()
+            value = next(iter(row.values())) if isinstance(row, dict) else row[0]
+            counts[table] = int(value)
+    finally:
+        cursor.close()
+    if any(value < 1 for value in counts.values()):
+        raise RuntimeError(f"shadow refresh found empty general mart tables: {counts}")
+    return counts

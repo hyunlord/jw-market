@@ -1,0 +1,33 @@
+# Human-reviewable shadow overlay. NOT applied directly.
+#
+# This replaces INGEST_LOAD_STAGING_ROOT on the trigger Deployment. It must
+# never coexist with INGEST_LOAD_TARGET_ROOT or INGEST_MART_PROMOTION_APPROVED.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-ingest-hook
+  namespace: llmops
+spec:
+  template:
+    spec:
+      containers:
+        - name: trigger
+          env:
+            - name: INGEST_LOAD_SHADOW_ROOT
+              value: /market-output/shadow
+            - name: INGEST_SHADOW_LEDGER_SQLITE
+              value: /market-output/shadow/ledger.sqlite
+            - name: INGEST_SHADOW_TARGET_DB
+              value: jw_mart_ingest_shadow_20260723
+            - name: INGEST_SHADOW_BUILD_PREFIX
+              value: jw_mart_ingest_shadow_build
+            - name: INGEST_SHADOW_SEED_ROOT
+              value: /market-output/ubist
+          volumeMounts:
+            - name: market-output
+              mountPath: /market-output
+              readOnly: false
+      volumes:
+        - name: market-output
+          persistentVolumeClaim:
+            claimName: llmops-market-output

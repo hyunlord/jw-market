@@ -263,6 +263,51 @@ def test_load_output_root_rejects_staging_and_target_together(monkeypatch, tmp_p
         config.load_target_mount_root()
 
 
+def test_load_output_root_selects_shadow_as_first_class_mode(monkeypatch, tmp_path):
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, str(tmp_path / "shadow"))
+
+    root, staging_verify = config.load_output_root()
+
+    assert root == tmp_path / "shadow"
+    assert staging_verify is False
+    assert config.load_mode() == "shadow"
+    monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, "/market-output/shadow")
+    assert config.load_target_mount_root() == Path("/market-output")
+
+
+def test_shadow_root_must_be_below_dedicated_output_mount(monkeypatch):
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, "/tmp/shadow")
+
+    with pytest.raises(RuntimeError, match="must be below"):
+        config.load_target_mount_root()
+
+
+@pytest.mark.parametrize(
+    "enabled",
+    [
+        (config.ENV_LOAD_STAGING_ROOT, config.ENV_LOAD_SHADOW_ROOT),
+        (config.ENV_LOAD_SHADOW_ROOT, config.ENV_LOAD_TARGET_ROOT),
+        (config.ENV_LOAD_STAGING_ROOT, config.ENV_LOAD_TARGET_ROOT),
+    ],
+)
+def test_load_modes_are_pairwise_mutually_exclusive(monkeypatch, tmp_path, enabled):
+    for name in (
+        config.ENV_LOAD_STAGING_ROOT,
+        config.ENV_LOAD_SHADOW_ROOT,
+        config.ENV_LOAD_TARGET_ROOT,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for index, name in enumerate(enabled):
+        monkeypatch.setenv(name, str(tmp_path / f"root-{index}"))
+
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        config.load_mode()
+
+
 # ─── full run() in staging-verify mode (loader stubbed) ──────────────
 def test_run_real_staging_verify_completes(staging_env, bucket, sqlite_ledger, monkeypatch):
     manifest_path = write_submission(bucket)  # default epoch 2026-07 matches GOOD_ROWS periods
@@ -415,6 +460,117 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
     assert order.index("journal:ledger_complete") < order.index("journal:signal_complete")
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
     assert entry.row_counts.get("epoch:2026-07") == 9
+
+
+def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
+    tmp_path, bucket, sqlite_ledger, monkeypatch
+):
+    manifest_path = write_submission(bucket)
+    manifest = load_manifest(manifest_path)
+    shadow_root = tmp_path / "market-output" / "shadow"
+    live_root = shadow_root / "ubist"
+    live_root.mkdir(parents=True)
+    (live_root / "_manifest.json").write_text(
+        json.dumps({"schema_version": "1.0", "partitions": []}), encoding="utf-8"
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
+    monkeypatch.delenv(ubist_mart_activation.ENV_PROMOTION_APPROVED, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, str(shadow_root))
+    monkeypatch.setenv(
+        ubist_mart_activation.ENV_SOURCE_DB, "jw_mart_d2_stage_20260630_r2"
+    )
+    monkeypatch.setenv(
+        ubist_mart_activation.ENV_SHADOW_TARGET_DB, "jw_mart_ingest_shadow_test"
+    )
+
+    opened: list[str | None] = []
+    order: list[str] = []
+
+    class Connection:
+        def close(self):
+            order.append("close")
+
+    def open_connection(database=None):
+        opened.append(database)
+        return Connection()
+
+    monkeypatch.setattr(config, "open_mart_connection", open_connection)
+    snapshot = object()
+    monkeypatch.setattr(
+        job_runner, "fingerprint_untouched_sources", lambda *_args, **_kwargs: snapshot
+    )
+    monkeypatch.setattr(job_runner, "sample_existing_periods", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        job_runner,
+        "run_post_gates",
+        lambda **_kwargs: order.append("post_gate")
+        or type("Post", (), {"status": "pass", "duration_ms": 1})(),
+    )
+    from pipeline.scripts.ingest_hook import sigma_market
+
+    monkeypatch.setattr(
+        sigma_market,
+        "check_market_sigma",
+        lambda *_args, **_kwargs: type(
+            "Sigma", (), {"cells_checked": 1, "markets_checked": 1, "worst_rel": 0.0}
+        )(),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation, "acquire_writer_lock", lambda *_args, **_kwargs: order.append("lock")
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation, "release_writer_lock", lambda *_args, **_kwargs: order.append("unlock")
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation, "require_writer_lock_owner", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation, "recover_incomplete_activations", lambda *_args, **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "ensure_shadow_target_baseline",
+        lambda *_args, **_kwargs: order.append("shadow_bootstrap"),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation, "build_shadow", lambda *_args, **_kwargs: order.append("mart_build")
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "publish_shadow",
+        lambda *_args, **kwargs: order.append(("publish", kwargs["require_ledger_gate"])) or (),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "validate_shadow_publish",
+        lambda *_args, **_kwargs: order.append("shadow_refresh"),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation, "maybe_inject_shadow_crash", lambda *_args: None
+    )
+
+    def fake_run(label, argv):
+        if label == "load":
+            target = Path(argv[argv.index("--target-dir") + 1])
+            _write_load_manifest(target, "2026-07", 9)
+            order.append("load")
+        elif label == "refresh":
+            raise AssertionError("production refresh ran in shadow mode")
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    assert job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
+    ) == 0
+    assert "jw_mart_ingest_shadow_test" in opened
+    assert "shadow_bootstrap" in order
+    assert order.index("shadow_bootstrap") < order.index("mart_build")
+    assert ("publish", False) in order
+    assert "shadow_refresh" in order
+    assert sqlite_ledger.signal_events(
+        manifest.epoch, manifest.category, manifest.manifest_sha
+    )[0].mode == "shadow"
 
 
 def test_production_ubist_does_not_release_unacquired_writer_lock(

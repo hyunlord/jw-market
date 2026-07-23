@@ -359,7 +359,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
 
     tracker = _StageTracker(ledger, identity, run_id)
-    mode = "staging" if rehearsal_root is not None or os.environ.get(config.ENV_LOAD_STAGING_ROOT) else "production"
+    mode = "staging" if rehearsal_root is not None else str(config.load_mode())
     rows_before = 0
     rows_after = 0
     rows_loaded = 0
@@ -369,6 +369,7 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
     corpus_candidate = None
     mart_activation = None
     writer_lock_acquired = False
+    writer_lock_name = None
     publish_actions: tuple[object, ...] = ()
     activation_succeeded = False
     ledger_completed = False
@@ -428,17 +429,75 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
             print("phase=refresh status=skipped reason=rehearsal (orchestrator untouched)")
         else:
             before_snapshot = None
+            configured_mode = config.load_mode()
             _, configured_staging_verify = config.load_output_root()
+            is_shadow = configured_mode == "shadow"
+            target_root, _ = config.load_output_root()
+            if manifest.category == "ubist" and not configured_staging_verify:
+                from pipeline.scripts.ingest_hook import ubist_mart_activation
+
+                if is_shadow:
+                    mart_activation = ubist_mart_activation.shadow_from_env(run_id=run_id)
+                    shadow_live_root = target_root / "ubist"
+                    if not shadow_live_root.exists():
+                        seed_value = os.environ.get("INGEST_SHADOW_SEED_ROOT", "").strip()
+                        if not seed_value:
+                            raise RuntimeError(
+                                "shadow corpus is absent and INGEST_SHADOW_SEED_ROOT is not set"
+                            )
+                        ubist_mart_activation.ensure_shadow_corpus(
+                            shadow_live_root, seed_root=Path(seed_value)
+                        )
+                else:
+                    mart_activation = ubist_mart_activation.from_env(run_id=run_id)
             if spec.sigma_source and not configured_staging_verify:
-                baseline_conn = config.open_mart_connection()
+                source_db = mart_activation.source_db if mart_activation is not None else None
+                baseline_conn = config.open_mart_connection(source_db)
                 baseline_lock_acquired = False
                 try:
-                    if manifest.category == "ubist":
+                    if manifest.category == "ubist" and is_shadow:
+                        recovery_lock_name = ubist_mart_activation.shadow_lock_name(
+                            mart_activation.target_db
+                        )
+                        recovery_lock_acquired = False
+                        try:
+                            ubist_mart_activation.acquire_writer_lock(
+                                baseline_conn,
+                                timeout_seconds=0,
+                                lock_name=recovery_lock_name,
+                            )
+                            recovery_lock_acquired = True
+                            ubist_mart_activation.ensure_shadow_target_baseline(
+                                baseline_conn, mart_activation
+                            )
+                            recovered = ubist_mart_activation.recover_incomplete_activations(
+                                baseline_conn,
+                                output_root=target_root,
+                                required_target_prefix=ubist_mart_activation.SHADOW_DB_PREFIX,
+                                ledger_status=lambda epoch, category, manifest_sha: (
+                                    entry.status
+                                    if (
+                                        entry := ledger.status(epoch, category, manifest_sha)
+                                    )
+                                    is not None
+                                    else None
+                                ),
+                            )
+                            if recovered:
+                                ubist_mart_activation.validate_shadow_publish(
+                                    baseline_conn, mart_activation
+                                )
+                                ubist_mart_activation.complete_recovery(recovered)
+                        finally:
+                            if recovery_lock_acquired:
+                                ubist_mart_activation.release_writer_lock(
+                                    baseline_conn, lock_name=recovery_lock_name
+                                )
+                    elif manifest.category == "ubist":
                         from pipeline.scripts.ingest_hook import ubist_mart_activation
 
                         ubist_mart_activation.acquire_writer_lock(baseline_conn, timeout_seconds=0)
                         baseline_lock_acquired = True
-                        target_root, _ = config.load_output_root()
                         recovered = ubist_mart_activation.recover_incomplete_activations(
                             baseline_conn,
                             output_root=target_root,
@@ -466,10 +525,6 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                         ubist_mart_activation.release_writer_lock(baseline_conn)
                     baseline_conn.close()
             if manifest.category == "ubist" and not configured_staging_verify:
-                from pipeline.scripts.ingest_hook import ubist_mart_activation
-
-                mart_activation = ubist_mart_activation.from_env(run_id=run_id)
-                target_root, _ = config.load_output_root()
                 corpus_candidate = ubist_mart_activation.prepare_candidate_corpus(
                     target_root / "ubist", run_id=run_id
                 )
@@ -569,16 +624,30 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     from pipeline.scripts.ingest_hook import ubist_mart_activation
 
                     tracker.enter("mart_publish")
-                    writer_conn = config.open_mart_connection()
-                    ubist_mart_activation.acquire_writer_lock(writer_conn, timeout_seconds=0)
+                    writer_db = mart_activation.target_db if is_shadow else None
+                    writer_conn = config.open_mart_connection(writer_db)
+                    writer_lock_name = (
+                        ubist_mart_activation.shadow_lock_name(mart_activation.target_db)
+                        if is_shadow
+                        else ubist_mart_activation.WRITER_LOCK_NAME
+                    )
+                    ubist_mart_activation.acquire_writer_lock(
+                        writer_conn, timeout_seconds=0, lock_name=writer_lock_name
+                    )
                     writer_lock_acquired = True
-                    ubist_mart_activation.require_writer_lock_owner(writer_conn)
+                    ubist_mart_activation.require_writer_lock_owner(
+                        writer_conn, lock_name=writer_lock_name
+                    )
                     ubist_mart_activation.require_corpus_manifest(
                         corpus_candidate.live_root, baseline_manifest_sha
                     )
-                    current_live_snapshot = fingerprint_untouched_sources(
-                        writer_conn, touched_source="__jw_ingest_no_source__"
-                    )
+                    snapshot_conn = config.open_mart_connection(mart_activation.source_db)
+                    try:
+                        current_live_snapshot = fingerprint_untouched_sources(
+                            snapshot_conn, touched_source="__jw_ingest_no_source__"
+                        )
+                    finally:
+                        snapshot_conn.close()
                     if current_live_snapshot != baseline_live_snapshot:
                         raise RuntimeError("serving general mart changed while candidate was built")
                     activation_journal = ubist_mart_activation.write_activation_journal(
@@ -592,6 +661,10 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "corpus_promoted"
                     )
+                    if is_shadow:
+                        ubist_mart_activation.maybe_inject_shadow_crash(
+                            "after_corpus_publish"
+                        )
                     print(f"phase=mart_publish status=start build_db={mart_activation.build_db}")
                     publish_actions = ubist_mart_activation.publish_shadow(
                         writer_conn,
@@ -599,10 +672,15 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                         run_id=run_id,
                         epoch=manifest.epoch,
                         ingest_run_id=run_id,
+                        require_ledger_gate=not is_shadow,
                     )
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "mart_promoted"
                     )
+                    if is_shadow:
+                        ubist_mart_activation.maybe_inject_shadow_crash(
+                            "after_mart_publish"
+                        )
                     print(f"phase=mart_publish status=complete tables={len(publish_actions)}")
                     tracker.done()
                 else:
@@ -612,7 +690,16 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "refresh_started"
                     )
-                _run_commands("refresh", spec.refresh_argv)
+                if is_shadow and mart_activation is not None:
+                    counts = ubist_mart_activation.validate_shadow_publish(
+                        writer_conn, mart_activation
+                    )
+                    print(
+                        "phase=refresh mode=shadow status=complete "
+                        f"target_db={mart_activation.target_db} counts={counts}"
+                    )
+                else:
+                    _run_commands("refresh", spec.refresh_argv)
                 if activation_journal is not None:
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "refresh_succeeded"
@@ -729,7 +816,12 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
                 )
                 if recovered:
                     try:
-                        _run_commands("refresh", resolve_category("ubist").refresh_argv)
+                        if mode == "shadow":
+                            ubist_mart_activation.validate_shadow_publish(
+                                writer_conn, mart_activation
+                            )
+                        else:
+                            _run_commands("refresh", resolve_category("ubist").refresh_argv)
                     except Exception as recovery_exc:
                         print(
                             f"recovery=deferred reason={type(recovery_exc).__name__}: {recovery_exc}",
@@ -742,7 +834,9 @@ def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root
         if writer_lock_acquired and writer_conn is not None:
             from pipeline.scripts.ingest_hook import ubist_mart_activation
 
-            ubist_mart_activation.release_writer_lock(writer_conn)
+            ubist_mart_activation.release_writer_lock(
+                writer_conn, lock_name=writer_lock_name
+            )
         if mart_conn is not None and mart_conn is not writer_conn:
             mart_conn.close()
         if writer_conn is not None:

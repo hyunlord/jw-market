@@ -1,0 +1,41 @@
+# Human-reviewable shadow Job overlay. NOT applied directly.
+#
+# job_launcher renders this contract from the trigger environment. The output
+# PVC is RW because the Job is the corpus writer. Production approval and target
+# variables are deliberately absent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jw-ingest-<category>-<sha8>
+  namespace: llmops
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingest
+          env:
+            - name: INGEST_LOAD_SHADOW_ROOT
+              value: /market-output/shadow
+            - name: INGEST_SHADOW_LEDGER_SQLITE
+              value: /market-output/shadow/ledger.sqlite
+            - name: INGEST_SHADOW_TARGET_DB
+              value: jw_mart_ingest_shadow_20260723
+            - name: INGEST_SHADOW_BUILD_PREFIX
+              value: jw_mart_ingest_shadow_build
+            - name: INGEST_SHADOW_SEED_ROOT
+              value: /market-output/ubist
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+          volumeMounts:
+            - name: market-output
+              mountPath: /market-output
+              readOnly: false
+      volumes:
+        - name: market-output
+          persistentVolumeClaim:
+            claimName: llmops-market-output

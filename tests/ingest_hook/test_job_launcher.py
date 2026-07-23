@@ -209,6 +209,36 @@ def test_rendered_production_job_mounts_dedicated_output_pvc_read_write(monkeypa
     assert volumes["market-output"]["persistentVolumeClaim"]["claimName"] == "llmops-market-output"
 
 
+def test_rendered_shadow_job_mounts_output_without_production_unlock(monkeypatch):
+    monkeypatch.setenv("INGEST_INPUT_BACKEND", "local")
+    monkeypatch.setenv("INGEST_INPUT_ROOT", "/nfs-root/autoIngestion")
+    monkeypatch.delenv("INGEST_LOAD_STAGING_ROOT", raising=False)
+    monkeypatch.delenv("INGEST_LOAD_TARGET_ROOT", raising=False)
+    monkeypatch.delenv("INGEST_MART_PROMOTION_APPROVED", raising=False)
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.setenv("INGEST_SHADOW_TARGET_DB", "jw_mart_ingest_shadow_demo")
+    monkeypatch.setenv("INGEST_SHADOW_LEDGER_SQLITE", "/market-output/shadow/ledger.sqlite")
+
+    body = render_job(
+        category="ubist", manifest_sha=SHA, manifest_path="/m.json", namespace="llmops"
+    )
+
+    pod_spec = body["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    env = {item["name"]: item for item in container["env"]}
+    mounts = {item["name"]: item for item in container["volumeMounts"]}
+    assert env["INGEST_LOAD_SHADOW_ROOT"]["value"] == "/market-output/shadow"
+    assert env["INGEST_SHADOW_TARGET_DB"]["value"] == "jw_mart_ingest_shadow_demo"
+    assert "INGEST_LOAD_TARGET_ROOT" not in env
+    assert "INGEST_MART_PROMOTION_APPROVED" not in env
+    assert mounts["market-output"]["mountPath"] == "/market-output"
+    assert mounts["market-output"]["readOnly"] is False
+    assert container["resources"] == {
+        "requests": {"cpu": "2", "memory": "8Gi"},
+        "limits": {"cpu": "4", "memory": "16Gi"},
+    }
+
+
 def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
     monkeypatch.delenv("INGEST_LOAD_STAGING_ROOT", raising=False)
     monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output")

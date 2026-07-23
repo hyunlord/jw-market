@@ -11,11 +11,15 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 * **G3/POST-GATE 우회 불가** — `job_runner.py` 가 G3 → 적재 → POST-GATE →
   refresh 순서를 코드로 강제한다. G3 실패는 `failed`, POST-GATE 실패는
   `gate_failed`이며 promotion preflight가 테이블 변경 전에 거부한다.
-* **D-3a 파일럿 무장** — `deploy/k8s/ingest-hook/` 의 trigger 는 replicas 1,
+* **D-3a 파일럿 무장** — `deploy/k8s/ingest-hook/` 의 기본 trigger 는 replicas 1,
   `INGEST_LOAD_STAGING_ROOT=/tmp/ingest-load-staging` 상태다. sweep 은
   `suspend: true` 이며 별도 PL 결정 전 resume 하지 않는다.
 * **실적재 잠금** — `INGEST_LOAD_TARGET_ROOT` 는 manifest 에 두지 않는다.
   설정하면 serving parquet refresh 가 활성화되므로 별도 PL 게이트가 필요하다.
+* **3모드 배타** — `INGEST_LOAD_STAGING_ROOT`, `INGEST_LOAD_SHADOW_ROOT`,
+  `INGEST_LOAD_TARGET_ROOT` 중 정확히 하나만 설정한다. shadow 는 RWX의 별도
+  corpus, `jw_mart_ingest_shadow_*` DB, 별도 SQLite ledger만 사용하며 serving
+  cache refresh를 호출하지 않는다. production 승인 변수는 shadow에서 무시된다.
 
 ## 구성
 
@@ -52,7 +56,25 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 | `INGEST_REHEARSAL_ROOT` | 설정 시 job_runner 격리 모드 (sqlite staging, orchestrator 미호출) |
 | `INGEST_LOAD_STAGING_ROOT` | ★J5 실 로더 격리 출력 루트 (설정 시 mart refresh skip = staging-verify) |
 | `INGEST_LOAD_STAGING_DB` | table loader 격리 스키마(필수, `jw_ingest_*`만 허용). 배포 manifest에는 활성화 승인 전 미설정 |
+| `INGEST_LOAD_SHADOW_ROOT` | UBIST full-path shadow corpus. `/market-output`의 자식이어야 하며 staging/target과 배타 |
+| `INGEST_SHADOW_LEDGER_SQLITE` | shadow 전용 ledger 경로. 운영 ingest ledger와 분리되며 trigger와 Job이 같은 RWX 파일 사용 |
+| `INGEST_SHADOW_TARGET_DB` | 격리 publish DB. `jw_mart_ingest_shadow_` prefix 필수 |
+| `INGEST_SHADOW_BUILD_PREFIX` | 격리 S4 build DB prefix. `jw_mart_ingest_shadow_` prefix 필수 |
+| `INGEST_SHADOW_SEED_ROOT` | 첫 shadow corpus를 seed할 read-only UBIST corpus root |
+| `INGEST_SHADOW_CRASH_AT` | shadow-only deterministic recovery injection point. production에서는 fail-closed |
 | `INGEST_LOAD_TARGET_ROOT` | J5 프로덕션 출력 루트 (D-3; refresh 실행). staging 미설정 시 필수 |
+
+## 적재 모드
+
+| 모드 | load | mart build/gates | publish | refresh/ledger |
+|---|---|---|---|---|
+| staging | 격리 임시 root | skip | skip | 운영 mart/cache 무접촉, 운영 ledger |
+| shadow | RWX shadow corpus | 격리 S4 + Sigma + post-gate | shadow DB 2테이블만 | shadow DB readback + shadow SQLite ledger |
+| production | RWX serving corpus | 격리 build + gates | serving DB | post-mart orchestrator + 운영 ledger |
+
+Shadow 배포 계약은
+`deploy/k8s/ingest-hook/reference/ingest-trigger-shadow-overlay.yaml`과
+`ingest-job-shadow-overlay.yaml`에 기록한다. 두 파일 모두 참고용이며 직접 apply하지 않는다.
 
 ## 카테고리 table loader 경계
 

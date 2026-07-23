@@ -29,6 +29,12 @@ _PASSTHROUGH_VALUES = (
     "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
     "INGEST_LOAD_STAGING_ROOT",  # J5 real-loader staging output (mart refresh skipped)
     "INGEST_LOAD_STAGING_DB",    # isolated jw_ingest_* target for table adapters
+    "INGEST_LOAD_SHADOW_ROOT",   # full gates with isolated corpus + mart only
+    "INGEST_SHADOW_LEDGER_SQLITE",
+    "INGEST_SHADOW_TARGET_DB",
+    "INGEST_SHADOW_BUILD_PREFIX",
+    "INGEST_SHADOW_SEED_ROOT",
+    "INGEST_SHADOW_CRASH_AT",
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
     "INGEST_MART_PROMOTION_APPROVED",
     "INGEST_MART_SOURCE_DB",
@@ -101,6 +107,17 @@ def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespac
         else []
     )
     output_root = config.load_target_mount_root()
+    resources = (
+        {
+            "requests": {"cpu": "2", "memory": "8Gi"},
+            "limits": {"cpu": "4", "memory": "16Gi"},
+        }
+        if config.load_mode(required=False) == "shadow"
+        else {
+            "requests": {"cpu": "500m", "memory": "1Gi"},
+            "limits": {"cpu": "2", "memory": "4Gi"},
+        }
+    )
     if output_root is not None:
         volume_mounts.append(
             {
@@ -149,10 +166,7 @@ def render_job(*, category: str, manifest_sha: str, manifest_path: str, namespac
                             ],
                             "env": _job_env(),
                             **({"volumeMounts": volume_mounts} if volume_mounts else {}),
-                            "resources": {
-                                "requests": {"cpu": "500m", "memory": "1Gi"},
-                                "limits": {"cpu": "2", "memory": "4Gi"},
-                            },
+                            "resources": resources,
                         }
                     ],
                     **({"volumes": volumes} if volumes else {}),
