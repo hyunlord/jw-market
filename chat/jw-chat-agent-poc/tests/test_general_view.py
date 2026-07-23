@@ -885,6 +885,18 @@ def test_number_in_market_name_is_not_treated_as_a_display_limit() -> None:
     assert request.capped is False
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 시장 상위 3개 브랜드 점유율",
+        "리바로 시장 상위 3개 브랜드 매출",
+        "리바로 시장 상위 3개 브랜드 성장률 추이",
+    ),
+)
+def test_counted_market_member_request_does_not_capture_metric_query(question: str) -> None:
+    assert asks_market_members(question) is False
+
+
 def test_general_member_request_applies_requested_limit_below_cap() -> None:
     memberships = (
         GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),

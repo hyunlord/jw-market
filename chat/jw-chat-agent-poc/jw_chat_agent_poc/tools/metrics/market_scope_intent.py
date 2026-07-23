@@ -27,6 +27,7 @@ _MARKET_MEMBER_COUNT_PATTERNS = (
     re.compile(r"(?:상위|top)\s*(-?\d+)\s*(?:개)?(?:\s*(?:브랜드|제품|품목|구성원))?", re.IGNORECASE),
     re.compile(r"(-?\d+)\s*개(?:만)?(?:\s*(?:알려|보여|표시|나열))?", re.IGNORECASE),
 )
+_MARKET_METRIC_CUES = ("점유율", "매출", "실적", "성장률", "추이", "규모", "hhi", "cr5", "집중도")
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +79,11 @@ def asks_market_members(question: str) -> bool:
     )
     market_context = any(token in normalized for token in ("시장", "기타", "순위", "상위"))
     terse_market_members = "시장" in normalized and normalized.endswith(("브랜드", "제품", "품목", "구성원"))
-    counted_market_members = "시장" in normalized and requested_market_member_limit(question).requested is not None
+    counted_market_members = (
+        "시장" in normalized
+        and requested_market_member_limit(question).requested is not None
+        and not any(cue in normalized for cue in _MARKET_METRIC_CUES)
+    )
     return (member_noun and market_context and (list_cue or terse_market_members)) or asks_other_market_members(
         question
     ) or counted_market_members
