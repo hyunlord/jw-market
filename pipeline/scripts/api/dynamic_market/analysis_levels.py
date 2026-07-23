@@ -33,6 +33,7 @@ def build_analysis_level_sections(
     focus: BrandMetric | None,
     mart_db: str,
     period_range: PeriodRange = PeriodRange(),
+    brand_cohort: tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     """Build the three cache-compatible analysis-level sections for dynamic data.
 
@@ -49,6 +50,7 @@ def build_analysis_level_sections(
             focus=focus,
             mart_db=mart_db,
             period_range=period_range,
+            brand_cohort=brand_cohort,
         )
 
     market = definition.market_catalog_row
@@ -91,6 +93,7 @@ def build_analysis_level_sections(
             series_value_cache=series_value_cache,
             series_observed_cache=series_observed_cache,
             channel_rows_cache=channel_rows_cache,
+            brand_cohort=brand_cohort,
         )
         analysis_levels = cause_builder._ensure_split_class_alias(analysis_levels)
         rows_by_level = cause_builder._level_rows_by_segment(

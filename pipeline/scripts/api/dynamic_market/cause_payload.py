@@ -105,6 +105,11 @@ def build_cause_data(
     full_matrix = matrix_rows(metrics=metrics, focus=focus)
     matrix = full_matrix[:100]
     display_matrix = display_matrix_rows(matrix, focus=focus)
+    brand_cohort = tuple(
+        str(row["brand"])
+        for row in display_matrix
+        if row.get("brand") not in (None, "")
+    )
     ranking = brand_ranking(metrics.all_brands, focus=focus)
     company = company_ranking(metrics.all_brands)
     company_hhi = company_hhi_series(metrics.all_brands, source=metrics.source)
@@ -122,6 +127,7 @@ def build_cause_data(
         focus=focus,
         mart_db=config.db_name,
         period_range=period_range,
+        brand_cohort=brand_cohort,
     )
     if timing_enabled and analysis_started is not None:
         logger.info(
@@ -141,6 +147,7 @@ def build_cause_data(
         metrics=metrics,
         focus=focus,
         channels=target_channels,
+        brand_cohort=brand_cohort,
     )
     if timing_enabled and competition_started is not None:
         logger.info(
@@ -286,6 +293,7 @@ def _target_customer_competition_by_channel(
     metrics: AggregatedMetrics,
     focus: BrandMetric | None,
     channels: list[Any],
+    brand_cohort: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     if metrics.source not in {"ubist", "iqvia_nsa"} or not analysis_sections or not channels:
         return {}
@@ -301,6 +309,7 @@ def _target_customer_competition_by_channel(
         channels=[str(channel) for channel in channels if str(channel)],
         series_value_cache=analysis_sections.get("series_value_cache"),
         channel_rows_cache=analysis_sections.get("channel_rows_cache"),
+        brand_cohort=brand_cohort,
     )
 
 
