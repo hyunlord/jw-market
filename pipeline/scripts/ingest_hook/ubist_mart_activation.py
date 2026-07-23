@@ -415,6 +415,7 @@ def build_shadow(
             catalog_root=catalog_root,
             ubist_dir=ubist_dir,
             input_mode="raw",
+            sources=("ubist",),
         )
     finally:
         for key, value in previous.items():

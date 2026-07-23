@@ -158,8 +158,12 @@ def run(params: dict[str, Any]) -> int:
         _configure_mart_env(target_db, source_db)
         from pipeline.etl.io.mart.layer3_compute_general_v3 import compute_general
 
+        sources = tuple(params.get("sources") or ("ubist", "iqvia_nsa"))
+        unsupported = [source for source in sources if source not in ("ubist", "iqvia_nsa")]
+        if unsupported:
+            raise ValueError(f"unsupported S4 sources: {unsupported}")
         stats: list[dict[str, Any]] = []
-        for source in ("ubist", "iqvia_nsa"):
+        for source in sources:
             _, _, source_stats = compute_general(
                 source,
                 insert=True,

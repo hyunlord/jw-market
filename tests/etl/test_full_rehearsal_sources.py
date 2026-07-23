@@ -90,3 +90,26 @@ def test_mart_stage_allows_same_rehearsal_schema(stage) -> None:  # type: ignore
 def test_mart_stage_rejects_same_nonrehearsal_schema(stage, database: str) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ValueError):
         stage._validate_schema_pair(database, database)
+
+
+def test_s4_mart_limits_compute_to_requested_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    computed: list[str] = []
+
+    monkeypatch.setattr(s4_mart, "_ensure_isolated_schema", lambda *_args: None)
+    monkeypatch.setattr(s4_mart, "_configure_mart_env", lambda *_args: None)
+    monkeypatch.setattr(
+        "pipeline.etl.io.mart.layer3_compute_general_v3.compute_general",
+        lambda source, **_kwargs: computed.append(source)
+        or ([], [], {"source": source, "brand_rows": 1, "market_rows": 1, "measures": {}}),
+    )
+
+    rc = s4_mart.run(
+        {
+            "target_db": "jw_mart_ingest_shadow_build_run1",
+            "source_db": "jw_mart",
+            "sources": ("ubist",),
+        }
+    )
+
+    assert rc == 0
+    assert computed == ["ubist"]

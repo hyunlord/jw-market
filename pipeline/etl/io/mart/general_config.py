@@ -20,6 +20,12 @@ MEASURES_BY_SOURCE = {
     "ubist": ("sales", "volume"),
     "iqvia_nsa": ("sales", "unit", "dosage_unit", "counting_unit"),
 }
+
+
+def catalog_dir() -> Path:
+    return Path(os.environ.get("S4_CATALOG_DIR", str(CATALOG_DIR)))
+
+
 UNIT_LABELS = {
     ("ubist", "sales"): "KRW",
     ("ubist", "volume"): "Rx",

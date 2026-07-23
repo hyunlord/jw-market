@@ -101,7 +101,27 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         "catalog_root": Path("/market-output/shadow/catalog"),
         "ubist_dir": Path("/market-output/.ubist-candidate-run1"),
         "input_mode": "raw",
+        "sources": ("ubist",),
     }]
+
+
+def test_shadow_catalog_path_is_resolved_after_environment_is_set(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pipeline.etl.io.mart import general_catalog
+
+    catalog_root = tmp_path / "catalog"
+    observed: list[Path] = []
+    monkeypatch.setenv("S4_CATALOG_DIR", str(catalog_root))
+    monkeypatch.setattr(
+        general_catalog.pd,
+        "read_parquet",
+        lambda path: observed.append(Path(path)) or general_catalog.pd.DataFrame(),
+    )
+
+    general_catalog.load_catalog_key_map()
+
+    assert observed == [catalog_root / "strategic_brand" / "strategic_brand.parquet"]
 
 
 def test_shadow_catalog_root_requires_isolated_canonical_catalog(tmp_path, monkeypatch) -> None:

@@ -7,11 +7,11 @@ import duckdb
 import pandas as pd
 
 from .brand_key_normalize import best_name, normalize_brand_name
-from .general_config import CATALOG_DIR
+from .general_config import catalog_dir
 from .general_utils import extract_atc4, normalize_period_label, normalise_iqvia_channel
 
 def load_catalog_key_map() -> dict[str, dict[str, Any]]:
-    catalog = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
+    catalog = pd.read_parquet(catalog_dir() / "strategic_brand" / "strategic_brand.parquet")
     mapping: dict[str, dict[str, Any]] = {}
     for _, row in catalog.iterrows():
         for col in ("name", "merge_name"):
@@ -32,8 +32,9 @@ def _first_atc_code(value: Any) -> str | None:
     return None
 
 def _catalog_product_bridge() -> pd.DataFrame:
-    products = pd.read_parquet(CATALOG_DIR / "strategic_product" / "strategic_product.parquet")
-    brands = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
+    root = catalog_dir()
+    products = pd.read_parquet(root / "strategic_product" / "strategic_product.parquet")
+    brands = pd.read_parquet(root / "strategic_brand" / "strategic_brand.parquet")
     brand_cols = [
         col
         for col in (

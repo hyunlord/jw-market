@@ -109,6 +109,7 @@ def test_run_s4_general_passes_explicit_ubist_root(monkeypatch) -> None:
         catalog_root=Path("/catalog"),
         ubist_dir=Path("/market-output/ubist"),
         input_mode="raw",
+        sources=("ubist",),
     )
 
     assert calls == [
@@ -118,6 +119,7 @@ def test_run_s4_general_passes_explicit_ubist_root(monkeypatch) -> None:
             "catalog_root": "/catalog",
             "ubist_dir": "/market-output/ubist",
             "input_mode": "raw",
+            "sources": ("ubist",),
         }
     ]
 

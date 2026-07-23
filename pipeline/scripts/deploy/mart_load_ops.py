@@ -161,6 +161,7 @@ def run_s4_general(
     catalog_root: Path | None,
     ubist_dir: Path | None,
     input_mode: str,
+    sources: tuple[str, ...] | None = None,
 ) -> None:
     params = {
         "target_db": build_db,
@@ -168,6 +169,7 @@ def run_s4_general(
         "catalog_root": str(catalog_root) if catalog_root else None,
         "ubist_dir": str(ubist_dir) if ubist_dir else None,
         "input_mode": input_mode,
+        "sources": sources,
     }
     rc = s4_mart.run(params)
     if rc != 0:
