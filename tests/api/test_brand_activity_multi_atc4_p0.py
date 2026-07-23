@@ -87,7 +87,6 @@ def _resolve(atc4: list[str]):
         market_id=atc4[0],
         selected_brand="선택",
         filter_payload={"atc4": atc4},
-        ranking_quarters=("2026-Q2",),
     )
 
 
