@@ -51,6 +51,8 @@ spec:
               value: local
             - name: INGEST_INPUT_ROOT
               value: /nfs-root/autoIngestion
+            - name: INGEST_LOG_ROOT
+              value: /market-output/ingest-logs
             # Receiver is intentionally unset until jw-agent publishes its
             # endpoint. job_launcher passes both values to every ingest Job.
             - name: INGEST_COMPLETION_WEBHOOK_URL
@@ -94,10 +96,16 @@ spec:
               mountPath: /nfs-root/autoIngestion
               subPath: autoIngestion
               readOnly: true
+            - name: market-output
+              mountPath: /market-output
+              readOnly: false
       volumes:
         - name: ingest-input
           persistentVolumeClaim:
             claimName: llmops-nfs-root
+        - name: market-output
+          persistentVolumeClaim:
+            claimName: llmops-market-output
 ---
 apiVersion: v1
 kind: Service

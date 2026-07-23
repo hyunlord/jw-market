@@ -17,10 +17,43 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     body = render_job(category="ubist", manifest_sha=SHA, manifest_path="/data/m.json", namespace="llmops")
     container = body["spec"]["template"]["spec"]["containers"][0]
     assert container["image"] == config.DEFAULT_JOB_IMAGE
-    assert container["command"][:4] == ["python", "-m", "pipeline.scripts.ingest_hook.job_runner", "--manifest"]
+    assert container["command"][:4] == [
+        "python", "-m", "pipeline.scripts.ingest_hook.stage_log_runner", "--manifest"
+    ]
     assert body["metadata"]["name"] == f"jw-ingest-ubist-{SHA[:8]}"
     assert body["spec"]["backoffLimit"] == 0
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
+
+
+def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):
+    monkeypatch.setenv("INGEST_LOAD_STAGING_ROOT", "/tmp/ingest-load-staging")
+    run_id = "20260723112233445566"
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id=run_id,
+    )
+
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.stage_log_runner",
+        "--manifest",
+        "/data/m.json",
+        "--run-id",
+        run_id,
+        "--job-name",
+        body["metadata"]["name"],
+    ]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["INGEST_LOG_ROOT"] == "/market-output/ingest-logs"
+    mounts = {item["name"]: item for item in container["volumeMounts"]}
+    assert mounts["market-output"]["mountPath"] == "/market-output"
+    assert mounts["market-output"]["readOnly"] is False
 
 
 def test_submit_uses_injected_transport(fake_transport):
@@ -129,8 +162,8 @@ def test_reference_jobs_separate_staging_from_activation_contracts():
     staging_env = {item["name"] for item in staging_container["env"]}
     assert "INGEST_LOAD_STAGING_ROOT" in staging_env
     assert "INGEST_LOAD_TARGET_ROOT" not in staging_env
-    assert "market-output" not in {item["name"] for item in staging_container["volumeMounts"]}
-    assert "market-output" not in {item["name"] for item in staging_spec["volumes"]}
+    assert "market-output" in {item["name"] for item in staging_container["volumeMounts"]}
+    assert "market-output" in {item["name"] for item in staging_spec["volumes"]}
 
     activation_spec = activation["spec"]["template"]["spec"]
     activation_container = activation_spec["containers"][0]
@@ -194,17 +227,27 @@ def test_rendered_local_job_inherits_backend_root_and_read_only_nfs(monkeypatch)
     assert env["INGEST_INPUT_BACKEND"]["value"] == "local"
     assert env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
     assert "INGEST_S3_BUCKET" not in env
-    assert container["volumeMounts"] == [
-        {
-            "name": "ingest-input",
-            "mountPath": "/nfs-root/autoIngestion",
-            "subPath": "autoIngestion",
-            "readOnly": True,
-        }
-    ]
-    assert pod_spec["volumes"] == [
-        {"name": "ingest-input", "persistentVolumeClaim": {"claimName": "llmops-nfs-root"}}
-    ]
+    mounts = {item["name"]: item for item in container["volumeMounts"]}
+    assert mounts["ingest-input"] == {
+        "name": "ingest-input",
+        "mountPath": "/nfs-root/autoIngestion",
+        "subPath": "autoIngestion",
+        "readOnly": True,
+    }
+    assert mounts["market-output"] == {
+        "name": "market-output",
+        "mountPath": "/market-output",
+        "readOnly": False,
+    }
+    volumes = {item["name"]: item for item in pod_spec["volumes"]}
+    assert volumes["ingest-input"] == {
+        "name": "ingest-input",
+        "persistentVolumeClaim": {"claimName": "llmops-nfs-root"},
+    }
+    assert volumes["market-output"] == {
+        "name": "market-output",
+        "persistentVolumeClaim": {"claimName": "llmops-market-output"},
+    }
 
 
 def test_rendered_production_job_mounts_dedicated_output_pvc_read_write(monkeypatch):

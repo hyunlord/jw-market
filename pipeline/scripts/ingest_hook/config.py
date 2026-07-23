@@ -25,7 +25,7 @@ ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for j
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
 
-DEFAULT_LOG_ROOT = "/ingest-logs"                   # container mountPath convention for the durable-log PVC
+DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
 MARKET_OUTPUT_PVC = "llmops-market-output"
 
@@ -44,6 +44,10 @@ def log_root_hint() -> str:
     the actual mount.
     """
     return os.environ.get(ENV_LOG_ROOT, DEFAULT_LOG_ROOT).rstrip("/")
+
+
+def log_root() -> Path:
+    return Path(log_root_hint())
 
 
 def completion_webhook() -> tuple[str, int]:

@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from pipeline.scripts.ingest_hook import config, job_launcher
+from pipeline.scripts.ingest_hook import config, job_launcher, stage_logs
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import Ledger, LedgerConnectionError
@@ -32,11 +32,21 @@ class WebhookPayload(BaseModel):
 
 
 class IngestService:
-    def __init__(self, ledger: Ledger, input_root: Path | None, transport=None, s3=None):
+    def __init__(
+        self,
+        ledger: Ledger,
+        input_root: Path | None,
+        transport=None,
+        s3=None,
+        inspect_transport=None,
+        now=None,
+    ):
         self.ledger = ledger
         self.input_root = input_root
         self.transport = transport
         self.s3 = s3
+        self.inspect_transport = inspect_transport
+        self.now = now or (lambda: datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"))
 
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
@@ -45,7 +55,8 @@ class IngestService:
         entry = self.ledger.next_queued(category)
         if entry is None:
             return None
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        run_id = self.now()
+        started_at = datetime.now(timezone.utc).isoformat()
         try:
             name = job_launcher.submit_job(
                 category=category,
@@ -53,15 +64,40 @@ class IngestService:
                 manifest_path=entry.manifest_path,
                 transport=self.transport,
                 run_id=run_id,
+                inspect_transport=self.inspect_transport,
             )
         except Exception as exc:  # noqa: BLE001 - transport is an external boundary
+            reason = f"job submission failed: {type(exc).__name__}: {exc}"
+            self.ledger.record_stage(
+                entry.epoch,
+                category,
+                entry.manifest_sha,
+                run_id=run_id,
+                seq=0,
+                stage="job_submit",
+                status="failed",
+                reason=reason,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
             self.ledger.mark_failed(
                 entry.epoch,
                 category,
                 entry.manifest_sha,
-                reason=f"job submission failed: {type(exc).__name__}: {exc}",
+                reason=reason,
             )
             raise
+        self.ledger.record_stage(
+            entry.epoch,
+            category,
+            entry.manifest_sha,
+            run_id=run_id,
+            seq=0,
+            stage="job_submit",
+            status="complete",
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
         self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
 
@@ -195,13 +231,60 @@ def create_app(service: IngestService) -> FastAPI:
             "log_ref": {
                 "job_name": entry.job_name,
                 "run_id": entry.run_id,
-                # Path hint only (not the body): logs can be large; body exposure
-                # with a size cap + paging is a B-track item, not this round.
+                # The body is exposed separately through a bounded, paged API.
                 "durable_log_hint": (
-                    f"{config.log_root_hint()}/{entry.category}/{entry.epoch}/"
+                    f"{config.log_root_hint()}/{entry.job_name}/"
                     if entry.job_name else None
                 ),
+                "endpoint": "/ingest/logs" if entry.job_name else None,
             },
+        }
+
+    @app.get("/ingest/logs")
+    def logs(
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        run_id: str,
+        stage: str | None = None,
+        offset: int = 0,
+        limit: int = 65536,
+    ) -> dict:
+        entry = service.ledger.status(epoch, category, manifest_sha)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="unknown submission identity")
+        events = service.ledger.stage_events(epoch, category, manifest_sha)
+        if run_id != entry.run_id and not any(event.run_id == run_id for event in events):
+            raise HTTPException(status_code=404, detail="unknown run_id")
+        name = job_launcher.job_name(category, manifest_sha, run_id)
+        try:
+            page = stage_logs.read_log_page(
+                config.log_root(),
+                job_name=name,
+                stage=stage,
+                offset=offset,
+                limit=limit,
+            )
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "reason": "log_not_available",
+                    "message": "The durable log is absent or has expired.",
+                },
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "epoch": epoch,
+            "category": category,
+            "manifest_sha": manifest_sha,
+            "run_id": run_id,
+            "stage": stage,
+            "text": page.text,
+            "total_bytes": page.total_bytes,
+            "next_offset": page.next_offset,
+            "truncated": page.truncated,
         }
 
     @app.post("/ingest/reconcile")

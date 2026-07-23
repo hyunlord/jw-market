@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -76,6 +77,29 @@ def _job_env() -> list[dict]:
     return env
 
 Transport = Callable[[str, dict], dict]
+InspectTransport = Callable[[str, str], dict]
+
+
+class JobSubmissionConflict(RuntimeError):
+    def __init__(
+        self,
+        *,
+        job_name: str,
+        existing_status: str,
+        created_at: str | None,
+        inspection_error: str | None = None,
+    ):
+        self.job_name = job_name
+        self.existing_status = existing_status
+        self.created_at = created_at
+        self.inspection_error = inspection_error
+        inspection_detail = (
+            f" inspection_error={inspection_error}" if inspection_error else ""
+        )
+        super().__init__(
+            f"job_name={job_name} existing_status={existing_status} "
+            f"created_at={created_at or 'unknown'}{inspection_detail}"
+        )
 
 
 def job_name(category: str, manifest_sha: str, run_id: str | None = None) -> str:
@@ -131,11 +155,11 @@ def render_job(
             "limits": {"cpu": "2", "memory": "4Gi"},
         }
     )
-    if output_root is not None:
+    if not any(item["name"] == _MARKET_OUTPUT_VOLUME for item in volume_mounts):
         volume_mounts.append(
             {
                 "name": _MARKET_OUTPUT_VOLUME,
-                "mountPath": str(output_root),
+                "mountPath": str(config.MARKET_OUTPUT_ROOT),
                 "readOnly": False,
             }
         )
@@ -173,11 +197,18 @@ def render_job(
                             "command": [
                                 "python",
                                 "-m",
-                                "pipeline.scripts.ingest_hook.job_runner",
+                                "pipeline.scripts.ingest_hook.stage_log_runner",
                                 "--manifest",
                                 manifest_path,
+                                "--run-id",
+                                run_id or name,
+                                "--job-name",
+                                name,
                             ],
-                            "env": _job_env(),
+                            "env": [
+                                *_job_env(),
+                                {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
+                            ],
                             **({"volumeMounts": volume_mounts} if volume_mounts else {}),
                             "resources": resources,
                         }
@@ -202,6 +233,32 @@ def _in_cluster_transport(url_path: str, body: dict) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _in_cluster_inspect(namespace: str, name: str) -> dict:
+    token = (_SA_DIR / "token").read_text().strip()
+    context = ssl.create_default_context(cafile=str(_SA_DIR / "ca.crt"))
+    request = urllib.request.Request(
+        f"https://kubernetes.default.svc/apis/batch/v1/namespaces/{namespace}/jobs/{name}",
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, context=context, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _job_status(payload: dict) -> str:
+    status = payload.get("status") or {}
+    for condition in status.get("conditions") or []:
+        if condition.get("status") == "True" and condition.get("type") in {"Complete", "Failed"}:
+            return str(condition["type"])
+    if status.get("active"):
+        return "Running"
+    if status.get("failed"):
+        return "Failed"
+    if status.get("succeeded"):
+        return "Complete"
+    return "Pending"
+
+
 def submit_job(
     *,
     category: str,
@@ -210,6 +267,7 @@ def submit_job(
     transport: Transport | None = None,
     namespace: str | None = None,
     run_id: str | None = None,
+    inspect_transport: InspectTransport | None = None,
 ) -> str:
     """Create the Job and return its name."""
     body = render_job(
@@ -220,5 +278,35 @@ def submit_job(
         run_id=run_id,
     )
     send = transport or _in_cluster_transport
-    send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)
+    try:
+        send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 409:
+            raise
+        inspect = inspect_transport or _in_cluster_inspect
+        try:
+            existing = inspect(
+                body["metadata"]["namespace"], body["metadata"]["name"]
+            )
+        except Exception as inspect_exc:
+            error_name = type(inspect_exc).__name__
+            error_code = getattr(inspect_exc, "code", None)
+            inspection_error = (
+                f"{error_name}:{error_code}" if error_code is not None else error_name
+            )
+            raise JobSubmissionConflict(
+                job_name=body["metadata"]["name"],
+                existing_status="Unknown",
+                created_at=None,
+                inspection_error=inspection_error,
+            ) from exc
+        metadata = existing.get("metadata") or {}
+        existing_status = _job_status(existing)
+        if existing_status in {"Pending", "Running"}:
+            return body["metadata"]["name"]
+        raise JobSubmissionConflict(
+            job_name=body["metadata"]["name"],
+            existing_status=existing_status,
+            created_at=metadata.get("creationTimestamp"),
+        ) from exc
     return body["metadata"]["name"]

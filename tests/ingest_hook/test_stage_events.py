@@ -68,14 +68,22 @@ def test_v1_stages_exposed_on_status_api(service, client, bucket, tmp_path):
         "/ingest/webhook", json={"manifest_path": str(manifest_path.relative_to(bucket))}
     ).json()
     # run the Job's work inline (rehearsal) so stage rows exist, then read status
-    job_runner.run(manifest_path, input_root=bucket, ledger=service.ledger, rehearsal_root=tmp_path / "s")
+    entry = service.ledger.status(payload["epoch"], "ubist", payload["manifest_sha"])
+    assert entry is not None and entry.run_id is not None
+    job_runner.run(
+        manifest_path,
+        input_root=bucket,
+        ledger=service.ledger,
+        rehearsal_root=tmp_path / "s",
+        run_id=entry.run_id,
+    )
     status = client.get(
         "/ingest/status",
         params={"epoch": payload["epoch"], "category": "ubist", "manifest_sha": payload["manifest_sha"]},
     ).json()
     stage_names = [s["stage"] for s in status["stages"]]
     assert stage_names == [
-        "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
+        "job_submit", "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
         "mart_publish", "refresh", "signal",
     ]
     assert status["current_stage"] is None  # completed run has no in-flight stage

@@ -341,8 +341,15 @@ def _emit_completion_signal(
     print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")
 
 
-def run(manifest_path: Path, *, input_root: Path, ledger: Ledger, rehearsal_root: Path | None) -> int:
-    run_id = _run_id()
+def run(
+    manifest_path: Path,
+    *,
+    input_root: Path,
+    ledger: Ledger,
+    rehearsal_root: Path | None,
+    run_id: str | None = None,
+) -> int:
+    run_id = run_id or _run_id()
     started_at = datetime.now(timezone.utc).isoformat()
     try:
         manifest = load_manifest(manifest_path)
@@ -868,6 +875,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--input-root", type=Path, default=None)
     parser.add_argument("--rehearsal-root", type=Path, default=None)
+    parser.add_argument("--run-id", default=None)
     args = parser.parse_args(argv)
 
     rehearsal_env = os.environ.get(config.ENV_REHEARSAL_ROOT, "")
@@ -899,10 +907,22 @@ def main(argv: list[str] | None = None) -> int:
                     pass  # G3 reports the absence as a failure
         except Exception:
             pass  # contract failures surface in run()
-        return run(local_manifest, input_root=workdir, ledger=ledger, rehearsal_root=rehearsal_root)
+        return run(
+            local_manifest,
+            input_root=workdir,
+            ledger=ledger,
+            rehearsal_root=rehearsal_root,
+            run_id=args.run_id,
+        )
 
     input_root = args.input_root or config.input_root()
-    return run(args.manifest, input_root=input_root, ledger=ledger, rehearsal_root=rehearsal_root)
+    return run(
+        args.manifest,
+        input_root=input_root,
+        ledger=ledger,
+        rehearsal_root=rehearsal_root,
+        run_id=args.run_id,
+    )
 
 
 if __name__ == "__main__":

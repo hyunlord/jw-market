@@ -52,7 +52,7 @@ def test_g1_end_to_end_rehearsal(client, service, bucket, tmp_path, fake_transpo
     # the Job body carries the runner + manifest path (G3 is its first step)
     job_body = fake_transport.submitted[0][1]
     command = job_body["spec"]["template"]["spec"]["containers"][0]["command"]
-    assert "pipeline.scripts.ingest_hook.job_runner" in command
+    assert "pipeline.scripts.ingest_hook.stage_log_runner" in command
 
     # execute the Job's work inline in rehearsal mode
     staging_root = tmp_path / "staging"
