@@ -195,8 +195,13 @@ def test_normal_preflight_completes_all_ten_checks(tmp_path: Path, monkeypatch):
         json.dumps(
             {
                 "classification": "census",
+                "raw_buckets": {
+                    "iqvia": "raw-iqvia",
+                    "ubist": "raw-ubist",
+                },
                 "population": len(objects),
                 "objects": objects,
+                "schema_version": 2,
             }
         )
     )
@@ -241,3 +246,73 @@ def test_normal_preflight_completes_all_ten_checks(tmp_path: Path, monkeypatch):
 
     assert len(findings) == 10
     assert all(finding.passed for finding in findings), findings
+
+
+def test_inventory_uses_declared_raw_bucket_roles(tmp_path: Path):
+    ubist = tmp_path / "ubist"
+    iqvia = tmp_path / "iqvia"
+    ubist.mkdir()
+    iqvia.mkdir()
+    ubist_file = ubist / "UBIST.xlsx"
+    iqvia_file = iqvia / "IQVIA.csv"
+    ubist_file.write_bytes(b"ubist")
+    iqvia_file.write_bytes(b"iqvia")
+    master = tmp_path / "master.xlsx"
+    master.write_bytes(b"master")
+    inputs = FullInputManifest(ubist, iqvia, master)
+    objects = [
+        {
+            "bucket": bucket,
+            "key": path.name,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size": path.stat().st_size,
+        }
+        for bucket, path in (
+            ("jw-market-raw-ubist", ubist_file),
+            ("jw-market-raw-iqvia", iqvia_file),
+            ("repository", master),
+        )
+    ]
+    inventory = tmp_path / "input_inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "classification": "census",
+                "raw_buckets": {
+                    "iqvia": "jw-market-raw-iqvia",
+                    "ubist": "jw-market-raw-ubist",
+                },
+                "population": len(objects),
+                "objects": objects,
+                "schema_version": 2,
+            }
+        )
+    )
+
+    finding = preflight.check_inventory(inputs, inventory)
+
+    assert finding.passed, finding.detail
+
+
+def test_inventory_rejects_missing_raw_bucket_roles(tmp_path: Path):
+    inventory = tmp_path / "input_inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "classification": "census",
+                "population": 0,
+                "objects": [],
+                "schema_version": 2,
+            }
+        )
+    )
+    inputs = FullInputManifest(
+        tmp_path / "ubist",
+        tmp_path / "iqvia",
+        tmp_path / "master.xlsx",
+    )
+
+    finding = preflight.check_inventory(inputs, inventory)
+
+    assert not finding.passed
+    assert "raw bucket roles" in finding.detail

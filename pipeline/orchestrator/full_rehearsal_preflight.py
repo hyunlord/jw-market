@@ -173,18 +173,34 @@ def check_inventory(inputs: FullInputManifest, inventory_path: Path) -> Finding:
     try:
         payload = json.loads(inventory_path.read_text(encoding="utf-8"))
         rows = payload["objects"]
+        raw_buckets = payload.get("raw_buckets")
+        if (
+            payload.get("schema_version") != 2
+            or not isinstance(raw_buckets, dict)
+            or set(raw_buckets) != {"ubist", "iqvia"}
+            or not all(isinstance(value, str) and value for value in raw_buckets.values())
+            or len(set(raw_buckets.values())) != 2
+        ):
+            failures.append("inventory raw bucket roles are invalid")
+            raw_buckets = {}
         if payload.get("classification") != "census" or payload.get("population") != len(rows):
             failures.append("inventory census metadata mismatch")
-        roots = {"raw-ubist": inputs.ubist_source_dir, "raw-iqvia": inputs.iqvia_source_dir}
+        roots = {
+            raw_buckets.get("ubist"): inputs.ubist_source_dir,
+            raw_buckets.get("iqvia"): inputs.iqvia_source_dir,
+        }
         for row in rows:
             bucket, key = row["bucket"], row["key"]
             if bucket in roots:
                 path = roots[bucket] / key
             elif bucket == "repository":
                 path = inputs.mi_master
-            else:
+            elif bucket == "pvc-sidecar":
                 match = [s.path for s in inputs.ubist_parquet_sidecars if str(s.relative_path) == key]
                 path = match[0] if match else Path("__missing__")
+            else:
+                failures.append(f"unknown inventory bucket: {bucket}")
+                continue
             if not path.is_file():
                 failures.append(f"missing inventory object: {bucket}/{key}")
             elif path.stat().st_size != row["size"] or _sha256(path) != row["sha256"]:

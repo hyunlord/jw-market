@@ -180,7 +180,11 @@ def materialize_full_inputs(
                 "missing": "fail",
                 "objects": inventory,
                 "population": len(inventory),
-                "schema_version": 1,
+                "raw_buckets": {
+                    "iqvia": iqvia_bucket,
+                    "ubist": ubist_bucket,
+                },
+                "schema_version": 2,
             },
             ensure_ascii=False,
             indent=2,
@@ -276,20 +280,30 @@ def _download_population(
         raise InputMaterializationError(f"{label} bucket {bucket!r} has no supported objects")
 
     paths: list[Path] = []
-    for key in keys:
+    normalized_sources: dict[str, str] = {}
+    for source_key in keys:
+        key = unicodedata.normalize("NFC", source_key)
+        existing_source = normalized_sources.get(key)
+        if existing_source is not None and existing_source != source_key:
+            raise InputMaterializationError(
+                f"{label} source keys have an NFC collision: "
+                f"{existing_source!r} and {source_key!r}"
+            )
+        normalized_sources[key] = source_key
         target = _safe_target(destination, key)
-        payload = client.read(key)
+        payload = client.read(source_key)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
         paths.append(target)
-        inventory.append(
-            {
-                "bucket": bucket,
-                "key": key,
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "size": len(payload),
-            }
-        )
+        row: dict[str, str | int] = {
+            "bucket": bucket,
+            "key": key,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+        if source_key != key:
+            row["source_key"] = source_key
+        inventory.append(row)
     return paths
 
 

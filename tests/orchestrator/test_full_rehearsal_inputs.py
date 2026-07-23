@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import unicodedata
 
 import pytest
 
@@ -62,6 +63,11 @@ def test_materialize_full_inputs_writes_manifest_and_sha_inventory(tmp_path: Pat
         (manifest_path.parent / "input_inventory.json").read_text(encoding="utf-8")
     )
     assert inventory["classification"] == "census"
+    assert inventory["raw_buckets"] == {
+        "iqvia": "raw-iqvia",
+        "ubist": "raw-ubist",
+    }
+    assert inventory["schema_version"] == 2
     assert inventory["objects"] == [
         {
             "bucket": "raw-iqvia",
@@ -82,6 +88,71 @@ def test_materialize_full_inputs_writes_manifest_and_sha_inventory(tmp_path: Pat
             "size": 6,
         },
     ]
+
+
+def test_materialize_full_inputs_normalizes_raw_paths_to_nfc(tmp_path: Path) -> None:
+    master_dir = tmp_path / "repository-master"
+    master_dir.mkdir()
+    master_payload = b"master"
+    (master_dir / MI_MASTER_FILE_NAME).write_bytes(master_payload)
+    (master_dir / "SOURCE_PINS.sha256").write_text(
+        f"{hashlib.sha256(master_payload).hexdigest()}  {MI_MASTER_FILE_NAME}\n",
+        encoding="utf-8",
+    )
+    nfc_key = "의원/의원.xlsx"
+    nfd_key = unicodedata.normalize("NFD", nfc_key)
+    buckets = {
+        "jw-market-raw-ubist": FakeS3({nfd_key: b"ubist"}),
+        "jw-market-raw-iqvia": FakeS3({"nsa/data.csv": b"iqvia"}),
+    }
+
+    manifest_path = materialize_full_inputs(
+        output_root=tmp_path / "inputs",
+        ubist_bucket="jw-market-raw-ubist",
+        iqvia_bucket="jw-market-raw-iqvia",
+        mi_master_source_dir=master_dir,
+        client_factory=lambda bucket: buckets[bucket],
+    )
+
+    materialized = manifest_path.parent / "ubist" / nfc_key
+    inventory = json.loads(
+        (manifest_path.parent / "input_inventory.json").read_text(encoding="utf-8")
+    )
+    ubist_row = next(
+        row
+        for row in inventory["objects"]
+        if row["bucket"] == "jw-market-raw-ubist"
+    )
+
+    assert materialized.read_bytes() == b"ubist"
+    assert ubist_row["key"] == nfc_key
+    assert ubist_row["source_key"] == nfd_key
+
+
+def test_materialize_full_inputs_rejects_nfc_path_collisions(tmp_path: Path) -> None:
+    master_dir = tmp_path / "repository-master"
+    master_dir.mkdir()
+    master_payload = b"master"
+    (master_dir / MI_MASTER_FILE_NAME).write_bytes(master_payload)
+    (master_dir / "SOURCE_PINS.sha256").write_text(
+        f"{hashlib.sha256(master_payload).hexdigest()}  {MI_MASTER_FILE_NAME}\n",
+        encoding="utf-8",
+    )
+    nfc_key = "의원.xlsx"
+    nfd_key = unicodedata.normalize("NFD", nfc_key)
+    buckets = {
+        "raw-ubist": FakeS3({nfc_key: b"nfc", nfd_key: b"nfd"}),
+        "raw-iqvia": FakeS3({"nsa/data.csv": b"iqvia"}),
+    }
+
+    with pytest.raises(InputMaterializationError, match="NFC collision"):
+        materialize_full_inputs(
+            output_root=tmp_path / "inputs",
+            ubist_bucket="raw-ubist",
+            iqvia_bucket="raw-iqvia",
+            mi_master_source_dir=master_dir,
+            client_factory=lambda bucket: buckets[bucket],
+        )
 
 
 def test_materialize_full_inputs_pins_ubist_parquet_sidecar(tmp_path: Path) -> None:
