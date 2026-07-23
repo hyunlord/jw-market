@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import pytest
 
+from pipeline.etl.io.mart.agent2_eligibility import (
+    AGENT2_ELIGIBILITY_REVISION,
+    Agent2ScoreRow,
+)
 from bundle_builder.agent2_density_router import (
+    BrandedScoreRow,
     CATEGORY_SCORE_CUTOFFS,
     CATEGORY_SCORE_CUTOFFS_BY_VERSION,
     EvidenceCount,
     NEW_WF196_PROCESSOR,
     PENDING_TIER2_PROCESSOR,
     ProcessingMode,
+    UnknownShadowBrandError,
     cutoff_for_tag,
     density_bucket,
     is_score_allowed_for_density,
     route_brand,
+    route_worklist_with_shadow,
     route_worklist,
 )
 
@@ -49,6 +56,110 @@ def test_route_worklist_keeps_zero_brands_in_template_queue() -> None:
     assert [route.brand for route in routes] == ["리바로", "제로브랜드"]
     assert [route.bucket for route in routes] == ["sparse", "zero"]
     assert routes[1].mode is ProcessingMode.TEMPLATE_ZERO
+
+
+def test_route_worklist_with_shadow_records_central_difference_without_changing_routes() -> None:
+    counts: tuple[EvidenceCount, ...] = ()
+    score_rows = (
+        BrandedScoreRow(
+            brand_key="리바로",
+            score=Agent2ScoreRow(
+                news_id="news-central-only",
+                source_processor=NEW_WF196_PROCESSOR,
+                derivation="llm_direct",
+                tag="자본/경영",
+                score=50,
+                published_date=None,
+                news_exists=True,
+            ),
+        ),
+    )
+
+    result = route_worklist_with_shadow(("리바로",), counts, score_rows)
+
+    assert result.routes == route_worklist(("리바로",), counts)
+    assert result.shadow[0].brand_key == "리바로"
+    assert result.shadow[0].density_news_ids == ()
+    assert result.shadow[0].central_news_ids == ("news-central-only",)
+    assert result.shadow[0].matches is False
+    assert result.shadow[0].revision == AGENT2_ELIGIBILITY_REVISION
+
+
+def test_route_worklist_with_shadow_uses_distinct_news_identity() -> None:
+    score = Agent2ScoreRow(
+        news_id="news-shared",
+        source_processor="workflow_196_optionB",
+        derivation="llm_direct",
+        tag="자본/경영",
+        score=43,
+        published_date=None,
+        news_exists=True,
+    )
+
+    result = route_worklist_with_shadow(
+        ("리바로",),
+        (),
+        (
+            BrandedScoreRow(brand_key="리바로", score=score),
+            BrandedScoreRow(brand_key="리바로", score=score),
+        ),
+    )
+
+    assert result.shadow[0].density_news_ids == ("news-shared",)
+    assert result.shadow[0].central_news_ids == ("news-shared",)
+    assert result.shadow[0].matches is True
+
+
+def test_route_worklist_with_shadow_records_orphan_as_central_rejection_without_changing_routes() -> None:
+    counts = (
+        EvidenceCount(
+            "리바로",
+            "workflow_196_optionB",
+            "llm_direct",
+            1,
+            tag="자본/경영",
+            score_cutoff=43,
+        ),
+    )
+    orphan = BrandedScoreRow(
+        brand_key="리바로",
+        score=Agent2ScoreRow(
+            news_id="orphan-news",
+            source_processor="workflow_196_optionB",
+            derivation="llm_direct",
+            tag="자본/경영",
+            score=43,
+            published_date=None,
+            news_exists=False,
+        ),
+    )
+
+    result = route_worklist_with_shadow(("리바로",), counts, (orphan,))
+
+    assert result.routes == route_worklist(("리바로",), counts)
+    assert result.shadow[0].density_news_ids == ("orphan-news",)
+    assert result.shadow[0].central_news_ids == ()
+    assert result.shadow[0].matches is False
+
+
+def test_route_worklist_with_shadow_rejects_unknown_brand_key() -> None:
+    score_rows = (
+        BrandedScoreRow(
+            brand_key="unmapped-brand",
+            score=Agent2ScoreRow(
+                news_id="news-1",
+                source_processor="workflow_196_optionB",
+                derivation="llm_direct",
+                tag="자본/경영",
+                score=43,
+                published_date=None,
+                news_exists=True,
+            ),
+        ),
+    )
+
+    with pytest.raises(UnknownShadowBrandError, match="unmapped-brand"):
+        route_worklist_with_shadow(("리바로",), (), score_rows)
 
 
 def test_route_brand_uses_category_cutoffs_and_excludes_etc() -> None:
