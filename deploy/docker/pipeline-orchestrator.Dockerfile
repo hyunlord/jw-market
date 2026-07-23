@@ -48,6 +48,7 @@ RUN python -c "import urllib.request; urllib.request.urlretrieve('https://dl.k8s
     && /usr/local/bin/kubectl version --client=true
 
 COPY pipeline /app/pipeline
+COPY deploy/k8s/orchestrator/pipeline-orchestrator-full-rehearsal-job.yaml /app/deploy/k8s/orchestrator/pipeline-orchestrator-full-rehearsal-job.yaml
 COPY docs/crawl /app/docs/crawl
 COPY ["data/JW 주요 약품 수동 매핑", "/app/data/JW 주요 약품 수동 매핑"]
 # Git-tracked s2 catalog seeds (target_priority skeleton + molecule worklist). The

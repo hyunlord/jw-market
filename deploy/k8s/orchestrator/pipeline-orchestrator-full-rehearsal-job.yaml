@@ -54,8 +54,19 @@ spec:
               set -euo pipefail
               umask 077
               cd /app
+              R1_LOCK_DIR="/work/evidence/.r1-active-lock"
+              if ! mkdir "${R1_LOCK_DIR}"; then
+                echo "error: another R-1 run owns the durable lock" >&2
+                exit 75
+              fi
+              cleanup_r1_lock() {
+                if test -d "${R1_LOCK_DIR}"; then
+                  rmdir "${R1_LOCK_DIR}"
+                fi
+              }
+              trap cleanup_r1_lock EXIT
               EVIDENCE_DIR="/work/evidence/${R1_RUN_ID}"
-              mkdir -p "${EVIDENCE_DIR}"
+              mkdir "${EVIDENCE_DIR}"
               test "${R1_TARGET_DB}" != "REPLACE_WITH_NEW_ISOLATED_DB"
               test "${R1_CACHE_DB}" != "REPLACE_WITH_NEW_ISOLATED_CACHE_DB"
               test "${R1_SOURCE_SUBPATH}" != "REPLACE_WITH_PINNED_SOURCE_SUBPATH"
@@ -76,6 +87,17 @@ spec:
                     8798ff1e04f524d59bcdddf42bc4f14f18ffe68b91942d3de970faadec6e2a5c
                 cp /work/inputs/input_manifest.json "${EVIDENCE_DIR}/"
                 cp /work/inputs/input_inventory.json "${EVIDENCE_DIR}/"
+                python -m pipeline.orchestrator preflight-full \
+                  --input-manifest /work/inputs/input_manifest.json \
+                  --input-inventory /work/inputs/input_inventory.json \
+                  --target-db "${R1_TARGET_DB}" \
+                  --cache-db "${R1_CACHE_DB}" \
+                  --source-db "${R1_SOURCE_DB}" \
+                  --work-dir /work/rehearsal \
+                  --evidence-dir "${EVIDENCE_DIR}" \
+                  --job-manifest /app/deploy/k8s/orchestrator/pipeline-orchestrator-full-rehearsal-job.yaml \
+                  --repo-root /app \
+                  --output "${EVIDENCE_DIR}/preflight.json"
                 python -m pipeline.orchestrator rehearse-full \
                   --input-manifest /work/inputs/input_manifest.json \
                   --target-db "${R1_TARGET_DB}" \
@@ -96,6 +118,10 @@ spec:
               value: REPLACE_WITH_UNIQUE_RUN_ID
             - name: R1_SOURCE_SUBPATH
               value: REPLACE_WITH_PINNED_SOURCE_SUBPATH
+            - name: R1_IMAGE_DIGEST
+              value: REPLACE_WITH_PINNED_DIGEST
+            - name: R1_GIT_COMMIT
+              value: REPLACE_WITH_GIT_COMMIT
             - name: R1_TARGET_DB
               value: REPLACE_WITH_NEW_ISOLATED_DB
             - name: R1_CACHE_DB

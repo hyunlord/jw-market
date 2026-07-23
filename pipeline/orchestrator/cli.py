@@ -92,6 +92,21 @@ def _build_parser() -> argparse.ArgumentParser:
     rehearsal.add_argument("--work-dir", required=True, type=Path)
     rehearsal.add_argument("--dry-run", action="store_true")
 
+    preflight = sub.add_parser(
+        "preflight-full",
+        help="validate every R-1 prerequisite before the expensive s1 load",
+    )
+    preflight.add_argument("--input-manifest", required=True, type=Path)
+    preflight.add_argument("--input-inventory", required=True, type=Path)
+    preflight.add_argument("--target-db", required=True)
+    preflight.add_argument("--cache-db", required=True)
+    preflight.add_argument("--source-db", required=True)
+    preflight.add_argument("--work-dir", required=True, type=Path)
+    preflight.add_argument("--evidence-dir", required=True, type=Path)
+    preflight.add_argument("--job-manifest", required=True, type=Path)
+    preflight.add_argument("--repo-root", type=Path, default=Path.cwd())
+    preflight.add_argument("--output", type=Path, default=None)
+
     comparison = sub.add_parser(
         "compare-full",
         help="read-only census comparison of isolated full-rehearsal outputs",
@@ -177,6 +192,50 @@ def main(argv: list[str] | None = None) -> int:
         except RehearsalContractError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+
+    if args.command == "preflight-full":
+        from pipeline.orchestrator.full_rehearsal import (
+            FullRehearsalConfig,
+            RehearsalContractError,
+        )
+        from pipeline.orchestrator.full_rehearsal_preflight import (
+            PreflightRequest,
+            run_preflight,
+        )
+
+        try:
+            findings = run_preflight(
+                PreflightRequest(
+                    rehearsal=FullRehearsalConfig(
+                        input_manifest=args.input_manifest,
+                        target_db=args.target_db,
+                        cache_db=args.cache_db,
+                        source_db=args.source_db,
+                        work_dir=args.work_dir,
+                    ),
+                    inventory_path=args.input_inventory,
+                    job_manifest_path=args.job_manifest,
+                    evidence_dir=args.evidence_dir,
+                    repo_root=args.repo_root,
+                    environment=os.environ,
+                )
+            )
+        except (OSError, RehearsalContractError, ValueError) as exc:
+            print(f"error: preflight contract failed: {exc}", file=sys.stderr)
+            return 2
+        payload = {
+            "classification": "census",
+            "checked": len(findings),
+            "population": 10,
+            "missing": "fail",
+            "failures": sum(not finding.passed for finding in findings),
+            "checks": [finding.as_dict() for finding in findings],
+        }
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        print(rendered)
+        if args.output:
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        return 0 if payload["failures"] == 0 and len(findings) == 10 else 2
 
     if args.command == "compare-full":
         from pipeline.orchestrator.full_rehearsal_compare import (
