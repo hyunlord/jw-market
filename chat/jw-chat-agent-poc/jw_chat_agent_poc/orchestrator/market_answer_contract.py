@@ -62,6 +62,8 @@ def enforce_market_answer_contract(
     if not contracted:
         contracted = _channel_ranking_answer(question, contract_calls)
     if not contracted:
+        contracted = _top_brand_volume_answer(question, contract_calls)
+    if not contracted:
         contracted = _dimension_answer(question, contract_calls)
     if not contracted:
         contracted = _brand_comparison_answer(question, contract_calls)
@@ -411,6 +413,7 @@ def _dimension_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
         data = _render_data(call)
         if _call_dimension(call) != dimension:
             continue
+        is_volume = _is_volume_data(data)
         segments = data.get("level_segments")
         if not isinstance(segments, Sequence) or isinstance(segments, str | bytes):
             continue
@@ -421,19 +424,56 @@ def _dimension_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
             name = str(item.get("name") or item.get("brand") or "").strip()
             if not name:
                 continue
-            sales = _decimal(item.get("value_억원"))
-            if sales is None:
-                sales = _krw_to_eok(item.get("value") or item.get("value_krw"))
+            value = _volume_value(item) if is_volume else _sales_value(item)
             share = _decimal(item.get("ms_recent_pct"))
-            sales_text = f"{sales:,.2f}억원" if sales is not None else "해당 없음"
+            value_text = _format_volume_value(value) if is_volume else _format_eok_value(value)
             share_text = f"{share:.2f}%" if share is not None else "해당 없음"
-            rows.append(f"| {name} | {sales_text} | {share_text} |")
+            rows.append(f"| {name} | {value_text} | {share_text} |")
         if rows:
+            value_header = "처방량(Rx)" if is_volume else "매출"
+            share_header = "처방량 점유율" if is_volume else "점유율"
             return "\n".join(
                 (
                     f"## {label}별 분포",
-                    f"| {label} | 매출 | 점유율 |",
+                    f"| {label} | {value_header} | {share_header} |",
                     "| --- | --- | --- |",
+                    *rows,
+                )
+            )
+    return ""
+
+
+def _top_brand_volume_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
+    if "처방량" not in question:
+        return ""
+    for call in calls:
+        data = _render_data(call)
+        if not _is_volume_data(data) or data.get("metric") != "market_top_brands":
+            continue
+        segments = data.get("level_segments")
+        if not isinstance(segments, Sequence) or isinstance(segments, str | bytes):
+            continue
+        rows: list[str] = []
+        for item in segments:
+            if not isinstance(item, Mapping):
+                continue
+            rank = item.get("rank")
+            brand = str(item.get("brand") or item.get("name") or "").strip()
+            value = _volume_value(item)
+            share = _decimal(item.get("ms_recent_pct"))
+            if rank in (None, "") or not brand:
+                continue
+            rows.append(
+                f"| {rank}위 | {brand} | {_format_volume_value(value)} | "
+                f"{share:.2f}% |" if share is not None else
+                f"| {rank}위 | {brand} | {_format_volume_value(value)} | 해당 없음 |"
+            )
+        if rows:
+            return "\n".join(
+                (
+                    "## 상위 브랜드 처방량",
+                    "| 순위 | 브랜드 | 처방량(Rx) | 처방량 점유율 |",
+                    "| --- | --- | --- | --- |",
                     *rows,
                 )
             )
@@ -535,7 +575,7 @@ def _hira_trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str
 
 
 def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
-    if "추이" not in question:
+    if "추이" not in question and "처방량" not in question:
         return ""
     for call in calls:
         rows = _series_rows(call, question)
@@ -543,9 +583,10 @@ def _trend_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
             continue
         subject = str(_render_data(call).get("brand") or "요청 지표")
         unit = _series_unit(call, rows)
+        value_header = "처방량(Rx)" if unit == "Rx" else "매출" if unit in {"억원", "KRW"} else "값"
         rendered = [
             f"## {subject} 추이",
-            "| 기간 | 값 |",
+            f"| 기간 | {value_header} |",
             "| --- | --- |",
             *(f"| {period} | {_format_series_value(value, unit)} |" for period, value, _ in rows),
         ]
@@ -572,7 +613,10 @@ def _series_rows(call: Mapping[str, Any], question: str) -> tuple[tuple[str, Any
 
 def _series_value_keys(question: str) -> tuple[str, ...]:
     sales = ("value_억원", "sales_억원", "sales_krw", "value_krw", "value")
+    volume = ("prescription_volume", "value")
     share = ("ms_recent_pct", "ms_pct")
+    if "처방량" in question:
+        return (*volume, *share, "product_details", "ptntCnt", *sales)
     if "매출" in question:
         return (*sales, *share, "product_details", "ptntCnt")
     if "점유율" in question:
@@ -597,6 +641,9 @@ def _series_candidates(data: Mapping[str, Any]) -> tuple[Sequence[Any], ...]:
 def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any, str]]) -> str:
     data = _render_data(call)
     selected_key = rows[0][2] if rows else ""
+    explicit = str(data.get("unit") or data.get("unit_label") or "")
+    if _is_volume_data(data) or selected_key == "prescription_volume":
+        return explicit or "Rx"
     if selected_key in {"ms_recent_pct", "ms_pct"}:
         return "%"
     if selected_key == "ptntCnt":
@@ -608,7 +655,6 @@ def _series_unit(call: Mapping[str, Any], rows: Sequence[tuple[str, Any, str]]) 
         return "KRW"
     if selected_key in {"sales_억원", "value_억원", "value"}:
         return "억원"
-    explicit = str(data.get("unit") or data.get("unit_label") or "")
     if explicit:
         return explicit
     metric = str(data.get("metric") or "").lower()
@@ -632,11 +678,50 @@ def _format_series_value(value: Any, unit: str) -> str:
         return str(value)
     if unit in {"건", "명"}:
         return f"{number:,.0f}{unit}"
+    if unit == "Rx":
+        return f"{_format_rx_decimal(number)} Rx"
     if unit == "%":
         return f"{number:.2f}%"
     if "KRW" in unit.upper() or abs(number) >= Decimal("100000000"):
         number /= Decimal("100000000")
     return f"{number:,.2f}억원"
+
+
+def _is_volume_data(data: Mapping[str, Any]) -> bool:
+    return (
+        data.get("measure") == "volume"
+        or data.get("unit_label") == "Rx"
+        or data.get("value_label") == "처방량"
+        or data.get("metric") == "prescription_volume"
+    )
+
+
+def _volume_value(item: Mapping[str, Any]) -> Decimal | None:
+    value = item.get("prescription_volume")
+    if value in (None, ""):
+        value = item.get("value")
+    return _decimal(value)
+
+
+def _sales_value(item: Mapping[str, Any]) -> Decimal | None:
+    value = _decimal(item.get("value_억원"))
+    if value is None:
+        value = _krw_to_eok(item.get("value") or item.get("value_krw"))
+    return value
+
+
+def _format_volume_value(value: Decimal | None) -> str:
+    return f"{_format_rx_decimal(value)} Rx" if value is not None else "해당 없음"
+
+
+def _format_eok_value(value: Decimal | None) -> str:
+    return f"{value:,.2f}억원" if value is not None else "해당 없음"
+
+
+def _format_rx_decimal(value: Decimal) -> str:
+    if value == value.to_integral_value():
+        return f"{value:,.0f}"
+    return f"{value.normalize():f}"
 
 
 def _public_language(question: str, answer: str) -> str:
@@ -781,6 +866,8 @@ def _requested_unit(question: str, answer: str) -> str | None:
         return "명"
     if "영업활동" in question:
         return "건"
+    if "처방량" in question:
+        return "Rx"
     if any(token in question for token in ("매출", "시장규모", "규모")):
         return "억원"
     if any(token in question for token in ("점유율", "CR")) or re.search(r"\d[\d,.]*%", answer):

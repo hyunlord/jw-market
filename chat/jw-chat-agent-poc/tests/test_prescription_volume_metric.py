@@ -10,6 +10,7 @@ from jw_chat_agent_poc.agent_loop.tool_helpers import metric_measure
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.query_layer import (
@@ -277,6 +278,138 @@ def test_v0_chat_agent_preserves_prescription_volume_through_strict_and_contract
     assert "Rx" in result["answer"]
     assert "진료과별 매출" not in result["answer"]
     assert "매출" not in result["answer"]
+
+
+@pytest.mark.parametrize(
+    ("question", "call_factory", "expected_heading"),
+    (
+        (
+            "리바로젯 진료과별 처방 추이",
+            lambda layer: layer.dimension_breakdown(
+                "리바로젯",
+                "specialty",
+                metric="prescription_volume",
+                source="ubist",
+            ),
+            "## 진료과별 분포",
+        ),
+        (
+            "리바로젯 유통채널별 처방량",
+            lambda layer: layer.dimension_breakdown(
+                "리바로젯",
+                "channel",
+                metric="prescription_volume",
+                source="ubist",
+            ),
+            "## 채널별 분포",
+        ),
+        (
+            "리바로젯 처방량",
+            lambda layer: layer.top_brands(
+                "리바로젯",
+                limit=2,
+                market="ml_006",
+                source="ubist",
+                metric="prescription_volume",
+            ),
+            "## 상위 브랜드 처방량",
+        ),
+    ),
+)
+def test_common_market_renderer_preserves_prescription_volume_labels_in_final_answer(
+    question: str,
+    call_factory,
+    expected_heading: str,
+) -> None:
+    call = call_factory(_layer())
+
+    answer = enforce_market_answer_contract(question, "요약 답변", [call])
+
+    assert expected_heading in answer
+    assert "처방량" in answer
+    assert "Rx" in answer
+    assert "매출" not in answer
+    assert "억원" not in answer
+
+
+def test_common_market_renderer_preserves_small_prescription_volume_values_in_rx() -> None:
+    call = {
+        "tool": "get_brand_metric",
+        "source": "UBIST",
+        "render_data": {
+            "brand": "리바로젯",
+            "metric": "prescription_volume",
+            "period": "2026-05",
+            "measure": "volume",
+            "unit_label": "Rx",
+            "brand_value_series_10pt": [
+                {"period": "2026-03", "prescription_volume": 0.02, "value": 0.02},
+                {"period": "2026-04", "prescription_volume": 0.22, "value": 0.22},
+                {"period": "2026-05", "prescription_volume": 0.03, "value": 0.03},
+            ],
+        },
+    }
+
+    answer = enforce_market_answer_contract("리바로젯 처방량", "요약 답변", [call])
+
+    assert "0.02 Rx" in answer
+    assert "0.22 Rx" in answer
+    assert "0.03 Rx" in answer
+    assert "처방량(Rx)" in answer
+    assert "매출" not in answer
+    assert "억원" not in answer
+
+
+def test_common_market_renderer_preserves_zero_prescription_volume_in_rx() -> None:
+    call = {
+        "tool": "get_brand_metric",
+        "source": "UBIST",
+        "render_data": {
+            "brand": "리바로젯",
+            "metric": "market_top_brands",
+            "period": "2026-05",
+            "measure": "volume",
+            "unit_label": "Rx",
+            "level_segments": [
+                {"rank": 1, "brand": "무처방브랜드", "prescription_volume": 0, "value": 99.0},
+            ],
+        },
+    }
+
+    answer = enforce_market_answer_contract("리바로젯 처방량", "요약 답변", [call])
+
+    assert "0 Rx" in answer
+    assert "99 Rx" not in answer
+    assert "매출" not in answer
+    assert "억원" not in answer
+
+
+def test_common_market_renderer_keeps_sales_answer_in_eok() -> None:
+    call = {
+        "tool": "get_brand_metric",
+        "source": "UBIST",
+        "render_data": {
+            "brand": "아일리아",
+            "metric": "sales",
+            "period": "2026-05",
+            "measure": "sales",
+            "sales_억원": 218.7,
+            "value": 21_870_000_000.0,
+            "unit_label": "KRW",
+            "brand_value_series_10pt": [
+                {"period": "2026-03", "value_억원": 210.0},
+                {"period": "2026-04", "value_억원": 216.0},
+                {"period": "2026-05", "value_억원": 218.7},
+            ],
+        },
+    }
+
+    answer = enforce_market_answer_contract("아일리아 매출 추이", "요약 답변", [call])
+
+    assert "218.70억원" in answer
+    assert "매출" in answer
+    assert "억원" in answer
+    assert "처방량" not in answer
 
 
 @pytest.mark.parametrize(
