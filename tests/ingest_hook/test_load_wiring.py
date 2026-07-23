@@ -202,6 +202,7 @@ def test_real_load_flattens_production_ubist_to_reader_root(tmp_path, bucket, mo
     seen = {}
 
     def fake_run(_label, argv):
+        seen["argv"] = argv
         target = Path(argv[argv.index("--target-dir") + 1])
         seen["target"] = target
         _write_load_manifest(target, "2026-03", 7)
@@ -210,8 +211,33 @@ def test_real_load_flattens_production_ubist_to_reader_root(tmp_path, bucket, mo
     result = job_runner._real_load(manifest, UBIST, bucket)
 
     assert seen["target"] == target_root / "ubist"
+    assert "--allow-overlap-dedup" not in seen["argv"]
     assert result["target_dir"] == target_root / "ubist"
     assert result["staging_verify"] is False
+
+
+def test_real_load_enables_overlap_dedup_only_for_shadow(tmp_path, bucket, monkeypatch):
+    manifest = _manifest(bucket, epoch="2026-03")
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, str(tmp_path / "shadow"))
+    seen: dict[str, tuple[str, ...]] = {}
+
+    def fake_run(_label, argv):
+        seen["argv"] = argv
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_load_manifest(target, "2026-03", 7)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    job_runner._real_load(
+        manifest,
+        UBIST,
+        bucket,
+        target_dir_override=tmp_path / "shadow-candidate",
+    )
+
+    assert "--allow-overlap-dedup" in seen["argv"]
 
 
 def test_real_load_silent_failure_is_caught(staging_env, bucket, monkeypatch):
