@@ -105,6 +105,36 @@ def test_authoritative_disease_name_mapping_routes_without_brand_substitution() 
     assert "brand" not in str(plan.proposal.proposed_calls)
 
 
+def test_diabetic_retinopathy_disease_name_does_not_broaden_to_diabetes_code() -> None:
+    plan = _planner().plan(
+        "당뇨병성 망막병증 환자 수 통계",
+        routing_mode=RoutingMode.SHADOW,
+    )
+
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.UNRESOLVED
+    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.TYPED_STOP
+    assert plan.proposal.proposed_calls == ()
+    assert plan.reason_code == "AMBIGUOUS_INPUT"
+    assert plan.input_key == "disease_name"
+
+
+def test_exact_diabetes_disease_name_can_still_use_confirmed_e11_mapping() -> None:
+    plan = _planner().plan(
+        "당뇨병 환자 수 통계",
+        routing_mode=RoutingMode.SHADOW,
+    )
+
+    assert plan.proposal.routing_decision.capability_status is CapabilityStatus.SUPPORTED
+    assert plan.proposal.routing_decision.route_outcome is RouteOutcome.CALL
+    assert plan.proposal.proposed_calls == (
+        ProposedCall(
+            tool_name="hira_disease_hospitalization_outpatient_stats",
+            normalized_args={"sick_cd": "E11", "year": "2024"},
+        ),
+    )
+    assert plan.input_key == "disease_name"
+
+
 def test_period_call_exception_rejects_multiple_authority_tool_types() -> None:
     calls = (
         ProposedCall(

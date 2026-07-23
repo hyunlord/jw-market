@@ -66,6 +66,24 @@ def test_direct_kcd_hira_questions_route_by_exact_code(question: str, expected_s
     assert "unsupported_hira_interface" not in str(result.get("answer") or "")
 
 
+def test_shadow_diagnostics_do_not_propose_diabetes_code_for_diabetic_retinopathy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "SHADOW")
+
+    result = ChatAgent(external_mode="fixture").answer("당뇨병성 망막병증 환자 수 통계")
+    routing_v4 = result["router_diagnostics"]["routing_v4"]
+    proposed = routing_v4["proposed_routing_signature"]
+
+    assert result["sources"] == ["hira_disease"]
+    assert result["tool_calls"][0]["tool"] == "hira_disease_code_absent"
+    assert routing_v4["shadow_status"] == "ok"
+    assert proposed["routing_decision"]["capability_status"] == "UNRESOLVED"
+    assert proposed["routing_decision"]["route_outcome"] == "TYPED_STOP"
+    assert proposed["proposed_calls"] == []
+    assert "E11" not in str(proposed)
+
+
 @pytest.mark.parametrize("question", SUPPORTED_BRAND_HIRA_QUESTIONS)
 def test_supported_brand_hira_questions_keep_their_mapped_calls(question: str) -> None:
     result = ChatAgent(external_mode="fixture").answer(question)

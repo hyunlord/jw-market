@@ -135,6 +135,15 @@ HIRA_DISEASE_TEXT_BRANDS: dict[str, str] = {
     "류마티스": "악템라",
 }
 
+HIRA_DISEASE_TEXT_EVIDENCE_LABELS: dict[str, tuple[str, ...]] = {
+    "이상지질": ("이상지질", "이상지질혈증"),
+    "고지혈": ("고지혈증",),
+    "지질단백질": ("지질단백질", "지질단백질대사장애"),
+    "당뇨": ("당뇨", "당뇨병"),
+    "혈우": ("혈우", "혈우병"),
+    "류마티스": ("류마티스", "류마티스관절염"),
+}
+
 
 def hira_disease_anchor_brand(question: str) -> str | None:
     """Resolve a disease-only question through the explicit HIRA mapping."""
@@ -291,7 +300,7 @@ def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMap
     if mapping is not None:
         return _normalize_hira_mappings(mapping)
     for token, mapping in HIRA_DISEASE_TEXT_MAPPINGS.items():
-        if token in question:
+        if _has_exact_text_evidence_binding(question, token):
             return _normalize_hira_mappings(mapping)
     return None
 
@@ -327,6 +336,37 @@ def _normalize_hira_mappings(mapping: HiraMappingEntry) -> tuple[HiraMapping, ..
     if isinstance(mapping, dict):
         return (mapping,)
     return tuple(mapping)
+
+
+def _has_exact_text_evidence_binding(question: str, token: str) -> bool:
+    from jw_chat_agent_poc.tool_use.routing_v4_capabilities import verify_claim_evidence
+
+    subject = _hira_disease_subject(question)
+    if not subject:
+        return False
+    bound = (_normalize_hira_text_evidence(subject),)
+    expected_labels = HIRA_DISEASE_TEXT_EVIDENCE_LABELS.get(token, (token,))
+    return any(
+        verify_claim_evidence(
+            expected_evidence_ids=(_normalize_hira_text_evidence(label),),
+            bound_evidence_ids=bound,
+        )
+        for label in expected_labels
+    )
+
+
+def _hira_disease_subject(question: str) -> str:
+    body = re.sub(r"^\s*(?:HIRA|hira)\s*:\s*", "", question, count=1).strip()
+    subject = re.split(
+        r"(?:의\s*)?(?:환자\s*수|환자수|환자\s*통계|환자통계|환자\s*분포|환자분포|질병\s*통계|질병통계|질환\s*통계|질환통계|관련\s*질병|관련\s*질환)",
+        body,
+        maxsplit=1,
+    )[0]
+    return subject.strip(" \t\r\n.?!。？！")
+
+
+def _normalize_hira_text_evidence(value: str) -> str:
+    return re.sub(r"\s+", "", value.strip().casefold())
 
 
 def _hira_candidates(search_call: ExternalCall) -> tuple[HiraDiseaseCandidate, ...]:
