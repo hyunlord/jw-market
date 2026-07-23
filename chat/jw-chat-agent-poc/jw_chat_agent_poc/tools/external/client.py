@@ -495,7 +495,18 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
         case "hira_disease_name_code":
             search_text = params.get("searchText") or params.get("sickCd", "")
             disease_type = params.get("diseaseType") or ("SICK_CD" if is_hira_disease_code(search_text) else "SICK_NM")
-            return _hira_spec(tool, "search_disease_code", {"search_text": search_text, "disease_type": disease_type, "sick_type": "1", "med_tp": "1", "num_of_rows": 10})
+            request_code = _hira_request_code(search_text)
+            return _hira_spec(
+                tool,
+                "search_disease_code",
+                {
+                    "search_text": request_code or search_text,
+                    "disease_type": disease_type,
+                    "sick_type": _hira_sick_type(request_code) or "1",
+                    "med_tp": "1",
+                    "num_of_rows": 10,
+                },
+            )
         case "hira_disease_hospitalization_outpatient_stats":
             return _hira_spec(tool, "get_disease_stats_by_patient_type", _hira_disease_args(params))
         case "hira_disease_gender_age_stats":
@@ -535,7 +546,30 @@ def _hira_spec(tool: str, mcp_tool: str, arguments: dict[str, Any]) -> dict[str,
 
 
 def _hira_disease_args(params: dict[str, str]) -> dict[str, Any]:
-    return {"sick_cd": params.get("sickCd", ""), "year": params.get("year"), "sick_type": "1", "med_tp": "1", "num_of_rows": 20}
+    display_code = params.get("sickCd", "")
+    request_code = _hira_request_code(display_code)
+    return {
+        "sick_cd": request_code or display_code,
+        "year": params.get("year"),
+        "sick_type": _hira_sick_type(request_code) or "1",
+        "med_tp": "1",
+        "num_of_rows": 20,
+    }
+
+
+def _hira_request_code(code: str) -> str | None:
+    compact = code.strip().upper().replace(".", "")
+    return compact if re.fullmatch(r"[A-Z]\d{2,3}", compact) else None
+
+
+def _hira_sick_type(request_code: str | None) -> str | None:
+    if request_code is None:
+        return None
+    if len(request_code) == 3:
+        return "1"
+    if len(request_code) == 4:
+        return "2"
+    return None
 
 
 def _hira_procedure_args(params: dict[str, str]) -> dict[str, Any]:
