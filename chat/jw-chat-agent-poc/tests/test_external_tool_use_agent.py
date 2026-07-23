@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from pydantic import BaseModel
+import pytest
 
 from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
 from jw_chat_agent_poc.service.answer_safety import ensure_natural_fact_lead
@@ -431,6 +432,73 @@ def test_nedrug_composition_forces_contract_backed_tool_in_off_mode() -> None:
     assert [(choice.name, choice.arguments) for choice in choices] == [
         ("mfds_composition", {"brand": "리바로"}),
     ]
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        "NeDrug: 아일리아 제품의 효능 효과, 용병 용량, 사용상 주의사항을 알려줘",
+    ),
+)
+def test_nedrug_permission_fields_force_contract_backed_tool_in_off_mode(question: str) -> None:
+    choices = _deterministic_tool_choices(question, BrandResolver())
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        ("mfds_permission_search", {"brand": "아일리아"}),
+    ]
+
+
+def test_forced_legacy_reimbursement_question_uses_nedrug_without_mart_text(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+
+    def permission_search(brand: str) -> ExternalCall:
+        assert brand == "아일리아"
+        return ExternalCall(
+            tool="mfds_permission_search",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 품목 1건",
+            render_data={
+                "resultCode": "00",
+                "items": [{"ITEM_SEQ": "201306324", "ITEM_NAME": "아일리아주사"}],
+            },
+        )
+
+    def permission_detail(item_seq: str) -> ExternalCall:
+        assert item_seq == "201306324"
+        return ExternalCall(
+            tool="mfds_permission_detail",
+            source="external_api",
+            status="ok",
+            summary_text="아일리아 허가 상세 1건",
+            render_data={
+                "resultCode": "00",
+                "items": [
+                    {
+                        "ITEM_SEQ": item_seq,
+                        "ITEM_NAME": "아일리아주사",
+                        "NB_DOC_DATA": "신생혈관성 연령관련 황반변성 급여 기준",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "OFF")
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setattr(external, "mfds_permission_search", permission_search)
+    monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
+
+    payload = run_external_tool_agent(
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        resolver=BrandResolver(),
+        external=external,
+    )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == ["mfds_permission_search"]
+    assert "신생혈관성 연령관련 황반변성 급여 기준" in payload["answer"]
+    assert "mart" not in payload["answer"].casefold()
+    assert "nhi_type" not in payload["answer"]
 
 
 def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug() -> None:

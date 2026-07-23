@@ -309,6 +309,11 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
     contract_key = str(contract.get("structural_contract") or contract.get("intent") or "")
     combined_clinical_review = _is_combined_clinical_review(question, contract_key=contract_key)
     requested = list(CONTRACT_REQUIRED_TOOLS.get(contract_key, ())) if combined_clinical_review else []
+    if classification.requested_capability in {
+        "MFDS_BASIC_PRODUCT_INFO",
+        "MFDS_PERMISSION_DETAIL_FIELDS",
+    }:
+        requested.append("mfds_permission_search")
     for requirement in tool_use_requirements(question):
         preferred = _preferred_requirement_tool(requirement.alternatives)
         if preferred is not None and preferred not in requested:
@@ -519,7 +524,15 @@ def _explicit_brand_query(question: str) -> str | None:
     """Keep short brand-only requests usable without treating full sentences as brands."""
 
     match = re.fullmatch(r"\s*([가-힣A-Za-z0-9+_-]{2,40})\s+(?:성분|주성분)\s*[?.!。？！]*\s*", question)
-    return match.group(1) if match is not None else None
+    if match is not None:
+        return match.group(1)
+    regulatory_match = re.match(
+        r"\s*(?:NeDrug\s*:\s*)?(?P<brand>[가-힣A-Za-z0-9+_-]{2,40})"
+        r"(?:의\s+급여\s*기준|의\s+급여기준|\s+제품의\s+)",
+        question,
+        flags=re.IGNORECASE,
+    )
+    return regulatory_match.group("brand") if regulatory_match is not None else None
 
 
 def _external_evidence_complete(
