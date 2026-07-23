@@ -94,6 +94,20 @@ def test_stage_script_uses_the_tier1_direct_run_endpoint() -> None:
     assert '--direct-run-url "${WF196_DIRECT_RUN_URL}"' in script
 
 
+def test_candidate_gate_uses_the_current_loader_identity_contract() -> None:
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from corpus_loader_v2 import news_id" in script
+    assert "candidate_path = scored_new / relative" in script
+    assert "candidate_news_id = news_id(candidate_path)" in script
+    assert "generate_news_id" not in script
+    assert '--corpus "${scored_new}"' in script
+    assert "--batch-dir" not in script
+    assert "--scored-dir" not in script
+
+
 def test_stage_script_supports_bounded_shadow_crawls_without_changing_defaults() -> None:
     # Given: the shared stage script used by both the dormant full chain and shadow worker.
     script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(

@@ -124,7 +124,7 @@ from pathlib import Path
 import pymysql
 
 sys.path[:0] = [str(Path(os.environ["REPO_ROOT"]) / "crawl" / "agent1")]
-from corpus_loader_v2 import generate_news_id, read_json, resolve_news_path, scored_files
+from corpus_loader_v2 import news_id
 
 raw = Path(os.environ["RAW"])
 scored = Path(os.environ["SCORED"])
@@ -132,18 +132,35 @@ scored_new = Path(os.environ["SCORED_NEW"])
 items = []
 seen = {}
 duplicates = []
-for scored_path in scored_files(raw, scored):
-    scored_json = read_json(scored_path)
-    source_path = resolve_news_path(raw, scored_path, scored_json)
-    news_id = generate_news_id(read_json(source_path), source_path, scored_json)
-    relative = scored_path.relative_to(scored)
-    if news_id in seen:
+for scored_path in sorted(scored.rglob("*.json")):
+    if "report" in scored_path.name.lower() or scored_path.name == "tier2_brand_plan.json":
+        continue
+    source_relative = scored_path.relative_to(scored)
+    if len(source_relative.parts) > 1 and source_relative.parent.name.startswith(
+        "news_5years_"
+    ):
+        relative = Path(source_relative.parent.name + "_processed", source_relative.name)
+    else:
+        relative = Path(source_relative.name)
+    candidate_path = scored_new / relative
+    candidate_news_id = news_id(candidate_path)
+    if candidate_news_id in seen:
         duplicates.append(
-            {"news_id": news_id, "first": str(seen[news_id]), "second": str(relative)}
+            {
+                "news_id": candidate_news_id,
+                "first": str(seen[candidate_news_id]),
+                "second": str(relative),
+            }
         )
     else:
-        seen[news_id] = relative
-    items.append({"news_id": news_id, "relative": str(relative), "path": str(scored_path)})
+        seen[candidate_news_id] = relative
+    items.append(
+        {
+            "news_id": candidate_news_id,
+            "relative": str(relative),
+            "path": str(scored_path),
+        }
+    )
 if duplicates:
     raise SystemExit(
         "ABORT: duplicate candidate IDs within batch: "
@@ -346,10 +363,10 @@ tier1_classify() {
     write_stage_gate 0 0 0
     return
   fi
-  python crawl/agent1/corpus_loader_v2.py \
-    --batch-dir "${raw}" --scored-dir "${scored_new}" \
-    --catalog crawl/config/_catalog.json --output "${output}/load_summary.json" \
-    --db-name "${DB_NAME}" --tier 1 --processed-by workflow_196_rev5674
+      python crawl/agent1/corpus_loader_v2.py \
+        --corpus "${scored_new}" --catalog crawl/config/_catalog.json \
+        --output "${output}/load_summary.json" \
+        --db-name "${DB_NAME}" --tier 1 --processed-by workflow_196_rev5674
   write_stage_gate "$(summary_failure_count "${output}/load_summary.json")" 0 0
 }
 
@@ -426,8 +443,8 @@ tier2_classify() {
     new_count="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_count"])' "${output}/candidate_gate.json")"
     if [[ "${new_count}" -gt 0 ]]; then
       python crawl/agent1/corpus_loader_v2.py \
-        --batch-dir "${raw}" --scored-dir "${processed_new}" \
-        --catalog crawl/config/_catalog.json --output "${output}/load_summary.json" \
+        --corpus "${processed_new}" --catalog crawl/config/_catalog.json \
+        --output "${output}/load_summary.json" \
         --db-name "${DB_NAME}" --tier 2 --processed-by tier2_exact_rule_v1
     else
       printf '{"status":"noop","reason":"no_new_candidates"}\n' > "${output}/load_summary.json"
