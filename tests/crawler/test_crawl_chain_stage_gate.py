@@ -37,6 +37,19 @@ def test_loader_partial_failures_and_global_gaps_are_fail_closed() -> None:
     assert 'json.load(open(sys.argv[1]))["pending_gap"]' in script
 
 
+def test_no_llm_shadow_gates_only_the_selected_work_and_keeps_global_observation() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "pipeline/scripts/crawler/crawl_chain_steps.sh").read_text(encoding="utf-8")
+
+    assert 'pending_scope="global"' in script
+    assert 'pending_scope="selected_no_llm_shadow"' in script
+    assert '"${CRAWL_CHAIN_SHADOW_KEYWORD:-}"' in script
+    assert 'selected_pending_gap' in script
+    assert 'global_pending_gap' in script
+    assert '"pending_global_gap"' in script
+    assert '"workflow_calls"' in script
+
+
 def test_tier1_collect_reported_site_failures_are_fail_closed() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "pipeline/scripts/crawler/crawl_chain_steps.sh").read_text(encoding="utf-8")
