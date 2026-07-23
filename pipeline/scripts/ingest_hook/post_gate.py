@@ -59,6 +59,10 @@ class PostGateError(RuntimeError):
         self.report_path = report_path
 
 
+def _first_value(row):
+    return next(iter(row.values())) if isinstance(row, dict) else row[0]
+
+
 def fingerprint_untouched_sources(conn, *, touched_source: str, mark: str = "%s") -> SourceSnapshot:
     """Fingerprint non-target rows without trusting storage-engine estimates."""
     specs = (
@@ -78,7 +82,7 @@ def fingerprint_untouched_sources(conn, *, touched_source: str, mark: str = "%s"
     for table, columns, order_by in specs:
         cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE source <> {mark}", (touched_source,))
         row = cursor.fetchone()
-        count = int(row[0])
+        count = int(_first_value(row))
         cursor.execute(
             f"SELECT {columns} FROM {table} WHERE source <> {mark} "
             f"ORDER BY {order_by} LIMIT 128",
@@ -108,7 +112,8 @@ def sample_existing_periods(
         (source,),
     )
     periods: set[str] = set()
-    for (raw,) in cursor.fetchall():
+    for row in cursor.fetchall():
+        raw = _first_value(row)
         try:
             value = json.loads(raw) if raw else {}
         except (TypeError, ValueError):
@@ -126,7 +131,7 @@ def staging_row_count(conn, table: str) -> int:
     cursor = conn.cursor()
     cursor.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608 - internal table name
     row = cursor.fetchone()
-    return int(row[0])
+    return int(_first_value(row))
 
 
 def run_post_gates(

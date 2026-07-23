@@ -124,6 +124,7 @@ def open_mart_connection(database: str | None = None):
         password=os.environ.get("MARIADB_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
         database=database or resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
         charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
     )
 
 

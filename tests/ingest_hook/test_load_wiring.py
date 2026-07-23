@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+import pymysql
 
 from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook import ubist_mart_activation
@@ -24,6 +25,26 @@ from pipeline.scripts.ingest_hook.load_verify import (
 from ingest_fixtures import write_submission
 
 UBIST = resolve_category("ubist")
+
+
+def test_open_mart_connection_uses_mapping_cursor(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def connect(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(pymysql, "connect", connect)
+    monkeypatch.setenv("MARIADB_HOST", "db")
+    monkeypatch.setenv("MARIADB_PORT", "3306")
+    monkeypatch.setenv("MARIADB_USER", "writer")
+    monkeypatch.setenv("MARIADB_PASSWORD", "secret")
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_source")
+
+    config.open_mart_connection("jw_mart_shadow")
+
+    assert captured["database"] == "jw_mart_shadow"
+    assert captured["cursorclass"] is pymysql.cursors.DictCursor
 
 
 def _write_load_manifest(target_dir: Path, epoch: str, rows: int) -> None:

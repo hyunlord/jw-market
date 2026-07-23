@@ -9,7 +9,9 @@ from pipeline.scripts.ingest_hook.post_gate import (
     SigmaEvidence,
     SourceSnapshot,
     TableFingerprint,
+    fingerprint_untouched_sources,
     run_post_gates,
+    sample_existing_periods,
     staging_row_count,
 )
 from pipeline.scripts.ingest_hook.sigma_gate import check_staging
@@ -32,6 +34,37 @@ def _database() -> sqlite3.Connection:
 def _sigma(conn: sqlite3.Connection) -> SigmaEvidence:
     report = check_staging(conn, "staging")
     return SigmaEvidence(len(report.periods), len(report.periods), str(report.periods))
+
+
+def test_post_gate_readers_accept_mapping_cursor_rows():
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, _params=None):
+            self.sql = sql
+
+        def fetchone(self):
+            return {"row_count": 2}
+
+        def fetchall(self):
+            if "market_size_series" in self.sql and "measure='sales'" in self.sql:
+                return [
+                    {"market_size_series": '{"2026-04":{"raw_value":1}}'},
+                    {"market_size_series": '{"2026-05":{"raw_value":2}}'},
+                ]
+            return [{"source": "iqvia", "measure": "sales"}]
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    conn = Connection()
+    snapshot = fingerprint_untouched_sources(conn, touched_source="ubist")
+    periods = sample_existing_periods(conn, source="ubist", excluded=())
+
+    assert [item.row_count for item in snapshot.tables] == [2, 2]
+    assert periods == ("2026-04", "2026-05")
 
 
 def test_all_post_gates_pass_and_write_report(tmp_path):
