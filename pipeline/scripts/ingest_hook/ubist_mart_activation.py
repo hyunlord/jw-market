@@ -35,6 +35,7 @@ ENV_SHADOW_FAILURE_AT = "INGEST_SHADOW_FAILURE_AT"
 SHADOW_FAILURE_SIGMA_PARTS_WHOLE = "sigma_parts_whole"
 SHADOW_FAILURE_POST_GATE_ROW_COUNT = "post_gate_row_count"
 SHADOW_DB_PREFIX = "jw_mart_ingest_shadow_"
+SHADOW_BASELINE_COPY_BATCH_SIZE = 100
 WRITER_LOCK_NAME = "jw-market:ubist-ingest:single-writer"
 GENERAL_TABLES = (
     "mart_general_brand_metric",
@@ -172,14 +173,46 @@ def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
                 f"{quote_id(config.source_db)}.{quote_id(table)}"
             )
             cursor.execute(
-                f"INSERT INTO {quote_id(config.target_db)}.{quote_id(scratch)} SELECT * FROM "
+                f"SELECT COUNT(*), COALESCE(MAX(`id`), 0) FROM "
                 f"{quote_id(config.source_db)}.{quote_id(table)}"
             )
-            cursor.execute(
-                f"SELECT COUNT(*) FROM {quote_id(config.source_db)}.{quote_id(table)}"
-            )
             source_row = cursor.fetchone()
-            source_rows = next(iter(source_row.values())) if isinstance(source_row, dict) else source_row[0]
+            source_values = (
+                list(source_row.values())
+                if isinstance(source_row, dict)
+                else list(source_row)
+            )
+            source_rows, source_max_id = map(int, source_values[:2])
+            last_id = 0
+            while last_id < source_max_id:
+                inserted = cursor.execute(
+                    f"INSERT INTO {quote_id(config.target_db)}.{quote_id(scratch)} SELECT * FROM "
+                    f"{quote_id(config.source_db)}.{quote_id(table)} WHERE `id` > %s "
+                    f"AND `id` <= %s ORDER BY `id` LIMIT "
+                    f"{SHADOW_BASELINE_COPY_BATCH_SIZE}",
+                    (last_id, source_max_id),
+                )
+                if int(inserted or 0) <= 0:
+                    raise RuntimeError(
+                        f"shadow baseline copy made no progress for {table} after id {last_id}"
+                    )
+                conn.commit()
+                cursor.execute(
+                    f"SELECT COALESCE(MAX(`id`), 0) FROM "
+                    f"{quote_id(config.target_db)}.{quote_id(scratch)}"
+                )
+                max_row = cursor.fetchone()
+                new_last_id = int(
+                    next(iter(max_row.values()))
+                    if isinstance(max_row, dict)
+                    else max_row[0]
+                )
+                if new_last_id <= last_id:
+                    raise RuntimeError(
+                        f"shadow baseline copy did not advance for {table}: "
+                        f"{new_last_id} <= {last_id}"
+                    )
+                last_id = new_last_id
             cursor.execute(
                 f"SELECT COUNT(*) FROM {quote_id(config.target_db)}.{quote_id(scratch)}"
             )
@@ -197,6 +230,9 @@ def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
         cursor.execute("RENAME TABLE " + ", ".join(moves))
         conn.commit()
     except Exception:
+        rollback = getattr(conn, "rollback", None)
+        if callable(rollback):
+            rollback()
         for scratch in scratch_tables:
             if table_exists(conn, config.target_db, scratch):
                 cursor.execute(

@@ -248,14 +248,43 @@ def test_shadow_crash_injection_is_explicit_and_shadow_only(monkeypatch) -> None
 
 def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None:
     statements: list[str] = []
-    counts = iter(((10,), (10,), (20,), (20,)))
+    source_rows = {
+        activation.GENERAL_TABLES[0]: 250,
+        activation.GENERAL_TABLES[1]: 20,
+    }
+    copied_rows = {table: 0 for table in activation.GENERAL_TABLES}
+    result = None
 
     class Cursor:
-        def execute(self, sql, _params=None):
+        def execute(self, sql, params=None):
+            nonlocal result
             statements.append(sql)
+            table = next(
+                (name for name in activation.GENERAL_TABLES if name in sql), None
+            )
+            if sql.startswith("SELECT COUNT(*), COALESCE(MAX(`id`), 0) FROM"):
+                result = (source_rows[table], source_rows[table])
+                return 1
+            if sql.startswith("INSERT INTO"):
+                last_id, source_max = params
+                inserted = min(
+                    activation.SHADOW_BASELINE_COPY_BATCH_SIZE,
+                    source_max - last_id,
+                )
+                copied_rows[table] += inserted
+                result = None
+                return inserted
+            if sql.startswith("SELECT COALESCE(MAX(`id`), 0) FROM"):
+                result = (copied_rows[table],)
+                return 1
+            if sql.startswith("SELECT COUNT(*) FROM"):
+                result = (copied_rows[table],)
+                return 1
+            result = None
+            return 0
 
         def fetchone(self):
-            return next(counts)
+            return result
 
         def close(self):
             return None
@@ -290,9 +319,16 @@ def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None
         )
         assert any(
             f"INSERT INTO `jw_mart_ingest_shadow_demo`.`{scratch}` SELECT * FROM "
-            f"`jw_mart_d2_stage_20260630_r2`.`{table}`" == sql
+            f"`jw_mart_d2_stage_20260630_r2`.`{table}` WHERE `id` > %s "
+            f"AND `id` <= %s ORDER BY `id` LIMIT " in sql
             for sql in statements
         )
+    assert not any(
+        sql.endswith(f"SELECT * FROM `jw_mart_d2_stage_20260630_r2`.`{table}`")
+        for table in activation.GENERAL_TABLES
+        for sql in statements
+    )
+    assert statements.count("COMMIT") >= 4
     assert any(sql.startswith("RENAME TABLE ") for sql in statements)
 
 
