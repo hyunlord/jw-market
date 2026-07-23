@@ -28,6 +28,7 @@ from jw_chat_agent_poc.tools.metrics.market_scope_intent import (
     asks_market_members,
     detect_market_scope_intent,
     map_market_view_reply,
+    requested_market_member_limit,
 )
 from jw_chat_agent_poc.tools.metrics.market_scope_helpers import (
     extended,
@@ -230,17 +231,27 @@ class MarketScopeResolver:
         started_at = qa_trace_started_at()
         if self._query_layer is None:
             return self._unsupported("전략 시장 조회 계층을 사용할 수 없습니다.", question, "market_id", market_id)
+        member_query = asks_market_members(question)
+        member_limit = requested_market_member_limit(question)
         try:
             call = (
-                self._query_layer.market_members(market=market_id, period=period)
-                if asks_market_members(question)
+                self._query_layer.market_members(market=market_id, period=period, limit=member_limit.applied)
+                if member_query
                 else self._query_layer.market_scope_by_id(market_id, period)
             )
-        except (LookupError, TypeError, ValueError) as exc:
+        except LookupError as exc:
+            if member_query and self._is_market_members_unavailable(exc):
+                return self._market_members_unavailable(question, exc, "market_id", market_id)
+            return self._unsupported(str(exc), question, "market_id", market_id)
+        except (TypeError, ValueError) as exc:
             return self._unsupported(str(exc), question, "market_id", market_id)
         data = call.get("render_data")
         if not isinstance(data, dict):
             return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "market_id", market_id)
+        if member_query and member_limit.requested is not None:
+            data["requested_limit"] = member_limit.requested
+            data["limit_capped"] = member_limit.capped
+            call["render_data"] = data
         source = str(data.get("source_label") or call.get("source") or "")
         attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
         markdown = MarkdownResponseBuilder().build(
@@ -285,12 +296,15 @@ class MarketScopeResolver:
         market_display_name: str | None = None,
     ) -> dict[str, Any]:
         assert self._query_layer is not None
+        member_query = asks_market_members(question)
+        member_limit = requested_market_member_limit(question)
         try:
-            if asks_market_members(question):
+            if member_query:
                 call = self._query_layer.market_members(
                     brand,
                     market=market_id,
                     period=requested_period(question) or "latest",
+                    limit=member_limit.applied,
                     include_other="기타" in question,
                 )
             else:
@@ -299,7 +313,13 @@ class MarketScopeResolver:
                     if view_type == "competitive_dynamics" or use_mart
                     else self._query_layer.market_scope(brand)
                 )
-        except (LookupError, TypeError, ValueError) as exc:
+        except LookupError as exc:
+            if member_query and self._is_market_members_unavailable(exc):
+                field = "market_id" if market_id else "brand"
+                value = market_id or brand
+                return self._market_members_unavailable(question, exc, field, value)
+            return self._query_failed(exc, question, "get_market_scope", brand, started_at=started_at)
+        except (TypeError, ValueError) as exc:
             return self._query_failed(exc, question, "get_market_scope", brand, started_at=started_at)
 
         data = call.get("render_data")
@@ -334,8 +354,11 @@ class MarketScopeResolver:
         data["market_name"] = market_name
         data["view_type"] = view_type
         data["view_label"] = view_label(view_type)
+        if member_query and member_limit.requested is not None:
+            data["requested_limit"] = member_limit.requested
+            data["limit_capped"] = member_limit.capped
         call["render_data"] = data
-        if asks_market_members(question):
+        if member_query:
             qualifier = "상위 5개 밖의 " if data.get("other_members_only") else ""
             call["summary_text"] = (
                 f"{market_name} 시장의 {qualifier}구성 브랜드를 전략 mart에서 조회했습니다. "
@@ -531,6 +554,36 @@ class MarketScopeResolver:
         }
         result["sources"] = ["strategic_market_not_member"]
         return result
+
+    @staticmethod
+    def _market_members_unavailable(
+        question: str,
+        error: LookupError,
+        field: str,
+        value: str,
+    ) -> dict[str, Any]:
+        if "market not found" in str(error).lower():
+            message = "시장 매핑이 확인되지 않습니다."
+            reason = "market_members_mapping_unavailable"
+        else:
+            message = "이 시장은 구성원 정보를 제공하지 않습니다."
+            reason = "market_members_data_unavailable"
+        result = MarketScopeResolver._unsupported(message, question, field, value)
+        result["decomposition"] = [{"intent": "market_members", "status": "unsupported"}]
+        result["router_diagnostics"] = {
+            "deterministic": True,
+            "mode": "market_scope",
+            "scope": "market_landscape",
+            "gate": "typed_unavailable",
+            "gate_reason": reason,
+        }
+        result["sources"] = [reason]
+        return result
+
+    @staticmethod
+    def _is_market_members_unavailable(error: LookupError) -> bool:
+        detail = str(error).lower()
+        return "mart market not found:" in detail or "market member data" in detail
 
     @staticmethod
     def _unsupported(message: str, question: str, field: str, value: str) -> dict[str, Any]:

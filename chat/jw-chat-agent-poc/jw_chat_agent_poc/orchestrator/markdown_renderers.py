@@ -80,6 +80,9 @@ def market_members_md(data: dict[str, Any]) -> str:
         ("항목", "내용"),
         tuple(overview_rows),
     )
+    if data.get("limit_capped"):
+        requested = int(data.get("requested_limit") or displayed)
+        overview = f"{overview}\n\n요청한 {requested:,}개에는 표시 상한 {displayed:,}개를 적용했습니다."
     if not member_names:
         if other_members_only and has_other_total:
             return f"{overview}\n\n상위 5개 외 기타 브랜드가 없습니다."
