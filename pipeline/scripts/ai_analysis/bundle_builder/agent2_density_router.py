@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from pipeline.etl.io.mart.agent2_eligibility import (
+    AGENT2_ELIGIBILITY_REVISION,
+    Agent2ScoreRow,
+    OrphanNewsError,
+    is_agent2_eligible,
+)
+
 from .event_bundle_builder import CROSS_MATCH_SOURCE_PROCESSORS, DIRECT_EVENT_SOURCE_PROCESSORS
 
 QUALITY_SCORE_CUTOFF: Final = 50
@@ -74,6 +81,33 @@ class RouteDecision:
     bucket: str
     mode: ProcessingMode
     included_processors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BrandedScoreRow:
+    brand_key: str
+    score: Agent2ScoreRow
+
+
+@dataclass(frozen=True, slots=True)
+class DensityShadowDecision:
+    brand_key: str
+    density_news_ids: tuple[str, ...]
+    central_news_ids: tuple[str, ...]
+    matches: bool
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class DensityShadowRouteResult:
+    routes: tuple[RouteDecision, ...]
+    shadow: tuple[DensityShadowDecision, ...]
+
+
+class UnknownShadowBrandError(RuntimeError):
+    def __init__(self, brand_key: str) -> None:
+        super().__init__(f"shadow score row has unknown brand_key: {brand_key}")
+        self.brand_key = brand_key
 
 
 def density_bucket(evidence_count: int) -> DensityBucket:
@@ -157,3 +191,45 @@ def route_worklist(brands: tuple[str, ...], counts: tuple[EvidenceCount, ...]) -
     """Route a mart-universe brand list while preserving input order."""
 
     return tuple(route_brand(brand, counts) for brand in brands)
+
+
+def route_worklist_with_shadow(
+    brands: tuple[str, ...],
+    counts: tuple[EvidenceCount, ...],
+    score_rows: tuple[BrandedScoreRow, ...],
+) -> DensityShadowRouteResult:
+    """Route with legacy density while recording central-selector shadow decisions."""
+
+    density_ids = {brand_key: set() for brand_key in brands}
+    central_ids = {brand_key: set() for brand_key in brands}
+    for branded_row in score_rows:
+        if branded_row.brand_key not in density_ids:
+            raise UnknownShadowBrandError(branded_row.brand_key)
+        score = branded_row.score
+        if (
+            score.source_processor in ALLOWED_PROCESSORS
+            and score.derivation in ALLOWED_DERIVATIONS
+            and is_score_allowed_for_density(score.score, score.tag, score.source_processor)
+        ):
+            density_ids[branded_row.brand_key].add(score.news_id)
+        try:
+            central_allowed = is_agent2_eligible(score)
+        except OrphanNewsError:
+            central_allowed = False
+        if central_allowed:
+            central_ids[branded_row.brand_key].add(score.news_id)
+
+    shadow = tuple(
+        DensityShadowDecision(
+            brand_key=brand_key,
+            density_news_ids=tuple(sorted(density_ids[brand_key])),
+            central_news_ids=tuple(sorted(central_ids[brand_key])),
+            matches=density_ids[brand_key] == central_ids[brand_key],
+            revision=AGENT2_ELIGIBILITY_REVISION,
+        )
+        for brand_key in brands
+    )
+    return DensityShadowRouteResult(
+        routes=route_worklist(brands, counts),
+        shadow=shadow,
+    )
