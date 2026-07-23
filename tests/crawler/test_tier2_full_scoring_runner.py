@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,11 +24,15 @@ from pipeline.scripts.crawler.tier2_full_scoring_runner import (
     insert_live_rows,
     parse_wf324_response,
     pending_exact_gap,
+    pending_exact_snapshot,
+    run_backlog_gate,
     score_tier,
     scoped_event_id,
     sync_missing_events_raw,
     update_live_tier2_categories,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class RecordingCursor:
@@ -147,6 +156,34 @@ class PendingGapConnection:
         return self.cursor_obj
 
 
+class PendingSnapshotCursor:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.sql = ""
+        self.params: tuple[object, ...] = ()
+
+    def __enter__(self) -> "PendingSnapshotCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        self.sql = sql
+        self.params = params
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return self.rows
+
+
+class PendingSnapshotConnection:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.cursor_obj = PendingSnapshotCursor(rows)
+
+    def cursor(self) -> PendingSnapshotCursor:
+        return self.cursor_obj
+
+
 def test_default_workflow_targets_ga_rebuild() -> None:
     assert DEFAULT_DEPLOYMENT_ID == 1453
     assert DEFAULT_WORKFLOW_ID == 337
@@ -230,6 +267,110 @@ def test_pending_gap_counts_exact_brand_pairs_without_target_scores() -> None:
     assert "scored.news_id = candidate.news_id" in conn.cursor_obj.sql
     assert "scored.brand_canonical = candidate.brand_canonical" in conn.cursor_obj.sql
     assert conn.cursor_obj.params == ("tier2_exact_rule_v1", PENDING_SOURCE_PROCESSOR)
+
+
+def test_pending_snapshot_uses_distinct_pair_identity_and_source_age() -> None:
+    first_seen = datetime(2026, 7, 20, tzinfo=UTC)
+    conn = PendingSnapshotConnection(
+        [
+            {
+                "news_id": "n1",
+                "brand_canonical": "리바로",
+                "first_seen_at": first_seen,
+            }
+        ]
+    )
+
+    snapshot = pending_exact_snapshot(
+        conn,
+        source_processor="tier2_exact_rule_v1",
+        target_processor=PENDING_SOURCE_PROCESSOR,
+        captured_at=datetime(2026, 7, 23, tzinfo=UTC),
+    )
+
+    assert snapshot.count == 1
+    assert snapshot.items[0].key == ("n1", "리바로")
+    assert snapshot.oldest_pending_at == first_seen
+    assert "GROUP BY candidate.news_id, candidate.brand_canonical" in conn.cursor_obj.sql
+    assert "MIN(COALESCE(candidate.collected_at, source_news.collected_at))" in conn.cursor_obj.sql
+
+
+def test_opt_runner_imports_packaged_backlog_policy_without_repo_package(
+    tmp_path: Path,
+) -> None:
+    source = REPO_ROOT / "pipeline/scripts/crawler"
+    shutil.copy2(source / "tier2_full_scoring_runner.py", tmp_path)
+    shutil.copy2(source / "crawl_backlog_policy.py", tmp_path)
+    package = tmp_path / "pipeline/scripts/crawler"
+    package.mkdir(parents=True)
+    for parent in (tmp_path / "pipeline", tmp_path / "pipeline/scripts", package):
+        (parent / "__init__.py").write_text("", encoding="utf-8")
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env["CRAWL_CHAIN_REPO_ROOT"] = str(tmp_path)
+
+    completed = subprocess.run(
+        [sys.executable, str(tmp_path / "tier2_full_scoring_runner.py"), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_backlog_gate_persists_age_and_trend_failure_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pipeline.scripts.crawler.crawl_backlog_policy import (
+        PendingItem,
+        PendingSnapshot,
+        write_pending_snapshot,
+    )
+    from pipeline.scripts.crawler import tier2_full_scoring_runner as runner
+
+    now = datetime(2026, 7, 23, tzinfo=UTC)
+    old = now - timedelta(days=4)
+    before = PendingSnapshot(
+        captured_at=now - timedelta(hours=1),
+        items=(PendingItem("n1", "리바로", old),),
+    )
+    write_pending_snapshot(state_root=tmp_path, run_id="jw-agent-test", snapshot=before)
+    receipts = tmp_path / "backlog-receipts"
+    receipts.mkdir()
+    for index, count in enumerate((1, 1, 1), start=1):
+        (receipts / f"previous-{index}.json").write_text(
+            json.dumps(
+                {
+                    "captured_at": f"2026-07-{19 + index:02d}T00:00:00+00:00",
+                    "after_count": count,
+                }
+            ),
+            encoding="utf-8",
+        )
+    after = PendingSnapshot(
+        captured_at=now,
+        items=(PendingItem("n1", "리바로", old),),
+    )
+    monkeypatch.setattr(runner, "pending_exact_snapshot", lambda *_args, **_kwargs: after)
+
+    result = run_backlog_gate(
+        object(),
+        source_processor="tier2_exact_rule_v1",
+        target_processor=PENDING_SOURCE_PROCESSOR,
+        pending_baseline=tmp_path / "runs/jw-agent-test/pending_baseline.json",
+        receipts_root=receipts,
+        run_id="jw-agent-test",
+    )
+
+    assert result["hard_pass"] is True
+    assert result["slo_status"] == "failure"
+    assert result["oldest_pending_age_days"] == 4
+    assert result["nondecreasing_runs"] == 4
+    assert (receipts / "jw-agent-test.json").is_file()
 
 
 def test_category_refresh_includes_v1_and_v2_but_excludes_tier1_news() -> None:

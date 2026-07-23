@@ -85,7 +85,9 @@ def test_production_worker_is_separate_and_unbounded() -> None:
     assert "name: jw-crawl-temporal-state" in manifest
     assert "value: jw-market-crawl-temporal-v1" in manifest
     assert "name: CRAWL_CHAIN_LLM_CALL_LIMIT" in manifest
-    assert 'value: "60"' in manifest
+    assert 'value: "100"' in manifest
+    assert "name: CRAWL_CHAIN_LLM_MAX_COST_KRW" in manifest
+    assert 'value: "339.00"' in manifest
     assert "shadow" not in manifest.lower()
     assert "CRAWL_CHAIN_TIER1_SITES" not in manifest
     assert "CRAWL_CHAIN_TIER1_MAX_ARTICLES" not in manifest

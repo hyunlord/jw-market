@@ -50,6 +50,17 @@ def test_no_llm_shadow_gates_only_the_selected_work_and_keeps_global_observation
     assert '"workflow_calls"' in script
 
 
+def test_production_final_stage_uses_run_delta_and_backlog_slo_gate() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "pipeline/scripts/crawler/crawl_chain_steps.sh").read_text(encoding="utf-8")
+
+    assert "backlog-gate" in script
+    assert '--pending-baseline "${CHAIN_RUN_ROOT}/pending_baseline.json"' in script
+    assert '--receipts-root "${state_root}/backlog-receipts"' in script
+    assert 'int(not payload["hard_pass"]) + len(payload["slo_failures"])' in script
+    assert 'payload["backlog"]' in script
+
+
 def test_tier1_collect_reported_site_failures_are_fail_closed() -> None:
     root = Path(__file__).resolve().parents[2]
     script = (root / "pipeline/scripts/crawler/crawl_chain_steps.sh").read_text(encoding="utf-8")

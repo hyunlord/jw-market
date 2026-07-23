@@ -26,6 +26,10 @@ from pipeline.scripts.crawler.crawl_temporal_contract import (
     resolve_execution_config,
     write_content_addressed_baseline,
 )
+from pipeline.scripts.crawler.crawl_backlog_policy import (
+    read_pending_snapshot,
+    write_pending_snapshot,
+)
 
 
 TASK_QUEUE = "jw-market-crawl-temporal-shadow-v1"
@@ -169,19 +173,55 @@ def _query_baseline_sync() -> Any:
         conn.close()
 
 
+def _query_pending_baseline_sync() -> Any:
+    from pipeline.scripts.crawler.tier2_full_scoring_runner import (
+        PENDING_SOURCE_PROCESSOR,
+        TIER2_EXACT_PROCESSOR,
+        connect_from_env,
+        pending_exact_snapshot,
+    )
+
+    conn = connect_from_env()
+    try:
+        return pending_exact_snapshot(
+            conn,
+            source_processor=TIER2_EXACT_PROCESSOR,
+            target_processor=PENDING_SOURCE_PROCESSOR,
+        )
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 async def _capture_baseline(config: CrawlDailyInput) -> dict[str, Any]:
     from pipeline.scripts.crawler.crawl_exposure_baseline import BaselineOrphanError
 
     started = time.monotonic()
     activity.heartbeat({"stage": "capture_exposure_baseline", "state": "querying"})
-    query = asyncio.create_task(asyncio.to_thread(_query_baseline_sync))
-    while not query.done():
-        try:
-            await asyncio.wait_for(asyncio.shield(query), timeout=30)
-        except TimeoutError:
-            activity.heartbeat({"stage": "capture_exposure_baseline", "state": "querying"})
+    pending_pointer_path = Path(config.state_root) / "runs" / config.run_id / "pending_baseline.json"
+    exposure_query = asyncio.create_task(asyncio.to_thread(_query_baseline_sync))
+    pending_query = (
+        None
+        if pending_pointer_path.is_file()
+        else asyncio.create_task(asyncio.to_thread(_query_pending_baseline_sync))
+    )
+    active = {exposure_query}
+    if pending_query is not None:
+        active.add(pending_query)
+    while active:
+        _done, active = await asyncio.wait(
+            active,
+            timeout=30,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        activity.heartbeat({"stage": "capture_exposure_baseline", "state": "querying"})
     try:
-        result = await query
+        result = await exposure_query
+        pending_snapshot = (
+            read_pending_snapshot(pending_pointer_path)
+            if pending_query is None
+            else await pending_query
+        )
     except BaselineOrphanError as exc:
         _validation_failure("capture_exposure_baseline", "orphan_news", str(exc))
     activity.heartbeat(
@@ -198,6 +238,11 @@ async def _capture_baseline(config: CrawlDailyInput) -> dict[str, Any]:
         eligibility_revision=result.eligibility_revision,
         captured_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
+    pending_pointer = write_pending_snapshot(
+        state_root=Path(config.state_root),
+        run_id=config.run_id,
+        snapshot=pending_snapshot,
+    )
     return {
         "stage": "capture_exposure_baseline",
         "status": "complete",
@@ -208,6 +253,7 @@ async def _capture_baseline(config: CrawlDailyInput) -> dict[str, Any]:
         "events_raw_gap": 0,
         "pending_gap": 0,
         **pointer,
+        "pending_baseline": pending_pointer,
     }
 
 

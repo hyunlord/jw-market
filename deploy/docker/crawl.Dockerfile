@@ -51,6 +51,7 @@ COPY crawl/tier2/prompts/ /work/crawl/tier2/prompts/
 
 RUN mkdir -p /opt/tier2 \
     && cp /work/crawl/crawler/tier2_full_scoring_runner.py /opt/tier2/ \
+    && cp /work/crawl/crawler/crawl_backlog_policy.py /opt/tier2/ \
     && cp /work/crawl/crawler/tier2_catalog.py /opt/tier2/ \
     && cp /work/crawl/crawler/tier2_body_match_runner.py /opt/tier2/ \
     && cp /work/crawl/crawler/tier2_match_score.py /opt/tier2/ \

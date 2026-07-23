@@ -63,7 +63,9 @@ spec:
         - name: WF337_URL
           value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
         - name: CRAWL_CHAIN_LLM_CALL_LIMIT
-          value: "60"
+          value: "100"
+        - name: CRAWL_CHAIN_LLM_MAX_COST_KRW
+          value: "339.00"
         - name: DB_USER
           valueFrom:
             secretKeyRef:

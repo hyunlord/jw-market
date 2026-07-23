@@ -38,9 +38,10 @@ write_stage_gate() {
   local failures="$1"
   local events_raw_gap="$2"
   local pending_gap="$3"
+  local backlog_assessment="${4:-}"
   STAGE="${stage}" OUTPUT="${CHAIN_STAGE_OUTPUT_DIR}" \
     FAILURES="${failures}" EVENTS_RAW_GAP="${events_raw_gap}" \
-    PENDING_GAP="${pending_gap}" python - <<'PY'
+    PENDING_GAP="${pending_gap}" BACKLOG_ASSESSMENT="${backlog_assessment}" python - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,9 @@ payload = {
     "events_raw_gap": int(os.environ["EVENTS_RAW_GAP"]),
     "pending_gap": int(os.environ["PENDING_GAP"]),
 }
+backlog_path = os.environ.get("BACKLOG_ASSESSMENT", "")
+if backlog_path:
+    payload["backlog"] = json.loads(Path(backlog_path).read_text(encoding="utf-8"))
 Path(os.environ["OUTPUT"], "stage_gate.json").write_text(
     json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
@@ -453,7 +457,9 @@ tier2_classify() {
   python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw --retries 1 \
     > "${output}/sync_summary.json"
   local llm_call_limit
-  llm_call_limit="${CRAWL_CHAIN_LLM_CALL_LIMIT:-60}"
+  local llm_max_cost_krw
+  llm_call_limit="${CRAWL_CHAIN_LLM_CALL_LIMIT:-100}"
+  llm_max_cost_krw="${CRAWL_CHAIN_LLM_MAX_COST_KRW:-339.00}"
   if [[ ! "${llm_call_limit}" =~ ^[0-9]+$ ]]; then
     echo "invalid CRAWL_CHAIN_LLM_CALL_LIMIT=${llm_call_limit}" >&2
     return 64
@@ -461,7 +467,7 @@ tier2_classify() {
   python /opt/tier2/tier2_full_scoring_runner.py append-live \
     --source-processor tier2_exact_rule_v1 \
     --target-processor tier2_llm_v2_rev5671 \
-    --workflow-url "${WF337_URL}" --daily-call-limit "${llm_call_limit}" --max-cost-krw 203.40 \
+    --workflow-url "${WF337_URL}" --daily-call-limit "${llm_call_limit}" --max-cost-krw "${llm_max_cost_krw}" \
     > "${output}/append_summary.json"
   # This required final step closes the historical category omission (audit dd41f8aa).
   python /opt/tier2/tier2_full_scoring_runner.py refresh-live-categories \
@@ -472,6 +478,7 @@ tier2_classify() {
     > "${output}/gate_status.json"
   local load_failures append_failures failures events_gap pending_gap
   local selected_pending_gap global_pending_gap pending_scope workflow_calls
+  local backlog_assessment=""
   load_failures="$(summary_failure_count "${output}/load_summary.json")"
   append_failures="$(summary_failure_count "${output}/append_summary.json")"
   failures="$((load_failures + append_failures))"
@@ -480,10 +487,28 @@ tier2_classify() {
   global_pending_gap="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["pending_gap"]))' "${output}/gate_status.json")"
   workflow_calls="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["workflow_calls"]))' "${output}/append_summary.json")"
   pending_scope="global"
-  pending_gap="${global_pending_gap}"
   if [[ -n "${CRAWL_CHAIN_SHADOW_KEYWORD:-}" && "${llm_call_limit}" -eq 0 ]]; then
     pending_scope="selected_no_llm_shadow"
     pending_gap="${selected_pending_gap}"
+  else
+    local state_root
+    state_root="$(dirname "$(dirname "${CHAIN_RUN_ROOT}")")"
+    python /opt/tier2/tier2_full_scoring_runner.py backlog-gate \
+      --source-processor tier2_exact_rule_v1 \
+      --target-processor tier2_llm_v2_rev5671 \
+      --pending-baseline "${CHAIN_RUN_ROOT}/pending_baseline.json" \
+      --receipts-root "${state_root}/backlog-receipts" \
+      --run-id "${CHAIN_RUN_ID}" \
+      > "${output}/backlog_assessment.json"
+    backlog_assessment="${output}/backlog_assessment.json"
+    pending_gap="$(python - "${backlog_assessment}" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1]))
+print(int(not payload["hard_pass"]) + len(payload["slo_failures"]))
+PY
+)"
   fi
   python - "${output}/classification_summary.json" "${pending_scope}" \
     "${selected_pending_gap}" "${global_pending_gap}" "${workflow_calls}" <<'PY'
@@ -502,7 +527,7 @@ payload = {
 }
 Path(output).write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 PY
-  write_stage_gate "${failures}" "${events_gap}" "${pending_gap}"
+  write_stage_gate "${failures}" "${events_gap}" "${pending_gap}" "${backlog_assessment}"
 }
 
 case "${stage}" in
