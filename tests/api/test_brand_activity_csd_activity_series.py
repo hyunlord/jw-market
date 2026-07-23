@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 import sys
 from typing import Any
@@ -582,23 +583,52 @@ def test_activity_series_exposes_multimarket_union_and_filter_without_cross_call
     assert filtered_first is not None
     assert filtered_first["scope"]["csd_markets"] == ["LIVALO", "LIVALO FENO"]
     assert filtered_first["scope"]["csd_market"] == "LIVALO FENO"
+    assert _point(filtered_first["entities"][0], "absolute", "2025-01") == 3.0
+    assert _point(filtered_first["entities"][0], "share_pct", "2025-01") == 100.0
     assert unfiltered is not None
     assert unfiltered["scope"]["csd_markets"] == ["LIVALO", "LIVALO FENO"]
     assert "COMPETITOR ONLY" not in unfiltered["series_by_csd_market"]
-    assert unfiltered["scope"]["csd_market"] == "LIVALO"
+    assert unfiltered["scope"]["csd_market"] is None
     assert unfiltered["aggregate"]["available"] == {
         "LIVALO": {"start": "2024-01", "end": "2025-03"},
         "LIVALO FENO": {"start": "2025-01", "end": "2025-03"},
     }
     assert unfiltered["aggregate"]["series"]["market_totals"]["2024-01"] == 10.0
     assert unfiltered["aggregate"]["series"]["market_totals"]["2025-01"] == 13.0
-    assert _point(unfiltered["entities"][0], "absolute", "2025-01") == 10.0
+    assert _point(unfiltered["entities"][0], "absolute", "2025-01") == 13.0
+    assert _point(unfiltered["entities"][0], "share_pct", "2025-01") == 100.0
+    _assert_multimarket_union_contract(unfiltered)
     assert unfiltered["aggregate"]["contributing_markets_by_period"]["2024-01"] == ["LIVALO"]
     assert unfiltered["aggregate"]["contributing_markets_by_period"]["2025-01"] == ["LIVALO", "LIVALO FENO"]
     assert "2024-01" not in unfiltered["series_by_csd_market"]["LIVALO FENO"]["market_totals"]
 
     with pytest.raises(service.CsdMarketFilterError):
         service.get_csd_activity_series({**base_request, "csd_market": "COMPETITOR ONLY"})
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("entity_below_market", "aggregate entity below selected market"),
+        ("total_sigma", "aggregate market total sigma mismatch"),
+        ("member_union", "aggregate member union mismatch"),
+    ),
+)
+def test_multimarket_union_gate_rejects_required_failure_injections(
+    mutation: str,
+    message: str,
+) -> None:
+    injected = deepcopy(_multimarket_union_gate_fixture())
+
+    if mutation == "entity_below_market":
+        injected["aggregate"]["series"]["by_entity"]["LIVALO"]["2025-01"] = 9.0
+    elif mutation == "total_sigma":
+        injected["aggregate"]["series"]["market_totals"]["2025-01"] = 14.0
+    else:
+        del injected["aggregate"]["series"]["by_entity"]["LIVALO"]
+
+    with pytest.raises(AssertionError, match=message):
+        _assert_multimarket_union_contract(injected)
 
 
 def test_activity_series_rejects_csd_market_outside_resolved_list(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -778,6 +808,78 @@ def _brand_set_with_korean_companies() -> BrandSetResolution:
         ranking_quarter=base.ranking_quarter,
         applied_filter=base.applied_filter,
     )
+
+
+def _assert_multimarket_union_contract(payload: dict[str, Any], tolerance: float = 1e-9) -> None:
+    by_market = payload["series_by_csd_market"]
+    aggregate = payload["aggregate"]["series"]
+    aggregate_totals = aggregate["market_totals"]
+    aggregate_entities = aggregate["by_entity"]
+    periods = set(aggregate_totals)
+
+    for period in periods:
+        market_sum = sum(market["market_totals"].get(period, 0.0) for market in by_market.values())
+        assert abs(aggregate_totals[period] - market_sum) <= tolerance, "aggregate market total sigma mismatch"
+
+    market_members = {
+        entity
+        for market in by_market.values()
+        for entity, values in market["by_entity"].items()
+        if any(abs(value) > tolerance for value in values.values())
+    }
+    aggregate_members = {
+        entity
+        for entity, values in aggregate_entities.items()
+        if any(abs(value) > tolerance for value in values.values())
+    }
+    assert aggregate_members == market_members, "aggregate member union mismatch"
+
+    for entity in market_members:
+        for period in periods:
+            aggregate_value = aggregate_entities.get(entity, {}).get(period, 0.0)
+            for market in by_market.values():
+                assert (
+                    aggregate_value + tolerance >= market["by_entity"].get(entity, {}).get(period, 0.0)
+                ), "aggregate entity below selected market"
+
+    entities = {entity["key"]: entity for entity in payload["entities"]}
+    for entity, response in entities.items():
+        for period in periods:
+            value = _point(response, "absolute", period)
+            expected_value = aggregate_entities.get(entity, {}).get(period, 0.0)
+            assert value == pytest.approx(expected_value, abs=tolerance)
+            expected_share = 100.0 * expected_value / aggregate_totals[period] if aggregate_totals[period] else None
+            assert _point(response, "share_pct", period) == pytest.approx(expected_share, abs=tolerance)
+
+
+def _multimarket_union_gate_fixture() -> dict[str, Any]:
+    return {
+        "entities": [
+            {
+                "key": "LIVALO",
+                "activity": {
+                    "absolute": [{"period": "2025-01", "value": 13.0}],
+                    "share_pct": [{"period": "2025-01", "value": 100.0}],
+                },
+            }
+        ],
+        "series_by_csd_market": {
+            "LIVALO": {
+                "market_totals": {"2025-01": 10.0},
+                "by_entity": {"LIVALO": {"2025-01": 10.0}},
+            },
+            "LIVALO FENO": {
+                "market_totals": {"2025-01": 3.0},
+                "by_entity": {"LIVALO": {"2025-01": 3.0}},
+            },
+        },
+        "aggregate": {
+            "series": {
+                "market_totals": {"2025-01": 13.0},
+                "by_entity": {"LIVALO": {"2025-01": 13.0}},
+            }
+        },
+    }
 
 
 def _point(entity: dict[str, Any], metric: str, period: str) -> float | int | None:

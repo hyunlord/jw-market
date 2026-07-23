@@ -121,13 +121,15 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
             primary_values = values
             primary_totals = activity.totals
     aggregate = _aggregate_market_activity(activity_by_market)
-    ranks = _ranks_by_period(primary_values, activity_months)
+    response_values = aggregate["series"]["by_entity"] if request.csd_market is None else primary_values
+    response_totals = aggregate["series"]["market_totals"] if request.csd_market is None else primary_totals
+    ranks = _ranks_by_period(response_values, activity_months)
     return {
         "scope": _scope_payload(request, brand_set, crosswalk, crosswalks, quarters),
         "entity_level": request.entity_level,
         "channel": request.csd_channel,
         "period": {"quarters": list(quarters), "months": list(activity_months), "max_quarters": MAX_QUARTERS, "default_quarters": DEFAULT_QUARTERS},
-        "entities": [_entity_payload(key, selected_key, primary_values.get(key, {}), primary_totals, ranks, activity_months, brand_set) for key in entity_keys],
+        "entities": [_entity_payload(key, selected_key, response_values.get(key, {}), response_totals, ranks, activity_months, brand_set) for key in entity_keys],
         "series_by_csd_market": aggregate["series_by_market"],
         "aggregate": {
             "series": aggregate["series"],
@@ -290,7 +292,7 @@ def _scope_payload(
         "view": request.view,
         "market_id": brand_set.market_id,
         "market_name": str(brand_set.market_row.get(brand_set.view.market_name_column) or brand_set.market_id),
-        "csd_market": crosswalk.display_market,
+        "csd_market": crosswalk.display_market if request.csd_market is not None else None,
         "csd_markets": [item.display_market for item in crosswalks],
         "selected_brand": request.selected_brand,
         "filter": request.filter_payload,
