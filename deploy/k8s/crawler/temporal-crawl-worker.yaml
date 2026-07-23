@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jw-crawl-temporal-state
+  namespace: llmops
+  labels:
+    app: jw-market-crawl-temporal
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-market-crawl-temporal-worker
+  namespace: llmops
+  labels:
+    app: jw-market-crawl-temporal
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jw-market-crawl-temporal
+  template:
+    metadata:
+      labels:
+        app: jw-market-crawl-temporal
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      nodeSelector:
+        genos: enabled
+      containers:
+      - name: worker
+        image: JW_CRAWL_TEMPORAL_IMAGE
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - pipeline.scripts.crawler.temporal_crawl_worker
+        env:
+        - name: TEMPORAL_ADDRESS
+          value: temporal-frontend.temporal.svc:7233
+        - name: TEMPORAL_NAMESPACE
+          value: default
+        - name: TEMPORAL_TASK_QUEUE
+          value: jw-market-crawl-temporal-v1
+        - name: CRAWL_CHAIN_REPO_ROOT
+          value: /work
+        - name: DB_HOST
+          value: llmops-mariadb-service.llmops.svc.cluster.local
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_NAME
+          value: jw_mart_d2_stage_20260630_r2
+        - name: WF196_DIRECT_RUN_URL
+          value: http://workflow-196.llmops.svc.cluster.local:8080/run/v2
+        - name: WF337_URL
+          value: http://workflow-337.llmops.svc.cluster.local:8080/run/v2
+        - name: CRAWL_CHAIN_LLM_CALL_LIMIT
+          value: "60"
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: jw-mart-d2-writer
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: jw-mart-d2-writer
+              key: password
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        volumeMounts:
+        - name: chain-state
+          mountPath: /var/lib/jw-crawl-chain
+        securityContext:
+          allowPrivilegeEscalation: false
+      volumes:
+      - name: chain-state
+        persistentVolumeClaim:
+          claimName: jw-crawl-temporal-state
+      restartPolicy: Always

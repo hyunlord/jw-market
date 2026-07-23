@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.scripts.crawler import crawl_temporal_contract as temporal_contract
 from pipeline.scripts.crawler.crawl_temporal_contract import (
     ACTIVITY_STAGES,
     INTERNAL_STAGE_BY_ACTIVITY,
@@ -119,6 +120,47 @@ def test_activity_command_runs_one_durable_stage_only(tmp_path: Path) -> None:
     assert command[:3] == ["python", "/work/pipeline/scripts/crawler/crawl_chain.py", "run-stage"]
     assert command[command.index("--stage") + 1] == "tier1_collect"
     assert "run" not in command[2:]
+
+
+def test_fixed_shadow_run_id_remains_unchanged() -> None:
+    config = CrawlDailyInput(
+        run_id="jw-agent-crawl-shadow-fixed",
+        command_revision="abc123",
+    )
+
+    resolved = temporal_contract.resolve_execution_config(
+        config,
+        temporal_run_id="019f8c72-2279-7828-b67e-906261a393f8",
+    )
+
+    assert resolved.run_id == "jw-agent-crawl-shadow-fixed"
+
+
+def test_production_run_id_is_unique_per_temporal_execution() -> None:
+    config = CrawlDailyInput(
+        run_id="jw-agent-crawl-daily",
+        command_revision="abc123",
+        use_temporal_run_id=True,
+    )
+
+    first = temporal_contract.resolve_execution_config(
+        config,
+        temporal_run_id="019f8c72-2279-7828-b67e-906261a393f8",
+    )
+    replay = temporal_contract.resolve_execution_config(
+        config,
+        temporal_run_id="019f8c72-2279-7828-b67e-906261a393f8",
+    )
+    next_day = temporal_contract.resolve_execution_config(
+        config,
+        temporal_run_id="019f91a0-1170-7a75-b03f-80734a30b402",
+    )
+
+    assert first.run_id == replay.run_id
+    assert first.run_id == "jw-agent-crawl-daily-019f8c72-2279-7828-b67e-906261a393f8"
+    assert next_day.run_id == "jw-agent-crawl-daily-019f91a0-1170-7a75-b03f-80734a30b402"
+    assert first.run_id != next_day.run_id
+    assert first.use_temporal_run_id is False
 
 
 def test_dependency_sequence_never_schedules_tier2_after_tier1_failure() -> None:

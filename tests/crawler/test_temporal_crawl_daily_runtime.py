@@ -29,6 +29,7 @@ def test_temporal_runtime_is_sequential_and_validation_is_non_retryable() -> Non
     assert "capture_exposure_baseline" in source
     assert "asyncio.to_thread" in source
     assert '"stage_timeout"' in source
+    assert "resolve_execution_config(config, temporal_run_id=workflow.info().run_id)" in source
 
 
 def test_shadow_manifest_cannot_create_a_schedule_or_cronjob() -> None:
@@ -72,3 +73,25 @@ def test_shadow_manifest_uses_the_live_tier1_classifier_endpoint() -> None:
 
     assert "name: WF196_DIRECT_RUN_URL" in manifest
     assert "http://workflow-196.llmops.svc.cluster.local:8080/run/v2" in manifest
+
+
+def test_production_worker_is_separate_and_unbounded() -> None:
+    root = Path(__file__).resolve().parents[2]
+    path = root / "deploy/k8s/crawler/temporal-crawl-worker.yaml"
+
+    assert path.is_file()
+    manifest = path.read_text(encoding="utf-8")
+    assert "name: jw-market-crawl-temporal-worker" in manifest
+    assert "name: jw-crawl-temporal-state" in manifest
+    assert "value: jw-market-crawl-temporal-v1" in manifest
+    assert "name: CRAWL_CHAIN_LLM_CALL_LIMIT" in manifest
+    assert 'value: "60"' in manifest
+    assert "shadow" not in manifest.lower()
+    assert "CRAWL_CHAIN_TIER1_SITES" not in manifest
+    assert "CRAWL_CHAIN_TIER1_MAX_ARTICLES" not in manifest
+    assert "CRAWL_CHAIN_TIER2_SITES" not in manifest
+    assert "CRAWL_CHAIN_TIER2_DAYS" not in manifest
+    assert "CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE" not in manifest
+    assert "CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE" not in manifest
+    assert "CRAWL_CHAIN_TIER2_MAX_ARTICLES" not in manifest
+    assert "CRAWL_CHAIN_TIER2_LIMIT_BRANDS" not in manifest
