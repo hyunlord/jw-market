@@ -292,6 +292,48 @@ def test_stage_runner_tees_masked_full_and_stage_logs(
     assert "password=[REDACTED]" in captured.out
 
 
+def test_stage_runner_persists_cgroup_samples_in_mart_build_log(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "logs"
+    monkeypatch.setattr(stage_log_runner.config, "log_root", lambda: root)
+
+    class FakeProcess:
+        stdout = iter(
+            [
+                "[stage] mart_build start(4/9)\n",
+                "metric=cgroup_memory stage=mart_build sample=periodic "
+                "current_bytes=1024 peak_bytes=2048\n",
+                "[stage] mart_build end rc=0\n",
+            ]
+        )
+
+        @staticmethod
+        def wait():
+            return 0
+
+    monkeypatch.setattr(
+        stage_log_runner.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+
+    assert (
+        stage_log_runner.run(
+            manifest=tmp_path / "manifest.json",
+            run_id="run1",
+            job_name="jw-ingest-ubist-eecd1a6a-run1",
+        )
+        == 0
+    )
+    mart_log = stage_logs.stage_log_path(
+        root,
+        job_name="jw-ingest-ubist-eecd1a6a-run1",
+        stage="mart_build",
+    ).read_text(encoding="utf-8")
+    assert "current_bytes=1024 peak_bytes=2048" in mart_log
+
+
 def test_log_api_returns_success_and_explicit_missing_reason(
     sqlite_ledger, bucket, tmp_path: Path, monkeypatch
 ):

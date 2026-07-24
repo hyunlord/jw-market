@@ -8,6 +8,7 @@ are tested deterministically with zero external deps.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -590,6 +591,15 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     monkeypatch.setattr(
         ubist_mart_activation, "build_shadow", lambda *_args, **_kwargs: order.append("mart_build")
     )
+
+    @contextmanager
+    def monitor_cgroup_memory(stage: str):
+        assert stage == "mart_build"
+        order.append("memory:start")
+        yield
+        order.append("memory:end")
+
+    monkeypatch.setattr(job_runner, "monitor_cgroup_memory", monitor_cgroup_memory)
     monkeypatch.setattr(
         ubist_mart_activation,
         "publish_shadow",
@@ -620,6 +630,8 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     assert "jw_mart_ingest_shadow_test" in opened
     assert "shadow_bootstrap" in order
     assert order.index("shadow_bootstrap") < order.index("mart_build")
+    assert order.index("memory:start") < order.index("mart_build")
+    assert order.index("mart_build") < order.index("memory:end")
     assert ("publish", False) in order
     assert "shadow_refresh" in order
     assert sqlite_ledger.signal_events(

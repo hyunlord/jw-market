@@ -31,6 +31,7 @@ from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
+from pipeline.scripts.ingest_hook.cgroup_memory import monitor_cgroup_memory
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
 from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
@@ -577,17 +578,20 @@ def run(
                         if is_shadow
                         else None
                     )
-                    print(
-                        f"phase=mart_build status=start build_db={mart_activation.build_db} "
-                        f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"
-                    )
-                    ubist_mart_activation.build_shadow(
-                        mart_activation,
-                        catalog_root=catalog_root,
-                        ubist_dir=load_result["target_dir"],
-                    )
-                    mart_conn = config.open_mart_connection(mart_activation.build_db)
-                    print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
+                    with monitor_cgroup_memory("mart_build"):
+                        print(
+                            f"phase=mart_build status=start build_db={mart_activation.build_db} "
+                            f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"
+                        )
+                        ubist_mart_activation.build_shadow(
+                            mart_activation,
+                            catalog_root=catalog_root,
+                            ubist_dir=load_result["target_dir"],
+                        )
+                        mart_conn = config.open_mart_connection(mart_activation.build_db)
+                        print(
+                            f"phase=mart_build status=complete build_db={mart_activation.build_db}"
+                        )
                     tracker.done()
                 elif spec.sigma_source:
                     raise RuntimeError("live mart load has no isolated activation plan")

@@ -367,8 +367,8 @@ def test_rendered_shadow_job_mounts_output_without_production_unlock(monkeypatch
     assert mounts["market-output"]["mountPath"] == "/market-output"
     assert mounts["market-output"]["readOnly"] is False
     assert container["resources"] == {
-        "requests": {"cpu": "2", "memory": "8Gi"},
-        "limits": {"cpu": "4", "memory": "16Gi"},
+        "requests": {"cpu": "2", "memory": "24Gi"},
+        "limits": {"cpu": "4", "memory": "32Gi"},
     }
 
 
@@ -388,6 +388,10 @@ def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
         for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert env["INGEST_MART_PROMOTION_APPROVED"]["value"] == "1"
+    assert body["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "limits": {"cpu": "2", "memory": "4Gi"},
+    }
     assert env["INGEST_MART_SOURCE_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_TARGET_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_BUILD_PREFIX"]["value"] == "jw_mart_ingest"

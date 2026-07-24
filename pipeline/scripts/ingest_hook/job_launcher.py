@@ -156,8 +156,10 @@ def render_job(
     output_root = config.load_target_mount_root()
     resources = (
         {
-            "requests": {"cpu": "2", "memory": "8Gi"},
-            "limits": {"cpu": "4", "memory": "16Gi"},
+            # Diagnostic canary only. Do not raise beyond 32Gi; resize after
+            # the full-corpus mart builder is replaced with partitioned work.
+            "requests": {"cpu": "2", "memory": "24Gi"},
+            "limits": {"cpu": "4", "memory": "32Gi"},
         }
         if config.load_mode(required=False) == "shadow"
         else {
