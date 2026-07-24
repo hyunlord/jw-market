@@ -54,6 +54,107 @@ def _fact(
     )
 
 
+def _posology_binding_result() -> dict:
+    facts = [
+        _fact(
+            value=f"허가사항-{index}",
+            entity="아일리아",
+            metric="허가사항",
+            period="",
+            unit="",
+        )
+        for index in range(1, 6)
+    ]
+    return {
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "routing_v4": {
+                "proposed_routing_signature": {
+                    "proposed_calls": [
+                        {
+                            "normalized_args": {
+                                "brand": "아일리아",
+                            }
+                        }
+                    ]
+                }
+            },
+        },
+        "tool_calls": [
+            {
+                "tool": "mfds_permission_search",
+                "status": "ok",
+                "render_data": {"ok": True},
+            }
+        ],
+        "markdown_response": {
+            "evidence": [asdict(fact) for fact in facts],
+        },
+        "sources": ["MFDS"],
+    }
+
+
+_A07_QUESTION = "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘"
+_A07_POSOLOGY_BODY = """### 용법 및 용량
+기본 권장 용량은 2mg(50μL)입니다.
+첫 3개월 동안 매월 1회 투여하고, 이후 2개월마다 1회 주사합니다.
+투여 간격을 2주 또는 4주씩 연장할 수 있으며 최소 투여 간격은 4주입니다.
+첫 5개월 동안 매월 1회 투여 후 2개월마다 1회 주사합니다.
+추가 투여 간격은 최소 1개월 이상이어야 합니다.
+
+| 구분 | 내용 |
+| --- | --- |
+| 적응증 1 | 1. 습성 연령 관련 황반변성 |
+| 적응증 2 | 2. 망막정맥폐쇄성 황반부종 |
+| 적응증 3 | 3. 당뇨병성 황반부종 |
+| 적응증 4 | 4. 병적근시 맥락막 신생혈관 |
+"""
+
+
+def test_compute_final_answer_allows_posology_numbers_without_changing_evidence(
+    monkeypatch,
+) -> None:
+    from jw_chat_agent_poc.service.genos_client import GenosClient
+
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args: iter((_A07_POSOLOGY_BODY,)),
+    )
+    result = _posology_binding_result()
+
+    final = compute_final_answer(_A07_QUESTION, result, "f7-a07")
+
+    assert "기본 권장 용량은 2mg(50μL)입니다." in final.text
+    assert result["_qa_claim_gate"]["binding_status"] == "pass"
+    assert result["_qa_claim_gate"]["blocked_numbers"] == ()
+    assert len(result["markdown_response"]["evidence"]) == 5
+
+
+def test_compute_final_answer_keeps_fact_counts_bound_but_exempts_posology_units(
+    monkeypatch,
+) -> None:
+    from jw_chat_agent_poc.service.genos_client import GenosClient
+
+    answers = (
+        ("함량은 50%이며 투여 기간은 5개월입니다.", "pass", ()),
+        ("시장 점유율은 50%이고 허가 품목은 5개 품목입니다.", "fail", ("50%", "5개")),
+        ("허가 품목은 8건입니다.", "fail", ("8건",)),
+    )
+    for answer, expected_status, expected_blocked in answers:
+        monkeypatch.setattr(
+            GenosClient,
+            "stream_answer",
+            lambda *_args, answer=answer: iter((answer,)),
+        )
+        result = _posology_binding_result()
+
+        compute_final_answer(_A07_QUESTION, result, "f7-ambiguous")
+
+        assert result["_qa_claim_gate"]["binding_status"] == expected_status
+        assert result["_qa_claim_gate"]["blocked_numbers"] == expected_blocked
+
+
 def test_source_grades_distinguish_authoritative_official_web_and_general_web() -> None:
     assert grade_evidence_source(tool="hira_stats", source="HIRA") is SourceGrade.AUTHORITATIVE
     assert grade_web_url("https://opendata.hira.or.kr/official") is SourceGrade.SUPPLEMENTARY
