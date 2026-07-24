@@ -166,7 +166,7 @@ def test_mysql_transition_locks_identity_before_status_change():
     assert any(
         sql.endswith(" FOR UPDATE")
         for sql in conn.executed_sql
-        if sql.startswith("SELECT status, job_name FROM ingest_ledger")
+        if sql.startswith("SELECT status, job_name, run_id FROM ingest_ledger")
     )
 
 

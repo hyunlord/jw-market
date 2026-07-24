@@ -196,7 +196,13 @@ def test_tracked_manifests_preserve_isolated_load_arming():
 
     rbac = list(yaml.safe_load_all((base / "ingest-hook-rbac.yaml").read_text(encoding="utf-8")))
     role = next(doc for doc in rbac if doc["kind"] == "Role")
-    assert role["rules"] == [{"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create", "get", "list"]}]
+    assert role["rules"] == [
+        {
+            "apiGroups": ["batch"],
+            "resources": ["jobs"],
+            "verbs": ["create", "get", "list", "delete"],
+        }
+    ]
 
 
 def test_reference_jobs_separate_staging_from_activation_contracts():

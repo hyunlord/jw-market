@@ -9,6 +9,7 @@ pipeline-orchestrator image (fastapi/uvicorn/PyMySQL already included):
 Endpoints (the site's whole contract surface):
   POST /ingest/webhook   {"manifest_path": "<path under INGEST_INPUT_ROOT>"}
   GET  /ingest/status    ?epoch=&category=&manifest_sha=
+  POST /ingest/force-stop (exact active run only)
   POST /ingest/reconcile  (promote queued submissions; sweep/ops helper)
   GET  /healthz
 """
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from time import sleep as _sleep
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -36,6 +38,14 @@ class WebhookPayload(BaseModel):
     manifest_path: str
 
 
+class ForceStopPayload(BaseModel):
+    epoch: str
+    category: str
+    manifest_sha: str
+    run_id: str
+    requested_by: str
+
+
 class IngestService:
     def __init__(
         self,
@@ -44,14 +54,22 @@ class IngestService:
         transport=None,
         s3=None,
         inspect_transport=None,
+        delete_transport=None,
         now=None,
+        timestamp=None,
+        sleep=None,
+        deletion_attempts: int = 30,
     ):
         self.ledger = ledger
         self.input_root = input_root
         self.transport = transport
         self.s3 = s3
         self.inspect_transport = inspect_transport
+        self.delete_transport = delete_transport
         self.now = now or (lambda: datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"))
+        self.timestamp = timestamp or (lambda: datetime.now(timezone.utc).isoformat())
+        self.sleep = sleep or _sleep
+        self.deletion_attempts = deletion_attempts
 
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
@@ -239,6 +257,112 @@ class IngestService:
             "actions": actions,
         }
 
+    def force_stop(
+        self,
+        *,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        run_id: str,
+        requested_by: str,
+    ) -> dict:
+        """Stop one exact active run and reconcile only that ledger identity."""
+        entry = self.ledger.status(epoch, category, manifest_sha)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="unknown submission identity")
+        if entry.status != "running":
+            raise HTTPException(
+                status_code=409,
+                detail=f"force stop requires a running ledger row, got {entry.status}",
+            )
+        if entry.run_id != run_id:
+            raise HTTPException(status_code=409, detail="run_id does not match the active ledger row")
+        expected_name = job_launcher.job_name(category, manifest_sha, run_id)
+        if entry.job_name != expected_name:
+            raise HTTPException(
+                status_code=409,
+                detail="ledger job_name does not match the deterministic run identity",
+            )
+        actor = requested_by.strip()
+        if not actor:
+            raise HTTPException(status_code=422, detail="requested_by is required")
+
+        observation = job_launcher.inspect_job(
+            expected_name,
+            transport=self.inspect_transport,
+        )
+        if observation.status not in {"Pending", "Running"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"force stop requires an active Kubernetes Job, got {observation.status}",
+            )
+        try:
+            job_launcher.delete_job(
+                expected_name,
+                observation=observation,
+                transport=self.delete_transport,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        terminal_observation = observation
+        for attempt in range(self.deletion_attempts):
+            terminal_observation = job_launcher.inspect_job(
+                expected_name,
+                transport=self.inspect_transport,
+            )
+            if terminal_observation.status == "Absent":
+                break
+            if attempt + 1 < self.deletion_attempts:
+                self.sleep(1)
+        if terminal_observation.status != "Absent":
+            raise HTTPException(
+                status_code=503,
+                detail="Kubernetes Job deletion was not confirmed; ledger remains running",
+            )
+
+        stopped_at = self.timestamp()
+        reason = (
+            f"PL 강제 정지: 요청자={actor}, 시각={stopped_at}, "
+            f"Kubernetes Job={expected_name} 삭제"
+        )
+        evidence = {
+            **observation.evidence,
+            "run_id": run_id,
+            "deleted_job_status": terminal_observation.status,
+            "requested_by": actor,
+            "requested_at": stopped_at,
+        }
+        changed = self.ledger.reconcile_terminal(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_FAILED,
+            reason=reason,
+            actor=actor,
+            source="manual_force_stop",
+            evidence=evidence,
+            expected_job_name=expected_name,
+            expected_run_id=run_id,
+        )
+        if not changed:
+            raise HTTPException(
+                status_code=409,
+                detail="ledger state changed concurrently; no queued submission was promoted",
+            )
+        promoted = self.promote(category)
+        return {
+            "epoch": epoch,
+            "category": category,
+            "manifest_sha": manifest_sha,
+            "run_id": run_id,
+            "job_name": expected_name,
+            "job_status": terminal_observation.status,
+            "status": STATUS_FAILED,
+            "reason": reason,
+            "promoted_job_name": promoted,
+        }
+
     def _read_manifest(self, manifest_path: str):
         if self.s3 is not None:
             key = manifest_path.lstrip("/")
@@ -424,6 +548,16 @@ def create_app(service: IngestService) -> FastAPI:
             "next_offset": page.next_offset,
             "truncated": page.truncated,
         }
+
+    @app.post("/ingest/force-stop")
+    def force_stop(payload: ForceStopPayload) -> dict:
+        return service.force_stop(
+            epoch=payload.epoch,
+            category=payload.category,
+            manifest_sha=payload.manifest_sha,
+            run_id=payload.run_id,
+            requested_by=payload.requested_by,
+        )
 
     @app.post("/ingest/reconcile")
     def reconcile() -> dict:

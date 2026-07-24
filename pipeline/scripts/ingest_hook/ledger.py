@@ -452,6 +452,8 @@ class Ledger:
         reason: str | None = None,
         evidence: dict | None = None,
         expected_status: str | None = None,
+        expected_job_name: str | None = None,
+        expected_run_id: str | None = None,
     ) -> bool:
         event_id = str(uuid.uuid4())
         created_at = _now()
@@ -460,7 +462,7 @@ class Ledger:
         )
         mark = self._mark
         select_sql = (
-            "SELECT status, job_name FROM ingest_ledger"
+            "SELECT status, job_name, run_id FROM ingest_ledger"
             f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
         )
         if self._dialect == "mysql":
@@ -486,8 +488,16 @@ class Ledger:
             if row is None:
                 return False
             values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
-            previous_status, job_name = str(values_row[0]), values_row[1]
+            previous_status, job_name, run_id = (
+                str(values_row[0]),
+                values_row[1],
+                values_row[2],
+            )
             if expected_status is not None and previous_status != expected_status:
+                return False
+            if expected_job_name is not None and job_name != expected_job_name:
+                return False
+            if expected_run_id is not None and run_id != expected_run_id:
                 return False
             cursor.execute(update_sql, values + (epoch, category, manifest_sha))
             cursor.execute(
@@ -722,6 +732,8 @@ class Ledger:
         actor: str,
         source: str,
         evidence: dict,
+        expected_job_name: str | None = None,
+        expected_run_id: str | None = None,
     ) -> bool:
         if status not in (STATUS_COMPLETE, STATUS_FAILED):
             raise ValueError(f"terminal reconciliation requires complete/failed, got {status!r}")
@@ -737,6 +749,8 @@ class Ledger:
             reason=reason,
             evidence=evidence,
             expected_status=STATUS_RUNNING,
+            expected_job_name=expected_job_name,
+            expected_run_id=expected_run_id,
         )
 
     # -- reads ----------------------------------------------------------------

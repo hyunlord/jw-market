@@ -1,7 +1,7 @@
 """Render and submit the incremental ingest Job (batch/v1).
 
 The trigger service is the only writer of Jobs and holds a Role limited to
-jobs create/get/list in its own namespace. The Job body mirrors
+jobs create/get/list/delete in its own namespace. The Job body mirrors
 deploy/k8s/ingest-hook/ingest-job-template.yaml; the manifest path and
 category labels are the only per-submission fields.
 
@@ -81,6 +81,7 @@ def _job_env() -> list[dict]:
 
 Transport = Callable[[str, dict], dict]
 InspectTransport = Callable[[str, str], dict]
+DeleteTransport = Callable[[str, dict], dict]
 
 
 @dataclass(frozen=True)
@@ -280,6 +281,19 @@ def _in_cluster_inspect(namespace: str, name: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _in_cluster_delete(url_path: str, body: dict) -> dict:
+    token = (_SA_DIR / "token").read_text().strip()
+    context = ssl.create_default_context(cafile=str(_SA_DIR / "ca.crt"))
+    request = urllib.request.Request(
+        f"https://kubernetes.default.svc{url_path}",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="DELETE",
+    )
+    with urllib.request.urlopen(request, context=context, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _job_status(payload: dict) -> str:
     status = payload.get("status") or {}
     for condition in status.get("conditions") or []:
@@ -342,6 +356,8 @@ def inspect_job(
         evidence={
             "job_name": name,
             "job_status": status,
+            "job_uid": metadata.get("uid"),
+            "resource_version": metadata.get("resourceVersion"),
             "created_at": metadata.get("creationTimestamp"),
             "active": int(raw_status.get("active") or 0),
             "failed": int(raw_status.get("failed") or 0),
@@ -349,6 +365,40 @@ def inspect_job(
             "conditions": conditions,
         },
     )
+
+
+def delete_job(
+    name: str,
+    *,
+    observation: JobObservation,
+    namespace: str | None = None,
+    transport: DeleteTransport | None = None,
+) -> None:
+    """Delete one exact observed Job with Kubernetes identity preconditions."""
+    if observation.evidence.get("job_name") != name:
+        raise ValueError("observed Job identity does not match the deletion target")
+    uid = observation.evidence.get("job_uid")
+    resource_version = observation.evidence.get("resource_version")
+    if not uid or not resource_version:
+        raise ValueError("Kubernetes Job UID/resourceVersion is required for force stop")
+    resolved_namespace = namespace or config.job_namespace()
+    path = f"/apis/batch/v1/namespaces/{resolved_namespace}/jobs/{name}"
+    body = {
+        "apiVersion": "v1",
+        "kind": "DeleteOptions",
+        "gracePeriodSeconds": 0,
+        "propagationPolicy": "Foreground",
+        "preconditions": {
+            "uid": uid,
+            "resourceVersion": resource_version,
+        },
+    }
+    send = transport or _in_cluster_delete
+    try:
+        send(path, body)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
 
 
 def submit_job(
