@@ -34,6 +34,36 @@ _METRIC_TERMS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("기간", ("기준기간", "기간")),
 )
 _ORDERED_LIST_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^\s*\d+[.)]\s+")
+_NUMBER_OCCURRENCE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?P<value>[+-]?\d[\d,]*(?:\.\d+)?)"
+    r"\s*"
+    r"(?P<unit>개월|시간|μg|ug|mg|mL|ml|μL|uL|%p|건|개|편|명|차례|주|일|회|g|%)?"
+    r"(?![A-Za-z])",
+    re.IGNORECASE,
+)
+_POSOLOGY_UNITS: Final[frozenset[str]] = frozenset(
+    {"개월", "시간", "μg", "ug", "mg", "ml", "μl", "ul", "주", "일", "회", "g"}
+)
+_POSOLOGY_CONTEXT_TERMS: Final[tuple[str, ...]] = (
+    "용법",
+    "용량",
+    "투여",
+    "주사",
+    "복용",
+    "간격",
+    "매월",
+    "매일",
+    "함량",
+    "농도",
+)
+_FACTUAL_PERCENT_CONTEXT_TERMS: Final[tuple[str, ...]] = (
+    "점유율",
+    "비율",
+    "성장률",
+    "증가율",
+    "감소율",
+)
 _SAME_ENTITY_OPERAND_METRICS: Final[frozenset[str]] = frozenset(
     {"점유율 변화", "매출 변화", "매출 변화율", "CAGR"}
 )
@@ -123,6 +153,49 @@ def claim_number_tokens(text: str) -> tuple[str, ...]:
             flags=re.IGNORECASE,
         )
     return tuple(dict.fromkeys((*number_tokens(without_periods), *periods)))
+
+
+def binding_claim_number_tokens(text: str) -> tuple[str, ...]:
+    tokens = claim_number_tokens(text)
+    occurrence_types: dict[str, set[str]] = {}
+    for match in _NUMBER_OCCURRENCE_RE.finditer(text):
+        normalized = number_tokens(match.group(0))
+        if not normalized:
+            continue
+        occurrence_type = (
+            "narrative"
+            if _is_posology_occurrence(text, match)
+            else "factual"
+        )
+        for token in normalized:
+            if token in tokens:
+                occurrence_types.setdefault(token, set()).add(occurrence_type)
+    return tuple(
+        token
+        for token in tokens
+        if occurrence_types.get(token) != {"narrative"}
+    )
+
+
+def _is_posology_occurrence(text: str, match: re.Match[str]) -> bool:
+    unit = str(match.group("unit") or "").casefold()
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_end = text.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end].casefold()
+
+    if "적응증" in line and not unit:
+        return True
+    if unit == "%":
+        if any(term in line for term in _FACTUAL_PERCENT_CONTEXT_TERMS):
+            return False
+        return any(term in line for term in ("함량", "농도"))
+    if unit not in _POSOLOGY_UNITS:
+        return False
+    if unit in {"μg", "ug", "mg", "ml", "μl", "ul", "g"}:
+        return True
+    return any(term in line for term in _POSOLOGY_CONTEXT_TERMS)
 
 
 def explicit_periods(text: str) -> tuple[str, ...]:

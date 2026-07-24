@@ -11,6 +11,7 @@ from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact, evidence_fro
 from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade
 from jw_chat_agent_poc.service.evidence_binding_rules import (
     IDENTIFIER_KEYS,
+    binding_claim_number_tokens,
     claim_number_tokens,
     claim_metrics_for_token,
     entity_matches,
@@ -96,7 +97,7 @@ def verify_claim_bindings(
     blocked: list[str] = []
     blocked_numbers: list[str] = []
     partial_reasons: list[str] = []
-    for token in claim_number_tokens(claim_text):
+    for token in binding_claim_number_tokens(claim_text):
         candidates = tuple(
             fact
             for fact in facts
