@@ -9,6 +9,7 @@ import pandas as pd
 from pipeline.etl.io.enrich.normalize import clean_scalar
 from pipeline.etl.io.enrich.schema import ENRICHED_COLUMNS
 from pipeline.etl.io.enrich.ubist_bridge import merge_parquet_sources, now_iso
+from pipeline.etl.io.iqvia_numeric import numeric_or_comma_string_to_double_sql
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +150,10 @@ def _iqvia_match_sql(*, nsa_glob: str, targets: list[str], atc_codes: list[str],
     brand_key = _iqvia_brand_key_expr()
     where = _candidate_where(targets, atc_codes)
     ingested = now_iso(ingested_at).replace("'", "''")
+    values_lc = numeric_or_comma_string_to_double_sql("values_lc")
+    counting_units = numeric_or_comma_string_to_double_sql("counting_units")
+    units = numeric_or_comma_string_to_double_sql("units")
+    dosage_units = numeric_or_comma_string_to_double_sql("dosage_units")
     return (
         "WITH candidates AS ("
         "SELECT *, "
@@ -181,10 +186,10 @@ def _iqvia_match_sql(*, nsa_glob: str, targets: list[str], atc_codes: list[str],
         ") "
         "SELECT "
         "matched_ml_id AS ml_id, product_id, 'nsa' AS source, period_label AS period_yyyymm, "
-        "try_cast(replace(values_lc, ',', '') AS DOUBLE) AS raw_rx_amt, "
-        "try_cast(replace(counting_units, ',', '') AS DOUBLE) AS raw_rx_cnt, "
-        "coalesce(try_cast(replace(units, ',', '') AS DOUBLE), try_cast(replace(dosage_units, ',', '') AS DOUBLE)) AS raw_rx_qty, "
-        "try_cast(replace(values_lc, ',', '') AS DOUBLE) AS canonical_value, "
+        f"{values_lc} AS raw_rx_amt, "
+        f"{counting_units} AS raw_rx_cnt, "
+        f"coalesce({units}, {dosage_units}) AS raw_rx_qty, "
+        f"{values_lc} AS canonical_value, "
         "CASE WHEN channel_key = '' THEN 'Unknown' ELSE channel_key END AS channel, "
         "'' AS specialty, match_method, match_confidence, 'nsa_canonical_parquet' AS source_table, "
         "concat('nsa::', coalesce(cast(source_file AS varchar), ''), '::', coalesce(cast(sheet_name AS varchar), ''), "

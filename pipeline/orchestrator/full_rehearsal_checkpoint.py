@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 from pipeline.orchestrator.full_rehearsal_checkpoint_census import (
     artifact_records,
     checkpoint_census,
+    iqvia_nsa_schema_fingerprint,
     read_database_census,
 )
 from pipeline.orchestrator.full_rehearsal_checkpoint_contract import (
@@ -68,6 +69,12 @@ class S1CheckpointStore:
             copied_artifacts = artifact_records(s1)
             if copied_artifacts != source_artifacts:
                 raise CheckpointContractError("copied checkpoint artifact identity mismatch")
+            source_schema_fingerprint = iqvia_nsa_schema_fingerprint(work)
+            copied_schema_fingerprint = iqvia_nsa_schema_fingerprint(s1)
+            if copied_schema_fingerprint != source_schema_fingerprint:
+                raise CheckpointContractError(
+                    "copied checkpoint IQVIA NSA schema fingerprint mismatch"
+                )
             temporary.mkdir(parents=True, exist_ok=True)
             os.replace(temporary, destination)
             census.append(
@@ -77,11 +84,19 @@ class S1CheckpointStore:
                     "detail": "immutable prefix promoted before completion marker",
                 }
             )
+            census.append(
+                {
+                    "check": "10-iqvia-schema-fingerprint",
+                    "passed": True,
+                    "detail": f"sha256={copied_schema_fingerprint}",
+                }
+            )
             completion = {
                 "artifacts": copied_artifacts,
                 "census": census,
                 "checkpoint_id": checkpoint_id,
                 "input_inventory_canonical_sha": inventory_canonical_sha(inventory_path),
+                "iqvia_nsa_schema_fingerprint": copied_schema_fingerprint,
                 "status": "complete",
             }
             marker_tmp = destination / ".__completion_tmp"
@@ -112,6 +127,11 @@ class S1CheckpointStore:
             ) from exc
         if actual != completion.get("artifacts"):
             raise CheckpointContractError("checkpoint artifact identity mismatch")
+        actual_schema_fingerprint = iqvia_nsa_schema_fingerprint(s1)
+        if actual_schema_fingerprint != completion.get("iqvia_nsa_schema_fingerprint"):
+            raise CheckpointContractError(
+                "checkpoint IQVIA NSA schema fingerprint mismatch"
+            )
         target = work_dir.resolve()
         if target.exists():
             raise CheckpointContractError(f"restore work directory already exists: {target}")
