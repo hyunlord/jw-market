@@ -367,6 +367,88 @@ def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(m
     assert "conversation_state_persist" in span_names
 
 
+def test_implicit_nedrug_followup_inherits_grounded_brand() -> None:
+    previous = ConversationTurn(
+        question="아일리아 매출 알려줘",
+        answer="아일리아 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="아일리아"),
+    )
+
+    assert requires_previous_turn("NeDrug 효능효과·용법용량") is True
+
+    resolved = resolve_anaphora("NeDrug 효능효과·용법용량", previous)
+
+    assert resolved.resolved_question == "NeDrug: 아일리아 효능효과·용법용량"
+    assert resolved.brand == "아일리아"
+    assert resolved.interpretation_notice == "아일리아의 효능효과·용법용량 요청으로 이해했어요."
+    assert resolved.unresolved_reference is False
+
+
+def test_implicit_brand_followup_fails_closed_without_anchor() -> None:
+    assert requires_previous_turn("효능효과") is True
+
+    resolved = resolve_anaphora("효능효과", None)
+
+    assert resolved.resolved_question == "효능효과"
+    assert resolved.brand is None
+    assert resolved.unresolved_reference is True
+
+
+def test_independent_market_question_never_inherits_previous_brand() -> None:
+    previous = ConversationTurn(
+        question="아일리아 매출 알려줘",
+        answer="아일리아 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="아일리아"),
+    )
+
+    assert requires_previous_turn("고지혈증 시장 브랜드") is False
+
+    resolved = resolve_anaphora("고지혈증 시장 브랜드", previous)
+
+    assert resolved.resolved_question == "고지혈증 시장 브랜드"
+    assert resolved.brand is None
+    assert resolved.interpretation_notice is None
+    assert resolved.unresolved_reference is False
+
+
+def test_implicit_nedrug_followup_hydrates_cross_pod_anchor(monkeypatch) -> None:
+    class SharedHistory:
+        def latest_turn(self, conversation_id: str):
+            assert conversation_id == "cross-pod-nedrug-conversation"
+            return ConversationTurn(
+                question="아일리아 매출 알려줘",
+                answer="아일리아 매출을 확인했습니다.",
+                slots=ConversationSlots(anchor_brand="아일리아"),
+            )
+
+    captured: list[str] = []
+
+    def capture_answer(_resolver, _factory, _conversation_id, question, *_args, **_kwargs):
+        captured.append(question)
+        return {"answer": "아일리아 허가정보", "sources": ["MFDS"], "tool_calls": []}
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", capture_answer)
+
+    item = _answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "NeDrug 효능효과·용법용량",
+        "live",
+        "cross-pod-nedrug-conversation",
+        use_direct_agent_loop=True,
+        conversation_history=SharedHistory(),
+    )
+
+    assert captured == ["NeDrug: 아일리아 효능효과·용법용량"]
+    assert item["result"]["conversation_interpretation"] == (
+        "아일리아의 효능효과·용법용량 요청으로 이해했어요."
+    )
+    span_names = [span["name"] for span in item["result"]["_qa_spans"]]
+    assert "conversation_history_fetch" in span_names
+    assert "conversation_history_replay" in span_names
+
+
 def test_deep_mode_followup_uses_resolved_state_and_discloses_interpretation(monkeypatch) -> None:
     store = SessionStore()
     store.conversations.record_exchange(
