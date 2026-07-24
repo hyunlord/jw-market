@@ -30,6 +30,7 @@ CRAWL_STAGES: Final[tuple[str, ...]] = tuple(INTERNAL_STAGE_BY_ACTIVITY.values()
 RUN_ID_PATTERN: Final = re.compile(r"^jw-agent-[a-z0-9][a-z0-9._-]{0,95}$")
 STAGE_GATE_SCHEMA: Final = "crawl-stage-gate/v1"
 BASELINE_SCHEMA: Final = "crawl-exposure-baseline/v1"
+WORKFLOW_EXECUTION_TIMEOUT_SECONDS: Final = 86_400
 
 
 class StageGateError(RuntimeError):
@@ -121,10 +122,10 @@ class ActivityPolicy:
 
 ACTIVITY_POLICIES: Final[dict[str, ActivityPolicy]] = {
     "capture_exposure_baseline": ActivityPolicy(900, 120),
-    "tier1_collect": ActivityPolicy(10_800, 300),
+    "tier1_collect": ActivityPolicy(10_800, 300, maximum_attempts=1),
     "tier1_classify": ActivityPolicy(1_800, 120),
-    "tier2_collect": ActivityPolicy(28_800, 300),
-    "tier2_classify_and_refresh": ActivityPolicy(7_200, 120),
+    "tier2_collect": ActivityPolicy(57_600, 300, maximum_attempts=1),
+    "tier2_classify_and_refresh": ActivityPolicy(7_200, 120, maximum_attempts=1),
 }
 
 

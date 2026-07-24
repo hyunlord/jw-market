@@ -10,7 +10,10 @@ from datetime import timedelta
 
 from temporalio.client import Client
 
-from pipeline.scripts.crawler.crawl_temporal_contract import CrawlDailyInput
+from pipeline.scripts.crawler.crawl_temporal_contract import (
+    WORKFLOW_EXECUTION_TIMEOUT_SECONDS,
+    CrawlDailyInput,
+)
 from pipeline.scripts.crawler.temporal_crawl_daily import (
     CrawlDailyWorkflow,
     NAMESPACE,
@@ -36,7 +39,7 @@ async def run(args: argparse.Namespace) -> None:
         config,
         id=args.workflow_id,
         task_queue=os.getenv("TEMPORAL_TASK_QUEUE", TASK_QUEUE),
-        execution_timeout=timedelta(hours=16),
+        execution_timeout=timedelta(seconds=WORKFLOW_EXECUTION_TIMEOUT_SECONDS),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
 

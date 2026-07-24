@@ -7,8 +7,10 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -109,11 +111,51 @@ def _timeout_for(stage: Stage) -> int:
     names = {
         Stage.TIER1_COLLECT: ("CRAWL_CHAIN_TIMEOUT_TIER1_COLLECT", 10_800),
         Stage.TIER1_CLASSIFY: ("CRAWL_CHAIN_TIMEOUT_TIER1_CLASSIFY", 900),
-        Stage.TIER2_COLLECT: ("CRAWL_CHAIN_TIMEOUT_TIER2_COLLECT", 28_800),
+        Stage.TIER2_COLLECT: ("CRAWL_CHAIN_TIMEOUT_TIER2_COLLECT", 57_000),
         Stage.TIER2_CLASSIFY: ("CRAWL_CHAIN_TIMEOUT_TIER2_CLASSIFY", 1_800),
     }
     env_name, default = names[stage]
     return int(os.environ.get(env_name, str(default)))
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[bytes],
+    *,
+    grace_seconds: float = 10,
+) -> None:
+    if process.poll() is not None:
+        return
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + grace_seconds
+    while _process_group_exists(process_group_id) and time.monotonic() < deadline:
+        if process.poll() is None:
+            try:
+                process.wait(timeout=min(0.1, max(0.0, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            time.sleep(0.05)
+
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.wait()
 
 
 def _receipt_path(run_root: Path, stage: Stage) -> Path:
@@ -176,13 +218,16 @@ def _run_stage(
     )
     gate: StageGate | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [str(config.stage_script), stage.value],
-            check=False,
             env=env,
-            timeout=_timeout_for(stage),
+            start_new_session=True,
         )
-        exit_code = completed.returncode
+        try:
+            exit_code = process.wait(timeout=_timeout_for(stage))
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(process)
+            raise
         error_code = "" if exit_code == 0 else "stage_nonzero_exit"
         if exit_code == 0:
             try:

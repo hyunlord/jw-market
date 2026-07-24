@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import signal
 import time
 from collections import deque
 from dataclasses import asdict
@@ -76,11 +78,22 @@ def _load_complete_receipt(config: CrawlDailyInput, stage: str) -> dict[str, Any
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
-    process.terminate()
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
     try:
         await asyncio.wait_for(process.wait(), timeout=10)
     except TimeoutError:
-        process.kill()
+        pass
+
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return
+    if process.returncode is None:
         await process.wait()
 
 
@@ -93,6 +106,7 @@ async def _run_stage_process(config: CrawlDailyInput, activity_name: str) -> dic
         cwd=config.repo_root,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
     tail: deque[str] = deque(maxlen=200)
     line_count = 0

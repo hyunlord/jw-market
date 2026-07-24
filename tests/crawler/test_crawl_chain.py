@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+from pipeline.scripts.crawler.crawl_chain import Stage, _timeout_for
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -87,6 +91,82 @@ def _run(
 def _stage_log(tmp_path: Path) -> list[str]:
     path = tmp_path / "stages.log"
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_tier2_stage_timeout_leaves_temporal_cleanup_margin(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CRAWL_CHAIN_TIMEOUT_TIER2_COLLECT", raising=False)
+
+    assert _timeout_for(Stage.TIER2_COLLECT) == 57_000
+
+
+def test_stage_timeout_terminates_descendant_processes(tmp_path: Path) -> None:
+    # Given: a stage shell owns a long-running Python descendant.
+    child_pid_path = tmp_path / "child.pid"
+    stage_script = tmp_path / "crawl_chain_steps.sh"
+    stage_script.write_text(
+        """#!/bin/sh
+set -eu
+"$CHAIN_TEST_PYTHON" -c 'import os,time; open(os.environ["CHAIN_TEST_CHILD_PID"], "w").write(str(os.getpid())); time.sleep(60)' &
+wait
+""",
+        encoding="utf-8",
+    )
+    stage_script.chmod(0o755)
+    env = {
+        **os.environ,
+        "CHAIN_TEST_PYTHON": sys.executable,
+        "CHAIN_TEST_CHILD_PID": str(child_pid_path),
+        "CRAWL_CHAIN_TIMEOUT_TIER1_COLLECT": "1",
+    }
+
+    try:
+        # When: the durable runner reaches its timeout.
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(RUNNER),
+                "run-stage",
+                "--run-id",
+                "2026-07-24T23-00-00+09-00",
+                "--state-root",
+                str(tmp_path / "state"),
+                "--stage-script",
+                str(stage_script),
+                "--stage",
+                STAGES[0],
+                "--command-revision",
+                "cleanup-test",
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            timeout=15,
+        )
+        assert result.returncode == 124
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+        # Then: the shell's descendant is gone as well, not orphaned under PID 1.
+        deadline = time.monotonic() + 2
+        while _pid_exists(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_exists(child_pid)
+    finally:
+        if child_pid_path.exists():
+            child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+            if _pid_exists(child_pid):
+                os.kill(child_pid, signal.SIGKILL)
 
 
 def test_chain_stops_after_first_failed_stage_and_records_receipt(tmp_path: Path) -> None:
