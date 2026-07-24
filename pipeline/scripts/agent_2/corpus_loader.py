@@ -253,6 +253,7 @@ def build_rows(
         scores.append(
             {
                 "event_id": nid,
+                "news_id": nid,
                 "brand_name": match.get("drug"),
                 "brand_canonical": brand_canonical,
                 "brand_id": brand_id,
@@ -263,6 +264,8 @@ def build_rows(
                 "score_tier": score_to_tier(score),
                 "reason": match.get("reason"),
                 "source_processor": processed_by,
+                "derivation": "llm_direct",
+                "tag": category_label,
                 "tier": tier,
                 "collected_at": collected,
             }
