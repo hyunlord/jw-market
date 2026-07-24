@@ -16,6 +16,7 @@ from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_c
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolTrace
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
+from jw_chat_agent_poc.tool_use.evidence_projection import project_authoritative_external_evidence
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import (
     GenosToolChoiceProvider,
@@ -561,6 +562,7 @@ def _agent_result_payload(
     timing: Timing | None = None,
 ) -> dict[str, Any]:
     verified_statuses = {"ok", "partial"}
+    fact_md = result.answer if result.status in verified_statuses else ""
     payload = {
         "question": question,
         "resolution": None,
@@ -570,8 +572,9 @@ def _agent_result_payload(
         "answer": result.answer,
         "markdown_response": {
             "markdown": result.answer,
-            "fact_md": result.answer if result.status in verified_statuses else "",
+            "fact_md": fact_md,
             "data_md": "",
+            "evidence": project_authoritative_external_evidence(result.tool_calls, fact_md),
             "verification": {
                 "status": (
                     "pass"
