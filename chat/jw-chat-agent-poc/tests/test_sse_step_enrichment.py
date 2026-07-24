@@ -92,8 +92,8 @@ def test_file_schema_and_tool_steps_hide_internal_names() -> None:
     started = events[::2]
     assert [event["name"] for event in started] == [
         "첨부 파일 구조 분석",
-        "임상 데이터 조회",
-        "식약처 허가 정보 확인",
+        "ClinicalTrials.gov 조회 중",
+        "NeDrug 허가정보 조회 중",
         "시장 데이터 집계",
     ]
     assert started[0]["detail"] == "파일의 시트와 열 확인"

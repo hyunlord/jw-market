@@ -6,6 +6,7 @@ from html import escape
 from collections.abc import Iterable
 from typing import Any, Final
 
+from jw_chat_agent_poc.common.source_display import public_source_label
 
 NUMBER_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z])[+-]?\d[\d,]*(?:\.\d+)?(?:\s*(?:억\s*원|억원|원|명|건|개|위|년|월|%p|%))?"
@@ -128,25 +129,7 @@ def number_value(value: Any) -> str:
 
 
 def source_label(source: str | None) -> str:
-    key = "" if source is None else str(source)
-    labels = {
-        "cache": "UBIST",
-        "metrics": "UBIST",
-        "UBIST": "UBIST",
-        "IQVIA": "IQVIA",
-        "external_api": "외부 API",
-        "hira_disease": "HIRA 질병정보서비스",
-        "hira_procedure": "HIRA 진료행위정보서비스",
-        "web_search": "웹 검색 결과(미검증)",
-        "deep_analysis_events": "뉴스/이슈",
-        "nedrug_mcp": "식약처 의약품 정보",
-        "document": "업로드 문서",
-        "none": "데이터 없음",
-        "unsupported_brand": "브랜드 식별 미확인",
-        "ambiguous_brand": "브랜드 식별 후보",
-        "strategic_market_not_member": "전략시장 정의 미포함",
-    }
-    return labels.get(key, key or "도구 결과")
+    return public_source_label(source)
 
 
 def source_description(source: str | None) -> str:
@@ -156,16 +139,20 @@ def source_description(source: str | None) -> str:
         "IQVIA": "매출·시장규모·점유율·순위 등 운영 지표",
         "external_api": "ClinicalTrials, MFDS, OpenFDA 등 외부 조회 결과",
         "외부 API": "ClinicalTrials, MFDS, OpenFDA 등 외부 조회 결과",
+        "외부 데이터 원천": "분류되지 않은 외부 조회 결과",
         "hira_disease": "HIRA 질병정보서비스 KCD 기반 환자 통계",
         "HIRA 질병정보서비스": "KCD 기반 질병명 및 환자 통계",
+        "심사평가원(HIRA) 질병통계": "KCD 기반 질병명 및 환자 통계",
         "hira_procedure": "HIRA 5단 행위코드 기준 진료행위 통계",
         "HIRA 진료행위정보서비스": "5단 행위코드 기준 진료행위 통계",
+        "심사평가원(HIRA) 진료행위통계": "5단 행위코드 기준 진료행위 통계",
         "web_search": "웹 검색 결과 URL/snippet, 내부 fact 미승격",
         "웹 검색 결과(미검증)": "URL/snippet 기반 미검증 웹 검색 결과",
         "deep_analysis_events": "뉴스·이슈 분석 결과",
         "뉴스/이슈": "뉴스·이슈 분석 결과",
         "nedrug_mcp": "식약처 의약품 허가·성분·임상·특허 조회 결과",
         "식약처 의약품 정보": "식약처 의약품 허가·성분·임상·특허 조회 결과",
+        "식약처 의약품안전나라(NeDrug)": "식약처 의약품 허가·성분·임상·특허 조회 결과",
         "식약처 의약품 특허 정보": "식약처 의약품 특허 정보 조회 결과",
         "document": "사용자가 업로드한 문서 검색 결과",
         "업로드 문서": "사용자가 업로드한 문서 검색 결과",
