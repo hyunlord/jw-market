@@ -12,10 +12,12 @@ from pydantic import BaseModel
 import pytest
 
 from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
+from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
 from jw_chat_agent_poc.service.answer_safety import ensure_natural_fact_lead
 from jw_chat_agent_poc.service.genos_client import GenosClient
+from jw_chat_agent_poc.service.runtime_provenance import _facts_returned
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
-from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
+from jw_chat_agent_poc.tool_use.contracts import AgentResult, EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.executor import AgentExecutor
 import jw_chat_agent_poc.tool_use.integration as integration_module
 from jw_chat_agent_poc.tool_use.integration import _deterministic_tool_choices, run_external_tool_agent
@@ -59,6 +61,199 @@ def _fact() -> EvidenceFact:
         source_locator="pitavastatin",
         raw_ref=None,
     )
+
+
+def _result_with_fact(tool: str, fact: EvidenceFact, *, answer: str | None = None) -> AgentResult:
+    rendered = render_evidence_answer((fact,))
+    return AgentResult(
+        status="ok",
+        answer=rendered if answer is None else answer,
+        tool_calls=(
+            {
+                "tool": tool,
+                "source": "nedrug_mcp" if tool.startswith("mfds_") else "clinicaltrials_mcp",
+                "status": "ok",
+                "summary_text": "근거 1건 확인",
+                "render_data": {
+                    "ok": True,
+                    "preview": "근거 1건 확인",
+                    "evidence": [fact.model_dump(mode="json")],
+                    "error_code": None,
+                    "error_message": None,
+                },
+            },
+        ),
+        sources=(fact.source_name,),
+        traces=(),
+        fallback_code=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool", "fact"),
+    (
+        (
+            "mfds_permission_search",
+            EvidenceFact(
+                fact_id="mfds_permission_detail:아일리아:NB_DOC_DATA",
+                subject="아일리아",
+                metric="급여 기준",
+                value=None,
+                unit=None,
+                period=None,
+                source_name="식약처 의약품 허가 상세",
+                source_locator="아일리아주사 · 신생혈관성 연령관련 황반변성 급여 기준",
+                raw_ref="mfds_permission_detail:1:NB_DOC_DATA",
+            ),
+        ),
+        (
+            "clinicaltrials_study_details",
+            EvidenceFact(
+                fact_id="clinicaltrials_study_details:NCT05151731:eligibility",
+                subject="NCT05151731",
+                metric="선정·제외 기준",
+                value=None,
+                unit=None,
+                period=None,
+                source_name="ClinicalTrials.gov 임상시험 상세",
+                source_locator="Inclusion Criteria: DME · Exclusion Criteria: prior treatment",
+                raw_ref="clinicaltrials_study_details:eligibility",
+            ),
+        ),
+    ),
+)
+def test_mfds_and_clinicaltrials_facts_are_projected_to_markdown_evidence(
+    tool: str,
+    fact: EvidenceFact,
+) -> None:
+    result = _result_with_fact(tool, fact)
+
+    payload = integration_module._agent_result_payload("원문 질문", result)
+
+    assert payload["markdown_response"]["fact_md"] == result.answer
+    assert payload["markdown_response"]["evidence"] == [
+        {
+            "fact_id": fact.fact_id,
+            "label": fact.metric,
+            "value": fact.source_locator,
+            "source": fact.source_name,
+            "tool": tool,
+            "path": fact.raw_ref,
+            "period": "",
+            "allowed_numbers": list(allowed_numbers(result.answer)),
+            "visible": True,
+            "entity": fact.subject,
+            "metric": fact.metric,
+            "unit": "",
+            "source_grade": "AUTHORITATIVE",
+            "view": "",
+            "operand_fact_ids": [],
+        }
+    ]
+    assert _facts_returned(payload["markdown_response"])["evidence_count"] == 1
+
+
+def test_external_evidence_projection_rejects_fact_not_rendered_in_fact_markdown() -> None:
+    fact = EvidenceFact(
+        fact_id="mfds_permission_detail:아일리아:NB_DOC_DATA",
+        subject="아일리아",
+        metric="급여 기준",
+        value=None,
+        unit=None,
+        period=None,
+        source_name="식약처 의약품 허가 상세",
+        source_locator="아일리아주사 · 급여 기준",
+        raw_ref="mfds_permission_detail:1:NB_DOC_DATA",
+    )
+    result = _result_with_fact("mfds_permission_search", fact, answer="- 아일리아: 허가 품목 = 아일리아주사")
+
+    payload = integration_module._agent_result_payload("아일리아 급여기준", result)
+
+    assert payload["markdown_response"]["evidence"] == []
+
+
+@pytest.mark.parametrize(
+    "tool",
+    (
+        "hira_disease_hospitalization_outpatient_stats",
+        "get_brand_metric",
+    ),
+)
+def test_external_evidence_projection_does_not_expand_to_hira_or_mart_tools(
+    tool: str,
+) -> None:
+    fact = EvidenceFact(
+        fact_id="hira_disease:D693:2024",
+        subject="D693",
+        metric="환자수",
+        value=Decimal("3620"),
+        unit="명",
+        period="2024",
+        source_name="건강보험심사평가원",
+        source_locator="공식 통계",
+        raw_ref="hira_disease:2024",
+    )
+    result = _result_with_fact(tool, fact)
+
+    payload = integration_module._agent_result_payload("상병코드 D693 환자수 추이", result)
+
+    assert payload["markdown_response"]["evidence"] == []
+
+
+def test_clinicaltrials_projection_omits_missing_field_placeholders() -> None:
+    actual = EvidenceFact(
+        fact_id="clinicaltrials_study_details:NCT05151731:title",
+        subject="NCT05151731",
+        metric="연구 제목",
+        value=None,
+        unit=None,
+        period=None,
+        source_name="ClinicalTrials.gov 임상시험 상세",
+        source_locator="DME Study · https://clinicaltrials.gov/study/NCT05151731",
+        raw_ref="clinicaltrials_study_details:title",
+    )
+    missing = EvidenceFact(
+        fact_id="clinicaltrials_study_details:NCT05151731:start_date",
+        subject="NCT05151731",
+        metric="시험 시작일",
+        value=None,
+        unit=None,
+        period=None,
+        source_name="ClinicalTrials.gov 임상시험 상세",
+        source_locator="ClinicalTrials 상세 응답에서 시험 시작일을 확인할 수 없습니다.",
+        raw_ref="clinicaltrials_study_details:start_date",
+    )
+    result = AgentResult(
+        status="ok",
+        answer=render_evidence_answer((actual, missing)),
+        tool_calls=(
+            {
+                "tool": "clinicaltrials_study_details",
+                "source": "clinicaltrials_mcp",
+                "status": "ok",
+                "summary_text": "근거 2건 확인",
+                "render_data": {
+                    "ok": True,
+                    "evidence": [
+                        actual.model_dump(mode="json"),
+                        missing.model_dump(mode="json"),
+                    ],
+                },
+            },
+        ),
+        sources=("ClinicalTrials.gov 임상시험 상세",),
+        traces=(),
+        fallback_code=None,
+    )
+
+    payload = integration_module._agent_result_payload(
+        "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+        result,
+    )
+
+    evidence = payload["markdown_response"]["evidence"]
+    assert [fact["metric"] for fact in evidence] == ["연구 제목"]
+    assert all("확인할 수 없습니다" not in fact["value"] for fact in evidence)
 
 
 def test_evidence_renderer_uses_text_fact_without_placeholder_or_raw_scalars() -> None:
@@ -451,7 +646,20 @@ def test_nedrug_permission_fields_force_contract_backed_tool_in_off_mode(questio
     ]
 
 
-def test_forced_legacy_reimbursement_question_uses_nedrug_without_mart_text(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "question",
+    (
+        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        "Eylea 급여기준 알려줘",
+        "Aflibercept 급여기준 알려줘",
+        "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘",
+        "아일리아의 허가 품목명과 업체명을 공식 허가정보 기준으로 알려줘",
+    ),
+)
+def test_forced_legacy_reimbursement_question_uses_nedrug_without_mart_text(
+    monkeypatch,
+    question: str,
+) -> None:
     external = ExternalApiClient(mode="fixture")
 
     def permission_search(brand: str) -> ExternalCall:
@@ -492,7 +700,7 @@ def test_forced_legacy_reimbursement_question_uses_nedrug_without_mart_text(monk
     monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
 
     payload = run_external_tool_agent(
-        "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
+        question,
         resolver=BrandResolver(),
         external=external,
     )
@@ -501,6 +709,39 @@ def test_forced_legacy_reimbursement_question_uses_nedrug_without_mart_text(monk
     assert "신생혈관성 연령관련 황반변성 급여 기준" in payload["answer"]
     assert "mart" not in payload["answer"].casefold()
     assert "nhi_type" not in payload["answer"]
+    evidence = payload["markdown_response"]["evidence"]
+    assert evidence
+    assert _facts_returned(payload["markdown_response"])["evidence_count"] == len(evidence)
+    assert {fact["source_grade"] for fact in evidence} == {"AUTHORITATIVE"}
+    assert {fact["entity"] for fact in evidence} == {"아일리아"}
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "NCT05151731의 inclusion 및 exclusion Criteria 알려줘",
+        "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+    ),
+)
+def test_nct_detail_questions_project_actual_fields_to_markdown_evidence(
+    monkeypatch,
+    question: str,
+) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_ChoiceSequence((ToolChoice(None, {}, "unused", call_id=None),)),
+    )
+
+    evidence = payload["markdown_response"]["evidence"]
+    assert evidence
+    assert _facts_returned(payload["markdown_response"])["evidence_count"] == len(evidence)
+    assert {fact["source_grade"] for fact in evidence} == {"AUTHORITATIVE"}
+    assert {fact["entity"] for fact in evidence} == {"NCT05151731"}
+    assert "선정·제외 기준" in {fact["metric"] for fact in evidence}
+    assert all("확인할 수 없습니다" not in fact["value"] for fact in evidence)
 
 
 def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug() -> None:
