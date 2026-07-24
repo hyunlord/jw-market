@@ -1,4 +1,4 @@
-"""Nine-gate census for immutable R-1 s1 checkpoints."""
+"""Artifact and schema census for immutable R-1 s1 checkpoints."""
 
 from __future__ import annotations
 
@@ -6,12 +6,16 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Mapping
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
+from pipeline.etl.io.iqvia_numeric import IQVIA_ENRICH_METRICS
 from pipeline.orchestrator.full_rehearsal_checkpoint_contract import (
     CheckpointContractError,
     DatabaseCensus,
+    canonical_json,
     inventory_canonical_sha,
+    sha256_bytes,
     sha256_file,
 )
 
@@ -70,6 +74,50 @@ def artifact_records(s1_root: Path) -> list[dict[str, object]]:
         }
     )
     return sorted(records, key=lambda row: str(row["path"]))
+
+
+def iqvia_nsa_schema_fingerprint(s1_root: Path) -> str:
+    """Fingerprint supported physical types for every NSA metric parquet."""
+    schema_records: list[dict[str, object]] = []
+    for path in sorted((s1_root / "iqvia-nsa").rglob("*.parquet")):
+        schema = pq.ParquetFile(path).schema_arrow
+        fields = {field.name: field for field in schema}
+        metric_records: list[dict[str, object]] = []
+        for _, column in IQVIA_ENRICH_METRICS:
+            field = fields.get(column)
+            if field is None:
+                raise CheckpointContractError(
+                    f"missing IQVIA NSA metric schema: {path.name}:{column}"
+                )
+            data_type = field.type
+            supported = (
+                pa.types.is_integer(data_type)
+                or pa.types.is_floating(data_type)
+                or pa.types.is_decimal(data_type)
+                or pa.types.is_string(data_type)
+                or pa.types.is_large_string(data_type)
+            )
+            if not supported:
+                raise CheckpointContractError(
+                    "unsupported IQVIA NSA metric schema: "
+                    f"{path.name}:{column}={data_type}"
+                )
+            metric_records.append(
+                {
+                    "name": column,
+                    "nullable": field.nullable,
+                    "type": str(data_type),
+                }
+            )
+        schema_records.append(
+            {
+                "metrics": metric_records,
+                "path": path.relative_to(s1_root).as_posix(),
+            }
+        )
+    if not schema_records:
+        raise CheckpointContractError("IQVIA NSA schema population is empty")
+    return sha256_bytes(canonical_json(schema_records))
 
 
 def _sidecar_values(sidecar: object) -> tuple[Path, str]:

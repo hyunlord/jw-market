@@ -11,6 +11,7 @@ from .brand_key_normalize import best_name, normalize_brand_name
 from .general_catalog import _attach_catalog
 from .general_config import LOGGER, enriched_glob, iqvia_nsa_glob, mariadb_connect
 from .general_utils import iqvia_source_priority, normalise_iqvia_channel, normalize_period_label, safe_float
+from ..iqvia_numeric import numeric_or_comma_string_to_double_sql
 
 def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
     if os.environ.get("S4_INPUT_MODE", "raw") != "enriched":
@@ -111,6 +112,10 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
     LOGGER.info("[iqvia_nsa] aggregating Layer 2 enriched parquet")
+    values_lc = numeric_or_comma_string_to_double_sql("n.values_lc")
+    units = numeric_or_comma_string_to_double_sql("n.units")
+    dosage_units = numeric_or_comma_string_to_double_sql("n.dosage_units")
+    counting_units = numeric_or_comma_string_to_double_sql("n.counting_units")
     query = f"""
         WITH enriched AS (
           SELECT *,
@@ -146,10 +151,10 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
           first(n.mfr_name) AS mfr_name,
           first(n.atc4_code) AS atc4_code,
           first(n.atc4_desc) AS atc4_desc,
-          SUM(TRY_CAST(replace(n.values_lc, ',', '') AS DOUBLE)) AS raw_sales,
-          SUM(TRY_CAST(replace(n.units, ',', '') AS DOUBLE)) AS raw_unit,
-          SUM(TRY_CAST(replace(n.dosage_units, ',', '') AS DOUBLE)) AS raw_dosage_unit,
-          SUM(TRY_CAST(replace(n.counting_units, ',', '') AS DOUBLE)) AS raw_counting_unit
+          SUM({values_lc}) AS raw_sales,
+          SUM({units}) AS raw_unit,
+          SUM({dosage_units}) AS raw_dosage_unit,
+          SUM({counting_units}) AS raw_counting_unit
         FROM enriched e
         JOIN read_parquet('{iqvia_nsa_glob()}', union_by_name=true) n
           ON n.source_file = e.source_file_key

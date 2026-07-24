@@ -2,7 +2,10 @@ import hashlib
 import importlib.util
 import json
 import zipfile
+from datetime import date
 from pathlib import Path
+
+import openpyxl
 
 from pipeline.orchestrator.full_rehearsal import (
     FullRehearsalConfig,
@@ -12,6 +15,115 @@ from pipeline.orchestrator.full_rehearsal import (
 )
 from pipeline.orchestrator import full_rehearsal_preflight as preflight
 from pipeline.orchestrator import cli
+
+
+NSA_HEADERS = [
+    "DATA PERIOD",
+    "AUDIT CODE",
+    "AUDIT DESC",
+    "MFR CODE",
+    "MFR NAME",
+    "PRODUCT NAME",
+    "PACK DESC",
+    "Values LC",
+    "Units",
+    "Counting Units",
+    "Dosage Units",
+    "Price",
+]
+
+
+def _write_nsa_workbook(
+    path: Path,
+    *,
+    headers: list[str] | None = None,
+    metric_value: date | int | str = 1234,
+) -> None:
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "NSA"
+    sheet.append(headers or NSA_HEADERS)
+    sheet.append(
+        [
+            "2026-03-01",
+            "KCPA",
+            "Clinic",
+            "MFR",
+            "Manufacturer",
+            "Drug",
+            "10MG",
+            metric_value,
+            metric_value,
+            metric_value,
+            metric_value,
+            1,
+        ]
+    )
+    workbook.save(path)
+
+
+def _bounded_inputs(tmp_path: Path, nsa_path: Path) -> FullInputManifest:
+    ubist = tmp_path / "ubist"
+    ubist.mkdir()
+    (ubist / "raw.csv").write_text("period,value\n2026-05,1\n")
+    master = tmp_path / "master.csv"
+    master.write_text("market,value\nsample,1\n")
+    return FullInputManifest(ubist, nsa_path.parents[1], master)
+
+
+def test_bounded_inputs_rejects_missing_canonical_nsa_metric_header(
+    tmp_path: Path,
+) -> None:
+    nsa = tmp_path / "iqvia" / "NSA" / "KOR_NSA_Jun-25-2026.xlsx"
+    nsa.parent.mkdir(parents=True)
+    _write_nsa_workbook(
+        nsa,
+        headers=[header for header in NSA_HEADERS if header != "Values LC"],
+    )
+
+    finding = preflight.check_bounded_inputs(_bounded_inputs(tmp_path, nsa))
+
+    assert not finding.passed
+    assert "Values LC" in finding.detail
+
+
+def test_bounded_inputs_rejects_nonnumeric_canonical_nsa_metric_sample(
+    tmp_path: Path,
+) -> None:
+    nsa = tmp_path / "iqvia" / "NSA" / "KOR_NSA_Jun-25-2026.xlsx"
+    nsa.parent.mkdir(parents=True)
+    _write_nsa_workbook(nsa, metric_value="not-a-number")
+
+    finding = preflight.check_bounded_inputs(_bounded_inputs(tmp_path, nsa))
+
+    assert not finding.passed
+    assert "non-numeric IQVIA NSA metric" in finding.detail
+
+
+def test_bounded_inputs_accepts_comma_string_canonical_nsa_metric_sample(
+    tmp_path: Path,
+) -> None:
+    nsa = tmp_path / "iqvia" / "NSA" / "KOR_NSA_Jun-25-2026.xlsx"
+    nsa.parent.mkdir(parents=True)
+    _write_nsa_workbook(nsa, metric_value="1,234")
+
+    finding = preflight.check_bounded_inputs(_bounded_inputs(tmp_path, nsa))
+
+    assert finding.passed
+
+
+def test_bounded_inputs_rejects_non_scalar_canonical_nsa_metric_sample(
+    tmp_path: Path,
+) -> None:
+    nsa = tmp_path / "iqvia" / "NSA" / "KOR_NSA_Jun-25-2026.xlsx"
+    nsa.parent.mkdir(parents=True)
+    _write_nsa_workbook(nsa, metric_value=date(2026, 1, 1))
+
+    finding = preflight.check_bounded_inputs(_bounded_inputs(tmp_path, nsa))
+
+    assert not finding.passed
+    assert "non-numeric IQVIA NSA metric" in finding.detail
+
 
 def test_full_rehearsal_preflight_is_an_independent_module():
     assert (
@@ -187,7 +299,7 @@ def test_normal_preflight_completes_all_eleven_checks(tmp_path: Path, monkeypatc
     iqvia_file = iqvia / "NSA" / "KOR_NSA_Jun-25-2026.xlsx"
     master = master_dir / "MI_Master.xlsx"
     write_xlsx(ubist_file)
-    write_xlsx(iqvia_file)
+    _write_nsa_workbook(iqvia_file)
     write_xlsx(master)
     manifest = inputs_root / "input_manifest.json"
     manifest.write_text(
