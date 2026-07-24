@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -196,6 +197,44 @@ CREATE TABLE IF NOT EXISTS ingest_signal_event (
 )
 """
 
+_DDL_TRANSITION_SQLITE = """
+CREATE TABLE IF NOT EXISTS ingest_status_transition (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id        TEXT NOT NULL UNIQUE,
+  epoch           TEXT NOT NULL,
+  category        TEXT NOT NULL,
+  manifest_sha    TEXT NOT NULL,
+  previous_status TEXT,
+  status          TEXT NOT NULL,
+  actor           TEXT NOT NULL,
+  source          TEXT NOT NULL,
+  reason          TEXT,
+  job_name        TEXT,
+  evidence_json   TEXT NOT NULL,
+  created_at      TEXT NOT NULL
+)
+"""
+
+_DDL_TRANSITION_MYSQL = """
+CREATE TABLE IF NOT EXISTS ingest_status_transition (
+  id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+  event_id        CHAR(36) NOT NULL,
+  epoch           VARCHAR(32) NOT NULL,
+  category        VARCHAR(32) NOT NULL,
+  manifest_sha    CHAR(64) NOT NULL,
+  previous_status VARCHAR(16) NULL,
+  status          VARCHAR(16) NOT NULL,
+  actor           VARCHAR(64) NOT NULL,
+  source          VARCHAR(64) NOT NULL,
+  reason          TEXT NULL,
+  job_name        VARCHAR(128) NULL,
+  evidence_json   LONGTEXT NOT NULL,
+  created_at      DATETIME NOT NULL,
+  UNIQUE KEY uq_status_transition_event (event_id),
+  KEY idx_status_transition_identity (epoch, category, manifest_sha, id)
+)
+"""
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -250,6 +289,19 @@ class SignalEvent:
     created_at: str
 
 
+@dataclass(frozen=True)
+class StatusTransition:
+    event_id: str
+    previous_status: str | None
+    status: str
+    actor: str
+    source: str
+    reason: str | None
+    job_name: str | None
+    evidence: dict
+    created_at: str
+
+
 class Ledger:
     """Dialect-neutral ledger operations over an injected DB-API connection."""
 
@@ -271,6 +323,11 @@ class Ledger:
         cursor.execute(_DDL_SQLITE if self._dialect == "sqlite" else _DDL_MYSQL)
         cursor.execute(_DDL_STAGE_SQLITE if self._dialect == "sqlite" else _DDL_STAGE_MYSQL)
         cursor.execute(_DDL_SIGNAL_SQLITE if self._dialect == "sqlite" else _DDL_SIGNAL_MYSQL)
+        cursor.execute(
+            _DDL_TRANSITION_SQLITE
+            if self._dialect == "sqlite"
+            else _DDL_TRANSITION_MYSQL
+        )
         self._conn.commit()
 
     # -- helpers -----------------------------------------------------------
@@ -334,6 +391,182 @@ class Ledger:
                 f"retry: {exc}"
             ) from exc
 
+    def _transaction(self, operation):
+        """Run one ledger mutation atomically, reconnecting only before a retry.
+
+        ``operation`` receives a cursor and must not commit. A dead MySQL
+        connection rolls its open transaction back server-side; the same
+        operation is retried once after reconnect. Transition inserts use a
+        stable event id and duplicate-safe SQL so an ambiguous commit response
+        cannot create duplicate history.
+        """
+        with self._lock:
+            for attempt in (1, 2):
+                cursor = self._conn.cursor()
+                try:
+                    result = operation(cursor)
+                    self._conn.commit()
+                    return result
+                except _STALE_CONN_ERRORS as exc:
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
+                    if (
+                        self._dialect != "mysql"
+                        or not _is_stale_connection_error(exc)
+                        or attempt == 2
+                    ):
+                        if self._dialect == "mysql" and _is_stale_connection_error(exc):
+                            raise LedgerConnectionError(
+                                "ingest ledger DB connection unavailable during "
+                                f"transaction: {exc}"
+                            ) from exc
+                        raise
+                    try:
+                        self._conn.ping(reconnect=True)
+                    except Exception as reconnect_exc:
+                        raise LedgerConnectionError(
+                            "ingest ledger DB unreachable on transaction reconnect: "
+                            f"{reconnect_exc}"
+                        ) from reconnect_exc
+                except Exception:
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+        raise AssertionError("transaction retry loop exhausted")
+
+    def _transition(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        status: str,
+        assignments: str,
+        values: tuple,
+        actor: str,
+        source: str,
+        reason: str | None = None,
+        evidence: dict | None = None,
+        expected_status: str | None = None,
+    ) -> bool:
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        evidence_json = json.dumps(
+            evidence or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        mark = self._mark
+        select_sql = (
+            "SELECT status, job_name FROM ingest_ledger"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        if self._dialect == "mysql":
+            select_sql += " FOR UPDATE"
+        update_sql = (
+            f"UPDATE ingest_ledger SET {assignments}"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        history_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+        )
+        if self._dialect == "sqlite":
+            history_sql += " ON CONFLICT(event_id) DO NOTHING"
+        else:
+            history_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
+
+        def operation(cursor):
+            cursor.execute(select_sql, (epoch, category, manifest_sha))
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            previous_status, job_name = str(values_row[0]), values_row[1]
+            if expected_status is not None and previous_status != expected_status:
+                return False
+            cursor.execute(update_sql, values + (epoch, category, manifest_sha))
+            cursor.execute(
+                history_sql,
+                (
+                    event_id,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    previous_status,
+                    status,
+                    actor,
+                    source,
+                    reason[:4000] if reason else None,
+                    job_name,
+                    evidence_json,
+                    created_at,
+                ),
+            )
+            return True
+
+        return bool(self._transaction(operation))
+
+    def _insert_queued(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        manifest_path: str,
+        uploaded_by: str | None,
+    ) -> None:
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        mark = self._mark
+        ledger_sql = (
+            "INSERT INTO ingest_ledger"
+            " (epoch, category, manifest_sha, manifest_path, uploaded_by, status, received_at)"
+            f" VALUES ({', '.join([mark] * 7)})"
+        )
+        history_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+        )
+
+        def operation(cursor):
+            cursor.execute(
+                ledger_sql,
+                (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    manifest_path,
+                    uploaded_by,
+                    STATUS_QUEUED,
+                    created_at,
+                ),
+            )
+            cursor.execute(
+                history_sql,
+                (
+                    event_id,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    None,
+                    STATUS_QUEUED,
+                    "ingest_service",
+                    "webhook_receive",
+                    "new submission queued",
+                    None,
+                    "{}",
+                    created_at,
+                ),
+            )
+
+        self._transaction(operation)
+
     def _fetch_row(self, epoch: str, category: str, manifest_sha: str):
         cursor = self._execute(
             "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
@@ -372,18 +605,20 @@ class Ledger:
             if status in _HELD_STATUSES:
                 return ReceiveDecision("noop", status, f"identity already {status}; webhook ignored")
             # failed -> allow retry
-            self._execute(
-                "UPDATE ingest_ledger SET status=?, reason=?, received_at=?, uploaded_by=?"
-                " WHERE epoch=? AND category=? AND manifest_sha=?",
-                (STATUS_QUEUED, "re-queued after failure", _now(), uploaded_by, epoch, category, manifest_sha),
+            reason = "re-queued after failure"
+            self._transition(
+                epoch,
+                category,
+                manifest_sha,
+                status=STATUS_QUEUED,
+                assignments=f"status={self._mark}, reason={self._mark}, received_at={self._mark}, uploaded_by={self._mark}",
+                values=(STATUS_QUEUED, reason, _now(), uploaded_by),
+                actor="ingest_service",
+                source="webhook_retry",
+                reason=reason,
             )
             return ReceiveDecision("queued", STATUS_QUEUED, "previous attempt failed; re-queued")
-        self._execute(
-            "INSERT INTO ingest_ledger"
-            " (epoch, category, manifest_sha, manifest_path, uploaded_by, status, received_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (epoch, category, manifest_sha, manifest_path, uploaded_by, STATUS_QUEUED, _now()),
-        )
+        self._insert_queued(epoch, category, manifest_sha, manifest_path, uploaded_by)
         return ReceiveDecision("queued", STATUS_QUEUED, "new submission queued")
 
     # -- category serialisation ---------------------------------------------
@@ -414,39 +649,127 @@ class Ledger:
             for row in cursor.fetchall()
         ]
 
+    def running_entries(self) -> list[LedgerEntry]:
+        cursor = self._execute(
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
+            " run_id, row_counts, received_at, started_at, finished_at"
+            " FROM ingest_ledger WHERE status=? ORDER BY category, started_at, id",
+            (STATUS_RUNNING,),
+        )
+        return [self._entry(row) for row in cursor.fetchall()]
+
     # -- state transitions ---------------------------------------------------
     def mark_running(self, epoch: str, category: str, manifest_sha: str, *, job_name: str, run_id: str) -> None:
-        self._execute(
-            "UPDATE ingest_ledger SET status=?, job_name=?, run_id=?, started_at=?"
-            " WHERE epoch=? AND category=? AND manifest_sha=?",
-            (STATUS_RUNNING, job_name, run_id, _now(), epoch, category, manifest_sha),
+        self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_RUNNING,
+            assignments=f"status={self._mark}, job_name={self._mark}, run_id={self._mark}, started_at={self._mark}",
+            values=(STATUS_RUNNING, job_name, run_id, _now()),
+            actor="ingest_service",
+            source="job_submission",
+            evidence={"run_id": run_id, "job_name": job_name},
         )
 
     def mark_complete(self, epoch: str, category: str, manifest_sha: str, *, row_counts: dict[str, int]) -> None:
-        self._execute(
-            "UPDATE ingest_ledger SET status=?, reason=NULL, row_counts=?, finished_at=?"
-            " WHERE epoch=? AND category=? AND manifest_sha=?",
-            (STATUS_COMPLETE, json.dumps(row_counts, ensure_ascii=False), _now(), epoch, category, manifest_sha),
+        self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_COMPLETE,
+            assignments=f"status={self._mark}, reason=NULL, row_counts={self._mark}, finished_at={self._mark}",
+            values=(STATUS_COMPLETE, json.dumps(row_counts, ensure_ascii=False), _now()),
+            actor="job_runner",
+            source="runner_completion",
+            evidence={"row_counts": row_counts},
         )
 
     def mark_failed(self, epoch: str, category: str, manifest_sha: str, *, reason: str) -> None:
-        self._execute(
-            "UPDATE ingest_ledger SET status=?, reason=?, finished_at=?"
-            " WHERE epoch=? AND category=? AND manifest_sha=?",
-            (STATUS_FAILED, reason[:4000], _now(), epoch, category, manifest_sha),
+        self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_FAILED,
+            assignments=f"status={self._mark}, reason={self._mark}, finished_at={self._mark}",
+            values=(STATUS_FAILED, reason[:4000], _now()),
+            actor="job_runner",
+            source="runner_failure",
+            reason=reason,
         )
 
     def mark_gate_failed(self, epoch: str, category: str, manifest_sha: str, *, reason: str) -> None:
-        self._execute(
-            "UPDATE ingest_ledger SET status=?, reason=?, finished_at=?"
-            " WHERE epoch=? AND category=? AND manifest_sha=?",
-            (STATUS_GATE_FAILED, reason[:4000], _now(), epoch, category, manifest_sha),
+        self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_GATE_FAILED,
+            assignments=f"status={self._mark}, reason={self._mark}, finished_at={self._mark}",
+            values=(STATUS_GATE_FAILED, reason[:4000], _now()),
+            actor="job_runner",
+            source="gate_failure",
+            reason=reason,
+        )
+
+    def reconcile_terminal(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        status: str,
+        reason: str,
+        actor: str,
+        source: str,
+        evidence: dict,
+    ) -> bool:
+        if status not in (STATUS_COMPLETE, STATUS_FAILED):
+            raise ValueError(f"terminal reconciliation requires complete/failed, got {status!r}")
+        return self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=status,
+            assignments=f"status={self._mark}, reason={self._mark}, finished_at={self._mark}",
+            values=(status, reason[:4000], _now()),
+            actor=actor,
+            source=source,
+            reason=reason,
+            evidence=evidence,
+            expected_status=STATUS_RUNNING,
         )
 
     # -- reads ----------------------------------------------------------------
     def status(self, epoch: str, category: str, manifest_sha: str) -> LedgerEntry | None:
         row = self._fetch_row(epoch, category, manifest_sha)
         return self._entry(row) if row is not None else None
+
+    def status_transitions(
+        self, epoch: str, category: str, manifest_sha: str
+    ) -> list[StatusTransition]:
+        cursor = self._execute(
+            "SELECT event_id, previous_status, status, actor, source, reason,"
+            " job_name, evidence_json, created_at FROM ingest_status_transition"
+            " WHERE epoch=? AND category=? AND manifest_sha=? ORDER BY id",
+            (epoch, category, manifest_sha),
+        )
+        result = []
+        for row in cursor.fetchall():
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            result.append(
+                StatusTransition(
+                    event_id=str(values[0]),
+                    previous_status=str(values[1]) if values[1] else None,
+                    status=str(values[2]),
+                    actor=str(values[3]),
+                    source=str(values[4]),
+                    reason=str(values[5]) if values[5] else None,
+                    job_name=str(values[6]) if values[6] else None,
+                    evidence=json.loads(values[7]),
+                    created_at=str(values[8]),
+                )
+            )
+        return result
 
     def previous_complete_total(self, category: str, *, before_epoch: str) -> int | None:
         """Total loaded rows of the most recent completed submission before this epoch."""

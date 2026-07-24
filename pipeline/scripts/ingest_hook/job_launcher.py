@@ -16,6 +16,7 @@ import ssl
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
@@ -80,6 +81,13 @@ def _job_env() -> list[dict]:
 
 Transport = Callable[[str, dict], dict]
 InspectTransport = Callable[[str, str], dict]
+
+
+@dataclass(frozen=True)
+class JobObservation:
+    status: str  # Pending | Running | Complete | Failed | Absent
+    reason: str | None
+    evidence: dict
 
 
 class JobSubmissionConflict(RuntimeError):
@@ -284,6 +292,63 @@ def _job_status(payload: dict) -> str:
     if status.get("succeeded"):
         return "Complete"
     return "Pending"
+
+
+def inspect_job(
+    name: str,
+    *,
+    namespace: str | None = None,
+    transport: InspectTransport | None = None,
+) -> JobObservation:
+    """Read one Job and retain a bounded condition summary for durable evidence."""
+    inspect = transport or _in_cluster_inspect
+    resolved_namespace = namespace or config.job_namespace()
+    try:
+        payload = inspect(resolved_namespace, name)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        return JobObservation(
+            status="Absent",
+            reason="NotFound",
+            evidence={"job_name": name, "job_status": "Absent", "conditions": []},
+        )
+
+    status = _job_status(payload)
+    raw_status = payload.get("status") or {}
+    conditions = []
+    for item in raw_status.get("conditions") or []:
+        conditions.append(
+            {
+                "type": str(item.get("type") or ""),
+                "status": str(item.get("status") or ""),
+                "reason": str(item.get("reason") or ""),
+                "message": str(item.get("message") or "")[:1000],
+                "last_transition_time": item.get("lastTransitionTime"),
+            }
+        )
+    terminal = next(
+        (
+            item
+            for item in conditions
+            if item["status"] == "True" and item["type"] in {"Complete", "Failed"}
+        ),
+        None,
+    )
+    metadata = payload.get("metadata") or {}
+    return JobObservation(
+        status=status,
+        reason=(terminal or {}).get("reason") or None,
+        evidence={
+            "job_name": name,
+            "job_status": status,
+            "created_at": metadata.get("creationTimestamp"),
+            "active": int(raw_status.get("active") or 0),
+            "failed": int(raw_status.get("failed") or 0),
+            "succeeded": int(raw_status.get("succeeded") or 0),
+            "conditions": conditions,
+        },
+    )
 
 
 def submit_job(

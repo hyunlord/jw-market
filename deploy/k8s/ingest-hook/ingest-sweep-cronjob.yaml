@@ -1,4 +1,4 @@
-# Loss sweep — daily watchdog for lost webhooks. NOT a load batch: on a normal
+# Loss/terminal sweep — five-minute watchdog. NOT a load batch: on a normal
 # day it finds every complete manifest already recorded and exits no-op.
 #
 # Registered SUSPENDED (suspend: true). Resume is part of the PL-gated
@@ -9,7 +9,7 @@ metadata:
   name: jw-ingest-sweep-daily
   namespace: llmops
 spec:
-  schedule: "30 19 * * *"        # 04:30 KST daily
+  schedule: "*/5 * * * *"        # bounds terminal-ledger blockage to one interval
   suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3

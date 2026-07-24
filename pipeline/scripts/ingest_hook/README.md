@@ -107,7 +107,9 @@ G-4 sweep). 전체: `python -m pytest tests/ingest_hook -q`.
 ## 파일럿 이후 활성화 절차 (PL 게이트)
 
 1. 계약 정본과 `contract.py`/`category_map.py` 필드 대사 (D_design F-1)
-2. mart DB 에 `ingest_ledger` DDL 적용 (ledger.py `_DDL_MYSQL`)
+2. mart DB 에 `ingest_ledger` 및 append-only
+   `ingest_status_transition` DDL 적용
+   (`ledger.py`의 `_DDL_MYSQL`, `reference/ingest-status-transition.sql`)
 3. D-3a 격리 검증 완료 후에만 production output root 와 sweep resume 여부 결정
 4. 사이트에 webhook URL(`/ingest/webhook`)·상태 URL(`/ingest/status`) 공유
 
