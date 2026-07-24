@@ -473,7 +473,7 @@ def test_hira_answer_is_markdown_with_disease_tables() -> None:
     assert "| 구분 | 질병코드 | 질병명 |" in answer
     assert "E78" in answer
     assert "지질단백질대사장애" in answer
-    assert "HIRA 질병정보서비스" in answer
+    assert "심사평가원(HIRA) 질병통계" in answer
 
 
 def test_get_disease_stats_call_renders_hira_patient_facts_in_body() -> None:
@@ -620,7 +620,7 @@ def test_get_procedure_stats_facade_reads_nested_hira_procedure_counts() -> None
     assert "| 외래 | MM302 | 기관절개술 | 2024 | 1234 | 1300 | 1400 |" in response.markdown
     assert "### HIRA 진료행위통계 fact" in response.fact_md
     assert "| 외래 | MM302 | 기관절개술 | 2024 | 1234 |" in response.fact_md
-    assert "HIRA 진료행위정보서비스" in response.markdown
+    assert "심사평가원(HIRA) 진료행위통계" in response.markdown
 
 
 def test_web_search_facade_renders_nested_results_as_unverified_external_section() -> None:

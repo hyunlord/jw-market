@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from jw_chat_agent_poc.common.source_display import source_label_for_tool
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     ALL_CHANNELS_LABEL,
     MISSING_LABEL,
@@ -74,29 +75,16 @@ def _source_from_tool(call: Mapping[str, Any]) -> str:
     tool = str(call.get("tool") or "")
     if tool == "requested_source_unavailable":
         return "지원 범위"
-    if tool in {"get_drug_main_ingredient", "mfds_composition"}:
-        return "식약처 의약품 성분 정보"
-    if tool in {"mfds_permission_search", "mfds_permission_detail", "mfds_easy_drug", "search_drug_info"}:
-        return "식약처 의약품 허가 정보"
-    if tool == "mfds_clinical_trial_kr":
-        return "식약처 임상시험 정보"
-    if tool in {"mfds_patent", "mfds_fda_orangebook", "get_patent_expiry"}:
-        return "식약처 의약품 특허 정보"
-    if tool.startswith("openfda"):
-        return "OpenFDA 의약품 라벨 정보"
-    if "clinicaltrials" in tool:
-        return "ClinicalTrials.gov"
-    if tool.startswith("hira_disease"):
-        return "hira_disease"
-    if tool.startswith("hira_procedure"):
-        return "hira_procedure"
+    mapped = source_label_for_tool(tool)
+    if mapped:
+        return mapped
     if call.get("safe_url"):
         return "external_api"
     return ""
 
 
 _GENERIC_PROVIDER_SOURCES = frozenset(
-    {"external_api", "nedrug_mcp", "openfda_mcp", "clinicaltrials_mcp"}
+    {"external", "external_api", "nedrug_mcp", "openfda_mcp", "clinicaltrials_mcp"}
 )
 
 

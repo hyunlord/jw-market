@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Any, Callable, Iterator
 
+from jw_chat_agent_poc.common.source_display import TOOL_STEP_LABELS, tool_step_label
 from jw_chat_agent_poc.common.token_usage import public_token_usage
 
 
@@ -70,7 +71,7 @@ _PUBLIC_STAGE_NAMES = {
     "final_deterministic_single_period_sales_path": "답변 작성",
     "final_llm_retry": "답변 재작성",
     "answer_safety": "숫자 검증",
-    "answer_generation_total": "답변 생성 전체",
+    "answer_generation_total": "도구 조회 및 답변 작성",
     "deep_research_total": "딥리서치 전체",
     "answer_cleanup": "답변 정리",
     "chart_generation": "차트 준비",
@@ -82,35 +83,7 @@ _PUBLIC_STAGE_NAMES = {
     "deep_research_synthesis": "딥리서치 종합 분석",
 }
 
-_PUBLIC_TOOL_NAMES = {
-    "get_metric": "시장 지표 조회",
-    "get_market_scope": "시장 범위 확인",
-    "get_brand_metric": "시장 데이터 집계",
-    "get_brand_sales": "브랜드 매출 조회",
-    "get_brand_share": "브랜드 점유율 확인",
-    "get_brand_series": "브랜드 추이 확인",
-    "get_top_brands": "상위 브랜드 확인",
-    "get_market_landscape": "경쟁 구도 조회",
-    "clinicaltrials_v2_search": "임상 데이터 조회",
-    "search_clinical": "임상시험 통합 조회",
-    "clinical_scope_notice": "임상 조회 범위 확인",
-    "competitor_molecule_candidates": "경쟁 성분 확인",
-    "mfds_clinical_trial_kr": "국내 임상 정보 확인",
-    "mfds_permission_search": "식약처 허가 정보 확인",
-    "search_drug_info": "식약처 허가 정보 확인",
-    "mfds_patent": "의약품 특허 정보 확인",
-    "mfds_fda_orangebook": "FDA 특허 정보 확인",
-    "search_patent": "특허 정보 통합 조회",
-    "openfda_label_search": "FDA 안전성 정보 확인",
-    "openfda_combo_label_search": "FDA 복합제 안전성 정보 확인",
-    "search_safety": "FDA 안전성 정보 확인",
-    "hira_disease": "건강보험 환자 정보 확인",
-    "get_disease_stats": "건강보험 환자 정보 확인",
-    "search_news": "뉴스·이슈 확인",
-    "csd_activity_trend": "영업 활동 추이 확인",
-    "matching_policy_notice": "의약품 일치 기준 확인",
-    "web_search": "최신 웹 자료 검색",
-}
+_PUBLIC_TOOL_NAMES = TOOL_STEP_LABELS
 
 
 @dataclass(slots=True)
@@ -153,7 +126,7 @@ _PUBLIC_STAGE_DETAILS = {
 def _public_stage_name(name: str) -> str:
     if name.startswith("tool:"):
         tool_name = name.removeprefix("tool:")
-        return _PUBLIC_TOOL_NAMES.get(tool_name, "관련 데이터 조회")
+        return tool_step_label(tool_name)
     return _PUBLIC_STAGE_NAMES.get(name, name)
 
 

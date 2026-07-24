@@ -560,7 +560,7 @@ def test_agent_executor_records_the_external_tool_stage_and_evidence_count() -> 
             "detail": "리바로 임상시험",
         }
     ]
-    assert events[-1]["name"] == "임상 데이터 조회"
+    assert events[-1]["name"] == "ClinicalTrials.gov 조회 중"
     assert events[-1]["status"] == "done"
     assert events[-1]["summary"] == "근거 1건 확인"
 
@@ -921,12 +921,12 @@ def test_exact_stroke_review_runs_contract_tools_concurrently(monkeypatch) -> No
         event
         for event in events
         if event.get("name")
-        in {"임상 데이터 조회", "국내 임상 정보 확인"}
+        in {"ClinicalTrials.gov 조회 중", "NeDrug 국내 임상정보 조회 중"}
     ]
     assert [event["status"] for event in tool_events[:2]] == ["started"] * 2
     assert {event["name"] for event in tool_events[:2]} == {
-        "임상 데이터 조회",
-        "국내 임상 정보 확인",
+        "ClinicalTrials.gov 조회 중",
+        "NeDrug 국내 임상정보 조회 중",
     }
 
 

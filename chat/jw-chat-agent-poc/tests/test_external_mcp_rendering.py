@@ -94,7 +94,7 @@ def test_mfds_permission_provenance_is_not_labeled_as_patent() -> None:
     )
 
     # Then: the public source reflects the permission tool rather than the MCP host label.
-    assert "식약처 의약품 허가 정보" in response.sources_md
+    assert "식약처 의약품안전나라(NeDrug)" in response.sources_md
     assert "식약처 의약품 특허 정보" not in response.sources_md
 
 
