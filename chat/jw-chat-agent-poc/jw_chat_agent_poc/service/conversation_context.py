@@ -38,6 +38,14 @@ _GENERIC_REFERENCE_RE = re.compile(
     r"^\s*(?:그건|그거|그것|이건|이거|이것|저건|저거|저것)(?:은|는|도)?(?:\s+.*)?[?!.]?\s*$",
     re.IGNORECASE,
 )
+_IMPLICIT_BRAND_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:(?P<prefix>NeDrug)\s*:?\s*)?(?P<body>.+?)"
+    r"(?:\s*(?:알려\s*줘|알려\s*주세요|확인해\s*줘|확인해\s*주세요))?\s*[?!.]?\s*$",
+    re.IGNORECASE,
+)
+_IMPLICIT_BRAND_FOLLOWUP_BODY_RE = re.compile(
+    r"^(?:(?:효능(?:효과)?|용법(?:용량)?|사용상주의사항))+$"
+)
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
     (re.compile(r"점유율\s*(?:경향성|추이|흐름|변화)"), "점유율 추이"),
@@ -208,6 +216,18 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
             brand=brand,
             interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
         )
+    implicit_brand_followup = _implicit_brand_followup(question)
+    if implicit_brand_followup is not None:
+        if previous_turn is None or not previous_turn.slots.anchor_brand:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        prefix, intent = implicit_brand_followup
+        brand = previous_turn.slots.anchor_brand
+        resolved_prefix = "NeDrug: " if prefix else ""
+        return AnaphoraResolution(
+            resolved_question=f"{resolved_prefix}{brand} {intent}",
+            brand=brand,
+            interpretation_notice=f"{brand}의 {intent} 요청으로 이해했어요.",
+        )
     if _GENERIC_REFERENCE_RE.match(question):
         return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
     if not any(pattern.search(question) for pattern in _REFERENCE_RES):
@@ -251,8 +271,20 @@ def requires_previous_turn(question: str) -> bool:
         or _METRIC_ONLY_FOLLOWUP_RE.match(question)
         or _PERIOD_ONLY_FOLLOWUP_RE.match(question)
         or _GENERIC_REFERENCE_RE.match(question)
+        or _implicit_brand_followup(question)
         or any(pattern.search(question) for pattern in _REFERENCE_RES)
     )
+
+
+def _implicit_brand_followup(question: str) -> tuple[str, str] | None:
+    match = _IMPLICIT_BRAND_FOLLOWUP_RE.fullmatch(question)
+    if match is None:
+        return None
+    intent = match.group("body").strip()
+    normalized = re.sub(r"[\s·ㆍ,/+&]+", "", intent)
+    if not normalized or _IMPLICIT_BRAND_FOLLOWUP_BODY_RE.fullmatch(normalized) is None:
+        return None
+    return (match.group("prefix") or "", intent)
 
 
 def _inheritable_intent(question: str) -> str:
