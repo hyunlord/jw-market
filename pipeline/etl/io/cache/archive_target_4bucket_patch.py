@@ -54,6 +54,7 @@ TARGET_LABEL_REWRITE_ANCHOR = '''    target_customer_competition_by_channel = _t
         series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
         rank_series_cache=analysis_rank_series_cache,
+        brand_cohort=brand_cohort,
     )
 '''
 
@@ -88,6 +89,7 @@ TARGET_LABEL_REWRITE_BLOCK = '''    target_customer_competition_by_channel = _ta
         series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
         rank_series_cache=analysis_rank_series_cache,
+        brand_cohort=brand_cohort,
     )
     if source_api == "UBIST" and isinstance(ubist_channel_context, dict):
         target_label_map = ubist_channel_context.get("target_channel_label_map")

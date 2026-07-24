@@ -3942,6 +3942,7 @@ def build_response(
         market_series=market_series,
         ei_market_key=market_row.get("id"),
     )
+    brand_cohort = tuple(str(row["brand"]) for row in display_entries_no_others)
     target_display = next((row for row in display_entries_no_others if row.get("is_target")), {})
     periods = resolved_periods if resolved_periods is not None else _history_periods(sibling_rows, source_api)
     hhi_points = _annual_share_hhi_from_rows(
@@ -4002,6 +4003,7 @@ def build_response(
         series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
         rank_series_cache=analysis_rank_series_cache,
+        brand_cohort=brand_cohort,
     )
     level_top5_trend = _level_top5_trend(
         analysis_levels,
@@ -4013,6 +4015,7 @@ def build_response(
         series_value_cache=analysis_series_value_cache,
         channel_rows_cache=analysis_channel_rows_cache,
         rank_series_cache=analysis_rank_series_cache,
+        brand_cohort=brand_cohort,
     )
     target_customer_competition = target_customer_competition_by_channel
     if precomputed_block is not None:

@@ -93,7 +93,6 @@ def build_analysis_level_sections(
             series_value_cache=series_value_cache,
             series_observed_cache=series_observed_cache,
             channel_rows_cache=channel_rows_cache,
-            brand_cohort=brand_cohort,
         )
         analysis_levels = cause_builder._ensure_split_class_alias(analysis_levels)
         rows_by_level = cause_builder._level_rows_by_segment(
@@ -110,6 +109,7 @@ def build_analysis_level_sections(
             channel="전체",
             series_value_cache=series_value_cache,
             channel_rows_cache=channel_rows_cache,
+            brand_cohort=brand_cohort,
         )
         market_status_channels = _market_status_channels(
             source=source_api,

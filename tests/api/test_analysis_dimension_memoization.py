@@ -520,6 +520,7 @@ def test_level_top5_reuses_identical_overall_brand_payload(monkeypatch) -> None:
 
 def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch) -> None:
     rows = [{"brand_key": "a", "brand_name": "A"}]
+    brand_cohort = ("A", "B", "C", "D", "E", "F")
     build_calls = []
     trend_calls = []
 
@@ -571,17 +572,21 @@ def test_strategic_analysis_builds_share_request_local_series_caches(monkeypatch
         metrics=metrics,
         focus=None,
         mart_db="jw_mart",
+        brand_cohort=brand_cohort,
     )
 
     assert result is not None
     assert len(build_calls) == 2
+    assert "brand_cohort" not in build_calls[0]
     assert build_calls[0]["series_value_cache"] is build_calls[1]["series_value_cache"]
     assert build_calls[0]["series_observed_cache"] is build_calls[1]["series_observed_cache"]
+    assert trend_calls[0]["brand_cohort"] == brand_cohort
     assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]
 
 
-def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkeypatch) -> None:
+def test_strategic_ml_build_response_fixes_display_cohort_for_detail_builders(monkeypatch) -> None:
     rows = [{"brand_key": "same-a", "brand_name": "Same A", "company_name": "Same Co"}]
+    brand_cohort = ("Same A", "Peer B", "Peer C", "Peer D", "Peer E", "Peer F")
     build_calls = []
     trend_calls = []
     competition_calls = []
@@ -597,7 +602,14 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     monkeypatch.setattr(cause_builder, "_row_company", lambda row: row.get("company_name"))
     monkeypatch.setattr(cause_builder, "_stacked_ranking", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cause_builder, "_target_rank_overrides", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(cause_builder, "_display_brand_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        cause_builder,
+        "_display_brand_rows",
+        lambda *_args, **_kwargs: [
+            {"brand": brand, "is_target": brand == "Same A"}
+            for brand in brand_cohort
+        ],
+    )
     monkeypatch.setattr(cause_builder, "_annual_share_hhi_from_rows", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cause_builder, "_company_hhi_from_rows", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(cause_builder, "_data_period_coverage", lambda *_args, **_kwargs: {})
@@ -665,5 +677,7 @@ def test_legacy_build_response_reuses_analysis_levels_when_channels_match(monkey
     assert result["data"]["kpi"]["brand_cagr_5y_pct"] is None
     assert result["data"]["kpi"]["brand_cagr_3y_pct"] is None
     assert len(build_calls) == 1
+    assert competition_calls[0]["brand_cohort"] == brand_cohort
+    assert trend_calls[0]["brand_cohort"] == brand_cohort
     assert trend_calls[0]["series_value_cache"] is build_calls[0]["series_value_cache"]
     assert competition_calls[0]["rank_series_cache"] is trend_calls[0]["rank_series_cache"]
