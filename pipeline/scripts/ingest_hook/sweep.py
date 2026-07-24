@@ -1,9 +1,10 @@
-"""Loss sweep — daily watchdog, NOT a load batch (normal day = no-op).
+"""Loss/terminal sweep — five-minute watchdog, NOT a load batch (normal = no-op).
 
-Scans the submission root for complete manifests, compares them to the
-ledger, and re-kicks anything unrecorded or failed-stale. A submission whose
-webhook was lost is therefore picked up at most one sweep later. Runs from the
-suspended CronJob deploy/k8s/ingest-hook/ingest-sweep-cronjob.yaml.
+First reconciles terminal Kubernetes Jobs that still have a running ledger row,
+then scans complete manifests and re-kicks anything unrecorded or failed-stale.
+A lost webhook or stale running row is picked up at most one active sweep later.
+Runs from the suspended CronJob
+deploy/k8s/ingest-hook/ingest-sweep-cronjob.yaml.
 
 Rehearsal mode (--rehearsal-root) executes the runner inline instead of
 creating Jobs, so the watchdog path itself is testable with zero cluster or
@@ -42,10 +43,11 @@ def sweep(
     rehearsal_root: Path | None = None,
     s3=None,
 ) -> dict:
-    """Return {found, kicked, skipped} counts plus per-manifest actions."""
+    """Reconcile terminal Jobs, then return manifest sweep action counts."""
     actions: list[dict] = []
     kicked = 0
     service = IngestService(ledger, input_root, transport=transport, s3=s3)
+    terminal = service.reconcile_terminal_jobs()
 
     for manifest_path, loader in _iter_manifests(input_root, s3):
         try:
@@ -80,7 +82,12 @@ def sweep(
             actions.append({"path": str(manifest_path), "action": "kicked", "job_name": name})
         kicked += 1
 
-    return {"found": len(actions), "kicked": kicked, "actions": actions}
+    return {
+        "found": len(actions),
+        "kicked": kicked,
+        "actions": actions,
+        "terminal": terminal,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -24,7 +24,12 @@ from pydantic import BaseModel
 from pipeline.scripts.ingest_hook import config, job_launcher, stage_logs
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
-from pipeline.scripts.ingest_hook.ledger import Ledger, LedgerConnectionError
+from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_COMPLETE,
+    STATUS_FAILED,
+    Ledger,
+    LedgerConnectionError,
+)
 
 
 class WebhookPayload(BaseModel):
@@ -100,6 +105,139 @@ class IngestService:
         )
         self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
+
+    def reconcile_terminal_jobs(self) -> dict:
+        """Repair stale running rows from Kubernetes truth, then unblock FIFO.
+
+        The ledger transition and append-only evidence are one DB transaction.
+        Job creation is necessarily outside that transaction, so promotion uses
+        the existing idempotent path immediately afterward. If the process dies
+        between those steps, the queued row remains eligible for the next
+        reconcile instead of leaving the category blocked by stale ``running``.
+        """
+        actions: list[dict] = []
+        reconciled = 0
+        inspection_failures = 0
+        for entry in self.ledger.running_entries():
+            if entry.job_name is None:
+                observation = job_launcher.JobObservation(
+                    status="Absent",
+                    reason="ledger job_name missing",
+                    evidence={
+                        "job_name": None,
+                        "job_status": "Absent",
+                        "conditions": [],
+                    },
+                )
+            else:
+                try:
+                    observation = job_launcher.inspect_job(
+                        entry.job_name,
+                        transport=self.inspect_transport,
+                    )
+                except Exception as exc:  # noqa: BLE001 - Kubernetes is an external boundary
+                    inspection_failures += 1
+                    actions.append(
+                        {
+                            "epoch": entry.epoch,
+                            "category": entry.category,
+                            "manifest_sha": entry.manifest_sha,
+                            "job_name": entry.job_name,
+                            "action": "inspection-failed",
+                            "error": type(exc).__name__,
+                        }
+                    )
+                    continue
+
+            if observation.status in {"Pending", "Running"}:
+                actions.append(
+                    {
+                        "epoch": entry.epoch,
+                        "category": entry.category,
+                        "manifest_sha": entry.manifest_sha,
+                        "job_name": entry.job_name,
+                        "action": "untouched",
+                        "job_status": observation.status,
+                    }
+                )
+                continue
+
+            if observation.status == "Complete":
+                ledger_status = STATUS_COMPLETE
+                source = "kubernetes_job_terminal_present"
+                reason = (
+                    "terminal-present: Kubernetes Job Complete; runner callback "
+                    "did not finalize the ledger"
+                )
+            elif observation.status == "Failed":
+                ledger_status = STATUS_FAILED
+                source = "kubernetes_job_terminal_present"
+                detail = observation.reason or "condition reason unavailable"
+                reason = f"terminal-present: Kubernetes Job Failed: {detail}"
+            elif observation.status == "Absent":
+                ledger_status = STATUS_FAILED
+                source = "kubernetes_job_absent"
+                reason = (
+                    "job-absent: Kubernetes Job not found for a running ledger row; "
+                    "it may have expired or been deleted"
+                )
+            else:
+                actions.append(
+                    {
+                        "epoch": entry.epoch,
+                        "category": entry.category,
+                        "manifest_sha": entry.manifest_sha,
+                        "job_name": entry.job_name,
+                        "action": "inspection-failed",
+                        "error": f"unsupported status {observation.status}",
+                    }
+                )
+                inspection_failures += 1
+                continue
+
+            changed = self.ledger.reconcile_terminal(
+                entry.epoch,
+                entry.category,
+                entry.manifest_sha,
+                status=ledger_status,
+                reason=reason,
+                actor="terminal_job_reconciler",
+                source=source,
+                evidence=observation.evidence,
+            )
+            if not changed:
+                actions.append(
+                    {
+                        "epoch": entry.epoch,
+                        "category": entry.category,
+                        "manifest_sha": entry.manifest_sha,
+                        "job_name": entry.job_name,
+                        "action": "state-changed-concurrently",
+                        "job_status": observation.status,
+                    }
+                )
+                continue
+
+            reconciled += 1
+            promoted = self.promote(entry.category)
+            actions.append(
+                {
+                    "epoch": entry.epoch,
+                    "category": entry.category,
+                    "manifest_sha": entry.manifest_sha,
+                    "job_name": entry.job_name,
+                    "action": "reconciled",
+                    "job_status": observation.status,
+                    "ledger_status": ledger_status,
+                    "promoted_job_name": promoted,
+                }
+            )
+        return {
+            "checked": len(actions),
+            "reconciled": reconciled,
+            "inspection_failures": inspection_failures,
+            "actions": actions,
+        }
 
     def _read_manifest(self, manifest_path: str):
         if self.s3 is not None:
@@ -289,12 +427,13 @@ def create_app(service: IngestService) -> FastAPI:
 
     @app.post("/ingest/reconcile")
     def reconcile() -> dict:
+        terminal = service.reconcile_terminal_jobs()
         launched = {
             category: name
             for category in service.ledger.queued_categories()
             if (name := service.promote(category)) is not None
         }
-        return {"launched": launched}
+        return {"terminal": terminal, "launched": launched}
 
     return app
 
