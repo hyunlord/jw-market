@@ -26,9 +26,8 @@ def test_market_ids_for_riva(db_conn):
     assert "ml_006" in ids["ml_ids"]
 
 
-def test_event_cutoff_applied(db_conn, config):
+def test_event_central_selection_order_and_cap(db_conn, config):
     eb = build_event_bundle("리바로", db_conn, datetime(2026, 5, 24, 8, 0, tzinfo=KST), config.event)
-    assert all(e["score"] >= config.event.min_score_direct for e in eb["direct_events"])
     assert len(eb["direct_events"]) <= config.event.max_count_direct
     rows = [(e["score"], e["published_date"], e["news_id"]) for e in eb["direct_events"]]
     for previous, current in zip(rows, rows[1:]):

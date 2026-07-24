@@ -1,153 +1,133 @@
 from __future__ import annotations
 
+from datetime import date
+
+import pytest
+
 from agent2_density_worklist import (
-    KNOWN_UNMATCHED_EVENT_BRANDS,
+    UnknownEventBrandError,
     build_brand_identities,
-    build_evidence_counts_from_rows,
+    build_central_evidence_from_rows,
     route_density_worklist,
 )
 
 
+def _brand_rows() -> list[dict]:
+    return [
+        {
+            "brand_key": "ryzodeg-key",
+            "brand_name": "리조덱플렉스터치",
+            "raw_value_history": {"2026-04": 10},
+        },
+        {
+            "brand_key": "zero-key",
+            "brand_name": "제로브랜드",
+            "raw_value_history": {"2026-04": 1},
+        },
+        {
+            "brand_key": "winnerf-key",
+            "brand_name": "위너프에이플러스",
+            "raw_value_history": {"2026-04": 3},
+        },
+        {
+            "brand_key": "tresiba-key",
+            "brand_name": "트레시바플렉스터치",
+            "raw_value_history": {"2026-04": 4},
+        },
+    ]
+
+
+def _score(brand: str, news_id: str, score: int = 53) -> dict:
+    return {
+        "news_id": news_id,
+        "brand_canonical": brand,
+        "brand_name": brand,
+        "mirrored_from_jw_brands": None,
+        "source_processor": "workflow_196_rev5674",
+        "derivation": "llm_direct",
+        "tag": "자본/경영",
+        "score": score,
+        "published_date": date(2026, 7, 1),
+        "joined_news_id": news_id,
+    }
+
+
 def test_brand_identity_uses_agent3_canonical_name_rule() -> None:
     rows = [
-        {"brand_key": "bk-1", "brand_name": "낮은표기", "raw_value_history": {"2026-04": 1}},
-        {"brand_key": "bk-1", "brand_name": "대표표기", "raw_value_history": {"2026-04": 10}},
-        {"brand_key": "bk-2", "brand_name": "제로브랜드", "raw_value_history": {"2026-04": 0}},
+        {
+            "brand_key": "bk-1",
+            "brand_name": "낮은표기",
+            "raw_value_history": {"2026-04": 1},
+        },
+        {
+            "brand_key": "bk-1",
+            "brand_name": "대표표기",
+            "raw_value_history": {"2026-04": 10},
+        },
     ]
 
     identities = build_brand_identities(rows)
 
     assert [(item.brand_key, item.canonical_brand_name) for item in identities] == [
         ("bk-1", "대표표기"),
-        ("bk-2", "제로브랜드"),
     ]
 
 
-def test_evidence_counts_map_event_names_to_keys_and_exclude_unmatched_known_brands() -> None:
-    brand_rows = [
-        {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},
-        {"brand_key": "etc-key", "brand_name": "기타브랜드", "raw_value_history": {"2026-04": 5}},
-    ]
-    score_rows = [
-        {
-            "brand_canonical": "자본브랜드",
-            "source_processor": "tier2_llm_v1",
-            "derivation": "llm_direct",
-            "tag": "자본/경영",
-            "score": 43,
-        },
-        {
-            "brand_canonical": "기타브랜드",
-            "source_processor": "tier2_llm_v1",
-            "derivation": "llm_direct",
-            "tag": "기타",
-            "score": 99,
-        },
-        {
-            "brand_canonical": "리조덱",
-            "source_processor": "tier2_llm_v1",
-            "derivation": "llm_direct",
-            "tag": "신약/R&D",
-            "score": 99,
-        },
-    ]
+def test_central_evidence_maps_aliases_and_records_registered_exclusions() -> None:
+    result = build_central_evidence_from_rows(
+        _brand_rows(),
+        [
+            _score("리조덱", "r"),
+            _score("트레시바", "t"),
+            _score("위너프A+", "w"),
+            _score("염화칼륨", "e"),
+            _score("오메가", "o"),
+            _score("하트만", "h"),
+        ],
+    )
 
-    result = build_evidence_counts_from_rows(brand_rows, score_rows)
-
-    assert result.unmatched_known == ("리조덱",)
+    assert [(row.brand_key, row.score.news_id) for row in result.score_rows] == [
+        ("ryzodeg-key", "r"),
+        ("tresiba-key", "t"),
+        ("winnerf-key", "w"),
+    ]
+    assert result.excluded_registered == ("염화칼륨", "오메가", "하트만")
     assert result.unmatched_unknown == ()
-    assert "리조덱" in KNOWN_UNMATCHED_EVENT_BRANDS
-    assert [(row.brand, row.count, row.tag, row.score_cutoff) for row in result.counts] == [
-        ("capital-key", 1, "자본/경영", 43)
-    ]
 
 
-def test_evidence_counts_resolve_pl_confirmed_winnerf_a_plus_alias() -> None:
-    brand_rows = [
-        {"brand_key": "winnerf-a-plus-key", "brand_name": "위너프에이플러스", "raw_value_history": {"2026-04": 10}},
-    ]
-    score_rows = [
+def test_central_evidence_hard_fails_unknown_alias() -> None:
+    with pytest.raises(UnknownEventBrandError, match="미등재"):
+        build_central_evidence_from_rows(
+            _brand_rows(),
+            [_score("미등재", "unknown")],
+        )
+
+
+def test_central_evidence_routes_cross_mirror_with_shared_input_rule() -> None:
+    row = _score("제로브랜드", "cross")
+    row.update(
         {
-            "brand_canonical": "위너프A+",
-            "source_processor": "workflow_196_optionB",
-            "derivation": "llm_direct",
-            "tag": "신약/R&D",
-            "score": 54,
-        },
-        {
-            "brand_canonical": "트레시바",
-            "source_processor": "tier2_llm_v1",
-            "derivation": "llm_direct",
-            "tag": "신약/R&D",
-            "score": 99,
-        },
-    ]
-
-    result = build_evidence_counts_from_rows(brand_rows, score_rows)
-
-    assert "위너프A+" not in KNOWN_UNMATCHED_EVENT_BRANDS
-    assert result.unmatched_known == ("트레시바",)
-    assert result.unmatched_unknown == ()
-    assert [(row.brand, row.count, row.tag, row.score_cutoff) for row in result.counts] == [
-        ("winnerf-a-plus-key", 1, "신약/R&D", 54)
-    ]
-
-
-def test_route_density_worklist_returns_brand_key_routes_with_display_names() -> None:
-    brand_rows = [
-        {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},
-        {"brand_key": "zero-key", "brand_name": "제로브랜드", "raw_value_history": {"2026-04": 1}},
-    ]
-    score_rows = [
-        {
-            "brand_canonical": "자본브랜드",
-            "source_processor": "tier2_llm_v1",
-            "derivation": "llm_direct",
-            "tag": "자본/경영",
-            "score": 43,
+            "derivation": "cross_match",
+            "source_processor": "cross_match_adapter_v1",
+            "mirrored_from_jw_brands": '["리조덱"]',
         }
+    )
+
+    result = build_central_evidence_from_rows(_brand_rows(), [row])
+
+    assert [(item.brand_key, item.score.news_id) for item in result.score_rows] == [
+        ("ryzodeg-key", "cross"),
+        ("zero-key", "cross"),
     ]
 
-    worklist = route_density_worklist(brand_rows, score_rows)
 
-    assert [(item.brand_key, item.canonical_brand_name, item.route.bucket) for item in worklist.routed] == [
-        ("capital-key", "자본브랜드", "sparse"),
-        ("zero-key", "제로브랜드", "zero"),
-    ]
-    assert worklist.evidence.unmatched_known == ()
+def test_route_density_worklist_uses_central_cutoff_and_keeps_zero_brand() -> None:
+    worklist = route_density_worklist(
+        _brand_rows(),
+        [_score("리조덱", "central-only", score=50)],
+    )
+    routed = {item.brand_key: item.route for item in worklist.routed}
 
-
-def test_evidence_counts_branch_cutoff_by_wf196_processor() -> None:
-    brand_rows = [
-        {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},
-    ]
-    score_rows = [
-        {
-            "brand_canonical": "자본브랜드",
-            "source_processor": "workflow_196_optionB",
-            "derivation": "llm_direct",
-            "tag": "자본/경영",
-            "score": 50,
-        },
-        {
-            "brand_canonical": "자본브랜드",
-            "source_processor": "workflow_196_rev5674",
-            "derivation": "llm_direct",
-            "tag": "자본/경영",
-            "score": 50,
-        },
-        {
-            "brand_canonical": "자본브랜드",
-            "source_processor": "workflow_196_rev5674",
-            "derivation": "llm_direct",
-            "tag": "자본/경영",
-            "score": 53,
-        },
-    ]
-
-    result = build_evidence_counts_from_rows(brand_rows, score_rows)
-
-    assert [(row.source_processor, row.count, row.score_cutoff) for row in result.counts] == [
-        ("workflow_196_optionB", 1, 43),
-        ("workflow_196_rev5674", 1, 53),
-    ]
+    assert routed["ryzodeg-key"].evidence_count == 1
+    assert routed["ryzodeg-key"].bucket == "sparse"
+    assert routed["zero-key"].bucket == "zero"

@@ -2,51 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final
 
 from pipeline.etl.io.mart.agent2_eligibility import (
-    AGENT2_ELIGIBILITY_REVISION,
+    AGENT2_ALLOWED_PROCESSORS,
     Agent2ScoreRow,
-    OrphanNewsError,
     is_agent2_eligible,
 )
 
-from .event_bundle_builder import CROSS_MATCH_SOURCE_PROCESSORS, DIRECT_EVENT_SOURCE_PROCESSORS
 
-QUALITY_SCORE_CUTOFF: Final = 50
-CATEGORY_SCORE_CUTOFFS: Final = {
-    "자본/경영": 43,
-    "외부/트렌드": 49,
-    "공급/생산": 51,
-    "신약/R&D": 54,
-    "정책/규제": 55,
-}
-LEGACY_WF196_PROCESSOR: Final = "workflow_196_optionB"
-NEW_WF196_PROCESSOR: Final = "workflow_196_rev5674"
-PENDING_TIER2_PROCESSOR: Final = "tier2_llm_v2_rev5671"
-CATEGORY_SCORE_CUTOFFS_BY_VERSION: Final = {
-    LEGACY_WF196_PROCESSOR: CATEGORY_SCORE_CUTOFFS,
-    NEW_WF196_PROCESSOR: {
-        "자본/경영": 53,
-        "외부/트렌드": 53,
-        "공급/생산": 53,
-        "신약/R&D": 73,
-        "정책/규제": 69,
-    },
-    PENDING_TIER2_PROCESSOR: {
-        "자본/경영": 41,
-        "외부/트렌드": 48,
-        "공급/생산": 22,
-        "신약/R&D": 62,
-        "정책/규제": 58,
-    },
-}
-EXCLUDED_EVIDENCE_TAGS: Final = frozenset({"기타"})
-FULL_MIN_EVIDENCE: Final = 10
-MID_MIN_EVIDENCE: Final = 3
-SPARSE_MIN_EVIDENCE: Final = 1
-ALLOWED_PROCESSORS: Final = DIRECT_EVENT_SOURCE_PROCESSORS + CROSS_MATCH_SOURCE_PROCESSORS
-ALLOWED_DERIVATIONS: Final = ("llm_direct", "cross_match")
+FULL_MIN_EVIDENCE = 10
+MID_MIN_EVIDENCE = 3
+SPARSE_MIN_EVIDENCE = 1
 
 
 class ProcessingMode(StrEnum):
@@ -65,16 +31,6 @@ class DensityBucket:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceCount:
-    brand: str
-    source_processor: str
-    derivation: str
-    count: int
-    score_cutoff: int = QUALITY_SCORE_CUTOFF
-    tag: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class RouteDecision:
     brand: str
     evidence_count: int
@@ -89,147 +45,96 @@ class BrandedScoreRow:
     score: Agent2ScoreRow
 
 
-@dataclass(frozen=True, slots=True)
-class DensityShadowDecision:
-    brand_key: str
-    density_news_ids: tuple[str, ...]
-    central_news_ids: tuple[str, ...]
-    matches: bool
-    revision: str
-
-
-@dataclass(frozen=True, slots=True)
-class DensityShadowRouteResult:
-    routes: tuple[RouteDecision, ...]
-    shadow: tuple[DensityShadowDecision, ...]
-
-
-class UnknownShadowBrandError(RuntimeError):
+class UnknownScoreBrandError(RuntimeError):
     def __init__(self, brand_key: str) -> None:
-        super().__init__(f"shadow score row has unknown brand_key: {brand_key}")
+        super().__init__(f"central score row has unknown brand_key: {brand_key}")
         self.brand_key = brand_key
 
 
 def density_bucket(evidence_count: int) -> DensityBucket:
-    """Classify an Agent2 brand by score-cut evidence density."""
+    """Classify an Agent2 brand by distinct central-eligible news count."""
 
     if evidence_count >= FULL_MIN_EVIDENCE:
         return DensityBucket("full", ProcessingMode.LLM_FULL, FULL_MIN_EVIDENCE, None)
     if evidence_count >= MID_MIN_EVIDENCE:
-        return DensityBucket("mid", ProcessingMode.LLM_COMPACT, MID_MIN_EVIDENCE, FULL_MIN_EVIDENCE - 1)
+        return DensityBucket(
+            "mid",
+            ProcessingMode.LLM_COMPACT,
+            MID_MIN_EVIDENCE,
+            FULL_MIN_EVIDENCE - 1,
+        )
     if evidence_count >= SPARSE_MIN_EVIDENCE:
-        return DensityBucket("sparse", ProcessingMode.LLM_RECAP, SPARSE_MIN_EVIDENCE, MID_MIN_EVIDENCE - 1)
+        return DensityBucket(
+            "sparse",
+            ProcessingMode.LLM_RECAP,
+            SPARSE_MIN_EVIDENCE,
+            MID_MIN_EVIDENCE - 1,
+        )
     return DensityBucket("zero", ProcessingMode.TEMPLATE_ZERO, 0, 0)
 
 
-def is_allowed_evidence(row: EvidenceCount) -> bool:
-    """Return whether a score row can feed Agent2 density routing."""
+def route_brand(
+    brand: str,
+    score_rows: tuple[BrandedScoreRow, ...],
+) -> RouteDecision:
+    """Route one brand using only the central eligibility predicate."""
 
-    expected_cutoff = cutoff_for_tag(row.tag, row.source_processor)
-    if expected_cutoff is None:
-        return False
-    return (
-        row.score_cutoff == expected_cutoff
-        and row.source_processor in ALLOWED_PROCESSORS
-        and row.derivation in ALLOWED_DERIVATIONS
-    )
-
-
-def cutoff_for_tag(tag: str | None, source_processor: str | None = None) -> int | None:
-    """Return the category-specific evidence cutoff, or None when excluded."""
-
-    normalized = (tag or "").strip()
-    if normalized in EXCLUDED_EVIDENCE_TAGS:
-        return None
-    processor = (source_processor or "").strip()
-    if processor in {
-        "",
-        LEGACY_WF196_PROCESSOR,
-        "tier2_llm_v1",
-        "cross_match_adapter_v1",
-    }:
-        cutoffs = CATEGORY_SCORE_CUTOFFS
-    elif processor in CATEGORY_SCORE_CUTOFFS_BY_VERSION:
-        cutoffs = CATEGORY_SCORE_CUTOFFS_BY_VERSION[processor]
-    else:
-        return None
-    return cutoffs.get(normalized, QUALITY_SCORE_CUTOFF)
+    news_ids: set[str] = set()
+    processors: set[str] = set()
+    for branded_row in score_rows:
+        if branded_row.brand_key != brand:
+            continue
+        score = branded_row.score
+        if not is_agent2_eligible(score):
+            continue
+        news_ids.add(score.news_id)
+        if score.source_processor is not None:
+            processors.add(score.source_processor)
+    return _route_from_evidence(brand, news_ids, processors)
 
 
-def is_score_allowed_for_density(
-    score: int | float,
-    tag: str | None,
-    source_processor: str | None = None,
-) -> bool:
-    """Evaluate a raw score against the category-specific density cutoff."""
-
-    cutoff = cutoff_for_tag(tag, source_processor)
-    return cutoff is not None and score >= cutoff
-
-
-def route_brand(brand: str, counts: tuple[EvidenceCount, ...]) -> RouteDecision:
-    """Route one brand to the LLM or zero-template lane."""
-
-    allowed = tuple(row for row in counts if row.brand == brand and is_allowed_evidence(row))
-    evidence_count = sum(max(row.count, 0) for row in allowed)
-    bucket = density_bucket(evidence_count)
-    processors = tuple(
-        processor
-        for processor in ALLOWED_PROCESSORS
-        if any(row.source_processor == processor and row.count > 0 for row in allowed)
-    )
+def _route_from_evidence(
+    brand: str,
+    news_ids: set[str],
+    processors: set[str],
+) -> RouteDecision:
+    bucket = density_bucket(len(news_ids))
     return RouteDecision(
         brand=brand,
-        evidence_count=evidence_count,
+        evidence_count=len(news_ids),
         bucket=bucket.bucket,
         mode=bucket.mode,
-        included_processors=processors,
+        included_processors=tuple(
+            processor
+            for processor in AGENT2_ALLOWED_PROCESSORS
+            if processor in processors
+        ),
     )
 
 
-def route_worklist(brands: tuple[str, ...], counts: tuple[EvidenceCount, ...]) -> tuple[RouteDecision, ...]:
-    """Route a mart-universe brand list while preserving input order."""
-
-    return tuple(route_brand(brand, counts) for brand in brands)
-
-
-def route_worklist_with_shadow(
+def route_worklist(
     brands: tuple[str, ...],
-    counts: tuple[EvidenceCount, ...],
     score_rows: tuple[BrandedScoreRow, ...],
-) -> DensityShadowRouteResult:
-    """Route with legacy density while recording central-selector shadow decisions."""
+) -> tuple[RouteDecision, ...]:
+    """Route the complete mart universe with central, fail-closed inputs."""
 
-    density_ids = {brand_key: set() for brand_key in brands}
-    central_ids = {brand_key: set() for brand_key in brands}
+    brand_set = frozenset(brands)
+    news_ids_by_brand = {brand: set() for brand in brands}
+    processors_by_brand = {brand: set() for brand in brands}
     for branded_row in score_rows:
-        if branded_row.brand_key not in density_ids:
-            raise UnknownShadowBrandError(branded_row.brand_key)
+        if branded_row.brand_key not in brand_set:
+            raise UnknownScoreBrandError(branded_row.brand_key)
         score = branded_row.score
-        if (
-            score.source_processor in ALLOWED_PROCESSORS
-            and score.derivation in ALLOWED_DERIVATIONS
-            and is_score_allowed_for_density(score.score, score.tag, score.source_processor)
-        ):
-            density_ids[branded_row.brand_key].add(score.news_id)
-        try:
-            central_allowed = is_agent2_eligible(score)
-        except OrphanNewsError:
-            central_allowed = False
-        if central_allowed:
-            central_ids[branded_row.brand_key].add(score.news_id)
-
-    shadow = tuple(
-        DensityShadowDecision(
-            brand_key=brand_key,
-            density_news_ids=tuple(sorted(density_ids[brand_key])),
-            central_news_ids=tuple(sorted(central_ids[brand_key])),
-            matches=density_ids[brand_key] == central_ids[brand_key],
-            revision=AGENT2_ELIGIBILITY_REVISION,
+        if not is_agent2_eligible(score):
+            continue
+        news_ids_by_brand[branded_row.brand_key].add(score.news_id)
+        if score.source_processor is not None:
+            processors_by_brand[branded_row.brand_key].add(score.source_processor)
+    return tuple(
+        _route_from_evidence(
+            brand,
+            news_ids_by_brand[brand],
+            processors_by_brand[brand],
         )
-        for brand_key in brands
-    )
-    return DensityShadowRouteResult(
-        routes=route_worklist(brands, counts),
-        shadow=shadow,
+        for brand in brands
     )

@@ -2,28 +2,37 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any, Dict, Iterable, Optional, Tuple
 
+from pipeline.etl.io.mart.agent2_eligibility import (
+    AGENT2_CROSS_PROCESSORS,
+    AGENT2_DIRECT_PROCESSORS,
+    Agent2ScoreRow,
+    eligible_agent2_events,
+    is_agent2_eligible,
+)
+from pipeline.scripts.ai_analysis.agent2_brand_registry import (
+    Agent2BrandRegistry,
+    event_brand_match_sql,
+)
+
+from .agent2_effective_selector import (
+    EffectiveSelectorConfig,
+    select_effective_agent2_events,
+)
 from .config import EventConfig
 
 TAGS = ["신약/R&D", "정책/규제", "공급/생산", "자본/경영", "외부/트렌드", "기타"]
-DIRECT_EVENT_SOURCE_PROCESSORS = (
-    "workflow_196_optionB",
-    "workflow_196_rev5674",
-    "tier2_llm_v1",
-    "tier2_llm_v2_rev5671",
-)
-CROSS_MATCH_SOURCE_PROCESSORS = ("cross_match_adapter_v1",)
+DIRECT_EVENT_SOURCE_PROCESSORS = AGENT2_DIRECT_PROCESSORS
+CROSS_MATCH_SOURCE_PROCESSORS = AGENT2_CROSS_PROCESSORS
 # Tier2 processor policy:
 # - tier2_llm_v1 is LLM-confirmed brand/article evidence and is visible to Agent2.
 # - tier2_exact_rule_v1 is search/exact-rule provenance only and intentionally
 #   stays outside Agent2 narrative evidence.
 # - tier2_llm_v2_rev5671 is visible after its calibrated category mapping was
 #   activated atomically with serving policy.
-
-
-def _sql_placeholders(values) -> str:
-    return ",".join(["%s"] * len(values))
 
 
 def _clean_text(value):
@@ -51,75 +60,151 @@ def _event_row(row, include_reason=True, include_mirror=False):
     return base
 
 
+@dataclass(frozen=True, slots=True)
+class CentralBundleRows:
+    direct_rows: tuple[dict[str, Any], ...]
+    cross_rows: tuple[dict[str, Any], ...]
+    selector_revision: str
+
+
+def _score_row(row: dict[str, Any]) -> Agent2ScoreRow:
+    return Agent2ScoreRow(
+        news_id=str(row.get("news_id") or "").strip(),
+        source_processor=str(row.get("source_processor") or "").strip() or None,
+        derivation=str(row.get("derivation") or "").strip() or None,
+        tag=str(row.get("tag") or "").strip() or None,
+        score=row.get("score") if row.get("score") is not None else 0,
+        published_date=row.get("published_date"),
+        news_exists=row.get("joined_news_id") is not None,
+    )
+
+
+def _best_rows_by_news_id(
+    rows: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    def row_order(row: dict[str, Any]) -> tuple[float, int, str, int, str, str]:
+        published = row.get("published_date")
+        if isinstance(published, datetime):
+            published = published.date()
+        published_ordinal = published.toordinal() if isinstance(published, date) else 0
+        derivation = str(row.get("derivation") or "")
+        return (
+            -float(row.get("score") or 0),
+            -published_ordinal,
+            str(row.get("news_id") or ""),
+            0 if derivation == "llm_direct" else 1,
+            str(row.get("source_processor") or ""),
+            str(row.get("tag") or ""),
+        )
+
+    ordered = sorted(
+        rows,
+        key=row_order,
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for row in ordered:
+        result.setdefault(str(row["news_id"]), row)
+    return result
+
+
+def select_central_bundle_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    snapshot_date: date,
+    lookback_months: int,
+    direct_cap: int,
+    cross_cap: int,
+    deduplicate_direct_by_date: bool,
+) -> CentralBundleRows:
+    """Apply the central eligibility and effective-selection contracts."""
+
+    scored_rows = tuple((row, _score_row(row)) for row in rows)
+    eligible_rows = tuple(
+        (row, score_row)
+        for row, score_row in scored_rows
+        if is_agent2_eligible(score_row)
+    )
+    eligible = eligible_agent2_events(
+        score_row for _, score_row in eligible_rows
+    )
+    config = EffectiveSelectorConfig(
+        lookback_months=lookback_months,
+        direct_prefetch=max(direct_cap * 3, direct_cap),
+        direct_cap=direct_cap,
+        cross_cap=cross_cap,
+        deduplicate_direct_by_date=deduplicate_direct_by_date,
+    )
+    selection = select_effective_agent2_events(
+        eligible,
+        snapshot_date=snapshot_date,
+        config=config,
+    )
+    rows_by_id = _best_rows_by_news_id(row for row, _ in eligible_rows)
+    return CentralBundleRows(
+        direct_rows=tuple(
+            rows_by_id[news_id] for news_id in selection.selected_direct_news_ids
+        ),
+        cross_rows=tuple(
+            rows_by_id[news_id] for news_id in selection.selected_cross_news_ids
+        ),
+        selector_revision=selection.selector_revision,
+    )
+
+
+def _fetch_central_bundle_rows(
+    brand: str,
+    db_conn: Any,
+    snapshot_date: date,
+    config: EventConfig,
+) -> CentralBundleRows:
+    registry = Agent2BrandRegistry.for_canonical_names(
+        {brand},
+    )
+    names = registry.source_names_for(brand)
+    brand_predicate, brand_params = event_brand_match_sql(names)
+    with db_conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT s.news_id, n.news_id AS joined_news_id, n.published_date,
+                   s.score, s.tag, n.title, s.summary, s.reason,
+                   n.source_name, s.source_processor, s.derivation,
+                   s.mirrored_from_jw_brands
+            FROM event_brand_scores s
+            LEFT JOIN news_raw n ON s.news_id = n.news_id
+            WHERE ({brand_predicate})
+            """,
+            brand_params,
+        )
+        rows = cur.fetchall()
+    return select_central_bundle_rows(
+        rows,
+        snapshot_date=snapshot_date,
+        lookback_months=config.lookback_months,
+        direct_cap=config.max_count_direct,
+        cross_cap=config.max_count_cross,
+        deduplicate_direct_by_date=bool(
+            (config.deduplication or {}).get("enabled", False)
+        ),
+    )
+
+
 def _build_event_bundle_v1(
     brand: str,
     db_conn,
     snapshot_at,
     config: EventConfig,
 ) -> Dict:
-    snapshot_date = snapshot_at.date().isoformat()
-    with db_conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
-                   s.summary, s.reason, n.source_name
-            FROM event_brand_scores s
-            JOIN news_raw n ON s.news_id = n.news_id
-            WHERE (s.brand_canonical = %s OR s.brand_name = %s)
-              AND s.derivation = 'llm_direct'
-              AND s.source_processor IN ({_sql_placeholders(DIRECT_EVENT_SOURCE_PROCESSORS)})
-              AND s.tag <> '기타'
-              AND s.score >= %s
-              AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
-              AND n.published_date <= %s
-            ORDER BY s.score DESC, n.published_date DESC, s.news_id ASC
-            LIMIT %s
-            """,
-            (
-                brand,
-                brand,
-                *DIRECT_EVENT_SOURCE_PROCESSORS,
-                config.min_score_direct,
-                snapshot_date,
-                config.lookback_months,
-                snapshot_date,
-                config.max_count_direct,
-            ),
-        )
-        direct_rows = cur.fetchall()
-
-        cur.execute(
-            f"""
-            SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
-                   s.summary, n.source_name, s.mirrored_from_jw_brands
-            FROM event_brand_scores s
-            JOIN news_raw n ON s.news_id = n.news_id
-            WHERE (s.brand_name = %s OR s.brand_canonical = %s OR s.mirrored_from_jw_brands LIKE %s)
-              AND s.derivation = 'cross_match'
-              AND s.source_processor IN ({_sql_placeholders(CROSS_MATCH_SOURCE_PROCESSORS)})
-              AND s.tag <> '기타'
-              AND s.score >= %s
-              AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
-              AND n.published_date <= %s
-            ORDER BY s.score DESC, n.published_date DESC, s.news_id ASC
-            LIMIT %s
-            """,
-            (
-                brand,
-                brand,
-                f'%"{brand}"%',
-                *CROSS_MATCH_SOURCE_PROCESSORS,
-                config.min_score_cross,
-                snapshot_date,
-                config.lookback_months,
-                snapshot_date,
-                config.max_count_cross,
-            ),
-        )
-        cross_rows = cur.fetchall()
-
-    direct_events = [_event_row(row) for row in direct_rows]
-    cross_events = [_event_row(row, include_reason=False, include_mirror=True) for row in cross_rows]
+    selected = _fetch_central_bundle_rows(
+        brand,
+        db_conn,
+        snapshot_at.date(),
+        config,
+    )
+    direct_events = [_event_row(row) for row in selected.direct_rows]
+    cross_events = [
+        _event_row(row, include_reason=False, include_mirror=True)
+        for row in selected.cross_rows
+    ]
     counts = Counter(event["tag"] for event in direct_events)
     tag_distribution = {tag: int(counts.get(tag, 0)) for tag in TAGS}
     return {
@@ -143,16 +228,6 @@ def is_brand_centric(
     return False, ""
 
 
-def _dedup_by_date(events: list[dict]) -> list[dict]:
-    by_date = {}
-    for event in events:
-        key = event["published_date"]
-        existing = by_date.get(key)
-        if existing is None or (event["score"], event["news_id"]) > (existing["score"], existing["news_id"]):
-            by_date[key] = event
-    return sorted(by_date.values(), key=lambda item: (-item["score"], item["published_date"] or "", item["news_id"]))
-
-
 def _build_event_bundle_v1_1(
     brand_context: dict,
     snapshot_at,
@@ -161,41 +236,13 @@ def _build_event_bundle_v1_1(
 ) -> Dict:
     event_config = config.event
     brand = brand_context["name"]
-    snapshot_date = snapshot_at.date().isoformat()
-    with db_conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT s.news_id, n.published_date, s.score, s.tag, n.title,
-                   s.summary, s.reason, n.source_name
-            FROM event_brand_scores s
-            JOIN news_raw n ON s.news_id = n.news_id
-            WHERE (s.brand_canonical = %s OR s.brand_name = %s)
-              AND s.derivation = 'llm_direct'
-              AND s.source_processor IN ({_sql_placeholders(DIRECT_EVENT_SOURCE_PROCESSORS)})
-              AND s.tag <> '기타'
-              AND s.score >= %s
-              AND n.published_date >= DATE_SUB(%s, INTERVAL %s MONTH)
-              AND n.published_date <= %s
-            ORDER BY s.score DESC, n.published_date DESC, s.news_id ASC
-            LIMIT %s
-            """,
-            (
-                brand,
-                brand,
-                *DIRECT_EVENT_SOURCE_PROCESSORS,
-                event_config.min_score_direct,
-                snapshot_date,
-                event_config.lookback_months,
-                snapshot_date,
-                event_config.max_count_direct * 3,
-            ),
-        )
-        direct_rows = cur.fetchall()
-
-    direct_events = [_event_row(row) for row in direct_rows]
-    if (event_config.deduplication or {}).get("enabled", False):
-        direct_events = _dedup_by_date(direct_events)
-    direct_events = direct_events[: event_config.max_count_direct]
+    selected = _fetch_central_bundle_rows(
+        brand,
+        db_conn,
+        snapshot_at.date(),
+        event_config,
+    )
+    direct_events = [_event_row(row) for row in selected.direct_rows]
 
     brand_english = None
     keywords = brand_context.get("search_keywords") or {}
@@ -212,7 +259,10 @@ def _build_event_bundle_v1_1(
         else:
             market_trend.append(enriched)
 
-    cross = _build_event_bundle_v1(brand, db_conn, snapshot_at, event_config)["cross_match_events"]
+    cross = [
+        _event_row(row, include_reason=False, include_mirror=True)
+        for row in selected.cross_rows
+    ]
     counts = Counter(event["tag"] for event in brand_centric + market_trend)
     return {
         "events_brand_centric": brand_centric[: event_config.brand_centric_max_count],
@@ -231,23 +281,3 @@ def build_event_bundle(
     if isinstance(brand_or_context, dict):
         return _build_event_bundle_v1_1(brand_or_context, db_conn_or_snapshot, snapshot_or_config, config_or_db)
     return _build_event_bundle_v1(brand_or_context, db_conn_or_snapshot, snapshot_or_config, config_or_db)
-
-
-def compare_event_bundle_selection_with_shadow(
-    brand_key,
-    rows,
-    *,
-    snapshot_date,
-    config=None,
-):
-    """Expose the observational selector without connecting it to serving."""
-
-    from .agent2_bundle_shadow import compare_event_bundle_with_shadow
-
-    kwargs = {} if config is None else {"config": config}
-    return compare_event_bundle_with_shadow(
-        brand_key,
-        rows,
-        snapshot_date=snapshot_date,
-        **kwargs,
-    )

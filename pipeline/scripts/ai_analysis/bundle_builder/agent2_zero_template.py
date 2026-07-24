@@ -109,7 +109,8 @@ def _body(snapshot: KpiSnapshot, kind: ZeroNarrativeType) -> str:
             return _newcomer_body(snapshot)
         case ZeroNarrativeType.INSUFFICIENT:
             return (
-                f"{snapshot.brand}은 현재 score≥50 근거 뉴스가 없고, mart KPI도 충분하지 않아 "
+                f"{snapshot.brand}은 현재 중앙 노출 정책을 통과한 근거 뉴스가 없고, "
+                "mart KPI도 충분하지 않아 "
                 "정량 신호를 단정하지 않습니다. 관련 뉴스 없음 상태로 표시합니다."
             )
         case unreachable:
@@ -177,7 +178,7 @@ def _newcomer_body(snapshot: KpiSnapshot) -> str:
         ]
     )
 def _bullets(snapshot: KpiSnapshot, kind: ZeroNarrativeType) -> list[str]:
-    bullets = ["관련 뉴스 없음: score≥50 evidence 0건", f"분류: {kind.value}"]
+    bullets = ["관련 뉴스 없음: 중앙 노출 정책 evidence 0건", f"분류: {kind.value}"]
     for label, value in (
         ("시장 순위", _rank(snapshot.rank)),
         ("최근 점유율", _pct(snapshot.share_pct)),
