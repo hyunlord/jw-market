@@ -231,3 +231,23 @@ def build_event_bundle(
     if isinstance(brand_or_context, dict):
         return _build_event_bundle_v1_1(brand_or_context, db_conn_or_snapshot, snapshot_or_config, config_or_db)
     return _build_event_bundle_v1(brand_or_context, db_conn_or_snapshot, snapshot_or_config, config_or_db)
+
+
+def compare_event_bundle_selection_with_shadow(
+    brand_key,
+    rows,
+    *,
+    snapshot_date,
+    config=None,
+):
+    """Expose the observational selector without connecting it to serving."""
+
+    from .agent2_bundle_shadow import compare_event_bundle_with_shadow
+
+    kwargs = {} if config is None else {"config": config}
+    return compare_event_bundle_with_shadow(
+        brand_key,
+        rows,
+        snapshot_date=snapshot_date,
+        **kwargs,
+    )
