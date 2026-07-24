@@ -44,6 +44,24 @@ class McpJsonClient:
                     texts.append(item["text"])
         return McpToolResult(content_text="\n".join(texts).strip(), raw_result=result)
 
+    def call_tool_checked(self, name: str, arguments: dict[str, Any]) -> McpToolResult:
+        schema = self._tool_input_schema(name)
+        _validate_numeric_bounds(name, arguments, schema)
+        return self.call_tool(name, arguments)
+
+    def _tool_input_schema(self, name: str) -> dict[str, Any]:
+        tools = self._post("tools/list", {}).get("tools")
+        if not isinstance(tools, list):
+            raise McpClientError("MCP tools/list did not include a tools array")
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("name") != name:
+                continue
+            schema = tool.get("inputSchema")
+            if isinstance(schema, dict):
+                return schema
+            raise McpClientError(f"MCP tool {name} did not include an input schema")
+        raise McpClientError(f"MCP tool {name} was not present in tools/list")
+
     def _post(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         last_error: Exception | None = None
@@ -69,6 +87,34 @@ class McpJsonClient:
                 if attempt == 0:
                     time.sleep(0.2)
         raise McpClientError(str(last_error) if last_error else "MCP request failed")
+
+
+def _validate_numeric_bounds(
+    tool_name: str,
+    arguments: dict[str, Any],
+    input_schema: dict[str, Any],
+) -> None:
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        raise McpClientError(f"MCP tool {tool_name} input schema did not include properties")
+    for field, value in arguments.items():
+        field_schema = properties.get(field)
+        if not isinstance(field_schema, dict):
+            continue
+        minimum = field_schema.get("minimum")
+        maximum = field_schema.get("maximum")
+        if minimum is None and maximum is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise McpClientError(f"MCP tool {tool_name} argument {field} must be numeric")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            raise McpClientError(
+                f"MCP tool {tool_name} argument {field} is below schema minimum {minimum}"
+            )
+        if isinstance(maximum, (int, float)) and value > maximum:
+            raise McpClientError(
+                f"MCP tool {tool_name} argument {field} is above schema maximum {maximum}"
+            )
 
 
 def _first_sse_event(text: str) -> dict[str, Any]:
