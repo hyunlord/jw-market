@@ -1,0 +1,18 @@
+# Content-addressed R-1 s1 artifacts. Separate from both the fast /work
+# emptyDir and the small evidence PVC because one checkpoint contains the full
+# UBIST and IQVIA parquet populations.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: r1-checkpoint-nfs
+  namespace: llmops
+  labels:
+    app: jw-pipeline-r1-rehearsal
+    codex-owner: latency-goal
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 250Gi

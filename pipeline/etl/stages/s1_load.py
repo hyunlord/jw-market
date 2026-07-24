@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.etl.io import iqvia_loader
+from pipeline.etl.io.iqvia_roles import bind_iqvia_sources, canonical_nsa_source
 from pipeline.etl.io.ubist_loader import (
     TARGET_DIR,
     discover_xlsx,
@@ -100,15 +101,8 @@ def _run_iqvia(params: dict[str, Any]) -> int:
     source_dir = Path(str(params["iqvia_source_dir"])) if params.get("iqvia_source_dir") else None
     try:
         if source_dir is not None:
-            files = sorted(
-                path.resolve()
-                for path in source_dir.rglob("*")
-                if path.is_file()
-                and not path.name.startswith(("~$", "._"))
-                and path.suffix.lower() in {".csv", ".xls", ".xlsx"}
-            )
-            if not files:
-                raise FileNotFoundError(f"no IQVIA source files under {source_dir}")
+            role_bound = bind_iqvia_sources(source_dir)
+            files = [canonical_nsa_source(role_bound).path]
         elif file_arg and (params.get("source") == "iqvia" or "IQVIA" in Path(str(file_arg)).parts):
             files = [Path(str(file_arg)).resolve()]
         else:

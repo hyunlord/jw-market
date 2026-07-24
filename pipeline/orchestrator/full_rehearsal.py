@@ -57,6 +57,9 @@ class FullRehearsalConfig:
     cache_db: str
     source_db: str
     work_dir: Path
+    input_inventory: Path | None = None
+    checkpoint_root: Path | None = None
+    start_at: str | None = None
 
     def validate(self) -> FullInputManifest:
         for label, value, prefix in (
@@ -71,6 +74,12 @@ class FullRehearsalConfig:
             raise RehearsalContractError("target_db and cache_db must be separate schemas")
         if not SAFE_DB_RE.fullmatch(self.source_db):
             raise RehearsalContractError(f"unsafe source_db: {self.source_db!r}")
+        if self.start_at not in {None, "s2"}:
+            raise RehearsalContractError(f"unsupported resume stage: {self.start_at!r}")
+        if self.start_at and not self.checkpoint_root:
+            raise RehearsalContractError("--start-at requires --checkpoint")
+        if self.checkpoint_root and not self.input_inventory:
+            raise RehearsalContractError("--checkpoint requires --input-inventory")
         return load_input_manifest(self.input_manifest)
 
 
@@ -415,11 +424,21 @@ def build_full_rehearsal_plan(config: FullRehearsalConfig) -> tuple[RehearsalSte
 
 def execute_full_rehearsal(config: FullRehearsalConfig, *, dry_run: bool) -> int:
     plan = build_full_rehearsal_plan(config)
+    checkpoint_id = _checkpoint_id(config, plan) if config.checkpoint_root else None
+    if config.start_at == "s2":
+        plan = tuple(step for step in plan if step.key not in {
+            "load_ubist",
+            "install_ubist_sidecars",
+            "load_iqvia",
+        })
     if dry_run:
         print(json.dumps([step.as_dict() for step in plan], ensure_ascii=False, indent=2))
         return 0
 
-    config.work_dir.mkdir(parents=True, exist_ok=False)
+    if config.start_at == "s2":
+        _restore_s1_checkpoint(config, checkpoint_id)
+    else:
+        config.work_dir.mkdir(parents=True, exist_ok=False)
     total = len(plan)
     for index, step in enumerate(plan, start=1):
         # Explicit stage markers so a persisted log can pinpoint the failing
@@ -432,5 +451,97 @@ def execute_full_rehearsal(config: FullRehearsalConfig, *, dry_run: bool) -> int
         if result.returncode != 0:
             print(f"rehearsal failed step={step.key} rc={result.returncode}", file=sys.stderr, flush=True)
             return int(result.returncode or 1)
+        if step.key == "load_iqvia" and checkpoint_id is not None:
+            _publish_s1_checkpoint(config, checkpoint_id)
     print(f"[stage] rehearse-full complete rc=0 ({total}/{total})", flush=True)
     return 0
+
+
+def _checkpoint_id(
+    config: FullRehearsalConfig,
+    plan: tuple[RehearsalStep, ...],
+) -> str:
+    from pipeline.orchestrator.full_rehearsal_checkpoint import (
+        CheckpointContractError,
+        build_checkpoint_identity,
+    )
+
+    image_digest = os.environ.get("R1_IMAGE_DIGEST", "")
+    git_commit = os.environ.get("R1_GIT_COMMIT", "")
+    source_subpath = os.environ.get("R1_SOURCE_SUBPATH", "")
+    stage_args = {
+        step.key: [
+            _normalize_checkpoint_arg(value, config)
+            for value in step.argv
+        ]
+        for step in plan
+        if step.key in {"load_ubist", "install_ubist_sidecars", "load_iqvia"}
+    }
+    sidecars = [
+        {
+            "relative_path": sidecar.relative_path.as_posix(),
+            "sha256": sidecar.sha256,
+        }
+        for sidecar in config.validate().ubist_parquet_sidecars
+    ]
+    sidecar_sha = hashlib.sha256(
+        json.dumps(sidecars, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    try:
+        return build_checkpoint_identity(
+            inventory_path=config.input_inventory or Path("__missing__"),
+            image_digest=image_digest,
+            git_commit=git_commit,
+            normalized_stage_args=stage_args,
+            nonsecret_config={"R1_SOURCE_SUBPATH": source_subpath},
+            sidecar_manifest_sha=sidecar_sha,
+        )
+    except CheckpointContractError as exc:
+        raise RehearsalContractError(str(exc)) from exc
+
+
+def _normalize_checkpoint_arg(value: str, config: FullRehearsalConfig) -> str:
+    return value.replace(str(config.work_dir.resolve()), "{work_dir}").replace(
+        config.target_db,
+        "{target_db}",
+    )
+
+
+def _publish_s1_checkpoint(config: FullRehearsalConfig, checkpoint_id: str) -> None:
+    from pipeline.orchestrator.full_rehearsal_checkpoint import (
+        S1CheckpointStore,
+        read_database_census,
+    )
+
+    inputs = config.validate()
+    store = S1CheckpointStore(config.checkpoint_root or Path("__missing__"))
+    completion = store.publish(
+        checkpoint_id=checkpoint_id,
+        work_dir=config.work_dir,
+        inventory_path=config.input_inventory or Path("__missing__"),
+        input_manifest=inputs,
+        database=read_database_census(config.target_db),
+        expected_sidecars=inputs.ubist_parquet_sidecars,
+    )
+    print(
+        f"[checkpoint] published id={checkpoint_id} "
+        f"census={len(completion['census'])}/9",
+        flush=True,
+    )
+
+
+def _restore_s1_checkpoint(config: FullRehearsalConfig, checkpoint_id: str | None) -> None:
+    from pipeline.etl.io import iqvia_loader
+    from pipeline.orchestrator.full_rehearsal_checkpoint import S1CheckpointStore
+
+    if checkpoint_id is None:
+        raise RehearsalContractError("checkpoint identity is required for s2 resume")
+    store = S1CheckpointStore(config.checkpoint_root or Path("__missing__"))
+    store.restore(checkpoint_id=checkpoint_id, work_dir=config.work_dir)
+    iqvia_loader.init_target_schema(config.target_db, config.source_db)
+    loaded = iqvia_loader.load_record_parquet_source(
+        config.work_dir / "iqvia-records",
+        target_database=config.target_db,
+        batch_size=10_000,
+    )
+    print(f"[checkpoint] restored id={checkpoint_id} iqvia_rows={loaded}", flush=True)

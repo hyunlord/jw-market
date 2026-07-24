@@ -59,6 +59,29 @@ def test_missing_iqvia_environment_is_rejected_without_values():
     assert "secret-value" not in finding.detail
 
 
+def test_iqvia_role_gate_rejects_mixed_or_ambiguous_nsa_inputs(tmp_path: Path):
+    ubist = tmp_path / "ubist"
+    iqvia = tmp_path / "iqvia"
+    nsa = iqvia / "NSA"
+    chso = iqvia / "CHSO"
+    ubist.mkdir()
+    nsa.mkdir(parents=True)
+    chso.mkdir()
+    (ubist / "raw.xlsx").write_bytes(b"xlsx")
+    (nsa / "KOR_NSA_Jun-25-2026.xlsx").write_bytes(b"nsa")
+    (nsa / "legacy.xlsx").write_bytes(b"legacy")
+    (chso / "CHSO_KOR.xlsx").write_bytes(b"chso")
+    master = tmp_path / "master.xlsx"
+    master.write_bytes(b"xlsx")
+
+    finding = preflight.check_iqvia_source_roles(
+        FullInputManifest(ubist, iqvia, master)
+    )
+
+    assert not finding.passed
+    assert "exactly one NSA" in finding.detail
+
+
 def test_nfd_source_path_is_rejected(tmp_path: Path):
     nfd = tmp_path / "UBIST 2026.05" / "의원.xlsx"
     nfd.parent.mkdir()
@@ -146,13 +169,13 @@ def test_canonical_job_runs_preflight_before_rehearsal():
     assert finding.passed, finding.detail
 
 
-def test_normal_preflight_completes_all_ten_checks(tmp_path: Path, monkeypatch):
+def test_normal_preflight_completes_all_eleven_checks(tmp_path: Path, monkeypatch):
     inputs_root = tmp_path / "materialized"
     ubist = inputs_root / "ubist"
     iqvia = inputs_root / "iqvia"
     master_dir = inputs_root / "mi-master"
     ubist.mkdir(parents=True)
-    iqvia.mkdir()
+    (iqvia / "NSA").mkdir(parents=True)
     master_dir.mkdir()
 
     def write_xlsx(path: Path) -> None:
@@ -161,10 +184,10 @@ def test_normal_preflight_completes_all_ten_checks(tmp_path: Path, monkeypatch):
             archive.writestr("xl/workbook.xml", "<workbook/>")
 
     ubist_file = ubist / "UBIST_202605.xlsx"
-    iqvia_file = iqvia / "IQVIA_2026Q1.csv"
+    iqvia_file = iqvia / "NSA" / "KOR_NSA_Jun-25-2026.xlsx"
     master = master_dir / "MI_Master.xlsx"
     write_xlsx(ubist_file)
-    iqvia_file.write_text("period,value\n2026Q1,1\n")
+    write_xlsx(iqvia_file)
     write_xlsx(master)
     manifest = inputs_root / "input_manifest.json"
     manifest.write_text(
@@ -186,7 +209,7 @@ def test_normal_preflight_completes_all_ten_checks(tmp_path: Path, monkeypatch):
         }
         for bucket, key, path in (
             ("raw-ubist", ubist_file.name, ubist_file),
-            ("raw-iqvia", iqvia_file.name, iqvia_file),
+            ("raw-iqvia", f"NSA/{iqvia_file.name}", iqvia_file),
             ("repository", master.name, master),
         )
     ]
@@ -244,7 +267,7 @@ def test_normal_preflight_completes_all_ten_checks(tmp_path: Path, monkeypatch):
         )
     )
 
-    assert len(findings) == 10
+    assert len(findings) == 11
     assert all(finding.passed for finding in findings), findings
 
 

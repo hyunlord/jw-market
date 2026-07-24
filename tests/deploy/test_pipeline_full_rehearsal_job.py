@@ -62,3 +62,15 @@ def test_full_rehearsal_job_pins_the_source_snapshot_and_evidence_run() -> None:
     assert mounts["r1-source"]["readOnly"] is True
     assert 'EVIDENCE_DIR="/work/evidence/${R1_RUN_ID}"' in script
     assert 'tee "${EVIDENCE_DIR}/rehearse.log"' in script
+
+
+def test_full_rehearsal_job_uses_a_dedicated_checkpoint_pvc() -> None:
+    job = _job()
+    pod_spec = job["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    mounts = {entry["name"]: entry for entry in container["volumeMounts"]}
+    volumes = {entry["name"]: entry for entry in pod_spec["volumes"]}
+
+    assert mounts["checkpoints"]["mountPath"] == "/work/checkpoints"
+    assert volumes["checkpoints"]["persistentVolumeClaim"]["claimName"] == "r1-checkpoint-nfs"
+    assert "--checkpoint /work/checkpoints" in container["args"][0]

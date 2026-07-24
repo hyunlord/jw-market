@@ -39,14 +39,17 @@ def test_ubist_full_source_dir_passes_every_workbook_once(
     assert captured["truncate"] is True
 
 
-def test_iqvia_full_source_dir_passes_every_source_once(
+def test_iqvia_full_source_dir_passes_only_pinned_nsa_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "raw-iqvia"
-    source.mkdir()
-    expected = [source / "a.csv", source / "b.xlsx"]
-    for path in expected:
-        path.write_bytes(b"source")
+    nsa = source / "NSA"
+    chso = source / "CHSO"
+    nsa.mkdir(parents=True)
+    chso.mkdir()
+    canonical = nsa / "KOR_NSA_Jun-25-2026.xlsx"
+    canonical.write_bytes(b"nsa")
+    (chso / "CHSO_KOR_SellOut_Basic_Feb-19-2026.xlsx").write_bytes(b"chso")
     (source / "ignore.txt").write_text("ignore", encoding="utf-8")
     captured: dict[str, object] = {}
 
@@ -75,8 +78,8 @@ def test_iqvia_full_source_dir_passes_every_source_once(
     )
 
     assert rc == 0
-    assert captured["files"] == [path.resolve() for path in expected]
-    assert captured["nsa_files"] == [path.resolve() for path in expected]
+    assert captured["files"] == [canonical.resolve()]
+    assert captured["nsa_files"] == [canonical.resolve()]
     assert captured["nsa_target"] == nsa_target
 
 

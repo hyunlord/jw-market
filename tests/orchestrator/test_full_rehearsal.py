@@ -272,6 +272,34 @@ def test_rehearse_full_dry_run_prints_plan_without_writes(
     assert all(row["writes_operating"] is False for row in payload)
 
 
+def test_cli_accepts_content_addressed_checkpoint_resume_contract(tmp_path: Path) -> None:
+    args = cli._build_parser().parse_args(
+        [
+            "rehearse-full",
+            "--input-manifest",
+            str(tmp_path / "input_manifest.json"),
+            "--input-inventory",
+            str(tmp_path / "input_inventory.json"),
+            "--target-db",
+            "jw_mart_rehearsal_test",
+            "--cache-db",
+            "jw_mart_s6_rehearsal_test",
+            "--source-db",
+            "jw_mart_source",
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--checkpoint",
+            str(tmp_path / "checkpoints"),
+            "--start-at",
+            "s2",
+        ]
+    )
+
+    assert args.checkpoint == tmp_path / "checkpoints"
+    assert args.start_at == "s2"
+    assert args.input_inventory == tmp_path / "input_inventory.json"
+
+
 class _FakeResult:
     def __init__(self, returncode: int) -> None:
         self.returncode = returncode
@@ -319,3 +347,78 @@ def test_execute_marks_failing_step_and_stops(
     assert "[stage] load_iqvia start" not in out
     assert "[stage] rehearse-full complete" not in out
     assert "rehearsal failed step=install_ubist_sidecars rc=2" in err
+
+
+def test_s2_resume_restores_checkpoint_and_never_runs_s1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _write_sources(tmp_path)
+    inventory = tmp_path / "input_inventory.json"
+    inventory.write_text(json.dumps({"objects": []}), encoding="utf-8")
+    config = FullRehearsalConfig(
+        input_manifest=manifest,
+        target_db="jw_mart_rehearsal_r1_20260718",
+        cache_db="jw_mart_s6_rehearsal_r1_20260718",
+        source_db="jw_mart_d2_stage_20260630_r2",
+        work_dir=tmp_path / "work",
+        input_inventory=inventory,
+        checkpoint_root=tmp_path / "checkpoints",
+        start_at="s2",
+    )
+    monkeypatch.setenv("R1_IMAGE_DIGEST", f"sha256:{'a' * 64}")
+    monkeypatch.setenv("R1_GIT_COMMIT", "b" * 40)
+    monkeypatch.setenv("R1_SOURCE_SUBPATH", "snapshot")
+    restored: list[str] = []
+    executed: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        fr,
+        "_restore_s1_checkpoint",
+        lambda _config, checkpoint_id: restored.append(checkpoint_id or ""),
+    )
+    monkeypatch.setattr(
+        fr.subprocess,
+        "run",
+        lambda argv, **_kwargs: executed.append(tuple(argv)) or _FakeResult(0),
+    )
+
+    assert execute_full_rehearsal(config, dry_run=False) == 0
+    assert len(restored) == 1
+    rendered = "\n".join(" ".join(argv) for argv in executed)
+    assert "--stage s1" not in rendered
+    assert "--stage s2" in rendered
+
+
+def test_checkpoint_is_published_only_after_iqvia_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _write_sources(tmp_path)
+    inventory = tmp_path / "input_inventory.json"
+    inventory.write_text(json.dumps({"objects": []}), encoding="utf-8")
+    config = FullRehearsalConfig(
+        input_manifest=manifest,
+        target_db="jw_mart_rehearsal_r1_20260718",
+        cache_db="jw_mart_s6_rehearsal_r1_20260718",
+        source_db="jw_mart_d2_stage_20260630_r2",
+        work_dir=tmp_path / "work",
+        input_inventory=inventory,
+        checkpoint_root=tmp_path / "checkpoints",
+    )
+    monkeypatch.setenv("R1_IMAGE_DIGEST", f"sha256:{'a' * 64}")
+    monkeypatch.setenv("R1_GIT_COMMIT", "b" * 40)
+    monkeypatch.setenv("R1_SOURCE_SUBPATH", "snapshot")
+    events: list[str] = []
+
+    def run(argv, **_kwargs):  # type: ignore[no-untyped-def]
+        if "--source" in argv:
+            events.append(argv[argv.index("--source") + 1])
+        return _FakeResult(0)
+
+    monkeypatch.setattr(fr.subprocess, "run", run)
+    monkeypatch.setattr(
+        fr,
+        "_publish_s1_checkpoint",
+        lambda _config, _checkpoint_id: events.append("publish"),
+    )
+
+    assert execute_full_rehearsal(config, dry_run=False) == 0
+    assert events[:3] == ["ubist", "iqvia", "publish"]

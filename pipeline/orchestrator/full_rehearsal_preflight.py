@@ -24,6 +24,11 @@ from pipeline.orchestrator.full_rehearsal_preflight_inputs import (
     bounded_input_failures,
     capacity_failures,
 )
+from pipeline.orchestrator.iqvia_roles import (
+    IqviaRoleContractError,
+    bind_iqvia_sources,
+    canonical_nsa_source,
+)
 
 
 REQUIRED_ENV_KEYS = frozenset(
@@ -135,6 +140,22 @@ def check_unicode_paths(inputs: FullInputManifest) -> Finding:
     return _finding("3-unicode-paths", failures, f"checked={len(paths)}")
 
 
+def check_iqvia_source_roles(inputs: FullInputManifest) -> Finding:
+    try:
+        sources = bind_iqvia_sources(inputs.iqvia_source_dir)
+        canonical = canonical_nsa_source(sources)
+    except IqviaRoleContractError as exc:
+        return Finding("3b-iqvia-source-roles", False, str(exc))
+    roles: dict[str, int] = {}
+    for source in sources:
+        roles[source.role] = roles.get(source.role, 0) + 1
+    detail = (
+        f"canonical_nsa={canonical.relative_path.as_posix()} "
+        f"roles={json.dumps(roles, sort_keys=True)}"
+    )
+    return Finding("3b-iqvia-source-roles", True, detail)
+
+
 def check_required_assets(repo_root: Path) -> Finding:
     missing = [str(path) for path in REQUIRED_ASSETS if not (repo_root / path).is_file()]
     return _finding("5-required-assets", missing, f"checked={len(REQUIRED_ASSETS)}")
@@ -145,6 +166,8 @@ def check_job_contract(manifest: str) -> Finding:
         "durable tee": "2>&1 | tee" in manifest and "set -euo pipefail" in manifest,
         "evidence PVC": "claimName: r1-evidence-nfs" in manifest
         and "mountPath: /work/evidence" in manifest,
+        "checkpoint PVC": "claimName: r1-checkpoint-nfs" in manifest
+        and "mountPath: /work/checkpoints" in manifest,
         "TTL": "ttlSecondsAfterFinished: 86400" in manifest,
         "node pin": "knp-jw-agn-dev-genos-api-01" in manifest,
         "stage markers": "[stage]" in manifest or "rehearse-full" in manifest,
@@ -249,6 +272,7 @@ def run_preflight(request: PreflightRequest) -> tuple[Finding, ...]:
         check_required_environment(request.environment),
         check_inventory(inputs, request.inventory_path),
         check_unicode_paths(inputs),
+        check_iqvia_source_roles(inputs),
         check_sidecar_exclusions(inputs, plan),
         check_required_assets(request.repo_root),
         check_database(request.environment, request.rehearsal),

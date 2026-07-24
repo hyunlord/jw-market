@@ -86,10 +86,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="rebuild explicit raw inputs into isolated mart/cache schemas (never publish)",
     )
     rehearsal.add_argument("--input-manifest", required=True, type=Path)
+    rehearsal.add_argument("--input-inventory", type=Path, default=None)
     rehearsal.add_argument("--target-db", required=True)
     rehearsal.add_argument("--cache-db", required=True)
     rehearsal.add_argument("--source-db", required=True)
     rehearsal.add_argument("--work-dir", required=True, type=Path)
+    rehearsal.add_argument("--checkpoint", type=Path, default=None)
+    rehearsal.add_argument("--start-at", choices=["s2"], default=None)
     rehearsal.add_argument("--dry-run", action="store_true")
 
     preflight = sub.add_parser(
@@ -186,6 +189,9 @@ def main(argv: list[str] | None = None) -> int:
                     cache_db=args.cache_db,
                     source_db=args.source_db,
                     work_dir=args.work_dir,
+                    input_inventory=args.input_inventory,
+                    checkpoint_root=args.checkpoint,
+                    start_at=args.start_at,
                 ),
                 dry_run=args.dry_run,
             )
@@ -226,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "classification": "census",
             "checked": len(findings),
-            "population": 10,
+            "population": 11,
             "missing": "fail",
             "failures": sum(not finding.passed for finding in findings),
             "checks": [finding.as_dict() for finding in findings],
@@ -235,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         print(rendered)
         if args.output:
             args.output.write_text(rendered + "\n", encoding="utf-8")
-        return 0 if payload["failures"] == 0 and len(findings) == 10 else 2
+        return 0 if payload["failures"] == 0 and len(findings) == 11 else 2
 
     if args.command == "compare-full":
         from pipeline.orchestrator.full_rehearsal_compare import (
