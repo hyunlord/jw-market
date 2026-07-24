@@ -2224,6 +2224,16 @@ def _prepend_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> st
     return f"{prefix}\n\n{answer}" if answer else prefix
 
 
+def _without_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> str:
+    prefix = _verified_evidence_prefix(result)
+    if not prefix or not answer.startswith(prefix):
+        return answer
+    remainder = answer[len(prefix) :]
+    if remainder and not remainder[0].isspace():
+        return answer
+    return remainder.lstrip()
+
+
 def _sse_initial_text_events(
     *,
     conversation_id: str | None,
@@ -2634,7 +2644,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     trace = trace_envelope(
         question=question,
         result=result,
-        answer=safe_answer,
+        answer=_without_verified_evidence_prefix(safe_answer, result),
         charts=charts,
         timing=timing_payload,
         conversation_id=conversation_id,
@@ -2689,9 +2699,11 @@ def _apply_relational_claim_gate(question: str, answer: str, result: dict[str, A
 
 
 def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, Any]) -> str:
+    claim_answer = _without_verified_evidence_prefix(answer, result)
+    had_presentation_prefix = claim_answer != answer
     gate = verify_claim_bindings(
         question=question,
-        answer=answer,
+        answer=claim_answer,
         facts=evidence_facts_from_result(result),
         expected_entities=expected_entities_from_result(question, result),
     )
@@ -2727,6 +2739,8 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         "binding_status": gate.status,
         "blocked_numbers": gate.blocked_numbers,
     }
+    if had_presentation_prefix:
+        return _prepend_verified_evidence_prefix(gate.answer, result)
     return gate.answer
 
 

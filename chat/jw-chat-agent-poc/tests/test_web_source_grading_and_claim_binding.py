@@ -10,6 +10,7 @@ from jw_chat_agent_poc.orchestrator.source_grading import (
     grade_web_url,
     requested_authority_source_explicit,
 )
+from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.service.app import compute_final_answer
 from jw_chat_agent_poc.service.evidence_binding import (
     expected_entities_from_result,
@@ -52,6 +53,92 @@ def _fact(
         view="strategic_ml" if metric == "HHI" else "",
         operand_fact_ids=operand_fact_ids,
     )
+
+
+def _mfds_binding_result(*, item_count: int = 8, count_fact: bool = False) -> dict:
+    facts = [
+        _fact(
+            value="8건" if count_fact else "2024년",
+            entity="Eylea",
+            metric="허가 건수" if count_fact else "허가사항",
+            period="2024",
+            unit="건" if count_fact else "년",
+        )
+    ]
+    return {
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "routing_v4": {
+                "proposed_routing_signature": {
+                    "proposed_calls": [
+                        {
+                            "normalized_args": {
+                                "brand": "Eylea",
+                            }
+                        }
+                    ]
+                }
+            },
+        },
+        "tool_calls": [
+            {
+                "tool": "mfds_permission_search",
+                "status": "live",
+                "render_data": {
+                    "ok": True,
+                    "items": [
+                        {"item_name": f"Eylea-{index}"}
+                        for index in range(item_count)
+                    ],
+                },
+            }
+        ],
+        "markdown_response": {
+            "evidence": [asdict(fact) for fact in facts],
+        },
+    }
+
+
+def test_verified_evidence_count_prefix_is_presentation_not_a_numeric_claim() -> None:
+    for question in ("Eylea 급여기준 알려줘", "아일리아 급여기준 알려줘"):
+        result = _mfds_binding_result()
+        prefix = service_app._verified_evidence_prefix(result)
+        answer = f"{prefix}\n\nEylea 급여기준 근거를 확인했습니다."
+
+        gated = service_app._apply_evidence_binding_gate(question, answer, result)
+
+        assert gated == answer
+        assert result["_qa_claim_gate"]["binding_status"] == "pass"
+        assert result["_qa_claim_gate"]["blocked_numbers"] == ()
+
+
+def test_unverified_count_claim_is_still_blocked() -> None:
+    question = "아일리아 급여기준 알려줘"
+    result = _mfds_binding_result()
+
+    gated = service_app._apply_evidence_binding_gate(
+        question,
+        "Eylea 허가 품목은 9건입니다.",
+        result,
+    )
+
+    assert "9건" not in gated
+    assert result["_qa_claim_gate"]["binding_status"] == "fail"
+    assert result["_qa_claim_gate"]["blocked_numbers"] == ("9건",)
+
+
+def test_evidence_backed_count_claim_remains_bindable() -> None:
+    question = "Eylea 급여기준 알려줘"
+    result = _mfds_binding_result(count_fact=True)
+
+    gated = service_app._apply_evidence_binding_gate(
+        question,
+        "Eylea 허가 품목은 8건입니다.",
+        result,
+    )
+
+    assert gated == "Eylea 허가 품목은 8건입니다."
+    assert result["_qa_claim_gate"]["binding_status"] == "pass"
 
 
 def test_source_grades_distinguish_authoritative_official_web_and_general_web() -> None:
