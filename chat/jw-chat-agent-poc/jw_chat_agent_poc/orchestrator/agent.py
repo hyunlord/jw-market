@@ -598,6 +598,20 @@ class ChatAgent:
             FallbackCode.UNSUPPORTED_QUERY.value,
             FallbackCode.VERIFICATION_FAIL.value,
         }:
+            preserves_permission_anchor = any(
+                isinstance(call, dict) and call.get("tool") == "mfds_permission_search"
+                for call in tool_result.get("tool_calls", [])
+            )
+            if pre_resolved is None and preserves_permission_anchor:
+                try:
+                    pre_resolved = self.resolver.resolve(question, allow_default=False)
+                except (AmbiguousBrandError, UnsupportedBrandError):
+                    pre_resolved = None
+            if pre_resolved is not None and tool_result.get("resolution") is None:
+                tool_result = {
+                    **tool_result,
+                    "resolution": pre_resolved.__dict__,
+                }
             return tool_result, pre_resolved, None
         return None, pre_resolved, str(fallback_code)
 

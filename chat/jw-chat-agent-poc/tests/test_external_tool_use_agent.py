@@ -13,8 +13,11 @@ from pydantic import BaseModel
 import pytest
 import requests
 
+import jw_chat_agent_poc.orchestrator.agent as agent_module
 from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
+from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
+from jw_chat_agent_poc.service.conversation_context import extract_conversation_slots
 from jw_chat_agent_poc.service.answer_safety import ensure_natural_fact_lead
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.runtime_provenance import _facts_returned
@@ -29,7 +32,7 @@ from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tool_use.registry import _external_call_envelope
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
-from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.resolver import BrandResolution, BrandResolver
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
@@ -53,6 +56,54 @@ class _ChoiceSequence:
         choice = self.choices[self.calls]
         self.calls += 1
         return choice
+
+
+def test_external_tool_agent_early_return_preserves_dynamic_brand_resolution(monkeypatch) -> None:
+    resolution = BrandResolution(
+        canonical_brand="리바로",
+        audit_code="LIVALO",
+        molecule_en=("pitavastatin",),
+        atc=("C10A1",),
+        edi_code=None,
+        item_seq=None,
+        is_combo=False,
+        market_id="strategy_006",
+    )
+
+    class _DynamicResolver:
+        @staticmethod
+        def has_fixture_alias(_question: str) -> bool:
+            return False
+
+        @staticmethod
+        def resolve(question: str, *, allow_default: bool) -> BrandResolution:
+            assert question == "리바로 허가정보 알려줘"
+            assert allow_default is False
+            return resolution
+
+    monkeypatch.setattr(
+        agent_module,
+        "run_external_tool_agent",
+        lambda *_args, **_kwargs: {
+            "resolution": None,
+            "router_diagnostics": {"fallback_code": None},
+            "tool_calls": [{"tool": "mfds_permission_search", "render_data": {}}],
+        },
+    )
+    agent = object.__new__(ChatAgent)
+    agent.resolver = _DynamicResolver()
+    agent.external = object()
+
+    result, resolved, fallback_code = agent._attempt_external_tool_agent(
+        "리바로 허가정보 알려줘",
+        None,
+    )
+
+    assert fallback_code is None
+    assert resolved == resolution
+    assert result is not None
+    assert result["resolution"]["canonical_brand"] == "리바로"
+    assert extract_conversation_slots(result).anchor_brand == "리바로"
 
 
 def _fact() -> EvidenceFact:
