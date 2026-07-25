@@ -10,8 +10,11 @@ from pipeline.scripts.crawler.hira_benefit.contract import (
     HiraWorkflowInput,
     validate_run_metrics,
 )
+from pipeline.scripts.crawler.hira_benefit.http_client import HiraRequestPolicy
 from pipeline.scripts.crawler.hira_benefit.stage_cli import (
+    build_failure_receipt,
     collect_metrics_from_receipt,
+    monitored_user_agent,
 )
 
 
@@ -26,6 +29,7 @@ def test_timeout_budget_is_hira_specific_and_has_three_x_margin() -> None:
     assert config.expected_seconds <= config.workflow_timeout_seconds / 3
     assert config.workflow_timeout_seconds == 3600
     assert ACTIVITY_POLICIES["collect_details"].start_to_close == timedelta(minutes=30)
+    assert config.request_policy == HiraRequestPolicy()
 
 
 def test_four_condition_gate_passes_without_unapproved_threshold() -> None:
@@ -82,6 +86,30 @@ def test_first_run_configuration_is_fail_closed() -> None:
         )
 
 
+def test_backfill_chunk_requires_manifest_identity_and_index() -> None:
+    with pytest.raises(ValueError, match="manifest_sha256"):
+        HiraWorkflowInput(
+            run_id="hira-backfill-chunk-001",
+            state_root="/tmp/hira-state",
+            first_run_mode="backfill_all",
+            manifest_path="/tmp/manifest.json",
+            chunk_index=0,
+        )
+
+
+def test_backfill_chunk_contract_has_no_population_max_notices_gate() -> None:
+    config = HiraWorkflowInput(
+        run_id="hira-backfill-chunk-001",
+        state_root="/tmp/hira-state",
+        first_run_mode="backfill_all",
+        manifest_path="/tmp/manifest.json",
+        manifest_sha256="a" * 64,
+        chunk_index=0,
+    )
+
+    assert not hasattr(config, "max_notices")
+
+
 def test_collect_metrics_rejects_failed_receipt_before_persist() -> None:
     with pytest.raises(RuntimeError, match="collect receipt is not complete"):
         collect_metrics_from_receipt(
@@ -96,3 +124,35 @@ def test_collect_metrics_rejects_failed_receipt_before_persist() -> None:
                 "failed_count": 0,
             }
         )
+
+
+def test_circuit_open_failure_receipt_requires_thirty_minute_pause() -> None:
+    from pipeline.scripts.crawler.hira_benefit.http_client import CircuitOpenError
+
+    receipt = build_failure_receipt(
+        "collect_details",
+        CircuitOpenError(reason="http_503", retry_after_seconds=1800),
+    )
+
+    assert receipt["status"] == "failed"
+    assert receipt["gate_failures"] == ["circuit_open"]
+    assert receipt["retry_after_seconds"] == 1800
+
+
+def test_monitored_user_agent_is_required_for_live_requests() -> None:
+    with pytest.raises(RuntimeError, match="HIRA_USER_AGENT"):
+        monitored_user_agent(None)
+    with pytest.raises(RuntimeError, match="monitored contact"):
+        monitored_user_agent(
+            "JWHealth-HIRA-InsuranceCriteriaBot/1.0 "
+            "(+mailto:<monitored-contact>; approved-internal-sync)"
+        )
+
+    assert (
+        monitored_user_agent(
+            "JWHealth-HIRA-InsuranceCriteriaBot/1.0 "
+            "(+mailto:ops@example.com; approved-internal-sync)"
+        )
+        == "JWHealth-HIRA-InsuranceCriteriaBot/1.0 "
+        "(+mailto:ops@example.com; approved-internal-sync)"
+    )

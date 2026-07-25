@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 
 from .change_detection import ChangePlan, StoredNoticeState, plan_changes
 from .contract import HiraRunMetrics, HiraWorkflowInput
+from .http_client import CircuitOpenError
 from .models import NoticeListItem
 from .parser import parse_detail_html, parse_list_html
 from .repository import PersistableNotice
@@ -42,17 +43,24 @@ def discover_changes(
         raise RuntimeError(
             "HIRA index yielded zero notices; verify URL/parameters before crawling"
         )
-    plan = plan_changes(
+    return (
+        plan_discovered_items(rows, config=config, stored=stored),
+        tag_sequence_signature(html),
+    )
+
+
+def plan_discovered_items(
+    rows: Sequence[NoticeListItem],
+    *,
+    config: HiraWorkflowInput,
+    stored: Mapping[str, StoredNoticeState] | None,
+) -> ChangePlan:
+    return plan_changes(
         rows,
         stored=stored,
         first_run_mode=config.first_run_mode,
         recent_limit=config.recent_limit,
     )
-    if len(plan.to_fetch) > config.max_notices:
-        raise RuntimeError(
-            f"planned notices exceed max_notices: {len(plan.to_fetch)}>{config.max_notices}"
-        )
-    return plan, tag_sequence_signature(html)
 
 
 def collect_details(
@@ -70,6 +78,8 @@ def collect_details(
                 source_notice_id=item.source_notice_id,
                 source_url=item.source_url,
             )
+        except CircuitOpenError:
+            raise
         except Exception:  # noqa: BLE001 - one bad notice must become an explicit run failure.
             failures += 1
             continue

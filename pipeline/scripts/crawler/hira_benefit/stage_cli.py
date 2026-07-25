@@ -5,14 +5,22 @@ import json
 import os
 import sys
 from dataclasses import asdict
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 from .alert_repository import load_recent_parse_counts, record_alert_status
 from .alerts import AlertEvent, evaluate_failed_ratio, publish_alert
+from .backfill import BackfillManifest
 from .contract import HiraRunMetrics, HiraWorkflowInput, validate_run_metrics
-from .http_client import HiraHttpClient
+from .http_client import (
+    LIST_SLOW_RESPONSE_SECONDS,
+    CircuitOpenError,
+    HiraHttpClient,
+    HiraRequestPolicy,
+)
 from .models import ParsedNotice, ParseStatus
+from .pagination import fetch_notice_index
 from .receipts import read_json, run_dir, write_json, write_stage_receipt
 from .repository import (
     PersistableNotice,
@@ -22,11 +30,58 @@ from .repository import (
     load_notice_state,
     persist_batch,
 )
-from .service import collect_details, discover_changes, notice_to_json
+from .service import collect_details, notice_to_json, plan_discovered_items
 
 
 def _input(path: Path) -> HiraWorkflowInput:
-    return HiraWorkflowInput(**json.loads(path.read_text(encoding="utf-8")))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    policy = HiraRequestPolicy(**payload.pop("request_policy", {}))
+    return HiraWorkflowInput(**payload, request_policy=policy)
+
+
+def monitored_user_agent(value: str | None) -> str:
+    """Require the F18 monitored identity before any live HIRA request."""
+
+    if not value:
+        raise RuntimeError("HIRA_USER_AGENT is required for live HIRA requests")
+    if "<monitored-contact>" in value or "monitored-contact-required" in value:
+        raise RuntimeError("HIRA_USER_AGENT must include an actual monitored contact")
+    return value
+
+
+def _client(
+    config: HiraWorkflowInput,
+    *,
+    slow_response_seconds: float | None = None,
+) -> HiraHttpClient:
+    policy = config.request_policy
+    if slow_response_seconds is not None:
+        policy = replace(policy, slow_response_seconds=slow_response_seconds)
+    return HiraHttpClient(
+        policy=policy,
+        user_agent=monitored_user_agent(os.environ.get("HIRA_USER_AGENT")),
+    )
+
+
+def build_failure_receipt(stage: str, error: Exception) -> dict[str, object]:
+    """Describe a circuit stop so Temporal cannot immediately retry it."""
+
+    if isinstance(error, CircuitOpenError):
+        return {
+            "stage": stage,
+            "status": "failed",
+            "gate_failures": ["circuit_open"],
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "retry_after_seconds": error.retry_after_seconds,
+        }
+    return {
+        "stage": stage,
+        "status": "failed",
+        "gate_failures": ["stage_exception"],
+        "error_type": type(error).__name__,
+        "error": str(error),
+    }
 
 
 def _item_payload(item: object) -> dict[str, object]:
@@ -43,8 +98,43 @@ def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
     finally:
         conn.rollback()
         conn.close()
-    html = HiraHttpClient(config.request_delay_seconds).get_text(config.index_url)
-    plan, signature = discover_changes(html, config=config, stored=state)
+    if config.manifest_path is not None:
+        manifest = BackfillManifest.from_json(
+            Path(config.manifest_path).read_text(encoding="utf-8")
+        )
+        if manifest.manifest_sha256 != config.manifest_sha256:
+            raise RuntimeError("backfill manifest hash mismatch")
+        if config.chunk_index is None:
+            raise RuntimeError("backfill chunk index is missing")
+        if config.chunk_index >= manifest.chunk_count:
+            raise RuntimeError("backfill chunk index is out of range")
+        chunk = manifest.chunks[config.chunk_index]
+        rows = chunk.items
+        signature = manifest.manifest_sha256
+        manifest_detail = {
+            "manifest_sha256": manifest.manifest_sha256,
+            "manifest_total_count": manifest.total_count,
+            "chunk_index": chunk.index,
+            "chunk_count": manifest.chunk_count,
+        }
+    else:
+        client = _client(
+            config,
+            slow_response_seconds=LIST_SLOW_RESPONSE_SECONDS,
+        )
+        index = fetch_notice_index(
+            index_url=config.index_url,
+            base_url=config.base_url,
+            fetch_form=client.post_form_text,
+        )
+        rows = index.items
+        signature = index.manifest_sha256
+        manifest_detail = {
+            "manifest_sha256": index.manifest_sha256,
+            "manifest_total_count": index.total_count,
+            "page_count": index.total_pages,
+        }
+    plan = plan_discovered_items(rows, config=config, stored=state)
     write_json(
         root / "discovery.json",
         {
@@ -56,6 +146,7 @@ def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
             "index_tag_signature_sha256": signature,
             "brand_names": list(brands),
             "mapping_revision": revision,
+            **manifest_detail,
         },
     )
     metrics = HiraRunMetrics(0, 0, 0, 0, 0, 0, 0)
@@ -82,7 +173,7 @@ def _notice_item(payload: dict[str, object]) -> object:
 
 def _run_collect(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
     discovery = read_json(root / "discovery.json")
-    client = HiraHttpClient(config.request_delay_seconds)
+    client = _client(config)
     notices, metrics = collect_details(
         tuple(_notice_item(item) for item in discovery["to_fetch"]),
         fetch_text=client.get_text,
@@ -277,6 +368,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         receipt = _RUNNERS[args.stage](config, root)
     except Exception as exc:  # noqa: BLE001 - CLI boundary converts failures to nonzero rc.
+        if isinstance(exc, CircuitOpenError):
+            write_json(
+                root / f"{args.stage}.receipt.json",
+                build_failure_receipt(args.stage, exc),
+            )
         print(f"stage={args.stage} status=failed error={type(exc).__name__}: {exc}")
         return 1
     print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))

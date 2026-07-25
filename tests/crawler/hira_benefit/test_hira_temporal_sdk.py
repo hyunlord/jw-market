@@ -42,3 +42,24 @@ def test_explicit_gate_failure_is_non_retryable(tmp_path: Path) -> None:
 
     assert error.value.non_retryable is True
     assert error.value.type == "HiraGateError"
+
+
+def test_circuit_open_receipt_is_non_retryable(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "collect_details.receipt.json"
+    write_json(
+        receipt_path,
+        {
+            "status": "failed",
+            "gate_failures": ["circuit_open"],
+            "retry_after_seconds": 1800,
+        },
+    )
+
+    with pytest.raises(ApplicationError) as error:
+        raise_for_stage_result(
+            stage="collect_details",
+            return_code=1,
+            receipt_path=receipt_path,
+        )
+
+    assert error.value.non_retryable is True
