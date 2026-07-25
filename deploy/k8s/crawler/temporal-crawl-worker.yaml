@@ -66,6 +66,10 @@ spec:
           value: "100"
         - name: CRAWL_CHAIN_LLM_MAX_COST_KRW
           value: "339.00"
+        - name: AGENT2_HOOK_LLM_CALL_LIMIT
+          value: "0"
+        - name: AGENT2_HOOK_ESTIMATED_USD_PER_CALL
+          value: "0.0439"
         - name: DB_USER
           valueFrom:
             secretKeyRef:

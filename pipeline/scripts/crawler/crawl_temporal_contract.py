@@ -20,6 +20,13 @@ ACTIVITY_STAGES: Final[tuple[str, ...]] = (
     "tier2_collect",
     "tier2_classify_and_refresh",
 )
+POST_REFRESH_ACTIVITY_STAGES: Final[tuple[str, ...]] = (
+    "detect_increased_brands",
+    "agent2_generate",
+)
+WORKFLOW_ACTIVITY_STAGES: Final[tuple[str, ...]] = (
+    ACTIVITY_STAGES + POST_REFRESH_ACTIVITY_STAGES
+)
 INTERNAL_STAGE_BY_ACTIVITY: Final[dict[str, str]] = {
     "tier1_collect": "tier1_collect",
     "tier1_classify": "tier1_classify_incremental",
@@ -86,7 +93,7 @@ class CrawlDailyInput:
             "inject_heartbeat_stall_stage",
         ):
             stage = getattr(self, field_name)
-            if stage is not None and stage not in ACTIVITY_STAGES:
+            if stage is not None and stage not in WORKFLOW_ACTIVITY_STAGES:
                 raise ValueError(f"{field_name} is not a known activity stage: {stage}")
         if self.test_heartbeat_timeout_seconds is not None and not (
             1 <= self.test_heartbeat_timeout_seconds <= 30
@@ -126,6 +133,10 @@ ACTIVITY_POLICIES: Final[dict[str, ActivityPolicy]] = {
     "tier1_classify": ActivityPolicy(1_800, 120),
     "tier2_collect": ActivityPolicy(57_600, 300, maximum_attempts=1),
     "tier2_classify_and_refresh": ActivityPolicy(7_200, 120, maximum_attempts=1),
+    "detect_increased_brands": ActivityPolicy(900, 60, maximum_attempts=1),
+    # wf217 retries transient failures per brand. Retrying the entire batch
+    # duplicates cost and exceeds the 24-hour workflow budget.
+    "agent2_generate": ActivityPolicy(3_600, 60, maximum_attempts=1),
 }
 
 

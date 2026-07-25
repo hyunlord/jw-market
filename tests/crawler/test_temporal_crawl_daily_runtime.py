@@ -11,6 +11,9 @@ import pytest
 
 from pipeline.scripts.crawler.crawl_temporal_contract import (
     ACTIVITY_POLICIES,
+    ACTIVITY_STAGES,
+    POST_REFRESH_ACTIVITY_STAGES,
+    WORKFLOW_ACTIVITY_STAGES,
     WORKFLOW_EXECUTION_TIMEOUT_SECONDS,
 )
 
@@ -29,6 +32,8 @@ def test_activity_policies_cover_every_stage_with_measured_timeouts() -> None:
     assert ACTIVITY_POLICIES["tier1_classify"].start_to_close_seconds == 1_800
     assert ACTIVITY_POLICIES["tier2_collect"].start_to_close_seconds == 57_600
     assert ACTIVITY_POLICIES["tier2_classify_and_refresh"].start_to_close_seconds == 7_200
+    assert ACTIVITY_POLICIES["detect_increased_brands"].start_to_close_seconds == 900
+    assert ACTIVITY_POLICIES["agent2_generate"].start_to_close_seconds == 3_600
     assert all(policy.heartbeat_seconds <= 300 for policy in ACTIVITY_POLICIES.values())
     assert {
         stage: policy.maximum_attempts
@@ -39,7 +44,29 @@ def test_activity_policies_cover_every_stage_with_measured_timeouts() -> None:
         "tier1_classify": 2,
         "tier2_collect": 1,
         "tier2_classify_and_refresh": 1,
+        "detect_increased_brands": 1,
+        "agent2_generate": 1,
     }
+    assert sum(
+        ACTIVITY_POLICIES[stage].start_to_close_seconds
+        for stage in WORKFLOW_ACTIVITY_STAGES
+    ) == 82_800
+    assert 82_800 < WORKFLOW_EXECUTION_TIMEOUT_SECONDS
+
+
+def test_agent2_hooks_append_without_changing_the_existing_five_stages() -> None:
+    assert ACTIVITY_STAGES == (
+        "capture_exposure_baseline",
+        "tier1_collect",
+        "tier1_classify",
+        "tier2_collect",
+        "tier2_classify_and_refresh",
+    )
+    assert POST_REFRESH_ACTIVITY_STAGES == (
+        "detect_increased_brands",
+        "agent2_generate",
+    )
+    assert WORKFLOW_ACTIVITY_STAGES == ACTIVITY_STAGES + POST_REFRESH_ACTIVITY_STAGES
 
 
 def test_temporal_runtime_is_sequential_and_validation_is_non_retryable() -> None:
@@ -48,7 +75,7 @@ def test_temporal_runtime_is_sequential_and_validation_is_non_retryable() -> Non
         encoding="utf-8"
     )
 
-    assert "for stage in ACTIVITY_STAGES" in source
+    assert "for stage in WORKFLOW_ACTIVITY_STAGES" in source
     assert "await workflow.execute_activity" in source
     assert "non_retryable=True" in source
     assert "activity.heartbeat" in source
@@ -183,6 +210,7 @@ def test_shadow_manifest_disables_tier2_llm_calls() -> None:
 
     assert "name: CRAWL_CHAIN_LLM_CALL_LIMIT" in manifest
     assert 'value: "0"' in manifest
+    assert "name: AGENT2_HOOK_LLM_CALL_LIMIT" in manifest
 
 
 def test_shadow_manifest_uses_the_live_tier1_classifier_endpoint() -> None:
@@ -208,6 +236,7 @@ def test_production_worker_is_separate_and_unbounded() -> None:
     assert 'value: "100"' in manifest
     assert "name: CRAWL_CHAIN_LLM_MAX_COST_KRW" in manifest
     assert 'value: "339.00"' in manifest
+    assert "name: AGENT2_HOOK_LLM_CALL_LIMIT" in manifest
     assert "shadow" not in manifest.lower()
     assert "CRAWL_CHAIN_TIER1_SITES" not in manifest
     assert "CRAWL_CHAIN_TIER1_MAX_ARTICLES" not in manifest

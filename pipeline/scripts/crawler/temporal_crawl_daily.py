@@ -11,6 +11,7 @@ import time
 from collections import deque
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -20,8 +21,8 @@ from temporalio.exceptions import ApplicationError
 
 from pipeline.scripts.crawler.crawl_temporal_contract import (
     ACTIVITY_POLICIES,
-    ACTIVITY_STAGES,
     INTERNAL_STAGE_BY_ACTIVITY,
+    WORKFLOW_ACTIVITY_STAGES,
     CrawlDailyInput,
     StageGateError,
     activity_command,
@@ -283,6 +284,10 @@ async def _run_activity(config: CrawlDailyInput, stage: str) -> dict[str, Any]:
         _validation_failure(stage, "heartbeat_not_enforced", "stall returned unexpectedly")
     if stage == "capture_exposure_baseline":
         return await _capture_baseline(config)
+    if stage == "detect_increased_brands":
+        return await _detect_increased_brands(config)
+    if stage == "agent2_generate":
+        return await _agent2_generate(config)
     try:
         return await _run_stage_process(config, stage)
     except StageGateError as exc:
@@ -314,12 +319,211 @@ async def tier2_classify_and_refresh(config: CrawlDailyInput) -> dict[str, Any]:
     return await _run_activity(config, "tier2_classify_and_refresh")
 
 
+async def _detect_increased_brands(config: CrawlDailyInput) -> dict[str, Any]:
+    from pipeline.scripts.ai_analysis.agent2_density_worklist import (
+        UnknownEventBrandError,
+    )
+    from pipeline.scripts.crawler.agent2_hook_runtime import (
+        detect_and_write_receipt,
+    )
+
+    started = time.monotonic()
+    activity.heartbeat({"stage": "detect_increased_brands", "state": "querying"})
+    try:
+        result, pointer = await asyncio.to_thread(
+            detect_and_write_receipt,
+            config,
+        )
+    except UnknownEventBrandError as exc:
+        _validation_failure("detect_increased_brands", "unresolved_alias", str(exc))
+    return {
+        "stage": "detect_increased_brands",
+        "status": "complete",
+        "attempt": activity.info().attempt,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "target_count": result.target_count,
+        "targets": [
+            {
+                "brand_key": target.brand_key,
+                "canonical_brand_name": target.canonical_brand_name,
+                "effective_added_news_ids": list(target.effective_added_news_ids),
+            }
+            for target in result.targets
+        ],
+        **pointer,
+    }
+
+
+def _agent2_call_limit() -> int:
+    raw = os.getenv("AGENT2_HOOK_LLM_CALL_LIMIT", "0").strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError("AGENT2_HOOK_LLM_CALL_LIMIT must be an integer") from exc
+    if value < 0:
+        raise ValueError("AGENT2_HOOK_LLM_CALL_LIMIT must be non-negative")
+    return value
+
+
+def _agent2_estimated_usd_per_call() -> Decimal:
+    from pipeline.scripts.crawler.agent2_hook import (
+        DEFAULT_ESTIMATED_USD_PER_CALL,
+    )
+
+    raw = os.getenv(
+        "AGENT2_HOOK_ESTIMATED_USD_PER_CALL",
+        str(DEFAULT_ESTIMATED_USD_PER_CALL),
+    ).strip()
+    try:
+        value = Decimal(raw)
+    except InvalidOperation as exc:
+        raise ValueError(
+            "AGENT2_HOOK_ESTIMATED_USD_PER_CALL must be a decimal"
+        ) from exc
+    if value < 0:
+        raise ValueError(
+            "AGENT2_HOOK_ESTIMATED_USD_PER_CALL must be non-negative"
+        )
+    return value
+
+
+async def _agent2_generate(config: CrawlDailyInput) -> dict[str, Any]:
+    from pipeline.scripts.crawler.agent2_hook_receipt import read_detection_receipt
+    from pipeline.scripts.crawler.agent2_hook_runtime import (
+        Agent2CommandRequest,
+        build_agent2_command,
+    )
+
+    started = time.monotonic()
+    pointer_path = (
+        Path(config.state_root)
+        / "runs"
+        / config.run_id
+        / "agent2_detection.json"
+    )
+    try:
+        detection = read_detection_receipt(pointer_path)
+        targets = detection["targets"]
+        if not isinstance(targets, list):
+            raise ValueError("Agent2 detection targets must be a list")
+        call_limit = _agent2_call_limit()
+        estimated_usd_per_call = _agent2_estimated_usd_per_call()
+    except (OSError, KeyError, TypeError, ValueError, RuntimeError) as exc:
+        _validation_failure("agent2_generate", "schema_invalid", str(exc))
+
+    target_count = len(targets)
+    base_result = {
+        "stage": "agent2_generate",
+        "status": "complete",
+        "attempt": activity.info().attempt,
+        "target_count": target_count,
+        "expected_llm_calls": target_count,
+        "allowed_llm_calls": 0,
+        "estimated_usd_per_call": str(estimated_usd_per_call),
+        "estimated_cost_usd": str(estimated_usd_per_call * target_count),
+        "detection_receipt": str(pointer_path),
+    }
+    if target_count == 0:
+        return {
+            **base_result,
+            "execution_mode": "no_targets",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    if call_limit == 0:
+        return {
+            **base_result,
+            "execution_mode": "selection_only",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    if target_count > call_limit:
+        _validation_failure(
+            "agent2_generate",
+            "llm_call_limit",
+            f"expected_calls={target_count} limit={call_limit}",
+        )
+
+    brand_keys = tuple(str(target["brand_key"]) for target in targets)
+    command = build_agent2_command(
+        Agent2CommandRequest(
+            repo_root=Path(config.repo_root),
+            state_root=Path(config.state_root),
+            content_sha256=str(
+                json.loads(pointer_path.read_text(encoding="utf-8"))[
+                    "content_sha256"
+                ]
+            ),
+            brand_keys=brand_keys,
+            snapshot_at=f"{detection['snapshot_date']}T00:00:00+00:00",
+        )
+    )
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=config.repo_root,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        while process.returncode is None:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=30)
+            except TimeoutError:
+                activity.heartbeat(
+                    {
+                        "stage": "agent2_generate",
+                        "state": "wf217",
+                        "target_count": target_count,
+                    }
+                )
+    except asyncio.CancelledError:
+        await _terminate_process(process)
+        raise
+    if process.returncode != 0:
+        output = await process.stdout.read() if process.stdout is not None else b""
+        detail = output.decode("utf-8", errors="replace")[-4000:]
+        if _TRANSIENT_FAILURE.search(detail):
+            raise ApplicationError(
+                f"stage=agent2_generate error_code=transient_failure {detail}",
+                type="Agent2TransientError",
+                non_retryable=False,
+            )
+        _validation_failure(
+            "agent2_generate",
+            "wf217_failed",
+            f"return_code={process.returncode} tail={detail}",
+        )
+    generation_dir = (
+        Path(config.state_root)
+        / "agent2-hook"
+        / "generation"
+    )
+    return {
+        **base_result,
+        "allowed_llm_calls": target_count,
+        "execution_mode": "wf217_enabled",
+        "generation_manifest": str(generation_dir / "run_manifest.json"),
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }
+
+
+@activity.defn(name="detect_increased_brands")
+async def detect_increased_brands(config: CrawlDailyInput) -> dict[str, Any]:
+    return await _run_activity(config, "detect_increased_brands")
+
+
+@activity.defn(name="agent2_generate")
+async def agent2_generate(config: CrawlDailyInput) -> dict[str, Any]:
+    return await _run_activity(config, "agent2_generate")
+
+
 ACTIVITY_FUNCTIONS = {
     "capture_exposure_baseline": capture_exposure_baseline,
     "tier1_collect": tier1_collect,
     "tier1_classify": tier1_classify,
     "tier2_collect": tier2_collect,
     "tier2_classify_and_refresh": tier2_classify_and_refresh,
+    "detect_increased_brands": detect_increased_brands,
+    "agent2_generate": agent2_generate,
 }
 
 
@@ -329,7 +533,7 @@ class CrawlDailyWorkflow:
     async def run(self, config: CrawlDailyInput) -> dict[str, Any]:
         config = resolve_execution_config(config, temporal_run_id=workflow.info().run_id)
         stages: list[dict[str, Any]] = []
-        for stage in ACTIVITY_STAGES:
+        for stage in WORKFLOW_ACTIVITY_STAGES:
             policy = ACTIVITY_POLICIES[stage]
             heartbeat_seconds = config.test_heartbeat_timeout_seconds or policy.heartbeat_seconds
             stages.append(
