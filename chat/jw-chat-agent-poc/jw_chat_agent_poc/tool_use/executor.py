@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 import requests
 
 from jw_chat_agent_poc.common.timing import Timing, stage
+from jw_chat_agent_poc.tools.external.mcp_client import mcp_execution_budget
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolEnvelope, ToolTrace
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider, ToolProviderConfigurationError
@@ -411,11 +412,16 @@ def _public_preview(envelope: ToolEnvelope) -> str:
 
 def _execute_with_timeout(spec: ToolSpec, payload: BaseModel) -> ToolEnvelope:
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-use-{spec.name}")
-    future = pool.submit(spec.execute, payload)
+    future = pool.submit(_execute_with_mcp_budget, spec, payload)
     try:
         return future.result(timeout=spec.timeout_s)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _execute_with_mcp_budget(spec: ToolSpec, payload: BaseModel) -> ToolEnvelope:
+    with mcp_execution_budget(spec.timeout_s):
+        return spec.execute(payload)
 
 
 def _execute_with_progress(

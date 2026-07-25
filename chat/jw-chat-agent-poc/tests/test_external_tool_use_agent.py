@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 import json
 import threading
@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel
 import pytest
+import requests
 
 from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
@@ -18,7 +19,7 @@ from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.runtime_provenance import _facts_returned
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, EvidenceFact, ToolEnvelope
-from jw_chat_agent_poc.tool_use.executor import AgentExecutor
+from jw_chat_agent_poc.tool_use.executor import AgentExecutor, _execute_with_timeout
 import jw_chat_agent_poc.tool_use.integration as integration_module
 from jw_chat_agent_poc.tool_use.integration import _deterministic_tool_choices, run_external_tool_agent
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete, tool_use_requirements
@@ -989,6 +990,76 @@ def test_mcp_specs_allow_the_client_timeout_to_finish() -> None:
     assert mcp_specs
     expected_wrapper_budget = MCP_FIRST_ATTEMPT_TIMEOUT_S + external.timeout_s + 1.0
     assert all(spec.timeout_s == expected_wrapper_budget for spec in mcp_specs)
+
+
+def test_permission_search_and_detail_share_the_tool_timeout_budget(monkeypatch) -> None:
+    class McpResponse:
+        def __init__(self, result: list[dict[str, str]]) -> None:
+            event = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [],
+                    "structuredContent": {"result": result},
+                },
+            }
+            self.text = f"data: {json.dumps(event)}\n\n"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    observed: list[tuple[str, float]] = []
+    detail_attempts = 0
+
+    def fake_post(_url, *, json, headers, timeout):
+        del headers
+        nonlocal detail_attempts
+        tool_name = str(json["params"]["name"])
+        observed.append((tool_name, float(timeout)))
+        if tool_name == "search_drug_permission_list":
+            time.sleep(0.05)
+            return McpResponse(
+                [{"ITEM_SEQ": "200500287", "ITEM_NAME": "리바로정1밀리그램"}]
+            )
+        detail_attempts += 1
+        if detail_attempts == 1:
+            time.sleep(0.10)
+            raise requests.Timeout("detail first attempt disconnected")
+        return McpResponse(
+            [{"ITEM_SEQ": "200500287", "ITEM_NAME": "리바로정1밀리그램"}]
+        )
+
+    monkeypatch.setenv("NEDRUG_MCP_URL", "http://mcp-nedrug/mcp")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.tools.external.mcp_client.requests.post",
+        fake_post,
+    )
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="live", timeout_s=12),
+    )
+    permission_spec = next(
+        spec
+        for spec in registry.list_for_query("리바로 허가정보")
+        if spec.name == "mfds_permission_search"
+    )
+    bounded_spec = replace(permission_spec, timeout_s=0.40)
+
+    envelope = _execute_with_timeout(
+        bounded_spec,
+        bounded_spec.input_model.model_validate({"brand": "리바로"}),
+    )
+
+    assert envelope.ok is True
+    assert [name for name, _timeout in observed][:2] == [
+        "search_drug_permission_list",
+        "get_drug_permission_detail",
+    ]
+    assert all(
+        timeout < bounded_spec.timeout_s
+        for name, timeout in observed
+        if name == "get_drug_permission_detail"
+    )
 
 
 def test_hira_registry_searches_korean_disease_label_without_internal_mapping() -> None:

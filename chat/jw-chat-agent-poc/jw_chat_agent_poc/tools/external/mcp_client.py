@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 import time
-from typing import Any, Final
+from typing import Any, Final, Iterator
 
 import requests
 
 
 MCP_ACCEPT_HEADER: Final[str] = "application/json, text/event-stream"
 MCP_FIRST_ATTEMPT_TIMEOUT_S: Final[int] = 5
+MCP_WRAPPER_GRACE_S: Final[float] = 1.0
+_MCP_EXECUTION_DEADLINE: ContextVar[float | None] = ContextVar(
+    "mcp_execution_deadline",
+    default=None,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +29,17 @@ class McpClientError(RuntimeError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+@contextmanager
+def mcp_execution_budget(timeout_s: float) -> Iterator[None]:
+    grace_s = min(MCP_WRAPPER_GRACE_S, max(float(timeout_s) * 0.1, 0.001))
+    deadline = time.monotonic() + max(float(timeout_s) - grace_s, 0.001)
+    token = _MCP_EXECUTION_DEADLINE.set(deadline)
+    try:
+        yield
+    finally:
+        _MCP_EXECUTION_DEADLINE.reset(token)
 
 
 class McpJsonClient:
@@ -48,7 +66,8 @@ class McpJsonClient:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         last_error: Exception | None = None
         for attempt in range(2):
-            timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S if attempt == 0 else self.timeout_s
+            requested_timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S if attempt == 0 else self.timeout_s
+            timeout_s = _remaining_timeout_s(requested_timeout_s)
             try:
                 response = requests.post(
                     self.url,
@@ -67,8 +86,18 @@ class McpJsonClient:
             except (requests.RequestException, McpClientError, json.JSONDecodeError) as exc:
                 last_error = exc
                 if attempt == 0:
-                    time.sleep(0.2)
+                    time.sleep(_remaining_timeout_s(0.2))
         raise McpClientError(str(last_error) if last_error else "MCP request failed")
+
+
+def _remaining_timeout_s(requested_timeout_s: float) -> float:
+    deadline = _MCP_EXECUTION_DEADLINE.get()
+    if deadline is None:
+        return float(requested_timeout_s)
+    remaining_s = deadline - time.monotonic()
+    if remaining_s <= 0:
+        raise McpClientError("MCP execution deadline exceeded")
+    return max(min(float(requested_timeout_s), remaining_s), 0.001)
 
 
 def _first_sse_event(text: str) -> dict[str, Any]:
