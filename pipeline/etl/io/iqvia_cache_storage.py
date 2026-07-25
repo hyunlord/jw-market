@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from pipeline.etl.io.iqvia_minio_cache_storage import MinioCacheStorage
+
 
 class CacheStorage(Protocol):
     def exists(self, key: str) -> bool: ...
@@ -81,3 +83,4 @@ class LocalCacheStorage:
                 if path.is_file()
             )
         )
+__all__ = ["CacheStorage", "LocalCacheStorage", "MinioCacheStorage"]
