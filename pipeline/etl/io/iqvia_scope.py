@@ -36,6 +36,12 @@ def normalize_iqvia_atc4_codes(values: Iterable[str] | None) -> tuple[str, ...]:
     )
 
 
+def iqvia_record_atc4_code(record: dict[str, Any]) -> str:
+    payload = json.loads(str(record.get("payload") or "{}"))
+    static = payload.get("static") or {}
+    return str(static.get("ATC 4 CODE") or "UNKNOWN").strip().upper()
+
+
 def iqvia_record_in_scope(
     record: dict[str, Any],
     *,
@@ -49,9 +55,7 @@ def iqvia_record_in_scope(
         if canonical not in quarters:
             return False
     if atc4_codes:
-        payload = json.loads(str(record.get("payload") or "{}"))
-        static = payload.get("static") or {}
-        atc4_code = str(static.get("ATC 4 CODE") or "UNKNOWN").strip().upper()
+        atc4_code = iqvia_record_atc4_code(record)
         if atc4_code not in atc4_codes:
             return False
     return True
