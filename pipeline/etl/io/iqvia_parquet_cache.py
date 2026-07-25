@@ -25,6 +25,7 @@ from pipeline.etl.io.iqvia_cache_storage import (
     CacheStorage,
     LocalCacheStorage,
     MinioCacheStorage,
+    build_iqvia_minio_cache_storage,
 )
 from pipeline.etl.io.iqvia_loader import RECORD_PARQUET_COLUMNS
 from pipeline.etl.io.iqvia_scope import (
@@ -95,6 +96,7 @@ __all__ = [
     "CacheUnavailableError",
     "LocalCacheStorage",
     "MinioCacheStorage",
+    "build_iqvia_minio_cache_storage",
     "build_iqvia_parquet_cache",
     "cache_identity_for_source",
     "cache_schema_revision",

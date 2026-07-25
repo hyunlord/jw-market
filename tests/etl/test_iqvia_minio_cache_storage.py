@@ -7,9 +7,13 @@ from urllib.request import Request
 
 import pytest
 
-from pipeline.etl.io.iqvia_cache_storage import MinioCacheStorage
+from pipeline.etl.io.iqvia_cache_storage import (
+    MinioCacheStorage,
+    build_iqvia_minio_cache_storage,
+)
 from pipeline.etl.io.iqvia_parquet_cache import (
     MinioCacheStorage as PublicMinioCacheStorage,
+    build_iqvia_minio_cache_storage as public_build_iqvia_minio_cache_storage,
 )
 
 
@@ -112,3 +116,74 @@ def test_minio_adapter_rejects_keys_outside_cache_prefix() -> None:
 
 def test_minio_adapter_is_exposed_by_public_cache_module() -> None:
     assert PublicMinioCacheStorage is MinioCacheStorage
+
+
+def test_build_iqvia_minio_cache_storage_is_exposed_by_public_cache_module() -> None:
+    assert public_build_iqvia_minio_cache_storage is build_iqvia_minio_cache_storage
+
+
+def _clear_iqvia_cache_minio_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "IQVIA_CACHE_MINIO_ENDPOINT",
+        "IQVIA_CACHE_MINIO_ACCESS_KEY",
+        "IQVIA_CACHE_MINIO_SECRET_KEY",
+        "IQVIA_CACHE_MINIO_BUCKET",
+        "IQVIA_CACHE_MINIO_PREFIX",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_build_iqvia_minio_cache_storage_raises_when_credentials_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_iqvia_cache_minio_env(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="IQVIA cache MinIO credentials missing"):
+        build_iqvia_minio_cache_storage()
+
+
+def test_build_iqvia_minio_cache_storage_never_falls_back_to_generic_minio_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_iqvia_cache_minio_env(monkeypatch)
+    # A generic MINIO_* credential (e.g. from the unrelated archival sync path)
+    # must never be picked up by this dedicated, prefix-scoped cache adapter.
+    monkeypatch.setenv("MINIO_ENDPOINT", "http://generic.example:9000")
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "generic-access")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "generic-secret")
+
+    with pytest.raises(RuntimeError, match="IQVIA cache MinIO credentials missing"):
+        build_iqvia_minio_cache_storage()
+
+
+def test_build_iqvia_minio_cache_storage_uses_dedicated_env_and_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_iqvia_cache_minio_env(monkeypatch)
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_ENDPOINT", "http://minio.example:9000")
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_ACCESS_KEY", "jw-iqvia-cache")
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_SECRET_KEY", "scoped-secret")
+
+    storage = build_iqvia_minio_cache_storage()
+
+    assert isinstance(storage, MinioCacheStorage)
+    assert storage._bucket == "jw-market-raw"
+    assert storage._root_prefix == "iqvia-parquet-cache"
+    assert storage._access_key == "jw-iqvia-cache"
+    assert storage._secret_key == "scoped-secret"
+
+
+def test_build_iqvia_minio_cache_storage_honors_bucket_and_prefix_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_iqvia_cache_minio_env(monkeypatch)
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_ENDPOINT", "http://minio.example:9000")
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_ACCESS_KEY", "jw-iqvia-cache")
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_SECRET_KEY", "scoped-secret")
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_BUCKET", "custom-bucket")
+    monkeypatch.setenv("IQVIA_CACHE_MINIO_PREFIX", "custom-prefix")
+
+    storage = build_iqvia_minio_cache_storage()
+
+    assert storage._bucket == "custom-bucket"
+    assert storage._root_prefix == "custom-prefix"
