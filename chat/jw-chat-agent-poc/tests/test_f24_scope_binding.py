@@ -25,6 +25,11 @@ from __future__ import annotations
 from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact
 from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade
 from jw_chat_agent_poc.service.evidence_binding import verify_claim_bindings
+from jw_chat_agent_poc.service.evidence_binding_rules import (
+    fact_scope,
+    question_view_scopes,
+    scope_matches,
+)
 
 
 def _fact(
@@ -116,3 +121,160 @@ def test_valid_sales_survives_when_a_foreign_scope_table_shares_the_number() -> 
 def _excluded_cells(answer: str) -> str:
     """Return only the text of cells/lines that were replaced by the exclusion marker."""
     return "\n".join(line for line in answer.splitlines() if "근거 불일치로 제외" in line)
+
+
+# --- G-2: genuinely different scopes stay distinguishable, never merged --------
+
+
+def test_scope_matches_is_permissive_when_request_pins_no_scope() -> None:
+    fact = _fact(
+        fact_id="f",
+        value="80.39억원",
+        entity="리바로",
+        metric="매출",
+        period="2026-05",
+        unit="억원",
+        view=_STRATEGIC_SCOPE,
+    )
+    # No explicit view in the question -> no scope pinned -> never newly rejects.
+    assert question_view_scopes("리바로 매출 알려줘") == frozenset()
+    assert scope_matches(fact, question_view_scopes("리바로 매출 알려줘")) is True
+
+
+def test_scope_matches_distinguishes_competitive_from_strategic_scope() -> None:
+    strategic = _fact(
+        fact_id="s",
+        value="80.39억원",
+        entity="리바로",
+        metric="매출",
+        period="2026-05",
+        unit="억원",
+        view="market_landscape:ml_555",
+    )
+    competitive = _fact(
+        fact_id="c",
+        value="80.39억원",
+        entity="리바로",
+        metric="매출",
+        period="2026-05",
+        unit="억원",
+        view="competitive_dynamics:cd_010",
+    )
+    requested = question_view_scopes("리바로 경쟁군 매출 알려줘")
+
+    assert requested == frozenset({"competitive_dynamics"})
+    assert scope_matches(competitive, requested) is True
+    assert scope_matches(strategic, requested) is False
+    assert fact_scope(strategic) == "market_landscape:ml_555"
+
+
+def test_explicit_competitive_request_blocks_a_strategic_scope_fact() -> None:
+    # Only a strategic-scope fact is available but the user pinned 경쟁군.
+    facts = (
+        _fact(
+            fact_id="fact_sales_strategic",
+            value="80.39억원",
+            entity="리바로",
+            metric="매출",
+            period="2026-05",
+            unit="억원",
+            view="market_landscape:ml_555",
+        ),
+    )
+    result = verify_claim_bindings(
+        question="리바로 경쟁군 매출 알려줘",
+        answer="리바로 경쟁군 매출은 80.39억원입니다.",
+        facts=facts,
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "fail"
+    assert "SCOPE_MISMATCH" in result.blocked_reasons
+    assert "80.39억원" not in result.answer
+
+
+def test_two_scopes_keep_their_own_values_and_do_not_cross_bind() -> None:
+    # 555 strategic 매출 = 80.39, 566 disease 매출 = 95.00. A claim of each value
+    # must bind to its own scope's fact; neither value may leak to the other.
+    facts = (
+        _fact(
+            fact_id="fact_555",
+            value="80.39억원",
+            entity="리바로",
+            metric="매출",
+            period="2026-05",
+            unit="억원",
+            view=_STRATEGIC_SCOPE,
+        ),
+        _fact(
+            fact_id="fact_566",
+            value="95.00억원",
+            entity="리바로",
+            metric="매출",
+            period="2026-05",
+            unit="억원",
+            view=_DISEASE_SCOPE,
+        ),
+    )
+    for value in ("80.39억원", "95.00억원"):
+        result = verify_claim_bindings(
+            question="리바로 매출 알려줘",
+            answer=f"리바로 2026-05 매출은 {value}입니다.",
+            facts=facts,
+            expected_entities=("리바로",),
+        )
+        assert result.status == "pass", value
+        assert value in result.answer
+
+
+# --- G-3: fail-closed still holds after the scope-robustness change ------------
+
+
+def test_fabricated_value_with_no_fact_still_fails_closed() -> None:
+    facts = (
+        _fact(
+            fact_id="fact_sales_555",
+            value="80.39억원",
+            entity="리바로",
+            metric="매출",
+            period="2026-05",
+            unit="억원",
+            view=_STRATEGIC_SCOPE,
+        ),
+    )
+    result = verify_claim_bindings(
+        question="리바로 매출 알려줘",
+        answer="리바로 2026-05 매출은 999.99억원입니다.",
+        facts=facts,
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "fail"
+    assert "999.99억원" not in result.answer
+
+
+def test_number_backed_only_by_wrong_metric_fact_is_still_blocked() -> None:
+    # 80.39 exists only as a 순위 fact (different metric). A 매출 claim of 80.39
+    # must not be rescued by the header-metric union.
+    facts = (
+        _fact(
+            fact_id="fact_rank",
+            value="80.39억원",
+            entity="리바로",
+            metric="순위",
+            period="2026-05",
+            unit="위",
+            view=_STRATEGIC_SCOPE,
+        ),
+    )
+    result = verify_claim_bindings(
+        question="리바로 매출 알려줘",
+        answer="""| 기준 브랜드 | 매출 |
+| --- | --- |
+| 리바로 | 80.39억원 |""",
+        facts=facts,
+        expected_entities=("리바로",),
+    )
+
+    assert result.status == "fail"
+    assert "80.39억원" not in result.answer

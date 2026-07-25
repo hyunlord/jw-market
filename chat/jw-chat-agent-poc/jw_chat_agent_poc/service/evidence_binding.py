@@ -25,7 +25,9 @@ from jw_chat_agent_poc.service.evidence_binding_rules import (
     period_matches,
     present,
     question_metrics,
+    question_view_scopes,
     requested_period_unavailable,
+    scope_matches,
     unit_matches,
     without_bound_identifiers,
 )
@@ -72,6 +74,7 @@ def verify_claim_bindings(
     expected = expected_entity_set(question, expected_entities)
     metrics = question_metrics(question)
     requested_periods = explicit_periods(question)
+    expected_scopes = question_view_scopes(question)
     if "환자수" in metrics and not expected:
         blocked_numbers = claim_number_tokens(answer)
         return BindingVerification(
@@ -124,6 +127,7 @@ def verify_claim_bindings(
             and metric_matches(fact, claim_metrics)
             and period_matches(fact, requested_periods)
             and unit_matches(fact, token)
+            and scope_matches(fact, expected_scopes)
         )
         if not matching:
             if expected and all(not present(fact.entity) for fact in candidates):
@@ -138,6 +142,7 @@ def verify_claim_bindings(
                 if entity_matches(fact, expected)
                 and metric_matches(fact, claim_metrics)
                 and unit_matches(fact, token)
+                and scope_matches(fact, expected_scopes)
             )
             if (
                 requested_periods
@@ -153,6 +158,7 @@ def verify_claim_bindings(
                     claim_metrics,
                     requested_periods=requested_periods,
                     token=token,
+                    expected_scopes=expected_scopes,
                 )
             )
             blocked_numbers.append(token)

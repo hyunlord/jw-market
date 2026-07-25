@@ -111,7 +111,15 @@ def claim_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
 
 
 def _table_header_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
+    # Accumulate header metrics across *every* table that carries the token, not
+    # only the first one. When two market scopes are merged into a single answer
+    # under the same public 뷰 label, the same numeric token can appear under a
+    # foreign scope's column header (e.g. 시장규모) as well as its own (매출).
+    # Returning only the first table's header let the foreign scope hijack the
+    # claim's metric and drop the correct-scope fact (F24 RC1). The union keeps
+    # the correct metric available; entity/period/unit/scope binding still decides.
     lines = answer.splitlines()
+    metrics: list[str] = []
     for row_index, line in enumerate(lines):
         cells = _markdown_table_cells(line)
         if not cells or not any(token in claim_number_tokens(cell) for cell in cells):
@@ -124,14 +132,11 @@ def _table_header_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
             continue
 
         headers = _markdown_table_cells(lines[table_start])
-        metrics: list[str] = []
         for column, cell in enumerate(cells):
             if column >= len(headers) or token not in claim_number_tokens(cell):
                 continue
             metrics.extend(question_metrics(headers[column]))
-        if metrics:
-            return tuple(dict.fromkeys(metrics))
-    return ()
+    return tuple(dict.fromkeys(metrics))
 
 
 def _markdown_table_cells(line: str) -> tuple[str, ...]:
@@ -269,6 +274,54 @@ def unit_matches(fact: EvidenceFact, token: str) -> bool:
     return fact.unit == expected
 
 
+_VIEW_SCOPE_TERMS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("general_view", ("일반뷰", "일반view", "atc4", "atc기준")),
+    ("competitive_dynamics", ("경쟁군", "경쟁시장", "competitive_dynamics", "competitive", "cd기준")),
+    ("market_landscape", ("전략뷰", "전략view", "market_landscape", "ml기준")),
+)
+
+
+def fact_scope(fact: EvidenceFact) -> str:
+    """Internal scope signature of a fact.
+
+    The public 뷰 label is shared across distinct scopes, so the analytic
+    ``view`` (view_type, optionally suffixed with an internal market key) is the
+    scope carrier. ``market_id`` itself is never surfaced; it stays inside this
+    opaque signature and is only ever compared, never rendered.
+    """
+    return fact.view.strip() if present(fact.view) else ""
+
+
+def _scope_base(scope: str) -> str:
+    return scope.split(":", 1)[0].strip()
+
+
+def question_view_scopes(question: str) -> frozenset[str]:
+    """View scopes explicitly requested by the question (empty when unspecified)."""
+    lowered = question.casefold()
+    return frozenset(
+        view
+        for view, terms in _VIEW_SCOPE_TERMS
+        if any(term.casefold() in lowered for term in terms)
+    )
+
+
+def scope_matches(fact: EvidenceFact, expected_scopes: frozenset[str]) -> bool:
+    """Fifth binding axis: the fact's scope must be consistent with the request.
+
+    Permissive by design — when the request does not pin a scope, or the fact
+    carries no scope signature, this never newly rejects a previously valid
+    binding. It only fires when the request explicitly names a competing scope
+    (e.g. 경쟁군 vs 전략뷰) and the fact belongs to a different one.
+    """
+    if not expected_scopes:
+        return True
+    scope = fact_scope(fact)
+    if not scope:
+        return True
+    return scope in expected_scopes or _scope_base(scope) in expected_scopes
+
+
 def mismatch_reason(
     candidates: Sequence[EvidenceFact],
     expected_entities: set[str],
@@ -276,6 +329,7 @@ def mismatch_reason(
     *,
     requested_periods: tuple[str, ...],
     token: str,
+    expected_scopes: frozenset[str] = frozenset(),
 ) -> str:
     if expected_entities and not any(
         entity_matches(fact, expected_entities) for fact in candidates
@@ -291,6 +345,10 @@ def mismatch_reason(
         return "PERIOD_MISMATCH"
     if not any(unit_matches(fact, token) for fact in candidates):
         return "UNIT_MISMATCH"
+    if expected_scopes and not any(
+        scope_matches(fact, expected_scopes) for fact in candidates
+    ):
+        return "SCOPE_MISMATCH"
     return "BINDING_MISMATCH"
 
 
