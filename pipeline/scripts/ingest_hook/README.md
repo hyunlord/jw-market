@@ -34,10 +34,38 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 | `job_runner.py` | Job 내부 실행 순서 강제 (rehearsal 모드 = 격리 검증) |
 | `sigma_gate.py` | Σ부분=전체 게이트 (staging 대상) |
 | `post_gate.py` | Σ·row coverage·비대상 source fingerprint JSON 판정 |
+| `ledger_fingerprint.py` | CronJob과 동일한 MariaDB 대상의 read-only identity fingerprint 활성화 게이트 |
 | `load_verify.py` | ★M-2 게이트: 업로드 epoch 이 로더 출력에 실제 적재됐나(조용한 실패 차단) |
 | `category_table_load.py` | NSA/CSD/Keyword/MI Master canonical loader를 격리 `jw_ingest_*` DB에 연결 |
 | `row_count_verifier.py` | append/upsert와 전체교체를 구분해 before/after/loaded 증거 검증 |
 | `sweep.py` | 유실 감시 CronJob 본체 (정상 시 no-op) |
+
+## Terminal reconciler ledger preflight
+
+Run the fingerprint command only in a container cloned from the live
+`jw-ingest-sweep-daily` Job template. The command requires the explicit
+`MARIADB_*` environment and rejects either SQLite ledger variable, so running
+it in the shadow hook Pod fails closed.
+
+Capture is read-only and never authorizes activation:
+
+```bash
+python -m pipeline.scripts.ingest_hook.ledger_fingerprint --report-only
+```
+
+After the PL records the reported host, database, and fingerprint, the final
+pre-activation check must compare all three:
+
+```bash
+python -m pipeline.scripts.ingest_hook.ledger_fingerprint \
+  --expected-host "$EXPECTED_MARIADB_HOST" \
+  --expected-database "$EXPECTED_MARIADB_DATABASE" \
+  --expected-fingerprint "$EXPECTED_LEDGER_FINGERPRINT"
+```
+
+Only output with `activation_allowed=true` is an activation gate success.
+`--report-only` deliberately emits `activation_allowed=false` even though the
+read-only command exits successfully.
 
 ## 멱등·직렬화
 

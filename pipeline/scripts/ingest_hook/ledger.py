@@ -577,6 +577,139 @@ class Ledger:
 
         self._transaction(operation)
 
+    def _receive_mysql_atomic(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        manifest_path: str,
+        uploaded_by: str | None,
+    ) -> ReceiveDecision:
+        """Materialize, lock, and decide one MariaDB identity atomically."""
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        mark = self._mark
+        insert_sql = (
+            "INSERT INTO ingest_ledger"
+            " (epoch, category, manifest_sha, manifest_path, uploaded_by, status, received_at)"
+            f" VALUES ({', '.join([mark] * 7)})"
+            " ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)"
+        )
+        select_sql = (
+            "SELECT status, job_name, run_id FROM ingest_ledger"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            " FOR UPDATE"
+        )
+        update_sql = (
+            "UPDATE ingest_ledger"
+            f" SET status={mark}, reason={mark}, received_at={mark}, uploaded_by={mark}"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND status={mark}"
+        )
+        history_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+            " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
+        )
+
+        def append_history(
+            cursor,
+            *,
+            previous_status: str | None,
+            source: str,
+            reason: str,
+            job_name: str | None,
+        ) -> None:
+            cursor.execute(
+                history_sql,
+                (
+                    event_id,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    previous_status,
+                    STATUS_QUEUED,
+                    "ingest_service",
+                    source,
+                    reason,
+                    job_name,
+                    "{}",
+                    created_at,
+                ),
+            )
+
+        def operation(cursor):
+            cursor.execute(
+                insert_sql,
+                (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    manifest_path,
+                    uploaded_by,
+                    STATUS_QUEUED,
+                    created_at,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+            cursor.execute(select_sql, (epoch, category, manifest_sha))
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("duplicate-safe ledger insert did not materialize a row")
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            status, job_name = str(values[0]), values[1]
+
+            if inserted:
+                append_history(
+                    cursor,
+                    previous_status=None,
+                    source="webhook_receive",
+                    reason="new submission queued",
+                    job_name=None,
+                )
+                return ReceiveDecision(
+                    "queued", STATUS_QUEUED, "new submission queued"
+                )
+            if status in _HELD_STATUSES:
+                return ReceiveDecision(
+                    "noop", status, f"identity already {status}; webhook ignored"
+                )
+
+            reason = "re-queued after failure"
+            cursor.execute(
+                update_sql,
+                (
+                    STATUS_QUEUED,
+                    reason,
+                    created_at,
+                    uploaded_by,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    status,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return ReceiveDecision(
+                    "noop",
+                    status,
+                    "identity changed concurrently; retry not applied",
+                )
+            append_history(
+                cursor,
+                previous_status=status,
+                source="webhook_retry",
+                reason=reason,
+                job_name=job_name,
+            )
+            return ReceiveDecision(
+                "queued", STATUS_QUEUED, "previous attempt failed; re-queued"
+            )
+
+        return self._transaction(operation)
+
     def _fetch_row(self, epoch: str, category: str, manifest_sha: str):
         cursor = self._execute(
             "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
@@ -609,6 +742,17 @@ class Ledger:
         manifest_path: str,
         uploaded_by: str | None = None,
     ) -> ReceiveDecision:
+        if self._dialect == "mysql":
+            return self._receive_mysql_atomic(
+                epoch,
+                category,
+                manifest_sha,
+                manifest_path,
+                uploaded_by,
+            )
+
+        # SQLite is an intentionally independent shadow/test ledger. Keep its
+        # existing SELECT -> transition behavior unchanged.
         existing = self._fetch_row(epoch, category, manifest_sha)
         if existing is not None:
             status = self._entry(existing).status
