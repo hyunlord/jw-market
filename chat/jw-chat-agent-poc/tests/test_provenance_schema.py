@@ -271,8 +271,8 @@ def test_external_tool_bullets_preserve_actual_source_identity() -> None:
     block = deterministic_source_block(fact_md)
 
     assert "| ClinicalTrials.gov |" in block
-    assert "| 식약처 의약품 정보 |" in block
+    assert "| 식약처 의약품안전나라(NeDrug) |" in block
     assert "| FDA 이상반응 보고 정보 |" in block
-    assert "| HIRA 질병정보서비스 |" in block
+    assert "| 심사평가원(HIRA) 질병통계 |" in block
     assert "| 뉴스/이슈 「국내진출 임박한 고지혈증 신약」 https://example.test/clinical |" in block
     assert "| external |" not in block

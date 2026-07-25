@@ -559,7 +559,7 @@ def test_hira_trend_uses_every_requested_year_instead_of_latest_snapshot() -> No
     assert len([line for line in answer.splitlines() if line.startswith("| 20") and line.count("|") == 3]) == 5
     assert "| 2020 | 900,000명 |" in answer
     assert "| 2024 | 1,305,727명 |" in answer
-    assert "| HIRA" in answer
+    assert "| 심사평가원(HIRA) 질병통계 |" in answer
     assert "| 2020~2024 |" in answer
 
 

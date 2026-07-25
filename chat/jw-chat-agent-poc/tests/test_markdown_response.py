@@ -1066,7 +1066,10 @@ def test_source_block_renders_hira_call_metadata_from_nested_calls() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "| HIRA 질병정보서비스 · I10 본태성(원발성) 고혈압 | 2024 | — | — | — | 전체 | 명 |" in block
+    assert (
+        "| 심사평가원(HIRA) 질병통계 · I10 본태성(원발성) 고혈압 "
+        "| 2024 | — | — | — | 전체 | 명 |"
+    ) in block
     assert "KCD 기반 환자 통계" not in block
 
 
