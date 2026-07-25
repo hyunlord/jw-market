@@ -169,6 +169,8 @@ def run(params: dict[str, Any]) -> int:
                 insert=True,
                 limit_atc4=params.get("limit_atc4"),
                 max_rows=params.get("max_rows"),
+                spool_dir=Path(params["spool_dir"]) if params.get("spool_dir") else None,
+                memory_budget_bytes=params.get("memory_budget_bytes"),
             )
             stats.append(source_stats)
             print(

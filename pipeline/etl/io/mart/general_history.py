@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 
 import pandas as pd
@@ -8,10 +9,37 @@ from .general_config import SKU_DIMENSION_COLUMNS
 from .layer3_compute_extended import compute_cagr_value, compute_hhi
 from .layer3_normalize import period_range_mat, period_sort_key, prev_month, prev_quarter_month, safe_div, same_month_prev_year
 
+
+def merge_additive_period_sums(
+    partials: Iterable[dict[str, float]],
+) -> dict[str, float]:
+    """Reduce partition-local period sums before any derived metric is computed."""
+    merged: dict[str, float] = {}
+    for partial in partials:
+        for period, value in partial.items():
+            merged[str(period)] = merged.get(str(period), 0.0) + float(value or 0.0)
+    return dict(sorted(merged.items(), key=lambda item: period_sort_key(item[0])))
+
+
 def fill_periods(periods: Iterable[str]) -> list[str]:
     return sorted({str(period) for period in periods if period}, key=period_sort_key)
 
 def period_value_map(group: pd.DataFrame, periods: list[str]) -> dict[str, float]:
+    if "raw_value_minor" in group.columns:
+        if not pd.api.types.is_integer_dtype(group["raw_value_minor"].dtype):
+            raise TypeError(
+                "decimal-additive-v1 pre-reduce float conversion detected: "
+                f"raw_value_minor={group['raw_value_minor'].dtype}"
+            )
+        series = (
+            group.groupby("period_yyyymm", dropna=False)["raw_value_minor"]
+            .sum()
+            .to_dict()
+        )
+        return {
+            period: int(series.get(period, 0) or 0) / 100
+            for period in periods
+        }
     series = group.groupby("period_yyyymm", dropna=False)["raw_value"].sum().to_dict()
     return {period: float(series.get(period, 0.0) or 0.0) for period in periods}
 
@@ -139,7 +167,7 @@ def build_products(group: pd.DataFrame, periods: list[str]) -> list[dict[str, An
             {
                 "product_name": str(product_name),
                 "product_code": None if pd.isna(product_code) else str(product_code),
-                "raw_value_total": float(sum(history.values())),
+                "raw_value_total": float(math.fsum(history.values())),
                 "raw_value_history": history,
             }
         )

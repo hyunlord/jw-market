@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -23,10 +25,217 @@ from .general_history import (
     period_value_map,
     value_at,
 )
-from .layer3_compute_extended import compute_ei, compute_growth_contribution, compute_momentum
-from .layer3_compute_market_metric import compute_market_mart_payload
+from .layer3_compute_extended import compute_ei, compute_growth_contribution, compute_hhi, compute_momentum
+from .layer3_compute_market_metric import compute_market_mart_payload_from_reduced_rows
 from .layer3_normalize import prev_month, prev_quarter_month, safe_div, same_month_prev_year
 from .resolve_company import resolve_company
+
+
+@dataclass(frozen=True)
+class UbistAdditivePartial:
+    """Lossless pre-derivation state for one product-stable subpartition."""
+
+    frame: pd.DataFrame
+    input_rows: int
+    atc4_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BrandMarketState:
+    """ATC-global additive state required before derived metrics are computed."""
+
+    market_periods: dict[str, list[str]]
+    market_period_totals: dict[tuple[str, str], float]
+    market_history_by_atc: dict[str, dict[str, float]]
+    hhi_by_atc_period: dict[tuple[str, str], float | None]
+    rank_lookup: dict[tuple[str, str, str], int]
+
+
+def assert_pre_reduce_minor_units(
+    frame: pd.DataFrame,
+    columns: Iterable[str],
+) -> None:
+    """Reject additive state that crossed into floating point before Pass 2."""
+    for column in columns:
+        if column not in frame.columns:
+            raise KeyError(f"missing additive minor-unit column: {column}")
+        if not pd.api.types.is_integer_dtype(frame[column].dtype):
+            raise TypeError(
+                "decimal-additive-v1 pre-reduce float conversion detected: "
+                f"{column}={frame[column].dtype}"
+            )
+
+
+def build_brand_period_summary(
+    frame: pd.DataFrame,
+    *,
+    value_column: str,
+) -> pd.DataFrame:
+    if "brand_key" not in frame.columns:
+        raise KeyError("missing required rank tie-break key: brand_key")
+    if value_column not in frame.columns:
+        raise KeyError(f"missing value column: {value_column}")
+    if value_column.endswith("_minor"):
+        assert_pre_reduce_minor_units(frame, (value_column,))
+    output_column = "raw_value_minor" if value_column.endswith("_minor") else "raw_value"
+    working = frame.loc[
+        frame[value_column].notna() & (frame[value_column] > 0),
+        ["atc4_code", "period_yyyymm", "brand_key", value_column],
+    ]
+    if working.empty:
+        return pd.DataFrame(
+            columns=["atc4_code", "period_yyyymm", "brand_key", output_column]
+        )
+    return (
+        working.groupby(
+            ["atc4_code", "period_yyyymm", "brand_key"],
+            dropna=False,
+        )[value_column]
+        .sum()
+        .rename(output_column)
+        .reset_index()
+    )
+
+
+def build_brand_market_state(
+    summaries: Iterable[pd.DataFrame],
+    *,
+    value_column: str = "raw_value",
+    minor_unit_scale: Decimal | None = None,
+) -> BrandMarketState:
+    nonempty = [summary for summary in summaries if not summary.empty]
+    if not nonempty:
+        return BrandMarketState({}, {}, {}, {}, {})
+    rank_source = pd.concat(nonempty, ignore_index=True)
+    if "brand_key" not in rank_source.columns:
+        raise KeyError("missing required rank tie-break key: brand_key")
+    if rank_source["brand_key"].isna().any():
+        raise ValueError("rank tie-break key contains null brand_key")
+    if value_column.endswith("_minor"):
+        assert_pre_reduce_minor_units(rank_source, (value_column,))
+        if minor_unit_scale is None or minor_unit_scale <= 0:
+            raise ValueError("minor_unit_scale must be positive for minor-unit state")
+    elif minor_unit_scale is not None:
+        raise ValueError("minor_unit_scale requires a minor-unit value column")
+    rank_source = (
+        rank_source.groupby(
+            ["atc4_code", "period_yyyymm", "brand_key"],
+            dropna=False,
+        )[value_column]
+        .sum()
+        .reset_index()
+    )
+    market_periods = {
+        str(atc): fill_periods(part["period_yyyymm"].unique())
+        for atc, part in rank_source.groupby("atc4_code", dropna=False)
+    }
+    market_period_totals = (
+        rank_source.groupby(["atc4_code", "period_yyyymm"], dropna=False)[
+            value_column
+        ]
+        .sum()
+        .to_dict()
+    )
+    divisor = float(minor_unit_scale) if minor_unit_scale is not None else 1.0
+    market_period_totals = {
+        (str(atc), str(period)): float(value) / divisor
+        for (atc, period), value in market_period_totals.items()
+    }
+    market_history_by_atc = {
+        str(atc): {
+            period: market_period_totals.get((str(atc), period), 0.0)
+            for period in market_periods[str(atc)]
+        }
+        for atc in rank_source["atc4_code"].drop_duplicates()
+    }
+    hhi_by_atc_period: dict[tuple[str, str], float | None] = {}
+    rank_lookup: dict[tuple[str, str, str], int] = {}
+    for (atc, period), part in rank_source.groupby(
+        ["atc4_code", "period_yyyymm"],
+        dropna=False,
+    ):
+        atc_key = str(atc)
+        period_key = str(period)
+        exact_total = part[value_column].sum()
+        total = float(exact_total)
+        ordered_part = part.sort_values("brand_key", kind="mergesort")
+        hhi_by_atc_period[(atc_key, period_key)] = (
+            compute_hhi(
+                [
+                    float(value) / total
+                    for value in ordered_part[value_column]
+                    if total > 0 and float(value) > 0
+                ]
+            )
+            if total > 0
+            else None
+        )
+        ranked = part.sort_values(
+            [value_column, "brand_key"],
+            ascending=[False, True],
+            kind="mergesort",
+        ).reset_index(drop=True)
+        for index, row in ranked.iterrows():
+            rank_lookup[(atc_key, period_key, str(row["brand_key"]))] = index + 1
+    return BrandMarketState(
+        market_periods=market_periods,
+        market_period_totals=market_period_totals,
+        market_history_by_atc=market_history_by_atc,
+        hhi_by_atc_period=hhi_by_atc_period,
+        rank_lookup=rank_lookup,
+    )
+
+
+def build_ubist_additive_partial(frame: pd.DataFrame) -> UbistAdditivePartial:
+    assert_pre_reduce_minor_units(
+        frame,
+        ("raw_sales_minor", "raw_volume_minor"),
+    )
+    codes = tuple(
+        sorted(
+            {
+                str(value)
+                for value in frame.get("atc4_code", pd.Series(dtype=object)).dropna().tolist()
+            }
+        )
+    )
+    return UbistAdditivePartial(
+        frame=frame,
+        input_rows=int(len(frame)),
+        atc4_codes=codes,
+    )
+
+
+def reduce_ubist_additive_partials(
+    atc4_code: str,
+    partials: Iterable[UbistAdditivePartial],
+) -> pd.DataFrame:
+    """Merge product-stable partials into one ATC4 state before HHI/rank/MS."""
+    frames: list[pd.DataFrame] = []
+    for partial in partials:
+        if partial.atc4_codes and partial.atc4_codes != (atc4_code,):
+            raise ValueError(
+                f"partial crosses ATC4 boundary: expected={atc4_code} "
+                f"actual={partial.atc4_codes}"
+            )
+        if not partial.frame.empty:
+            assert_pre_reduce_minor_units(
+                partial.frame,
+                ("raw_sales_minor", "raw_volume_minor"),
+            )
+            frames.append(partial.frame)
+    if not frames:
+        return pd.DataFrame()
+    reduced = pd.concat(frames, ignore_index=True)
+    sort_columns = [
+        column
+        for column in ("product_code", "period_yyyymm", "channel", "specialty")
+        if column in reduced.columns
+    ]
+    if sort_columns:
+        reduced = reduced.sort_values(sort_columns, kind="mergesort").reset_index(drop=True)
+    return reduced
+
 
 def _representative_row(group: pd.DataFrame) -> dict[str, Any]:
     """Choose display/company fields deterministically without changing aggregates.
@@ -37,9 +246,13 @@ def _representative_row(group: pd.DataFrame) -> dict[str, Any]:
     """
     sort_frame = pd.DataFrame(index=group.index)
     priority_source = (
-        group["display_priority_value"]
+        group["display_priority_value_minor"]
+        if "display_priority_value_minor" in group.columns
+        else group["display_priority_value"]
         if "display_priority_value" in group.columns
-        else group["raw_sales"] if "raw_sales" in group.columns else group["raw_value"]
+        else group["raw_sales"]
+        if "raw_sales" in group.columns
+        else group["raw_value"]
     )
     sort_frame["display_priority_value"] = pd.to_numeric(priority_source, errors="coerce").fillna(0.0)
     for column in ("audit_code", "product_code", "product_name", "brand_name"):
@@ -54,40 +267,60 @@ def _representative_row(group: pd.DataFrame) -> dict[str, Any]:
     ).index
     return group.loc[order[0]].to_dict()
 
-def build_brand_rows(source: str, measure: str, frame: pd.DataFrame, catalog_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    working = frame.loc[frame["raw_value"].notna() & (frame["raw_value"] > 0)].copy()
+def build_brand_rows(
+    source: str,
+    measure: str,
+    frame: pd.DataFrame,
+    catalog_map: dict[str, dict[str, Any]],
+    *,
+    value_column: str = "raw_value",
+    market_state: BrandMarketState | None = None,
+    minor_unit_scale: Decimal | None = None,
+) -> list[dict[str, Any]]:
+    if value_column not in frame.columns:
+        raise KeyError(f"missing value column: {value_column}")
+    if value_column.endswith("_minor"):
+        assert_pre_reduce_minor_units(frame, (value_column,))
+        if minor_unit_scale is None or minor_unit_scale <= 0:
+            raise ValueError("minor_unit_scale must be positive for minor-unit rows")
+    elif minor_unit_scale is not None:
+        raise ValueError("minor_unit_scale requires a minor-unit value column")
+    mask = frame[value_column].notna() & (frame[value_column] > 0)
+    working = frame.loc[mask].copy(deep=False)
+    if minor_unit_scale is not None:
+        working = working.assign(
+            raw_value_minor=working[value_column],
+            raw_value=working[value_column] / float(minor_unit_scale)
+        )
+    elif value_column != "raw_value":
+        working = working.assign(raw_value=working[value_column])
     if working.empty:
         return []
-    market_periods = {
-        atc: fill_periods(part["period_yyyymm"].unique())
-        for atc, part in working.groupby("atc4_code", dropna=False)
-    }
-    market_period_totals = working.groupby(["atc4_code", "period_yyyymm"], dropna=False)["raw_value"].sum().to_dict()
-    market_history_by_atc = {
-        atc: period_value_map(part, market_periods[atc])
-        for atc, part in working.groupby("atc4_code", dropna=False)
-    }
-    hhi_by_atc_period = {
-        (str(atc), str(period)): hhi_for_period(part)
-        for (atc, period), part in working.groupby(["atc4_code", "period_yyyymm"], dropna=False)
-    }
-    rank_lookup: dict[tuple[str, str, str], int] = {}
-    rank_source = working.groupby(["atc4_code", "period_yyyymm", "brand_key"], dropna=False)["raw_value"].sum().reset_index()
-    for (atc, period), part in rank_source.groupby(["atc4_code", "period_yyyymm"], dropna=False):
-        part = part.sort_values("raw_value", ascending=False).reset_index(drop=True)
-        for idx, row in part.iterrows():
-            rank_lookup[(str(atc), str(period), str(row["brand_key"]))] = int(idx + 1)
+    if market_state is None:
+        market_state = build_brand_market_state(
+            [build_brand_period_summary(working, value_column=value_column)],
+            value_column=(
+                "raw_value_minor" if value_column.endswith("_minor") else "raw_value"
+            ),
+            minor_unit_scale=minor_unit_scale,
+        )
+    market_periods = market_state.market_periods
+    market_period_totals = market_state.market_period_totals
+    market_history_by_atc = market_state.market_history_by_atc
+    hhi_by_atc_period = market_state.hhi_by_atc_period
+    rank_lookup = market_state.rank_lookup
     rows: list[dict[str, Any]] = []
     for (brand_key, atc4_code), group in working.groupby(["brand_key", "atc4_code"], dropna=False):
-        periods = market_periods.get(atc4_code, fill_periods(group["period_yyyymm"].unique()))
+        atc_key = str(atc4_code)
+        periods = market_periods.get(atc_key, fill_periods(group["period_yyyymm"].unique()))
         history = period_value_map(group, periods)
-        atc_history = market_history_by_atc.get(atc4_code, {})
+        atc_history = market_history_by_atc.get(atc_key, {})
         metric_history: dict[str, dict[str, Any]] = {}
         extended_history: dict[str, dict[str, Any]] = {}
         ms_values: list[float] = []
         for period in periods:
             value = history.get(period, 0.0)
-            market_total = market_period_totals.get((atc4_code, period), 0.0)
+            market_total = market_period_totals.get((atc_key, period), 0.0)
             ms = safe_div(value, market_total)
             ms_pct = ms * 100 if ms is not None else 0.0
             ms_values.append(ms_pct)
@@ -171,7 +404,13 @@ def build_market_rows(source: str, measure: str, brand_rows: list[dict[str, Any]
     rows: list[dict[str, Any]] = []
     for atc4_code, grouped in _group_rows(brand_rows, "atc4_code").items():
         atc4_desc = next((row.get("atc4_desc") for row in grouped if row.get("atc4_desc")), None)
-        payload = compute_market_mart_payload(grouped, source=source, measure=measure, view_type="general", catalog_market_row=None)
+        payload = compute_market_mart_payload_from_reduced_rows(
+            grouped,
+            source=source,
+            measure=measure,
+            view_type="general",
+            catalog_market_row=None,
+        )
         rows.append(
             {
                 "atc4_code": atc4_code,

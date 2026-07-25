@@ -332,8 +332,8 @@ def test_direct_promotion_builds_from_bounded_ubist_partitions(monkeypatch) -> N
                     "brand_name": f"Brand {product_code}",
                     "product_code": product_code,
                     "period_yyyymm": "202601",
-                    "raw_sales": 10.0,
-                    "raw_volume": 2.0,
+                    "raw_sales_minor": 1000,
+                    "raw_volume_minor": 200,
                     "ubist_molecule_raw": molecule,
                 }
             ]
@@ -373,8 +373,8 @@ def test_full_ubist_builder_validates_serving_market_period_before_insert(monkey
                 "brand_name": "Brand A",
                 "product_code": "P1",
                 "period_yyyymm": "2026-04",
-                "raw_sales": 100.0,
-                "raw_volume": 10.0,
+                "raw_sales_minor": 10000,
+                "raw_volume_minor": 1000,
                 "company": "Seller A",
                 "ubist_molecule_raw": "Molecule A",
                 "ubist_molecule_strength": "10mg",
