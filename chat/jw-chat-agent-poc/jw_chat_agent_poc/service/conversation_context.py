@@ -44,7 +44,7 @@ _IMPLICIT_BRAND_FOLLOWUP_RE = re.compile(
     re.IGNORECASE,
 )
 _IMPLICIT_BRAND_FOLLOWUP_BODY_RE = re.compile(
-    r"^(?:(?:효능(?:효과)?|용법(?:용량)?|사용상주의사항))+$"
+    r"^(?:(?:효능(?:효과)?|용법(?:용량)?|사용상주의사항))+(?:은|는)?$"
 )
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),

@@ -384,6 +384,23 @@ def test_implicit_nedrug_followup_inherits_grounded_brand() -> None:
     assert resolved.unresolved_reference is False
 
 
+def test_implicit_nedrug_followup_with_topic_particle_inherits_grounded_brand() -> None:
+    previous = ConversationTurn(
+        question="리바로 허가정보 알려줘",
+        answer="리바로 허가정보를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로"),
+    )
+
+    assert requires_previous_turn("효능효과는?") is True
+
+    resolved = resolve_anaphora("효능효과는?", previous)
+
+    assert resolved.resolved_question == "리바로 효능효과는"
+    assert resolved.brand == "리바로"
+    assert resolved.interpretation_notice == "리바로의 효능효과는 요청으로 이해했어요."
+    assert resolved.unresolved_reference is False
+
+
 def test_implicit_brand_followup_fails_closed_without_anchor() -> None:
     assert requires_previous_turn("효능효과") is True
 
