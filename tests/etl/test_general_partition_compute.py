@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pandas as pd
 import pytest
@@ -44,6 +45,50 @@ def _without_computed_at(rows: list[dict[str, object]]) -> list[dict[str, object
             item["payload"].pop("computed_at", None)
         normalized.append(item)
     return normalized
+
+
+@pytest.mark.parametrize(
+    ("mode_flag", "expected_dry_run", "expected_insert"),
+    [
+        ("--dry-run", True, False),
+        ("--insert", False, True),
+    ],
+)
+def test_cli_routes_mode_to_compute_general(
+    monkeypatch,
+    mode_flag: str,
+    expected_dry_run: bool,
+    expected_insert: bool,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_compute_general(
+        **kwargs: object,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+        calls.append(dict(kwargs))
+        return [], [], {}
+
+    monkeypatch.setattr(general_compute, "compute_general", fake_compute_general)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["layer3_compute_general_v3", "--source", "ubist", mode_flag],
+    )
+
+    assert general_compute.main() == 0
+    assert calls == [
+        {
+            "source": "ubist",
+            "dry_run": expected_dry_run,
+            "insert": expected_insert,
+            "limit_atc4": None,
+            "max_rows": None,
+            "output_dir": general_compute.DRY_RUN_DIR,
+            "ml": None,
+            "spool_dir": None,
+            "memory_budget_bytes": None,
+        }
+    ]
 
 
 def test_value_column_path_matches_legacy_measure_frame() -> None:
