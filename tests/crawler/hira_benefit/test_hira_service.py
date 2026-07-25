@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+
+from pipeline.scripts.crawler.hira_benefit.contract import HiraWorkflowInput
+from pipeline.scripts.crawler.hira_benefit.models import NoticeListItem
+from pipeline.scripts.crawler.hira_benefit.service import (
+    collect_details,
+    discover_changes,
+    tag_sequence_signature,
+)
+
+
+def test_tag_signature_ignores_volatile_text_and_attributes() -> None:
+    first = '<div data-session="one"><span>조회수 1</span></div>'
+    second = '<div data-session="two"><span>조회수 99</span></div>'
+
+    assert tag_sequence_signature(first) == tag_sequence_signature(second)
+
+
+def test_zero_row_index_fails_closed() -> None:
+    config = HiraWorkflowInput(
+        run_id="run",
+        state_root="/tmp/state",
+        first_run_mode="recent_n",
+        recent_limit=10,
+    )
+
+    with pytest.raises(RuntimeError, match="zero notices"):
+        discover_changes("<html><body>페이지 정보가 존재하지 않습니다.</body></html>", config=config, stored=None)
+
+
+def test_collect_details_keeps_failed_parse_as_raw_fallback() -> None:
+    item = NoticeListItem.create(
+        source_notice_id="1",
+        title="notice",
+        notice_date=date(2026, 7, 25),
+        source_url="https://www.hira.or.kr/detail?brdBltNo=1",
+    )
+
+    rows, metrics = collect_details(
+        (item,),
+        fetch_text=lambda _url: "<p>리바로 관련 첨부파일을 확인하십시오.</p>",
+        brand_names=("리바로",),
+    )
+
+    assert len(rows) == 1
+    assert rows[0].parsed.parse_status.value == "FAILED"
+    assert rows[0].brand_names == ("리바로",)
+    assert metrics.failures == 0
+    assert metrics.failed_count == 1
