@@ -151,6 +151,13 @@ def default_capability_matrix() -> CapabilityMatrix:
         ),
         _entry("hira", "HIRA_LABEL_EFFICACY", "product_name", "FIELD_NOT_EXPOSED"),
         _entry(
+            "hira",
+            "HIRA_REIMBURSEMENT_CRITERIA",
+            "product_name",
+            "SUPPORTED",
+            ("hira_reimbursement_criteria",),
+        ),
+        _entry(
             "regulatory",
             "MFDS_BASIC_PRODUCT_INFO",
             "product_name",

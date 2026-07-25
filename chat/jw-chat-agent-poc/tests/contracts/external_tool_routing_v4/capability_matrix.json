@@ -53,6 +53,14 @@
       "truth_basis": "HIRA registry exposes disease and procedure statistics, not drug-label efficacy"
     },
     {
+      "requested_capability": "HIRA_REIMBURSEMENT_CRITERIA",
+      "source_domain": "hira",
+      "input_key": "product_name",
+      "capability_status": "SUPPORTED",
+      "eligible_tools": ["hira_reimbursement_criteria"],
+      "truth_basis": "F15/F16 approved HIRA insurance-criteria page flow with bounded cache-first realtime fallback"
+    },
+    {
       "requested_capability": "MFDS_BASIC_PRODUCT_INFO",
       "source_domain": "regulatory",
       "input_key": "product_name",

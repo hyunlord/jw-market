@@ -21,6 +21,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
+from jw_chat_agent_poc.tool_use.reimbursement_evidence import reimbursement_envelope
 from jw_chat_agent_poc.tool_use.specs import (
     BrandInput,
     ClinicalQueryInput,
@@ -34,6 +35,11 @@ from jw_chat_agent_poc.tool_use.specs import (
     ToolSpec,
 )
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, is_hira_disease_code
+from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    AbsentReimbursementStore,
+    HiraReimbursementHttpClient,
+    ReimbursementLookupService,
+)
 from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
 
 
@@ -48,9 +54,19 @@ def _clinical_detail_value_present(value: Any) -> bool:
 class ExternalToolRegistry:
     """Expose the external evidence pack without question-specific routing rules."""
 
-    def __init__(self, *, resolver: BrandResolver, external: ExternalApiClient) -> None:
+    def __init__(
+        self,
+        *,
+        resolver: BrandResolver,
+        external: ExternalApiClient,
+        reimbursement: ReimbursementLookupService | None = None,
+    ) -> None:
         self._resolver = resolver
         self._external = external
+        self._reimbursement = reimbursement or ReimbursementLookupService(
+            store=AbsentReimbursementStore(),
+            realtime=HiraReimbursementHttpClient(),
+        )
 
     def list_for_query(self, _user_text: str) -> tuple[ToolSpec, ...]:
         mcp_timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S + float(self._external.timeout_s) + 1.0
@@ -73,6 +89,7 @@ class ExternalToolRegistry:
             ("hira_disease_gender_age_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_gender_age_stats", "질병 성별/연령 통계"), mcp_timeout_s, ("external", "hira")),
             ("hira_disease_institution_class_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_institution_class_stats", "질병 기관종별 통계"), mcp_timeout_s, ("external", "hira")),
             ("hira_disease_area_stats", DiseaseCodeInput, partial(self._disease_call, "hira_disease_area_stats", "질병 지역 통계"), mcp_timeout_s, ("external", "hira")),
+            ("hira_reimbursement_criteria", BrandInput, self._hira_reimbursement, 8.0, ("external", "hira")),
             ("hira_procedure_gender_ipat_opat_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_gender_ipat_opat_stats", "진료행위 입원/외래 통계"), mcp_timeout_s, ("external", "hira")),
             ("hira_procedure_gender_age_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_gender_age_stats", "진료행위 성별/연령 통계"), mcp_timeout_s, ("external", "hira")),
             ("hira_procedure_institution_class_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_institution_class_stats", "진료행위 기관종별 통계"), mcp_timeout_s, ("external", "hira")),
@@ -82,6 +99,12 @@ class ExternalToolRegistry:
             ToolSpec(name, _DESCRIPTIONS[name], input_model, execute, timeout_s, tags)
             for name, input_model, execute, timeout_s, tags in definitions
         )
+
+    def _hira_reimbursement(self, payload: BaseModel) -> ToolEnvelope:
+        request = BrandInput.model_validate(payload.model_dump())
+        canonical = self._canonical_brand(request.brand)
+        result = self._reimbursement.lookup(canonical)
+        return reimbursement_envelope(result, subject=canonical)
 
     def _local_molecule(self, payload: BaseModel) -> ToolEnvelope:
         request = BrandInput.model_validate(payload.model_dump())

@@ -82,22 +82,22 @@
       "case_id": "A-04",
       "semantic_field": "routing_signature",
       "baseline": "brand-absent typed stop before capability ownership",
-      "candidate": "INTENT_OWNER regulatory SUPPORTED DETERMINISTIC_SINGLETON CALL",
-      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
+      "candidate": "INTENT_OWNER hira SUPPORTED DETERMINISTIC_SINGLETON CALL",
+      "oracle": "capability_matrix HIRA_REIMBURSEMENT_CRITERIA"
     },
     {
       "case_id": "A-04",
       "semantic_field": "reason_code",
       "baseline": "SOURCE_ABSENT",
       "candidate": null,
-      "oracle": "existing NEDrug permission search/detail contracts"
+      "oracle": "F17-B HIRA reimbursement evidence contract"
     },
     {
       "case_id": "A-04",
       "semantic_field": "typed_disclosure",
       "baseline": "brand lookup failure language",
-      "candidate": "NEDrug permission detail evidence or typed NO_RECORD_FOUND on absence",
-      "oracle": "v4 NEDrug evidence contract"
+      "candidate": "HIRA insurance-criteria cache/realtime evidence or typed NO_RECORD_FOUND on absence",
+      "oracle": "F17-B HIRA reimbursement evidence contract"
     },
     {
       "case_id": "A-05",
@@ -111,14 +111,14 @@
       "semantic_field": "reason_code",
       "baseline": "SOURCE_ABSENT",
       "candidate": null,
-      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
+      "oracle": "capability_matrix HIRA_REIMBURSEMENT_CRITERIA"
     },
     {
       "case_id": "A-05",
       "semantic_field": "typed_disclosure",
       "baseline": "brand lookup failure language",
-      "candidate": "same NEDrug evidence semantics as A-04",
-      "oracle": "v4 NEDrug evidence contract"
+      "candidate": "same HIRA reimbursement evidence semantics as A-04",
+      "oracle": "F17-B HIRA reimbursement evidence contract"
     },
     {
       "case_id": "A-06",
@@ -132,14 +132,14 @@
       "semantic_field": "reason_code",
       "baseline": "SOURCE_ABSENT",
       "candidate": null,
-      "oracle": "capability_matrix MFDS_PERMISSION_DETAIL_FIELDS"
+      "oracle": "capability_matrix HIRA_REIMBURSEMENT_CRITERIA"
     },
     {
       "case_id": "A-06",
       "semantic_field": "typed_disclosure",
       "baseline": "brand lookup failure language",
-      "candidate": "same NEDrug evidence semantics as A-04",
-      "oracle": "v4 NEDrug evidence contract"
+      "candidate": "same HIRA reimbursement evidence semantics as A-04",
+      "oracle": "F17-B HIRA reimbursement evidence contract"
     },
     {
       "case_id": "A-07",

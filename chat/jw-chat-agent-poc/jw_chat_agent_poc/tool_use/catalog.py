@@ -29,6 +29,7 @@ TOOL_DESCRIPTION_CATALOG: tuple[ToolDescriptionRecord, ...] = (
     ToolDescriptionRecord("hira_disease_gender_age_stats", True, "HIRA 질병 성별/연령 통계. when to use: 상병코드별 성별·연령 질의. when NOT to use: 지역/기관종별 통계."),
     ToolDescriptionRecord("hira_disease_institution_class_stats", True, "HIRA 질병 요양기관 종별 통계. when to use: 상병코드별 기관종별 질의. when NOT to use: 성별/연령/지역 통계."),
     ToolDescriptionRecord("hira_disease_area_stats", True, "HIRA 질병 지역 통계. when to use: 상병코드별 지역 질의. when NOT to use: 진료행위 코드 통계."),
+    ToolDescriptionRecord("hira_reimbursement_criteria", True, "심사평가원 보험인정기준 조회. when to use: 제품별 급여기준·보험인정기준 질의. when NOT to use: 식약처 허가 효능·용법 또는 상병코드 환자 통계."),
     ToolDescriptionRecord("hira_procedure_gender_ipat_opat_stats", True, "HIRA 진료행위 입원/외래 통계. when to use: 행위코드별 입원·외래 질의. when NOT to use: 상병코드 통계."),
     ToolDescriptionRecord("hira_procedure_gender_age_stats", True, "HIRA 진료행위 성별/연령 통계. when to use: 행위코드별 성별·연령 질의. when NOT to use: 질병 상병코드 통계."),
     ToolDescriptionRecord("hira_procedure_institution_class_stats", True, "HIRA 진료행위 기관종별 통계. when to use: 행위코드별 기관종별 질의. when NOT to use: 성별/연령/지역 통계."),

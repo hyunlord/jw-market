@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import time
 from typing import Any
 
@@ -22,6 +23,10 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import (
 )
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
+from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    HiraReimbursementHttpClient,
+    ReimbursementCriterion,
+)
 
 
 @dataclass(slots=True)
@@ -459,43 +464,22 @@ def test_enforce_executes_raw_validated_arguments_but_records_normalized_ccs(mon
     }
 
 
-def test_enforce_reimbursement_uses_nedrug_permission_detail(monkeypatch) -> None:
+def test_enforce_reimbursement_uses_hira_criteria(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
 
-    def permission_search(brand: str) -> ExternalCall:
+    def reimbursement(_self, brand: str) -> ReimbursementCriterion:
         assert brand == "아일리아"
-        return ExternalCall(
-            tool="mfds_permission_search",
-            source="external_api",
-            status="ok",
-            summary_text="아일리아 허가 품목 1건",
-            render_data={
-                "resultCode": "00",
-                "items": [{"ITEM_SEQ": "201306324", "ITEM_NAME": "아일리아주사"}],
-            },
+        return ReimbursementCriterion(
+            brand_name=brand,
+            title="항혈관내피성장인자 주사제 급여기준",
+            criterion_text="신생혈관성 연령관련 황반변성 급여 기준",
+            source_date="2026-06-24",
+            collected_at=datetime(2026, 7, 25, tzinfo=UTC),
+            notice_number="보건복지부 고시 제2026-101호",
+            source_url="https://www.hira.or.kr/rc/example.do",
         )
 
-    def permission_detail(item_seq: str) -> ExternalCall:
-        assert item_seq == "201306324"
-        return ExternalCall(
-            tool="mfds_permission_detail",
-            source="external_api",
-            status="ok",
-            summary_text="아일리아 허가 상세 1건",
-            render_data={
-                "resultCode": "00",
-                "items": [
-                    {
-                        "ITEM_SEQ": item_seq,
-                        "ITEM_NAME": "아일리아주사",
-                        "NB_DOC_DATA": "신생혈관성 연령관련 황반변성 급여 기준",
-                    }
-                ],
-            },
-        )
-
-    monkeypatch.setattr(external, "mfds_permission_search", permission_search)
-    monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
+    monkeypatch.setattr(HiraReimbursementHttpClient, "fetch", reimbursement)
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
 
     payload = run_external_tool_agent(
@@ -506,18 +490,15 @@ def test_enforce_reimbursement_uses_nedrug_permission_detail(monkeypatch) -> Non
         routing_provider=_TimeoutProvider(),
     )
 
-    assert [call["tool"] for call in payload["tool_calls"]] == ["mfds_permission_search"]
+    assert [call["tool"] for call in payload["tool_calls"]] == ["hira_reimbursement_criteria"]
     assert "신생혈관성 연령관련 황반변성 급여 기준" in payload["answer"]
     evidence = payload["tool_calls"][0]["render_data"]["evidence"]
-    assert [fact["raw_ref"] for fact in evidence] == [
-        "mfds_permission_search:1",
-        "mfds_permission_detail:1:NB_DOC_DATA",
-    ]
+    assert [fact["source_name"] for fact in evidence] == ["심사평가원(HIRA) 보험인정기준"]
     ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
     assert ccs["routing_decision"]["capability_status"] == "SUPPORTED"
     assert ccs["routing_decision"]["route_outcome"] == "CALL"
     assert ccs["reason_code"] is None
-    assert ccs["executed_calls"][0]["tool_name"] == "mfds_permission_search"
+    assert ccs["executed_calls"][0]["tool_name"] == "hira_reimbursement_criteria"
 
 
 def test_enforce_label_fields_use_nedrug_permission_detail(monkeypatch) -> None:
@@ -579,24 +560,10 @@ def test_enforce_label_fields_use_nedrug_permission_detail(monkeypatch) -> None:
     ]
 
 
-def test_enforce_reimbursement_nedrug_absence_is_typed_no_evidence(monkeypatch) -> None:
+def test_enforce_reimbursement_hira_absence_is_typed_no_evidence(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
 
-    def no_rows(brand: str) -> ExternalCall:
-        assert brand == "아일리아"
-        return ExternalCall(
-            tool="mfds_permission_search",
-            source="external_api",
-            status="ok",
-            summary_text="아일리아 허가 품목 없음",
-            render_data={"resultCode": "00", "items": [], "request": {"brand": brand}},
-        )
-
-    def permission_detail(item_seq: str) -> ExternalCall:
-        raise AssertionError(f"detail lookup must not run without ITEM_SEQ: {item_seq}")
-
-    monkeypatch.setattr(external, "mfds_permission_search", no_rows)
-    monkeypatch.setattr(external, "mfds_permission_detail", permission_detail)
+    monkeypatch.setattr(HiraReimbursementHttpClient, "fetch", lambda _self, _brand: None)
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
 
     payload = run_external_tool_agent(
@@ -607,12 +574,12 @@ def test_enforce_reimbursement_nedrug_absence_is_typed_no_evidence(monkeypatch) 
         routing_provider=_TimeoutProvider(),
     )
 
-    assert [call["tool"] for call in payload["tool_calls"]] == ["mfds_permission_search"]
+    assert [call["tool"] for call in payload["tool_calls"]] == ["hira_reimbursement_criteria"]
     assert "mart" not in payload["answer"].casefold()
     ccs = payload["router_diagnostics"]["routing_v4"]["executed_call_signature"]
     assert ccs["runtime_status"] == "typed_stop"
     assert ccs["reason_code"] == "NO_RECORD_FOUND"
-    assert ccs["routing_decision"]["source_domain"] == "regulatory"
+    assert ccs["routing_decision"]["source_domain"] == "hira"
 
 
 def test_a13_preserves_all_exact_family_rows_and_binds_each_claim(monkeypatch) -> None:

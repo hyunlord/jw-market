@@ -86,13 +86,13 @@
       "question": "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
       "expected_decision_source": "DETERMINISTIC_SINGLETON",
       "routing_decision": {
-        "source_domain": "regulatory",
+        "source_domain": "hira",
         "domain_decision_source": "INTENT_OWNER",
         "capability_status": "SUPPORTED",
         "tool_selection_source": "DETERMINISTIC_SINGLETON",
         "route_outcome": "CALL"
       },
-      "eligible_tools": ["mfds_permission_search"],
+      "eligible_tools": ["hira_reimbursement_criteria"],
       "canonical_argument_contract": {"brand": "아일리아"},
       "forbidden_tools": ["web_search"]
     },

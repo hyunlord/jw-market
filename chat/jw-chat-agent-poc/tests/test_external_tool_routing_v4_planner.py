@@ -204,14 +204,14 @@ def test_parent_disease_code_is_not_promoted_to_a_child_code() -> None:
         "Aflibercept 급여기준 알려줘",
     ),
 )
-def test_reimbursement_requests_route_to_nedrug_permission_search(question: str) -> None:
+def test_reimbursement_requests_route_to_hira_criteria_lookup(question: str) -> None:
     plan = _planner().plan(question, routing_mode=RoutingMode.ENFORCE)
 
     assert plan.proposal.routing_decision.capability_status is CapabilityStatus.SUPPORTED
     assert plan.proposal.routing_decision.tool_selection_source is ToolSelectionSource.DETERMINISTIC_SINGLETON
     assert plan.proposal.routing_decision.route_outcome is RouteOutcome.CALL
     assert plan.proposal.proposed_calls == (
-        ProposedCall(tool_name="mfds_permission_search", normalized_args={"brand": "아일리아"}),
+        ProposedCall(tool_name="hira_reimbursement_criteria", normalized_args={"brand": "아일리아"}),
     )
     assert plan.reason_code is None
     assert "web_search" not in plan.eligible_tools

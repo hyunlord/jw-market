@@ -210,7 +210,11 @@ def _validate_domain_arguments(tool_name: str, arguments: dict[str, Any]) -> Non
 
 
 def singleton_arguments(tool_name: str, question: str) -> dict[str, Any] | None:
-    if tool_name in {"mfds_permission_search", "mfds_composition"}:
+    if tool_name in {
+        "hira_reimbursement_criteria",
+        "mfds_permission_search",
+        "mfds_composition",
+    }:
         body = PREFIX_RE.sub("", question, count=1).strip()
         match = re.match(r"(?P<subject>[A-Za-z가-힣0-9+_-]{2,80}?)(?:의|\s)", body)
         return {"brand": _nedrug_brand_alias(match.group("subject").strip())} if match else None
