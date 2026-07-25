@@ -66,11 +66,16 @@
 | 신규 브랜드 최소 매출 | 100,000,000 KRW(1억) | `tier2_catalog.py:20` |
 | 요일 슬라이스 modulo | 7 (brand_key sha256 해시) | `tier2_catalog.py:62` |
 | tier2 wf337 워크플로 | id 337 · rev 5671 · deployment 1453 | `tier2_full_scoring_runner.py:27-29` |
-| 일일 호출 상한 | `--daily-call-limit` 기본 60 | `tier2_full_scoring_runner.py:1346` |
-| 비용 상한 | `--max-cost-krw` 기본 203.40 (콜당 3.39원) | `:1347,:37,:843-847` |
+| 일일 호출 상한 | `--daily-call-limit` 기본 100 | `tier2_full_scoring_runner.py` |
+| 비용 상한 | `--max-cost-krw` 기본 339.00 (콜당 3.39원) | `tier2_full_scoring_runner.py` |
 | 배치 크기 / 연속 실패 abort / 타임아웃 | 200 / 3 / 420초 | `:36,:34,:35` |
 
 비용 가드는 `daily_call_limit × 3.39 > max_cost_krw`이면 실행 전 예외(`:843-847`)로 cap 초과 설정 자체를 차단한다.
+2026-07-23 승인된 10일 유입량(55·57·29·100·99·92·91·18·44·50) 재생에서
+100과 120은 모두 current-run hard-gate 실패 0/10이었다. 100은 평균 63.5콜
+(215.27원/일), 설정상 최대 339.00원이며 120은 관측상 추가 처리 이득 없이
+최대 예산만 406.80원으로 늘어 채택하지 않았다. 호출은 순차 실행이라 이 변경은
+동시 요청 수를 늘리지 않는다.
 
 ### 1.4 category refresh — 2026-07-18 cutover 추가 스텝
 

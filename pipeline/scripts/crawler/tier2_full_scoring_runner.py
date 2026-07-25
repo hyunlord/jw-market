@@ -13,14 +13,39 @@ import datetime as dt
 import hashlib
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
 import pymysql
+
+REPO_ROOT = Path(os.environ.get("CRAWL_CHAIN_REPO_ROOT", Path.cwd()))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from pipeline.scripts.crawler.crawl_backlog_policy import (
+        PendingItem,
+        PendingSnapshot,
+        assess_backlog,
+        assessment_payload,
+        read_pending_snapshot,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"pipeline", "pipeline.scripts.crawler.crawl_backlog_policy"}:
+        raise
+    from crawl_backlog_policy import (  # type: ignore[no-redef]
+        PendingItem,
+        PendingSnapshot,
+        assess_backlog,
+        assessment_payload,
+        read_pending_snapshot,
+    )
 
 DEFAULT_MATCH_TABLE = "tier2_match_staging"
 DEFAULT_WORKFLOW_URL = "http://workflow-337.llmops.svc.cluster.local:8080/run/v2"
@@ -35,6 +60,8 @@ MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_TIMEOUT_SECONDS = 420
 DEFAULT_BATCH_SIZE = 200
 WORKFLOW_CALL_COST_KRW = 3.39
+DEFAULT_DAILY_CALL_LIMIT = 100
+DEFAULT_MAX_COST_KRW = 339.00
 
 CATEGORY_CODE_BY_LABEL = {
     "신약/R&D": "rd",
@@ -492,7 +519,7 @@ def load_pending_exact_inputs(
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT s.news_id,
+            SELECT pending.news_id,
                    COALESCE(g.brand_key, s.brand_canonical) AS brand_key,
                    s.brand_canonical,
                    'tier2_exact_rule_v1' AS match_source,
@@ -505,24 +532,29 @@ def load_pending_exact_inputs(
                    n.collected_at,
                    n.expire_at
             FROM (
-                SELECT MIN(candidate.id) AS first_id, candidate.news_id
+                SELECT MIN(candidate.id) AS first_id,
+                       COALESCE(candidate.news_id, candidate.event_id) AS news_id
                 FROM event_brand_scores candidate
+                JOIN news_raw source_news
+                  ON source_news.news_id =
+                     COALESCE(candidate.news_id, candidate.event_id)
                 WHERE candidate.source_processor = %s
                   AND NOT EXISTS (
                       SELECT 1
                       FROM event_brand_scores scored
-                      WHERE scored.news_id = candidate.news_id
+                      WHERE scored.news_id =
+                            COALESCE(candidate.news_id, candidate.event_id)
                         AND scored.brand_canonical = candidate.brand_canonical
                         AND scored.source_processor = %s
                   )
-                GROUP BY candidate.news_id
+                GROUP BY COALESCE(candidate.news_id, candidate.event_id)
                 ORDER BY first_id
                 LIMIT %s
             ) pending
             JOIN event_brand_scores s
-              ON s.news_id = pending.news_id
+              ON COALESCE(s.news_id, s.event_id) = pending.news_id
              AND s.source_processor = %s
-            JOIN news_raw n ON n.news_id = s.news_id
+            JOIN news_raw n ON n.news_id = pending.news_id
             LEFT JOIN (
                 SELECT REPLACE(brand_name, ' ', '') AS normalized_brand,
                        MIN(brand_key) AS brand_key
@@ -534,7 +566,7 @@ def load_pending_exact_inputs(
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM event_brand_scores scored
-                WHERE scored.news_id = s.news_id
+                WHERE scored.news_id = COALESCE(s.news_id, s.event_id)
                   AND scored.brand_canonical = s.brand_canonical
                   AND scored.source_processor = %s
             )
@@ -784,6 +816,183 @@ def events_raw_gap(conn: pymysql.connections.Connection) -> int:
         return int(cursor.fetchone()["gap"] or 0)
 
 
+def pending_exact_gap(
+    conn: pymysql.connections.Connection,
+    *,
+    source_processor: str,
+    target_processor: str,
+) -> int:
+    """Return exact-rule brand pairs that still lack target scoring rows."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS gap
+            FROM event_brand_scores candidate
+            JOIN news_raw source_news
+              ON source_news.news_id =
+                 COALESCE(candidate.news_id, candidate.event_id)
+            WHERE candidate.source_processor = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM event_brand_scores scored
+                  WHERE scored.news_id =
+                        COALESCE(candidate.news_id, candidate.event_id)
+                    AND scored.brand_canonical = candidate.brand_canonical
+                    AND scored.source_processor = %s
+              )
+            """,
+            (source_processor, target_processor),
+        )
+        return int(cursor.fetchone()["gap"] or 0)
+
+
+def pending_exact_snapshot(
+    conn: pymysql.connections.Connection,
+    *,
+    source_processor: str,
+    target_processor: str,
+    captured_at: dt.datetime | None = None,
+) -> PendingSnapshot:
+    """Return the exact pending pair identities used by the run-delta gate."""
+
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT COALESCE(candidate.news_id, candidate.event_id) AS news_id,
+                   candidate.brand_canonical,
+                   MIN(COALESCE(candidate.collected_at, source_news.collected_at)) AS first_seen_at
+            FROM event_brand_scores candidate
+            JOIN news_raw source_news
+              ON source_news.news_id =
+                 COALESCE(candidate.news_id, candidate.event_id)
+            WHERE candidate.source_processor = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM event_brand_scores scored
+                  WHERE scored.news_id =
+                        COALESCE(candidate.news_id, candidate.event_id)
+                    AND scored.brand_canonical = candidate.brand_canonical
+                    AND scored.source_processor = %s
+              )
+            GROUP BY COALESCE(candidate.news_id, candidate.event_id),
+                     candidate.brand_canonical
+            ORDER BY COALESCE(candidate.news_id, candidate.event_id),
+                     candidate.brand_canonical
+            """,
+            (source_processor, target_processor),
+        )
+        rows = cursor.fetchall()
+    items: list[PendingItem] = []
+    for row in rows:
+        first_seen_at = row.get("first_seen_at")
+        if isinstance(first_seen_at, dt.date) and not isinstance(first_seen_at, dt.datetime):
+            first_seen_at = dt.datetime.combine(first_seen_at, dt.time.min)
+        if not isinstance(first_seen_at, dt.datetime):
+            raise RuntimeError(
+                "pending pair has no first_seen_at: "
+                f"news_id={row.get('news_id')!r} brand={row.get('brand_canonical')!r}"
+            )
+        if first_seen_at.tzinfo is None:
+            first_seen_at = first_seen_at.replace(tzinfo=dt.UTC)
+        items.append(
+            PendingItem(
+                news_id=str(row["news_id"]),
+                brand_canonical=str(row["brand_canonical"]),
+                first_seen_at=first_seen_at,
+            )
+        )
+    return PendingSnapshot(
+        captured_at=captured_at or dt.datetime.now(dt.UTC),
+        items=tuple(items),
+    )
+
+
+def _prior_backlog_counts(receipts_root: Path, *, run_id: str) -> tuple[int, ...]:
+    receipts: list[tuple[str, int]] = []
+    if not receipts_root.is_dir():
+        return ()
+    for path in receipts_root.glob("*.json"):
+        if path.stem == run_id:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            captured_at = str(payload["captured_at"])
+            after_count = int(payload["after_count"])
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+        if after_count >= 0:
+            receipts.append((captured_at, after_count))
+    receipts.sort()
+    return tuple(count for _captured_at, count in receipts)
+
+
+def run_backlog_gate(
+    conn: pymysql.connections.Connection,
+    *,
+    source_processor: str,
+    target_processor: str,
+    pending_baseline: Path,
+    receipts_root: Path,
+    run_id: str,
+) -> dict[str, object]:
+    """Assess this run and persist the result outside Temporal history."""
+
+    before = read_pending_snapshot(pending_baseline)
+    after = pending_exact_snapshot(
+        conn,
+        source_processor=source_processor,
+        target_processor=target_processor,
+    )
+    assessment = assess_backlog(
+        before=before,
+        after=after,
+        prior_after_counts=_prior_backlog_counts(receipts_root, run_id=run_id),
+    )
+    payload = assessment_payload(assessment, run_id=run_id, captured_at=after.captured_at)
+    receipts_root.mkdir(parents=True, exist_ok=True)
+    path = receipts_root / f"{run_id}.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+    return payload
+
+
+def _selected_pending_gap(
+    conn: pymysql.connections.Connection,
+    *,
+    items: Sequence[NewsScoringInput],
+    target_processor: str,
+) -> int:
+    required = {
+        (item.news_id, brand.brand_name)
+        for item in items
+        for brand in item.brands
+    }
+    if not required:
+        return 0
+    news_ids = sorted({news_id for news_id, _brand in required})
+    placeholders = ",".join(["%s"] * len(news_ids))
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT news_id, brand_canonical
+            FROM event_brand_scores
+            WHERE source_processor = %s
+              AND news_id IN ({placeholders})
+            """,
+            (target_processor, *news_ids),
+        )
+        present = {
+            (str(row["news_id"]), str(row["brand_canonical"]))
+            for row in cursor.fetchall()
+        }
+    return len(required - present)
+
+
 def sync_missing_events_raw(
     conn: pymysql.connections.Connection,
     *,
@@ -903,6 +1112,16 @@ def run_append_live(
         "source_after": source_after,
         "target_before": target_before,
         "target_after": processor_snapshot(conn, target_processor),
+        "pending_gap": _selected_pending_gap(
+            conn,
+            items=items,
+            target_processor=target_processor,
+        ),
+        "pending_global_gap": pending_exact_gap(
+            conn,
+            source_processor=source_processor,
+            target_processor=target_processor,
+        ),
         "elapsed_sec": round(time.time() - started, 3),
     }
 
@@ -1343,11 +1562,22 @@ def main() -> int:
         default=os.getenv("WF337_URL", DEFAULT_WORKFLOW_URL),
     )
     append_parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
-    append_parser.add_argument("--daily-call-limit", type=int, default=60)
-    append_parser.add_argument("--max-cost-krw", type=float, default=203.40)
+    append_parser.add_argument("--daily-call-limit", type=int, default=DEFAULT_DAILY_CALL_LIMIT)
+    append_parser.add_argument("--max-cost-krw", type=float, default=DEFAULT_MAX_COST_KRW)
 
     sync_parser = subparsers.add_parser("sync-events-raw")
     sync_parser.add_argument("--retries", type=int, default=1)
+
+    gate_parser = subparsers.add_parser("gate-status")
+    gate_parser.add_argument("--source-processor", default=TIER2_EXACT_PROCESSOR)
+    gate_parser.add_argument("--target-processor", default=PENDING_SOURCE_PROCESSOR)
+
+    backlog_parser = subparsers.add_parser("backlog-gate")
+    backlog_parser.add_argument("--source-processor", default=TIER2_EXACT_PROCESSOR)
+    backlog_parser.add_argument("--target-processor", default=PENDING_SOURCE_PROCESSOR)
+    backlog_parser.add_argument("--pending-baseline", type=Path, required=True)
+    backlog_parser.add_argument("--receipts-root", type=Path, required=True)
+    backlog_parser.add_argument("--run-id", required=True)
 
     refresh_parser = subparsers.add_parser("refresh-live-categories")
     refresh_parser.add_argument("--dry-run", action="store_true")
@@ -1392,6 +1622,26 @@ def main() -> int:
             )
         elif args.command == "sync-events-raw":
             summary = sync_missing_events_raw(conn, retries=args.retries)
+        elif args.command == "gate-status":
+            summary = {
+                "events_raw_gap": events_raw_gap(conn),
+                "pending_gap": pending_exact_gap(
+                    conn,
+                    source_processor=args.source_processor,
+                    target_processor=args.target_processor,
+                ),
+                "source_processor": args.source_processor,
+                "target_processor": args.target_processor,
+            }
+        elif args.command == "backlog-gate":
+            summary = run_backlog_gate(
+                conn,
+                source_processor=args.source_processor,
+                target_processor=args.target_processor,
+                pending_baseline=args.pending_baseline,
+                receipts_root=args.receipts_root,
+                run_id=args.run_id,
+            )
         elif args.command == "refresh-live-categories":
             dry_run = bool(args.dry_run)
             affected = update_live_tier2_categories(conn, dry_run=dry_run)

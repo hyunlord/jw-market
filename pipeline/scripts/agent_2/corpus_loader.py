@@ -253,6 +253,7 @@ def build_rows(
         scores.append(
             {
                 "event_id": nid,
+                "news_id": nid,
                 "brand_name": match.get("drug"),
                 "brand_canonical": brand_canonical,
                 "brand_id": brand_id,
@@ -263,6 +264,8 @@ def build_rows(
                 "score_tier": score_to_tier(score),
                 "reason": match.get("reason"),
                 "source_processor": processed_by,
+                "derivation": "llm_direct",
+                "tag": category_label,
                 "tier": tier,
                 "collected_at": collected,
             }
@@ -374,6 +377,21 @@ def score_exists(cursor: Any, score: dict[str, Any]) -> bool:
     return cursor.fetchone() is not None
 
 
+def table_exists(cursor: Any, schema: str, table: str) -> bool:
+    cursor.execute(
+        """
+        SELECT EXISTS(
+          SELECT 1
+          FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+        ) AS table_exists
+        """,
+        (schema, table),
+    )
+    row = cursor.fetchone()
+    return bool(row and row["table_exists"])
+
+
 def load_to_db(
     corpus: Path,
     resolver: BrandResolver,
@@ -411,31 +429,35 @@ def load_to_db(
     score_tiers = collections.Counter()
     unknown = collections.Counter()
     matched_score_count = 0
+    run_id: int | None = None
+    run_log_available = False
 
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO agent_run_log
-                  (agent_name, agent_version, started_at, status, input_count, output_count,
-                   skipped_count, error_count, notes)
-                VALUES
-                  (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    "corpus_loader",
-                    "v1",
-                    started,
-                    "running",
-                    len(files),
-                    0,
-                    0,
-                    0,
-                    f"corpus={corpus}; processed_by={processed_by}",
-                ),
-            )
-            run_id = cursor.lastrowid
-            conn.commit()
+            run_log_available = table_exists(cursor, db_name, "agent_run_log")
+            if run_log_available:
+                cursor.execute(
+                    """
+                    INSERT INTO agent_run_log
+                      (agent_name, agent_version, started_at, status, input_count, output_count,
+                       skipped_count, error_count, notes)
+                    VALUES
+                      (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        "corpus_loader",
+                        "v1",
+                        started,
+                        "running",
+                        len(files),
+                        0,
+                        0,
+                        0,
+                        f"corpus={corpus}; processed_by={processed_by}",
+                    ),
+                )
+                run_id = cursor.lastrowid
+                conn.commit()
 
             for index, path in enumerate(files, start=1):
                 try:
@@ -470,22 +492,23 @@ def load_to_db(
 
             finished = datetime.now()
             status = "success" if not errors else "partial"
-            cursor.execute(
-                """
-                UPDATE agent_run_log
-                SET finished_at = %s, status = %s, output_count = %s,
-                    skipped_count = %s, error_count = %s
-                WHERE run_id = %s
-                """,
-                (
-                    finished,
-                    status,
-                    inserted_events,
-                    len(files) - inserted_events,
-                    len(errors),
-                    run_id,
-                ),
-            )
+            if run_log_available:
+                cursor.execute(
+                    """
+                    UPDATE agent_run_log
+                    SET finished_at = %s, status = %s, output_count = %s,
+                        skipped_count = %s, error_count = %s
+                    WHERE run_id = %s
+                    """,
+                    (
+                        finished,
+                        status,
+                        inserted_events,
+                        len(files) - inserted_events,
+                        len(errors),
+                        run_id,
+                    ),
+                )
             conn.commit()
     except Exception:
         conn.rollback()
@@ -497,6 +520,7 @@ def load_to_db(
     return {
         "dry_run": False,
         "run_id": run_id,
+        "run_log_available": run_log_available,
         "corpus": str(corpus),
         "processed_json_found": len(files),
         "news_raw_rows_inserted": inserted_news,

@@ -82,4 +82,83 @@ def test_stage_script_preserves_incremental_loader_and_category_refresh_order() 
     append_at = script.index("append-live")
     refresh_at = script.index("refresh-live-categories")
     assert sync_at < append_at < refresh_at
-    assert "--daily-call-limit 60 --max-cost-krw 203.40" in script
+    assert 'CRAWL_CHAIN_LLM_CALL_LIMIT:-100' in script
+    assert 'CRAWL_CHAIN_LLM_MAX_COST_KRW:-339.00' in script
+    assert '--daily-call-limit "${llm_call_limit}" --max-cost-krw "${llm_max_cost_krw}"' in script
+
+
+def test_stage_script_uses_the_tier1_direct_run_endpoint() -> None:
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert '--direct-run-url "${WF196_DIRECT_RUN_URL}"' in script
+
+
+def test_candidate_gate_uses_the_current_loader_identity_contract() -> None:
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "from corpus_loader_v2 import news_id" in script
+    assert "candidate_path = scored_new / relative" in script
+    assert "candidate_news_id = news_id(candidate_path)" in script
+    assert "generate_news_id" not in script
+    assert '--corpus "${scored_new}"' in script
+    assert "--batch-dir" not in script
+    assert "--scored-dir" not in script
+
+
+def test_stage_script_supports_bounded_shadow_crawls_without_changing_defaults() -> None:
+    # Given: the shared stage script used by both the dormant full chain and shadow worker.
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    # When/Then: limits are opt-in, while the normal production windows remain the defaults.
+    assert 'CRAWL_CHAIN_TIER1_SITES:-' in script
+    assert 'selected_sites="${CRAWL_CHAIN_TIER1_SITES:-${all_sites// /,}}"' in script
+    assert 'CRAWL_CHAIN_TIER1_MONTHS:-1' in script
+    assert 'CRAWL_CHAIN_TIER1_MAX_ARTICLES:-0' in script
+    assert 'CRAWL_CHAIN_TIER2_SITES:-' in script
+    assert 'CRAWL_CHAIN_TIER2_DAYS:-7' in script
+    assert 'CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE:-3' in script
+    assert 'CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE:-80' in script
+    assert 'CRAWL_CHAIN_TIER2_MAX_ARTICLES:-0' in script
+    assert 'CRAWL_CHAIN_TIER2_LIMIT_BRANDS:-0' in script
+    assert "--tier2-concurrent-sites" not in script
+
+
+def test_stage_script_can_isolate_a_manual_shadow_by_one_keyword() -> None:
+    # Given: an operator-provided keyword used only by the manual shadow worker.
+    script = (REPO_ROOT / "pipeline" / "scripts" / "crawler" / "crawl_chain_steps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    # When/Then: both tiers consume the same run-scoped keyword identity, while
+    # an unset variable leaves the existing profile/catalog paths untouched.
+    assert 'shadow_keyword="${CRAWL_CHAIN_SHADOW_KEYWORD:-}"' in script
+    assert 'prepare_shadow_tier1_profile "${profiles}/drug_profiles" "${shadow_keyword}"' in script
+    assert 'prepare_shadow_tier2_brand_file "${shadow_brand_file}" "${shadow_keyword}"' in script
+    assert 'crawl_command+=(--brand-file "${shadow_brand_file}" --weekday-slice "${weekday}")' in script
+    assert 'crawl_command+=(--weekday-slice "${weekday}")' in script
+
+
+def test_shadow_manifest_limits_only_the_manual_shadow_worker() -> None:
+    # Given: the dedicated Temporal shadow worker manifest.
+    manifest = _yaml_documents("temporal-crawl-shadow-worker.yaml")
+    deployment = next(document for document in manifest if document["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    environment = {item["name"]: item.get("value") for item in container["env"]}
+
+    # When/Then: one-site, one-day bounds are explicit and cannot affect legacy CronJobs.
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    assert environment["CRAWL_CHAIN_TIER1_SITES"] == "히트뉴스"
+    assert environment["CRAWL_CHAIN_TIER1_MAX_ARTICLES"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_SITES"] == "히트뉴스"
+    assert environment["CRAWL_CHAIN_TIER2_DAYS"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_PAGES_PER_SITE"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_LINKS_PER_PAGE"] == "10"
+    assert environment["CRAWL_CHAIN_TIER2_MAX_ARTICLES"] == "1"
+    assert environment["CRAWL_CHAIN_TIER2_LIMIT_BRANDS"] == "1"
+    assert environment["CRAWL_CHAIN_DELAY_SECONDS"] == "0.1"

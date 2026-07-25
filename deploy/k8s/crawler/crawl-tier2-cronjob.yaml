@@ -181,8 +181,8 @@ spec:
                 --source-processor tier2_exact_rule_v1 \
                 --target-processor tier2_llm_v2_rev5671 \
                 --workflow-url "$WF337_URL" \
-                --daily-call-limit 60 \
-                --max-cost-krw 203.40
+                --daily-call-limit 100 \
+                --max-cost-krw 339.00
               # Category refresh must follow append-live and must not be
               # skippable: under set -euo pipefail this line only runs after a
               # successful append, and its own failure fails the Job (the

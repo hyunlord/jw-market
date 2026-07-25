@@ -7,13 +7,25 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from pipeline.scripts.crawler.crawl_temporal_contract import (
+    StageGate,
+    StageGateError,
+    read_stage_gate,
+)
 
 
 class Stage(StrEnum):
@@ -40,6 +52,9 @@ class Receipt:
     output_sha256: str
     exit_code: int
     error_code: str
+    failures: int = 0
+    events_raw_gap: int = 0
+    pending_gap: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,11 +111,51 @@ def _timeout_for(stage: Stage) -> int:
     names = {
         Stage.TIER1_COLLECT: ("CRAWL_CHAIN_TIMEOUT_TIER1_COLLECT", 10_800),
         Stage.TIER1_CLASSIFY: ("CRAWL_CHAIN_TIMEOUT_TIER1_CLASSIFY", 900),
-        Stage.TIER2_COLLECT: ("CRAWL_CHAIN_TIMEOUT_TIER2_COLLECT", 28_800),
+        Stage.TIER2_COLLECT: ("CRAWL_CHAIN_TIMEOUT_TIER2_COLLECT", 57_000),
         Stage.TIER2_CLASSIFY: ("CRAWL_CHAIN_TIMEOUT_TIER2_CLASSIFY", 1_800),
     }
     env_name, default = names[stage]
     return int(os.environ.get(env_name, str(default)))
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[bytes],
+    *,
+    grace_seconds: float = 10,
+) -> None:
+    if process.poll() is not None:
+        return
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + grace_seconds
+    while _process_group_exists(process_group_id) and time.monotonic() < deadline:
+        if process.poll() is None:
+            try:
+                process.wait(timeout=min(0.1, max(0.0, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            time.sleep(0.05)
+
+    if _process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.wait()
 
 
 def _receipt_path(run_root: Path, stage: Stage) -> Path:
@@ -161,15 +216,29 @@ def _run_stage(
             "CHAIN_STAGE_OUTPUT_DIR": str(attempt_output_path),
         }
     )
+    gate: StageGate | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [str(config.stage_script), stage.value],
-            check=False,
             env=env,
-            timeout=_timeout_for(stage),
+            start_new_session=True,
         )
-        exit_code = completed.returncode
+        try:
+            exit_code = process.wait(timeout=_timeout_for(stage))
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(process)
+            raise
         error_code = "" if exit_code == 0 else "stage_nonzero_exit"
+        if exit_code == 0:
+            try:
+                gate = read_stage_gate(
+                    attempt_output_path / "stage_gate.json",
+                    expected_stage=stage.value,
+                )
+            except StageGateError as exc:
+                gate = exc.gate
+                exit_code = 78
+                error_code = exc.error_code
     except subprocess.TimeoutExpired:
         exit_code = 124
         error_code = "stage_timeout"
@@ -194,11 +263,36 @@ def _run_stage(
         output_sha256=output_sha256,
         exit_code=exit_code,
         error_code=error_code,
+        failures=gate.failures if gate is not None else 0,
+        events_raw_gap=gate.events_raw_gap if gate is not None else 0,
+        pending_gap=gate.pending_gap if gate is not None else 0,
     )
     _atomic_json(receipt_path, receipt)
     event = "CHAIN_STAGE_COMPLETE" if exit_code == 0 else "CHAIN_STAGE_FAILED"
     _marker(event, run_id=config.run_id, stage=stage.value, attempt=attempt, exit_code=exit_code)
     return exit_code
+
+
+def run_stage(config: ChainConfig, stage: Stage) -> int:
+    """Run one stage only after verifying every durable predecessor."""
+
+    run_root = config.state_root / "runs" / config.run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    input_sha256 = "root"
+    stage_index = STAGES.index(stage)
+    for prior in STAGES[:stage_index]:
+        input_sha256 = _verify_complete(
+            config,
+            run_root,
+            prior,
+            input_sha256,
+        ).output_sha256
+    receipt = _read_receipt(_receipt_path(run_root, stage))
+    if receipt is not None and receipt.status == "complete":
+        _verify_complete(config, run_root, stage, input_sha256)
+        _marker("CHAIN_STAGE_SKIPPED_COMPLETE", run_id=config.run_id, stage=stage.value)
+        return 0
+    return _run_stage(config, run_root, stage, input_sha256)
 
 
 def run(config: ChainConfig) -> int:
@@ -287,6 +381,12 @@ def _parse_args() -> argparse.Namespace:
     run_parser.add_argument("--stage-script", type=Path, required=True)
     run_parser.add_argument("--resume", action="store_true")
     run_parser.add_argument("--from-stage", type=Stage, choices=STAGES, default=STAGES[0])
+    stage_parser = subparsers.add_parser("run-stage")
+    stage_parser.add_argument("--run-id", required=True)
+    stage_parser.add_argument("--state-root", type=Path, default=Path("/var/lib/jw-crawl-chain"))
+    stage_parser.add_argument("--stage-script", type=Path, required=True)
+    stage_parser.add_argument("--stage", type=Stage, choices=STAGES, required=True)
+    stage_parser.add_argument("--command-revision", required=True)
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--run-id", required=True)
     status_parser.add_argument("--state-root", type=Path, default=Path("/var/lib/jw-crawl-chain"))
@@ -296,15 +396,15 @@ def _parse_args() -> argparse.Namespace:
 def _execute(args: argparse.Namespace) -> int:
     if args.action == "status":
         return report_status(args.state_root, args.run_id)
-    revision = os.environ.get("CRAWL_CHAIN_COMMAND_REVISION") or hashlib.sha256(
-        args.stage_script.read_bytes() + Path(__file__).read_bytes()
-    ).hexdigest()
+    revision = getattr(args, "command_revision", "") or os.environ.get(
+        "CRAWL_CHAIN_COMMAND_REVISION"
+    ) or hashlib.sha256(args.stage_script.read_bytes() + Path(__file__).read_bytes()).hexdigest()
     config = ChainConfig(
         run_id=args.run_id,
         state_root=args.state_root,
         stage_script=args.stage_script,
-        resume=args.resume,
-        from_stage=args.from_stage,
+        resume=getattr(args, "resume", True),
+        from_stage=getattr(args, "from_stage", getattr(args, "stage", STAGES[0])),
         command_revision=revision,
     )
     config.state_root.mkdir(parents=True, exist_ok=True)
@@ -315,6 +415,8 @@ def _execute(args: argparse.Namespace) -> int:
         except BlockingIOError:
             _marker("CHAIN_SCHEDULE_SKIPPED_ACTIVE", run_id=config.run_id)
             return 75
+        if args.action == "run-stage":
+            return run_stage(config, args.stage)
         return run(config)
 
 

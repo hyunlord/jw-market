@@ -34,12 +34,14 @@ RUN pip install --no-cache-dir \
     "lxml>=5.0.0" \
     "trafilatura>=1.8.0" \
     "pandas>=2.2.0" \
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0" \
+    "temporalio==1.30.0"
 
 WORKDIR /work
 
 COPY pipeline/scripts/crawler/ /work/crawl/crawler/
 COPY pipeline/scripts/crawler/ /work/pipeline/scripts/crawler/
+COPY pipeline/etl/io/mart/ /work/pipeline/etl/io/mart/
 COPY pipeline/scripts/agent_2/score_v2.py /work/crawl/agent1/score_v2.py
 COPY pipeline/scripts/agent_2/corpus_loader.py /work/crawl/agent1/corpus_loader_v2.py
 COPY docs/crawl/drug_profiles.zip /work/crawl/config/drug_profiles.zip
@@ -49,6 +51,7 @@ COPY crawl/tier2/prompts/ /work/crawl/tier2/prompts/
 
 RUN mkdir -p /opt/tier2 \
     && cp /work/crawl/crawler/tier2_full_scoring_runner.py /opt/tier2/ \
+    && cp /work/crawl/crawler/crawl_backlog_policy.py /opt/tier2/ \
     && cp /work/crawl/crawler/tier2_catalog.py /opt/tier2/ \
     && cp /work/crawl/crawler/tier2_body_match_runner.py /opt/tier2/ \
     && cp /work/crawl/crawler/tier2_match_score.py /opt/tier2/ \

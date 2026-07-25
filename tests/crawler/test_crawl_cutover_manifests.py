@@ -31,8 +31,8 @@ def test_tier2_manifest_pins_ga_workflow_and_is_retained_for_rollback() -> None:
     assert "http://workflow-337.llmops.svc.cluster.local:8080/run/v2" in manifest
     assert "append-live" in manifest
     assert "--target-processor tier2_llm_v2_rev5671" in manifest
-    assert "--daily-call-limit 60" in manifest
-    assert "--max-cost-krw 203.40" in manifest
+    assert "--daily-call-limit 100" in manifest
+    assert "--max-cost-krw 339.00" in manifest
     assert "python /opt/tier2/tier2_full_scoring_runner.py append-live" in manifest
     assert "python /opt/tier2/tier2_full_scoring_runner.py sync-events-raw" in manifest
     assert manifest.index("sync-events-raw") < manifest.index("append-live")
@@ -48,5 +48,12 @@ def test_tier2_apply_script_generates_configmap_from_canonical_runner() -> None:
     script = _manifest("apply-tier2-llm-schedule.sh")
 
     assert "--from-file=tier2_full_scoring_runner.py=\"$runner\"" in script
+    assert "--from-file=crawl_backlog_policy.py=\"$backlog_policy\"" in script
     assert "--dry-run=client -o yaml | kubectl apply -f -" in script
     assert "kubectl -n \"$namespace\" apply -f \"$manifest\"" in script
+
+
+def test_crawl_image_packages_backlog_policy_for_opt_runner() -> None:
+    dockerfile = (REPO_ROOT / "deploy/docker/crawl.Dockerfile").read_text(encoding="utf-8")
+
+    assert "cp /work/crawl/crawler/crawl_backlog_policy.py /opt/tier2/" in dockerfile

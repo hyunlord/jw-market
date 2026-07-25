@@ -80,6 +80,8 @@ def run_one_site(site: str, args: argparse.Namespace) -> dict:
         str(news_dir),
         "--reverse-time-order",
     ]
+    if args.max_articles:
+        cmd.extend(["--max-articles", str(args.max_articles)])
     if args.batch_by_month:
         cmd.append("--batch-by-month")
 
@@ -129,6 +131,7 @@ def main() -> None:
     ap.add_argument("--concurrent-sites", type=int, default=4)
     ap.add_argument("--months", type=int, default=60)
     ap.add_argument("--max-pages", type=int, default=10)
+    ap.add_argument("--max-articles", type=int, default=0)
     ap.add_argument("--delay", type=float, default=5.0)
     ap.add_argument("--batch-by-month", action="store_true")
     args = ap.parse_args()
