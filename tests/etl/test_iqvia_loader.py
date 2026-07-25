@@ -147,6 +147,49 @@ def test_nsa_header_order_does_not_change_record(tmp_path: Path) -> None:
     assert json.loads(record["payload"])["period_values"]["Values LC"] == 7_152_613
 
 
+def test_nsa_quarter_filter_matches_full_read_subset(tmp_path: Path) -> None:
+    q1 = _row(values_lc=100)
+    q1[0] = "2026-03-01 00:00:00"
+    q2 = _row(values_lc=200)
+    q2[0] = "2026-06-01 00:00:00"
+    path = _write_workbook(tmp_path / "quarters.xlsx", CANONICAL_HEADERS, [q1, q2])
+
+    full = list(iter_nsa_xlsx(path))
+    filtered = list(iter_nsa_xlsx(path, quarters=("2026-Q2",)))
+
+    assert [record["period_label"] for record in full] == ["2026Q1", "2026Q2"]
+    assert filtered == [record for record in full if record["period_label"] == "2026Q2"]
+
+
+def test_nsa_quarter_filter_rejects_invalid_labels(tmp_path: Path) -> None:
+    path = _write_workbook(tmp_path / "quarters.xlsx", CANONICAL_HEADERS, [_row()])
+
+    with pytest.raises(ValueError, match="invalid IQVIA quarter"):
+        list(iter_nsa_xlsx(path, quarters=("2026-Q5",)))
+
+
+def test_wide_nsa_quarter_columns_use_same_filter_contract(tmp_path: Path) -> None:
+    static_headers = ["AUDIT CODE", "MFR CODE", "PRODUCT NAME", "PACK DESC"]
+    metrics = ["Values LC", "Units", "Counting Units", "Dosage Units", "Price"]
+    headers = static_headers + [
+        f"{month}/{year}_{metric}"
+        for month, year in ((3, 2026), (6, 2026))
+        for metric in metrics
+    ]
+    row = ["KCPA", "MFR", "PRODUCT", "10MG"] + [
+        value
+        for values in ((100, 10, 5, 8, 1), (200, 20, 10, 16, 2))
+        for value in values
+    ]
+    path = _write_workbook(tmp_path / "wide.xlsx", headers, [row])
+
+    records = list(iter_nsa_xlsx(path, quarters=("2026-Q2",)))
+
+    assert len(records) == 1
+    assert records[0]["period_label"] == "2026Q2"
+    assert json.loads(records[0]["payload"])["period_values"]["Values LC"] == 200
+
+
 @pytest.mark.parametrize("missing", ["AUDIT CODE", "MFR CODE", "PRODUCT NAME", "PACK DESC", "DATA PERIOD"])
 def test_nsa_missing_required_header_fails(tmp_path: Path, missing: str) -> None:
     index = CANONICAL_HEADERS.index(missing)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 import duckdb
@@ -12,24 +13,93 @@ from .general_catalog import _attach_catalog
 from .general_config import LOGGER, enriched_glob, iqvia_nsa_glob, mariadb_connect
 from .general_utils import iqvia_source_priority, normalise_iqvia_channel, normalize_period_label, safe_float
 from ..iqvia_numeric import numeric_or_comma_string_to_double_sql
+from ..iqvia_scope import normalize_iqvia_atc4_codes, normalize_iqvia_quarters
 
-def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
+
+_RAW_ATC4_EXPR = (
+    "UPPER(TRIM(COALESCE("
+    "JSON_UNQUOTE(JSON_EXTRACT(payload, '$.static.\"ATC 4 CODE\"')), "
+    "'UNKNOWN')))"
+)
+
+
+def _raw_table_name() -> str:
+    source_database = os.environ.get("MARIADB_SOURCE_DATABASE")
+    return (
+        f"`{source_database.replace('`', '``')}`.iqvia_nsa_quarterly_raw"
+        if source_database
+        else "iqvia_nsa_quarterly_raw"
+    )
+
+
+def _raw_scope_sql(
+    quarters: tuple[str, ...],
+    atc4_codes: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]]:
+    clauses: list[str] = []
+    parameters: list[str] = []
+    if quarters:
+        clauses.append(f"period_label IN ({', '.join(['%s'] * len(quarters))})")
+        parameters.extend(quarter.replace("-", "") for quarter in quarters)
+    if atc4_codes:
+        clauses.append(f"{_RAW_ATC4_EXPR} IN ({', '.join(['%s'] * len(atc4_codes))})")
+        parameters.extend(atc4_codes)
+    return (f" WHERE {' AND '.join(clauses)}" if clauses else "", tuple(parameters))
+
+
+def _duckdb_values(values: tuple[str, ...]) -> str:
+    return ", ".join("'" + value.replace("'", "''") + "'" for value in values)
+
+
+def _enriched_scope_sql(
+    quarters: tuple[str, ...],
+    atc4_codes: tuple[str, ...],
+) -> tuple[str, str]:
+    enriched_clauses: list[str] = []
+    canonical_clauses: list[str] = []
+    if quarters:
+        values = _duckdb_values(quarters)
+        enriched_clauses.append(f"period_yyyymm IN ({values})")
+        canonical_clauses.append(f"n.period_label IN ({values})")
+    if atc4_codes:
+        canonical_clauses.append(
+            f"UPPER(COALESCE(n.atc4_code, 'UNKNOWN')) IN ({_duckdb_values(atc4_codes)})"
+        )
+    enriched_sql = "".join(f" AND {clause}" for clause in enriched_clauses)
+    canonical_sql = (
+        f"WHERE {' AND '.join(canonical_clauses)}" if canonical_clauses else ""
+    )
+    return enriched_sql, canonical_sql
+
+
+def load_iqvia_base_frame(
+    max_rows: int | None = None,
+    *,
+    quarters: Iterable[str] | None = None,
+    atc4_codes: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    quarter_scope = normalize_iqvia_quarters(quarters)
+    atc4_scope = normalize_iqvia_atc4_codes(atc4_codes)
     if os.environ.get("S4_INPUT_MODE", "raw") != "enriched":
         limit = f" LIMIT {int(max_rows)}" if max_rows else ""
-        LOGGER.info("[iqvia_nsa] fetching raw rows%s", f" limit={max_rows}" if max_rows else "")
-        source_database = os.environ.get("MARIADB_SOURCE_DATABASE")
-        raw_table = (
-            f"`{source_database.replace('`', '``')}`.iqvia_nsa_quarterly_raw"
-            if source_database
-            else "iqvia_nsa_quarterly_raw"
+        where, parameters = _raw_scope_sql(quarter_scope, atc4_scope)
+        LOGGER.info(
+            "[iqvia_nsa] fetching raw rows%s quarters=%s atc4=%s",
+            f" limit={max_rows}" if max_rows else "",
+            quarter_scope or "all",
+            atc4_scope or "all",
         )
         conn = mariadb_connect()
         try:
             with conn.cursor() as cur:
-                cur.execute(
+                query = (
                     "SELECT id, source_file, source_row_no, audit_code, mfr_name, period_label, payload "
-                    f"FROM {raw_table}{limit}"
+                    f"FROM {_raw_table_name()}{where}{limit}"
                 )
+                if parameters:
+                    cur.execute(query, parameters)
+                else:
+                    cur.execute(query)
                 rows = cur.fetchall()
         finally:
             conn.close()
@@ -111,7 +181,15 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
         return frame
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
-    LOGGER.info("[iqvia_nsa] aggregating Layer 2 enriched parquet")
+    LOGGER.info(
+        "[iqvia_nsa] aggregating Layer 2 enriched parquet quarters=%s atc4=%s",
+        quarter_scope or "all",
+        atc4_scope or "all",
+    )
+    enriched_scope, canonical_scope = _enriched_scope_sql(
+        quarter_scope,
+        atc4_scope,
+    )
     values_lc = numeric_or_comma_string_to_double_sql("n.values_lc")
     units = numeric_or_comma_string_to_double_sql("n.units")
     dosage_units = numeric_or_comma_string_to_double_sql("n.dosage_units")
@@ -126,6 +204,7 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
             split_part(source_row_id, '::', 6) AS period_label_key
           FROM read_parquet('{enriched_glob()}', union_by_name=true, hive_partitioning=true)
           WHERE source='nsa' AND (TRY_CAST(raw_rx_amt AS DOUBLE) > 0 OR TRY_CAST(raw_rx_cnt AS DOUBLE) > 0 OR TRY_CAST(raw_rx_qty AS DOUBLE) > 0)
+          {enriched_scope}
           {limit}
         )
         SELECT
@@ -162,6 +241,7 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
          AND n.source_row_no = e.source_row_no_key
          AND n.audit_code = e.audit_code_key
          AND n.period_label = e.period_label_key
+        {canonical_scope}
         GROUP BY 1,2,3,4,5,6,7,8
     """
     con = duckdb.connect()
@@ -187,6 +267,69 @@ def load_iqvia_base_frame(max_rows: int | None = None) -> pd.DataFrame:
     frame["atc4_code"] = frame.apply(lambda row: best_name(row.get("atc4_code"), row.get("catalog_atc4_code"), "UNKNOWN"), axis=1)
     frame["atc4_desc"] = frame["atc4_desc"].where(frame["atc4_desc"].notna(), None)
     return frame
+
+
+def _available_iqvia_atc4_codes(quarters: tuple[str, ...]) -> tuple[str, ...]:
+    if os.environ.get("S4_INPUT_MODE", "raw") != "enriched":
+        where, parameters = _raw_scope_sql(quarters, ())
+        conn = mariadb_connect()
+        try:
+            with conn.cursor() as cur:
+                query = (
+                    f"SELECT DISTINCT {_RAW_ATC4_EXPR} AS atc4_code "
+                    f"FROM {_raw_table_name()}{where} ORDER BY atc4_code"
+                )
+                if parameters:
+                    cur.execute(query, parameters)
+                else:
+                    cur.execute(query)
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        return tuple(
+            sorted(
+                {
+                    str(row.get("atc4_code") or "UNKNOWN").strip().upper()
+                    for row in rows
+                }
+            )
+        )
+
+    where = (
+        f"WHERE period_label IN ({_duckdb_values(quarters)})" if quarters else ""
+    )
+    query = f"""
+        SELECT DISTINCT UPPER(COALESCE(atc4_code, 'UNKNOWN')) AS atc4_code
+        FROM read_parquet('{iqvia_nsa_glob()}', union_by_name=true)
+        {where}
+        ORDER BY atc4_code
+    """
+    con = duckdb.connect()
+    try:
+        rows = con.execute(query).fetchall()
+    finally:
+        con.close()
+    return tuple(str(row[0] or "UNKNOWN").strip().upper() for row in rows)
+
+
+def iter_iqvia_base_frames(
+    *,
+    quarters: Iterable[str] | None = None,
+    atc4_codes: Iterable[str] | None = None,
+    max_rows: int | None = None,
+) -> Iterator[tuple[str, pd.DataFrame]]:
+    """Yield one IQVIA ATC4 frame at a time without loading the full source."""
+    quarter_scope = normalize_iqvia_quarters(quarters)
+    requested_atc4 = normalize_iqvia_atc4_codes(atc4_codes)
+    available_atc4 = requested_atc4 or _available_iqvia_atc4_codes(quarter_scope)
+    for atc4_code in available_atc4:
+        frame = load_iqvia_base_frame(
+            max_rows=max_rows,
+            quarters=quarter_scope,
+            atc4_codes=(atc4_code,),
+        )
+        if not frame.empty:
+            yield atc4_code, frame
 
 def iqvia_measure_frame(base: pd.DataFrame, measure: str) -> pd.DataFrame:
     frame = base.copy()
