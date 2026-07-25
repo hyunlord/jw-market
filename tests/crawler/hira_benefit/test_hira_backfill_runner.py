@@ -101,6 +101,60 @@ def test_runner_executes_chunks_strictly_sequentially_and_accumulates_status(
     assert progress.failed_count == 3
 
 
+def test_approved_ten_chunk_population_never_runs_in_parallel(
+    tmp_path: Path,
+) -> None:
+    manifest = build_backfill_manifest(_items(4_577), chunk_size=500)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(manifest.to_json(), encoding="utf-8")
+    base_config = replace(
+        _base_config(tmp_path, manifest_path),
+        manifest_sha256=manifest.manifest_sha256,
+    )
+    active = 0
+    maximum_active = 0
+    observed: list[int] = []
+
+    async def execute(
+        config: HiraWorkflowInput,
+        _workflow_id: str,
+    ) -> dict[str, object]:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        observed.append(config.chunk_index)
+        await asyncio.sleep(0)
+        active -= 1
+        return {
+            "status": "complete",
+            "stages": [
+                {
+                    "stage": "collect_details",
+                    "status": "complete",
+                    "parsed_count": (
+                        77 if config.chunk_index == 9 else 500
+                    ),
+                    "partial_count": 0,
+                    "failed_count": 0,
+                }
+            ],
+        }
+
+    progress = asyncio.run(
+        run_backfill_sequentially(
+            manifest=manifest,
+            base_config=base_config,
+            progress_path=tmp_path / "progress.json",
+            execute=execute,
+        )
+    )
+
+    assert observed == list(range(10))
+    assert maximum_active == 1
+    assert progress.completed_chunk_indexes == tuple(range(10))
+    assert progress.parsed_count == 4_577
+
+
 def test_runner_resumes_from_first_incomplete_chunk_after_failure(tmp_path: Path) -> None:
     manifest = build_backfill_manifest(_items(1_077), chunk_size=500)
     manifest_path = tmp_path / "manifest.json"
