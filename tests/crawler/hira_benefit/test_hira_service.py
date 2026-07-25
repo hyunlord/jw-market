@@ -9,6 +9,7 @@ from pipeline.scripts.crawler.hira_benefit.models import NoticeListItem
 from pipeline.scripts.crawler.hira_benefit.service import (
     collect_details,
     discover_changes,
+    plan_discovered_items,
     tag_sequence_signature,
 )
 
@@ -51,3 +52,24 @@ def test_collect_details_keeps_failed_parse_as_raw_fallback() -> None:
     assert rows[0].brand_names == ("리바로",)
     assert metrics.failures == 0
     assert metrics.failed_count == 1
+
+
+def test_full_population_plan_is_not_rejected_by_old_500_row_limit() -> None:
+    items = tuple(
+        NoticeListItem.create(
+            source_notice_id=str(index),
+            title=f"notice {index}",
+            notice_date=date(2026, 7, 25),
+            source_url=f"https://www.hira.or.kr/detail?brdBltNo={index}",
+        )
+        for index in range(501)
+    )
+    config = HiraWorkflowInput(
+        run_id="run",
+        state_root="/tmp/state",
+        first_run_mode="backfill_all",
+    )
+
+    plan = plan_discovered_items(items, config=config, stored=None)
+
+    assert len(plan.to_fetch) == 501

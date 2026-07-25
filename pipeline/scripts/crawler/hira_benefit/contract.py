@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
+
+from .http_client import HiraRequestPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +40,13 @@ class HiraWorkflowInput:
     base_url: str = "https://www.hira.or.kr"
     first_run_mode: str | None = None
     recent_limit: int | None = None
-    max_notices: int = 500
+    manifest_path: str | None = None
+    manifest_sha256: str | None = None
+    chunk_index: int | None = None
+    chunk_size: int = 500
     failed_alert_ratio: float | None = None
     failed_alert_window_runs: int = 3
-    request_delay_seconds: float = 0.50
+    request_policy: HiraRequestPolicy = field(default_factory=HiraRequestPolicy)
     workflow_timeout_seconds: int = 3600
 
     def __post_init__(self) -> None:
@@ -55,8 +60,15 @@ class HiraWorkflowInput:
             self.recent_limit is None or self.recent_limit <= 0
         ):
             raise ValueError("recent_limit must be positive for recent_n")
-        if self.max_notices <= 0:
-            raise ValueError("max_notices must be positive")
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        if self.manifest_path is not None:
+            if self.manifest_sha256 is None or len(self.manifest_sha256) != 64:
+                raise ValueError("manifest_sha256 is required for a backfill chunk")
+            if self.chunk_index is None or self.chunk_index < 0:
+                raise ValueError("chunk_index is required for a backfill chunk")
+        elif self.manifest_sha256 is not None or self.chunk_index is not None:
+            raise ValueError("manifest_path is required with chunk identity")
         if self.failed_alert_ratio is not None and not 0.0 <= self.failed_alert_ratio <= 1.0:
             raise ValueError("failed_alert_ratio must be between 0 and 1")
         if self.failed_alert_window_runs <= 0:
@@ -66,8 +78,12 @@ class HiraWorkflowInput:
 
     @property
     def expected_seconds(self) -> int:
-        selected = min(self.max_notices, self.recent_limit or self.max_notices)
-        return max(60, int(selected * (self.request_delay_seconds + 0.20)))
+        selected = self.recent_limit or self.chunk_size
+        request_seconds = (
+            self.request_policy.delay_after_response_seconds
+            + 0.20
+        )
+        return max(60, int(selected * request_seconds))
 
 
 @dataclass(frozen=True, slots=True)
