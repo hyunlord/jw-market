@@ -19,10 +19,11 @@ from typing import Literal
 
 from pymysql.connections import Connection
 
+from pipeline.contracts.serving_tables import STRATEGIC_FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.general_config import mariadb_connect
 
 
-STRATEGIC_DIMENSION_TABLE = "mart_strategic_filter_dimension_metric"
+STRATEGIC_DIMENSION_TABLE = STRATEGIC_FILTER_DIMENSION_TABLE
 LOAD_BATCH_SIZE = 200
 EMPTY_DIMENSION_VALUES = {"", "nan", "none", "null", "<na>", "n/a", "na", "-"}
 UBIST_DIMENSION_FIELDS: dict[str, tuple[str, ...]] = {

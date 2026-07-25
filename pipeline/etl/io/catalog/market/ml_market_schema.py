@@ -19,8 +19,6 @@ DEFAULT_OUTPUT_FILE = Path("parquet/ml_market/ml_market.parquet")
 # ml_market parquet가 4/22이면 원인분석/시장현황이 다른 시장정의를 보게 되어
 # 기각한다.
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
-EXPECTED_ML_IDS = tuple(f"ml_{index:03d}" for index in range(1, 17))
 EXPECTED_DATA_SOURCE_COUNTS = expected_mapping("ml_market.data_source_counts")
 EXPECTED_STRATEGY_005_SOURCE = "ubist"
 
@@ -187,6 +185,10 @@ ANALYZE_MATRIX: dict[str, dict[str, bool]] = {
         "fish_oil": False,
     },
 }
+EXPECTED_ML_IDS = tuple(ANALYZE_MATRIX)
+EXPECTED_MARKET_IDS = tuple(
+    f"strategy_{ml_id.removeprefix('ml_')}" for ml_id in EXPECTED_ML_IDS
+)
 ML_MARKET_COLUMNS = (
     "ml_id",
     "name",

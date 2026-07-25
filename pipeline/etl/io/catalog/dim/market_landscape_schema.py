@@ -9,9 +9,9 @@ DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_market_landscape/dim_market_landscape.parquet")
 
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
 EXPECTED_ROW_COUNT = expected_int("dim_market_landscape.row_count")
 EXPECTED_MARKET_COUNTS = expected_mapping("dim_market_landscape.market_counts")
+EXPECTED_MARKET_IDS = tuple(EXPECTED_MARKET_COUNTS)
 DEFAULT_SHEET_ALL_MARKETS = {"strategy_005", "strategy_011"}
 EXPECTED_TOTAL_MASTER_DRUG_ROWS = expected_int("dim_market_landscape.total_master_drug_rows")
 

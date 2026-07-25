@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Final, Mapping
 
-from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
+from pipeline.domain.molecules import split_molecule_components
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta, JsonMap, text

@@ -104,8 +104,8 @@ def validate_records(
     stats = summary["stats"]
     included_counts = dict(sorted(stats.get("sheet_included_rows", stats["included_rows"]).items()))
     expected_by_smid = {
-        f"strategy_{index:03d}": EXPECTED_ML_COUNTS[f"ml_{index:03d}"]
-        for index in range(1, 17)
+        f"strategy_{ml_id.removeprefix('ml_')}": expected
+        for ml_id, expected in EXPECTED_ML_COUNTS.items()
     }
     if included_counts != expected_by_smid:
         raise ValueError(f"market row distribution mismatch: expected={expected_by_smid}, actual={included_counts}")

@@ -11,8 +11,10 @@ import math
 import re
 from typing import Any
 
-from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
-from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
+from pipeline.contracts.serving_tables import (
+    GENERAL_FILTER_DIMENSION_TABLE as FILTER_DIMENSION_TABLE,
+    STRATEGIC_FILTER_DIMENSION_TABLE as STRATEGIC_DIMENSION_TABLE,
+)
 from pipeline.scripts.api import db
 from pipeline.scripts.api.competitor_ranking import MAX_COMPETITOR_COUNT, CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.dynamic_market.channel_axis import (

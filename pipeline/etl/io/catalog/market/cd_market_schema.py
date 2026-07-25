@@ -19,7 +19,6 @@ DEFAULT_OUTPUT_FILE = Path("parquet/cd_market/cd_market.parquet")
 # 묶기 위한 checkpoint다. 파일명 mismatch를 조용히 통과시키는 대안은 운영
 # smoke에서 CD tooltip/시장정의 원인을 역추적하기 어렵게 하므로 기각했다.
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-EXPECTED_CD_IDS = tuple(f"cd_{index:03d}" for index in range(1, 20))
 EXPECTED_ROW_COUNT = expected_int("cd_market.row_count")
 EXPECTED_DATA_SOURCE_COUNTS = expected_mapping("cd_market.data_source_counts")
 COLLAPSE_PAIR_CD_ID = "cd_015"
@@ -106,6 +105,7 @@ CD_SPECS: tuple[dict[str, Any], ...] = (
     {"cd_id": "cd_018", "name": "위너프 위너프에이플러스", "ml_id": "ml_014", "cd_filter_id": "cdf_018", "strategic_market_id": "strategy_014", "column_ids": (21,)},
     {"cd_id": "cd_019", "name": "플라주오피", "ml_id": "ml_016", "cd_filter_id": "cdf_019", "strategic_market_id": "strategy_016", "column_ids": (22,)},
 )
+EXPECTED_CD_IDS = tuple(str(spec["cd_id"]) for spec in CD_SPECS)
 
 import unicodedata
 from collections import Counter

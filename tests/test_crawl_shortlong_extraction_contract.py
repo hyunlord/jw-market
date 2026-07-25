@@ -11,7 +11,10 @@ PROTECTED_BLOB_SHA256 = {
     "pipeline/scripts/agent3/repository.py": "83af919e96eac24b372fa500c7fdb920b1e23e9abfb91352134bc98305fec858",
     "pipeline/scripts/agent3/run_source.py": "be4dcaf7cffb77cdcb0898970597a76d12349822ecdf3ff4aebd633aa794c376",
     "pipeline/scripts/agent3/strength_candidate_extractor.py": "67773b5947f4eb36b79c85edb421a9c1002d413450dbb001f842b91f2c8cb271",
-    "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "48eec25ef65943c1cd1ff8213c635f9dece3051a87033710f359aa389b26ed0c",
+    # Repinned 2026-07-25: dimension aliases and brand normalization now come
+    # from shared contract/domain modules; the runtime filtering behavior is
+    # byte-locked against the previous implementation by the registry contract.
+    "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "366a9a706bc06d6cbaa31284f9be2eb42ec9ea0a9013675047fa85e9dab4e764",
     "pipeline/scripts/api/main.py": "5ada140bfdf2213a23dfbf885be70257cd185518f714876cf314933c9c401272",
     "pipeline/scripts/api/market_definition_display.py": "36cd88d6b0ada9718ddf959f2b8172c0443fb52843ebca64ca8340e1b6bbd269",
     # Repinned 2026-07-22: brand-activity topics company_name openapi description updated to

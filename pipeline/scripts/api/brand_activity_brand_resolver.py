@@ -4,8 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
-from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
-from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
+from pipeline.contracts.serving_tables import GENERAL_FILTER_DIMENSION_TABLE as FILTER_DIMENSION_TABLE
+from pipeline.domain.molecules import split_molecule_components
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_channel_axis import (

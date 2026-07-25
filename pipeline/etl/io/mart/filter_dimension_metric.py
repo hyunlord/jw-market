@@ -12,18 +12,25 @@ general mart.
 """
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 import math
 from typing import TYPE_CHECKING, Any
-import re
 
+from pipeline.contracts.dimension_registry import (
+    DIMENSION_REGISTRY,
+    EMPTY_DIMENSION_VALUES,
+    DimensionSpec,
+    enabled_dimension_specs,
+    normalize_dimension_value,
+    normalize_spec_value,
+)
+from pipeline.contracts.serving_tables import GENERAL_FILTER_DIMENSION_TABLE
 from .general_config import MEASURES_BY_SOURCE
 
 if TYPE_CHECKING:
     import pandas as pd
 
 
-FILTER_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
+FILTER_DIMENSION_TABLE = GENERAL_FILTER_DIMENSION_TABLE
 DIMENSION_STAGE_PREFIX = "jw_mart_dim_stage_"
 REHEARSAL_STAGE_PREFIX = "jw_mart_rehearsal_"
 LOCAL_SERVING_TARGET = "jw_mart"
@@ -34,161 +41,9 @@ BLOCKED_DIMENSION_TARGETS = frozenset(
         "jw_mart_d1_stage_20260625_173115",
     }
 )
-EMPTY_DIMENSION_VALUES = frozenset({"", "-", "<na>", "n/a", "na", "nan", "none", "null", "미상", "해당없음"})
 PERIOD_COMPLETE_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "ubist": ("seller", "molecule", "molecule_strength", "form", "route", "reimbursement"),
 }
-
-
-@dataclass(frozen=True, slots=True)
-class DimensionSpec:
-    dimension_type: str
-    display_name: str
-    source_columns: tuple[str, ...]
-    enabled: bool
-    source: str
-    notes: str
-
-
-DIMENSION_REGISTRY: dict[str, dict[str, DimensionSpec]] = {
-    "ubist": {
-        "atc3": DimensionSpec(
-            dimension_type="atc3",
-            display_name="ATC3",
-            source_columns=("atc4_code",),
-            enabled=True,
-            source="ubist",
-            notes="ATC4 코드의 4자리 prefix로 생성하는 UBIST ATC3 narrowing 축.",
-        ),
-        "atc4": DimensionSpec(
-            dimension_type="atc4",
-            display_name="ATC4",
-            source_columns=("atc4_code",),
-            enabled=True,
-            source="ubist",
-            notes="전략뷰/일반뷰 공통 ATC4 narrowing 축. mart atc4_code와 직접 정합한다.",
-        ),
-        "seller": DimensionSpec(
-            dimension_type="seller",
-            display_name="판매사",
-            source_columns=("company", "manufacturer"),
-            enabled=True,
-            source="ubist",
-            notes="판매사를 우선하고 비어 있으면 제조사를 사용한다.",
-        ),
-        "molecule": DimensionSpec(
-            dimension_type="molecule",
-            display_name="성분",
-            source_columns=("ubist_molecule_raw",),
-            enabled=True,
-            source="ubist",
-            notes="원천 molecule 값을 분해하지 않고 양끝 공백만 제거해 하나의 성분 값으로 보존한다.",
-        ),
-        "molecule_strength": DimensionSpec(
-            dimension_type="molecule_strength",
-            display_name="성분용량",
-            source_columns=("ubist_molecule_strength",),
-            enabled=True,
-            source="ubist",
-            notes="성분 자체는 제외하지만 용량 축은 분석레벨로 유지한다.",
-        ),
-        "form": DimensionSpec(
-            dimension_type="form",
-            display_name="제형",
-            source_columns=("ubist_form",),
-            enabled=True,
-            source="ubist",
-            notes="제품 단위 제형 필터. brand-level row에 넣으면 과대 포함된다.",
-        ),
-        "route": DimensionSpec(
-            dimension_type="route",
-            display_name="투여경로",
-            source_columns=("ubist_route",),
-            enabled=True,
-            source="ubist",
-            notes="제품 단위 투여경로 필터.",
-        ),
-        "reimbursement": DimensionSpec(
-            dimension_type="reimbursement",
-            display_name="급여구분",
-            source_columns=("ubist_reimbursement",),
-            enabled=True,
-            source="ubist",
-            notes="제품 단위 급여구분 필터.",
-        ),
-    },
-    "iqvia_nsa": {
-        "mfr": DimensionSpec(
-            dimension_type="mfr",
-            display_name="MFR NAME KOR",
-            source_columns=("company", "manufacturer"),
-            enabled=True,
-            source="iqvia_nsa",
-            notes="IQVIA 판매사 축. MFR NAME KOR를 우선하고 row-level mfr_name을 fallback으로 둔다.",
-        ),
-        "molecule_desc": DimensionSpec(
-            dimension_type="molecule_desc",
-            display_name="MOLECULE DESC",
-            source_columns=("molecule_desc", "molecule"),
-            enabled=True,
-            source="iqvia_nsa",
-            notes="IQVIA 성분 축. MOLECULE DESC 원본 값을 그대로 노출한다.",
-        ),
-        "molecule_type": DimensionSpec(
-            dimension_type="molecule_type",
-            display_name="MOLECULE TYPE",
-            source_columns=("molecule_type",),
-            enabled=True,
-            source="iqvia_nsa",
-            notes="IQVIA 고유 분석레벨. 기존 dimension_data에 없어서 raw static에서 별도 추출한다.",
-        ),
-        "pack": DimensionSpec(
-            dimension_type="pack",
-            display_name="PACK DESC",
-            source_columns=("pack_desc",),
-            enabled=True,
-            source="iqvia_nsa",
-            notes="PL 결정으로 IQVIA 일반뷰 PACK DESC 분석레벨 필터를 활성화한다.",
-        ),
-        "strength": DimensionSpec(
-            dimension_type="strength",
-            display_name="STRENGTH",
-            source_columns=("strength",),
-            enabled=True,
-            source="iqvia_nsa",
-            notes="제품 단위 성분용량 필터. PACK DESC fallback을 쓰지 않아 제외 정책을 지킨다.",
-        ),
-        "nhi": DimensionSpec(
-            dimension_type="nhi",
-            display_name="NHI TYPE",
-            source_columns=("nhi_type",),
-            enabled=True,
-            source="iqvia_nsa",
-            notes="제품 단위 급여구분 필터.",
-        ),
-    },
-}
-
-
-def enabled_dimension_specs(source: str) -> tuple[DimensionSpec, ...]:
-    registry = DIMENSION_REGISTRY.get(source)
-    if registry is None:
-        raise ValueError(f"unsupported dimension source: {source}")
-    return tuple(spec for spec in registry.values() if spec.enabled)
-
-
-def normalize_dimension_value(value: object) -> str | None:
-    if value is None:
-        return None
-    try:
-        if value != value:
-            return None
-    except TypeError:
-        pass
-    normalized = re.sub(r"\s+", " ", str(value)).strip()
-    if normalized.lower() in EMPTY_DIMENSION_VALUES:
-        return None
-    return normalized
 
 
 def build_filter_dimension_rows(
@@ -222,7 +77,7 @@ def build_filter_dimension_rows(
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
         working[label_col] = _dimension_display_series(working, spec)
-        working[norm_col] = working[label_col].map(lambda value: _normalize_spec_value(value, spec))
+        working[norm_col] = working[label_col].map(lambda value: normalize_spec_value(value, spec))
         dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
             continue
@@ -401,25 +256,11 @@ def _dimension_display_series(frame: pd.DataFrame, spec: DimensionSpec) -> pd.Se
     for column in spec.source_columns:
         if column not in frame:
             continue
-        values = frame[column].map(lambda value: _normalize_spec_value(value, spec))
+        values = frame[column].map(lambda value: normalize_spec_value(value, spec))
         if spec.dimension_type == "atc3":
             values = values.map(_atc3_from_atc4)
         result = result.where(result.notna(), values)
     return result
-
-
-def _normalize_spec_value(value: object, spec: DimensionSpec) -> str | None:
-    if spec.source == "ubist" and spec.dimension_type == "molecule":
-        if value is None:
-            return None
-        try:
-            if value != value:
-                return None
-        except TypeError:
-            pass
-        trimmed = str(value).strip()
-        return None if trimmed.lower() in EMPTY_DIMENSION_VALUES else trimmed
-    return normalize_dimension_value(value)
 
 
 def _atc3_from_atc4(value: str | None) -> str | None:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Final, Mapping
 
-from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_value
-from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
+from pipeline.contracts.dimension_registry import api_dimension_names, normalize_dimension_value
+from pipeline.domain.molecules import split_molecule_components
 from pipeline.scripts.api.brand_activity_channel_axis import audit_code_axis_echo, parse_audit_code_axis
 from pipeline.scripts.api.brand_activity_csd_shared import JsonMap, text
 
@@ -13,14 +13,7 @@ FILTER_DIMENSIONS_BY_VIEW: Final[dict[str, tuple[str, ...]]] = {
     "strategic_ml": ("atc4", "molecule", "class"),
     "strategic_cd": ("atc4", "molecule", "class"),
 }
-IQVIA_ANALYSIS_LEVEL_DIMENSIONS: Final[dict[str, str]] = {
-    "mfr_name_kor": "mfr",
-    "molecule_type": "molecule_type",
-    "molecule_desc": "molecule_desc",
-    "pack_desc": "pack",
-    "strength": "strength",
-    "nhi_type": "nhi",
-}
+IQVIA_ANALYSIS_LEVEL_DIMENSIONS: Final = api_dimension_names("iqvia_nsa")
 
 
 def applied_brand_filter(view_name: str, market_id: str, filter_payload: Mapping[str, Any]) -> JsonMap:
