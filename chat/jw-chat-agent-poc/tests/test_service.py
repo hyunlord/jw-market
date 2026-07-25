@@ -703,7 +703,7 @@ def test_direct_agent_loop_shadow_attaches_regulatory_typed_stop_prs(monkeypatch
     decision = diagnostics["proposed_routing_signature"]["routing_decision"]
     assert diagnostics["shadow_status"] == "ok"
     assert decision == {
-        "source_domain": "regulatory",
+        "source_domain": "hira",
         "domain_decision_source": "INTENT_OWNER",
         "capability_status": "SUPPORTED",
         "tool_selection_source": "DETERMINISTIC_SINGLETON",

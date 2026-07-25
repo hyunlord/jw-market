@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 import json
 import threading
@@ -30,6 +31,10 @@ from jw_chat_agent_poc.tool_use.specs import ToolSpec
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
+from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    HiraReimbursementHttpClient,
+    ReimbursementCriterion,
+)
 from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
 
 
@@ -633,13 +638,23 @@ def test_nedrug_composition_forces_contract_backed_tool_in_off_mode() -> None:
     "question",
     (
         "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
-        "NeDrug: 아일리아 제품의 효능 효과, 용병 용량, 사용상 주의사항을 알려줘",
         "Eylea 급여기준 알려줘",
         "Aflibercept 급여기준 알려줘",
     ),
 )
-def test_nedrug_permission_fields_force_contract_backed_tool_in_off_mode(question: str) -> None:
+def test_reimbursement_questions_force_hira_criteria_tool_in_off_mode(question: str) -> None:
     choices = _deterministic_tool_choices(question, BrandResolver())
+
+    assert [(choice.name, choice.arguments) for choice in choices] == [
+        ("hira_reimbursement_criteria", {"brand": "아일리아"}),
+    ]
+
+
+def test_nedrug_permission_fields_force_contract_backed_tool_in_off_mode() -> None:
+    choices = _deterministic_tool_choices(
+        "NeDrug: 아일리아 제품의 효능 효과, 용병 용량, 사용상 주의사항을 알려줘",
+        BrandResolver(),
+    )
 
     assert [(choice.name, choice.arguments) for choice in choices] == [
         ("mfds_permission_search", {"brand": "아일리아"}),
@@ -652,11 +667,57 @@ def test_nedrug_permission_fields_force_contract_backed_tool_in_off_mode(questio
         "아일리아의 급여기준에 대해서 적응증 별로 설명해줘",
         "Eylea 급여기준 알려줘",
         "Aflibercept 급여기준 알려줘",
+    ),
+)
+def test_forced_legacy_reimbursement_question_uses_hira_without_mart_text(
+    monkeypatch,
+    question: str,
+) -> None:
+    def reimbursement_fetch(
+        _client: HiraReimbursementHttpClient,
+        brand: str,
+    ) -> ReimbursementCriterion:
+        assert brand == "아일리아"
+        return ReimbursementCriterion(
+            brand_name=brand,
+            title="항혈관내피성장인자 주사제 급여기준",
+            criterion_text="신생혈관성 연령관련 황반변성 투여기준",
+            source_date="2026-06-24",
+            collected_at=datetime(2026, 7, 25, tzinfo=UTC),
+            notice_number="보건복지부 고시 제2026-120호",
+            source_url="https://www.hira.or.kr/criteria/eylea",
+        )
+
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "OFF")
+    monkeypatch.setenv("CHAT_EXTERNAL_TOOL_FORCE_CONTRACT_CALLS", "true")
+    monkeypatch.setattr(HiraReimbursementHttpClient, "fetch", reimbursement_fetch)
+
+    payload = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+
+    assert [call["tool"] for call in payload["tool_calls"]] == [
+        "hira_reimbursement_criteria"
+    ]
+    assert "신생혈관성 연령관련 황반변성 투여기준" in payload["answer"]
+    assert "mart" not in payload["answer"].casefold()
+    evidence = payload["markdown_response"]["evidence"]
+    assert evidence
+    assert _facts_returned(payload["markdown_response"])["evidence_count"] == len(evidence)
+    assert {fact["source_grade"] for fact in evidence} == {"AUTHORITATIVE"}
+    assert {fact["entity"] for fact in evidence} == {"아일리아"}
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
         "NeDrug: 아일리아 제품의 효능·효과, 용법·용량, 사용상 주의사항을 알려줘",
         "아일리아의 허가 품목명과 업체명을 공식 허가정보 기준으로 알려줘",
     ),
 )
-def test_forced_legacy_reimbursement_question_uses_nedrug_without_mart_text(
+def test_forced_legacy_permission_question_uses_nedrug_without_mart_text(
     monkeypatch,
     question: str,
 ) -> None:
@@ -936,7 +997,7 @@ def test_agent_executor_continues_when_completion_policy_requires_final_tool() -
     assert "provider_payload" not in result.answer
 
 
-def test_tool_catalog_has_descriptions_for_all_22_tools() -> None:
+def test_tool_catalog_has_descriptions_for_all_23_tools() -> None:
     # Given: the phase-1 external tool inventory.
     records = TOOL_DESCRIPTION_CATALOG
 
@@ -944,8 +1005,8 @@ def test_tool_catalog_has_descriptions_for_all_22_tools() -> None:
     descriptions = tuple(record.description.casefold() for record in records)
 
     # Then: every tool has explicit positive and negative guidance.
-    assert len(records) == 22
-    assert len({record.name for record in records}) == 22
+    assert len(records) == 23
+    assert len({record.name for record in records}) == 23
     assert all("when to use" in description for description in descriptions)
     assert all("when not" in description for description in descriptions)
 
@@ -969,7 +1030,7 @@ def test_registry_exposes_a_spec_for_every_cataloged_tool() -> None:
     specs = registry.list_for_query("외부 근거 조회")
 
     # Then: every cataloged tool is executable and names are identical.
-    assert len(specs) == 22
+    assert len(specs) == 23
     assert {spec.name for spec in specs} == {record.name for record in TOOL_DESCRIPTION_CATALOG}
 
 
@@ -982,7 +1043,12 @@ def test_mcp_specs_allow_the_client_timeout_to_finish() -> None:
     mcp_specs = tuple(
         spec
         for spec in registry.list_for_query("외부 근거 조회")
-        if spec.name not in {"local_molecule_lookup", "web_search"}
+        if spec.name
+        not in {
+            "hira_reimbursement_criteria",
+            "local_molecule_lookup",
+            "web_search",
+        }
     )
 
     # Then: the wrapper cannot preempt a structured MCP response at the same deadline.
@@ -1149,7 +1215,7 @@ def test_registry_forwards_mfds_clinical_condition_and_default_intervention() ->
     assert external.calls == [("고지혈증", "condition"), ("리바로", "intervention")]
 
 
-def test_fixture_tool_pack_executes_all_22_specs_with_evidence() -> None:
+def test_fixture_tool_pack_executes_all_23_specs_with_evidence(monkeypatch) -> None:
     # Given: schema-valid fixture inputs for every registered external tool.
     payloads: dict[str, dict[str, str]] = {
         "local_molecule_lookup": {"brand": "리바로"},
@@ -1170,11 +1236,26 @@ def test_fixture_tool_pack_executes_all_22_specs_with_evidence() -> None:
         "hira_disease_gender_age_stats": {"sick_cd": "E78"},
         "hira_disease_institution_class_stats": {"sick_cd": "E78"},
         "hira_disease_area_stats": {"sick_cd": "E78"},
+        "hira_reimbursement_criteria": {"brand": "아일리아"},
         "hira_procedure_gender_ipat_opat_stats": {"st5_cd": "MM302"},
         "hira_procedure_gender_age_stats": {"st5_cd": "MM302"},
         "hira_procedure_institution_class_stats": {"st5_cd": "MM302"},
         "hira_procedure_area_stats": {"st5_cd": "MM302"},
     }
+
+    monkeypatch.setattr(
+        HiraReimbursementHttpClient,
+        "fetch",
+        lambda _client, brand: ReimbursementCriterion(
+            brand_name=brand,
+            title="항혈관내피성장인자 주사제 급여기준",
+            criterion_text="신생혈관성 연령관련 황반변성 투여기준",
+            source_date="2026-06-24",
+            collected_at=datetime(2026, 7, 25, tzinfo=UTC),
+            notice_number="보건복지부 고시 제2026-120호",
+            source_url="https://www.hira.or.kr/criteria/eylea",
+        ),
+    )
     registry = ExternalToolRegistry(resolver=BrandResolver(), external=ExternalApiClient(mode="fixture"))
 
     # When: each ToolSpec executes through its declared input schema.

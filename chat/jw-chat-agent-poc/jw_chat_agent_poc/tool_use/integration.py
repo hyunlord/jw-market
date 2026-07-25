@@ -24,6 +24,9 @@ from jw_chat_agent_poc.tool_use.provider import (
     ToolChoiceProvider,
     configured_planner_max_tokens,
 )
+from jw_chat_agent_poc.tool_use.reimbursement_evidence import (
+    project_reimbursement_evidence,
+)
 from jw_chat_agent_poc.tool_use.clinical_disease import (
     clinical_disease_for_query,
     clinical_disease_for_text,
@@ -303,9 +306,18 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
     if (
         brand is None
         and classification.requested_capability
-        in {"MFDS_BASIC_PRODUCT_INFO", "MFDS_PERMISSION_DETAIL_FIELDS"}
+        in {
+            "HIRA_REIMBURSEMENT_CRITERIA",
+            "MFDS_BASIC_PRODUCT_INFO",
+            "MFDS_PERMISSION_DETAIL_FIELDS",
+        }
     ):
-        arguments = singleton_arguments("mfds_permission_search", question)
+        fallback_tool = (
+            "hira_reimbursement_criteria"
+            if classification.requested_capability == "HIRA_REIMBURSEMENT_CRITERIA"
+            else "mfds_permission_search"
+        )
+        arguments = singleton_arguments(fallback_tool, question)
         brand = str(arguments["brand"]) if arguments is not None else None
     ingredient = (
         resolution.molecule_en[0]
@@ -319,10 +331,15 @@ def _deterministic_tool_choices(question: str, resolver: BrandResolver) -> tuple
     combined_clinical_review = _is_combined_clinical_review(question, contract_key=contract_key)
     requested = list(CONTRACT_REQUIRED_TOOLS.get(contract_key, ())) if combined_clinical_review else []
     if classification.requested_capability in {
+        "HIRA_REIMBURSEMENT_CRITERIA",
         "MFDS_BASIC_PRODUCT_INFO",
         "MFDS_PERMISSION_DETAIL_FIELDS",
     }:
-        requested.append("mfds_permission_search")
+        requested.append(
+            "hira_reimbursement_criteria"
+            if classification.requested_capability == "HIRA_REIMBURSEMENT_CRITERIA"
+            else "mfds_permission_search"
+        )
     for requirement in tool_use_requirements(question):
         preferred = _preferred_requirement_tool(requirement.alternatives)
         if preferred is not None and preferred not in requested:
@@ -425,6 +442,7 @@ def _disclose_unconstructible_clinical_scopes(
 def _preferred_requirement_tool(alternatives: frozenset[str]) -> str | None:
     preference = (
         "mfds_composition",
+        "hira_reimbursement_criteria",
         "local_molecule_lookup",
         "clinicaltrials_study_details",
         "clinicaltrials_v2_search",
@@ -453,6 +471,7 @@ def _deterministic_arguments(
     if tool_name in {
         "local_molecule_lookup",
         "get_drug_main_ingredient",
+        "hira_reimbursement_criteria",
         "mfds_permission_search",
         "mfds_composition",
     }:
@@ -574,7 +593,10 @@ def _agent_result_payload(
             "markdown": result.answer,
             "fact_md": fact_md,
             "data_md": "",
-            "evidence": project_authoritative_external_evidence(result.tool_calls, fact_md),
+            "evidence": [
+                *project_authoritative_external_evidence(result.tool_calls, fact_md),
+                *project_reimbursement_evidence(result.tool_calls, fact_md),
+            ],
             "verification": {
                 "status": (
                     "pass"

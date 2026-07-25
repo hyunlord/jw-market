@@ -90,10 +90,11 @@ def classify_question(question: str) -> QuestionClassification:
         )
     if any(token in lowered for token in ("급여", "reimbursement")):
         return QuestionClassification(
-            source_domain="regulatory",
+            source_domain="hira",
             domain_decision_source=DomainDecisionSource.INTENT_OWNER,
-            requested_capability="MFDS_PERMISSION_DETAIL_FIELDS",
+            requested_capability="HIRA_REIMBURSEMENT_CRITERIA",
             input_key="product_name",
+            deterministic_rule_id="HIRA_REIMBURSEMENT_CRITERIA",
         )
     if asks_basic_permission_fields(lowered):
         return QuestionClassification(
