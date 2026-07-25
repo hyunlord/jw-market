@@ -4,8 +4,13 @@ from copy import deepcopy
 
 from jw_chat_agent_poc.common.source_display import TOOL_SOURCE_LABELS, TOOL_STEP_LABELS
 from jw_chat_agent_poc.common.timing import _emit_stage_event, _public_stage_name
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label
-from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
+from jw_chat_agent_poc.orchestrator.provenance_labels import (
+    provenance_source_block,
+    provenance_source_block_from_facts,
+)
+from jw_chat_agent_poc.service.answer_safety import append_deterministic_source_block
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 
 
@@ -77,3 +82,62 @@ def test_provenance_uses_tool_specific_source_without_changing_call_payload() ->
     assert "심사평가원(HIRA) 질병통계" in block
     assert "external" not in block
     assert calls == before
+
+
+def test_fact_based_provenance_maps_legacy_external_source_labels() -> None:
+    fact_md = """- D69.3: 환자수 = 3,620명 [건강보험심사평가원 통계]
+- 아일리아: 허가 품목 = 아일리아주사 [식약처 의약품 정보]
+- NCT05151731: 임상 디자인 = DME Study [ClinicalTrials.gov 임상시험 정보]
+"""
+
+    block = provenance_source_block_from_facts(fact_md)
+
+    assert "심사평가원(HIRA) 질병통계" in block
+    assert "식약처 의약품안전나라(NeDrug)" in block
+    assert "ClinicalTrials.gov" in block
+    assert "HIRA 질병정보서비스" not in block
+    assert "식약처 의약품 정보" not in block
+
+
+def test_exact_d693_final_fact_render_matches_call_based_source_label() -> None:
+    question = "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘"
+    calls = [
+        {
+            "tool": "get_disease_stats",
+            "source": "hira_disease",
+            "render_data": {
+                "facade_tool": "get_disease_stats",
+                "calls": [
+                    {
+                        "tool": "hira_disease_hospitalization_outpatient_stats",
+                        "source": "hira_disease",
+                        "render_data": {
+                            "request": {"sickCd": "D693", "year": "2024"},
+                            "mapping_sickCd": "D69.3",
+                            "mapping_disease_name": "특발성 혈소판감소성 자반",
+                            "items": [
+                                {
+                                    "inpatOpat": "전체",
+                                    "sickCd": "D69.3",
+                                    "sickNm": "특발성 혈소판감소성 자반",
+                                    "ptntCnt": 3620,
+                                    "year": "2024",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        }
+    ]
+    fact_md = answer_fact_markdown(calls, ["hira_disease"])
+
+    path_a = provenance_source_block(calls, ["hira_disease"])
+    final_answer = append_deterministic_source_block(
+        f"{question}\n\n2024년 환자수는 3,620명입니다.",
+        fact_md,
+    )
+
+    assert "심사평가원(HIRA) 질병통계" in path_a
+    assert "심사평가원(HIRA) 질병통계" in final_answer
+    assert "HIRA 질병정보서비스" not in final_answer

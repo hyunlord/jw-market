@@ -163,7 +163,7 @@ def normalized_row(
     unit: Any = MISSING_LABEL,
 ) -> ProvenanceRow:
     return ProvenanceRow(
-        source=public_value(source),
+        source=public_source(source),
         period=public_value(period),
         view=public_value(view),
         market=public_value(market),

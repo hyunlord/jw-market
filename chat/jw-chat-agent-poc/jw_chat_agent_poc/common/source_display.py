@@ -98,6 +98,14 @@ SOURCE_LABELS: Final[dict[str, str]] = {
     "strategic_market_not_member": "전략시장 정의 미포함",
 }
 
+LEGACY_SOURCE_LABELS: Final[dict[str, str]] = {
+    "HIRA 질병정보서비스": "심사평가원(HIRA) 질병통계",
+    "식약처 의약품 정보": "식약처 의약품안전나라(NeDrug)",
+    "식약처 의약품 허가 상세": "식약처 의약품안전나라(NeDrug)",
+    "ClinicalTrials.gov 임상시험 정보": "ClinicalTrials.gov",
+    "ClinicalTrials.gov 임상시험 상세": "ClinicalTrials.gov",
+}
+
 _MACHINE_IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(
     r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*"
 )
@@ -126,6 +134,13 @@ def public_source_label(source: str | None) -> str:
     label = SOURCE_LABELS.get(value)
     if label:
         return label
+    label = LEGACY_SOURCE_LABELS.get(value)
+    if label:
+        return label
+    legacy_source, separator, detail = value.partition(" · ")
+    label = LEGACY_SOURCE_LABELS.get(legacy_source)
+    if label and separator:
+        return f"{label}{separator}{detail}"
     if _MACHINE_IDENTIFIER_RE.fullmatch(value):
         return "외부 데이터 원천"
     return value
