@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 
 from openpyxl import load_workbook
+import pandas as pd
 import yaml
 
 from pipeline.etl.mi_master_registry import (
@@ -25,6 +26,7 @@ from pipeline.etl.io.catalog.dim.market_landscape_schema import (
     market_landscape_contract,
 )
 from pipeline.etl.io.catalog.postfix.rebuild_strategic import (
+    clean_strategic_brand,
     strategic_brand_contract,
 )
 from pipeline.etl.io.enrich import catalog as enrich_catalog
@@ -254,3 +256,29 @@ def test_gardlet_tirzepatide_is_present_and_reclassified_declaratively() -> None
         context={"sheet_name": "가드렛 가드메트"},
     )
     assert updated["class"] == "GLP-1RA"
+
+
+def test_gardlet_tirzepatide_placeholder_does_not_replace_korean_brand() -> None:
+    catalog = pd.DataFrame(
+        [
+            {
+                "ml_id": "ml_003",
+                "brand_id": "sb_003_00018",
+                "name": "TIRZEPATIDE",
+                "is_jw": False,
+                "is_target": False,
+            },
+            {
+                "ml_id": "ml_003",
+                "brand_id": "sb_003_atc4_00427",
+                "name": "마운자로",
+                "is_jw": False,
+                "is_target": False,
+            },
+        ]
+    )
+
+    cleaned, removed = clean_strategic_brand(catalog)
+
+    assert cleaned["name"].tolist() == ["마운자로"]
+    assert removed["name"].tolist() == ["TIRZEPATIDE"]

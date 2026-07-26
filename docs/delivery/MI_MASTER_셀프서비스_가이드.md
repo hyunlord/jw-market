@@ -95,8 +95,9 @@ PYTHONPATH=.:pipeline/scripts/etl python3 -m pytest -q \
 - 임시 신규 시장이 registry, catalog, API 목록에 모두 나타나는가
 - 제이클과 가드렛 API 응답이 기존 골든과 동일한가
 - 기존 일반뷰와 전략뷰 응답이 바뀌지 않았는가
-- 가드렛 TIRZEPATIDE 원천 행은 존재하고, 실제 제품 catalog 부재 사유가
-  raw 제품 미존재 정책과 일치하는가
+- 가드렛 TIRZEPATIDE 원천 행과 MOUNJARO 제품은 존재하며, 중복 영문
+  molecule placeholder만 제외되고 한국어 canonical 브랜드 `마운자로`가
+  유지되는가
 - 전체 `tests/` 회귀의 신규 실패가 0건인가
 
 ## 6. 담당 경계
