@@ -11,6 +11,7 @@ from typing import Any, Final
 from jw_chat_agent_poc.common.timing import Timing
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_text
+from jw_chat_agent_poc.orchestrator.provenance import project_hira_nedrug_binding_evidence
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
@@ -596,6 +597,7 @@ def _agent_result_payload(
             "evidence": [
                 *project_authoritative_external_evidence(result.tool_calls, fact_md),
                 *project_reimbursement_evidence(result.tool_calls, fact_md),
+                *project_hira_nedrug_binding_evidence(result.tool_calls, fact_md),
             ],
             "verification": {
                 "status": (
