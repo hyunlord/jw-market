@@ -104,6 +104,10 @@ from jw_chat_agent_poc.service.evidence_binding import (
     expected_market_ids_from_result,
     verify_claim_bindings,
 )
+from jw_chat_agent_poc.service.evidence_binding_observability import (
+    binding_pipeline_observability,
+    evidence_fact_input_inventory,
+)
 from jw_chat_agent_poc.service.context_scope import (
     ContextScope,
     file_reference_terms,
@@ -2653,12 +2657,24 @@ def _apply_relational_claim_gate(question: str, answer: str, result: dict[str, A
 
 
 def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, Any]) -> str:
+    facts = evidence_facts_from_result(result)
+    expected_entities = expected_entities_from_result(question, result)
+    expected_market_ids = expected_market_ids_from_result(result)
     gate = verify_claim_bindings(
         question=question,
         answer=answer,
-        facts=evidence_facts_from_result(result),
-        expected_entities=expected_entities_from_result(question, result),
-        expected_market_ids=expected_market_ids_from_result(result),
+        facts=facts,
+        expected_entities=expected_entities,
+        expected_market_ids=expected_market_ids,
+    )
+    observability = binding_pipeline_observability(
+        question=question,
+        answer=answer,
+        facts=facts,
+        expected_entities=expected_entities,
+        expected_market_ids=expected_market_ids,
+        gate=gate,
+        fact_input=evidence_fact_input_inventory(result, facts),
     )
     previous = result.get("_qa_claim_gate")
     previous_items = previous if isinstance(previous, dict) else {}
@@ -2696,6 +2712,8 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         result["_qa_claim_gate"]["rejections"] = tuple(
             item.to_trace() for item in gate.rejections
         )
+    if observability:
+        result["_qa_claim_gate"]["pipeline_observability"] = observability
     failure_kind = gate.failure_kind or str(previous_items.get("failure_kind") or "") or None
     if failure_kind:
         result["_qa_claim_gate"]["failure_kind"] = failure_kind

@@ -200,6 +200,9 @@ def _qa_trace(
     )
     if rejection_trace:
         claim_trace["rejections"] = rejection_trace
+    pipeline_observability = claim_items.get("pipeline_observability")
+    if isinstance(pipeline_observability, Mapping):
+        claim_trace["pipeline_observability"] = dict(pipeline_observability)
     qa_trace = {
         "request": {
             "request_id": trace_id,
