@@ -410,14 +410,31 @@ def test_stored_raw_text_extracts_only_structural_contraindication_labels() -> N
         "1) 기대 여명 1년 이하 2) 활동성 심내막염 "
         "라. 시설 기준 관련 기준을 충족해야 한다. 닫기"
     )
+    contraindications_without_terminal = parse_stored_raw_text(
+        "나. 금기증은 아래와 같으며, 요양급여를 인정하지 아니함 "
+        "1) 심장내 혈전 2) 활동성 심내막염 "
+        "다. 시설 기준 관련 기준을 충족해야 한다. 닫기"
+    )
 
     assert contraindicated_patients.exclusion_rule == (
         "가. 활동성 결핵 환자 나. 중증 심부전 환자"
     )
     assert contraindications.exclusion_rule == (
-        "은 아래와 같으며 요양급여를 인정하지 아니함. "
         "1) 기대 여명 1년 이하 2) 활동성 심내막염"
     )
+    assert contraindications_without_terminal.exclusion_rule == (
+        "1) 심장내 혈전 2) 활동성 심내막염"
+    )
+
+
+def test_stored_raw_text_rejects_ambiguous_generic_contraindication_heading() -> None:
+    parsed = parse_stored_raw_text(
+        "나. 금기증 활동성 감염 환자 "
+        "2. 사전ㆍ사후관리 별도 관리 기준을 적용한다. 닫기"
+    )
+
+    assert parsed.exclusion_rule is None
+    assert parsed.exclusion_status is FieldParseStatus.NOT_APPLICABLE
 
 
 def test_stored_raw_text_does_not_promote_free_prose_denials_to_exclusion() -> None:
