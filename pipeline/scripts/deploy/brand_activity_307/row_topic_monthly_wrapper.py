@@ -11,6 +11,7 @@ import pymysql
 
 
 SCHEMA = os.environ.get("ROW_TOPIC_SCHEMA", "jw_brand_activity_stage")
+HANDOFF_TABLE = "mart_brand_activity_assignment_handoff"
 DEFAULT_MAX_CALLS = int(os.environ.get("ROW_TOPIC_MAX_CALLS", "350"))
 GATE_MAX_CALLS = int(os.environ.get("ROW_TOPIC_GATE_MAX_CALLS", "5"))
 
@@ -44,21 +45,20 @@ def _connect() -> pymysql.connections.Connection:
     )
 
 
-def _latest_topic_set_version() -> str:
+def _pending_topic_set_versions() -> tuple[str, ...]:
+    """Return exact completed-axis receipts still requiring reconciliation."""
     sql = f"""
         SELECT run_id
-        FROM `{SCHEMA}`.`mart_brand_activity_topic_runs`
-        WHERE input_fingerprint IS NOT NULL AND input_fingerprint <> ''
-        ORDER BY created_at DESC, updated_at DESC
-        LIMIT 1
+        FROM `{SCHEMA}`.`{HANDOFF_TABLE}`
+        WHERE axis_status='complete'
+          AND assignment_status IN ('pending','running','gap')
+        ORDER BY created_at, run_id
     """
     with _connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql)
-            row = cursor.fetchone()
-    if not row:
-        raise RuntimeError("no topic run with input_fingerprint found")
-    return str(row["run_id"])
+            rows = cursor.fetchall()
+    return tuple(str(row["run_id"]) for row in rows)
 
 
 def _mode_from_job_name() -> str:
@@ -116,7 +116,32 @@ def main() -> int:
     mode = _mode_from_job_name()
     if mode not in {"dry-run", "execute", "auto"}:
         raise RuntimeError(f"unsupported GATE_MODE: {mode}")
-    version = os.environ.get("ROW_TOPIC_SET_VERSION") or _latest_topic_set_version()
+    explicit_version = os.environ.get("ROW_TOPIC_SET_VERSION", "").strip()
+    versions = (
+        (explicit_version,)
+        if explicit_version
+        else _pending_topic_set_versions()
+    )
+    if not versions:
+        print(
+            json.dumps(
+                {
+                    "event": "row_topic_noop",
+                    "reason": "no_complete_pending_axis_receipt",
+                    "calls": 0,
+                    "inserts": 0,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return 0
+    for version in versions:
+        _process_version(mode, version)
+    return 0
+
+
+def _process_version(mode: str, version: str) -> None:
     print(json.dumps({"event": "row_topic_gate_start", "mode": mode, "topic_set_version": version}, sort_keys=True), flush=True)
     dry = _run_row_topic("dry-run", version)
     pending_rows = int(dry.get("pending_rows") or 0)
@@ -135,16 +160,28 @@ def main() -> int:
         flush=True,
     )
     if mode == "dry-run":
-        return 0
+        return
     if pending_rows == 0:
-        print(json.dumps({"event": "row_topic_noop", "calls": 0, "inserts": 0}, sort_keys=True), flush=True)
-        return 0
+        reconciliation = _run_row_topic("reconcile", version)
+        print(
+            json.dumps(
+                {
+                    "event": "row_topic_reconciled_noop",
+                    "topic_set_version": version,
+                    "calls": 0,
+                    "inserts": 0,
+                    "reconciliation": reconciliation,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return
     if not os.environ.get("GENOS_BEARER_TOKEN"):
         raise RuntimeError("GENOS_BEARER_TOKEN is required before executing pending row-topic calls")
     cap = GATE_MAX_CALLS if mode == "execute" else DEFAULT_MAX_CALLS
     result = _run_row_topic("execute", version, max_calls=cap)
     print(json.dumps({"event": "row_topic_execute_complete", "result": result}, ensure_ascii=False, sort_keys=True), flush=True)
-    return 0
 
 
 if __name__ == "__main__":

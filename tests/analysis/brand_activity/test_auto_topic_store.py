@@ -6,6 +6,9 @@ import pytest
 
 from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store
 from pipeline.scripts.analysis.brand_activity.auto_topic import topic_store_db
+from pipeline.scripts.analysis.brand_activity.auto_topic.topic_assignment_handoff import (
+    AssignmentHandoffReceipt,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic import verification
 from pipeline.scripts.analysis.brand_activity.auto_topic.audit import write_json
 
@@ -300,6 +303,95 @@ def test_upsert_topic_results_does_not_retry_nonzero_first_readback() -> None:
     assert summary.stored_topic_rows == len(records)
     assert summary.count_retry_used is False
     assert connection.count_queries[topic_store_db.TOPICS_TABLE] == 1
+
+
+def test_save_artifacts_records_exact_handoff_after_topic_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given a successful topic save, the axis handoff records its target mode and scopes."""
+    artifacts = _artifact_payload()
+    artifacts.run_summary["target_selection"] = {"mode": "strategic"}
+    summary = topic_store_db.StoreSummary(
+        run_id="topic-run",
+        topic_record_count=1,
+        topic_brand_count=2,
+        stored_topic_rows=1,
+        stored_run_rows=1,
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        topic_store_db,
+        "upsert_topic_results",
+        lambda *_args, **_kwargs: summary,
+    )
+
+    def _record(_connection, **kwargs):
+        captured.update(kwargs)
+        return AssignmentHandoffReceipt(
+            run_id="topic-run",
+            target_mode="strategic",
+            input_fingerprint="fp-current",
+            expected_scope_count=1,
+            stored_scope_count=1,
+            scope_identity_sha256="s" * 64,
+            assignment_population_count=2,
+            assignment_population_sha256="p" * 64,
+            axis_status="complete",
+            assignment_status="pending",
+        )
+
+    monkeypatch.setattr(topic_store_db, "record_axis_handoff", _record)
+
+    stored = topic_store_db.save_artifacts(
+        _StoreConnection(
+            {
+                topic_store_db.RUNS_TABLE: [1],
+                topic_store_db.TOPICS_TABLE: [1],
+            }
+        ),
+        schema=topic_store_db.SCHEMA,
+        artifacts=artifacts,
+        artifact_sha256="a" * 64,
+    )
+
+    assert captured["target_mode"] == "strategic"
+    assert captured["run_id"] == "serving_direct_singleconcept_top7_exec_20260620_143124"
+    assert len(captured["expected_scopes"]) == 1
+    assert stored.axis_handoff_status == "complete"
+    assert stored.assignment_handoff_status == "pending"
+
+
+def test_save_artifacts_does_not_publish_handoff_when_topic_store_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given topic persistence fails, no assignment receipt can be published."""
+    monkeypatch.setattr(
+        topic_store_db,
+        "upsert_topic_results",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            topic_store.TopicStoreError("axis save failed")
+        ),
+    )
+    monkeypatch.setattr(
+        topic_store_db,
+        "record_axis_handoff",
+        lambda *_args, **_kwargs: pytest.fail(
+            "handoff must not be written after axis save failure"
+        ),
+    )
+
+    with pytest.raises(topic_store.TopicStoreError, match="axis save failed"):
+        topic_store_db.save_artifacts(
+            _StoreConnection(
+                {
+                    topic_store_db.RUNS_TABLE: [0],
+                    topic_store_db.TOPICS_TABLE: [0],
+                }
+            ),
+            schema=topic_store_db.SCHEMA,
+            artifacts=_artifact_payload(),
+            artifact_sha256="a" * 64,
+        )
 
 
 def test_load_artifacts_requires_existing_audit_files(tmp_path: Path) -> None:

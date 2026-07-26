@@ -44,6 +44,12 @@ from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_db import (
     prepare_run,
 )
 from pipeline.scripts.analysis.brand_activity.auto_topic.row_topic_runner import AssignmentBatch, AssignmentChatClient, plan_batches
+from pipeline.scripts.analysis.brand_activity.auto_topic.topic_assignment_handoff_db import (
+    assignment_gap_json,
+    mark_assignment_running,
+    reconcile_assignment_handoff,
+    require_axis_handoff,
+)
 from pipeline.scripts.analysis.brand_activity.auto_topic.topic_store import validated_stage_schema
 
 
@@ -54,7 +60,10 @@ PENDING_SOURCE_DB: Final = "db"
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("apply-ddl", "dry-run", "execute"))
+    parser.add_argument(
+        "mode",
+        choices=("apply-ddl", "dry-run", "execute", "reconcile"),
+    )
     parser.add_argument("--schema", default=SCHEMA)
     parser.add_argument("--topic-set-version", default="")
     parser.add_argument("--checkpoint", type=Path, default=Path("/tmp/row_topic_assignment_checkpoint.jsonl"))
@@ -72,7 +81,20 @@ def main() -> int:
         if args.mode == "apply-ddl":
             _print_json(apply_ddl(connection, schema=schema))
             return 0
-        prepared = prepare_run(connection, schema=schema, topic_set_version=args.topic_set_version)
+        prepared = prepare_receipted_run(
+            connection,
+            schema=schema,
+            topic_set_version=args.topic_set_version,
+        )
+        if args.mode == "reconcile":
+            gap = reconcile_assignment_handoff(
+                connection,
+                schema=schema,
+                prepared=prepared,
+            )
+            payload = assignment_gap_json(gap)
+            _print_json(payload)
+            return 0 if gap.complete else 2
         summary = dry_summary(
             prepared,
             connection,
@@ -85,6 +107,11 @@ def main() -> int:
         _print_json(summary)
         if args.mode == "dry-run":
             return 0
+        mark_assignment_running(
+            connection,
+            schema=schema,
+            run_id=prepared.topic_set_version,
+        )
         client = AssignmentChatClient(base_url=args.base_url, token=_required_env("GENOS_BEARER_TOKEN"), serving_id=args.serving_id)
         result = execute(
             prepared,
@@ -98,10 +125,40 @@ def main() -> int:
             pending_source=args.pending_source,
             retry_unresolved=args.retry_unresolved,
         )
+        gap = reconcile_assignment_handoff(
+            connection,
+            schema=schema,
+            prepared=prepared,
+        )
+        result["reconciliation"] = assignment_gap_json(gap)
         _print_json(result)
-        return 0
+        return 0 if gap.complete else 2
     finally:
         connection.close()
+
+
+def prepare_receipted_run(
+    connection: pymysql.connections.Connection,
+    *,
+    schema: str,
+    topic_set_version: str,
+) -> PreparedRun:
+    """Resolve only an explicit run whose exact axis receipt is complete."""
+    if not topic_set_version:
+        raise AssignmentParseError(
+            "explicit topic-set-version is required; latest-run inference is disabled"
+        )
+    prepared = prepare_run(
+        connection,
+        schema=schema,
+        topic_set_version=topic_set_version,
+    )
+    require_axis_handoff(
+        connection,
+        schema=schema,
+        prepared=prepared,
+    )
+    return prepared
 
 
 def dry_summary(
