@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import re
 
@@ -20,6 +21,8 @@ class SplitResult:
 
 
 def _quarter(value: object) -> str:
+    if isinstance(value, date):
+        return f"{value.year:04d}-Q{((value.month - 1) // 3) + 1}"
     text = str(value or "").strip()
     month_match = re.fullmatch(r"(\d{4})-(\d{2})", text)
     if month_match:

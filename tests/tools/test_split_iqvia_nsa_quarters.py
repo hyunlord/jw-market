@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from datetime import datetime
 import inspect
 from pathlib import Path
 
@@ -165,3 +166,35 @@ def test_split_does_not_materialize_source_rows() -> None:
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp))
     ]
     assert comprehensions == []
+
+
+def test_split_accepts_excel_datetime_period_cells(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    history = tmp_path / "history.xlsx"
+    latest = tmp_path / "latest.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(
+        [
+            "AUDIT CODE",
+            "MFR CODE",
+            "PRODUCT NAME",
+            "PACK DESC",
+            "DATA PERIOD",
+            "Values LC",
+            "Units",
+            "Counting Units",
+            "Dosage Units",
+            "Price",
+        ]
+    )
+    for index, period in enumerate(
+        (datetime(2025, 12, 1), datetime(2026, 3, 1), datetime(2026, 6, 1))
+    ):
+        sheet.append([f"A-{index}", "M", "Brand", "Pack", period, 1, 2, 3, 4, 5])
+    workbook.save(source)
+
+    result = split_workbook(source, history, latest)
+
+    assert result.history_quarters == ("2025-Q4", "2026-Q1")
+    assert result.latest_quarters == ("2026-Q2",)
