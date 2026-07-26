@@ -37,6 +37,14 @@ def write_run_metadata(
     finished_utc: str | None,
     status: str,
 ) -> None:
+    question_set_paths = options.question_set_paths or (options.question_set_path,)
+    question_sets = [
+        {
+            "path": str(path),
+            "sha256": sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in question_set_paths
+    ]
     atomic_json(
         options.output / "run_metadata.json",
         {
@@ -55,6 +63,7 @@ def write_run_metadata(
                 "path": str(options.question_set_path),
                 "sha256": sha256(options.question_set_path.read_bytes()).hexdigest(),
             },
+            "question_sets": question_sets,
             "execution": {
                 "concurrency": options.concurrency,
                 "interval_seconds": options.interval_seconds,

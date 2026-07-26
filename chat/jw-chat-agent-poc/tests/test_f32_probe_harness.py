@@ -8,11 +8,16 @@ from threading import Thread
 from typing import Iterator
 
 from scripts.f21_probe.cli import main
-from scripts.f21_probe.models import load_question_set, question_set_counts
+from scripts.f21_probe.models import (
+    load_question_set,
+    load_question_sets,
+    question_set_counts,
+)
 from scripts.f21_probe.schema import QUESTION_ANSWER_FIELDS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 QUESTION_SET = PROJECT_ROOT / "eval" / "f21_probe_questions.v1.json"
+F59_QUESTION_SET = PROJECT_ROOT / "eval" / "f59_probe_questions.v1.json"
 
 
 class _SseHandler(BaseHTTPRequestHandler):
@@ -176,6 +181,81 @@ def test_committed_question_set_preserves_f21_population() -> None:
     assert counts.multiturn_sets == 27
     assert counts.skipped_multiturn_sets == 3
     assert counts.stage_question_counts == {"A": 14, "B": 9, "C": 3, "D": 54}
+
+
+def test_f59_question_set_carries_expectations_as_metadata_only() -> None:
+    question_set = load_question_set(F59_QUESTION_SET)
+    turns = [
+        turn
+        for stage in question_set.stages
+        for scenario in stage.scenarios
+        for turn in scenario.turns
+    ]
+
+    assert turns
+    assert all(turn.expectations for turn in turns)
+    assert any(
+        "selected_data_path" in expectation
+        for turn in turns
+        for expectation in turn.expectations
+    )
+
+
+def test_multiple_question_sets_combine_without_changing_source_files() -> None:
+    baseline = load_question_set(QUESTION_SET)
+    extension = load_question_set(F59_QUESTION_SET)
+    combined = load_question_sets((QUESTION_SET, F59_QUESTION_SET))
+
+    assert combined.stages == baseline.stages + extension.stages
+    assert question_set_counts(combined).question_answer_pairs == (
+        question_set_counts(baseline).question_answer_pairs
+        + question_set_counts(extension).question_answer_pairs
+    )
+
+
+def test_cli_accepts_v1_new_and_both_question_set_modes(tmp_path: Path) -> None:
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    _write_minimal_question_set(first)
+    payload = json.loads(first.read_text(encoding="utf-8"))
+    payload["stages"][0]["id"] = "U"
+    payload["stages"][0]["directory"] = "stage_second"
+    second.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    modes = {
+        "v1": [first],
+        "new": [second],
+        "both": [first, second],
+    }
+    for mode, paths in modes.items():
+        output = tmp_path / mode
+        argv = [
+            "--base-url",
+            "unused",
+            "--output",
+            str(output),
+            "--target-commit",
+            "mock-commit",
+            "--target-generation",
+            "mock-generation",
+            "--target-digest",
+            "sha256:mock",
+        ]
+        for path in paths:
+            argv.extend(["--question-set", str(path)])
+
+        with _mock_sse_server() as base_url:
+            argv[1] = base_url
+            assert main(argv + ["--interval-seconds", "0"]) == 0
+
+        rows = list(output.glob("stage_*/*.json"))
+        answer_rows = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in rows
+            if path.name != "scenario.json"
+        ]
+        assert len(answer_rows) == 2 * len(paths)
+        assert all(set(row) == QUESTION_ANSWER_FIELDS for row in answer_rows)
 
 
 def test_question_population_changes_by_data_only(tmp_path: Path) -> None:

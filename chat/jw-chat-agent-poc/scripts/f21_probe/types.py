@@ -27,6 +27,7 @@ class RunOptions:
     target: TargetIdentity
     headers: dict[str, str]
     header_sources: dict[str, str]
+    question_set_paths: tuple[Path, ...] = ()
     concurrency: int = 1
     interval_seconds: float = 2.0
     request_timeout_seconds: float = 360.0
