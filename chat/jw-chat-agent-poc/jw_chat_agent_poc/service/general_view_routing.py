@@ -372,6 +372,7 @@ def _multi_contract(
     for market in markets:
         section = _contract(market, other_candidates=[], compact=compact, dual=dual, question=question)
         section["market_size"] = market.market_size
+        section["market_size_recent_krw"] = market.market_size
         section["section_markdown"] = section["section_markdown"].replace(
             "## 일반뷰 (ATC4)",
             f"### ATC4 {market.atc4_code} — {market.atc4_description}",

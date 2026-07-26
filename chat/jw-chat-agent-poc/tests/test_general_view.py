@@ -7,6 +7,7 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
+from jw_chat_agent_poc.orchestrator.provenance import evidence_from_calls
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.service.general_view_routing import (
     GeneralRoute,
@@ -339,6 +340,47 @@ def test_strategic_market_reverse_mapping_splits_two_atc4_general_views_without_
         ("C10A1", None, "ubist", "sales"),
         ("C10C", None, "ubist", "sales"),
     ]
+
+
+def test_split_general_views_emit_independent_market_size_facts() -> None:
+    memberships = (
+        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10C", "지질조절제 복합제제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = replace(
+        _market("C10A1", 10.0),
+        market_size=100_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    backend.market_map["C10C"] = replace(
+        _market("C10C", 20.0),
+        market_size=40_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    service = GeneralViewService(
+        backend,
+        StrategicMembershipWithMarketMembers({"리바로", "리바로젯"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
+    facts = evidence_from_calls(result["tool_calls"], result["answer"])
+    market_size_facts = [fact for fact in facts if fact.metric == "시장규모"]
+
+    assert [
+        (fact.entity, fact.metric, fact.unit, fact.value)
+        for fact in market_size_facts
+    ] == [
+        ("C10A1", "시장규모", "억원", "1,000.00억원"),
+        ("C10C", "시장규모", "억원", "400.00억원"),
+    ]
+    assert all(fact.value != "1,400.00억원" for fact in facts)
 
 
 def test_strategic_market_reverse_mapping_keeps_typed_unavailable_when_atc4_resolution_fails() -> None:
