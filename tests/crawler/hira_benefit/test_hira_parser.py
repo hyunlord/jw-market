@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from pipeline.scripts.crawler.hira_benefit import parser as hira_parser
-from pipeline.scripts.crawler.hira_benefit.models import ParseStatus
+from pipeline.scripts.crawler.hira_benefit.models import FieldParseStatus, ParseStatus
 from pipeline.scripts.crawler.hira_benefit.parser import (
     parse_detail_html,
     parse_list_html,
@@ -398,3 +398,58 @@ def test_stored_raw_text_parses_exclusion_label_with_qualifier() -> None:
         "1) 출혈경향이 있는 경우 2) 임신을 한 경우"
     )
     assert parsed.parse_status is ParseStatus.OK
+
+
+def test_stored_raw_text_extracts_only_structural_contraindication_labels() -> None:
+    contraindicated_patients = parse_stored_raw_text(
+        "2. 금기환자 가. 활동성 결핵 환자 나. 중증 심부전 환자 "
+        "3. 교체투여 다른 약제로 교체한다. 닫기"
+    )
+    contraindications = parse_stored_raw_text(
+        "다. 금기증은 아래와 같으며 요양급여를 인정하지 아니함. "
+        "1) 기대 여명 1년 이하 2) 활동성 심내막염 "
+        "라. 시설 기준 관련 기준을 충족해야 한다. 닫기"
+    )
+
+    assert contraindicated_patients.exclusion_rule == (
+        "가. 활동성 결핵 환자 나. 중증 심부전 환자"
+    )
+    assert contraindications.exclusion_rule == (
+        "은 아래와 같으며 요양급여를 인정하지 아니함. "
+        "1) 기대 여명 1년 이하 2) 활동성 심내막염"
+    )
+
+
+def test_stored_raw_text_does_not_promote_free_prose_denials_to_exclusion() -> None:
+    material = parse_stored_raw_text(
+        "치료재료 비용 중 재료대를 제외한다. 닫기"
+    )
+    combination = parse_stored_raw_text(
+        "다른 약제와 병용투여는 급여로 인정하지 아니함. 닫기"
+    )
+
+    assert material.exclusion_rule is None
+    assert material.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+    assert combination.exclusion_rule is None
+    assert combination.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+
+
+def test_field_status_distinguishes_extracted_absent_and_failed() -> None:
+    parsed = parse_stored_raw_text(
+        "1. 투여대상: 성인 환자 2. 제외기준: 3. 투여용량: 1일 1회"
+    )
+
+    assert parsed.target_status is FieldParseStatus.EXTRACTED
+    assert parsed.exclusion_status is FieldParseStatus.FAILED
+    assert parsed.dosage_status is FieldParseStatus.EXTRACTED
+    assert parsed.parse_status is ParseStatus.PARTIAL
+    assert parsed.failed_fields == ("exclusion_rule",)
+
+
+def test_field_status_marks_absent_labels_not_applicable() -> None:
+    parsed = parse_stored_raw_text("보험인정기준 상세내용을 개정한다.")
+
+    assert parsed.target_status is FieldParseStatus.NOT_APPLICABLE
+    assert parsed.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+    assert parsed.dosage_status is FieldParseStatus.NOT_APPLICABLE
+    assert parsed.parse_status is ParseStatus.NOT_APPLICABLE

@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from .detail_html import parse_detail_document
 from .ingress_gate import DetailIngressEvidence, failed_ingress_reason
-from .models import NoticeListItem, ParsedNotice, ParseStatus
+from .models import FieldParseStatus, NoticeListItem, ParsedNotice, ParseStatus
 from .typed_extraction import StructuredParseResult, extract_structured
 
 _DATE_RE = re.compile(r"\b(20\d{2})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?\b")
@@ -168,6 +168,9 @@ def parse_detail_html(
             dosage_limit=None,
             parse_status=ParseStatus.FAILED,
             failed_fields=(ingress_failure,),
+            target_status=FieldParseStatus.FAILED,
+            exclusion_status=FieldParseStatus.FAILED,
+            dosage_status=FieldParseStatus.FAILED,
         )
     notice_match = _NOTICE_RE.search(raw_text)
     notice_no = (
@@ -188,4 +191,7 @@ def parse_detail_html(
         raw_html_sha256=hashlib.sha256(html.encode("utf-8")).hexdigest(),
         parse_status=structured.parse_status,
         failed_fields=structured.failed_fields,
+        target_status=structured.target_status,
+        exclusion_status=structured.exclusion_status,
+        dosage_status=structured.dosage_status,
     )

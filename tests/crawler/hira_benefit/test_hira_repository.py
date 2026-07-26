@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Self
 
-from pipeline.scripts.crawler.hira_benefit.models import ParsedNotice, ParseStatus
+from pipeline.scripts.crawler.hira_benefit.models import (
+    FieldParseStatus,
+    ParsedNotice,
+    ParseStatus,
+)
 from pipeline.scripts.crawler.hira_benefit.repository import (
     PersistableNotice,
     latest_notice_id,
@@ -56,6 +60,9 @@ def test_persist_batch_commits_notices_brand_links_and_state_together() -> None:
         raw_html_sha256="a" * 64,
         parse_status=ParseStatus.PARTIAL,
         failed_fields=("exclusion_rule", "dosage_limit"),
+        target_status=FieldParseStatus.EXTRACTED,
+        exclusion_status=FieldParseStatus.FAILED,
+        dosage_status=FieldParseStatus.FAILED,
     )
 
     persist_batch(
@@ -75,6 +82,9 @@ def test_persist_batch_commits_notices_brand_links_and_state_together() -> None:
 
     sql = "\n".join(call[0] for call in conn.fake_cursor.calls)
     assert "INSERT INTO hira_benefit_notice" in sql
+    assert "target_status" in sql
+    assert "exclusion_status" in sql
+    assert "dosage_status" in sql
     assert "INSERT INTO hira_benefit_notice_brand" in sql
     assert "INSERT INTO hira_benefit_crawl_run" in sql
     crawl_run_sql = next(

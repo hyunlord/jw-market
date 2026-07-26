@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).with_name("sql") / "001_create_hira_benefit_tables.sql"
+MIGRATION_PATHS = (
+    Path(__file__).with_name("sql") / "002_add_hira_field_status.sql",
+)
 _CREATE_TABLE_RE = re.compile(
     r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+`?([a-z0-9_]+)`?",
     re.IGNORECASE,
@@ -37,12 +40,24 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate HIRA DDL without applying it")
     parser.add_argument("--dry-run", action="store_true", required=True)
     parser.parse_args(argv)
-    result = validate_schema_sql(SCHEMA_PATH.read_text(encoding="utf-8"))
-    if result.destructive_statements:
-        raise SystemExit(
-            f"destructive statements found: {result.destructive_statements}"
-        )
-    print(f"schema_dry_run=PASS tables={','.join(result.tables)}")
+    paths = (SCHEMA_PATH, *MIGRATION_PATHS)
+    results = tuple(
+        validate_schema_sql(path.read_text(encoding="utf-8"))
+        for path in paths
+    )
+    destructive = tuple(
+        statement
+        for result in results
+        for statement in result.destructive_statements
+    )
+    if destructive:
+        raise SystemExit(f"destructive statements found: {destructive}")
+    tables = tuple(table for result in results for table in result.tables)
+    print(
+        "schema_dry_run=PASS "
+        f"tables={','.join(tables)} "
+        f"files={','.join(path.name for path in paths)}"
+    )
     return 0
 
 

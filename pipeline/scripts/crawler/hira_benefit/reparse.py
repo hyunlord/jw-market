@@ -29,6 +29,7 @@ class ReparseSummary:
     population: int
     parse_status: dict[str, int]
     field_nonempty: dict[str, int]
+    field_status: dict[str, dict[str, int]]
     target_suffix_count: int
     target_raw_ratio_median: float
 
@@ -88,6 +89,21 @@ def summarize_reparse_plan(plan: Sequence[ReparseRecord]) -> ReparseSummary:
                 record.parsed.dosage_limit is not None for record in plan
             ),
         },
+        field_status={
+            status_name: dict(
+                sorted(
+                    Counter(
+                        getattr(record.parsed, status_name).value
+                        for record in plan
+                    ).items()
+                )
+            )
+            for status_name in (
+                "target_status",
+                "exclusion_status",
+                "dosage_status",
+            )
+        },
         target_suffix_count=sum(
             bool(record.parsed.target_condition)
             and record.raw_text.endswith(record.parsed.target_condition or "")
@@ -113,6 +129,9 @@ def apply_reparse_plan(
                     SET target_condition=%s,
                         exclusion_rule=%s,
                         dosage_limit=%s,
+                        target_status=%s,
+                        exclusion_status=%s,
+                        dosage_status=%s,
                         parse_status=%s,
                         parse_failed_fields_json=%s
                     WHERE source_notice_id=%s
@@ -121,6 +140,9 @@ def apply_reparse_plan(
                         record.parsed.target_condition,
                         record.parsed.exclusion_rule,
                         record.parsed.dosage_limit,
+                        record.parsed.target_status.value,
+                        record.parsed.exclusion_status.value,
+                        record.parsed.dosage_status.value,
                         record.parsed.parse_status.value,
                         json.dumps(
                             record.parsed.failed_fields,

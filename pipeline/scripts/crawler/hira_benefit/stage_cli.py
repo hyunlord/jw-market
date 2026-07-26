@@ -19,7 +19,7 @@ from .http_client import (
     HiraHttpClient,
     HiraRequestPolicy,
 )
-from .models import ParsedNotice, ParseStatus
+from .models import FieldParseStatus, ParsedNotice, ParseStatus
 from .pagination import fetch_notice_index
 from .receipts import read_json, run_dir, write_json, write_stage_receipt
 from .repository import (
@@ -193,6 +193,21 @@ def _run_collect(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
 def _persistable(payload: dict[str, object]) -> PersistableNotice:
     parsed = payload["parsed"]
     assert isinstance(parsed, dict)
+    failed_fields = tuple(str(value) for value in parsed["failed_fields"])
+
+    def field_status(
+        status_name: str,
+        value_name: str,
+    ) -> FieldParseStatus:
+        explicit = parsed.get(status_name)
+        if explicit is not None:
+            return FieldParseStatus(str(explicit))
+        if parsed.get(value_name) is not None:
+            return FieldParseStatus.EXTRACTED
+        if value_name in failed_fields:
+            return FieldParseStatus.FAILED
+        return FieldParseStatus.NOT_APPLICABLE
+
     return PersistableNotice(
         parsed=ParsedNotice(
             source_notice_id=str(parsed["source_notice_id"]),
@@ -210,7 +225,10 @@ def _persistable(payload: dict[str, object]) -> PersistableNotice:
             raw_text=str(parsed["raw_text"]),
             raw_html_sha256=str(parsed["raw_html_sha256"]),
             parse_status=ParseStatus(str(parsed["parse_status"])),
-            failed_fields=tuple(str(value) for value in parsed["failed_fields"]),
+            failed_fields=failed_fields,
+            target_status=field_status("target_status", "target_condition"),
+            exclusion_status=field_status("exclusion_status", "exclusion_rule"),
+            dosage_status=field_status("dosage_status", "dosage_limit"),
         ),
         listing_fingerprint=str(payload["listing_fingerprint"]),
         brand_names=tuple(str(value) for value in payload["brand_names"]),
