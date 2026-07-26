@@ -6,7 +6,7 @@ no schedule creation or workflow-start command.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,12 +26,25 @@ with workflow.unsafe.imports_passed_through():
 
 TASK_QUEUE = "jw-market-hira-benefit-v1"
 WORKFLOW_NAME = "jw_hira_benefit_daily_v1"
+SCHEDULE_RUN_ID = "temporal-scheduled"
 
 
 @dataclass(frozen=True, slots=True)
 class HiraStageRequest:
     config: HiraWorkflowInput
     stage: str
+
+
+def resolve_run_config(
+    config: HiraWorkflowInput,
+    *,
+    workflow_id: str,
+) -> HiraWorkflowInput:
+    """Give each scheduled execution an independent durable receipt path."""
+
+    if config.run_id != SCHEDULE_RUN_ID:
+        return config
+    return replace(config, run_id=workflow_id)
 
 
 def completed_stage_receipt(receipt_path: Path) -> dict[str, object] | None:
@@ -110,6 +123,10 @@ async def run_hira_benefit_stage(request: HiraStageRequest) -> dict[str, object]
 class HiraBenefitDailyWorkflow:
     @workflow.run
     async def run(self, config: HiraWorkflowInput) -> dict[str, object]:
+        config = resolve_run_config(
+            config,
+            workflow_id=workflow.info().workflow_id,
+        )
         receipts: list[dict[str, object]] = []
         for stage in ACTIVITY_STAGES:
             policy = ACTIVITY_POLICIES[stage]
