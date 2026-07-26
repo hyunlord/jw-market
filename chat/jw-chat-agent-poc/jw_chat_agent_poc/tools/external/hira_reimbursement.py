@@ -34,12 +34,33 @@ class CacheStatus(StrEnum):
     NOT_FOUND = "NOT_FOUND"
 
 
+class CacheLookupStatus(StrEnum):
+    STORE_ABSENT = "store_absent"
+    CONNECT_ERROR = "connect_error"
+    TABLE_MISSING = "table_missing"
+    ZERO_ROWS = "zero_rows"
+    BRAND_UNMATCHED = "brand_unmatched"
+    EMPTY_RAW_TEXT = "empty_raw_text"
+    HIT = "hit"
+
+
 class ReimbursementRefreshError(RuntimeError):
     """The background refresh dispatcher could not accept a refresh request."""
 
 
 class ReimbursementStoreError(RuntimeError):
     """The confirmed crawler store could not persist a verified criterion."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        lookup_status: CacheLookupStatus = CacheLookupStatus.CONNECT_ERROR,
+        schema_name: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.lookup_status = lookup_status
+        self.schema_name = schema_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +87,8 @@ class ReimbursementCacheResult:
     status: CacheStatus
     data: ReimbursementCriterion | None
     source_date: str | None
+    lookup_status: CacheLookupStatus | None = None
+    schema_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +99,8 @@ class ReimbursementLookupResult:
     data: ReimbursementCriterion | None
     error_code: str | None = None
     cache_write: str = "not_attempted"
+    cache_lookup_status: CacheLookupStatus = CacheLookupStatus.STORE_ABSENT
+    cache_schema: str | None = None
 
 
 class ReimbursementCriteriaStore(Protocol):
@@ -112,7 +137,12 @@ class AbsentReimbursementStore:
     """Explicit adapter for the pre-crawler state; it never pretends persistence exists."""
 
     def get_reimbursement_criteria(self, _brand_name: str) -> ReimbursementCacheResult:
-        return ReimbursementCacheResult(CacheStatus.NOT_FOUND, None, None)
+        return ReimbursementCacheResult(
+            CacheStatus.NOT_FOUND,
+            None,
+            None,
+            lookup_status=CacheLookupStatus.STORE_ABSENT,
+        )
 
     def put_reimbursement_criteria(self, _criterion: ReimbursementCriterion) -> bool:
         return False
@@ -121,14 +151,46 @@ class AbsentReimbursementStore:
 class MariaDbReimbursementStore:
     """Read the agent-owned HIRA cache without taking ownership of its writes."""
 
-    def __init__(self, *, connect: Callable[[], _Connection] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        connect: Callable[[], _Connection] | None = None,
+        schema_name: str | None = None,
+    ) -> None:
         self._connect = connect or _connect_reimbursement_db
+        self.schema_name = schema_name or _reimbursement_database_name()
 
     def get_reimbursement_criteria(self, brand_name: str) -> ReimbursementCacheResult:
         connection: _Connection | None = None
         try:
             connection = self._connect()
             with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT 1 AS brand_match
+                    FROM hira_benefit_notice_brand
+                    WHERE brand_name = %s
+                    LIMIT 1
+                    """,
+                    (brand_name,),
+                )
+                if cursor.fetchone() is None:
+                    return self._miss(CacheLookupStatus.BRAND_UNMATCHED)
+
+                cursor.execute(
+                    """
+                    SELECT 1 AS notice_match
+                    FROM hira_benefit_notice_brand AS b
+                    INNER JOIN hira_benefit_notice AS n
+                      ON n.source_notice_id = b.source_notice_id
+                    WHERE b.brand_name = %s
+                    LIMIT 1
+                    """,
+                    (brand_name,),
+                )
+                if cursor.fetchone() is None:
+                    return self._miss(CacheLookupStatus.ZERO_ROWS)
+
                 cursor.execute(
                     """
                     SELECT
@@ -143,7 +205,7 @@ class MariaDbReimbursementStore:
                     INNER JOIN hira_benefit_notice AS n
                       ON n.source_notice_id = b.source_notice_id
                     WHERE b.brand_name = %s
-                      AND NULLIF(TRIM(n.raw_text), '') IS NOT NULL
+                      AND CHAR_LENGTH(TRIM(n.raw_text)) > 0
                     ORDER BY
                       n.notice_date DESC,
                       n.collected_at DESC,
@@ -154,22 +216,40 @@ class MariaDbReimbursementStore:
                 )
                 row = cursor.fetchone()
         except Exception as exc:
+            lookup_status = (
+                CacheLookupStatus.TABLE_MISSING
+                if _is_missing_table_error(exc)
+                else CacheLookupStatus.CONNECT_ERROR
+            )
             raise ReimbursementStoreError(
-                f"reimbursement cache read failed: {type(exc).__name__}"
+                f"reimbursement cache read failed: {type(exc).__name__}",
+                lookup_status=lookup_status,
+                schema_name=self.schema_name,
             ) from exc
         finally:
             if connection is not None:
                 connection.close()
 
         if row is None:
-            return ReimbursementCacheResult(CacheStatus.NOT_FOUND, None, None)
+            return self._miss(CacheLookupStatus.EMPTY_RAW_TEXT)
         criterion = _criterion_from_cache_row(row)
         if not criterion.raw_text.strip():
-            return ReimbursementCacheResult(CacheStatus.NOT_FOUND, None, None)
+            return self._miss(CacheLookupStatus.EMPTY_RAW_TEXT)
         return ReimbursementCacheResult(
             CacheStatus.FRESH,
             criterion,
             criterion.source_date,
+            lookup_status=CacheLookupStatus.HIT,
+            schema_name=self.schema_name,
+        )
+
+    def _miss(self, status: CacheLookupStatus) -> ReimbursementCacheResult:
+        return ReimbursementCacheResult(
+            CacheStatus.NOT_FOUND,
+            None,
+            None,
+            lookup_status=status,
+            schema_name=self.schema_name,
         )
 
     def put_reimbursement_criteria(self, _criterion: ReimbursementCriterion) -> bool:
@@ -177,15 +257,16 @@ class MariaDbReimbursementStore:
 
 
 def configured_reimbursement_store() -> ReimbursementCriteriaStore:
+    database = _reimbursement_database_name()
     required = (
         os.environ.get("CHAT_CACHE_DB_HOST", "").strip(),
-        os.environ.get("CHAT_CACHE_DB_NAME", "").strip(),
+        database,
         os.environ.get("CHAT_CACHE_DB_USER", "").strip(),
         os.environ.get("CHAT_CACHE_DB_PASSWORD", ""),
     )
     if not all(required):
         return AbsentReimbursementStore()
-    return MariaDbReimbursementStore()
+    return MariaDbReimbursementStore(schema_name=database)
 
 
 class ReimbursementLookupService:
@@ -211,11 +292,26 @@ class ReimbursementLookupService:
                 "reimbursement cache read failed error=%s",
                 type(exc).__name__,
             )
-            cached = ReimbursementCacheResult(CacheStatus.NOT_FOUND, None, None)
+            cached = ReimbursementCacheResult(
+                CacheStatus.NOT_FOUND,
+                None,
+                None,
+                lookup_status=exc.lookup_status,
+                schema_name=exc.schema_name,
+            )
+        lookup_status = _effective_lookup_status(cached)
+        cache_schema = cached.schema_name
         status = _effective_cache_status(cached, now=self._now())
 
         if status is CacheStatus.FRESH and cached.data is not None:
-            return ReimbursementLookupResult(True, status, "cache", cached.data)
+            return ReimbursementLookupResult(
+                True,
+                status,
+                "cache",
+                cached.data,
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
+            )
         if status is CacheStatus.STALE and cached.data is not None:
             try:
                 self._refresh_trigger(brand)
@@ -224,7 +320,14 @@ class ReimbursementLookupService:
                     "reimbursement refresh trigger failed error=%s",
                     type(exc).__name__,
                 )
-            return ReimbursementLookupResult(True, status, "stale_cache", cached.data)
+            return ReimbursementLookupResult(
+                True,
+                status,
+                "stale_cache",
+                cached.data,
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
+            )
 
         try:
             live = self._realtime.fetch(brand)
@@ -235,6 +338,8 @@ class ReimbursementLookupService:
                 "typed_unavailable",
                 None,
                 error_code="TOOL_TIMEOUT",
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
             )
         except requests.RequestException:
             return ReimbursementLookupResult(
@@ -243,6 +348,8 @@ class ReimbursementLookupService:
                 "typed_unavailable",
                 None,
                 error_code="UPSTREAM_UNAVAILABLE",
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
             )
 
         if live is None:
@@ -252,6 +359,8 @@ class ReimbursementLookupService:
                 "typed_unavailable",
                 None,
                 error_code="NO_EVIDENCE",
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
             )
         try:
             persisted = self._store.put_reimbursement_criteria(live)
@@ -268,6 +377,8 @@ class ReimbursementLookupService:
             "realtime",
             live,
             cache_write=cache_write,
+            cache_lookup_status=lookup_status,
+            cache_schema=cache_schema,
         )
 
 
@@ -366,7 +477,7 @@ def _connect_reimbursement_db() -> _Connection:
         port=int(os.environ.get("CHAT_CACHE_DB_PORT", "3306")),
         user=os.environ["CHAT_CACHE_DB_USER"],
         password=os.environ["CHAT_CACHE_DB_PASSWORD"],
-        database=os.environ["CHAT_CACHE_DB_NAME"],
+        database=_reimbursement_database_name(),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         connect_timeout=2,
@@ -374,6 +485,27 @@ def _connect_reimbursement_db() -> _Connection:
         write_timeout=2,
         autocommit=True,
     )
+
+
+def _reimbursement_database_name() -> str:
+    return (
+        os.environ.get("CHAT_REIMBURSEMENT_DB_NAME")
+        or os.environ.get("CHAT_CACHE_DB_NAME", "")
+    ).strip()
+
+
+def _effective_lookup_status(cached: ReimbursementCacheResult) -> CacheLookupStatus:
+    if cached.lookup_status is not None:
+        return cached.lookup_status
+    if cached.data is None:
+        return CacheLookupStatus.ZERO_ROWS
+    if not cached.data.raw_text.strip():
+        return CacheLookupStatus.EMPTY_RAW_TEXT
+    return CacheLookupStatus.HIT
+
+
+def _is_missing_table_error(exc: Exception) -> bool:
+    return bool(exc.args and exc.args[0] == 1146)
 
 
 def _criterion_from_cache_row(row: dict[str, Any]) -> ReimbursementCriterion:
