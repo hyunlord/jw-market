@@ -101,6 +101,7 @@ from jw_chat_agent_poc.service.conversation_history import ConversationHistorySt
 from jw_chat_agent_poc.service.evidence_binding import (
     evidence_facts_from_result,
     expected_entities_from_result,
+    expected_market_ids_from_result,
     verify_claim_bindings,
 )
 from jw_chat_agent_poc.service.context_scope import (
@@ -2694,6 +2695,7 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         answer=answer,
         facts=evidence_facts_from_result(result),
         expected_entities=expected_entities_from_result(question, result),
+        expected_market_ids=expected_market_ids_from_result(result),
     )
     previous = result.get("_qa_claim_gate")
     previous_items = previous if isinstance(previous, dict) else {}

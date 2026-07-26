@@ -289,11 +289,23 @@ def fact_scope(fact: EvidenceFact) -> str:
     scope carrier. ``market_id`` itself is never surfaced; it stays inside this
     opaque signature and is only ever compared, never rendered.
     """
-    return fact.view.strip() if present(fact.view) else ""
+    view = fact.view.strip() if present(fact.view) else ""
+    market_id = _fact_market_id(fact)
+    if not market_id:
+        return view
+    view_base = _scope_base(view)
+    return f"{view_base}:{market_id}" if view_base else market_id
 
 
 def _scope_base(scope: str) -> str:
     return scope.split(":", 1)[0].strip()
+
+
+def _fact_market_id(fact: EvidenceFact) -> str:
+    if present(fact.market_id):
+        return fact.market_id.strip().casefold()
+    scope_parts = fact.view.split(":", 1)
+    return scope_parts[1].strip().casefold() if len(scope_parts) == 2 else ""
 
 
 def question_view_scopes(question: str) -> frozenset[str]:
@@ -306,20 +318,26 @@ def question_view_scopes(question: str) -> frozenset[str]:
     )
 
 
-def scope_matches(fact: EvidenceFact, expected_scopes: frozenset[str]) -> bool:
-    """Fifth binding axis: the fact's scope must be consistent with the request.
+def scope_matches(
+    fact: EvidenceFact,
+    expected_scopes: frozenset[str],
+    expected_market_ids: frozenset[str] = frozenset(),
+) -> bool:
+    """Scope binding: view and internal market identity must match the request.
 
-    Permissive by design — when the request does not pin a scope, or the fact
-    carries no scope signature, this never newly rejects a previously valid
-    binding. It only fires when the request explicitly names a competing scope
-    (e.g. 경쟁군 vs 전략뷰) and the fact belongs to a different one.
+    View matching keeps F24's permissive legacy behavior. When resolution pins
+    a market identity, however, missing or foreign market metadata fails closed.
     """
-    if not expected_scopes:
-        return True
     scope = fact_scope(fact)
-    if not scope:
-        return True
-    return scope in expected_scopes or _scope_base(scope) in expected_scopes
+    if expected_scopes and scope:
+        if scope not in expected_scopes and _scope_base(scope) not in expected_scopes:
+            return False
+    if expected_market_ids:
+        market_id = _fact_market_id(fact)
+        if not market_id:
+            return False
+        return market_id in expected_market_ids
+    return True
 
 
 def mismatch_reason(
@@ -330,6 +348,7 @@ def mismatch_reason(
     requested_periods: tuple[str, ...],
     token: str,
     expected_scopes: frozenset[str] = frozenset(),
+    expected_market_ids: frozenset[str] = frozenset(),
 ) -> str:
     if expected_entities and not any(
         entity_matches(fact, expected_entities) for fact in candidates
@@ -345,8 +364,9 @@ def mismatch_reason(
         return "PERIOD_MISMATCH"
     if not any(unit_matches(fact, token) for fact in candidates):
         return "UNIT_MISMATCH"
-    if expected_scopes and not any(
-        scope_matches(fact, expected_scopes) for fact in candidates
+    if (expected_scopes or expected_market_ids) and not any(
+        scope_matches(fact, expected_scopes, expected_market_ids)
+        for fact in candidates
     ):
         return "SCOPE_MISMATCH"
     return "BINDING_MISMATCH"

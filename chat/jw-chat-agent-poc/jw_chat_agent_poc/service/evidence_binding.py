@@ -69,6 +69,7 @@ def verify_claim_bindings(
     answer: str,
     facts: Sequence[EvidenceFact],
     expected_entities: Sequence[str] = (),
+    expected_market_ids: frozenset[str] = frozenset(),
     _allow_partial_exclusion: bool = True,
 ) -> BindingVerification:
     expected = expected_entity_set(question, expected_entities)
@@ -127,7 +128,7 @@ def verify_claim_bindings(
             and metric_matches(fact, claim_metrics)
             and period_matches(fact, requested_periods)
             and unit_matches(fact, token)
-            and scope_matches(fact, expected_scopes)
+            and scope_matches(fact, expected_scopes, expected_market_ids)
         )
         if not matching:
             if expected and all(not present(fact.entity) for fact in candidates):
@@ -142,7 +143,7 @@ def verify_claim_bindings(
                 if entity_matches(fact, expected)
                 and metric_matches(fact, claim_metrics)
                 and unit_matches(fact, token)
-                and scope_matches(fact, expected_scopes)
+                and scope_matches(fact, expected_scopes, expected_market_ids)
             )
             if (
                 requested_periods
@@ -159,6 +160,7 @@ def verify_claim_bindings(
                     requested_periods=requested_periods,
                     token=token,
                     expected_scopes=expected_scopes,
+                    expected_market_ids=expected_market_ids,
                 )
             )
             blocked_numbers.append(token)
@@ -214,6 +216,7 @@ def verify_claim_bindings(
                     answer=partial_answer,
                     facts=facts,
                     expected_entities=expected_entities,
+                    expected_market_ids=expected_market_ids,
                     _allow_partial_exclusion=False,
                 )
                 if remainder.status != "fail":
@@ -398,3 +401,35 @@ def expected_entities_from_result(question: str, result: Mapping[str, Any]) -> t
                 if isinstance(value, str) and value.strip():
                     entities.append(value.strip())
     return tuple(dict.fromkeys(entities))
+
+
+def expected_market_ids_from_result(result: Mapping[str, Any]) -> frozenset[str]:
+    """Return internal market identifiers pinned by resolution or routing."""
+    resolution = result.get("resolution")
+    if isinstance(resolution, Mapping):
+        resolved = _normalized_market_id(resolution.get("market_id"))
+        if resolved:
+            return frozenset({resolved})
+
+    market_ids: set[str] = set()
+    diagnostics = result.get("router_diagnostics")
+    routing_v4 = diagnostics.get("routing_v4") if isinstance(diagnostics, Mapping) else None
+    proposal = routing_v4.get("proposed_routing_signature") if isinstance(routing_v4, Mapping) else None
+    calls = proposal.get("proposed_calls") if isinstance(proposal, Mapping) else None
+    if not isinstance(calls, (list, tuple)):
+        return frozenset()
+    for call in calls:
+        args = call.get("normalized_args") if isinstance(call, Mapping) else None
+        if not isinstance(args, Mapping):
+            continue
+        for key in ("market_id", "ml_id", "cd_id"):
+            normalized = _normalized_market_id(args.get(key))
+            if normalized:
+                market_ids.add(normalized)
+    return frozenset(market_ids)
+
+
+def _normalized_market_id(value: object) -> str:
+    if isinstance(value, str | int) and not isinstance(value, bool):
+        return str(value).strip().casefold()
+    return ""

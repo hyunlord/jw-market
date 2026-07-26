@@ -41,6 +41,7 @@ class EvidenceFact:
     unit: str = ""
     source_grade: str = ""
     view: str = ""
+    market_id: str = ""
     operand_fact_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,7 +112,7 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
     facts: list[EvidenceFact] = []
     for label, value, path in values:
         if value:
-            entity, metric, fact_period, unit, view = _metric_binding(
+            entity, metric, fact_period, unit, view, market_id = _metric_binding(
                 data,
                 label,
                 period,
@@ -132,6 +133,7 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
                     unit=unit,
                     source_grade=grade_evidence_source(tool=tool, source=source).value,
                     view=view,
+                    market_id=market_id,
                 )
             )
     facts = _bind_derived_operands(facts)
@@ -394,7 +396,7 @@ def _metric_binding(
     label: str,
     default_period: str,
     path: str,
-) -> tuple[str, str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     entity = _metric_entity(data, path)
     metric = {
         "기간": "기간",
@@ -444,7 +446,8 @@ def _metric_binding(
     }.get(label, label)
     unit = _metric_unit(metric)
     view = str(data.get("view_type") or data.get("view") or "")
-    return entity, metric, _metric_period(default_period, path), unit, view
+    market_id = str(data.get("market_id") or data.get("ml_id") or data.get("cd_id") or "")
+    return entity, metric, _metric_period(default_period, path), unit, view, market_id
 
 
 def _metric_period(default_period: str, path: str) -> str:
@@ -633,6 +636,7 @@ def _fact(
     unit: str = "",
     source_grade: str = "",
     view: str = "",
+    market_id: str = "",
     operand_fact_ids: tuple[str, ...] = (),
 ) -> EvidenceFact:
     allowed = set(number_tokens(value))
@@ -669,6 +673,7 @@ def _fact(
         unit=str(unit).strip(),
         source_grade=str(source_grade).strip(),
         view=str(view).strip(),
+        market_id=str(market_id).strip(),
         operand_fact_ids=operand_fact_ids,
     )
 
