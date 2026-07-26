@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from pathlib import Path
 
 import openpyxl
 
 from pipeline.etl.io.iqvia_loader import iter_nsa_xlsx
+from pipeline.scripts.ingest_hook import rehearsal_nsa_split
 from pipeline.scripts.ingest_hook.rehearsal_nsa_split import split_workbook
 
 
@@ -130,3 +133,35 @@ def test_split_uses_19_plus_1_quarter_window_and_is_repeatable(
         f"{row['period_yyyy']}-Q{row['period_quarter']}"
         for row in iter_nsa_xlsx(latest)
     } == {periods[-1]}
+
+
+def test_split_uses_streaming_output_workbooks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source.xlsx"
+    history = tmp_path / "history.xlsx"
+    latest = tmp_path / "latest.xlsx"
+    _long_nsa(source)
+    calls: list[bool] = []
+    original = openpyxl.Workbook
+
+    def tracking_workbook(*args, **kwargs):
+        calls.append(bool(kwargs.get("write_only")))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rehearsal_nsa_split.openpyxl, "Workbook", tracking_workbook)
+
+    split_workbook(source, history, latest)
+
+    assert calls == [True, True]
+
+
+def test_split_does_not_materialize_source_rows() -> None:
+    tree = ast.parse(inspect.getsource(split_workbook))
+    comprehensions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp))
+    ]
+    assert comprehensions == []

@@ -56,7 +56,7 @@ def split_workbook(
             data_only=False,
         )
         try:
-            matches: list[tuple[str, tuple[str, ...], list[tuple[object, ...]]]] = []
+            matches: list[tuple[str, tuple[object, ...], tuple[str, ...]]] = []
             for sheet in workbook.worksheets:
                 rows = sheet.iter_rows(values_only=True)
                 try:
@@ -71,38 +71,38 @@ def split_workbook(
                     continue
                 if "DATA PERIOD" not in headers:
                     continue
-                matches.append((sheet.title, headers, [tuple(row) for row in rows]))
+                matches.append((sheet.title, raw_headers, headers))
             if len(matches) != 1:
                 raise ValueError(
                     "NSA split requires exactly one long-format data sheet; "
                     f"matched={len(matches)}"
                 )
-            sheet_name, headers, rows = matches[0]
+            sheet_name, raw_header, headers = matches[0]
             period_index = headers.index("DATA PERIOD")
-            quarters = sorted(
-                {
-                    _quarter(row[period_index])
-                    for row in rows
-                    if period_index < len(row) and row[period_index] not in (None, "")
-                }
-            )
+            source_sheet = workbook[sheet_name]
+            quarters_found: set[str] = set()
+            scan_rows = source_sheet.iter_rows(values_only=True)
+            next(scan_rows)
+            for row in scan_rows:
+                if period_index < len(row) and row[period_index] not in (None, ""):
+                    quarters_found.add(_quarter(row[period_index]))
+            quarters = sorted(quarters_found)
             if len(quarters) < 2:
                 raise ValueError("NSA split requires at least two quarters")
             latest_set = {quarters[-1]}
             history_set = set(quarters[-(history_quarters + 1) : -1])
 
-            history_book = openpyxl.Workbook()
-            latest_book = openpyxl.Workbook()
-            history_sheet = history_book.active
-            latest_sheet = latest_book.active
-            history_sheet.title = sheet_name
-            latest_sheet.title = sheet_name
-            raw_header = tuple(workbook[sheet_name].iter_rows(values_only=True).__next__())
+            history_book = openpyxl.Workbook(write_only=True)
+            latest_book = openpyxl.Workbook(write_only=True)
+            history_sheet = history_book.create_sheet(sheet_name)
+            latest_sheet = latest_book.create_sheet(sheet_name)
             _copy_row(history_sheet, raw_header)
             _copy_row(latest_sheet, raw_header)
             history_rows = 0
             latest_rows = 0
-            for row in rows:
+            output_rows = source_sheet.iter_rows(values_only=True)
+            next(output_rows)
+            for row in output_rows:
                 if period_index >= len(row) or row[period_index] in (None, ""):
                     continue
                 quarter = _quarter(row[period_index])
