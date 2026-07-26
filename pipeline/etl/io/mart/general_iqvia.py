@@ -15,10 +15,12 @@ from .general_utils import iqvia_source_priority, normalise_iqvia_channel, norma
 from ..iqvia_numeric import numeric_or_comma_string_to_double_sql
 from ..iqvia_parquet_cache import (
     available_iqvia_cache_atc4_codes_for_source_sha256,
+    available_iqvia_cache_quarters_for_source_sha256,
     build_iqvia_minio_cache_storage,
     iter_iqvia_parquet_cache_for_source_sha256,
 )
 from ..iqvia_scope import normalize_iqvia_atc4_codes, normalize_iqvia_quarters
+from .general_window import rolling_period_scope
 
 
 _RAW_ATC4_EXPR = (
@@ -96,6 +98,42 @@ def _approved_cache_source_sha256() -> str:
             "IQVIA_CACHE_SOURCE_SHA256 must be the approved 64-character source digest"
         )
     return value
+
+
+def _available_iqvia_quarters() -> tuple[str, ...]:
+    if _iqvia_cache_configured():
+        periods = available_iqvia_cache_quarters_for_source_sha256(
+            _approved_cache_source_sha256(),
+            build_iqvia_minio_cache_storage(),
+        )
+    elif os.environ.get("S4_INPUT_MODE", "raw") != "enriched":
+        conn = mariadb_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT DISTINCT period_label FROM {_raw_table_name()} "
+                    "WHERE period_label IS NOT NULL ORDER BY period_label"
+                )
+                periods = tuple(
+                    str(row.get("period_label") or "")
+                    for row in cur.fetchall()
+                )
+        finally:
+            conn.close()
+    else:
+        with duckdb.connect() as connection:
+            periods = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    f"""
+                    SELECT DISTINCT period_label
+                    FROM read_parquet('{iqvia_nsa_glob()}', union_by_name=true)
+                    WHERE period_label IS NOT NULL
+                    ORDER BY period_label
+                    """
+                ).fetchall()
+            )
+    return rolling_period_scope(periods, source="iqvia_nsa")
 
 
 def _raw_rows_to_base_frame(rows: Iterable[dict[str, Any]]) -> pd.DataFrame:
@@ -196,7 +234,11 @@ def load_iqvia_base_frame(
     quarters: Iterable[str] | None = None,
     atc4_codes: Iterable[str] | None = None,
 ) -> pd.DataFrame:
-    quarter_scope = normalize_iqvia_quarters(quarters)
+    quarter_scope = (
+        normalize_iqvia_quarters(quarters)
+        if quarters is not None
+        else _available_iqvia_quarters()
+    )
     atc4_scope = normalize_iqvia_atc4_codes(atc4_codes)
     if _iqvia_cache_configured():
         source_sha256 = _approved_cache_source_sha256()
@@ -391,7 +433,11 @@ def iter_iqvia_base_frames(
     max_rows: int | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame]]:
     """Yield one IQVIA ATC4 frame at a time without loading the full source."""
-    quarter_scope = normalize_iqvia_quarters(quarters)
+    quarter_scope = (
+        normalize_iqvia_quarters(quarters)
+        if quarters is not None
+        else _available_iqvia_quarters()
+    )
     requested_atc4 = normalize_iqvia_atc4_codes(atc4_codes)
     available_atc4 = requested_atc4 or _available_iqvia_atc4_codes(quarter_scope)
     for atc4_code in available_atc4:

@@ -16,6 +16,7 @@ import pandas as pd
 from .brand_key_normalize import best_name, extract_brand_base_name, normalize_brand_name
 from .general_catalog import _attach_catalog
 from .general_config import LOGGER, enriched_glob, ubist_glob
+from .general_window import filter_frame_to_rolling_window, rolling_period_scope
 from .general_rows import build_ubist_additive_partial, reduce_ubist_additive_partials
 from .general_utils import deduplicate_ubist_internal_medicine_rows, extract_atc4, ubist_channel_to_raw, ubist_specialty_to_raw
 
@@ -282,8 +283,53 @@ def _extract_atc4_code(value: object) -> str:
     return extract_atc4(value)[0]
 
 
+def _available_ubist_periods() -> tuple[str, ...]:
+    source_periods: list[str] = []
+    for path_text in glob.glob(ubist_glob()):
+        path = Path(path_text)
+        year = path.parent.parent.name.removeprefix("year=")
+        month = path.parent.name.removeprefix("month=")
+        if year.isdigit() and month.isdigit():
+            source_periods.append(f"{year}-{month}")
+    if source_periods:
+        return rolling_period_scope(source_periods, source="ubist")
+    if not glob.glob(enriched_glob()):
+        return ()
+    with duckdb.connect() as connection:
+        periods = tuple(
+            str(row[0])
+            for row in connection.execute(
+                f"""
+                SELECT DISTINCT period_yyyymm
+                FROM read_parquet({_sql_literal(enriched_glob())})
+                WHERE source='ubist' AND period_yyyymm IS NOT NULL
+                ORDER BY period_yyyymm
+                """
+            ).fetchall()
+        )
+    return rolling_period_scope(periods, source="ubist")
+
+
+def _ubist_period_filter_sql(periods: tuple[str, ...]) -> str:
+    period_values = sorted(
+        {
+            value
+            for period in periods
+            for value in (period, period.replace("-", ""))
+        }
+    )
+    if not period_values:
+        return ""
+    return (
+        "CAST(period_yyyymm AS VARCHAR) IN ("
+        + ", ".join(_sql_literal(value) for value in period_values)
+        + ")"
+    )
+
+
 def _raw_ubist_source_query(max_rows: int | None = None) -> str:
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
+    period_filter = _ubist_period_filter_sql(_available_ubist_periods())
     return f"""
         SELECT * EXCLUDE (filename, file_row_number),
                filename AS __source_file,
@@ -294,6 +340,7 @@ def _raw_ubist_source_query(max_rows: int | None = None) -> str:
           filename=true,
           file_row_number=true
         )
+        {"WHERE " + period_filter if period_filter else ""}
         {limit}
     """
 
@@ -750,7 +797,8 @@ def _normalize_raw_ubist_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame["channel"] = frame["channel"].map(ubist_channel_to_raw)
     frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
     frame = deduplicate_ubist_internal_medicine_rows(frame)
-    return frame.loc[frame["brand_key"] != ""].copy()
+    frame = frame.loc[frame["brand_key"] != ""].copy()
+    return filter_frame_to_rolling_window(frame, source="ubist")
 
 
 def iter_ubist_base_frames(
@@ -835,12 +883,14 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
     parquet_glob = enriched_glob(ml)
+    period_filter = _ubist_period_filter_sql(_available_ubist_periods())
     enriched_source = f"""
         SELECT * EXCLUDE (raw_rx_amt, raw_rx_qty),
                raw_rx_amt AS rx_amt,
                raw_rx_qty AS rx_qty
         FROM read_parquet({_sql_literal(parquet_glob)})
         WHERE source='ubist'
+          {"AND " + period_filter if period_filter else ""}
         {limit}
     """
     filtered_enriched = f"""
@@ -915,7 +965,8 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
     frame["channel"] = frame["channel"].map(ubist_channel_to_raw)
     frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
     frame = deduplicate_ubist_internal_medicine_rows(frame)
-    return frame.loc[frame["brand_key"] != ""].copy()
+    frame = frame.loc[frame["brand_key"] != ""].copy()
+    return filter_frame_to_rolling_window(frame, source="ubist")
 
 def ubist_measure_frame(base: pd.DataFrame, measure: str) -> pd.DataFrame:
     frame = base.copy()

@@ -48,7 +48,7 @@ def safe_ratio(numerator: Any, denominator: Any) -> float | None:
         return None
     return numerator_f / denominator_f
 
-def compute_cagr_value(end_value: Any, start_value: Any, years: int) -> float | None:
+def compute_cagr_value(end_value: Any, start_value: Any, years: float | int) -> float | None:
     ratio = safe_ratio(end_value, start_value)
     if ratio is None or ratio < 0:
         return None

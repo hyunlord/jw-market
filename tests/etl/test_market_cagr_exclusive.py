@@ -81,16 +81,17 @@ def test_brand_iqvia_uses_19_quarters_but_never_18_for_five_year_slot() -> None:
     assert brand_cagr_exclusive(eighteen_quarters)[0] is None
 
 
-def test_brand_monthly_history_does_not_use_adjacent_month_for_five_year_slot() -> None:
+def test_brand_monthly_uses_59_month_span_for_five_year_window() -> None:
     months = {
         f"{2021 + (4 + offset) // 12:04d}-{(4 + offset) % 12 + 1:02d}": 100.0 + offset
         for offset in range(60)
     }
+    expected = round(((159.0 / 100.0) ** (1 / (59 / 12)) - 1) * 100, 4)
 
     cagr_5y, cagr_3y = brand_cagr_exclusive(months)
 
-    assert cagr_5y is None
-    assert cagr_3y is not None
+    assert cagr_5y == pytest.approx(expected)
+    assert cagr_3y is None
 
 
 def _quarter_labels(start: str, end: str) -> tuple[str, ...]:

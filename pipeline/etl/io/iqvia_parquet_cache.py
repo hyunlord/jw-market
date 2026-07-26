@@ -112,6 +112,16 @@ def available_iqvia_cache_atc4_codes_for_source_sha256(
     )
 
 
+def available_iqvia_cache_quarters_for_source_sha256(
+    source_sha256: str,
+    storage: CacheStorage,
+) -> tuple[str, ...]:
+    """Return quarter labels from a verified cache manifest."""
+    identity = make_cache_identity(source_sha256, cache_schema_revision())
+    manifest = load_verified_manifest(identity, storage)
+    return tuple(sorted({partition.quarter for partition in manifest.partitions}))
+
+
 def _iter_iqvia_parquet_cache_identity(
     identity: CacheIdentity,
     storage: CacheStorage,
@@ -173,6 +183,7 @@ __all__ = [
     "build_iqvia_minio_cache_storage",
     "build_iqvia_parquet_cache",
     "available_iqvia_cache_atc4_codes_for_source_sha256",
+    "available_iqvia_cache_quarters_for_source_sha256",
     "cache_identity_for_source",
     "cache_schema_revision",
     "iter_iqvia_parquet_cache",

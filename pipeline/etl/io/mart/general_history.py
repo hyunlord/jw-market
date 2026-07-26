@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from .general_config import SKU_DIMENSION_COLUMNS
+from .general_config import GENERAL_HISTORY_YEARS, SKU_DIMENSION_COLUMNS
 from .layer3_compute_extended import compute_cagr_value, compute_hhi
 from .layer3_normalize import period_range_mat, period_sort_key, prev_month, prev_quarter_month, safe_div, same_month_prev_year
 
@@ -70,7 +70,23 @@ def cagr_from_history(history: dict[str, float], period: str, years: int) -> flo
     periods_per_year = 4 if "-Q" in period else 12
     target_ord = ord_now - periods_per_year * years
     start_period = next((p for p in history if period_sort_key(p) == target_ord), None)
-    return compute_cagr_value(history.get(period), history.get(start_period) if start_period else None, years)
+    elapsed_years: float | int = years
+    if start_period is None and years == GENERAL_HISTORY_YEARS:
+        elapsed_periods = periods_per_year * years - 1
+        start_period = next(
+            (
+                p
+                for p in history
+                if period_sort_key(p) == ord_now - elapsed_periods
+            ),
+            None,
+        )
+        elapsed_years = elapsed_periods / periods_per_year
+    return compute_cagr_value(
+        history.get(period),
+        history.get(start_period) if start_period else None,
+        elapsed_years,
+    )
 
 def hhi_for_period(part: pd.DataFrame) -> float | None:
     total = part["raw_value"].sum()

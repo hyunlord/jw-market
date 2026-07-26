@@ -16,6 +16,9 @@ IQVIA_NSA_DIR = Path(os.environ.get("S4_IQVIA_NSA_DIR", str(OUTPUT_DIR / "iqvia_
 UBIST_DIR = Path(os.environ.get("S4_UBIST_DIR", str(OUTPUT_DIR / "ubist")))
 DRY_RUN_DIR = Path("/tmp")
 ALLOWED_SOURCES = ("ubist", "iqvia_nsa")
+GENERAL_HISTORY_YEARS = 5
+UBIST_HISTORY_PERIODS = GENERAL_HISTORY_YEARS * 12
+IQVIA_HISTORY_PERIODS = GENERAL_HISTORY_YEARS * 4
 MEASURES_BY_SOURCE = {
     "ubist": ("sales", "volume"),
     "iqvia_nsa": ("sales", "unit", "dosage_unit", "counting_unit"),
