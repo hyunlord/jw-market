@@ -4,8 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 
+from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
+    BrandMetric,
     MarketDefinition,
 )
 from pipeline.scripts.api.models.dynamic_market import DynamicMarketRequest
@@ -22,6 +24,37 @@ def _canonical_bytes(value: object) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _hemlibra_ranking_fixture() -> dict[str, object]:
+    names_and_values = (
+        ("헴리브라", 700.0),
+        ("애드베이트", 600.0),
+        ("애디노베이트", 500.0),
+        ("그린모노", 400.0),
+        ("진타솔로퓨즈", 300.0),
+        ("노보세븐알티", 200.0),
+        ("잔여브랜드", 100.0),
+    )
+    brands = tuple(
+        BrandMetric(
+            brand_key=name,
+            brand_name=name,
+            atc4_code="B02D1",
+            total_value=value,
+            market_share_pct=value / 28.0,
+            rank=rank,
+            latest_period="2026-Q1",
+            latest_value=value,
+            history_by_period={"2026-Q1": value},
+        )
+        for rank, (name, value) in enumerate(names_and_values, start=1)
+    )
+    ranking = brand_ranking(brands, focus=brands[0])
+    return {
+        "top_brands": ranking["top_brands"],
+        "rankings_by_year": ranking["rankings_by_year"],
+    }
 
 
 def capture_api_response_samples(
@@ -93,12 +126,13 @@ def capture_api_response_samples(
 
     def fake_strategic_payload(**kwargs: object) -> dict[str, object]:
         brand = str(kwargs["focus_brand_key"])
-        return {
-            "data": {
-                "kpi": {"target_brand_sales": 1.0},
-                "selected_brand": brand,
-            }
+        data: dict[str, object] = {
+            "kpi": {"target_brand_sales": 1.0},
+            "selected_brand": brand,
         }
+        if brand == "헴리브라":
+            data["brand_ranking_stacked"] = _hemlibra_ranking_fixture()
+        return {"data": data}
 
     monkeypatch.setattr(
         dynamic_market_route,
@@ -164,3 +198,30 @@ def test_api_response_golden_v2_is_separate_and_covers_required_markets(
         expected_response = sample["canonical_response"]
         assert observed[name] == expected_response
         assert hashlib.sha256(_canonical_bytes(expected_response)).hexdigest() == sample["canonical_sha256"]
+
+
+def test_api_response_golden_v2_locks_hemlibra_selected_plus_five_contract() -> None:
+    contract = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+    hemlibra = next(
+        sample
+        for sample in contract["samples"]
+        if sample["name"] == "cd_hemlibra"
+    )
+    ranking = hemlibra["canonical_response"]["result"]["data"]["brand_ranking_stacked"]
+
+    assert ranking["top_brands"] == [
+        "헴리브라",
+        "애드베이트",
+        "애디노베이트",
+        "그린모노",
+        "진타솔로퓨즈",
+        "노보세븐알티",
+        "기타",
+    ]
+    rows = ranking["rankings_by_year"]["2026"]
+    visible = [row for row in rows if not row["is_others"]]
+    assert len(visible) == 6
+    assert visible[0]["brand"] == "헴리브라"
+    assert visible[0]["rank"] == 1
+    assert len({row["brand"] for row in visible}) == 6
+    assert abs(sum(row["ms_pct"] for row in rows) - 100.0) < 1e-9

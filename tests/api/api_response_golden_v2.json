@@ -1167,7 +1167,92 @@
             "kpi": {
               "target_brand_sales": 1.0
             },
-            "selected_brand": "헴리브라"
+            "selected_brand": "헴리브라",
+            "brand_ranking_stacked": {
+              "top_brands": [
+                "헴리브라",
+                "애드베이트",
+                "애디노베이트",
+                "그린모노",
+                "진타솔로퓨즈",
+                "노보세븐알티",
+                "기타"
+              ],
+              "rankings_by_year": {
+                "2026": [
+                  {
+                    "brand": "헴리브라",
+                    "company": "헴리브라",
+                    "rank": 1,
+                    "value": 700.0,
+                    "ms_pct": 25.0,
+                    "is_target": true,
+                    "is_jw": false,
+                    "is_others": false
+                  },
+                  {
+                    "brand": "애드베이트",
+                    "company": "애드베이트",
+                    "rank": 2,
+                    "value": 600.0,
+                    "ms_pct": 21.428571428571427,
+                    "is_target": false,
+                    "is_jw": false,
+                    "is_others": false
+                  },
+                  {
+                    "brand": "애디노베이트",
+                    "company": "애디노베이트",
+                    "rank": 3,
+                    "value": 500.0,
+                    "ms_pct": 17.857142857142858,
+                    "is_target": false,
+                    "is_jw": false,
+                    "is_others": false
+                  },
+                  {
+                    "brand": "그린모노",
+                    "company": "그린모노",
+                    "rank": 4,
+                    "value": 400.0,
+                    "ms_pct": 14.285714285714285,
+                    "is_target": false,
+                    "is_jw": false,
+                    "is_others": false
+                  },
+                  {
+                    "brand": "진타솔로퓨즈",
+                    "company": "진타솔로퓨즈",
+                    "rank": 5,
+                    "value": 300.0,
+                    "ms_pct": 10.714285714285714,
+                    "is_target": false,
+                    "is_jw": false,
+                    "is_others": false
+                  },
+                  {
+                    "brand": "노보세븐알티",
+                    "company": "노보세븐알티",
+                    "rank": 6,
+                    "value": 200.0,
+                    "ms_pct": 7.142857142857142,
+                    "is_target": false,
+                    "is_jw": false,
+                    "is_others": false
+                  },
+                  {
+                    "brand": "기타",
+                    "company": null,
+                    "is_target": false,
+                    "is_jw": false,
+                    "is_others": true,
+                    "rank": null,
+                    "value": 100.0,
+                    "ms_pct": 3.571428571428571
+                  }
+                ]
+              }
+            }
           },
           "view": "strategic_cd",
           "market_meta": {
@@ -1175,7 +1260,7 @@
           }
         }
       },
-      "canonical_sha256": "3b2f7f27f85ccbd52246550273c5f0afac194d8c283567efa86cd8646ed0caa2"
+      "canonical_sha256": "0e517ca9f5d1fa7dad6762567f6fff86ad6ef9f13ef2494d417df27b5528b195"
     },
     {
       "name": "cd_winnerf",
