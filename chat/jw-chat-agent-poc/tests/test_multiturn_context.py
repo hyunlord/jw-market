@@ -196,7 +196,7 @@ def test_generic_demonstrative_without_resolvable_slot_fails_closed() -> None:
     assert resolved.resolved_question == "그건?"
 
 
-def test_resolve_anaphora_uses_anchor_market_for_ranked_brand_requery() -> None:
+def test_resolve_anaphora_keeps_first_rank_target_for_ranked_brand_requery() -> None:
     previous = ConversationTurn(
         question="상위 3개",
         answer="1위 로수젯",
@@ -205,8 +205,99 @@ def test_resolve_anaphora_uses_anchor_market_for_ranked_brand_requery() -> None:
 
     resolved = resolve_anaphora("그중 1위 브랜드 점유율 추이는?", previous)
 
-    assert resolved.resolved_question == "리바로 시장의 로수젯 점유율 추이는?"
+    assert resolved.resolved_question == "로수젯 점유율 추이는?"
+    assert resolved.brand == "로수젯"
     assert resolved.reusable_ranked is None
+
+
+def test_first_rank_followup_persists_ranked_target_for_next_pronoun(monkeypatch) -> None:
+    store = SessionStore()
+    conversation_id = "f41-first-rank-slot-precedence"
+    routed_questions: list[str] = []
+
+    store.conversations.record_exchange(
+        conversation_id,
+        "고지혈증 시장 상위 5개",
+        "1위 로수젯",
+        slots=ConversationSlots(
+            anchor_brand="리바로",
+            market="ml_006",
+            market_definition="고지혈증 시장",
+            metric="시장점유율",
+            ranked_brands=("로수젯", "리피토", "리바로"),
+        ),
+    )
+
+    def capture_answer(_resolver, _factory, _conversation_id, routed_question, *_args, **_kwargs):
+        routed_questions.append(routed_question)
+        canonical_brand = "리바로" if routed_question.startswith("리바로 시장의 ") else "로수젯"
+        return {
+            "answer": f"{canonical_brand}의 시장점유율을 확인했습니다.",
+            "resolution": {"canonical_brand": canonical_brand},
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "render_data": {
+                        "anchor_brand": canonical_brand,
+                        "market_id": "ml_006",
+                        "metric": "시장점유율",
+                        "period": "2026-05",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", capture_answer)
+
+    first_snapshot = store.conversations.get_or_create(conversation_id).turns[-1].slots
+    _answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "그중 1위 점유율은?",
+        "live",
+        conversation_id,
+        use_direct_agent_loop=True,
+    )
+    second_snapshot = store.conversations.get_or_create(conversation_id).turns[-1].slots
+    _answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "걔 최근 추세는?",
+        "live",
+        conversation_id,
+        use_direct_agent_loop=True,
+    )
+    third_snapshot = store.conversations.get_or_create(conversation_id).turns[-1].slots
+
+    assert first_snapshot.ranked_brands[0] == "로수젯"
+    assert first_snapshot.anchor_brand == "리바로"
+    assert first_snapshot.market == "ml_006"
+    assert first_snapshot.metric == "시장점유율"
+    assert routed_questions == ["로수젯 점유율은?", "로수젯 최근 추세는?"]
+    assert second_snapshot.anchor_brand == "로수젯"
+    assert second_snapshot.market == "ml_006"
+    assert second_snapshot.metric == "시장점유율"
+    assert third_snapshot.anchor_brand == "로수젯"
+    assert third_snapshot.market == "ml_006"
+    assert third_snapshot.metric == "시장점유율"
+
+
+def test_first_rank_followup_fails_closed_without_ranked_slots() -> None:
+    previous = ConversationTurn(
+        question="고지혈증 시장을 확인해줘",
+        answer="시장 정보를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006"),
+    )
+
+    resolved = resolve_anaphora("그중 1위 점유율은?", previous)
+
+    assert resolved.resolved_question == "그중 1위 점유율은?"
+    assert resolved.brand is None
+    assert resolved.unresolved_reference is True
 
 
 def test_resolve_anaphora_inherits_market_for_common_market_pronouns() -> None:
