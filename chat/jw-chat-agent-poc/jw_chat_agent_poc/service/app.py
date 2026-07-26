@@ -2157,72 +2157,20 @@ def _file_ready_prefix(result: dict[str, Any]) -> str:
     return cleanup_markdown_answer(str(result.get("answer") or ""))
 
 
-_VERIFIED_EVIDENCE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("임상시험", ("clinicaltrials_", "mfds_clinical_", "search_clinical")),
-    ("허가", ("mfds_permission_", "search_drug_info")),
-    ("안전성", ("openfda_", "search_safety")),
-    ("환자수", ("hira_", "get_disease_stats")),
-    ("최신 자료", ("web_search", "search_news")),
+_VERIFIED_EVIDENCE_PROGRESS_RE = re.compile(
+    r"^(?:(?:임상시험|허가|안전성|환자수|최신 자료)\s+\d+건)"
+    r"(?:\s*·\s*(?:임상시험|허가|안전성|환자수|최신 자료)\s+\d+건)*"
+    r"\s*의 근거를 확인했습니다\.\s*"
+    r"확인된 자료를 종합해 답변을 정리하고 있어요\.\s*"
 )
 
 
 def _stream_ready_prefix(result: dict[str, Any]) -> str:
-    return _file_ready_prefix(result) or _verified_evidence_prefix(result)
+    return _file_ready_prefix(result)
 
 
-def _verified_evidence_prefix(result: dict[str, Any]) -> str:
-    if result.get("research_mode") == "deep":
-        return ""
-    if result.get("context_scope") in {ContextScope.FILE.value, ContextScope.MIXED.value}:
-        return ""
-    diagnostics = result.get("router_diagnostics")
-    if not isinstance(diagnostics, dict) or diagnostics.get("mode") != "tool_use_agent":
-        return ""
-
-    completed_groups: list[str] = []
-    calls = result.get("tool_calls")
-    if not isinstance(calls, list):
-        return ""
-    for label, tool_prefixes in _VERIFIED_EVIDENCE_GROUPS:
-        evidence = {
-            json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-            for call in calls
-            if isinstance(call, dict)
-            and str(call.get("tool") or "").startswith(tool_prefixes)
-            for item in _verified_evidence_items(call)
-        }
-        if evidence:
-            completed_groups.append(f"{label} {len(evidence)}건")
-    if not completed_groups:
-        return ""
-    joined = "·".join(completed_groups)
-    return f"{joined}의 근거를 확인했습니다. 확인된 자료를 종합해 답변을 정리하고 있어요."
-
-
-def _verified_evidence_items(call: dict[str, Any]) -> tuple[Any, ...]:
-    if str(call.get("status") or "").lower() in {"error", "failed", "unavailable"}:
-        return ()
-    data = call.get("render_data")
-    if not isinstance(data, dict) or data.get("ok") is False:
-        return ()
-    for key in ("evidence", "items", "rows"):
-        items = data.get(key)
-        if isinstance(items, (list, tuple)) and items:
-            return tuple(items)
-    payload = data.get("payload")
-    if isinstance(payload, dict):
-        for key in ("studies", "results", "items"):
-            items = payload.get(key)
-            if isinstance(items, (list, tuple)) and items:
-                return tuple(items)
-    return ()
-
-
-def _prepend_verified_evidence_prefix(answer: str, result: dict[str, Any]) -> str:
-    prefix = _verified_evidence_prefix(result)
-    if not prefix or answer.startswith(prefix):
-        return answer
-    return f"{prefix}\n\n{answer}" if answer else prefix
+def _strip_verified_evidence_progress(answer: str) -> str:
+    return _VERIFIED_EVIDENCE_PROGRESS_RE.sub("", answer, count=1)
 
 
 def _sse_initial_text_events(
@@ -2631,7 +2579,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
     if not file_context_fact and market_contract_allowed:
         safe_answer = _apply_evidence_binding_gate(active_question, safe_answer, result)
-    safe_answer = _prepend_verified_evidence_prefix(safe_answer, result)
+    safe_answer = _strip_verified_evidence_progress(safe_answer)
     trace = trace_envelope(
         question=question,
         result=result,

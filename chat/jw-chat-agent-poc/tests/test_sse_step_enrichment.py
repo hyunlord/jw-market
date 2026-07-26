@@ -300,90 +300,39 @@ def _verified_external_result() -> dict:
     }
 
 
-def test_verified_evidence_prefix_uses_only_successful_user_facing_sources() -> None:
-    result = _verified_external_result()
-    result["tool_calls"].extend(
-        [
-            {
-                "tool": "openfda_label_search",
-                "status": "error",
-                "render_data": {"ok": False, "evidence": []},
-            },
-            {
-                "tool": "local_molecule_lookup",
-                "status": "live",
-                "render_data": {"ok": True, "evidence": [{"metric": "성분"}]},
-            },
-        ]
+def test_verified_evidence_progress_stripper_accepts_spacing_variants() -> None:
+    progress = (
+        "임상시험 1건 · 허가 1건의 근거를 확인했습니다.\n"
+        "확인된 자료를 종합해 답변을 정리하고 있어요.  "
     )
 
-    prefix = service_app._verified_evidence_prefix(result)
-
-    assert prefix == (
-        "임상시험 1건·허가 1건의 근거를 확인했습니다. "
-        "확인된 자료를 종합해 답변을 정리하고 있어요."
-    )
-    assert "clinicaltrials" not in prefix
-    assert "mfds" not in prefix
-    assert "openfda" not in prefix
-    assert "성분" not in prefix
-    final_text = service_app._prepend_verified_evidence_prefix("최종 분석입니다.", result)
-    assert final_text.startswith(prefix)
-    assert service_app._prepend_verified_evidence_prefix(final_text, result) == final_text
+    assert service_app._strip_verified_evidence_progress(f"{progress}최종 분석입니다.") == "최종 분석입니다."
+    assert service_app._strip_verified_evidence_progress("최종 분석입니다.") == "최종 분석입니다."
 
 
-def test_verified_evidence_prefix_counts_nested_results_without_double_counting() -> None:
+def test_verified_evidence_progress_is_not_part_of_final_answer() -> None:
     result = _verified_external_result()
-    result["tool_calls"] = [
-        {
-            "tool": "clinicaltrials_v2_search",
-            "status": "live",
-            "render_data": {
-                "payload": {
-                    "studies": [
-                        {"nctId": "NCT001"},
-                        {"nctId": "NCT002"},
-                    ]
-                }
-            },
-        },
-        {
-            "tool": "clinicaltrials_v2_search",
-            "status": "live",
-            "render_data": {
-                "payload": {
-                    "studies": [
-                        {"nctId": "NCT002"},
-                        {"nctId": "NCT003"},
-                    ]
-                }
-            },
-        },
-    ]
 
-    assert service_app._verified_evidence_prefix(result).startswith("임상시험 3건의 근거")
+    final = service_app.compute_final_answer("리바로 임상과 허가", result, "c")
+
+    assert "근거를 확인했습니다" not in final.text
+    assert "답변을 정리하고 있어요" not in final.text
 
 
-def test_verified_evidence_prefix_rejects_empty_failed_and_non_external_results() -> None:
-    empty = _verified_external_result()
-    empty["tool_calls"] = [
-        {
-            "tool": "clinicaltrials_v2_search",
-            "status": "error",
-            "render_data": {"ok": False, "evidence": []},
-        }
-    ]
-    market = _verified_external_result()
-    market["router_diagnostics"] = {"mode": "agent_loop"}
-    deep = _verified_external_result()
-    deep["research_mode"] = "deep"
+def test_verified_evidence_progress_is_removed_after_whitespace_cleanup() -> None:
+    result = _verified_external_result()
+    result["answer"] = (
+        "임상시험 1건·허가 1건의 근거를 확인했습니다.\n"
+        "확인된 자료를 종합해 답변을 정리하고 있어요.  최종 분석입니다."
+    )
 
-    assert service_app._verified_evidence_prefix(empty) == ""
-    assert service_app._verified_evidence_prefix(market) == ""
-    assert service_app._verified_evidence_prefix(deep) == ""
+    final = service_app.compute_final_answer("리바로 임상과 허가", result, "c")
+
+    assert "근거를 확인했습니다" not in final.text
+    assert "답변을 정리하고 있어요" not in final.text
 
 
-def test_verified_evidence_prefix_streams_before_slow_final_synthesis(monkeypatch) -> None:
+def test_verified_evidence_progress_is_not_streamed_as_answer_delta(monkeypatch) -> None:
     compute_started = threading.Event()
     compute_finished = threading.Event()
 
@@ -398,9 +347,8 @@ def test_verified_evidence_prefix_streams_before_slow_final_synthesis(monkeypatc
         compute_started.set()
         time.sleep(0.15)
         compute_finished.set()
-        prefix = service_app._verified_evidence_prefix(args[1])
         return service_app.FinalAnswer(
-            text=f"{prefix}\n\n최종 분석입니다.",
+            text="최종 분석입니다.",
             charts=[],
             timing={},
             trace={},
@@ -420,21 +368,10 @@ def test_verified_evidence_prefix_streams_before_slow_final_synthesis(monkeypatc
         None,
         limiter=None,
     )
-    first_delta = None
-    events: list[str] = []
-    for event in stream:
-        events.append(event)
-        if event.startswith("event: delta\n"):
-            first_delta = event
-            break
-
-    assert first_delta is not None
-    assert "임상시험 1건·허가 1건의 근거를 확인했습니다" in first_delta
-    assert compute_started.is_set() is False
-    assert compute_finished.is_set() is False
-
-    events.extend(stream)
+    events = list(stream)
     rendered = "".join(events)
     assert compute_started.is_set() is True
     assert compute_finished.is_set() is True
-    assert rendered.count("임상시험 1건·허가 1건의 근거를 확인했습니다") == 1
+    assert "임상시험 1건·허가 1건의 근거를 확인했습니다" not in rendered
+    assert "최종 분석입니다." in rendered
+    assert "event: step\n" in rendered
