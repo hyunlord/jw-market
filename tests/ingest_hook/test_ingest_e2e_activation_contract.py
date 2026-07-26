@@ -144,7 +144,7 @@ def test_trigger_production_overlay_is_not_shadow_or_staging() -> None:
         "mart_publication_provenance"
     )
     assert env["BUILD_GIT_SHA"]["value"] == (
-        "d2d7234dde8a1405a8bf1c80c391880b426706cc"
+        "78281911a174b3f0ef14999745fa18eb3c09d4b3"
     )
     assert env["INGEST_JOB_IMAGE"]["value"] == config.DEFAULT_JOB_IMAGE
     assert "INGEST_LOAD_STAGING_ROOT" not in env

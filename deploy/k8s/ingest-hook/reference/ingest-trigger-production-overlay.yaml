@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
         - name: trigger
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:b810813ad2532ee1df833867fa217fa055ed195f1a33dc66d9de9d38e9391aeb
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:651a4cf898f0eee9e63f9ef93fe4be52d557b8f7fa50399994deb089b968c550
           imagePullPolicy: IfNotPresent
           env:
             - $patch: replace
@@ -56,9 +56,9 @@ spec:
             - name: INGEST_COMPLETION_WEBHOOK_ATTEMPTS
               value: "4"
             - name: BUILD_GIT_SHA
-              value: d2d7234dde8a1405a8bf1c80c391880b426706cc
+              value: 78281911a174b3f0ef14999745fa18eb3c09d4b3
             - name: INGEST_JOB_IMAGE
-              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:b810813ad2532ee1df833867fa217fa055ed195f1a33dc66d9de9d38e9391aeb
+              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:651a4cf898f0eee9e63f9ef93fe4be52d557b8f7fa50399994deb089b968c550
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT
