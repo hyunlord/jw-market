@@ -34,14 +34,17 @@ from jw_chat_agent_poc.tool_use.specs import (
     QueryInput,
     ToolSpec,
 )
-from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall, is_hira_disease_code
+from jw_chat_agent_poc.tools.external import (
+    ExternalApiClient,
+    ExternalCall,
+    is_hira_disease_code,
+)
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
-    AbsentReimbursementStore,
     HiraReimbursementHttpClient,
     ReimbursementLookupService,
+    configured_reimbursement_store,
 )
 from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
-
 
 _DESCRIPTIONS = {record.name: record.description for record in TOOL_DESCRIPTION_CATALOG}
 _FAILED_STATUSES = frozenset({"error", "unsupported", "inapplicable", "no_data"})
@@ -64,7 +67,7 @@ class ExternalToolRegistry:
         self._resolver = resolver
         self._external = external
         self._reimbursement = reimbursement or ReimbursementLookupService(
-            store=AbsentReimbursementStore(),
+            store=configured_reimbursement_store(),
             realtime=HiraReimbursementHttpClient(),
         )
 

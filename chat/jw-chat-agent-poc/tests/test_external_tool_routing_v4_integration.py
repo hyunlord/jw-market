@@ -472,7 +472,7 @@ def test_enforce_reimbursement_uses_hira_criteria(monkeypatch) -> None:
         return ReimbursementCriterion(
             brand_name=brand,
             title="항혈관내피성장인자 주사제 급여기준",
-            criterion_text="신생혈관성 연령관련 황반변성 급여 기준",
+            raw_text="신생혈관성 연령관련 황반변성 급여 기준",
             source_date="2026-06-24",
             collected_at=datetime(2026, 7, 25, tzinfo=UTC),
             notice_number="보건복지부 고시 제2026-101호",

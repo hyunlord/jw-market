@@ -5,17 +5,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import requests
 
+from jw_chat_agent_poc.tool_use.reimbursement_evidence import reimbursement_envelope
 from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
     AbsentReimbursementStore,
     CacheStatus,
     HiraReimbursementHttpClient,
+    MariaDbReimbursementStore,
     ReimbursementCacheResult,
     ReimbursementCriterion,
     ReimbursementLookupService,
     ReimbursementStoreError,
+    configured_reimbursement_store,
 )
-
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
@@ -62,7 +64,7 @@ def _criterion(*, collected_at: datetime = NOW) -> ReimbursementCriterion:
     return ReimbursementCriterion(
         brand_name="아일리아",
         title="항혈관내피성장인자 주사제 급여기준",
-        criterion_text="신생혈관성 연령관련 황반변성에서 투여 간격 기준을 적용한다.",
+        raw_text="신생혈관성 연령관련 황반변성에서 투여 간격 기준을 적용한다.",
         source_date="2026-06-24",
         collected_at=collected_at,
         notice_number="보건복지부 고시 제2026-101호",
@@ -206,6 +208,143 @@ def test_future_cache_timestamp_is_not_treated_as_fresh() -> None:
     assert refreshes == ["아일리아"]
 
 
+def test_cache_entry_without_raw_text_falls_back_to_realtime() -> None:
+    empty = ReimbursementCriterion(
+        brand_name="아일리아",
+        title="파싱 불완전 행",
+        raw_text=" \n\t ",
+        source_date="2026-06-24",
+        collected_at=NOW,
+        notice_number=None,
+        source_url="https://www.hira.or.kr/rc/example.do",
+    )
+    live = _criterion()
+    realtime = _Realtime(live)
+
+    result = ReimbursementLookupService(
+        store=_Store(ReimbursementCacheResult(CacheStatus.FRESH, empty, empty.source_date)),
+        realtime=realtime,
+        now=lambda: NOW,
+    ).lookup("아일리아")
+
+    assert result.ok is True
+    assert result.retrieval == "realtime"
+    assert result.data == live
+    assert realtime.calls == ["아일리아"]
+
+
+class _DbCursor:
+    def __init__(self, row: dict | None) -> None:
+        self.row = row
+        self.sql = ""
+        self.params = None
+
+    def execute(self, sql: str, params=None) -> None:
+        self.sql = sql
+        self.params = params
+
+    def fetchone(self):
+        return self.row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+
+class _DbConnection:
+    def __init__(self, row: dict | None) -> None:
+        self.cursor_instance = _DbCursor(row)
+        self.closed = False
+
+    def cursor(self) -> _DbCursor:
+        return self.cursor_instance
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_mariadb_store_reads_only_authoritative_raw_text() -> None:
+    raw_text = "1. 대상\n  가. 신생혈관성 연령관련 황반변성\n2. 투여 기준\n  14회 이내"
+    connection = _DbConnection(
+        {
+            "brand_name": "아일리아",
+            "title": "항혈관내피성장인자 주사제",
+            "raw_text": raw_text,
+            "notice_date": "2026-06-24",
+            "collected_at": NOW.replace(hour=9, minute=30, tzinfo=None),
+            "notice_no": "보건복지부 고시 제2026-101호",
+            "source_url": "https://www.hira.or.kr/rc/example.do",
+        }
+    )
+
+    result = MariaDbReimbursementStore(connect=lambda: connection).get_reimbursement_criteria(
+        "아일리아"
+    )
+
+    assert result.data is not None
+    assert result.data.raw_text == raw_text
+    assert result.data.collected_at.tzinfo is UTC
+    assert result.source_date == "2026-06-24"
+    sql = connection.cursor_instance.sql
+    assert "hira_benefit_notice_brand" in sql
+    assert "hira_benefit_notice" in sql
+    assert "raw_text" in sql
+    assert "target_condition" not in sql
+    assert "exclusion_rule" not in sql
+    assert "dosage_limit" not in sql
+    assert connection.cursor_instance.params == ("아일리아",)
+    assert connection.closed is True
+
+
+def test_mariadb_store_is_read_only_for_realtime_fallback() -> None:
+    store = MariaDbReimbursementStore(connect=lambda: _DbConnection(None))
+
+    assert store.put_reimbursement_criteria(_criterion()) is False
+
+
+def test_configured_store_requires_complete_chat_cache_credentials(monkeypatch) -> None:
+    for name in (
+        "CHAT_CACHE_DB_HOST",
+        "CHAT_CACHE_DB_NAME",
+        "CHAT_CACHE_DB_USER",
+        "CHAT_CACHE_DB_PASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    assert isinstance(configured_reimbursement_store(), AbsentReimbursementStore)
+
+    monkeypatch.setenv("CHAT_CACHE_DB_HOST", "db.internal")
+    monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
+    monkeypatch.setenv("CHAT_CACHE_DB_USER", "chat")
+    monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
+
+    assert isinstance(configured_reimbursement_store(), MariaDbReimbursementStore)
+
+
+def test_reimbursement_evidence_exposes_raw_text_without_reconstruction() -> None:
+    criterion = _criterion()
+    result = ReimbursementLookupService(
+        store=_Store(
+            ReimbursementCacheResult(CacheStatus.FRESH, criterion, criterion.source_date)
+        ),
+        realtime=_Realtime(error=AssertionError("fresh cache must not call HIRA")),
+        now=lambda: NOW,
+    ).lookup("아일리아")
+
+    envelope = reimbursement_envelope(result, subject="아일리아")
+
+    assert envelope.ok is True
+    assert len(envelope.evidence) == 1
+    fact = envelope.evidence[0]
+    assert fact.metric == "HIRA 보험인정기준 원문 (AI 요약·해석·재구성 없음)"
+    assert fact.source_locator == criterion.raw_text
+    assert "target_condition" not in envelope.raw
+    assert "exclusion_rule" not in envelope.raw
+    assert "dosage_limit" not in envelope.raw
+
+
 class _Response:
     def __init__(self, text: str, *, url: str, status_code: int = 200) -> None:
         self.text = text
@@ -257,7 +396,7 @@ def test_http_client_uses_bounded_hira_search_and_parses_detail() -> None:
 
     assert result is not None
     assert result.brand_name == "아일리아"
-    assert "투여 간격 기준" in result.criterion_text
+    assert "투여 간격 기준" in result.raw_text
     assert result.source_date == "2026-06-24"
     assert result.notice_number == "보건복지부 고시 제2026-101호"
     assert len(session.calls) == 2
@@ -388,7 +527,7 @@ def test_http_client_uses_only_verified_detail_container() -> None:
     result = HiraReimbursementHttpClient(session=session).fetch("아일리아")
 
     assert result is not None
-    assert result.criterion_text == "아일리아는 확인된 투여기준을 적용한다."
+    assert result.raw_text == "아일리아는 확인된 투여기준을 적용한다."
 
 
 def test_http_client_fails_closed_without_verified_detail_container() -> None:

@@ -8,8 +8,9 @@ from pydantic import ValidationError
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_claim
-from jw_chat_agent_poc.tools.external.hira_reimbursement import ReimbursementLookupResult
-
+from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    ReimbursementLookupResult,
+)
 
 _REIMBURSEMENT_TOOL: Final[str] = "hira_reimbursement_criteria"
 
@@ -35,22 +36,20 @@ def reimbursement_envelope(
         )
 
     data = result.data
-    notice = f"{data.notice_number} · " if data.notice_number else ""
-    locator = f"{notice}{data.title}: {data.criterion_text}"
     fact = EvidenceFact(
         fact_id=f"hira_reimbursement:{subject}:{data.source_date or 'undated'}",
         subject=subject,
-        metric="보험인정기준",
+        metric="HIRA 보험인정기준 원문 (AI 요약·해석·재구성 없음)",
         value=None,
         unit=None,
         period=data.source_date,
         source_name="심사평가원(HIRA) 보험인정기준",
-        source_locator=locator,
+        source_locator=data.raw_text,
         raw_ref=data.source_url,
     )
     return ToolEnvelope(
         ok=True,
-        preview=f"{subject} HIRA 보험인정기준 확인",
+        preview=f"{subject} HIRA 보험인정기준 원문 확인 (AI 요약·해석·재구성 없음)",
         evidence=(fact,),
         raw={
             "retrieval": result.retrieval,

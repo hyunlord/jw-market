@@ -733,7 +733,7 @@ def test_forced_legacy_reimbursement_question_uses_hira_without_mart_text(
         return ReimbursementCriterion(
             brand_name=brand,
             title="항혈관내피성장인자 주사제 급여기준",
-            criterion_text="신생혈관성 연령관련 황반변성 투여기준",
+            raw_text="신생혈관성 연령관련 황반변성 투여기준",
             source_date="2026-06-24",
             collected_at=datetime(2026, 7, 25, tzinfo=UTC),
             notice_number="보건복지부 고시 제2026-120호",
@@ -1371,7 +1371,7 @@ def test_fixture_tool_pack_executes_all_23_specs_with_evidence(monkeypatch) -> N
         lambda _client, brand: ReimbursementCriterion(
             brand_name=brand,
             title="항혈관내피성장인자 주사제 급여기준",
-            criterion_text="신생혈관성 연령관련 황반변성 투여기준",
+            raw_text="신생혈관성 연령관련 황반변성 투여기준",
             source_date="2026-06-24",
             collected_at=datetime(2026, 7, 25, tzinfo=UTC),
             notice_number="보건복지부 고시 제2026-120호",
