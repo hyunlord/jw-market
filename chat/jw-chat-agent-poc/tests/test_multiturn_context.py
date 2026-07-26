@@ -431,6 +431,168 @@ def test_unrelated_topic_never_inherits_previous_brand_after_pronoun_extension()
     assert resolved.unresolved_reference is False
 
 
+def test_bare_market_followups_use_grounded_previous_market() -> None:
+    previous = ConversationTurn(
+        question="고지혈증 시장 HHI",
+        answer="고지혈증 시장의 HHI를 확인했습니다.",
+        slots=ConversationSlots(
+            market="ml_006",
+            market_definition="고지혈증 시장",
+            metric="HHI",
+            view="market_landscape",
+        ),
+    )
+
+    assert requires_previous_turn("시장 규모는?") is True
+    assert requires_previous_turn("일반뷰로는?") is True
+
+    market_size = resolve_anaphora("시장 규모는?", previous)
+    general_view = resolve_anaphora("일반뷰로는?", previous)
+
+    assert market_size.resolved_question == "고지혈증 시장 규모는?"
+    assert market_size.unresolved_reference is False
+    assert general_view.resolved_question == "고지혈증 시장 일반뷰로는?"
+    assert general_view.unresolved_reference is False
+
+
+def test_bare_market_followups_fail_closed_without_grounded_market() -> None:
+    previous = ConversationTurn(
+        question="리바로 매출",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출"),
+    )
+
+    for question in ("시장 규모는?", "일반뷰로는?"):
+        resolved = resolve_anaphora(question, previous)
+
+        assert resolved.resolved_question == question
+        assert resolved.unresolved_reference is True
+
+
+def test_bare_brand_switch_inherits_grounded_metric_through_existing_brand_resolver() -> None:
+    previous = ConversationTurn(
+        question="리바로 매출",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출"),
+    )
+    known_brand = lambda question: "리바로젯" in question
+
+    assert requires_previous_turn("리바로젯은?", known_brand=known_brand) is True
+
+    resolved = resolve_anaphora("리바로젯은?", previous, known_brand=known_brand)
+
+    assert resolved.resolved_question == "리바로젯 매출은?"
+    assert resolved.brand == "리바로젯"
+    assert resolved.interpretation_notice == "리바로젯의 매출로 이해했어요."
+    assert resolved.unresolved_reference is False
+
+
+def test_bare_brand_switch_never_inherits_without_metric_or_known_brand() -> None:
+    no_metric = ConversationTurn(
+        question="리바로 알려줘",
+        answer="리바로를 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로"),
+    )
+    with_metric = ConversationTurn(
+        question="리바로 매출",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출"),
+    )
+    known_brand = lambda question: "리바로젯" in question
+
+    no_metric_result = resolve_anaphora("리바로젯은?", no_metric, known_brand=known_brand)
+    unknown_brand_result = resolve_anaphora("없는브랜드는?", with_metric, known_brand=known_brand)
+
+    assert no_metric_result.resolved_question == "리바로젯은?"
+    assert no_metric_result.unresolved_reference is True
+    assert unknown_brand_result.resolved_question == "없는브랜드는?"
+    assert unknown_brand_result.unresolved_reference is False
+    assert requires_previous_turn("없는브랜드는?", known_brand=known_brand) is False
+
+
+def test_f35_followups_hydrate_persisted_context_and_reach_tool_execution(monkeypatch) -> None:
+    class SharedHistory:
+        def __init__(self, conversation_id: str, turn: ConversationTurn) -> None:
+            self.conversation_id = conversation_id
+            self.turn = turn
+
+        def latest_turn(self, requested_conversation_id: str):
+            assert requested_conversation_id == self.conversation_id
+            return self.turn
+
+    captured: list[str] = []
+
+    def capture_answer(_resolver, _factory, _conversation_id, routed_question, *_args, **_kwargs):
+        captured.append(routed_question)
+        return {
+            "answer": "도구 실행 결과",
+            "sources": ["UBIST"],
+            "tool_calls": [{"tool": "get_brand_metric", "render_data": {}}],
+        }
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", capture_answer)
+    cases = (
+        (
+            "f35-market-size",
+            "시장 규모는?",
+            ConversationTurn(
+                question="고지혈증 시장 HHI",
+                answer="고지혈증 시장의 HHI를 확인했습니다.",
+                slots=ConversationSlots(
+                    market="ml_006",
+                    market_definition="고지혈증 시장",
+                    metric="HHI",
+                ),
+            ),
+            "고지혈증 시장 규모는?",
+        ),
+        (
+            "f35-general-view",
+            "일반뷰로는?",
+            ConversationTurn(
+                question="고지혈증 시장 HHI",
+                answer="고지혈증 시장의 HHI를 확인했습니다.",
+                slots=ConversationSlots(
+                    market="ml_006",
+                    market_definition="고지혈증 시장",
+                    metric="HHI",
+                ),
+            ),
+            "고지혈증 시장 일반뷰로는?",
+        ),
+        (
+            "f35-brand-switch",
+            "리바로젯은?",
+            ConversationTurn(
+                question="리바로 매출",
+                answer="리바로 매출을 확인했습니다.",
+                slots=ConversationSlots(anchor_brand="리바로", metric="매출"),
+            ),
+            "리바로젯 매출은?",
+        ),
+    )
+
+    for conversation_id, question, previous_turn, expected_question in cases:
+        captured.clear()
+        item = _answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            _fake_agent_factory,
+            question,
+            "live",
+            conversation_id,
+            use_direct_agent_loop=True,
+            conversation_history=SharedHistory(conversation_id, previous_turn),
+        )
+
+        assert captured == [expected_question]
+        assert item["result"]["tool_calls"][0]["tool"] == "get_brand_metric"
+        span_names = [span["name"] for span in item["result"]["_qa_spans"]]
+        assert "conversation_history_fetch" in span_names
+        assert "conversation_history_replay" in span_names
+        assert "anaphora_resolution" in span_names
+
+
 def test_rc3_followups_hydrate_context_and_reach_the_tool_execution_path(monkeypatch) -> None:
     class SharedHistory:
         def __init__(self, conversation_id: str, turn: ConversationTurn) -> None:
