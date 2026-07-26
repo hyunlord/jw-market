@@ -144,6 +144,43 @@ def test_supports_only_bounded_production_categories() -> None:
     assert activation.supports("ubist") is False
 
 
+def test_copy_columns_is_independent_of_staging_and_target_ordinal_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = activation.TableEvidence(
+        schema="jw_ingest_stage_test",
+        table="iqvia_nsa_quarterly_raw",
+    )
+    target = activation.TableTarget(
+        target_schema="jw_ingest_shadow_iqvia",
+        table="iqvia_nsa_quarterly_raw",
+    )
+    observed = iter(
+        [
+            ("period_label", "payload", "period_ym"),
+            ("payload", "period_ym", "period_label"),
+        ]
+    )
+    monkeypatch.setattr(
+        activation,
+        "_writable_columns",
+        lambda *_args, **_kwargs: next(observed),
+    )
+
+    columns, existing, staged = activation._copy_columns(
+        object(),
+        evidence,
+        target,
+        target_exists=True,
+    )
+
+    assert columns == "`payload`, `period_label`, `period_ym`"
+    assert existing == (
+        "existing.`payload`, existing.`period_label`, existing.`period_ym`"
+    )
+    assert staged == "staged.`payload`, staged.`period_label`, staged.`period_ym`"
+
+
 def test_activate_requires_declarative_target_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

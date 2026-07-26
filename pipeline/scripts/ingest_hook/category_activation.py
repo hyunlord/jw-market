@@ -675,16 +675,17 @@ def _copy_columns(
     staged_columns = _writable_columns(cursor, evidence.schema, evidence.table)
     if target_exists:
         target_columns = _writable_columns(cursor, target.target_schema, target.table)
-        if staged_columns != target_columns:
+        if set(staged_columns) != set(target_columns):
             raise ActivationError(
                 "staging/target writable-column mismatch for "
                 f"{evidence.table}: staging={staged_columns} target={target_columns}"
             )
-    columns = ", ".join(f"`{column}`" for column in staged_columns)
+    canonical_columns = tuple(sorted(staged_columns))
+    columns = ", ".join(f"`{column}`" for column in canonical_columns)
     return (
         columns,
-        ", ".join(f"existing.`{column}`" for column in staged_columns),
-        ", ".join(f"staged.`{column}`" for column in staged_columns),
+        ", ".join(f"existing.`{column}`" for column in canonical_columns),
+        ", ".join(f"staged.`{column}`" for column in canonical_columns),
     )
 
 
