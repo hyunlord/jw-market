@@ -7,8 +7,10 @@ from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
-from .models import NoticeListItem, ParsedNotice
-from .typed_extraction import extract_structured
+from .detail_html import parse_detail_document
+from .ingress_gate import DetailIngressEvidence, failed_ingress_reason
+from .models import NoticeListItem, ParsedNotice, ParseStatus
+from .typed_extraction import StructuredParseResult, extract_structured
 
 _DATE_RE = re.compile(r"\b(20\d{2})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?\b")
 _NOTICE_RE = re.compile(r"(?:고시\s*)?(제\s*\d{4}\s*-\s*\d+\s*호)")
@@ -130,102 +132,43 @@ def parse_list_html(html: str, *, base_url: str) -> tuple[NoticeListItem, ...]:
     return tuple(result)
 
 
-class _DetailParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.visible: list[str] = []
-        self.headings: list[tuple[str, str, list[str]]] = []
-        self.blocks: list[str] = []
-        self.table_rows: list[tuple[str, ...]] = []
-        self.title_parts: list[str] = []
-        self._heading_level: str | None = None
-        self._heading_parts: list[str] = []
-        self._current_section: list[str] | None = None
-        self._block_tag: str | None = None
-        self._block_parts: list[str] = []
-        self._table_row: list[str] | None = None
-        self._table_cell: list[str] | None = None
-        self._ignored_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        lowered = tag.lower()
-        if lowered in {"script", "style", "noscript"}:
-            self._ignored_depth += 1
-            return
-        if self._ignored_depth:
-            return
-        if lowered in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            self._heading_level = lowered
-            self._heading_parts = []
-        if lowered in {"p", "li"}:
-            self._block_tag = lowered
-            self._block_parts = []
-        if lowered == "tr":
-            self._table_row = []
-        if lowered in {"th", "td"} and self._table_row is not None:
-            self._table_cell = []
-
-    def handle_data(self, data: str) -> None:
-        if self._ignored_depth:
-            return
-        value = _clean(data)
-        if not value:
-            return
-        self.visible.append(value)
-        if self._heading_level is not None:
-            self._heading_parts.append(value)
-        elif self._current_section is not None:
-            self._current_section.append(value)
-        if self._block_tag is not None:
-            self._block_parts.append(value)
-        if self._table_cell is not None:
-            self._table_cell.append(value)
-
-    def handle_endtag(self, tag: str) -> None:
-        lowered = tag.lower()
-        if lowered in {"script", "style", "noscript"} and self._ignored_depth:
-            self._ignored_depth -= 1
-            return
-        if lowered == self._heading_level:
-            heading = _clean(" ".join(self._heading_parts))
-            values: list[str] = []
-            self.headings.append((lowered, heading, values))
-            self._current_section = values
-            if lowered == "h1" and not self.title_parts:
-                self.title_parts.append(heading)
-            self._heading_level = None
-            self._heading_parts = []
-        if lowered == self._block_tag:
-            block = _clean(" ".join(self._block_parts))
-            if block:
-                self.blocks.append(block)
-            self._block_tag = None
-            self._block_parts = []
-        if lowered in {"th", "td"} and self._table_cell is not None:
-            self._table_row.append(_clean(" ".join(self._table_cell)))
-            self._table_cell = None
-        if lowered == "tr" and self._table_row is not None:
-            cells = tuple(value for value in self._table_row if value)
-            if cells:
-                self.table_rows.append(cells)
-            self._table_row = None
-
-
 def parse_detail_html(
     html: str,
     *,
     source_notice_id: str,
     source_url: str,
 ) -> ParsedNotice:
-    parser = _DetailParser()
-    parser.feed(html)
-    raw_text = _clean(" ".join(parser.visible))
-    structured = extract_structured(
-        raw_text=raw_text,
-        headings=parser.headings,
-        table_rows=parser.table_rows,
-        blocks=parser.blocks,
+    document = parse_detail_document(html)
+    raw_text = document.raw_text
+    # Broken transport/page structure is FAILED before typed extraction. A valid
+    # page with no applicable clauses remains the extractor's NOT_APPLICABLE.
+    ingress_failure = failed_ingress_reason(
+        DetailIngressEvidence(
+            raw_text=raw_text,
+            h1_headings=tuple(
+                heading
+                for level, heading, _values in document.headings
+                if level == "h1"
+            ),
+            structural_html_valid=document.structural_html_valid,
+            content_container_present=document.content_container_present,
+        )
     )
+    if ingress_failure is None:
+        structured = extract_structured(
+            raw_text=raw_text,
+            headings=list(document.headings),
+            table_rows=list(document.table_rows),
+            blocks=list(document.blocks),
+        )
+    else:
+        structured = StructuredParseResult(
+            target_condition=None,
+            exclusion_rule=None,
+            dosage_limit=None,
+            parse_status=ParseStatus.FAILED,
+            failed_fields=(ingress_failure,),
+        )
     notice_match = _NOTICE_RE.search(raw_text)
     notice_no = (
         re.sub(r"\s+", "", notice_match.group(1))
@@ -235,7 +178,7 @@ def parse_detail_html(
     return ParsedNotice(
         source_notice_id=source_notice_id,
         source_url=source_url,
-        title=parser.title_parts[0] if parser.title_parts else None,
+        title=document.title,
         notice_no=notice_no,
         notice_date=_parse_date(raw_text),
         target_condition=structured.target_condition,

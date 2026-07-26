@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from pipeline.scripts.crawler.hira_benefit import parser as hira_parser
 from pipeline.scripts.crawler.hira_benefit.models import ParseStatus
 from pipeline.scripts.crawler.hira_benefit.parser import (
     parse_detail_html,
@@ -65,7 +68,8 @@ def test_list_parser_extracts_current_hira_popup_identity() -> None:
 def test_detail_parser_marks_ok_only_when_all_structured_fields_exist() -> None:
     html = """
     <main>
-      <h1>[약제] 고시 제2025-189호 안내</h1>
+      <h1>보험인정기준 상세내용</h1>
+      <div class="title">[약제] 고시 제2025-189호 안내</div>
       <dl><dt>관련근거</dt><dd>고시 제2025-189호</dd>
           <dt>게시일</dt><dd>2025-11-28</dd></dl>
       <h2>투여대상</h2><p>성인 중 LDL-C 조절이 필요한 환자</p>
@@ -91,7 +95,8 @@ def test_detail_parser_marks_ok_only_when_all_structured_fields_exist() -> None:
 
 def test_detail_parser_preserves_raw_text_and_marks_optional_fields_applicable() -> None:
     html = """
-    <main><h1>고시 제2026-10호</h1><p>게시일 2026-01-03</p>
+    <main><h1>보험인정기준 상세내용</h1>
+    <div class="title">고시 제2026-10호</div><p>게시일 2026-01-03</p>
     <h2>투여대상</h2><p>특정 환자군</p></main>
     """
 
@@ -120,12 +125,94 @@ def test_detail_parser_marks_failed_without_synthesizing_values() -> None:
     assert parsed.target_condition is None
     assert parsed.exclusion_rule is None
     assert parsed.dosage_limit is None
-    assert parsed.failed_fields == (
-        "target_condition",
-        "exclusion_rule",
-        "dosage_limit",
-    )
+    assert parsed.failed_fields == ("ingress:missing_expected_structure",)
     assert parsed.raw_text == "첨부파일에서 세부 기준을 확인하십시오."
+
+
+@pytest.mark.parametrize("html", ("", " \n\t "))
+def test_detail_parser_rejects_empty_ingress(html: str) -> None:
+    parsed = parse_detail_html(
+        html,
+        source_notice_id="empty-ingress",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=empty-ingress",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:empty_raw_text",)
+
+
+def test_detail_parser_rejects_unclosed_structural_html() -> None:
+    parsed = parse_detail_html(
+        "<main><h1>보험인정기준 상세내용</h1><p>정상 본문",
+        source_notice_id="broken-html",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=broken-html",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:malformed_html",)
+
+
+def test_detail_parser_rejects_missing_expected_heading() -> None:
+    parsed = parse_detail_html(
+        "<html><body><main><h1>일반 게시물</h1><p>정상 본문</p></main></body></html>",
+        source_notice_id="missing-structure",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=missing-structure",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:missing_expected_structure",)
+
+
+def test_detail_parser_rejects_missing_content_container() -> None:
+    parsed = parse_detail_html(
+        "<html><h1>보험인정기준 상세내용</h1><p>정상처럼 보이는 본문</p></html>",
+        source_notice_id="missing-container",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=missing-container",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:missing_expected_structure",)
+
+
+def test_detail_parser_rejects_http_error_page_body() -> None:
+    parsed = parse_detail_html(
+        "<html><head><title>Internal Server Error</title></head>"
+        "<body><p>HTTP Status 500</p></body></html>",
+        source_notice_id="http-error",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=http-error",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:http_error_page",)
+
+
+def test_detail_parser_does_not_extract_fields_after_ingress_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(**_kwargs: object) -> None:
+        pytest.fail("typed extraction must not run after ingress failure")
+
+    monkeypatch.setattr(hira_parser, "extract_structured", fail_if_called)
+
+    parsed = parse_detail_html(
+        "<html><body><p>HTTP Status 500</p></body></html>",
+        source_notice_id="no-extraction",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=no-extraction",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+
+
+def test_detail_parser_keeps_normal_document_without_typed_clauses_not_applicable() -> None:
+    parsed = parse_detail_html(
+        "<main><h1>보험인정기준 상세내용</h1>"
+        "<p>요양급여의 적용기준 및 방법에 대한 세부사항을 개정한다.</p></main>",
+        source_notice_id="normal-no-clauses",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=normal-no-clauses",
+    )
+
+    assert parsed.parse_status is ParseStatus.NOT_APPLICABLE
+    assert parsed.failed_fields == ()
 
 
 def test_stored_raw_text_ignores_common_attachment_download_boilerplate() -> None:
