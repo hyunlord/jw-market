@@ -186,7 +186,11 @@ def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(mo
         "blocked_count": 1,
         "blocked_reasons": ("missing_share_evidence",),
     }
-    assert qa_trace["final"] == {"disposition": "unavailable", "body_empty": False}
+    assert qa_trace["final"] == {
+        "disposition": "unavailable",
+        "body_empty": False,
+        "failure_kind": "tool_error",
+    }
 
 
 def test_trace_envelope_preserves_explicit_typed_gate_decision(monkeypatch) -> None:

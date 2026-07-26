@@ -2686,6 +2686,9 @@ def _apply_relational_claim_gate(question: str, answer: str, result: dict[str, A
         "blocked_reasons": combined_reasons,
         "disposition": disposition,
     }
+    failure_kind = gate.failure_kind or str(previous_items.get("failure_kind") or "") or None
+    if failure_kind:
+        result["_qa_claim_gate"]["failure_kind"] = failure_kind
     return gate.answer
 
 
@@ -2729,6 +2732,9 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         "binding_status": gate.status,
         "blocked_numbers": gate.blocked_numbers,
     }
+    failure_kind = gate.failure_kind or str(previous_items.get("failure_kind") or "") or None
+    if failure_kind:
+        result["_qa_claim_gate"]["failure_kind"] = failure_kind
     return gate.answer
 
 

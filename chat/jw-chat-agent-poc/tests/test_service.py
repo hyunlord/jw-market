@@ -259,7 +259,11 @@ def test_compute_final_answer_reports_blocked_failed_trend_in_qa_trace() -> None
     assert final.text.strip()
     assert qa_trace["claims"]["blocked_count"] >= 1
     assert qa_trace["claims"]["blocked_reasons"]
-    assert qa_trace["final"] == {"disposition": "unavailable", "body_empty": False}
+    assert qa_trace["final"] == {
+        "disposition": "unavailable",
+        "body_empty": False,
+        "failure_kind": "tool_error",
+    }
 
 
 def test_compute_final_answer_does_not_recreate_recent_trend_from_cached_fallback() -> None:

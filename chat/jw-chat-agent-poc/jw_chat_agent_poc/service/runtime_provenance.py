@@ -12,6 +12,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOO
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
+from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
 from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers as _ungrounded_numbers
 from jw_chat_agent_poc.service.routing_v4_trace import project_routing_v4_qa_trace
 
@@ -166,8 +167,24 @@ def _qa_trace(
     claim_gate = result.get("_qa_claim_gate")
     claim_items = claim_gate if isinstance(claim_gate, Mapping) else {}
     disposition = str(claim_items.get("disposition") or "")
+    detected_failure_kind = str(claim_items.get("failure_kind") or "") or detect_failure_kind(
+        answer,
+        tuple(
+            call
+            for call in (result.get("tool_calls") or ())
+            if isinstance(call, Mapping)
+        ),
+    )
+    if detected_failure_kind and disposition in {"", "answered"}:
+        disposition = "unavailable"
     if not disposition:
         disposition = "empty" if not answer.strip() else "answered"
+    final = {
+        "disposition": disposition,
+        "body_empty": not bool(answer.strip()),
+    }
+    if detected_failure_kind:
+        final["failure_kind"] = detected_failure_kind
     qa_trace = {
         "request": {
             "request_id": trace_id,
@@ -191,10 +208,7 @@ def _qa_trace(
             "blocked_count": int(claim_items.get("blocked_claim_count") or 0),
             "blocked_reasons": tuple(str(item) for item in claim_items.get("blocked_reasons", ()) if str(item)),
         },
-        "final": {
-            "disposition": disposition,
-            "body_empty": not bool(answer.strip()),
-        },
+        "final": final,
     }
     routing_v4 = project_routing_v4_qa_trace(diagnostic_items)
     if routing_v4 is not None:

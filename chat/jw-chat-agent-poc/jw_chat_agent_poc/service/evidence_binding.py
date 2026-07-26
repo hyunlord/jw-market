@@ -9,6 +9,7 @@ from typing import Any, Final
 from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_exact_name
 from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact, evidence_from_calls, number_tokens
 from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade
+from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
 from jw_chat_agent_poc.service.evidence_binding_rules import (
     IDENTIFIER_KEYS,
     binding_claim_number_tokens,
@@ -61,6 +62,7 @@ class BindingVerification:
     blocked_claim_count: int
     blocked_reasons: tuple[str, ...]
     blocked_numbers: tuple[str, ...]
+    failure_kind: str | None = None
 
 
 def verify_claim_bindings(
@@ -76,6 +78,17 @@ def verify_claim_bindings(
     metrics = question_metrics(question)
     requested_periods = explicit_periods(question)
     expected_scopes = question_view_scopes(question)
+    detected_failure_kind = detect_failure_kind(answer)
+    if detected_failure_kind:
+        return BindingVerification(
+            answer=answer,
+            status="fail",
+            disposition="unavailable",
+            blocked_claim_count=0,
+            blocked_reasons=(f"FAILURE_KIND_{detected_failure_kind.upper()}",),
+            blocked_numbers=(),
+            failure_kind=detected_failure_kind,
+        )
     if "환자수" in metrics and not expected:
         blocked_numbers = claim_number_tokens(answer)
         return BindingVerification(

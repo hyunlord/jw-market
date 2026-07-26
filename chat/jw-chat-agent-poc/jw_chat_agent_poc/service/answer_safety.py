@@ -13,6 +13,7 @@ from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note,
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
 from jw_chat_agent_poc.service.deep_report_cleanup import repair_plain_table_urls, slim_source_tables
+from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 
@@ -180,6 +181,7 @@ class RelationalClaimGateResult:
     blocked_claim_count: int
     blocked_reasons: tuple[str, ...]
     disposition: str
+    failure_kind: str | None = None
 
 
 def generation_attempts() -> int:
@@ -2026,6 +2028,7 @@ def enforce_relational_numeric_claims_with_trace(
 
     blocked_to_empty = blocked_count > 0 and not _has_substantive_answer(revised)
     failed_to_empty = _has_failed_relational_call(call_items) and not _has_substantive_answer(revised)
+    detected_failure_kind = detect_failure_kind(revised, call_items)
     if blocked_to_empty or failed_to_empty:
         revised = _typed_relational_failure_fallback(question, call_items)
         disposition = "unavailable"
@@ -2033,6 +2036,8 @@ def enforce_relational_numeric_claims_with_trace(
         disposition = "cached_partial"
     elif failed_metrics:
         disposition = "partial" if successful_metrics else "unavailable"
+    elif detected_failure_kind:
+        disposition = "unavailable"
     else:
         disposition = "answered"
     return RelationalClaimGateResult(
@@ -2040,6 +2045,7 @@ def enforce_relational_numeric_claims_with_trace(
         blocked_claim_count=blocked_count,
         blocked_reasons=tuple(dict.fromkeys(blocked_reasons)),
         disposition=disposition,
+        failure_kind=detected_failure_kind,
     )
 
 
