@@ -230,7 +230,7 @@ def _parser() -> argparse.ArgumentParser:
         "--index-url",
         default=(
             "https://www.hira.or.kr/rc/insu/insuadtcrtr/"
-            "InsuAdtCrtrList.do"
+            "InsuAdtCrtrList.do?pgmid=HIRAA030069000400"
         ),
     )
     prepare.add_argument("--base-url", default="https://www.hira.or.kr")

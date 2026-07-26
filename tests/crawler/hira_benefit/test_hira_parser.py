@@ -36,6 +36,31 @@ def test_list_parser_extracts_notice_identity_date_and_absolute_url() -> None:
     assert len(rows[0].listing_fingerprint) == 64
 
 
+def test_list_parser_extracts_current_hira_popup_identity() -> None:
+    html = """
+    <table><tbody><tr>
+      <td class="col-gubun">고시</td>
+      <td class="col-num2">고시 제2026-133호 (약제)</td>
+      <td class="col-tit"><a href="#none"
+        onclick="viewInsuAdtCrtr(3, '20260701', '1', '0005', '3'); return false;">
+        Zastaprazan 경구제(품명: 자큐보정20밀리그램 등)
+      </a></td>
+      <td class="col-date">2026-07-01</td>
+    </tr></tbody></table>
+    """
+
+    rows = parse_list_html(html, base_url="https://www.hira.or.kr")
+
+    assert len(rows) == 1
+    assert rows[0].source_notice_id == "20260701-1-0005"
+    assert rows[0].notice_date.isoformat() == "2026-07-01"
+    assert rows[0].title.startswith("Zastaprazan")
+    assert rows[0].source_url == (
+        "https://www.hira.or.kr/rc/insu/insuadtcrtr/"
+        "InsuAdtCrtrPopup.do?mtgHmeDd=20260701&sno=1&mtgMtrRegSno=0005"
+    )
+
+
 def test_detail_parser_marks_ok_only_when_all_structured_fields_exist() -> None:
     html = """
     <main>

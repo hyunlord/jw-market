@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 
 from .http_client import HiraRequestPolicy
 
@@ -39,7 +39,7 @@ class HiraWorkflowInput:
     )
     base_url: str = "https://www.hira.or.kr"
     first_run_mode: str | None = None
-    recent_limit: int | None = None
+    notice_date_boundary: str | None = None
     manifest_path: str | None = None
     manifest_sha256: str | None = None
     chunk_index: int | None = None
@@ -54,12 +54,21 @@ class HiraWorkflowInput:
             raise ValueError("run_id is required")
         if not self.index_url.startswith("https://www.hira.or.kr/"):
             raise ValueError("index_url must use the approved HIRA HTTPS origin")
-        if self.first_run_mode not in {None, "backfill_all", "recent_n"}:
-            raise ValueError("first_run_mode must be backfill_all or recent_n")
-        if self.first_run_mode == "recent_n" and (
-            self.recent_limit is None or self.recent_limit <= 0
-        ):
-            raise ValueError("recent_limit must be positive for recent_n")
+        if self.first_run_mode not in {None, "backfill_all", "date_boundary"}:
+            raise ValueError(
+                "first_run_mode must be backfill_all or date_boundary"
+            )
+        if self.first_run_mode == "date_boundary":
+            if self.notice_date_boundary is None:
+                raise ValueError(
+                    "notice_date_boundary is required for date_boundary"
+                )
+            try:
+                date.fromisoformat(self.notice_date_boundary)
+            except ValueError as error:
+                raise ValueError(
+                    "notice_date_boundary must be an ISO date"
+                ) from error
         if self.chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
         if self.manifest_path is not None:
@@ -78,12 +87,11 @@ class HiraWorkflowInput:
 
     @property
     def expected_seconds(self) -> int:
-        selected = self.recent_limit or self.chunk_size
         request_seconds = (
             self.request_policy.delay_after_response_seconds
             + 0.20
         )
-        return max(60, int(selected * request_seconds))
+        return max(60, int(self.chunk_size * request_seconds))
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,8 +25,8 @@ def test_zero_row_index_fails_closed() -> None:
     config = HiraWorkflowInput(
         run_id="run",
         state_root="/tmp/state",
-        first_run_mode="recent_n",
-        recent_limit=10,
+        first_run_mode="date_boundary",
+        notice_date_boundary="2026-07-01",
     )
 
     with pytest.raises(RuntimeError, match="zero notices"):

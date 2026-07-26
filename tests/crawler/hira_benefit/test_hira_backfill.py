@@ -8,6 +8,7 @@ from pipeline.scripts.crawler.hira_benefit.backfill import (
     compare_manifest_state,
     next_pending_chunk,
 )
+from pipeline.scripts.crawler.hira_benefit.backfill_cli import _parser
 from pipeline.scripts.crawler.hira_benefit.change_detection import StoredNoticeState
 from pipeline.scripts.crawler.hira_benefit.models import NoticeListItem
 
@@ -34,6 +35,16 @@ def test_manifest_splits_4577_notices_into_ten_approved_chunks() -> None:
     assert manifest.chunk_count == 10
     assert [len(chunk.items) for chunk in manifest.chunks] == [500] * 9 + [77]
     assert len(manifest.manifest_sha256) == 64
+
+
+def test_prepare_defaults_to_the_live_hira_page_identity() -> None:
+    args = _parser().parse_args(
+        ["prepare", "--manifest", "/tmp/hira-manifest.json"]
+    )
+
+    assert args.index_url.endswith(
+        "InsuAdtCrtrList.do?pgmid=HIRAA030069000400"
+    )
 
 
 def test_next_pending_chunk_resumes_after_last_complete_receipt() -> None:

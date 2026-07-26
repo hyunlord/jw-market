@@ -59,7 +59,7 @@ def plan_discovered_items(
         rows,
         stored=stored,
         first_run_mode=config.first_run_mode,
-        recent_limit=config.recent_limit,
+        notice_date_boundary=config.notice_date_boundary,
     )
 
 
