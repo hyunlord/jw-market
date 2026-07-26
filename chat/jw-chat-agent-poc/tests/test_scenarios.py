@@ -26,6 +26,32 @@ class _McpResponse:
         return None
 
 
+def _clinicaltrials_tools_list_response() -> _McpResponse:
+    return _McpResponse(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    {
+                        "name": "search_studies",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "pageSize": {
+                                    "type": "number",
+                                    "minimum": 1,
+                                    "maximum": 20,
+                                }
+                            },
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+
 class _DiseaseSearchExternal(ExternalApiClient):
     def __init__(self) -> None:
         super().__init__(mode="fixture")
@@ -570,6 +596,8 @@ def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
         assert url == "http://ct-mcp/json"
         assert "application/json" in headers["Accept"]
         assert "text/event-stream" in headers["Accept"]
+        if json["method"] == "tools/list":
+            return _clinicaltrials_tools_list_response()
         assert json["method"] == "tools/call"
         return _McpResponse(
             {
@@ -613,6 +641,8 @@ def test_clinicaltrials_live_search_uses_mcp_text_event_stream(monkeypatch):
 
 def test_clinicaltrials_live_search_uses_structured_content_when_text_is_empty(monkeypatch):
     def fake_post(url, json, headers, timeout):
+        if json["method"] == "tools/list":
+            return _clinicaltrials_tools_list_response()
         return _McpResponse(
             {
                 "jsonrpc": "2.0",

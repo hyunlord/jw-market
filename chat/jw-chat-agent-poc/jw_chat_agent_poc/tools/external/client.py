@@ -56,6 +56,14 @@ MCP_DIRECT_URL_ENV_BY_SOURCE = {
     HIRA_MCP_SOURCE: HIRA_MCP_URL_ENV,
     CLINICAL_TRIALS_MCP_SOURCE: CLINICAL_TRIALS_MCP_URL_ENV,
 }
+MCP_SCHEMA_GUARDED_TOOLS = frozenset(
+    {
+        "search_studies",
+        "search_drug_labels",
+        "search_drug_adverse_events",
+    }
+)
+
 
 def resolve_patent_ingredient_query(text: str) -> str | None:
     normalized = " ".join(str(text or "").casefold().replace("-", " ").split())
@@ -292,7 +300,11 @@ class ExternalApiClient:
         safe_url = self.redact_url(url)
         start = time.monotonic()
         try:
-            result = McpJsonClient(url, timeout_s=self.timeout_s).call_tool(spec["mcp_tool"], spec["arguments"])
+            client = McpJsonClient(url, timeout_s=self.timeout_s)
+            if spec["mcp_tool"] in MCP_SCHEMA_GUARDED_TOOLS:
+                result = client.call_tool_checked(spec["mcp_tool"], spec["arguments"])
+            else:
+                result = client.call_tool(spec["mcp_tool"], spec["arguments"])
         except McpClientError as exc:
             elapsed = round((time.monotonic() - start) * 1000, 1)
             safe_reason = self.redact_url(exc.message)
