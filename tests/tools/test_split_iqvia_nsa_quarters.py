@@ -6,6 +6,7 @@ import inspect
 from pathlib import Path
 
 import openpyxl
+import pytest
 
 from pipeline.etl.io.iqvia_loader import iter_nsa_xlsx
 from pipeline.scripts.ingest_hook import rehearsal_nsa_split
@@ -198,3 +199,35 @@ def test_split_accepts_excel_datetime_period_cells(tmp_path: Path) -> None:
 
     assert result.history_quarters == ("2025-Q4", "2026-Q1")
     assert result.latest_quarters == ("2026-Q2",)
+
+
+def test_split_ignores_unkeyed_grand_total_rows(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    history = tmp_path / "history.xlsx"
+    latest = tmp_path / "latest.xlsx"
+    _long_nsa(source)
+    workbook = openpyxl.load_workbook(source)
+    sheet = workbook.active
+    sheet.append([None, None, None, None, "Grand Total", 3, 6, 9, 12, 15])
+    workbook.save(source)
+    workbook.close()
+
+    result = split_workbook(source, history, latest)
+
+    assert result.history_rows == 2
+    assert result.latest_rows == 1
+
+
+def test_split_rejects_invalid_period_on_keyed_data_row(tmp_path: Path) -> None:
+    source = tmp_path / "source.xlsx"
+    history = tmp_path / "history.xlsx"
+    latest = tmp_path / "latest.xlsx"
+    _long_nsa(source)
+    workbook = openpyxl.load_workbook(source)
+    sheet = workbook.active
+    sheet.append(["A-invalid", "M", "Brand", "Pack", "Grand Total", 1, 2, 3, 4, 5])
+    workbook.save(source)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="invalid IQVIA NSA period_label"):
+        split_workbook(source, history, latest)

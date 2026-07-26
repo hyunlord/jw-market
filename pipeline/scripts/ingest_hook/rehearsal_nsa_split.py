@@ -9,7 +9,11 @@ import re
 
 import openpyxl
 
-from pipeline.etl.io.iqvia_loader import canonicalize_nsa_headers, period_label_to_quarter
+from pipeline.etl.io.iqvia_loader import (
+    NSA_REQUIRED_STATIC_HEADERS,
+    canonicalize_nsa_headers,
+    period_label_to_quarter,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +39,22 @@ def _quarter(value: object) -> str:
 
 def _copy_row(target, values: tuple[object, ...]) -> None:
     target.append(list(values))
+
+
+def _period_value(
+    headers: tuple[str, ...],
+    row: tuple[object, ...],
+) -> object | None:
+    values_by_header = dict(zip(headers, row, strict=False))
+    period = values_by_header.get("DATA PERIOD")
+    if period in (None, ""):
+        return None
+    if all(
+        values_by_header.get(header) in (None, "")
+        for header in NSA_REQUIRED_STATIC_HEADERS
+    ):
+        return None
+    return period
 
 
 def split_workbook(
@@ -81,14 +101,14 @@ def split_workbook(
                     f"matched={len(matches)}"
                 )
             sheet_name, raw_header, headers = matches[0]
-            period_index = headers.index("DATA PERIOD")
             source_sheet = workbook[sheet_name]
             quarters_found: set[str] = set()
             scan_rows = source_sheet.iter_rows(values_only=True)
             next(scan_rows)
             for row in scan_rows:
-                if period_index < len(row) and row[period_index] not in (None, ""):
-                    quarters_found.add(_quarter(row[period_index]))
+                period = _period_value(headers, row)
+                if period is not None:
+                    quarters_found.add(_quarter(period))
             quarters = sorted(quarters_found)
             if len(quarters) < 2:
                 raise ValueError("NSA split requires at least two quarters")
@@ -106,9 +126,10 @@ def split_workbook(
             output_rows = source_sheet.iter_rows(values_only=True)
             next(output_rows)
             for row in output_rows:
-                if period_index >= len(row) or row[period_index] in (None, ""):
+                period = _period_value(headers, row)
+                if period is None:
                     continue
-                quarter = _quarter(row[period_index])
+                quarter = _quarter(period)
                 if quarter in history_set:
                     _copy_row(history_sheet, row)
                     history_rows += 1
