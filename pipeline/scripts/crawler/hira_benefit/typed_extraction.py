@@ -9,6 +9,7 @@ from .models import ParseStatus
 _FIELD_HEADINGS: Final = {
     "target_condition": (
         "투여대상",
+        "투여 대상",
         "급여대상",
         "대상환자",
         "인정기준",
@@ -20,30 +21,32 @@ _FIELD_HEADINGS: Final = {
         "투여제외",
         "급여제외",
         "급여제외 대상",
+        "급여 제외 대상",
+        "제외대상",
+        "제외 대상",
     ),
     "dosage_limit": (
         "투여용량",
         "투여용량 및 기간",
+        "인정용량",
+        "인정 용량",
         "용량제한",
         "용량 제한",
         "용법·용량",
         "용법 및 용량",
+        "용법용량",
         "투여기간",
+        "용량",
     ),
 }
 _FIELD_ORDER: Final = ("target_condition", "exclusion_rule", "dosage_limit")
 _AMBIGUOUS_INLINE_ALIASES: Final = frozenset({"인정기준"})
 _NUMBERED_PREFIX_RE: Final = re.compile(r"^\s*(?:(?:\d+|[가-하])[.)])\s*")
-_ATTACHMENT_ONLY_RE: Final = re.compile(r"첨부파일.{0,30}(?:확인|참조)")
-_UNRESOLVED_PATTERNS: Final = {
-    "target_condition": re.compile(r"(?:투여|급여)\s*대상"),
-    "exclusion_rule": re.compile(r"(?:제외|금기|인정하지\s*않|급여하지\s*않)"),
-    "dosage_limit": re.compile(
-        r"(?:용법|용량|투여\s*기간|최대\s*\d+|"
-        r"(?:1일|매\s*\d+\s*(?:일|주|개월)).{0,20}(?:회|투여))",
-        re.IGNORECASE,
-    ),
-}
+_ATTACHMENT_ONLY_DOCUMENT_RE: Final = re.compile(
+    r"(?:(?!첨부파일).){0,80}"
+    r"첨부파일(?:에서|을(?: 통해)?).{0,100}(?:확인|참조)"
+    r"(?:하십시오|하시기 바랍니다)?[.\s]*"
+)
 _INLINE_ALIASES: Final = tuple(
     sorted(
         {
@@ -146,6 +149,17 @@ def _extract_inline_values(value: str) -> tuple[tuple[str, str], ...]:
     return tuple(extracted)
 
 
+def _structural_fields(value: str) -> tuple[str, ...]:
+    fields: list[str] = []
+    for match in _INLINE_LABEL_RE.finditer(value):
+        if match.group("marker") is None and match.group("colon") is None:
+            continue
+        field_name = _field_for_label(match.group("label"), allow_ambiguous=False)
+        if field_name is not None and field_name not in fields:
+            fields.append(field_name)
+    return tuple(fields)
+
+
 def extract_structured(
     *,
     raw_text: str,
@@ -154,24 +168,31 @@ def extract_structured(
     blocks: list[str],
 ) -> StructuredParseResult:
     values: dict[str, str | None] = {field_name: None for field_name in _FIELD_ORDER}
+    attempted_fields: set[str] = set()
 
     for level, heading, section_values in headings:
         if level == "h1":
             continue
         field_name = _field_for_label(heading, allow_ambiguous=True)
         value = _clean(" ".join(section_values))
-        if field_name is not None and value and values[field_name] is None:
-            values[field_name] = value
+        if field_name is not None:
+            attempted_fields.add(field_name)
+            if value and values[field_name] is None:
+                values[field_name] = value
 
     for cells in table_rows:
         field_name = _field_for_label(cells[0], allow_ambiguous=False)
         value = _clean(" ".join(cells[1:]))
-        if field_name is not None and value and values[field_name] is None:
-            values[field_name] = value
+        if field_name is not None:
+            attempted_fields.add(field_name)
+            if value and values[field_name] is None:
+                values[field_name] = value
 
     for block in blocks:
+        attempted_fields.update(_structural_fields(block))
+        inline_values = _extract_inline_values(block)
         extracted = _extract_labeled_block(block)
-        candidates = (extracted,) if extracted is not None else _extract_inline_values(block)
+        candidates = inline_values or ((extracted,) if extracted is not None else ())
         for field_name, value in candidates:
             if values[field_name] is None:
                 values[field_name] = value
@@ -179,19 +200,18 @@ def extract_structured(
     unresolved_fields = tuple(
         field_name
         for field_name in _FIELD_ORDER
-        if values[field_name] is None
-        and _UNRESOLVED_PATTERNS[field_name].search(raw_text) is not None
+        if field_name in attempted_fields and values[field_name] is None
     )
     present_count = sum(value is not None for value in values.values())
-    if _ATTACHMENT_ONLY_RE.search(raw_text) is not None:
-        status = ParseStatus.FAILED
-        failed_fields = _FIELD_ORDER
-    elif unresolved_fields:
+    if unresolved_fields:
         status = ParseStatus.PARTIAL if present_count else ParseStatus.FAILED
         failed_fields = unresolved_fields
     elif present_count:
         status = ParseStatus.OK
         failed_fields = ()
+    elif _ATTACHMENT_ONLY_DOCUMENT_RE.fullmatch(raw_text) is not None:
+        status = ParseStatus.FAILED
+        failed_fields = _FIELD_ORDER
     else:
         status = ParseStatus.NOT_APPLICABLE
         failed_fields = ()
