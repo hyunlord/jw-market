@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Sequence
 
-from scripts.f21_probe.models import load_question_set
+from scripts.f21_probe.models import load_question_sets
 from scripts.f21_probe.runner import run_probe
 from scripts.f21_probe.types import RunOptions, TargetIdentity
 
@@ -21,8 +21,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--question-set",
         type=Path,
-        default=DEFAULT_QUESTION_SET,
-        help="Versioned JSON question set.",
+        action="append",
+        help=(
+            "Versioned JSON question set. Repeat to capture multiple sets in one run; "
+            "defaults to the F21 v1 baseline."
+        ),
     )
     parser.add_argument(
         "--base-url",
@@ -80,12 +83,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("--request-timeout-seconds must be positive")
 
     headers, header_sources = _header_environment(args.header_env)
-    question_set = load_question_set(args.question_set)
+    question_set_paths = tuple(args.question_set or (DEFAULT_QUESTION_SET,))
+    question_set = load_question_sets(question_set_paths)
     options = RunOptions(
         base_url=args.base_url,
         stream_path=args.stream_path,
         output=args.output,
-        question_set_path=args.question_set,
+        question_set_path=question_set_paths[0],
+        question_set_paths=question_set_paths,
         target=TargetIdentity(
             commit=args.target_commit,
             generation=args.target_generation,

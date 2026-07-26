@@ -1,0 +1,298 @@
+{
+  "schema": "chat_f21_question_set_v1",
+  "defaults": {
+    "repetitions": 1
+  },
+  "stages": [
+    {
+      "id": "F59",
+      "directory": "stage_f59_new_features",
+      "multiturn_sets": true,
+      "scenarios": [
+        {
+          "id": "01_atc4_split_n2",
+          "turns": [
+            {
+              "case_id": "F59-01-T1",
+              "question": "고지혈증 시장 HHI",
+              "expectations": [
+                "전략시장 HHI 응답을 반환한다",
+                "최종 답변 본문에 진행문구가 포함되지 않는다"
+              ]
+            },
+            {
+              "case_id": "F59-01-T2",
+              "question": "일반뷰로는?",
+              "expectations": [
+                "C10A1과 C10C를 별도 섹션으로 반환한다",
+                "두 ATC4 시장규모를 합산하지 않는다",
+                "trace에 selected_data_path를 기록한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "02_atc4_no_switch_n5_plus",
+          "turns": [
+            {
+              "case_id": "F59-02-T1",
+              "question": "당뇨 시장 HHI",
+              "expectations": [
+                "ml_003 당뇨 전략시장 문맥을 확립한다"
+              ]
+            },
+            {
+              "case_id": "F59-02-T2",
+              "question": "일반뷰로는?",
+              "expectations": [
+                "ATC4 후보 코드를 제시한다",
+                "후보가 5개 이상이므로 일반뷰로 자동 전환하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "03_bare_market_followup",
+          "turns": [
+            {
+              "case_id": "F59-03-T1",
+              "question": "고지혈증 시장 HHI",
+              "expectations": [
+                "고지혈증 시장 문맥을 확립한다"
+              ]
+            },
+            {
+              "case_id": "F59-03-T2",
+              "question": "시장 규모는?",
+              "expectations": [
+                "직전 고지혈증 시장 문맥을 승계해 시장규모를 반환한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "04_bare_brand_switch",
+          "turns": [
+            {
+              "case_id": "F59-04-T1",
+              "question": "리바로 매출",
+              "expectations": [
+                "리바로와 매출 지표 문맥을 확립한다"
+              ]
+            },
+            {
+              "case_id": "F59-04-T2",
+              "question": "리바로젯은?",
+              "expectations": [
+                "매출 지표를 승계하고 브랜드만 리바로젯으로 교체한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "05_relative_period_three_hop",
+          "turns": [
+            {
+              "case_id": "F59-05-T1",
+              "question": "리바로 분기 매출",
+              "expectations": [
+                "리바로 분기 매출 문맥을 확립한다"
+              ]
+            },
+            {
+              "case_id": "F59-05-T2",
+              "question": "2024년은?",
+              "expectations": [
+                "기간을 2024년으로 해소한다"
+              ]
+            },
+            {
+              "case_id": "F59-05-T3",
+              "question": "그 전 해는?",
+              "expectations": [
+                "직전 기간을 기준으로 2023년으로 해소한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "06_rank_pronoun_slot_precedence",
+          "turns": [
+            {
+              "case_id": "F59-06-T1",
+              "question": "고지혈증 시장 상위 5개",
+              "expectations": [
+                "고지혈증 시장 상위 브랜드를 반환한다"
+              ]
+            },
+            {
+              "case_id": "F59-06-T2",
+              "question": "그중 1위 점유율은?",
+              "expectations": [
+                "1위 브랜드를 대상으로 점유율을 반환한다",
+                "이전 앵커 브랜드를 답변에 혼입하지 않는다"
+              ]
+            },
+            {
+              "case_id": "F59-06-T3",
+              "question": "걔 최근 추세는?",
+              "expectations": [
+                "직전 1위 브랜드로 대명사를 해소한다",
+                "오염된 이전 앵커로 해소하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "07_pronoun_without_anchor",
+          "turns": [
+            {
+              "case_id": "F59-07-T1",
+              "question": "걔 최근 추세는?",
+              "expectations": [
+                "근거 슬롯이 없으므로 대명사를 추측해 해소하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "08_reimbursement_indexed",
+          "turns": [
+            {
+              "case_id": "F59-08-T1",
+              "question": "아일리아 급여기준 알려줘",
+              "expectations": [
+                "색인된 원문의 raw_text를 반환한다",
+                "AI가 요약하거나 해석하거나 재구성하지 않았다는 표기를 포함한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "09_reimbursement_unindexed",
+          "turns": [
+            {
+              "case_id": "F59-09-T1",
+              "question": "로수젯 급여기준 알려줘",
+              "expectations": [
+                "색인 대상이 아니라는 typed 안내를 즉시 반환한다",
+                "실시간 조회 타임아웃으로 종료하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "10_hira_direct_code",
+          "turns": [
+            {
+              "case_id": "F59-10-T1",
+              "question": "질병코드 E11.3 환자수 통계 알려줘",
+              "expectations": [
+                "정확한 E11.3 직접 코드 범위의 실제 환자수 수치를 반환한다",
+                "상위 코드로 확대하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "11_hira_natural_language_fail_closed",
+          "turns": [
+            {
+              "case_id": "F59-11-T1",
+              "question": "당뇨병성 망막병증의 환자수 통계 알려줘",
+              "expectations": [
+                "코드가 확정되지 않으면 미해소 상태를 유지한다",
+                "상위 코드로 확대하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "12_clinical_trial_design",
+          "turns": [
+            {
+              "case_id": "F59-12-T1",
+              "question": "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+              "expectations": [
+                "대상과 평가변수와 기간 요청 섹션만 투영한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "13_clinical_trial_ie",
+          "turns": [
+            {
+              "case_id": "F59-13-T1",
+              "question": "NCT05151731의 inclusion 및 exclusion Criteria 알려줘",
+              "expectations": [
+                "선정기준과 제외기준을 투영한다",
+                "200자 절단 고지와 원문 링크를 포함한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "14_strategic_source_labels",
+          "turns": [
+            {
+              "case_id": "F59-14-T1",
+              "question": "리바로 매출 알려줘",
+              "expectations": [
+                "전략뷰 출처 행을 시장 범위별로 구분한다",
+                "내부 ml_NNN 식별자를 사용자에게 노출하지 않는다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "15_general_view_data_path",
+          "turns": [
+            {
+              "case_id": "F59-15-T1",
+              "question": "고지혈증 시장 HHI",
+              "expectations": [
+                "고지혈증 시장 문맥을 확립한다"
+              ]
+            },
+            {
+              "case_id": "F59-15-T2",
+              "question": "일반뷰로는?",
+              "expectations": [
+                "trace에 selected_data_path를 기록한다",
+                "direct_mart이면 출처를 JW Market 직접 Mart로 표시한다",
+                "backend_fallback이면 출처를 JW Market Backend API로 표시하고 사유를 기록한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "16_missing_brand_failure_kind",
+          "turns": [
+            {
+              "case_id": "F59-16-T1",
+              "question": "없는브랜드 매출 알려줘",
+              "expectations": [
+                "answered로 기록하지 않는다",
+                "failure_kind를 기록한다"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "17_unsupported_metric_failure_kind",
+          "turns": [
+            {
+              "case_id": "F59-17-T1",
+              "question": "리바로 환자 만족도 알려줘",
+              "expectations": [
+                "지원하지 않는 지표를 answered로 기록하지 않는다",
+                "failure_kind를 기록한다"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

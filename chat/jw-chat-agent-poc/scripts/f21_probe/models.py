@@ -12,6 +12,7 @@ class TurnSpec(BaseModel):
 
     case_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
+    expectations: tuple[str, ...] = ()
 
 
 class ScenarioSpec(BaseModel):
@@ -82,6 +83,21 @@ class QuestionSetCounts:
 
 def load_question_set(path: Path) -> QuestionSet:
     return QuestionSet.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def load_question_sets(paths: tuple[Path, ...]) -> QuestionSet:
+    if not paths:
+        raise ValueError("at least one question set is required")
+    question_sets = tuple(load_question_set(path) for path in paths)
+    return QuestionSet(
+        schema=question_sets[0].schema_version,
+        defaults=question_sets[0].defaults,
+        stages=tuple(
+            stage
+            for question_set in question_sets
+            for stage in question_set.stages
+        ),
+    )
 
 
 def question_set_counts(question_set: QuestionSet) -> QuestionSetCounts:
