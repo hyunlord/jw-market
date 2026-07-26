@@ -12,11 +12,7 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     section = str(contract.get("section_markdown") or "").strip()
     if not section:
         return answer
-    code = str(contract.get("atc4_code") or "")
-    source = str(contract.get("source") or "")
-    measure = str(contract.get("measure") or "")
-    period = str(contract.get("period") or "")
-    label = f"기준: 일반뷰 (ATC4 {code}) | 소스: {source} | 지표: {measure} | 기준: {period}"
+    labels = _scope_labels(contract)
     strategic_answer = answer.rstrip()
     if contract.get("mode") == "dual" and not strategic_answer.startswith("## 전략뷰 (market_landscape)"):
         strategic_answer = f"## 전략뷰 (market_landscape)\n\n{strategic_answer}"
@@ -24,8 +20,23 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     if section not in answer:
         parts.append(section)
     combined = "\n\n".join(part for part in parts if part)
-    if label not in combined:
-        combined = "\n\n".join(part for part in (combined, label) if part)
+    for label in labels:
+        if label not in combined:
+            combined = "\n\n".join(part for part in (combined, label) if part)
     if contract.get("mode") == "dual" and DUAL_WARNING not in combined:
         combined = "\n\n".join((combined, f"> {DUAL_WARNING}"))
     return combined
+
+
+def _scope_labels(contract: dict[str, Any]) -> tuple[str, ...]:
+    sections = contract.get("atc4_sections")
+    scopes = sections if isinstance(sections, list) and sections else [contract]
+    return tuple(
+        "기준: 일반뷰 "
+        f"(ATC4 {str(scope.get('atc4_code') or '')}) | "
+        f"소스: {str(scope.get('source') or '')} | "
+        f"지표: {str(scope.get('measure') or '')} | "
+        f"기준: {str(scope.get('period') or '')}"
+        for scope in scopes
+        if isinstance(scope, dict)
+    )
