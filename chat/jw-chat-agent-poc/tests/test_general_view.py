@@ -7,6 +7,7 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
+from jw_chat_agent_poc.orchestrator.provenance import evidence_from_calls
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.service.general_view_routing import (
     GeneralRoute,
@@ -259,17 +260,131 @@ class StrategicMembershipWithExplicitMarket(StrategicMembership):
 
 
 class StrategicMembershipWithMarketMembers(StrategicMembershipWithExplicitMarket):
+    def __init__(self, brands: set[str], market_members: tuple[str, ...] = ("리바로", "리바로젯")) -> None:
+        super().__init__(brands)
+        self._market_members = market_members
+
     def market_members(self, question: str) -> tuple[str, ...]:
-        return ("리바로", "리바로젯") if self.explicit_market(question) else ()
+        return self._market_members if self.explicit_market(question) else ()
 
 
 def test_strategic_market_reverse_mapping_fails_closed_for_multiple_atc4_codes() -> None:
-    memberships = (
-        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴", "ubist"),
-        GeneralBrandMembership("리바로젯", "리바로젯", "C10A1", "스타틴", "ubist"),
-        GeneralBrandMembership("리바로젯", "리바로젯", "C10C0", "지질조절 복합제", "ubist"),
+    brands = tuple(f"브랜드{index}" for index in range(1, 6))
+    memberships = tuple(
+        GeneralBrandMembership(brand, brand, f"A10A{index}", f"ATC4 {index}", "ubist")
+        for index, brand in enumerate(brands, 1)
     )
     cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        StrategicMembershipWithMarketMembers(set(brands), brands),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
+
+    assert result["general_view_contract"]["unavailable"] is True
+    assert "4개를 초과" in result["answer"]
+    for index in range(1, 6):
+        assert f"A10A{index}" in result["answer"]
+    assert "ATC4를 지정" in result["answer"]
+    assert backend.market_calls == []
+
+
+def test_strategic_market_reverse_mapping_splits_two_atc4_general_views_without_aggregation() -> None:
+    memberships = (
+        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10C", "지질조절제 복합제제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = replace(
+        _market("C10A1", 10.0),
+        atc4_description="스타틴류 (HMG-CoA 환원효소 억제제)",
+        market_size=100_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    backend.market_map["C10C"] = replace(
+        _market("C10C", 20.0),
+        atc4_description="지질조절제 복합제제",
+        market_size=40_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    service = GeneralViewService(
+        backend,
+        StrategicMembershipWithMarketMembers({"리바로", "리바로젯"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["atc4_codes"] == ["C10A1", "C10C"]
+    assert [section["atc4_code"] for section in contract["atc4_sections"]] == ["C10A1", "C10C"]
+    assert [section["market_size"] for section in contract["atc4_sections"]] == [
+        100_000_000_000,
+        40_000_000_000,
+    ]
+    assert "각각의 일반뷰로 나눠 보여드립니다" in result["answer"]
+    assert "ATC4 C10A1" in result["answer"]
+    assert "ATC4 C10C" in result["answer"]
+    assert "합계" not in result["answer"]
+    assert "평균" not in result["answer"]
+    assert sorted(backend.market_calls) == [
+        ("C10A1", None, "ubist", "sales"),
+        ("C10C", None, "ubist", "sales"),
+    ]
+
+
+def test_split_general_views_emit_independent_market_size_facts() -> None:
+    memberships = (
+        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10C", "지질조절제 복합제제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = replace(
+        _market("C10A1", 10.0),
+        market_size=100_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    backend.market_map["C10C"] = replace(
+        _market("C10C", 20.0),
+        market_size=40_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    service = GeneralViewService(
+        backend,
+        StrategicMembershipWithMarketMembers({"리바로", "리바로젯"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
+    facts = evidence_from_calls(result["tool_calls"], result["answer"])
+    market_size_facts = [fact for fact in facts if fact.metric == "시장규모"]
+
+    assert [
+        (fact.entity, fact.metric, fact.unit, fact.value)
+        for fact in market_size_facts
+    ] == [
+        ("C10A1", "시장규모", "억원", "1,000.00억원"),
+        ("C10C", "시장규모", "억원", "400.00억원"),
+    ]
+    assert all(fact.value != "1,400.00억원" for fact in facts)
+
+
+def test_strategic_market_reverse_mapping_keeps_typed_unavailable_when_atc4_resolution_fails() -> None:
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(()), ttl_seconds=300)
     backend = FakeBackend()
     service = GeneralViewService(
         backend,
@@ -281,9 +396,7 @@ def test_strategic_market_reverse_mapping_fails_closed_for_multiple_atc4_codes()
     result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
 
     assert result["general_view_contract"]["unavailable"] is True
-    assert "복수 ATC4" in result["answer"]
-    assert "C10A1" in result["answer"]
-    assert "C10C0" in result["answer"]
+    assert "대응하는 ATC4를 확인할 수 없습니다" in result["answer"]
     assert backend.market_calls == []
 
 
@@ -1171,6 +1284,34 @@ def test_contract_appends_scope_label_and_dual_warning_idempotently() -> None:
     assert once.startswith("## 전략뷰 (market_landscape)\n\n전략 답변")
     assert "기준: 일반뷰 (ATC4 C10A1) | 소스: UBIST | 지표: sales | 기준: 2026-04" in once
     assert "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다" in once
+
+
+def test_multi_atc_contract_appends_each_scope_label_idempotently() -> None:
+    sections = [
+        {
+            "atc4_code": code,
+            "source": "UBIST",
+            "measure": "sales",
+            "period": "2026-04",
+        }
+        for code in ("C10A1", "C10C")
+    ]
+    contract = {
+        "mode": "general_only",
+        "view_type": "general_view",
+        "market_basis": "ATC4",
+        "split_by": "ATC4",
+        "atc4_codes": ["C10A1", "C10C"],
+        "atc4_sections": sections,
+        "section_markdown": "## 일반뷰 (ATC4별 분리)\n\n두 섹션",
+    }
+
+    once = enforce_general_view_contract("", contract)
+    twice = enforce_general_view_contract(once, contract)
+
+    assert once == twice
+    assert once.count("기준: 일반뷰 (ATC4 C10A1)") == 1
+    assert once.count("기준: 일반뷰 (ATC4 C10C)") == 1
 
 
 def test_tool_schema_exposes_general_view_only_when_enabled(monkeypatch) -> None:

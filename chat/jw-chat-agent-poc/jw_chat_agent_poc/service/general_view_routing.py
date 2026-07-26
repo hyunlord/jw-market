@@ -46,6 +46,7 @@ _SOURCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _STRATEGIC_MARKET_ID_PATTERN = re.compile(r"(?<![A-Za-z0-9_])ml_\d+(?![A-Za-z0-9_])", re.IGNORECASE)
+_STRATEGIC_MARKET_SPLIT_LIMIT = 4
 
 
 class GeneralRoute(Enum):
@@ -140,13 +141,16 @@ class GeneralViewService:
         return bool(market_ids or getattr(resolution, "market_id", None))
 
     def _explicit_strategic_market(self, question: str) -> bool:
+        return self._strategic_market(question) is not None
+
+    def _strategic_market(self, question: str) -> tuple[str, str] | None:
         resolve_market = getattr(self._strategic_membership, "explicit_market", None)
         if not callable(resolve_market):
-            return False
+            return None
         try:
-            return resolve_market(question) is not None
+            return resolve_market(question)
         except (LookupError, OSError, TypeError, ValueError):
-            return False
+            return None
 
     def _has_general_membership(self, question: str) -> bool:
         if self._general_membership is None:
@@ -201,7 +205,26 @@ class GeneralViewService:
                 candidates = self._strategic_market_candidates(question, source)
             if not candidates:
                 raise GeneralViewBackendError("ATC4 후보를 찾지 못했습니다")
-            markets = self._fetch_candidates(candidates, resolved_brand or None, source, measure)
+            markets = self._fetch_candidates(
+                candidates,
+                resolved_brand or None,
+                source,
+                measure,
+                require_all=explicit_strategic_market,
+            )
+            if explicit_strategic_market and len(markets) > 1:
+                strategic_market = self._strategic_market(question)
+                if strategic_market is None:
+                    raise GeneralViewBackendError("전략시장 정보를 다시 확인할 수 없습니다")
+                ordered_markets = tuple(sorted(markets, key=lambda item: item.atc4_code))
+                contract = _multi_contract(
+                    strategic_market[1],
+                    ordered_markets,
+                    compact=compact,
+                    dual=dual,
+                    question=question,
+                )
+                return _multi_result(question, ordered_markets, contract, started_at=started_at)
             selected = max(markets, key=lambda item: item.brand_value if item.brand_value is not None else float("-inf"))
             descriptions = {market.atc4_code: market.atc4_description for market in markets}
             others = [
@@ -235,11 +258,10 @@ class GeneralViewService:
         return self._backend.candidates(brand, source), brand
 
     def _strategic_market_candidates(self, question: str, source: str) -> tuple[AtcCandidate, ...]:
-        explicit_market = getattr(self._strategic_membership, "explicit_market", None)
         market_members = getattr(self._strategic_membership, "market_members", None)
-        if not callable(explicit_market) or not callable(market_members):
+        if not callable(market_members):
             return ()
-        market = explicit_market(question)
+        market = self._strategic_market(question)
         if market is None:
             return ()
         if self._general_membership is None:
@@ -255,10 +277,12 @@ class GeneralViewService:
             for candidate in candidates:
                 candidates_by_code.setdefault(candidate.code, candidate)
         candidates = tuple(candidates_by_code[code] for code in sorted(candidates_by_code))
-        if len(candidates) > 1:
-            codes = ", ".join(candidate.code for candidate in candidates)
+        if len(candidates) > _STRATEGIC_MARKET_SPLIT_LIMIT:
+            codes = ", ".join(f"{candidate.code} ({candidate.description})" for candidate in candidates)
             raise GeneralViewBackendError(
-                f"전략시장 '{market[1]}'이 복수 ATC4에 걸쳐 일반뷰를 하나로 확정할 수 없습니다: {codes}"
+                f"전략시장 '{market[1]}'의 ATC4가 분리 표시 상한 "
+                f"{_STRATEGIC_MARKET_SPLIT_LIMIT}개를 초과합니다. "
+                f"ATC4를 지정해 조회해 주세요. 전체 후보: {codes}"
             )
         if not candidates:
             raise GeneralViewBackendError(
@@ -272,6 +296,8 @@ class GeneralViewService:
         brand: str | None,
         source: str,
         measure: str,
+        *,
+        require_all: bool = False,
     ) -> tuple[GeneralMarket, ...]:
         if len(candidates) == 1:
             return (self._backend.market(candidates[0].code, brand, source, measure),)
@@ -284,7 +310,12 @@ class GeneralViewService:
             for future in as_completed(futures):
                 try:
                     markets.append(future.result())
-                except GeneralViewBrandMismatchError:
+                except GeneralViewBrandMismatchError as exc:
+                    if require_all:
+                        candidate = futures[future]
+                        raise GeneralViewBackendError(
+                            f"ATC4 {candidate.code} 일반뷰 데이터를 독립 조회할 수 없습니다"
+                        ) from exc
                     continue
         if not markets:
             raise GeneralViewBrandMismatchError(
@@ -327,6 +358,45 @@ def _contract(
     }
     contract.update(member_fields)
     return contract
+
+
+def _multi_contract(
+    strategic_market_name: str,
+    markets: tuple[GeneralMarket, ...],
+    *,
+    compact: bool,
+    dual: bool,
+    question: str,
+) -> dict[str, Any]:
+    sections: list[dict[str, Any]] = []
+    for market in markets:
+        section = _contract(market, other_candidates=[], compact=compact, dual=dual, question=question)
+        section["market_size"] = market.market_size
+        section["market_size_recent_krw"] = market.market_size
+        section["section_markdown"] = section["section_markdown"].replace(
+            "## 일반뷰 (ATC4)",
+            f"### ATC4 {market.atc4_code} — {market.atc4_description}",
+            1,
+        )
+        sections.append(section)
+    codes = [market.atc4_code for market in markets]
+    explanation = (
+        f"{strategic_market_name}은 {'·'.join(codes)} {len(codes)}개 ATC4에 걸쳐 있어 "
+        "각각의 일반뷰로 나눠 보여드립니다."
+    )
+    section_markdown = "\n\n".join(
+        ["## 일반뷰 (ATC4별 분리)", explanation, *(str(section["section_markdown"]) for section in sections)]
+    )
+    return {
+        "mode": "dual" if dual else "general_only",
+        "view_type": "general_view",
+        "market_basis": "ATC4",
+        "split_by": "ATC4",
+        "strategic_market_name": strategic_market_name,
+        "atc4_codes": codes,
+        "atc4_sections": sections,
+        "section_markdown": section_markdown,
+    }
 
 
 def _result(
@@ -378,6 +448,56 @@ def _result(
         "answer": contract["section_markdown"],
         "markdown_response": None,
         "sources": [market.source],
+        "general_view_contract": contract,
+        "general_view_ready": contract["mode"] == "general_only",
+    }
+
+
+def _multi_result(
+    question: str,
+    markets: tuple[GeneralMarket, ...],
+    contract: dict[str, Any],
+    *,
+    started_at: datetime,
+) -> dict[str, Any]:
+    tool_calls: list[dict[str, Any]] = []
+    for market, section in zip(markets, contract["atc4_sections"], strict=True):
+        call = {
+            "source": "jw-market-backend-api",
+            "tool": "general_view_dynamic_market",
+            "summary_text": f"ATC4 {market.atc4_code} 일반뷰를 독립 조회했습니다.",
+            "render_data": dict(section),
+        }
+        attach_tool_qa_trace(
+            call,
+            started_at=started_at,
+            status="ok",
+            row_count=max(1, len(market.top_brands)),
+            data_as_of=str(section.get("period") or "") or None,
+            cache_hit=False,
+        )
+        tool_calls.append(call)
+    return {
+        "question": question,
+        "resolution": {"atc4_codes": list(contract["atc4_codes"])},
+        "decomposition": [
+            {
+                "intent": "general_view_market_metric",
+                "view_type": "general_view",
+                "atc4_code": market.atc4_code,
+            }
+            for market in markets
+        ],
+        "router_diagnostics": {
+            "mode": "general_view",
+            "reason": "general_view_dynamic_market_split",
+            "deterministic": True,
+            "general_view": True,
+        },
+        "tool_calls": tool_calls,
+        "answer": contract["section_markdown"],
+        "markdown_response": None,
+        "sources": sorted({market.source for market in markets}),
         "general_view_contract": contract,
         "general_view_ready": contract["mode"] == "general_only",
     }
