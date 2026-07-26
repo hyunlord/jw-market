@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS `{safe_schema}`.`{table}` (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (run_id),
-  KEY idx_topic_assignment_handoff_pending (axis_status, assignment_status, updated_at)
+  KEY idx_topic_assignment_handoff_pending (axis_status, assignment_status, created_at, run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """.strip()
 
