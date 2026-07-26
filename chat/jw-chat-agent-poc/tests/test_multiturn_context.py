@@ -328,6 +328,179 @@ def test_period_followup_prefers_persisted_metric_when_question_text_is_opaque()
     assert resolved.unresolved_reference is False
 
 
+def test_relative_year_followup_uses_grounded_previous_period() -> None:
+    previous = ConversationTurn(
+        question="2024년은?",
+        answer="리바로 2024년 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", period="2024", metric="매출"),
+    )
+
+    assert requires_previous_turn("그 전 해는?") is True
+
+    resolved = resolve_anaphora("그 전 해는?", previous)
+
+    assert resolved.resolved_question == "리바로 2023년 매출은?"
+    assert resolved.brand == "리바로"
+    assert resolved.unresolved_reference is False
+
+
+def test_brand_pronoun_followup_uses_grounded_ranked_brand() -> None:
+    previous = ConversationTurn(
+        question="그중 1위",
+        answer="1위는 로수젯입니다.",
+        slots=ConversationSlots(anchor_brand="로수젯"),
+    )
+
+    assert requires_previous_turn("걔 최근 추세는?") is True
+
+    resolved = resolve_anaphora("걔 최근 추세는?", previous)
+
+    assert resolved.resolved_question == "로수젯 최근 추세는?"
+    assert resolved.brand == "로수젯"
+    assert resolved.unresolved_reference is False
+
+
+def test_relative_period_and_brand_pronoun_fail_closed_without_grounded_slots() -> None:
+    no_period = ConversationTurn(
+        question="리바로 매출",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출"),
+    )
+    no_brand = ConversationTurn(
+        question="상위 5개",
+        answer="시장 순위를 확인했습니다.",
+        slots=ConversationSlots(period="2024", metric="매출"),
+    )
+
+    relative = resolve_anaphora("그 전 해는?", no_period)
+    pronoun = resolve_anaphora("걔 최근 추세는?", no_brand)
+
+    assert relative.resolved_question == "그 전 해는?"
+    assert relative.unresolved_reference is True
+    assert pronoun.resolved_question == "걔 최근 추세는?"
+    assert pronoun.unresolved_reference is True
+
+
+def test_relative_period_followup_only_resolves_matching_grounded_granularity() -> None:
+    cases = (
+        ("그 다음 해는?", "2024", "리바로 2025년 매출은?"),
+        ("전년은?", "2024년", "리바로 2023년 매출은?"),
+        ("이전 분기는?", "2025-Q1", "리바로 2024년 4분기 매출은?"),
+        ("그 다음 분기는?", "2025-Q4", "리바로 2026년 1분기 매출은?"),
+        ("전월은?", "2025-01", "리바로 2024년 12월 매출은?"),
+        ("그 다음 달은?", "2025-12", "리바로 2026년 1월 매출은?"),
+    )
+
+    for question, period, expected in cases:
+        previous = ConversationTurn(
+            question="리바로 매출",
+            answer="리바로 매출을 확인했습니다.",
+            slots=ConversationSlots(anchor_brand="리바로", period=period, metric="매출"),
+        )
+
+        resolved = resolve_anaphora(question, previous)
+
+        assert resolved.resolved_question == expected
+        assert resolved.unresolved_reference is False
+
+    ambiguous = resolve_anaphora(
+        "이전 분기는?",
+        ConversationTurn(
+            question="리바로 2024년 매출",
+            answer="리바로 2024년 매출을 확인했습니다.",
+            slots=ConversationSlots(anchor_brand="리바로", period="2024", metric="매출"),
+        ),
+    )
+    assert ambiguous.resolved_question == "이전 분기는?"
+    assert ambiguous.unresolved_reference is True
+
+
+def test_unrelated_topic_never_inherits_previous_brand_after_pronoun_extension() -> None:
+    previous = ConversationTurn(
+        question="리바로 매출",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", period="2024", metric="매출"),
+    )
+
+    assert requires_previous_turn("오늘 서울 날씨") is False
+
+    resolved = resolve_anaphora("오늘 서울 날씨", previous)
+
+    assert resolved.resolved_question == "오늘 서울 날씨"
+    assert resolved.brand is None
+    assert resolved.unresolved_reference is False
+
+
+def test_rc3_followups_hydrate_context_and_reach_the_tool_execution_path(monkeypatch) -> None:
+    class SharedHistory:
+        def __init__(self, conversation_id: str, turn: ConversationTurn) -> None:
+            self.conversation_id = conversation_id
+            self.turn = turn
+
+        def latest_turn(self, requested_conversation_id: str):
+            assert requested_conversation_id == self.conversation_id
+            return self.turn
+
+    def capture_with(captured: list[str]):
+        def capture_answer(_resolver, _factory, _conversation_id, routed_question, *_args, **_kwargs):
+            captured.append(routed_question)
+            return {
+                "answer": "도구 실행 결과",
+                "sources": ["UBIST"],
+                "tool_calls": [{"tool": "get_brand_metric", "render_data": {}}],
+            }
+
+        return capture_answer
+
+    cases = (
+        (
+            "relative-period-followup",
+            "그 전 해는?",
+            ConversationTurn(
+                question="2024년은?",
+                answer="리바로 2024년 매출을 확인했습니다.",
+                slots=ConversationSlots(anchor_brand="리바로", period="2024", metric="매출"),
+            ),
+            "리바로 2023년 매출은?",
+        ),
+        (
+            "brand-pronoun-followup",
+            "걔 최근 추세는?",
+            ConversationTurn(
+                question="그중 1위",
+                answer="1위는 로수젯입니다.",
+                slots=ConversationSlots(anchor_brand="로수젯"),
+            ),
+            "로수젯 최근 추세는?",
+        ),
+    )
+
+    for conversation_id, question, previous_turn, expected_question in cases:
+        captured: list[str] = []
+        monkeypatch.setattr(
+            "jw_chat_agent_poc.service.app._answer_without_pending",
+            capture_with(captured),
+        )
+
+        item = _answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            _fake_agent_factory,
+            question,
+            "live",
+            conversation_id,
+            use_direct_agent_loop=True,
+            conversation_history=SharedHistory(conversation_id, previous_turn),
+        )
+
+        assert captured == [expected_question]
+        assert item["result"]["tool_calls"][0]["tool"] == "get_brand_metric"
+        span_names = [span["name"] for span in item["result"]["_qa_spans"]]
+        assert "conversation_history_fetch" in span_names
+        assert "conversation_history_replay" in span_names
+        assert "anaphora_resolution" in span_names
+
+
 def test_followup_hydrates_latest_persisted_turn_when_local_pod_state_is_empty(monkeypatch) -> None:
     class SharedHistory:
         def latest_turn(self, conversation_id: str):
