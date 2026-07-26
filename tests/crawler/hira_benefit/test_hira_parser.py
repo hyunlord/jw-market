@@ -5,6 +5,7 @@ from pipeline.scripts.crawler.hira_benefit.parser import (
     parse_detail_html,
     parse_list_html,
 )
+from pipeline.scripts.crawler.hira_benefit.typed_extraction import parse_stored_raw_text
 
 LIST_HTML = """
 <table>
@@ -88,7 +89,7 @@ def test_detail_parser_marks_ok_only_when_all_structured_fields_exist() -> None:
     assert parsed.failed_fields == ()
 
 
-def test_detail_parser_preserves_raw_text_and_marks_partial() -> None:
+def test_detail_parser_preserves_raw_text_and_marks_optional_fields_applicable() -> None:
     html = """
     <main><h1>고시 제2026-10호</h1><p>게시일 2026-01-03</p>
     <h2>투여대상</h2><p>특정 환자군</p></main>
@@ -100,11 +101,11 @@ def test_detail_parser_preserves_raw_text_and_marks_partial() -> None:
         source_url="https://www.hira.or.kr/detail?brdBltNo=60000",
     )
 
-    assert parsed.parse_status is ParseStatus.PARTIAL
+    assert parsed.parse_status is ParseStatus.OK
     assert parsed.target_condition == "특정 환자군"
     assert parsed.exclusion_rule is None
     assert parsed.dosage_limit is None
-    assert parsed.failed_fields == ("exclusion_rule", "dosage_limit")
+    assert parsed.failed_fields == ()
     assert "특정 환자군" in parsed.raw_text
 
 
@@ -125,3 +126,139 @@ def test_detail_parser_marks_failed_without_synthesizing_values() -> None:
         "dosage_limit",
     )
     assert parsed.raw_text == "첨부파일에서 세부 기준을 확인하십시오."
+
+
+def test_detail_parser_does_not_treat_common_h1_as_target_condition() -> None:
+    html = """
+    <main>
+      <h1>보험인정기준 상세내용</h1>
+      <div class="title">[약제] 고시 제2025-169호 안내</div>
+      <p>요양급여의 적용기준 및 방법에 대한 세부사항을 개정한다.</p>
+    </main>
+    """
+
+    parsed = parse_detail_html(
+        html,
+        source_notice_id="52991",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=52991",
+    )
+
+    assert parsed.target_condition is None
+    assert parsed.exclusion_rule is None
+    assert parsed.dosage_limit is None
+    assert parsed.parse_status is ParseStatus.NOT_APPLICABLE
+    assert parsed.failed_fields == ()
+
+
+def test_detail_parser_extracts_typed_fields_from_table_rows() -> None:
+    html = """
+    <main>
+      <h1>보험인정기준 상세내용</h1>
+      <table>
+        <tr><th>투여대상</th><td>성인 중 LDL-C 조절이 필요한 환자</td></tr>
+        <tr><th>제외기준</th><td>중증 간장애 환자는 제외한다.</td></tr>
+        <tr><th>투여용량</th><td>1일 1회 1정, 최대 12개월</td></tr>
+      </table>
+    </main>
+    """
+
+    parsed = parse_detail_html(
+        html,
+        source_notice_id="table-1",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=table-1",
+    )
+
+    assert parsed.parse_status is ParseStatus.OK
+    assert parsed.target_condition == "성인 중 LDL-C 조절이 필요한 환자"
+    assert parsed.exclusion_rule == "중증 간장애 환자는 제외한다."
+    assert parsed.dosage_limit == "1일 1회 1정, 최대 12개월"
+
+
+def test_detail_parser_extracts_typed_fields_from_numbered_paragraphs() -> None:
+    html = """
+    <main>
+      <h1>보험인정기준 상세내용</h1>
+      <p>1. 투여대상: 재발성 환자</p>
+      <p>2. 제외기준: 임신부는 제외한다.</p>
+      <p>가. 투여용량: 4주마다 1회 투여한다.</p>
+    </main>
+    """
+
+    parsed = parse_detail_html(
+        html,
+        source_notice_id="numbered-1",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=numbered-1",
+    )
+
+    assert parsed.parse_status is ParseStatus.OK
+    assert parsed.target_condition == "재발성 환자"
+    assert parsed.exclusion_rule == "임신부는 제외한다."
+    assert parsed.dosage_limit == "4주마다 1회 투여한다."
+
+
+def test_stored_raw_text_reparse_distinguishes_unresolved_from_not_applicable() -> None:
+    parsed = parse_stored_raw_text(
+        "보험인정기준 상세내용 1. 투여대상: 특정 환자군 "
+        "2. 제외기준: 투여 금기 환자 3. 투여용량: 1일 1회"
+    )
+    not_applicable = parse_stored_raw_text(
+        "보험인정기준 상세내용 요양급여의 적용기준 및 방법을 개정한다."
+    )
+    unresolved = parse_stored_raw_text(
+        "보험인정기준 상세내용 임신부는 투여 대상에서 제외한다."
+    )
+
+    assert parsed.parse_status is ParseStatus.OK
+    assert parsed.target_condition == "특정 환자군"
+    assert parsed.exclusion_rule == "투여 금기 환자"
+    assert parsed.dosage_limit == "1일 1회"
+    assert not_applicable.parse_status is ParseStatus.NOT_APPLICABLE
+    assert not_applicable.failed_fields == ()
+    assert unresolved.parse_status is ParseStatus.FAILED
+    assert unresolved.failed_fields == ("target_condition", "exclusion_rule")
+
+
+def test_stored_raw_text_uses_numbered_sibling_boundaries() -> None:
+    parsed = parse_stored_raw_text(
+        "보험인정기준 상세내용 - 다 음 - "
+        "가. 투여대상 분별함수 점수가 32점 이상인 중증 알코올성 간염환자 "
+        "나. 투여용량 및 기간 1회 400mg을 1일 3회, 최대 4주 이내 "
+        "* 시행일: 2013.9.1. * 변경사유: 용어정비 닫기"
+    )
+
+    assert parsed.target_condition == (
+        "분별함수 점수가 32점 이상인 중증 알코올성 간염환자"
+    )
+    assert parsed.dosage_limit == "1회 400mg을 1일 3회, 최대 4주 이내"
+    assert parsed.parse_status is ParseStatus.OK
+
+
+def test_stored_raw_text_parses_numbered_labels_without_colons() -> None:
+    parsed = parse_stored_raw_text(
+        "투여기준 1) 투여대상 아래 조건을 모두 충족하는 경우 "
+        "가) 체온이 38도 이상인 경우 나) 호흡수가 기준을 넘는 경우 "
+        "2) 용법 및 용량 하루 1회, 최대 14일 투여 "
+        "■ 고시 개정 사유 대상 범위 명확화 닫기"
+    )
+
+    assert parsed.target_condition == (
+        "아래 조건을 모두 충족하는 경우 "
+        "가) 체온이 38도 이상인 경우 나) 호흡수가 기준을 넘는 경우"
+    )
+    assert parsed.dosage_limit == "하루 1회, 최대 14일 투여"
+    assert parsed.parse_status is ParseStatus.OK
+
+
+def test_stored_raw_text_parses_exclusion_label_with_qualifier() -> None:
+    parsed = parse_stored_raw_text(
+        "가. 급여대상 반복적 진통제를 사용하는 환자 "
+        "나. 급여제외 대상(금기증) 1) 출혈경향이 있는 경우 "
+        "2) 임신을 한 경우 "
+        "다. 사전검사 초음파촬영으로 결석을 확인한다. 닫기"
+    )
+
+    assert parsed.target_condition == "반복적 진통제를 사용하는 환자"
+    assert parsed.exclusion_rule == (
+        "1) 출혈경향이 있는 경우 2) 임신을 한 경우"
+    )
+    assert parsed.parse_status is ParseStatus.OK

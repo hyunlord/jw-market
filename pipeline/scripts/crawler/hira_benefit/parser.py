@@ -7,7 +7,8 @@ from datetime import date
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
-from .models import NoticeListItem, ParsedNotice, ParseStatus
+from .models import NoticeListItem, ParsedNotice
+from .typed_extraction import extract_structured
 
 _DATE_RE = re.compile(r"\b(20\d{2})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?\b")
 _NOTICE_RE = re.compile(r"(?:고시\s*)?(제\s*\d{4}\s*-\s*\d+\s*호)")
@@ -15,29 +16,6 @@ _POPUP_CALL_RE = re.compile(
     r"viewInsuAdtCrtr\(\s*\d+\s*,\s*['\"](\d{8})['\"]\s*,"
     r"\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]"
 )
-_FIELD_HEADINGS = {
-    "target_condition": (
-        "투여대상",
-        "급여대상",
-        "대상환자",
-        "인정기준",
-        "대상 조건",
-    ),
-    "exclusion_rule": (
-        "제외기준",
-        "제외 기준",
-        "투여제외",
-        "급여제외",
-    ),
-    "dosage_limit": (
-        "투여용량",
-        "용량제한",
-        "용량 제한",
-        "용법·용량",
-        "용법 및 용량",
-        "투여기간",
-    ),
-}
 
 
 def _clean(value: str) -> str:
@@ -156,11 +134,17 @@ class _DetailParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.visible: list[str] = []
-        self.headings: list[tuple[str, list[str]]] = []
+        self.headings: list[tuple[str, str, list[str]]] = []
+        self.blocks: list[str] = []
+        self.table_rows: list[tuple[str, ...]] = []
         self.title_parts: list[str] = []
         self._heading_level: str | None = None
         self._heading_parts: list[str] = []
         self._current_section: list[str] | None = None
+        self._block_tag: str | None = None
+        self._block_parts: list[str] = []
+        self._table_row: list[str] | None = None
+        self._table_cell: list[str] | None = None
         self._ignored_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -173,6 +157,13 @@ class _DetailParser(HTMLParser):
         if lowered in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             self._heading_level = lowered
             self._heading_parts = []
+        if lowered in {"p", "li"}:
+            self._block_tag = lowered
+            self._block_parts = []
+        if lowered == "tr":
+            self._table_row = []
+        if lowered in {"th", "td"} and self._table_row is not None:
+            self._table_cell = []
 
     def handle_data(self, data: str) -> None:
         if self._ignored_depth:
@@ -185,6 +176,10 @@ class _DetailParser(HTMLParser):
             self._heading_parts.append(value)
         elif self._current_section is not None:
             self._current_section.append(value)
+        if self._block_tag is not None:
+            self._block_parts.append(value)
+        if self._table_cell is not None:
+            self._table_cell.append(value)
 
     def handle_endtag(self, tag: str) -> None:
         lowered = tag.lower()
@@ -194,24 +189,26 @@ class _DetailParser(HTMLParser):
         if lowered == self._heading_level:
             heading = _clean(" ".join(self._heading_parts))
             values: list[str] = []
-            self.headings.append((heading, values))
+            self.headings.append((lowered, heading, values))
             self._current_section = values
             if lowered == "h1" and not self.title_parts:
                 self.title_parts.append(heading)
             self._heading_level = None
             self._heading_parts = []
-
-
-def _section_value(
-    sections: list[tuple[str, list[str]]],
-    aliases: tuple[str, ...],
-) -> str | None:
-    for heading, values in sections:
-        normalized_heading = _clean(heading).casefold()
-        if any(alias.casefold() in normalized_heading for alias in aliases):
-            value = _clean(" ".join(values))
-            return value or None
-    return None
+        if lowered == self._block_tag:
+            block = _clean(" ".join(self._block_parts))
+            if block:
+                self.blocks.append(block)
+            self._block_tag = None
+            self._block_parts = []
+        if lowered in {"th", "td"} and self._table_cell is not None:
+            self._table_row.append(_clean(" ".join(self._table_cell)))
+            self._table_cell = None
+        if lowered == "tr" and self._table_row is not None:
+            cells = tuple(value for value in self._table_row if value)
+            if cells:
+                self.table_rows.append(cells)
+            self._table_row = None
 
 
 def parse_detail_html(
@@ -223,17 +220,12 @@ def parse_detail_html(
     parser = _DetailParser()
     parser.feed(html)
     raw_text = _clean(" ".join(parser.visible))
-    structured = {
-        field: _section_value(parser.headings, aliases)
-        for field, aliases in _FIELD_HEADINGS.items()
-    }
-    failed_fields = tuple(field for field, value in structured.items() if value is None)
-    if not failed_fields:
-        status = ParseStatus.OK
-    elif len(failed_fields) == len(structured):
-        status = ParseStatus.FAILED
-    else:
-        status = ParseStatus.PARTIAL
+    structured = extract_structured(
+        raw_text=raw_text,
+        headings=parser.headings,
+        table_rows=parser.table_rows,
+        blocks=parser.blocks,
+    )
     notice_match = _NOTICE_RE.search(raw_text)
     notice_no = (
         re.sub(r"\s+", "", notice_match.group(1))
@@ -246,11 +238,11 @@ def parse_detail_html(
         title=parser.title_parts[0] if parser.title_parts else None,
         notice_no=notice_no,
         notice_date=_parse_date(raw_text),
-        target_condition=structured["target_condition"],
-        exclusion_rule=structured["exclusion_rule"],
-        dosage_limit=structured["dosage_limit"],
+        target_condition=structured.target_condition,
+        exclusion_rule=structured.exclusion_rule,
+        dosage_limit=structured.dosage_limit,
         raw_text=raw_text,
         raw_html_sha256=hashlib.sha256(html.encode("utf-8")).hexdigest(),
-        parse_status=status,
-        failed_fields=failed_fields,
+        parse_status=structured.parse_status,
+        failed_fields=structured.failed_fields,
     )
