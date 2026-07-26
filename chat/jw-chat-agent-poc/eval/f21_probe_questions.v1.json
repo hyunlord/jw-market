@@ -1,0 +1,407 @@
+{
+  "schema": "chat_f21_question_set_v1",
+  "defaults": {
+    "repetitions": 1
+  },
+  "stages": [
+    {
+      "id": "A",
+      "directory": "stage_a_bq14",
+      "scenarios": [
+        {
+          "id": "A1_A2",
+          "turns": [
+            {
+              "case_id": "A1",
+              "question": "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?"
+            },
+            {
+              "case_id": "A2",
+              "question": "이 시장 앞으로 어떻게 될 것 같아?"
+            }
+          ]
+        },
+        {
+          "id": "A3",
+          "turns": [
+            {
+              "case_id": "A3",
+              "question": "리바로 질병 환자수랑 최근 매출 한번에 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "B1",
+          "turns": [
+            {
+              "case_id": "B1",
+              "question": "리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?"
+            }
+          ]
+        },
+        {
+          "id": "B2",
+          "turns": [
+            {
+              "case_id": "B2",
+              "question": "리바로 경쟁 상대는 누구고 우리 위치는 어디야?"
+            }
+          ]
+        },
+        {
+          "id": "B3",
+          "turns": [
+            {
+              "case_id": "B3",
+              "question": "신규 진입자/위협 브랜드 있어?"
+            }
+          ]
+        },
+        {
+          "id": "C1",
+          "turns": [
+            {
+              "case_id": "C1",
+              "question": "리바로 최근 매출/처방 추이 어때?"
+            }
+          ]
+        },
+        {
+          "id": "C2",
+          "turns": [
+            {
+              "case_id": "C2",
+              "question": "리바로 어느 채널/진료과에서 잘 팔려?"
+            }
+          ]
+        },
+        {
+          "id": "C3",
+          "turns": [
+            {
+              "case_id": "C3",
+              "question": "IQVIA랑 UBIST 수치가 다른데 왜?"
+            }
+          ]
+        },
+        {
+          "id": "D1",
+          "turns": [
+            {
+              "case_id": "D1",
+              "question": "리바로 영업활동 추이 어때?"
+            }
+          ]
+        },
+        {
+          "id": "D2",
+          "turns": [
+            {
+              "case_id": "D2",
+              "question": "영업활동이 매출에 영향 줬어?"
+            }
+          ]
+        },
+        {
+          "id": "D3",
+          "turns": [
+            {
+              "case_id": "D3",
+              "question": "경쟁사 영업활동 변화 있어?"
+            }
+          ]
+        },
+        {
+          "id": "E1",
+          "turns": [
+            {
+              "case_id": "E1",
+              "question": "리바로 관련 최근 이슈 뭐 있어?"
+            }
+          ]
+        },
+        {
+          "id": "E2",
+          "turns": [
+            {
+              "case_id": "E2",
+              "question": "왜 이렇게 됐어?"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "directory": "stage_b_designated9",
+      "scenarios": [
+        {
+          "id": "01",
+          "turns": [
+            {
+              "case_id": "01",
+              "question": "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘"
+            }
+          ]
+        },
+        {
+          "id": "02",
+          "turns": [
+            {
+              "case_id": "02",
+              "question": "뇌경색 질환 임상·허가심사 현황 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "03",
+          "turns": [
+            {
+              "case_id": "03",
+              "question": "아일리아 급여기준 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "04",
+          "turns": [
+            {
+              "case_id": "04",
+              "question": "당뇨병성 망막병증 환자 수 통계"
+            }
+          ]
+        },
+        {
+          "id": "05",
+          "turns": [
+            {
+              "case_id": "05",
+              "question": "질병코드 H360 환자수 통계 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "06",
+          "turns": [
+            {
+              "case_id": "06",
+              "question": "NeDrug: 아일리아 제품의 효능 효과, 용법 용량, 사용상 주의사항을 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "07",
+          "turns": [
+            {
+              "case_id": "07",
+              "question": "ClinicalTrials: 당뇨황반부종(DME) 질환의 임상 허가심사 단계 경쟁약물 현황을 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "08",
+          "turns": [
+            {
+              "case_id": "08",
+              "question": "NCT05151731의 inclusion 및 exclusion Criteria 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "09",
+          "turns": [
+            {
+              "case_id": "09",
+              "question": "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "directory": "stage_c_disease_code",
+      "scenarios": [
+        {
+          "id": "C-1",
+          "turns": [
+            {
+              "case_id": "C-1",
+              "question": "당뇨병성 망막병증의 환자수 통계 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "C-2",
+          "turns": [
+            {
+              "case_id": "C-2",
+              "question": "질병코드 H360 환자수 통계 알려줘"
+            }
+          ]
+        },
+        {
+          "id": "C-3",
+          "turns": [
+            {
+              "case_id": "C-3",
+              "question": "질병코드 E11.3 환자수 통계 알려줘"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D",
+      "directory": "stage_d_multiturn",
+      "multiturn_sets": true,
+      "scenarios": [
+        {
+          "id": "01_period_inheritance",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "리바로 분기 매출"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "2024년은?"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "그 전 해는?"
+            }
+          ]
+        },
+        {
+          "id": "02_anaphora_resolution",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "고지혈증 시장 상위 5개"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "그중 1위 점유율은?"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "걔 최근 추세는?"
+            }
+          ]
+        },
+        {
+          "id": "03_brand_switch",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "리바로 매출"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "리바로젯은?"
+            }
+          ]
+        },
+        {
+          "id": "04_market_context",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "고지혈증 시장 HHI"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "시장 규모는?"
+            }
+          ]
+        },
+        {
+          "id": "05_view_switch",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "고지혈증 시장 HHI"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "일반뷰로는?"
+            }
+          ]
+        },
+        {
+          "id": "06_file_inheritance",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "skip_reason": "No upload file was supplied; no file-upload question was invented.",
+          "requires": "file_upload",
+          "turns": []
+        },
+        {
+          "id": "07_mixed_gate_recovery",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "없는브랜드 매출"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "리바로 매출로 다시"
+            }
+          ]
+        },
+        {
+          "id": "08_topic_switch",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "리바로 매출 알려줘"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "오늘 서울 날씨 어때?"
+            }
+          ]
+        },
+        {
+          "id": "09_failure_recovery",
+          "repetitions": 3,
+          "artifact_subdir_template": "{scenario}/repetition_{repetition}",
+          "artifact_name_template": "turn_{turn}",
+          "turns": [
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "뇌경색 질환 임상·허가심사 현황 알려줘"
+            },
+            {
+              "case_id": "{scenario}-R{repetition}-T{turn}",
+              "question": "리바로 매출 알려줘"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
