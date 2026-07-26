@@ -185,6 +185,24 @@ def _qa_trace(
     }
     if detected_failure_kind:
         final["failure_kind"] = detected_failure_kind
+    claim_trace = {
+        "blocked_count": int(claim_items.get("blocked_claim_count") or 0),
+        "blocked_reasons": tuple(
+            str(item)
+            for item in claim_items.get("blocked_reasons", ())
+            if str(item)
+        ),
+    }
+    rejection_trace = tuple(
+        dict(item)
+        for item in claim_items.get("rejections", ())
+        if isinstance(item, Mapping)
+    )
+    if rejection_trace:
+        claim_trace["rejections"] = rejection_trace
+    pipeline_observability = claim_items.get("pipeline_observability")
+    if isinstance(pipeline_observability, Mapping):
+        claim_trace["pipeline_observability"] = dict(pipeline_observability)
     qa_trace = {
         "request": {
             "request_id": trace_id,
@@ -204,10 +222,7 @@ def _qa_trace(
         },
         "tools": _qa_tool_calls(result),
         "spans": _qa_spans(result),
-        "claims": {
-            "blocked_count": int(claim_items.get("blocked_claim_count") or 0),
-            "blocked_reasons": tuple(str(item) for item in claim_items.get("blocked_reasons", ()) if str(item)),
-        },
+        "claims": claim_trace,
         "final": final,
     }
     routing_v4 = project_routing_v4_qa_trace(diagnostic_items)
