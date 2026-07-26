@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import re
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, InvalidOperation
@@ -65,6 +66,137 @@ def evidence_from_calls(calls: list[dict[str, Any]], data_md: str) -> tuple[Evid
         facts.extend(_summary_text_facts(call, len(facts)))
     facts.extend(_table_token_facts(data_md, facts, len(facts)))
     return tuple(facts)
+
+
+def project_hira_nedrug_binding_evidence(
+    tool_calls: Sequence[Mapping[str, Any]],
+    fact_md: str,
+) -> list[dict[str, Any]]:
+    """Project exact HIRA counts and the MFDS result count for claim binding."""
+
+    rendered_lines = frozenset(fact_md.splitlines())
+    projected: list[dict[str, Any]] = []
+    for call in tool_calls:
+        if str(call.get("status") or "") != "ok":
+            continue
+        tool = str(call.get("tool") or "")
+        facts = _tool_envelope_facts(call)
+        if tool.startswith("hira_disease_") and tool.endswith("_stats"):
+            for fact in facts:
+                if (
+                    fact.get("value") is None
+                    or _render_serialized_evidence_claim(fact) not in rendered_lines
+                ):
+                    continue
+                projected_fact = _hira_patient_binding_fact(tool, fact)
+                if projected_fact is not None:
+                    projected.append(projected_fact)
+        elif tool == "mfds_permission_search":
+            aggregate = _mfds_permission_count_binding_fact(tool, facts, rendered_lines)
+            if aggregate is not None:
+                projected.append(aggregate)
+    return projected
+
+
+def _tool_envelope_facts(call: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping) or render_data.get("ok") is False:
+        return ()
+    serialized = render_data.get("evidence")
+    if not isinstance(serialized, Sequence) or isinstance(serialized, (str, bytes)):
+        return ()
+    facts: list[Mapping[str, Any]] = []
+    for raw_fact in serialized:
+        if not isinstance(raw_fact, Mapping):
+            continue
+        required = ("fact_id", "subject", "metric", "source_name")
+        if any(not str(raw_fact.get(key) or "").strip() for key in required):
+            continue
+        facts.append(raw_fact)
+    return tuple(facts)
+
+
+def _render_serialized_evidence_claim(fact: Mapping[str, Any]) -> str:
+    raw_value = fact.get("value")
+    is_numeric = raw_value is not None
+    value = str(raw_value) if is_numeric else str(fact.get("source_locator") or "확인됨")
+    unit = str(fact.get("unit") or "") if is_numeric else ""
+    period_value = str(fact.get("period") or "")
+    period = f" ({period_value})" if period_value else ""
+    locator_value = str(fact.get("source_locator") or "")
+    locator = f" · {locator_value}" if is_numeric and locator_value else ""
+    return (
+        f"- {fact['subject']}{period}: {fact['metric']} = {value}{unit} "
+        f"[{fact['source_name']}{locator}]"
+    )
+
+
+def _hira_patient_binding_fact(
+    tool: str,
+    fact: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        value = format(Decimal(str(fact["value"])), "f")
+    except (InvalidOperation, ValueError):
+        return None
+    period = str(fact.get("period") or "")
+    number_source = " ".join(part for part in (f"{value}명", period) if part)
+    return {
+        "fact_id": str(fact["fact_id"]),
+        "label": "환자수",
+        "value": f"{value}명",
+        "source": str(fact["source_name"]),
+        "tool": tool,
+        "path": str(fact.get("raw_ref") or f"render_data.evidence.{fact['fact_id']}"),
+        "period": period,
+        "allowed_numbers": list(allowed_numbers(number_source)),
+        "visible": True,
+        "entity": str(fact["subject"]),
+        "metric": "환자수",
+        "unit": "명",
+        "source_grade": "AUTHORITATIVE",
+        "view": "",
+        "market_id": "",
+        "operand_fact_ids": [],
+    }
+
+
+def _mfds_permission_count_binding_fact(
+    tool: str,
+    facts: tuple[Mapping[str, Any], ...],
+    rendered_lines: frozenset[str],
+) -> dict[str, Any] | None:
+    item_facts = tuple(
+        fact
+        for fact in facts
+        if fact.get("metric") == "허가 품목"
+        and _render_serialized_evidence_claim(fact) in rendered_lines
+    )
+    if not item_facts:
+        return None
+    subjects = {str(fact["subject"]) for fact in item_facts}
+    if len(subjects) != 1:
+        return None
+    count = len(item_facts)
+    first = item_facts[0]
+    return {
+        "fact_id": f"{tool}:aggregate:count",
+        "label": "허가 품목 수",
+        "value": f"{count}건",
+        "source": str(first["source_name"]),
+        "tool": tool,
+        "path": "render_data.evidence[metric=허가 품목]",
+        "period": "현재 조회",
+        "allowed_numbers": [f"{count}건"],
+        "visible": True,
+        "entity": str(first["subject"]),
+        "metric": "허가 품목 수",
+        "unit": "건",
+        "source_grade": "AUTHORITATIVE",
+        "view": "",
+        "market_id": "",
+        "operand_fact_ids": [],
+    }
 
 
 def evidence_markdown(facts: tuple[EvidenceFact, ...]) -> str:

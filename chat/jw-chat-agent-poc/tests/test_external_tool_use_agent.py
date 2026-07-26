@@ -17,8 +17,10 @@ import jw_chat_agent_poc.orchestrator.agent as agent_module
 from jw_chat_agent_poc.common.timing import new_timing, stage_event_sink
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
+from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact as BindingEvidenceFact
 from jw_chat_agent_poc.service.conversation_context import extract_conversation_slots
 from jw_chat_agent_poc.service.answer_safety import ensure_natural_fact_lead
+from jw_chat_agent_poc.service.evidence_binding import verify_claim_bindings
 from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.service.runtime_provenance import _facts_returned
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
@@ -146,6 +148,32 @@ def _result_with_fact(tool: str, fact: EvidenceFact, *, answer: str | None = Non
     )
 
 
+def _result_with_facts(tool: str, facts: tuple[EvidenceFact, ...]) -> AgentResult:
+    answer = render_evidence_answer(facts)
+    return AgentResult(
+        status="ok",
+        answer=answer,
+        tool_calls=(
+            {
+                "tool": tool,
+                "source": "external_api",
+                "status": "ok",
+                "summary_text": f"근거 {len(facts)}건 확인",
+                "render_data": {
+                    "ok": True,
+                    "preview": f"근거 {len(facts)}건 확인",
+                    "evidence": [fact.model_dump(mode="json") for fact in facts],
+                    "error_code": None,
+                    "error_message": None,
+                },
+            },
+        ),
+        sources=tuple(dict.fromkeys(fact.source_name for fact in facts)),
+        traces=(),
+        fallback_code=None,
+    )
+
+
 @pytest.mark.parametrize(
     ("tool", "fact"),
     (
@@ -229,16 +257,7 @@ def test_external_evidence_projection_rejects_fact_not_rendered_in_fact_markdown
     assert payload["markdown_response"]["evidence"] == []
 
 
-@pytest.mark.parametrize(
-    "tool",
-    (
-        "hira_disease_hospitalization_outpatient_stats",
-        "get_brand_metric",
-    ),
-)
-def test_external_evidence_projection_does_not_expand_to_hira_or_mart_tools(
-    tool: str,
-) -> None:
+def test_external_evidence_projection_does_not_expand_to_mart_tools() -> None:
     fact = EvidenceFact(
         fact_id="hira_disease:D693:2024",
         subject="D693",
@@ -250,11 +269,114 @@ def test_external_evidence_projection_does_not_expand_to_hira_or_mart_tools(
         source_locator="공식 통계",
         raw_ref="hira_disease:2024",
     )
-    result = _result_with_fact(tool, fact)
+    result = _result_with_fact("get_brand_metric", fact)
 
     payload = integration_module._agent_result_payload("상병코드 D693 환자수 추이", result)
 
     assert payload["markdown_response"]["evidence"] == []
+
+
+def test_f21_c3_hira_envelope_projects_exact_patient_binding_tuple() -> None:
+    # F21 C-3 capture 5e0e243f... recorded E11.3, 2024, 34,091 outpatients,
+    # evidence_count=0, and MISSING_EVIDENCE_BINDING.
+    question = "질병코드 E11.3 환자수 통계 알려줘"
+    raw_fact = EvidenceFact(
+        fact_id="hira_disease_hospitalization_outpatient_stats:2",
+        subject="E11.3",
+        metric="질병 입원/외래 통계",
+        value=Decimal("34091"),
+        unit=None,
+        period="2024",
+        source_name="건강보험심사평가원 통계",
+        source_locator="외래",
+        raw_ref="hira_disease_hospitalization_outpatient_stats:2",
+    )
+
+    payload = integration_module._agent_result_payload(
+        question,
+        _result_with_facts("hira_disease_hospitalization_outpatient_stats", (raw_fact,)),
+    )
+
+    assert payload["markdown_response"]["evidence"] == [
+        {
+            "fact_id": raw_fact.fact_id,
+            "label": "환자수",
+            "value": "34091명",
+            "source": raw_fact.source_name,
+            "tool": "hira_disease_hospitalization_outpatient_stats",
+            "path": raw_fact.raw_ref,
+            "period": "2024",
+            "allowed_numbers": ["2024", "34091명"],
+            "visible": True,
+            "entity": "E11.3",
+            "metric": "환자수",
+            "unit": "명",
+            "source_grade": "AUTHORITATIVE",
+            "view": "",
+            "market_id": "",
+            "operand_fact_ids": [],
+        }
+    ]
+    projected = tuple(BindingEvidenceFact(**fact) for fact in payload["markdown_response"]["evidence"])
+    verification = verify_claim_bindings(
+        question=question,
+        answer="E11.3의 2024년 외래 환자수는 34,091명입니다.",
+        facts=projected,
+    )
+    assert verification.status == "pass"
+    assert verification.disposition == "answered"
+
+
+def test_f21_b06_nedrug_items_project_authoritative_count_without_rewriting_text() -> None:
+    # F21 B06 capture b115a817... recorded "허가 8건" with five text facts;
+    # the same live path recorded ungrounded_numeric_spans=["8건"].
+    question = "NeDrug: 아일리아 제품의 효능 효과, 용법 용량, 사용상 주의사항을 알려줘"
+    item_facts = tuple(
+        EvidenceFact(
+            fact_id=f"mfds_permission_search:{index}",
+            subject="아일리아",
+            metric="허가 품목",
+            value=None,
+            unit=None,
+            period=None,
+            source_name="식약처 의약품 허가 정보",
+            source_locator=f"아일리아주사 {index}",
+            raw_ref=f"mfds_permission_search:{index}",
+        )
+        for index in range(1, 9)
+    )
+    detail = EvidenceFact(
+        fact_id="mfds_permission_detail:아일리아:EE_DOC_DATA",
+        subject="아일리아",
+        metric="효능·효과",
+        value=None,
+        unit=None,
+        period=None,
+        source_name="식약처 의약품 허가 상세",
+        source_locator="신생혈관성 연령관련 황반변성의 치료",
+        raw_ref="mfds_permission_detail:1:EE_DOC_DATA",
+    )
+
+    payload = integration_module._agent_result_payload(
+        question,
+        _result_with_facts("mfds_permission_search", (*item_facts, detail)),
+    )
+    evidence = payload["markdown_response"]["evidence"]
+    aggregate = next(fact for fact in evidence if fact["metric"] == "허가 품목 수")
+
+    assert aggregate["value"] == "8건"
+    assert aggregate["allowed_numbers"] == ["8건"]
+    assert aggregate["entity"] == "아일리아"
+    assert aggregate["period"] == "현재 조회"
+    assert detail.source_locator in payload["markdown_response"]["fact_md"]
+    projected = tuple(BindingEvidenceFact(**fact) for fact in evidence)
+    verification = verify_claim_bindings(
+        question=question,
+        answer="허가 8건의 근거를 확인했습니다.",
+        facts=projected,
+        expected_entities=("아일리아",),
+    )
+    assert verification.status == "pass"
 
 
 def test_clinicaltrials_projection_omits_missing_field_placeholders() -> None:
