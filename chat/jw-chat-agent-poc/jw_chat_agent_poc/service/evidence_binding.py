@@ -4,11 +4,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import re
-from typing import Any, Final
+from typing import Final
 
 from jw_chat_agent_poc.orchestrator.hira_disease import hira_disease_code_for_exact_name
 from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact, evidence_from_calls, number_tokens
 from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade
+from jw_chat_agent_poc.service.evidence_binding_diagnostics import (
+    ClaimRejectionDiagnostic,
+    rejection_diagnostic,
+)
 from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
 from jw_chat_agent_poc.service.evidence_binding_rules import (
     IDENTIFIER_KEYS,
@@ -63,6 +67,7 @@ class BindingVerification:
     blocked_reasons: tuple[str, ...]
     blocked_numbers: tuple[str, ...]
     failure_kind: str | None = None
+    rejections: tuple[ClaimRejectionDiagnostic, ...] = ()
 
 
 def verify_claim_bindings(
@@ -91,6 +96,29 @@ def verify_claim_bindings(
         )
     if "환자수" in metrics and not expected:
         blocked_numbers = claim_number_tokens(answer)
+        rejections = tuple(
+            rejection_diagnostic(
+                token=token,
+                reason="MISSING_EXPECTED_ENTITY_BINDING",
+                candidates=tuple(
+                    fact
+                    for fact in facts
+                    if has_binding_metadata(fact)
+                    and (
+                        token in fact.allowed_numbers
+                        or token.upper() in explicit_periods(fact.period)
+                        or _matches_display_rounding(token, fact)
+                    )
+                ),
+                expected_entities=expected,
+                expected_metrics=metrics,
+                requested_periods=requested_periods,
+                expected_scopes=expected_scopes,
+                expected_market_ids=expected_market_ids,
+                forced_mismatch_axes=("entity",),
+            )
+            for token in blocked_numbers
+        )
         return BindingVerification(
             answer=_BINDING_FAILURE_ANSWER,
             status="fail",
@@ -98,6 +126,7 @@ def verify_claim_bindings(
             blocked_claim_count=len(blocked_numbers),
             blocked_reasons=("MISSING_EXPECTED_ENTITY_BINDING",),
             blocked_numbers=blocked_numbers,
+            rejections=rejections,
         )
     if not expected and not metrics:
         return BindingVerification(
@@ -114,6 +143,7 @@ def verify_claim_bindings(
     blocked: list[str] = []
     blocked_numbers: list[str] = []
     partial_reasons: list[str] = []
+    rejections: list[ClaimRejectionDiagnostic] = []
     for token in binding_claim_number_tokens(claim_text):
         candidates = tuple(
             fact
@@ -130,6 +160,19 @@ def verify_claim_bindings(
             if expected and not token_periods.intersection(requested_periods):
                 blocked.append("MISSING_EVIDENCE_BINDING")
                 blocked_numbers.append(token)
+                rejections.append(
+                    rejection_diagnostic(
+                        token=token,
+                        reason="MISSING_EVIDENCE_BINDING",
+                        candidates=(),
+                        expected_entities=expected,
+                        expected_metrics=metrics,
+                        requested_periods=requested_periods,
+                        expected_scopes=expected_scopes,
+                        expected_market_ids=expected_market_ids,
+                        forced_mismatch_axes=("evidence",),
+                    )
+                )
             continue
 
         claim_metrics = claim_metrics_for_token(claim_text, token) or metrics
@@ -165,24 +208,48 @@ def verify_claim_bindings(
             ):
                 partial_reasons.append("REQUESTED_PERIOD_UNAVAILABLE")
                 continue
-            blocked.append(
-                mismatch_reason(
-                    candidates,
-                    expected,
-                    claim_metrics,
-                    requested_periods=requested_periods,
+            reason = mismatch_reason(
+                candidates,
+                expected,
+                claim_metrics,
+                requested_periods=requested_periods,
+                token=token,
+                expected_scopes=expected_scopes,
+                expected_market_ids=expected_market_ids,
+            )
+            blocked.append(reason)
+            blocked_numbers.append(token)
+            rejections.append(
+                rejection_diagnostic(
                     token=token,
+                    reason=reason,
+                    candidates=candidates,
+                    expected_entities=expected,
+                    expected_metrics=claim_metrics,
+                    requested_periods=requested_periods,
                     expected_scopes=expected_scopes,
                     expected_market_ids=expected_market_ids,
                 )
             )
-            blocked_numbers.append(token)
             continue
 
         grade_usable = tuple(fact for fact in matching if grade(fact) is not SourceGrade.UNVERIFIED)
         if not grade_usable:
             blocked.append("SOURCE_GRADE_MISMATCH")
             blocked_numbers.append(token)
+            rejections.append(
+                rejection_diagnostic(
+                    token=token,
+                    reason="SOURCE_GRADE_MISMATCH",
+                    candidates=matching,
+                    expected_entities=expected,
+                    expected_metrics=claim_metrics,
+                    requested_periods=requested_periods,
+                    expected_scopes=expected_scopes,
+                    expected_market_ids=expected_market_ids,
+                    forced_mismatch_axes=("source_grade",),
+                )
+            )
             continue
 
         usable: list[EvidenceFact] = []
@@ -202,8 +269,26 @@ def verify_claim_bindings(
                 if all(grade(fact) is SourceGrade.SUPPLEMENTARY for fact in grade_usable):
                     partial_reasons.append("SUPPLEMENTARY_SOURCE_ONLY")
                 continue
-            blocked.append(operand_failure_reasons[0] if operand_failure_reasons else "OPERAND_BINDING_MISMATCH")
+            reason = (
+                operand_failure_reasons[0]
+                if operand_failure_reasons
+                else "OPERAND_BINDING_MISMATCH"
+            )
+            blocked.append(reason)
             blocked_numbers.append(token)
+            rejections.append(
+                rejection_diagnostic(
+                    token=token,
+                    reason=reason,
+                    candidates=grade_usable,
+                    expected_entities=expected,
+                    expected_metrics=claim_metrics,
+                    requested_periods=requested_periods,
+                    expected_scopes=expected_scopes,
+                    expected_market_ids=expected_market_ids,
+                    forced_mismatch_axes=("operands",),
+                )
+            )
             continue
         if all(
             not present(fact.period)
@@ -245,6 +330,7 @@ def verify_claim_bindings(
                             dict.fromkeys((*blocked_reasons, *remainder.blocked_reasons))
                         ),
                         blocked_numbers=unique_blocked_numbers,
+                        rejections=tuple((*rejections, *remainder.rejections)),
                     )
         return BindingVerification(
             answer=_BINDING_FAILURE_ANSWER,
@@ -253,6 +339,7 @@ def verify_claim_bindings(
             blocked_claim_count=len(unique_blocked_numbers),
             blocked_reasons=blocked_reasons,
             blocked_numbers=unique_blocked_numbers,
+            rejections=tuple(rejections),
         )
 
     unique_partial = tuple(dict.fromkeys(partial_reasons))

@@ -2692,6 +2692,10 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         "binding_status": gate.status,
         "blocked_numbers": gate.blocked_numbers,
     }
+    if gate.rejections:
+        result["_qa_claim_gate"]["rejections"] = tuple(
+            item.to_trace() for item in gate.rejections
+        )
     failure_kind = gate.failure_kind or str(previous_items.get("failure_kind") or "") or None
     if failure_kind:
         result["_qa_claim_gate"]["failure_kind"] = failure_kind
