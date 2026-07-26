@@ -203,7 +203,7 @@ def test_same_source_and_view_merge_period_and_multi_value_fields() -> None:
 
     assert block.count("| UBIST |") == 1
     assert (
-        "| UBIST | 2025-07~2026-04 | 전략뷰 (market_landscape) | "
+        "| UBIST | 2025-07~2026-04 | 전략뷰 (market_landscape) · 리바로/리바로젯 | "
         "리바로/리바로젯 | 470, 516 | 의원, 전체 | %, 억원 |"
     ) in block
 
@@ -232,14 +232,15 @@ def test_multi_value_limit_and_separator_are_environment_driven(monkeypatch) -> 
 | 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |
 | --- | --- | --- | --- | --- | --- | --- |
 | UBIST | 2026-01 | 전략뷰 (market_landscape) | A | 470 | 전체 | 억원 |
-| UBIST | 2026-02 | 전략뷰 (market_landscape) | B | 516 | 의원 | % |
-| UBIST | 2026-03 | 전략뷰 (market_landscape) | C | 600 | 병원 | 위 |
-| UBIST | 2026-04 | 전략뷰 (market_landscape) | D | 700 | 약국 | 명 |
+| UBIST | 2026-02 | 전략뷰 (market_landscape) | A | 516 | 의원 | % |
+| UBIST | 2026-03 | 전략뷰 (market_landscape) | A | 600 | 병원 | 위 |
+| UBIST | 2026-04 | 전략뷰 (market_landscape) | A | 700 | 약국 | 명 |
 """
 
     block = deterministic_source_block(fact_md)
 
-    assert "| A / B 외 2 |" in block
+    assert block.count("| UBIST |") == 1
+    assert "| 전략뷰 (market_landscape) · A | A |" in block
     assert "| 470 / 516 외 2 |" in block
     assert "| 병원 / 약국 외 2 |" in block
     assert "| % / 명 외 2 |" in block

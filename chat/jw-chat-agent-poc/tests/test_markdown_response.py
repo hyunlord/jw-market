@@ -1240,7 +1240,7 @@ def test_source_block_renders_data_period_from_call_series() -> None:
     block = deterministic_source_block(fact_md)
 
     assert (
-        "| UBIST | 2025-07~2026-04 | 전략뷰 (market_landscape) | 이상지질혈증 | 470 | 전체 | 억원 |"
+        "| UBIST | 2025-07~2026-04 | 전략뷰 (market_landscape) · 이상지질혈증 | 이상지질혈증 | 470 | 전체 | 억원 |"
     ) in block
 
 
@@ -1275,7 +1275,7 @@ def test_source_block_renders_trend_data_detail_from_render_metadata() -> None:
     block = deterministic_source_block(fact_md)
 
     assert (
-        "| UBIST | 2023-Q3~2025-Q4 | 전략뷰 (market_landscape) | 철분제 | 516 | 전체 | 억원 |"
+        "| UBIST | 2023-Q3~2025-Q4 | 전략뷰 (market_landscape) · 철분제 | 철분제 | 516 | 전체 | 억원 |"
     ) in block
 
 
@@ -1302,7 +1302,7 @@ def test_source_block_uses_confirmed_view_mapping_for_strategy_cache_market() ->
 
     block = deterministic_source_block(fact_md)
 
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로 리바로젯 | 516 | 전체 | 억원 |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) · 리바로 리바로젯 | 리바로 리바로젯 | 516 | 전체 | 억원 |" in block
     assert "strategy_006" not in block
 
 
@@ -1326,7 +1326,7 @@ def test_source_block_uses_confirmed_view_mapping_for_market_landscape_query_mar
 
     block = deterministic_source_block(fact_md)
 
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로 리바로젯 | 470 | 전체 | — |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) · 리바로 리바로젯 | 리바로 리바로젯 | 470 | 전체 | — |" in block
 
 
 def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_difference() -> None:
@@ -1364,7 +1364,7 @@ def test_source_block_notes_confirmed_strategy_and_query_layer_denominator_diffe
 
     block = deterministic_source_block(fact_md)
 
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470, 516 | 전체 | — |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) · 리바로/리바로젯 | 리바로/리바로젯 | 470, 516 | 전체 | — |" in block
     assert "ml_006" not in block
 
 
@@ -1392,7 +1392,7 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_strategy_only_
 
     block = deterministic_source_block(fact_md)
 
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 516 | 전체 | 억원 |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) · 리바로/리바로젯 | 리바로/리바로젯 | 516 | 전체 | 억원 |" in block
     assert "ml_006" not in block
 
 
@@ -1423,7 +1423,7 @@ def test_source_block_notes_confirmed_counterpart_denominator_for_query_only_pat
     block = deterministic_source_block(fact_md)
 
     assert "순위 6/470/470" not in fact_md
-    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) | 리바로/리바로젯 | 470 | 전체 | 억원 |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (market_landscape) · 리바로/리바로젯 | 리바로/리바로젯 | 470 | 전체 | 억원 |" in block
     assert "strategy_006" not in block
     assert "6/470/516" not in block
 
@@ -1462,7 +1462,7 @@ def test_source_block_notes_split_market_class2_basis() -> None:
 
     block = deterministic_source_block(fact_md)
 
-    assert "| IQVIA NSA | 2025-Q4 | 전략뷰 (market_landscape) | 악템라 | 12 | 전체 | 억원 |" in block
+    assert "| IQVIA NSA | 2025-Q4 | 전략뷰 (market_landscape) · 악템라 | 악템라 | 12 | 전체 | 억원 |" in block
     assert "Class 1" not in block
 
 
@@ -1486,7 +1486,7 @@ def test_source_block_uses_confirmed_view_mapping_for_competitive_dynamics_marke
 
     block = deterministic_source_block(fact_md)
 
-    assert "| UBIST | 2026-04 | 전략뷰 (competitive_dynamics) | 리바로 리바로젯 | 104 | 전체 | — |" in block
+    assert "| UBIST | 2026-04 | 전략뷰 (competitive_dynamics) · 리바로 리바로젯 | 리바로 리바로젯 | 104 | 전체 | — |" in block
     assert "cd_006" not in block
 
 

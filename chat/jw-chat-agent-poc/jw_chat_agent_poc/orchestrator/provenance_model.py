@@ -162,15 +162,24 @@ def normalized_row(
     channel: Any = ALL_CHANNELS_LABEL,
     unit: Any = MISSING_LABEL,
 ) -> ProvenanceRow:
+    public_market_label = public_value(market)
     return ProvenanceRow(
         source=public_source(source),
         period=public_value(period),
-        view=public_value(view),
-        market=public_value(market),
+        view=_public_scoped_view(view, public_market_label),
+        market=public_market_label,
         denominator=public_value(denominator),
         channel=public_value(channel, missing=ALL_CHANNELS_LABEL),
         unit=public_value(unit),
     )
+
+
+def _public_scoped_view(raw_view: Any, public_market_label: str) -> str:
+    view = public_value(raw_view)
+    if not view.startswith("전략뷰 (") or public_market_label == MISSING_LABEL:
+        return view
+    suffix = f" · {public_market_label}"
+    return view if view.endswith(suffix) else f"{view}{suffix}"
 
 
 def dedupe_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
@@ -179,12 +188,12 @@ def dedupe_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
 
 
 def merge_public_source_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
-    """Merge public rows only when both source and view are identical."""
+    """Merge public rows only within the same source, view, and public market."""
 
-    groups: dict[tuple[str, str], list[ProvenanceRow]] = {}
+    groups: dict[tuple[str, str, str], list[ProvenanceRow]] = {}
     for row in dedupe_rows(rows):
         clean = normalized_row(*row.as_tuple())
-        groups.setdefault((clean.source, clean.view), []).append(clean)
+        groups.setdefault((clean.source, clean.view, clean.market), []).append(clean)
 
     merged = tuple(_merge_source_group(group) for group in groups.values())
     return merged or (ProvenanceRow(),)
