@@ -14,15 +14,6 @@ from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolutio
 from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, ViewConfig
 
 
-@pytest.fixture(autouse=True)
-def _reset_manufacturer_cache():
-    """The product->manufacturer map is a long-lived module cache; reset it around each test
-    so cache state never leaks across tests (order-independent, full-suite deterministic)."""
-    topic_matrix._manufacturer_cache = None
-    yield
-    topic_matrix._manufacturer_cache = None
-
-
 def test_post_topic_service_emits_event_count_from_assignment_rows(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _confidence_brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
@@ -52,7 +43,11 @@ def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch
         selected_brand="리바로",
         view=view,
         market_row={"atc4_desc": "STATIN"},
-        brand_rows=(),
+        brand_rows=(
+            {"brand_key": "리바로", "by_dimension": json.dumps({"manufacturer": "JW SHINYAK"})},
+            {"brand_key": "리바로", "by_dimension": json.dumps({"manufacturer": "JW PHARMACEUTICAL"})},
+            {"brand_key": "미매칭", "by_dimension": json.dumps({"manufacturer": ""})},
+        ),
         brand_meta={
             "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
             "미매칭": BrandMeta("미매칭", "미매칭", ("NOKW",), False),
@@ -65,68 +60,58 @@ def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch
         ranking_quarter="2026-Q1",
         applied_filter={"atc4": ["C10A1"]},
     )
-    monkeypatch.setattr(
-        topic_matrix,
-        "iqvia_product_codes_by_brand",
-        lambda _brands: {"리바로": ("LIVALO", "LIVALOZET"), "미매칭": ("NOKW",)},
-    )
-    # Manufacturer (제조사, MFR NAME KOR) map. Multi-manufacturer retained for CMO/repackaging:
-    # JW SHINYAK is hit by both codes (count 2) so it sorts before JW PHARMACEUTICAL (count 1);
-    # NOKW has no manufacturer -> null.
-    manufacturer_map = {
-        "LIVALO": frozenset({"JW SHINYAK"}),
-        "LIVALOZET": frozenset({"JW PHARMACEUTICAL", "JW SHINYAK"}),
-    }
-    monkeypatch.setattr(topic_matrix, "_cached_manufacturer_by_product", lambda: manufacturer_map)
-
     result = topic_matrix._company_names_by_brand(brand_set, {})
 
-    assert result == {"리바로": "JW SHINYAK, JW PHARMACEUTICAL", "미매칭": None}
+    assert result == {"리바로": "JW PHARMACEUTICAL, JW SHINYAK", "미매칭": None}
 
 
 def test_company_names_tie_breaks_on_name_ascending(monkeypatch) -> None:
     view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     brand_set = BrandSetResolution(
         view_name="general", market_id="C10A1", selected_brand="리바로", view=view,
-        market_row={}, brand_rows=(),
+        market_row={},
+        brand_rows=(
+            {"brand_key": "리바로", "by_dimension": json.dumps({"manufacturer": "GAMMA"})},
+            {"brand_key": "리바로", "by_dimension": json.dumps({"manufacturer": "BETA"})},
+        ),
         brand_meta={"리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True)},
         choices=(BrandChoice("리바로", "리바로", 1, True),),
         candidates=(), ranking_quarter="2026-Q1", applied_filter={},
     )
-    monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _b: {"리바로": ("LIVALO",)})
-    # Equal counts (one code hits both once) -> deterministic name ascending (BETA before GAMMA).
-    manufacturer_map = {"LIVALO": frozenset({"GAMMA", "BETA"})}
-    monkeypatch.setattr(topic_matrix, "_cached_manufacturer_by_product", lambda: manufacturer_map)
     assert topic_matrix._company_names_by_brand(brand_set, {}) == {"리바로": "BETA, GAMMA"}
 
 
-def test_fetch_manufacturer_by_product_builds_kor_map_and_skips_null(monkeypatch) -> None:
-    """Source = iqvia_nsa_quarterly_raw MFR NAME KOR; key normalized; null/empty skipped."""
-    rows = [
-        {"product": "LIVALO", "manufacturer": "제이더블유중외제약"},
-        {"product": "CRESTOR", "manufacturer": "아스트라제네카"},
-        {"product": "ATORVA", "manufacturer": "유한양행"},
-        {"product": "NOMFR", "manufacturer": ""},        # empty -> skipped
-        {"product": "NULLMFR", "manufacturer": None},    # null -> skipped
-    ]
-    captured = {}
+def test_company_names_reuse_resolved_rows_without_scanning_iqvia_raw(monkeypatch) -> None:
+    view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
+    brand_set = BrandSetResolution(
+        view_name="general",
+        market_id="C10A1",
+        selected_brand="리바로",
+        view=view,
+        market_row={},
+        brand_rows=(
+            {"brand_key": "리바로", "by_dimension": json.dumps({"manufacturer": "제이더블유중외제약"})},
+            {"brand_key": "리바로", "by_dimension": json.dumps({"manufacturer": "JW신약"})},
+            {"brand_key": "미매칭", "by_dimension": json.dumps({"manufacturer": ""})},
+        ),
+        brand_meta={
+            "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
+            "미매칭": BrandMeta("미매칭", "미매칭", ("NOKW",), False),
+        },
+        choices=(
+            BrandChoice("리바로", "리바로", 1, True),
+            BrandChoice("미매칭", "미매칭", 2, False),
+        ),
+        candidates=(),
+        ranking_quarter="2026-Q1",
+        applied_filter={},
+    )
+    monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _brands: pytest.fail("raw lookup is forbidden"))
 
-    def fake_fetch_all(sql, params=None):
-        captured["sql"] = sql
-        return rows
-
-    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
-    result = topic_matrix._fetch_manufacturer_by_product()
-    assert result == {
-        "LIVALO": frozenset({"제이더블유중외제약"}),
-        "CRESTOR": frozenset({"아스트라제네카"}),
-        "ATORVA": frozenset({"유한양행"}),
+    assert topic_matrix._company_names_by_brand(brand_set, {}) == {
+        "리바로": "JW신약, 제이더블유중외제약",
+        "미매칭": None,
     }
-    # confirm the source table + Korean manufacturer column
-    assert "iqvia_nsa_quarterly_raw" in captured["sql"]
-    assert "MFR NAME KOR" in captured["sql"]
-
-
 def test_post_topic_service_keeps_topic_brand_contract(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _confidence_brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
