@@ -9,6 +9,7 @@ from enum import Enum
 class ParseStatus(str, Enum):
     OK = "OK"
     PARTIAL = "PARTIAL"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
     FAILED = "FAILED"
 
 
