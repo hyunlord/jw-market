@@ -332,8 +332,6 @@ def resolve_anaphora(
         brand = slots.ranked_brands[0]
         reusable = next((item for item in slots.ranked if item.brand == brand and item.series), None)
         resolved = _FIRST_RANK_RE.sub(brand, resolved)
-        if reusable is None and slots.anchor_brand and slots.anchor_brand != brand:
-            resolved = f"{slots.anchor_brand} 시장의 {resolved}"
     if _ANCHOR_RE.search(resolved):
         brand = brand or slots.anchor_brand
         if not brand:
