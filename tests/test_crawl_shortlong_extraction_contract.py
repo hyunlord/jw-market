@@ -14,10 +14,10 @@ PROTECTED_BLOB_SHA256 = {
     "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "48eec25ef65943c1cd1ff8213c635f9dece3051a87033710f359aa389b26ed0c",
     "pipeline/scripts/api/main.py": "5ada140bfdf2213a23dfbf885be70257cd185518f714876cf314933c9c401272",
     "pipeline/scripts/api/market_definition_display.py": "36cd88d6b0ada9718ddf959f2b8172c0443fb52843ebca64ca8340e1b6bbd269",
-    # Repinned 2026-07-22: brand-activity topics company_name openapi description updated to
-    # reflect the manufacturer (제조사, IQVIA MFR NAME KOR) source switch. Forward, description-
-    # only edit; does not revert the crawl-shortlong extraction lineage the blob set guards.
-    "pipeline/scripts/api/openapi_docs.py": "995e57a772e159339d52d68199c1e1f570d51abc1de872f36cfc425ba2cdc465",
+    # Repinned 2026-07-23: brand-activity interest and CSD company descriptions now share the
+    # manufacturer (제조사, IQVIA MFR NAME KOR) source already used by topics. Forward,
+    # description-only edit; does not revert the crawl-shortlong extraction lineage guarded here.
+    "pipeline/scripts/api/openapi_docs.py": "70ef96428b2a475a40ca75237387abfac678edd7e39ac7d2390ef10bf0cc4f0f",
     "pipeline/scripts/api/routes/cause.py": "d5d2ba035d49bc8ac9f5951becc2a38dfe7e7217d8c75e8d2c64945371a70edb",
     "pipeline/scripts/api/routes/deep_analysis.py": "4dc23b1e6dcd6afea9a8937288f34b3ba230504c2bad7417edbe145bebbc82b7",
 }

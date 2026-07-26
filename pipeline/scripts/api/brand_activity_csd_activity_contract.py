@@ -69,7 +69,7 @@ class CsdActivitySeriesRequest(BaseModel):
     filter: MarketFilter = Field(default_factory=MarketFilter, description="legacy 호환 필드. filters가 있으면 filters가 우선.")
     entity_level: str = Field(
         default="brand",
-        description="brand 또는 company. company면 선택 브랜드 활동량을 IQVIA mart 회사 기준으로 합산합니다.",
+        description="brand 또는 company. company면 선택 브랜드 활동량을 IQVIA MFR NAME KOR 제조사 기준으로 합산합니다.",
     )
     csd_channel: str = Field(default="TOTAL", description="CSD 원본 jw_channel 값. TOTAL/GH/SHPPI/CPPI/GH+SHPPI.")
     csd_market: str | None = Field(default=None, description="선택 CSD 시장. 미지정 시 매핑된 전체 시장과 합산을 반환합니다.")

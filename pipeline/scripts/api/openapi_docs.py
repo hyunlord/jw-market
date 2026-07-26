@@ -843,8 +843,7 @@ BRAND_ACTIVITY_TOPICS_RESPONSES: Final = {
                                             "company_name": {
                                                 "type": ["string", "null"],
                                                 "description": (
-                                                    "제조사(manufacturer, IQVIA MFR NAME KOR). 브랜드 귀속 표기이며 "
-                                                    "interest-timeseries의 companies(판매사, representing_company)와는 다른 기준입니다. "
+                                                    "제조사(manufacturer, IQVIA MFR NAME KOR). 브랜드활동 회사 표기의 단일 정본이며 "
                                                     "복수 시 제품 매칭 수 내림차순·이름 오름차순으로 \", \"로 결합합니다. 미매핑이면 null."
                                                 ),
                                             },

@@ -23,10 +23,17 @@ from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMet
 from pipeline.scripts.api.brand_activity_interest_rx_config import INTEREST_LEVELS
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
 from pipeline.scripts.api.brand_activity_interest_rx_source import _market_clause
-from pipeline.scripts.api.brand_activity_topic_matrix import _alias_lookup, _keyword_filter_domain
+from pipeline.scripts.api.brand_activity_topic_matrix import (
+    _alias_lookup,
+    _keyword_filter_domain,
+)
 from pipeline.scripts.api.brand_activity_interest_rx_matrix import _canonical_product
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
+from pipeline.scripts.api.manufacturer_resolver import (
+    get_manufacturer_by_product,
+    resolve_manufacturer_name,
+)
 
 
 def _period_minus_months(period: str, months: int) -> str:
@@ -105,7 +112,10 @@ def get_interest_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     counts = _counts_by_brand_month(brand_set, rows, code_sets, aliases)
     company_counts, company_totals = _counts_by_company_month(brand_set, rows, code_sets, aliases)
     # Deterministic order: keyword row count desc, then company name asc.
-    ordered_companies = sorted(company_counts, key=lambda name: (-company_totals[name], name))
+    ordered_companies = sorted(
+        company_counts,
+        key=lambda name: (-company_totals[name], name is None, name or ""),
+    )
     return {
         "scope": _scope_payload(request, brand_set),
         "filters_applied": {
@@ -195,10 +205,10 @@ def _fetch_rows(brand_set: BrandSetResolution, request: TimeseriesRequest, perio
             params.extend(values)
     return db.fetch_all(
         f"""
-        SELECT product_name, representing_company, period_ym, interest, COUNT(*) AS event_count
+        SELECT product_name, period_ym, interest, COUNT(*) AS event_count
         FROM {quote_identifier(config.brand_activity_db_name)}.`km_keyword_event_stage`
         WHERE {" AND ".join(clauses)}
-        GROUP BY product_name, representing_company, period_ym, interest
+        GROUP BY product_name, period_ym, interest
         """,
         tuple(params),
     )
@@ -277,18 +287,19 @@ def _counts_by_company_month(
     rows: list[JsonMap],
     code_sets: dict[str, frozenset[str]],
     aliases: dict[str, str],
-) -> tuple[dict[str, dict[str, dict[str, int]]], dict[str, int]]:
-    """representing_company -> month -> interest -> count, plus per-company total row count.
+) -> tuple[dict[str | None, dict[str, dict[str, int]]], dict[str | None, int]]:
+    """IQVIA manufacturer -> month -> interest -> count, plus per-company total row count.
 
     Companies come from the resolved brand set's keyword rows only (a row counts when its
-    canonical product belongs to any of the brands). Co-promotion keeps every company: a
-    product's rows split across companies are attributed to each. filters flow through the
-    same fetched rows, so a company's denominator moves with the filter (brand rule parity).
+    canonical product belongs to any of the brands). Seller variants collapse under the IQVIA
+    MFR NAME KOR identity. Filters flow through the same fetched rows, so a company's
+    denominator moves with the filter (brand rule parity). Unmapped products stay under null.
     """
 
     brand_products: frozenset[str] = frozenset().union(*code_sets.values()) if code_sets else frozenset()
-    result: dict[str, dict[str, dict[str, int]]] = {}
-    totals: dict[str, int] = {}
+    manufacturer_map = get_manufacturer_by_product()
+    result: dict[str | None, dict[str, dict[str, int]]] = {}
+    totals: dict[str | None, int] = {}
     for row in rows:
         level = text(row.get("interest"))
         if level not in INTEREST_LEVELS:
@@ -296,9 +307,7 @@ def _counts_by_company_month(
         product = _canonical_product(text(row.get("product_name")), aliases)
         if product not in brand_products:
             continue
-        company = text(row.get("representing_company")).strip()
-        if not company:
-            continue
+        company = resolve_manufacturer_name((product,), manufacturer_map)
         month = text(row.get("period_ym"))
         value = int(float_value(row.get("event_count")))
         month_counts = result.setdefault(company, {}).setdefault(month, {})
@@ -307,7 +316,7 @@ def _counts_by_company_month(
     return result, totals
 
 
-def _company_payload(company_name: str, by_month: dict[str, dict[str, int]], period: PeriodWindow) -> JsonMap:
+def _company_payload(company_name: str | None, by_month: dict[str, dict[str, int]], period: PeriodWindow) -> JsonMap:
     return {
         "company_name": company_name,
         "series": _series_for_counts(by_month, period),

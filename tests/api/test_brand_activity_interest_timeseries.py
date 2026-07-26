@@ -45,6 +45,16 @@ def _stub_common(monkeypatch):
                         lambda names: {k: tuple(_meta[k].product_codes) for k in names if k in _meta})
     # bounds: exactly 36 months 2023-06..2026-05
     monkeypatch.setattr(service.db, "fetch_one", lambda *_a, **_k: {"available_start": "2023-06", "available_end": "2026-05"})
+    monkeypatch.setattr(
+        service,
+        "get_manufacturer_by_product",
+        lambda: {
+            "LIVALO": frozenset({"제이더블유중외제약"}),
+            "CRESTOR": frozenset({"아스트라제네카"}),
+            "LIPITOR": frozenset({"비아트리스"}),
+            "LIPILOU": frozenset({"종근당"}),
+        },
+    )
 
 
 def _rows(rows):
@@ -68,43 +78,41 @@ def test_within_brand_month_pct_and_total_count(monkeypatch):
     assert crestor["total_count"] == 2 and crestor["NOT AT ALL"]["pct"] == 100.0
 
 
-def test_companies_axis_copromotion_pct_null_and_order(monkeypatch):
-    # Co-promotion: LIVALO -> JW PHARMACEUTICAL + JW SHINYAK; CRESTOR -> DAE WOONG.
-    # JW SHINYAK has data only in 2026-05 (null elsewhere); pct uses within-company denom.
+def test_companies_axis_merges_sellers_by_manufacturer_and_preserves_natural_pct(monkeypatch):
+    # Two LIVALO sellers collapse to the one IQVIA manufacturer. CRESTOR stays separate.
     monkeypatch.setattr(service.db, "fetch_all", _rows([
         {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "NOT AT ALL", "event_count": 1},
         {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 19},
         {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 3},
         {"product_name": "LIVALO", "representing_company": "JW PHARMACEUTICAL", "period_ym": "2026-04", "interest": "SOMEWHAT USEFUL", "event_count": 10},
-        {"product_name": "LIVALO", "representing_company": "JW SHINYAK", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 8},
+        {"product_name": "LIVALO", "representing_company": "JW SHINYAK", "period_ym": "2026-04", "interest": "SOMEWHAT USEFUL", "event_count": 8},
         {"product_name": "CRESTOR", "representing_company": "DAE WOONG", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 8},
     ]))
     out = service.get_interest_timeseries({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
     companies = {c["company_name"]: c for c in out["companies"]}
-    # co-promotion keeps both LIVALO companies + CRESTOR's; >6 allowed, none dropped.
-    assert set(companies) == {"JW PHARMACEUTICAL", "JW SHINYAK", "DAE WOONG"}
-    # order: row count desc (JW PHARM 33 > JW SHINYAK 8 == DAE WOONG 8 -> name asc).
-    assert [c["company_name"] for c in out["companies"]] == ["JW PHARMACEUTICAL", "DAE WOONG", "JW SHINYAK"]
-    jw = companies["JW PHARMACEUTICAL"]["series"]["2026-05"]
+    assert set(companies) == {"제이더블유중외제약", "아스트라제네카"}
+    assert [c["company_name"] for c in out["companies"]] == ["제이더블유중외제약", "아스트라제네카"]
+    jw_series = companies["제이더블유중외제약"]["series"]
+    jw = jw_series["2026-05"]
     assert jw["total_count"] == 23
     assert jw["NOT AT ALL"] == {"count": 1, "pct": 4.3}
     assert jw["SOMEWHAT USEFUL"] == {"count": 19, "pct": 82.6}
     assert jw["VERY USEFUL"] == {"count": 3, "pct": 13.0}
     assert round(sum(jw[l]["pct"] for l in service.INTEREST_LEVELS), 1) == 99.9  # no forced 100
-    # JW SHINYAK: data only 2026-05 -> other months null, not zero-filled.
-    shinyak = companies["JW SHINYAK"]["series"]
-    assert shinyak["2026-05"]["total_count"] == 8
-    assert shinyak["2026-04"] is None and shinyak["2023-06"] is None
-    assert len(shinyak) == 36
+    assert jw_series["2026-04"]["total_count"] == 18
+    assert jw_series["2023-06"] is None
+    assert len(jw_series) == 36
 
 
-def test_companies_absent_without_representing_company(monkeypatch):
-    # Rows lacking representing_company yield no companies (brands still populated).
+def test_companies_use_null_manufacturer_without_dropping_rows(monkeypatch):
+    monkeypatch.setattr(service, "get_manufacturer_by_product", lambda: {})
     monkeypatch.setattr(service.db, "fetch_all", _rows([
         {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 3},
     ]))
     out = service.get_interest_timeseries({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
-    assert out["companies"] == []
+    assert len(out["companies"]) == 1
+    assert out["companies"][0]["company_name"] is None
+    assert out["companies"][0]["series"]["2026-05"]["total_count"] == 3
     assert any(b["series"]["2026-05"] for b in out["brands"])
 
 
@@ -116,8 +124,67 @@ def test_companies_denominator_moves_with_filter(monkeypatch):
         {"product_name": "UNRELATED", "representing_company": "OTHER CO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 99},
     ]))
     out = service.get_interest_timeseries({"view": "general", "selected_brand": "리바로", "filters": {"atc4": ["C10A1"]}})
-    assert [c["company_name"] for c in out["companies"]] == ["JW PHARMACEUTICAL"]
+    assert [c["company_name"] for c in out["companies"]] == ["제이더블유중외제약"]
     assert out["companies"][0]["series"]["2026-05"]["total_count"] == 5
+
+
+def test_company_manufacturer_aggregation_matches_5211_row_census() -> None:
+    rows = [
+        {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 3},
+        {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 19},
+        {"product_name": "LIVALO", "period_ym": "2026-05", "interest": "NOT AT ALL", "event_count": 1},
+        {"product_name": "LIVALO", "period_ym": "2023-06", "interest": "SOMEWHAT USEFUL", "event_count": 1306},
+        {"product_name": "LIPITOR", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 15},
+        {"product_name": "LIPITOR", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 54},
+        {"product_name": "LIPITOR", "period_ym": "2026-05", "interest": "NOT AT ALL", "event_count": 1},
+        {"product_name": "LIPITOR", "period_ym": "2023-06", "interest": "SOMEWHAT USEFUL", "event_count": 2919},
+        {"product_name": "CRESTOR", "period_ym": "2026-05", "interest": "VERY USEFUL", "event_count": 1},
+        {"product_name": "CRESTOR", "period_ym": "2026-05", "interest": "SOMEWHAT USEFUL", "event_count": 18},
+        {"product_name": "CRESTOR", "period_ym": "2023-06", "interest": "SOMEWHAT USEFUL", "event_count": 572},
+        {"product_name": "LIPILOU", "period_ym": "2023-06", "interest": "SOMEWHAT USEFUL", "event_count": 302},
+    ]
+    code_sets = {
+        "리바로": frozenset({"LIVALO"}),
+        "리피토": frozenset({"LIPITOR"}),
+        "크레스토": frozenset({"CRESTOR"}),
+        "리피로우": frozenset({"LIPILOU"}),
+    }
+
+    counts, totals = service._counts_by_company_month(_brand_set(), rows, code_sets, {})
+
+    assert totals == {
+        "비아트리스": 2989,
+        "제이더블유중외제약": 1329,
+        "아스트라제네카": 591,
+        "종근당": 302,
+    }
+    assert sum(totals.values()) == 5211
+    period = service.PeriodWindow(
+        "2023-06", "2026-05", "2023-06", "2026-05", tuple(service._month_range("2023-06", "2026-05")), True
+    )
+    may = {
+        company: service._series_for_counts(by_month, period)["2026-05"]
+        for company, by_month in counts.items()
+    }
+    assert may["비아트리스"] == {
+        "total_count": 70,
+        "VERY USEFUL": {"count": 15, "pct": 21.4},
+        "SOMEWHAT USEFUL": {"count": 54, "pct": 77.1},
+        "NOT AT ALL": {"count": 1, "pct": 1.4},
+    }
+    assert may["제이더블유중외제약"] == {
+        "total_count": 23,
+        "VERY USEFUL": {"count": 3, "pct": 13.0},
+        "SOMEWHAT USEFUL": {"count": 19, "pct": 82.6},
+        "NOT AT ALL": {"count": 1, "pct": 4.3},
+    }
+    assert may["아스트라제네카"] == {
+        "total_count": 19,
+        "VERY USEFUL": {"count": 1, "pct": 5.3},
+        "SOMEWHAT USEFUL": {"count": 18, "pct": 94.7},
+        "NOT AT ALL": {"count": 0, "pct": 0.0},
+    }
+    assert may["종근당"] is None
 
 
 def test_missing_month_is_null(monkeypatch):

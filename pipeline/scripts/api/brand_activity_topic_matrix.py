@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from decimal import Decimal
 from pathlib import Path
-from threading import Lock
 from typing import Final, Sequence
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
@@ -28,6 +26,10 @@ from pipeline.scripts.api.brand_activity_topics import (
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
+from pipeline.scripts.api.manufacturer_resolver import (
+    get_manufacturer_by_product,
+    resolve_manufacturer_name,
+)
 
 
 ALIAS_MAPPING_PATH: Final = Path("docs/design/brand_activity/alias/ALIAS_01_MAPPING.json")
@@ -38,13 +40,6 @@ KEYWORD_FILTER_COLUMNS: Final = {
     "prescription_evolution": "prescription_evolution",
 }
 LOGGER = logging.getLogger(__name__)
-
-# Manufacturer (제조사) map cache: manufacturer is static within a serving DB, so a long TTL
-# fills the product->manufacturer map once per pod instead of scanning IQVIA raw per request.
-MANUFACTURER_CACHE_TTL_SECONDS: Final = 86400.0
-_manufacturer_cache: "tuple[float, dict[str, frozenset[str]]] | None" = None
-_manufacturer_cache_lock = Lock()
-
 
 class TopicRequestError(RuntimeError):
     """Raised when a topic matrix request cannot be parsed."""
@@ -507,63 +502,14 @@ def _topic_product_codes_by_brand(
     return resolved
 
 
-def _fetch_manufacturer_by_product() -> dict[str, frozenset[str]]:
-    """Build {normalize_iqvia_en(PRODUCT NAME) -> {MFR NAME KOR}} from the IQVIA NSA source.
-
-    Source = jw_mart iqvia_nsa_quarterly_raw (PL-confirmed source (B)). Language = Korean:
-    STEP 1 proved MFR NAME(EN) <-> MFR NAME KOR is bijective over the full table (0
-    bidirectional violations, 0 null/empty), so per §0 the Korean side (MFR NAME KOR) is used.
-    """
-
-    schema = quote_identifier(config.db_name)
-    rows = db.fetch_all(
-        f"""
-        SELECT DISTINCT
-            JSON_UNQUOTE(JSON_EXTRACT(payload, '$.static."PRODUCT NAME"')) AS product,
-            JSON_UNQUOTE(JSON_EXTRACT(payload, '$.static."MFR NAME KOR"')) AS manufacturer
-        FROM {schema}.`iqvia_nsa_quarterly_raw`
-        """
-    )
-    mapping: dict[str, set[str]] = {}
-    for row in rows:
-        product = normalize_iqvia_en(_text(row.get("product")))
-        manufacturer = _text(row.get("manufacturer")).strip()
-        if not product or not manufacturer:
-            continue
-        mapping.setdefault(product, set()).add(manufacturer)
-    return {product: frozenset(names) for product, names in mapping.items()}
-
-
-def _cached_manufacturer_by_product() -> dict[str, frozenset[str]]:
-    """Cache the product->manufacturer map. Manufacturer is static within a serving DB, so a
-    long TTL fills it once per pod rather than re-scanning the 891k-row IQVIA raw per request.
-    """
-
-    global _manufacturer_cache
-
-    now = time.monotonic()
-    cached = _manufacturer_cache
-    if cached is not None and now - cached[0] < MANUFACTURER_CACHE_TTL_SECONDS:
-        return cached[1]
-    with _manufacturer_cache_lock:
-        cached = _manufacturer_cache
-        if cached is not None and now - cached[0] < MANUFACTURER_CACHE_TTL_SECONDS:
-            return cached[1]
-        mapping = _fetch_manufacturer_by_product()
-        _manufacturer_cache = (time.monotonic(), mapping)
-        return mapping
-
-
 def _company_names_by_brand(
     brand_set: BrandSetResolution,
     aliases: dict[str, str],
 ) -> dict[str, str | None]:
     """Return the ", "-joined MANUFACTURER (제조사, MFR NAME KOR) per brand, or None when unmapped.
 
-    Source = iqvia_nsa_quarterly_raw MFR NAME KOR (PL-confirmed). This is the brand's
-    MANUFACTURER — deliberately different from interest-timeseries `companies`, which stays
-    representing_company (판매사, the keyword-row aggregation unit). The two EPs complement:
-    topics shows who makes the brand, interest shows who promotes it.
+    Source = iqvia_nsa_quarterly_raw MFR NAME KOR (PL-confirmed). Brand-activity company
+    displays use this same manufacturer basis across topics and time-series endpoints.
 
     Manufacturer is 1:1 per brand in the measured data, but the combine logic is retained for
     CMO / import-repackaging multiplicity. Order is deterministic: product-hit count desc,
@@ -575,18 +521,12 @@ def _company_names_by_brand(
     iqvia = iqvia_product_codes_by_brand(
         {choice.brand_key: brand_set.brand_meta[choice.brand_key].brand_name for choice in brand_set.choices}
     )
-    manufacturer_map = _cached_manufacturer_by_product()
+    manufacturer_map = get_manufacturer_by_product()
     result: dict[str, str | None] = {}
     for choice in brand_set.choices:
-        counts: dict[str, int] = {}
-        for code in iqvia.get(choice.brand_key, ()):
-            for manufacturer in manufacturer_map.get(normalize_iqvia_en(code), frozenset()):
-                counts[manufacturer] = counts.get(manufacturer, 0) + 1
-        if not counts:
-            result[choice.brand_key] = None
-            continue
-        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-        result[choice.brand_key] = ", ".join(name for name, _count in ordered)
+        result[choice.brand_key] = resolve_manufacturer_name(
+            iqvia.get(choice.brand_key, ()), manufacturer_map
+        )
     return result
 
 
