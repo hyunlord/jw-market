@@ -328,6 +328,16 @@ class ReimbursementLookupService:
                 cache_lookup_status=lookup_status,
                 cache_schema=cache_schema,
             )
+        if lookup_status is CacheLookupStatus.BRAND_UNMATCHED:
+            return ReimbursementLookupResult(
+                False,
+                CacheStatus.NOT_FOUND,
+                "typed_unavailable",
+                None,
+                error_code="NO_EVIDENCE",
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
+            )
 
         try:
             live = self._realtime.fetch(brand)

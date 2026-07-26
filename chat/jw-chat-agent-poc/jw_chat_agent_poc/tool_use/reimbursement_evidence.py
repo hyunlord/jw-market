@@ -9,6 +9,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_claim
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    CacheLookupStatus,
     ReimbursementLookupResult,
 )
 
@@ -22,10 +23,13 @@ def reimbursement_envelope(
 ) -> ToolEnvelope:
     if not result.ok or result.data is None:
         error_code = result.error_code or "NO_EVIDENCE"
-        message = {
-            "TOOL_TIMEOUT": "HIRA 급여기준 실시간 조회 시간이 초과되었습니다.",
-            "NO_EVIDENCE": "HIRA 보험인정기준에서 해당 제품의 기록을 찾지 못했습니다.",
-        }.get(error_code, "HIRA 급여기준 원천을 확인할 수 없습니다.")
+        if result.cache_lookup_status is CacheLookupStatus.BRAND_UNMATCHED:
+            message = "해당 브랜드는 아직 급여기준 색인 대상이 아닙니다."
+        else:
+            message = {
+                "TOOL_TIMEOUT": "HIRA 급여기준 실시간 조회 시간이 초과되었습니다.",
+                "NO_EVIDENCE": "HIRA 보험인정기준에서 해당 제품의 기록을 찾지 못했습니다.",
+            }.get(error_code, "HIRA 급여기준 원천을 확인할 수 없습니다.")
         return ToolEnvelope(
             ok=False,
             preview=message,

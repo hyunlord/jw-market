@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import requests
 
+from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.tool_use.reimbursement_evidence import reimbursement_envelope
 from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
@@ -422,7 +423,6 @@ def test_reimbursement_evidence_exposes_raw_text_without_reconstruction() -> Non
     ("lookup_status", "criterion"),
     (
         (CacheLookupStatus.ZERO_ROWS, None),
-        (CacheLookupStatus.BRAND_UNMATCHED, None),
         (
             CacheLookupStatus.EMPTY_RAW_TEXT,
             ReimbursementCriterion(
@@ -437,7 +437,7 @@ def test_reimbursement_evidence_exposes_raw_text_without_reconstruction() -> Non
         ),
     ),
 )
-def test_cache_miss_taxonomy_reaches_trace_and_keeps_realtime_fallback(
+def test_recoverable_cache_miss_reaches_trace_and_keeps_realtime_fallback(
     lookup_status: CacheLookupStatus,
     criterion: ReimbursementCriterion | None,
 ) -> None:
@@ -464,6 +464,86 @@ def test_cache_miss_taxonomy_reaches_trace_and_keeps_realtime_fallback(
     assert result.cache_schema == "reimbursement_stage"
     assert envelope.raw["cache_lookup_status"] == lookup_status.value
     assert envelope.raw["cache_schema"] == "reimbursement_stage"
+
+
+def test_brand_unmatched_returns_immediate_typed_notice_without_realtime() -> None:
+    live = _criterion()
+    realtime = _Realtime(live)
+    result = ReimbursementLookupService(
+        store=_Store(
+            ReimbursementCacheResult(
+                CacheStatus.NOT_FOUND,
+                None,
+                None,
+                lookup_status=CacheLookupStatus.BRAND_UNMATCHED,
+                schema_name="reimbursement_stage",
+            )
+        ),
+        realtime=realtime,
+        now=lambda: NOW,
+    ).lookup("아일리아")
+
+    envelope = reimbursement_envelope(result, subject="아일리아")
+
+    assert result.ok is False
+    assert result.retrieval == "typed_unavailable"
+    assert result.error_code == "NO_EVIDENCE"
+    assert result.cache_lookup_status is CacheLookupStatus.BRAND_UNMATCHED
+    assert realtime.calls == []
+    assert envelope.preview == "해당 브랜드는 아직 급여기준 색인 대상이 아닙니다."
+    assert envelope.raw["cache_lookup_status"] == "brand_unmatched"
+
+
+def test_brand_unmatched_notice_remains_unavailable_in_runtime_trace() -> None:
+    result = ReimbursementLookupService(
+        store=_Store(
+            ReimbursementCacheResult(
+                CacheStatus.NOT_FOUND,
+                None,
+                None,
+                lookup_status=CacheLookupStatus.BRAND_UNMATCHED,
+                schema_name="reimbursement_stage",
+            )
+        ),
+        realtime=_Realtime(error=AssertionError("unindexed brand must not call HIRA")),
+        now=lambda: NOW,
+    ).lookup("아일리아")
+    envelope = reimbursement_envelope(result, subject="아일리아")
+    tool_call = {
+        "tool": "hira_reimbursement_criteria",
+        "status": "error",
+        "render_data": envelope.model_dump(mode="json"),
+    }
+
+    trace = trace_envelope(
+        question="아일리아 급여기준 알려줘",
+        result={
+            "tool_calls": [tool_call],
+            "markdown_response": {"fact_md": "", "data_md": ""},
+        },
+        answer=envelope.preview,
+        charts=(),
+        timing={"stages": []},
+        conversation_id="f46-brand-unmatched",
+    )
+
+    assert trace["qa_trace"]["final"] == {
+        "disposition": "unavailable",
+        "body_empty": False,
+        "failure_kind": "tool_error",
+    }
+
+
+def test_cache_lookup_status_contract_keeps_all_seven_values() -> None:
+    assert tuple(status.value for status in CacheLookupStatus) == (
+        "store_absent",
+        "connect_error",
+        "table_missing",
+        "zero_rows",
+        "brand_unmatched",
+        "empty_raw_text",
+        "hit",
+    )
 
 
 @pytest.mark.parametrize(
