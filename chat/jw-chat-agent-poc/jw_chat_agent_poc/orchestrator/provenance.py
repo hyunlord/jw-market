@@ -136,6 +136,22 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
                     market_id=market_id,
                 )
             )
+    facts.extend(
+        _brand_sales_series_facts(
+            data,
+            offset=offset + len(facts),
+            source=source,
+            tool=tool,
+        )
+    )
+    facts.extend(
+        _level_segment_rank_facts(
+            data,
+            offset=offset + len(facts),
+            source=source,
+            tool=tool,
+        )
+    )
     facts = _bind_derived_operands(facts)
     facts.extend(
         _hira_facts(
@@ -145,6 +161,108 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
             tool=tool,
         )
     )
+    return facts
+
+
+def _brand_sales_series_facts(
+    data: dict[str, Any],
+    *,
+    offset: int,
+    source: str,
+    tool: str,
+) -> list[EvidenceFact]:
+    if data.get("measure") == "volume":
+        return []
+    entity = _brand_entity(data)
+    if not entity:
+        return []
+
+    raw_series = data.get("brand_value_series_10pt")
+    path_root = "render_data.brand_value_series_10pt"
+    if not isinstance(raw_series, list) or not raw_series:
+        raw_series = data.get("series")
+        path_root = "render_data.series"
+
+    rows: list[tuple[str, str, str]] = []
+    if isinstance(raw_series, dict):
+        for period, raw_value in raw_series.items():
+            value = eok_value(None, raw_value)
+            if value:
+                rows.append((str(period), value, f"{path_root}[{period}]"))
+    elif isinstance(raw_series, list):
+        for index, row in enumerate(raw_series):
+            if not isinstance(row, dict):
+                continue
+            period = str(row.get("period") or "")
+            value = eok_value(row.get("value_억원"), row.get("value_krw"))
+            if period and value:
+                rows.append((period, value, f"{path_root}[{index}].value_krw"))
+
+    view = str(data.get("view_type") or data.get("view") or "")
+    market_id = str(data.get("market_id") or data.get("ml_id") or data.get("cd_id") or "")
+    source_grade = grade_evidence_source(tool=tool, source=source).value
+    return [
+        _fact(
+            offset + index,
+            label="매출",
+            value=value,
+            source=source,
+            tool=tool,
+            path=path,
+            period=period,
+            visible=True,
+            entity=entity,
+            metric="매출",
+            unit="억원",
+            source_grade=source_grade,
+            view=view,
+            market_id=market_id,
+        )
+        for index, (period, value, path) in enumerate(rows)
+    ]
+
+
+def _level_segment_rank_facts(
+    data: dict[str, Any],
+    *,
+    offset: int,
+    source: str,
+    tool: str,
+) -> list[EvidenceFact]:
+    segments = data.get("level_segments")
+    if not isinstance(segments, list):
+        return []
+
+    entity = _metric_entity(data, "render_data.level_segments")
+    period = str(data.get("period") or "")
+    view = str(data.get("view_type") or data.get("view") or "")
+    market_id = str(data.get("market_id") or data.get("ml_id") or data.get("cd_id") or "")
+    source_grade = grade_evidence_source(tool=tool, source=source).value
+    facts: list[EvidenceFact] = []
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            continue
+        value = rank_value(segment.get("rank"), None)
+        if not value:
+            continue
+        facts.append(
+            _fact(
+                offset + len(facts),
+                label="순위",
+                value=value,
+                source=source,
+                tool=tool,
+                path=f"render_data.level_segments[{index}].rank",
+                period=period,
+                visible=True,
+                entity=entity,
+                metric="순위",
+                unit="위",
+                source_grade=source_grade,
+                view=view,
+                market_id=market_id,
+            )
+        )
     return facts
 
 
@@ -490,6 +608,14 @@ def _metric_entity(data: dict[str, Any], path: str) -> str:
     return ""
 
 
+def _brand_entity(data: dict[str, Any]) -> str:
+    for key in ("brand_key", "brand_name", "brand", "anchor_brand"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _metric_unit(metric: str) -> str:
     if metric in {"점유율 변화", "초과성장"}:
         return "%p"
@@ -578,6 +704,8 @@ def _latest_market_size(data: dict[str, Any]) -> str:
         latest = market_series[-1]
         if isinstance(latest, dict):
             return eok_value(latest.get("value_억원"), latest.get("value_krw"))
+    if _brand_entity(data):
+        return ""
     return latest_series_eok(data.get("series"))
 
 
