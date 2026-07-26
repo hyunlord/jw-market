@@ -249,7 +249,7 @@ def test_crawl_once_persists_old_url_before_sleep_and_skips_it_next_run(
     assert first_saved == 0
     assert fetch_calls == [url]
     assert history_file.read_text(encoding="utf-8").splitlines() == [url]
-    assert sleep_calls == []
+    assert sleep_calls == [5]
 
     fetch_calls.clear()
     second_saved = crawler.crawl_once(

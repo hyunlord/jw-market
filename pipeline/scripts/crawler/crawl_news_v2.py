@@ -2377,6 +2377,7 @@ def crawl_once(
                         # A valid old article is fully processed for future dedupe even
                         # though its body is outside the collection window.
                         append_scraped_url(url, history_file=hf)
+                        time.sleep(delay_sec)
                         continue
 
                     if cutoff is None or _is_within_cutoff(effective_date, cutoff):
