@@ -222,7 +222,10 @@ def test_reference_jobs_separate_staging_from_activation_contracts():
 
     activation_spec = activation["spec"]["template"]["spec"]
     activation_container = activation_spec["containers"][0]
-    activation_env = {item["name"] for item in activation_container["env"]}
+    assert activation_container["env"][0] == {"$patch": "replace"}
+    activation_env = {
+        item["name"] for item in activation_container["env"] if "name" in item
+    }
     assert "INGEST_LOAD_STAGING_ROOT" not in activation_env
     assert "INGEST_LOAD_TARGET_ROOT" in activation_env
     assert "INGEST_MART_PROMOTION_APPROVED" in activation_env

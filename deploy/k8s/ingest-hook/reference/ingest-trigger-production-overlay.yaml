@@ -14,6 +14,7 @@ spec:
       containers:
         - name: trigger
           env:
+            - $patch: replace
             - name: INGEST_LOAD_TARGET_ROOT
               value: /market-output
             - name: INGEST_LOAD_PRODUCTION_DB

@@ -96,6 +96,7 @@ def test_activation_overlays_declare_loader_and_publication_wiring() -> None:
             )
         )
         container = overlay["spec"]["template"]["spec"]["containers"][0]
+        assert container["env"][0] == {"$patch": "replace"}
         env = _overlay_env(overlay)
 
         assert container["image"] == config.DEFAULT_JOB_IMAGE
@@ -131,6 +132,8 @@ def test_trigger_production_overlay_is_not_shadow_or_staging() -> None:
     overlay = yaml.safe_load(
         Path(TRIGGER_PRODUCTION_OVERLAY).read_text(encoding="utf-8")
     )
+    container = overlay["spec"]["template"]["spec"]["containers"][0]
+    assert container["env"][0] == {"$patch": "replace"}
     env = _overlay_env(overlay)
 
     assert env["INGEST_LOAD_TARGET_ROOT"]["value"] == "/market-output"
@@ -165,4 +168,4 @@ def test_semantic_replay_runs_in_a_separate_resource_bounded_job() -> None:
 
 def _overlay_env(overlay: dict) -> dict[str, dict]:
     container = overlay["spec"]["template"]["spec"]["containers"][0]
-    return {item["name"]: item for item in container["env"]}
+    return {item["name"]: item for item in container["env"] if "name" in item}
