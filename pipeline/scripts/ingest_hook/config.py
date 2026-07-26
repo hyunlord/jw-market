@@ -35,7 +35,7 @@ MARKET_OUTPUT_PVC = "llmops-market-output"
 DEFAULT_NAMESPACE = "llmops"
 DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
-    "jw-pipeline-orchestrator@sha256:567e3941f6793dd7cb73b4dfc42a31bcc58d8606c81238c7831c61dcef04bc79"
+    "jw-pipeline-orchestrator@sha256:b810813ad2532ee1df833867fa217fa055ed195f1a33dc66d9de9d38e9391aeb"
 )
 
 
