@@ -160,10 +160,10 @@
           "turns": [
             {
               "case_id": "F59-08-T1",
-              "question": "아일리아 급여기준 알려줘",
+              "question": "뉴트로진 급여기준 알려줘",
               "expectations": [
-                "색인된 원문의 raw_text를 반환한다",
-                "AI가 요약하거나 해석하거나 재구성하지 않았다는 표기를 포함한다"
+                "CHAT_REIMBURSEMENT_DB_NAME이 설정되고 뉴트로진 색인이 유효하면 raw_text 원문과 AI 비요약·비해석·비재구성 표기를 반환한다",
+                "CHAT_REIMBURSEMENT_DB_NAME이 미설정인 현재 배포 상태에서는 캐시를 사용하지 않고 기존 실시간 조회 경로를 관측한다"
               ]
             }
           ]
@@ -175,8 +175,8 @@
               "case_id": "F59-09-T1",
               "question": "로수젯 급여기준 알려줘",
               "expectations": [
-                "색인 대상이 아니라는 typed 안내를 즉시 반환한다",
-                "실시간 조회 타임아웃으로 종료하지 않는다"
+                "CHAT_REIMBURSEMENT_DB_NAME이 설정되고 로수젯이 미색인이면 색인 대상이 아니라는 typed 안내를 즉시 반환하고 실시간 조회 타임아웃으로 종료하지 않는다",
+                "CHAT_REIMBURSEMENT_DB_NAME이 미설정인 현재 배포 상태에서는 캐시를 사용하지 않고 기존 실시간 조회 경로를 관측한다"
               ]
             }
           ]
