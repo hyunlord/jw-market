@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
     default_mi_master_registry,
 )
 
@@ -251,13 +252,16 @@ def _excel_column_name(column_id: int) -> str:
     return name
 
 
-def _build_cd_specs() -> tuple[dict[str, Any], ...]:
+def build_cd_specs(
+    registry: MiMasterRegistry | None = None,
+) -> tuple[dict[str, Any], ...]:
+    active_registry = registry or default_mi_master_registry()
     business_by_id = {
         str(spec["competitive_dynamics_id"]): spec
         for spec in _CD_BUSINESS_SPECS
     }
     specs: list[dict[str, Any]] = []
-    for topology in default_mi_master_registry().cd_specs:
+    for topology in active_registry.cd_specs:
         cd_id = str(topology["cd_id"])
         column_ids = tuple(int(value) for value in topology["column_ids"])
         business = business_by_id.get(
@@ -288,4 +292,4 @@ def _build_cd_specs() -> tuple[dict[str, Any], ...]:
     return tuple(specs)
 
 
-CD_SPECS: tuple[dict[str, Any], ...] = _build_cd_specs()
+CD_SPECS: tuple[dict[str, Any], ...] = build_cd_specs()

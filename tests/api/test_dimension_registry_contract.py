@@ -24,6 +24,7 @@ from pipeline.etl.io.catalog.market.ml_market_schema import (
     EXPECTED_MARKET_IDS,
     EXPECTED_ML_IDS,
 )
+from pipeline.etl.mi_master_registry import default_mi_master_registry
 from pipeline.domain.brand_names import normalize_brand_name
 from pipeline.domain.molecules import split_molecule_components
 from pipeline.domain.momentum import compute_market_share_momentum
@@ -157,14 +158,17 @@ def test_api_layer_does_not_import_etl_mart_implementation_modules() -> None:
 
 
 def test_market_validation_ids_keep_exact_existing_order_without_count_literals() -> None:
-    assert EXPECTED_ML_IDS == tuple(f"ml_{index:03d}" for index in range(1, 17))
+    registry = default_mi_master_registry()
+    assert EXPECTED_ML_IDS == tuple(registry.analyze_matrix)
     assert EXPECTED_MARKET_IDS == tuple(
-        f"strategy_{index:03d}" for index in range(1, 17)
+        market.strategic_market_id for market in registry.market_sheets
     )
     assert LANDSCAPE_MARKET_IDS == EXPECTED_MARKET_IDS
-    assert EXPECTED_CD_IDS == tuple(f"cd_{index:03d}" for index in range(1, 20))
+    assert EXPECTED_CD_IDS == tuple(
+        str(spec["cd_id"]) for spec in registry.cd_specs
+    )
     assert EXPECTED_CD_FILTER_IDS == tuple(
-        f"cdf_{index:03d}" for index in range(1, 20)
+        str(spec["cd_filter_id"]) for spec in registry.cd_specs
     )
 
 
