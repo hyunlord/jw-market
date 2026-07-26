@@ -34,9 +34,25 @@ _METRIC_ONLY_FOLLOWUP_RE = re.compile(
 _PERIOD_ONLY_FOLLOWUP_RE = re.compile(
     r"^\s*(?P<period>20\d{2}년|\d{1,2}월|\d{1,2}분기)(?:은|는)?[?!.]?\s*$"
 )
+_RELATIVE_PERIOD_FOLLOWUP_RE = re.compile(
+    r"^\s*(?P<expression>(?:(?:그\s*)?(?:전|다음)|이전)\s*(?:해|년|달|월|분기)|전년|전월)"
+    r"(?:은|는)?[?!.]?\s*$"
+)
 _GENERIC_REFERENCE_RE = re.compile(
     r"^\s*(?:그건|그거|그것|이건|이거|이것|저건|저거|저것)(?:은|는|도)?(?:\s+.*)?[?!.]?\s*$",
     re.IGNORECASE,
+)
+_BRAND_PRONOUN_FOLLOWUP_RE = re.compile(
+    r"^\s*(?P<pronoun>걔|얘|쟤)(?=(?:은|는|이|가|도)?(?:\s|[?!.]|$))",
+    re.IGNORECASE,
+)
+_YEAR_PERIOD_RE = re.compile(r"^\s*(?P<year>20\d{2})(?:년)?\s*$")
+_QUARTER_PERIOD_RE = re.compile(
+    r"^\s*(?P<year>20\d{2})(?:-Q(?P<canonical>[1-4])|(?:년)?\s*(?P<label>[1-4])\s*분기)\s*$",
+    re.IGNORECASE,
+)
+_MONTH_PERIOD_RE = re.compile(
+    r"^\s*(?P<year>20\d{2})(?:-(?P<canonical>0[1-9]|1[0-2])|(?:년)?\s*(?P<label>1[0-2]|0?[1-9])\s*월)\s*$"
 )
 _IMPLICIT_BRAND_FOLLOWUP_RE = re.compile(
     r"^\s*(?:(?P<prefix>NeDrug)\s*:?\s*)?(?P<body>.+?)"
@@ -201,6 +217,37 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
             brand=brand,
             interpretation_notice=f"{brand}의 {period} {intent}로 이해했어요.",
         )
+    relative_period_followup = _RELATIVE_PERIOD_FOLLOWUP_RE.match(question)
+    if relative_period_followup is not None:
+        if (
+            previous_turn is None
+            or not previous_turn.slots.anchor_brand
+            or not previous_turn.slots.period
+        ):
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        intent = _turn_intent(previous_turn)
+        period = _resolve_relative_period(
+            relative_period_followup.group("expression"),
+            previous_turn.slots.period,
+        )
+        if not intent or period is None:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        brand = previous_turn.slots.anchor_brand
+        return AnaphoraResolution(
+            resolved_question=f"{brand} {period} {intent}은?",
+            brand=brand,
+            interpretation_notice=f"{brand}의 {period} {intent}로 이해했어요.",
+        )
+    brand_pronoun_followup = _BRAND_PRONOUN_FOLLOWUP_RE.match(question)
+    if brand_pronoun_followup is not None:
+        if previous_turn is None or not previous_turn.slots.anchor_brand:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        brand = previous_turn.slots.anchor_brand
+        return AnaphoraResolution(
+            resolved_question=_BRAND_PRONOUN_FOLLOWUP_RE.sub(brand, question, count=1),
+            brand=brand,
+            interpretation_notice=f"{brand}을 가리키는 것으로 이해했어요.",
+        )
     contrast = _CONTRAST_FOLLOWUP_RE.match(question)
     if contrast is not None:
         brand = contrast.group("brand")
@@ -270,10 +317,36 @@ def requires_previous_turn(question: str) -> bool:
         _CONTRAST_FOLLOWUP_RE.match(question)
         or _METRIC_ONLY_FOLLOWUP_RE.match(question)
         or _PERIOD_ONLY_FOLLOWUP_RE.match(question)
+        or _RELATIVE_PERIOD_FOLLOWUP_RE.match(question)
+        or _BRAND_PRONOUN_FOLLOWUP_RE.match(question)
         or _GENERIC_REFERENCE_RE.match(question)
         or _implicit_brand_followup(question)
         or any(pattern.search(question) for pattern in _REFERENCE_RES)
     )
+
+
+def _resolve_relative_period(expression: str, grounded_period: str) -> str | None:
+    direction = 1 if "다음" in expression else -1
+    if "분기" in expression:
+        match = _QUARTER_PERIOD_RE.fullmatch(grounded_period)
+        if match is None:
+            return None
+        quarter = int(match.group("canonical") or match.group("label"))
+        shifted_year, shifted_quarter = divmod(int(match.group("year")) * 4 + quarter - 1 + direction, 4)
+        return f"{shifted_year}년 {shifted_quarter + 1}분기"
+    if "달" in expression or "월" in expression:
+        match = _MONTH_PERIOD_RE.fullmatch(grounded_period)
+        if match is None:
+            return None
+        month = int(match.group("canonical") or match.group("label"))
+        shifted_year, shifted_month = divmod(int(match.group("year")) * 12 + month - 1 + direction, 12)
+        return f"{shifted_year}년 {shifted_month + 1}월"
+    if "해" in expression or "년" in expression:
+        match = _YEAR_PERIOD_RE.fullmatch(grounded_period)
+        if match is None:
+            return None
+        return f"{int(match.group('year')) + direction}년"
+    return None
 
 
 def _implicit_brand_followup(question: str) -> tuple[str, str] | None:
