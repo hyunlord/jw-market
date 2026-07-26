@@ -155,6 +155,7 @@ def test_csd_fingerprint_and_loader_aggregate_all_content_matching_sheets(tmp_pa
     fingerprint = fingerprint_source(path, "iqvia_csd_channel")
     rows = read_csd_source_rows(path, "a" * 64)
 
+    assert classify(path, "2026-08") == "iqvia_csd_channel"
     assert fingerprint.natural_key_count == 2
     assert fingerprint.periods == frozenset({"2026-07", "2026-08"})
     assert [(row.period_ym, row.market, row.product_details) for row in rows] == [

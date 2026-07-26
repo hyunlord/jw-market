@@ -61,6 +61,14 @@ def _matches_structure(category: str, path: Path) -> None:
         if not summarize_source(path).periods:
             raise ValueError("UBIST workbook has no metric periods")
         return
+    if category == "iqvia_csd_channel":
+        from pipeline.scripts.ingest_hook.source_fingerprint import (
+            fingerprint_source,
+        )
+
+        if fingerprint_source(path, category).natural_key_count <= 0:
+            raise ValueError("CSD workbook has no TOTAL-region rows")
+        return
     from pipeline.scripts.ingest_hook.source_fingerprint import (
         single_matching_sheet,
     )
