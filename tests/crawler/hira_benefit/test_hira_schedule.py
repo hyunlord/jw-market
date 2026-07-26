@@ -23,20 +23,26 @@ from pipeline.scripts.crawler.hira_benefit.temporal_workflow import (
 )
 
 
-def test_scheduled_run_uses_temporal_workflow_id_for_durable_receipts() -> None:
+def test_scheduled_runs_use_unique_temporal_run_ids_for_durable_receipts() -> None:
     config = scheduled_workflow_input(
         state_root="/var/lib/jw-hira-benefit",
         notice_date_boundary="2026-06-24",
     )
 
-    resolved = resolve_run_config(
+    first = resolve_run_config(
         config,
-        workflow_id="jw-hira-benefit-daily-v1-run-2026-07-27T01:30:00+09:00",
+        workflow_run_id="019fa-first-temporal-run",
+    )
+    second = resolve_run_config(
+        config,
+        workflow_run_id="019fb-second-temporal-run",
     )
 
     assert config.run_id == SCHEDULE_RUN_ID
-    assert resolved.run_id == ("jw-hira-benefit-daily-v1-run-2026-07-27T01:30:00+09:00")
-    assert resolved.notice_date_boundary == "2026-06-24"
+    assert first.run_id == "019fa-first-temporal-run"
+    assert second.run_id == "019fb-second-temporal-run"
+    assert first.run_id != second.run_id
+    assert first.notice_date_boundary == "2026-06-24"
 
 
 def test_manual_run_id_is_not_rewritten() -> None:
@@ -46,7 +52,10 @@ def test_manual_run_id_is_not_rewritten() -> None:
         run_id="manual-hira-check",
     )
 
-    resolved = resolve_run_config(config, workflow_id="temporal-generated-id")
+    resolved = resolve_run_config(
+        config,
+        workflow_run_id="temporal-generated-run-id",
+    )
 
     assert resolved.run_id == "manual-hira-check"
 

@@ -38,13 +38,13 @@ class HiraStageRequest:
 def resolve_run_config(
     config: HiraWorkflowInput,
     *,
-    workflow_id: str,
+    workflow_run_id: str,
 ) -> HiraWorkflowInput:
     """Give each scheduled execution an independent durable receipt path."""
 
     if config.run_id != SCHEDULE_RUN_ID:
         return config
-    return replace(config, run_id=workflow_id)
+    return replace(config, run_id=workflow_run_id)
 
 
 def completed_stage_receipt(receipt_path: Path) -> dict[str, object] | None:
@@ -125,7 +125,7 @@ class HiraBenefitDailyWorkflow:
     async def run(self, config: HiraWorkflowInput) -> dict[str, object]:
         config = resolve_run_config(
             config,
-            workflow_id=workflow.info().workflow_id,
+            workflow_run_id=workflow.info().run_id,
         )
         receipts: list[dict[str, object]] = []
         for stage in ACTIVITY_STAGES:
