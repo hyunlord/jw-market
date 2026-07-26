@@ -191,18 +191,23 @@ class GeneralViewService:
                 brand = ""
         resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
+        membership_source = "not_applicable"
         try:
             if explicit_atc4:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
+                membership_source = "explicit_atc4"
             elif brand:
-                candidates, resolved_brand = self._membership_resolution(brand, source)
+                candidates, resolved_brand, membership_source = self._membership_resolution(brand, source)
                 if not candidates and requested_source is None:
                     alternate_source = "iqvia" if source == "ubist" else "ubist"
-                    candidates, resolved_brand = self._membership_resolution(brand, alternate_source)
+                    candidates, resolved_brand, membership_source = self._membership_resolution(
+                        brand,
+                        alternate_source,
+                    )
                     if candidates:
                         source = alternate_source
             else:
-                candidates = self._strategic_market_candidates(question, source)
+                candidates, membership_source = self._strategic_market_candidates(question, source)
             if not candidates:
                 raise GeneralViewBackendError("ATC4 후보를 찾지 못했습니다")
             markets = self._fetch_candidates(
@@ -224,6 +229,7 @@ class GeneralViewService:
                     dual=dual,
                     question=question,
                 )
+                contract["membership_source"] = membership_source
                 return _multi_result(question, ordered_markets, contract, started_at=started_at)
             selected = max(markets, key=lambda item: item.brand_value if item.brand_value is not None else float("-inf"))
             descriptions = {market.atc4_code: market.atc4_description for market in markets}
@@ -233,6 +239,7 @@ class GeneralViewService:
                 if candidate.code != selected.atc4_code
             ]
             contract = _contract(selected, other_candidates=others, compact=compact, dual=dual, question=question)
+            contract["membership_source"] = membership_source
             return _result(question, selected, contract, started_at=started_at)
         except GeneralViewBackendError as exc:
             reason = str(exc)
@@ -240,7 +247,11 @@ class GeneralViewService:
                 reason = "시장 매핑이 확인되지 않습니다"
             return _unavailable_result(question, reason, dual=dual, started_at=started_at)
 
-    def _membership_resolution(self, brand: str, source: str) -> tuple[tuple[AtcCandidate, ...], str]:
+    def _membership_resolution(
+        self,
+        brand: str,
+        source: str,
+    ) -> tuple[tuple[AtcCandidate, ...], str, str]:
         if self._general_membership is not None:
             try:
                 resolve = getattr(self._general_membership, "resolve", None)
@@ -248,22 +259,26 @@ class GeneralViewService:
                     resolution = resolve(brand, source)
                     candidates = ()
                     if resolution is not None:
-                        return resolution.candidates, resolution.brand_key
+                        return resolution.candidates, resolution.brand_key, "membership_db"
                 else:
                     candidates = self._general_membership.candidates(brand, source)
             except GeneralMembershipLoadError:
                 candidates = ()
             if candidates:
-                return candidates, brand
-        return self._backend.candidates(brand, source), brand
+                return candidates, brand, "membership_db"
+        return self._backend.candidates(brand, source), brand, "backend_fallback"
 
-    def _strategic_market_candidates(self, question: str, source: str) -> tuple[AtcCandidate, ...]:
+    def _strategic_market_candidates(
+        self,
+        question: str,
+        source: str,
+    ) -> tuple[tuple[AtcCandidate, ...], str]:
         market_members = getattr(self._strategic_membership, "market_members", None)
         if not callable(market_members):
-            return ()
+            return (), "unavailable"
         market = self._strategic_market(question)
         if market is None:
-            return ()
+            return (), "unavailable"
         if self._general_membership is None:
             raise GeneralViewBackendError(
                 f"전략시장 '{market[1]}'의 구성 브랜드와 ATC4 멤버십을 연결할 수 없습니다"
@@ -272,8 +287,10 @@ class GeneralViewService:
         if not brands:
             raise GeneralViewBackendError(f"전략시장 '{market[1]}'의 구성 브랜드를 확인할 수 없습니다")
         candidates_by_code: dict[str, AtcCandidate] = {}
+        membership_sources: set[str] = set()
         for member_brand in brands:
-            candidates, _ = self._membership_resolution(member_brand, source)
+            candidates, _, membership_source = self._membership_resolution(member_brand, source)
+            membership_sources.add(membership_source)
             for candidate in candidates:
                 candidates_by_code.setdefault(candidate.code, candidate)
         candidates = tuple(candidates_by_code[code] for code in sorted(candidates_by_code))
@@ -288,7 +305,7 @@ class GeneralViewService:
             raise GeneralViewBackendError(
                 f"전략시장 '{market[1]}'의 구성 브랜드에 대응하는 ATC4를 확인할 수 없습니다"
             )
-        return candidates
+        return candidates, _combined_source(membership_sources)
 
     def _fetch_candidates(
         self,
@@ -349,6 +366,7 @@ def _contract(
         "atc4_code": market.atc4_code,
         "atc4_description": market.atc4_description,
         "source": market.source,
+        "selected_data_path": market.selected_data_path,
         "measure": market.measure,
         "unit": market.unit,
         "period": window[0] if window else market.period,
@@ -356,6 +374,8 @@ def _contract(
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
     }
+    if market.fallback_reason is not None:
+        contract["fallback_reason"] = market.fallback_reason
     contract.update(member_fields)
     return contract
 
@@ -380,6 +400,7 @@ def _multi_contract(
         )
         sections.append(section)
     codes = [market.atc4_code for market in markets]
+    selected_paths = {market.selected_data_path for market in markets}
     explanation = (
         f"{strategic_market_name}은 {'·'.join(codes)} {len(codes)}개 ATC4에 걸쳐 있어 "
         "각각의 일반뷰로 나눠 보여드립니다."
@@ -395,6 +416,7 @@ def _multi_contract(
         "strategic_market_name": strategic_market_name,
         "atc4_codes": codes,
         "atc4_sections": sections,
+        "selected_data_path": next(iter(selected_paths)) if len(selected_paths) == 1 else "mixed",
         "section_markdown": section_markdown,
     }
 
@@ -416,7 +438,7 @@ def _result(
         else f"ATC4 {market.atc4_code} 일반뷰를 조회했습니다."
     )
     call = {
-        "source": "jw-market-backend-api",
+        "source": _data_path_source(market),
         "tool": tool,
         "summary_text": summary,
         "render_data": dict(contract),
@@ -429,6 +451,7 @@ def _result(
         data_as_of=str(contract.get("period") or "") or None,
         cache_hit=False,
     )
+    _attach_data_path_trace(call, market)
     return {
         "question": question,
         "resolution": {"canonical_brand": market.brand, "atc4_code": market.atc4_code},
@@ -443,6 +466,8 @@ def _result(
             "reason": "general_view_dynamic_market",
             "deterministic": True,
             "general_view": True,
+            "selected_data_path": market.selected_data_path,
+            "membership_source": contract.get("membership_source"),
         },
         "tool_calls": [call],
         "answer": contract["section_markdown"],
@@ -451,6 +476,27 @@ def _result(
         "general_view_contract": contract,
         "general_view_ready": contract["mode"] == "general_only",
     }
+
+
+def _data_path_source(market: GeneralMarket) -> str:
+    return "jw-market-direct-mart" if market.selected_data_path == "direct_mart" else "jw-market-backend-api"
+
+
+def _attach_data_path_trace(call: dict[str, Any], market: GeneralMarket) -> None:
+    trace = call.get("qa_trace")
+    if not isinstance(trace, dict):
+        return
+    trace["selected_data_path"] = market.selected_data_path
+    if market.fallback_reason is not None:
+        trace["fallback_reason"] = market.fallback_reason
+
+
+def _combined_source(sources: set[str]) -> str:
+    if not sources:
+        return "unavailable"
+    if len(sources) == 1:
+        return next(iter(sources))
+    return "mixed"
 
 
 def _multi_result(
@@ -463,7 +509,7 @@ def _multi_result(
     tool_calls: list[dict[str, Any]] = []
     for market, section in zip(markets, contract["atc4_sections"], strict=True):
         call = {
-            "source": "jw-market-backend-api",
+            "source": _data_path_source(market),
             "tool": "general_view_dynamic_market",
             "summary_text": f"ATC4 {market.atc4_code} 일반뷰를 독립 조회했습니다.",
             "render_data": dict(section),
@@ -476,6 +522,7 @@ def _multi_result(
             data_as_of=str(section.get("period") or "") or None,
             cache_hit=False,
         )
+        _attach_data_path_trace(call, market)
         tool_calls.append(call)
     return {
         "question": question,
@@ -493,6 +540,8 @@ def _multi_result(
             "reason": "general_view_dynamic_market_split",
             "deterministic": True,
             "general_view": True,
+            "selected_data_path": contract.get("selected_data_path"),
+            "membership_source": contract.get("membership_source"),
         },
         "tool_calls": tool_calls,
         "answer": contract["section_markdown"],

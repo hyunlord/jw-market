@@ -84,6 +84,8 @@ SOURCE_LABELS: Final[dict[str, str]] = {
     "metrics": "UBIST",
     "UBIST": "UBIST",
     "IQVIA": "IQVIA",
+    "jw-market-direct-mart": "JW Market 직접 Mart",
+    "jw-market-backend-api": "JW Market Backend API",
     "external": "외부 데이터 원천",
     "external_api": "외부 데이터 원천",
     "hira_disease": "심사평가원(HIRA) 질병통계",

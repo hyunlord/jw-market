@@ -49,6 +49,12 @@ class CsdActivityTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class CsdActivityTargetResolution:
+    target: CsdActivityTarget | None
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class CsdActivityRow:
     period_ym: str
     product_details: int | None
@@ -507,20 +513,29 @@ class TtlCsdActivityTargetCache:
         self._ttl_seconds = ttl_seconds
         self._fallback_targets = fallback_targets
         self._targets: tuple[CsdActivityTarget, ...] | None = None
+        self._target_source = "unavailable"
         self._loaded_at = 0.0
 
     def target_for_brand(self, brand: str) -> CsdActivityTarget | None:
+        return self.resolve_target_for_brand(brand).target
+
+    def resolve_target_for_brand(self, brand: str) -> CsdActivityTargetResolution:
         lookup = _targets_by_brand(self._current_targets())
-        return lookup.get(_normalise_brand_name(brand))
+        return CsdActivityTargetResolution(
+            target=lookup.get(_normalise_brand_name(brand)),
+            source=self._target_source,
+        )
 
     def _current_targets(self) -> tuple[CsdActivityTarget, ...]:
         now = time.monotonic()
         if self._targets is None or now - self._loaded_at > self._ttl_seconds:
             try:
                 self._targets = self._reader.load()
+                self._target_source = "catalog_db"
             except CsdActivityTargetLoadError:
                 if self._targets is None:
                     self._targets = self._fallback_targets
+                    self._target_source = "legacy_static_map"
             self._loaded_at = now
         return self._targets
 

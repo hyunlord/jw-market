@@ -27,9 +27,11 @@ class CauseBackendTrace:
     source_epoch: str | None = None
     built_at: str | None = None
     cache_hit: bool = False
+    fallback_from_source: str | None = None
+    fallback_reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "endpoint": self.endpoint,
             "status": self.status,
             "latency_ms": self.latency_ms,
@@ -38,6 +40,11 @@ class CauseBackendTrace:
             "built_at": self.built_at,
             "cache_hit": self.cache_hit,
         }
+        if self.fallback_from_source is not None:
+            data["fallback_from_source"] = self.fallback_from_source
+        if self.fallback_reason is not None:
+            data["fallback_reason"] = self.fallback_reason
+        return data
 
 
 class CauseBackendError(LookupError):
@@ -294,6 +301,15 @@ class CauseBackend:
                     first_no_data = exc
                     continue
                 raise
+            if first_no_data is not None:
+                market = replace(
+                    market,
+                    trace=replace(
+                        market.trace,
+                        fallback_from_source=selected_sources[0],
+                        fallback_reason=first_no_data.reason or first_no_data.status,
+                    ),
+                )
             self._remember(cache_key, market)
             return market
         assert first_no_data is not None
