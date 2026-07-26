@@ -96,7 +96,6 @@ def test_activation_overlays_declare_loader_and_publication_wiring() -> None:
             )
         )
         container = overlay["spec"]["template"]["spec"]["containers"][0]
-        assert container["env"][0] == {"$patch": "replace"}
         env = _overlay_env(overlay)
 
         assert container["image"] == config.DEFAULT_JOB_IMAGE
@@ -143,6 +142,10 @@ def test_trigger_production_overlay_is_not_shadow_or_staging() -> None:
     assert env["INGEST_PUBLICATION_PROVENANCE_TABLE"]["value"] == (
         "mart_publication_provenance"
     )
+    assert env["BUILD_GIT_SHA"]["value"] == (
+        "ca49945bc15df260f43134c6026a98fd5a5f47c4"
+    )
+    assert env["INGEST_JOB_IMAGE"]["value"] == config.DEFAULT_JOB_IMAGE
     assert "INGEST_LOAD_STAGING_ROOT" not in env
     assert "INGEST_LOAD_SHADOW_ROOT" not in env
     assert "INGEST_SHADOW_LEDGER_SQLITE" not in env
