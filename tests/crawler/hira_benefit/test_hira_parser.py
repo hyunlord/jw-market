@@ -128,6 +128,38 @@ def test_detail_parser_marks_failed_without_synthesizing_values() -> None:
     assert parsed.raw_text == "첨부파일에서 세부 기준을 확인하십시오."
 
 
+def test_stored_raw_text_ignores_common_attachment_download_boilerplate() -> None:
+    parsed = parse_stored_raw_text(
+        "본문내용.pdf 첨부파일 다운로드 자료가 다운되지 않을 경우 담당부서로 "
+        "연락주시기 바랍니다. 첨부파일명이 한글로 되어있는 경우 다운로드시 "
+        "확인해 주세요. 국민건강보험 요양급여 적용기준을 개정한다. 닫기"
+    )
+
+    assert parsed.parse_status is ParseStatus.NOT_APPLICABLE
+    assert parsed.failed_fields == ()
+
+
+def test_stored_raw_text_does_not_treat_fee_or_material_phrases_as_parse_failures() -> None:
+    fee = parse_stored_raw_text(
+        "제2의 것부터는 50%를 산정하되 최대 200%까지 산정한다. 닫기"
+    )
+    material = parse_stored_raw_text(
+        "별도로 산정하도록 명시된 경우를 제외하고 소정점수를 산정한다. 닫기"
+    )
+
+    assert fee.parse_status is ParseStatus.NOT_APPLICABLE
+    assert fee.failed_fields == ()
+    assert material.parse_status is ParseStatus.NOT_APPLICABLE
+    assert material.failed_fields == ()
+
+
+def test_stored_raw_text_marks_empty_structural_label_as_failed() -> None:
+    parsed = parse_stored_raw_text("보험인정기준 상세내용 1. 투여 대상:")
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("target_condition",)
+
+
 def test_detail_parser_does_not_treat_common_h1_as_target_condition() -> None:
     html = """
     <main>
@@ -196,7 +228,7 @@ def test_detail_parser_extracts_typed_fields_from_numbered_paragraphs() -> None:
     assert parsed.dosage_limit == "4주마다 1회 투여한다."
 
 
-def test_stored_raw_text_reparse_distinguishes_unresolved_from_not_applicable() -> None:
+def test_stored_raw_text_reparse_requires_structure_before_marking_failure() -> None:
     parsed = parse_stored_raw_text(
         "보험인정기준 상세내용 1. 투여대상: 특정 환자군 "
         "2. 제외기준: 투여 금기 환자 3. 투여용량: 1일 1회"
@@ -204,7 +236,7 @@ def test_stored_raw_text_reparse_distinguishes_unresolved_from_not_applicable() 
     not_applicable = parse_stored_raw_text(
         "보험인정기준 상세내용 요양급여의 적용기준 및 방법을 개정한다."
     )
-    unresolved = parse_stored_raw_text(
+    free_prose = parse_stored_raw_text(
         "보험인정기준 상세내용 임신부는 투여 대상에서 제외한다."
     )
 
@@ -214,8 +246,8 @@ def test_stored_raw_text_reparse_distinguishes_unresolved_from_not_applicable() 
     assert parsed.dosage_limit == "1일 1회"
     assert not_applicable.parse_status is ParseStatus.NOT_APPLICABLE
     assert not_applicable.failed_fields == ()
-    assert unresolved.parse_status is ParseStatus.FAILED
-    assert unresolved.failed_fields == ("target_condition", "exclusion_rule")
+    assert free_prose.parse_status is ParseStatus.NOT_APPLICABLE
+    assert free_prose.failed_fields == ()
 
 
 def test_stored_raw_text_uses_numbered_sibling_boundaries() -> None:
@@ -247,6 +279,23 @@ def test_stored_raw_text_parses_numbered_labels_without_colons() -> None:
     )
     assert parsed.dosage_limit == "하루 1회, 최대 14일 투여"
     assert parsed.parse_status is ParseStatus.OK
+
+
+def test_stored_raw_text_parses_verified_label_variants() -> None:
+    parsed = parse_stored_raw_text(
+        "가. 투여 대상: 성인 환자 "
+        "나. 인정용량: 수술 당 최대 500ml "
+        "다. 제외 대상: 임신부 닫기"
+    )
+    compact_dosage = parse_stored_raw_text("1. 용법용량: 1일 1회")
+    generic_dosage = parse_stored_raw_text("1. 용량: 최대 5mg")
+
+    assert parsed.target_condition == "성인 환자"
+    assert parsed.dosage_limit == "수술 당 최대 500ml"
+    assert parsed.exclusion_rule == "임신부"
+    assert parsed.parse_status is ParseStatus.OK
+    assert compact_dosage.dosage_limit == "1일 1회"
+    assert generic_dosage.dosage_limit == "최대 5mg"
 
 
 def test_stored_raw_text_parses_exclusion_label_with_qualifier() -> None:
