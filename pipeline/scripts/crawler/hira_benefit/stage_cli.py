@@ -26,9 +26,16 @@ from .repository import (
     PersistableNotice,
     connect_from_env,
     has_crawl_state,
-    load_jw_brand_scope,
     load_notice_state,
+    load_serving_brand_scope,
     persist_batch,
+)
+from .scope import (
+    BrandMatch,
+    BrandScopeEntry,
+    MoleculeScopeEntry,
+    derive_dosage_form_suffixes,
+    derive_non_specific_molecules,
 )
 from .service import collect_details, notice_to_json, plan_discovered_items
 
@@ -93,7 +100,7 @@ def _item_payload(item: object) -> dict[str, object]:
 def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
     conn = connect_from_env()
     try:
-        brands, revision = load_jw_brand_scope(conn)
+        brands, molecules, raw_texts, revision = load_serving_brand_scope(conn)
         state = load_notice_state(conn) if has_crawl_state(conn) else None
     finally:
         conn.rollback()
@@ -144,7 +151,14 @@ def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
             "unchanged": len(plan.unchanged),
             "skipped_initial_backfill": plan.skipped_initial_backfill,
             "index_tag_signature_sha256": signature,
-            "brand_names": list(brands),
+            "brand_scope": [asdict(row) for row in brands],
+            "molecule_scope": [asdict(row) for row in molecules],
+            "blocked_molecules": sorted(
+                derive_non_specific_molecules(molecules, raw_texts)
+            ),
+            "dosage_form_suffixes": sorted(
+                derive_dosage_form_suffixes(brands, raw_texts)
+            ),
             "mapping_revision": revision,
             **manifest_detail,
         },
@@ -174,10 +188,34 @@ def _notice_item(payload: dict[str, object]) -> object:
 def _run_collect(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
     discovery = read_json(root / "discovery.json")
     client = _client(config)
+    brands = tuple(
+        BrandScopeEntry(
+            brand_key=str(row["brand_key"]),
+            brand_name=str(row["brand_name"]),
+            atc4_codes=tuple(str(value) for value in row["atc4_codes"]),
+        )
+        for row in discovery["brand_scope"]
+    )
+    molecules = tuple(
+        MoleculeScopeEntry(
+            molecule_norm=str(row["molecule_norm"]),
+            brand_key=str(row["brand_key"]),
+            brand_name=str(row["brand_name"]),
+            atc4_code=str(row["atc4_code"]),
+        )
+        for row in discovery["molecule_scope"]
+    )
     notices, metrics = collect_details(
         tuple(_notice_item(item) for item in discovery["to_fetch"]),
         fetch_text=client.get_text,
-        brand_names=tuple(discovery["brand_names"]),
+        brands=brands,
+        molecules=molecules,
+        blocked_molecules=frozenset(
+            str(value) for value in discovery["blocked_molecules"]
+        ),
+        dosage_form_suffixes=frozenset(
+            str(value) for value in discovery["dosage_form_suffixes"]
+        ),
     )
     write_json(root / "collected.json", [notice_to_json(item) for item in notices])
     gate = validate_run_metrics(metrics, failed_alert_ratio=config.failed_alert_ratio)
@@ -213,7 +251,34 @@ def _persistable(payload: dict[str, object]) -> PersistableNotice:
             failed_fields=tuple(str(value) for value in parsed["failed_fields"]),
         ),
         listing_fingerprint=str(payload["listing_fingerprint"]),
-        brand_names=tuple(str(value) for value in payload["brand_names"]),
+        brand_matches=tuple(
+            BrandMatch(
+                brand_key=str(match["brand_key"]),
+                brand_name=str(match["brand_name"]),
+                match_method=str(match["match_method"]),
+                confidence=str(match["confidence"]),
+                evidence_start=int(match["evidence_start"]),
+                evidence_end=int(match["evidence_end"]),
+                matched_text=str(match["matched_text"]),
+                evidence_coordinate=str(
+                    match.get(
+                        "evidence_coordinate",
+                        "normalized_nfc_casefold_whitespace",
+                    )
+                ),
+                molecule_norm=(
+                    str(match["molecule_norm"])
+                    if match.get("molecule_norm") is not None
+                    else None
+                ),
+                atc4_code=(
+                    str(match["atc4_code"])
+                    if match.get("atc4_code") is not None
+                    else None
+                ),
+            )
+            for match in payload["brand_matches"]
+        ),
     )
 
 

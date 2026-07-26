@@ -8,10 +8,15 @@ from html.parser import HTMLParser
 from .change_detection import ChangePlan, StoredNoticeState, plan_changes
 from .contract import HiraRunMetrics, HiraWorkflowInput
 from .http_client import CircuitOpenError
-from .models import NoticeListItem
+from .models import NoticeListItem, ParsedNotice
 from .parser import parse_detail_html, parse_list_html
 from .repository import PersistableNotice
-from .scope import match_brand_names
+from .scope import (
+    BrandScopeEntry,
+    MoleculeScopeEntry,
+    derive_dosage_form_suffixes,
+    match_brand_scope,
+)
 
 
 class _TagSequenceParser(HTMLParser):
@@ -67,9 +72,12 @@ def collect_details(
     items: Sequence[NoticeListItem],
     *,
     fetch_text: Callable[[str], str],
-    brand_names: Sequence[str],
+    brands: Sequence[BrandScopeEntry],
+    molecules: Sequence[MoleculeScopeEntry],
+    blocked_molecules: frozenset[str] = frozenset(),
+    dosage_form_suffixes: frozenset[str] = frozenset(),
 ) -> tuple[tuple[PersistableNotice, ...], HiraRunMetrics]:
-    collected: list[PersistableNotice] = []
+    parsed_items: list[tuple[NoticeListItem, ParsedNotice]] = []
     failures = 0
     for item in items:
         try:
@@ -83,13 +91,26 @@ def collect_details(
         except Exception:  # noqa: BLE001 - one bad notice must become an explicit run failure.
             failures += 1
             continue
-        collected.append(
+        parsed_items.append((item, parsed))
+
+    effective_suffixes = dosage_form_suffixes | derive_dosage_form_suffixes(
+        brands,
+        tuple(parsed.raw_text for _item, parsed in parsed_items),
+    )
+    collected = [
             PersistableNotice(
                 parsed=parsed,
                 listing_fingerprint=item.listing_fingerprint,
-                brand_names=match_brand_names(parsed.raw_text, brand_names),
+                brand_matches=match_brand_scope(
+                    parsed.raw_text,
+                    brands,
+                    molecules,
+                    blocked_molecules=blocked_molecules,
+                    dosage_form_suffixes=effective_suffixes,
+                ),
             )
-        )
+        for item, parsed in parsed_items
+    ]
     expected_ids = {item.source_notice_id for item in items}
     actual_ids = {item.parsed.source_notice_id for item in collected}
     metrics = HiraRunMetrics(
@@ -118,5 +139,5 @@ def notice_to_json(item: PersistableNotice) -> dict[str, object]:
     return {
         "parsed": payload,
         "listing_fingerprint": item.listing_fingerprint,
-        "brand_names": list(item.brand_names),
+        "brand_matches": [asdict(match) for match in item.brand_matches],
     }

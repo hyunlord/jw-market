@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Protocol, Self
+
+from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
 
 from .change_detection import StoredNoticeState
 from .contract import HiraRunMetrics
 from .models import ParsedNotice
-from .scope import brands_from_cache_payload
+from .scope import BrandMatch, BrandScopeEntry, MoleculeScopeEntry
 
 
 class Cursor(Protocol):
@@ -32,7 +35,11 @@ class Connection(Protocol):
 class PersistableNotice:
     parsed: ParsedNotice
     listing_fingerprint: str
-    brand_names: tuple[str, ...]
+    brand_matches: tuple[BrandMatch, ...]
+
+    @property
+    def brand_names(self) -> tuple[str, ...]:
+        return tuple(match.brand_name for match in self.brand_matches)
 
 
 def latest_notice_id(notice_ids: Sequence[str]) -> str | None:
@@ -60,22 +67,146 @@ def connect_from_env() -> Connection:
     )
 
 
-def load_jw_brand_scope(conn: Connection) -> tuple[tuple[str, ...], str]:
+def load_serving_brand_scope(
+    conn: Connection,
+    *,
+    minimum_brand_count: int = 10_000,
+) -> tuple[
+    tuple[BrandScopeEntry, ...],
+    tuple[MoleculeScopeEntry, ...],
+    tuple[str, ...],
+    str,
+]:
+    """Load the chat-serving brand universe and canonical molecule bridge."""
+
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT response_json, build_sha
-            FROM cache_brands
-            WHERE query_key = 'default'
+            SELECT brand_key, brand_name, atc4_code
+            FROM mart_general_brand_metric
+            WHERE brand_key <> '' AND brand_name <> ''
+            UNION ALL
+            SELECT '' AS brand_key, brand_name, '' AS atc4_code
+            FROM mart_strategic_ml_brand_metric
+            WHERE brand_name <> ''
+            UNION ALL
+            SELECT '' AS brand_key, brand_name, '' AS atc4_code
+            FROM mart_strategic_cd_brand_metric
+            WHERE brand_name <> ''
             """
         )
-        row = cursor.fetchone()
-    if row is None:
-        raise RuntimeError("cache_brands.default is missing")
-    return (
-        brands_from_cache_payload(str(row["response_json"])),
-        f"cache_brands:{row.get('build_sha') or 'unknown'!s}",
+        universe_rows = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT alias_name, brand_key
+            FROM brand_alias
+            WHERE alias_name <> '' AND brand_key <> ''
+            """
+        )
+        alias_rows = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT molecule_norm, brand_key, brand_name, atc4_code
+            FROM mart_brand_molecule
+            WHERE molecule_norm <> '' AND brand_key <> ''
+            """
+        )
+        molecule_rows = cursor.fetchall()
+        cursor.execute(
+            "SELECT raw_text FROM hira_benefit_notice WHERE raw_text <> ''"
+        )
+        notice_rows = cursor.fetchall()
+
+    atc4_by_identity: dict[tuple[str, str], set[str]] = {}
+    canonical_name_by_key: dict[str, str] = {}
+    alias_key_by_name = {
+        str(row["alias_name"]).strip(): str(row["brand_key"]).strip()
+        for row in alias_rows
+        if str(row["alias_name"]).strip() and str(row["brand_key"]).strip()
+    }
+    for row in universe_rows:
+        brand_name = str(row["brand_name"]).strip()
+        brand_key = (
+            str(row["brand_key"]).strip()
+            or alias_key_by_name.get(brand_name)
+            or normalize_brand_name(brand_name)
+        )
+        if not brand_key or not brand_name:
+            continue
+        canonical_name_by_key.setdefault(brand_key, brand_name)
+        identity = (brand_key, brand_name)
+        atc4_by_identity.setdefault(identity, set())
+        atc4_code = str(row.get("atc4_code") or "").strip()
+        if atc4_code:
+            atc4_by_identity[identity].add(atc4_code)
+    if len(canonical_name_by_key) < minimum_brand_count:
+        raise RuntimeError(
+            "serving brand universe is unexpectedly small: "
+            f"{len(canonical_name_by_key)} < {minimum_brand_count}"
+        )
+
+    for row in molecule_rows:
+        brand_key = str(row["brand_key"]).strip()
+        brand_name = str(row["brand_name"]).strip()
+        atc4_code = str(row.get("atc4_code") or "").strip()
+        identity = (brand_key, brand_name)
+        if identity in atc4_by_identity and atc4_code:
+            atc4_by_identity[identity].add(atc4_code)
+
+    for row in alias_rows:
+        alias_name = str(row["alias_name"]).strip()
+        brand_key = str(row["brand_key"]).strip()
+        identity = (brand_key, alias_name)
+        if alias_name and brand_key in canonical_name_by_key:
+            canonical_identity = (brand_key, canonical_name_by_key[brand_key])
+            atc4_by_identity.setdefault(identity, set()).update(
+                atc4_by_identity.get(canonical_identity, set())
+            )
+
+    entries = [
+        BrandScopeEntry(
+            brand_key=brand_key,
+            brand_name=brand_name,
+            atc4_codes=tuple(sorted(atc4_codes)),
+        )
+        for (brand_key, brand_name), atc4_codes in atc4_by_identity.items()
+    ]
+    brands = tuple(
+        sorted(entries, key=lambda row: (row.brand_key, row.brand_name))
     )
+    molecules = tuple(
+        sorted(
+            (
+                MoleculeScopeEntry(
+                    molecule_norm=str(row["molecule_norm"]).strip(),
+                    brand_key=str(row["brand_key"]).strip(),
+                    brand_name=str(row["brand_name"]).strip(),
+                    atc4_code=str(row.get("atc4_code") or "").strip(),
+                )
+                for row in molecule_rows
+                if str(row["molecule_norm"]).strip()
+                and str(row["brand_key"]).strip() in canonical_name_by_key
+            ),
+            key=lambda row: (row.molecule_norm, row.brand_key, row.atc4_code),
+        )
+    )
+    raw_texts = tuple(str(row["raw_text"]) for row in notice_rows)
+    revision_payload = {
+        "brands": [
+            (row.brand_key, row.brand_name, row.atc4_codes) for row in brands
+        ],
+        "molecules": [
+            (row.molecule_norm, row.brand_key, row.atc4_code) for row in molecules
+        ],
+    }
+    revision = hashlib.sha256(
+        json.dumps(
+            revision_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return brands, molecules, raw_texts, f"serving_mart:{revision}"
 
 
 def load_notice_state(conn: Connection) -> dict[str, StoredNoticeState]:
@@ -169,14 +300,20 @@ def persist_batch(
                     "DELETE FROM hira_benefit_notice_brand WHERE source_notice_id=%s",
                     (parsed.source_notice_id,),
                 )
-                for brand_name in item.brand_names:
+                for match in item.brand_matches:
                     cursor.execute(
                         """
                         INSERT INTO hira_benefit_notice_brand (
                           source_notice_id, brand_name, brand_key, match_method, created_at
-                        ) VALUES (%s, %s, NULL, 'exact_normalized_name', %s)
+                        ) VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (parsed.source_notice_id, brand_name, timestamp),
+                        (
+                            parsed.source_notice_id,
+                            match.brand_name,
+                            match.brand_key,
+                            match.match_method,
+                            timestamp,
+                        ),
                     )
             last_seen_notice_id = latest_notice_id(
                 tuple(item.parsed.source_notice_id for item in notices)
@@ -185,6 +322,14 @@ def persist_batch(
                 "run_id": run_id,
                 "notice_count": len(notices),
                 "mapping_revision": mapping_revision,
+                "brand_match_provenance": [
+                    {
+                        "source_notice_id": item.parsed.source_notice_id,
+                        **asdict(match),
+                    }
+                    for item in notices
+                    for match in item.brand_matches
+                ],
             }
             cursor.execute(
                 """
