@@ -161,7 +161,8 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
         }
 
     def get_csd_activity_trend(self, brand: str, limit: int = 12) -> dict[str, Any]:
-        target = self._csd_activity_target_cache.target_for_brand(brand)
+        target_resolution = self._csd_activity_target_cache.resolve_target_for_brand(brand)
+        target = target_resolution.target
         if target is None:
             return {
                 "source": "cache",
@@ -172,6 +173,7 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                     "status": "unsupported",
                     "brand": brand,
                     "source_label": "CSD ChannelDynamics",
+                    "csd_target_source": target_resolution.source,
                     "message": "CSD aggregate 매핑 미보유",
                     "available_fields": _csd_available_fields(),
                     "unsupported_fields": _csd_unsupported_fields(),
@@ -190,6 +192,7 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                     "market": target.market,
                     "master_product": target.master_product,
                     "source_label": "CSD ChannelDynamics",
+                    "csd_target_source": target_resolution.source,
                     "data_grain": "월별 TOTAL 채널 aggregate 콜수/활동량(product_details 합계)",
                     "available_fields": _csd_available_fields(),
                     "unsupported_fields": _csd_unsupported_fields(),
@@ -217,6 +220,7 @@ class MetricsTool(CauseMetricMixin, CacheMetricHelperMixin):
                 "market": target.market,
                 "master_product": target.master_product,
                 "source_label": "CSD ChannelDynamics",
+                "csd_target_source": target_resolution.source,
                 "data_grain": "월별 TOTAL 채널 aggregate 콜수/활동량(product_details 합계)",
                 "available_fields": _csd_available_fields(),
                 "unsupported_fields": _csd_unsupported_fields(),

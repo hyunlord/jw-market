@@ -50,6 +50,8 @@ class GeneralMarket:
     top_brands: tuple[TopBrand, ...]
     market_size_series: tuple[tuple[str, float], ...] = ()
     member_brands: tuple[TopBrand, ...] = ()
+    selected_data_path: str = "backend_fallback"
+    fallback_reason: str | None = None
 
 
 @dataclass(slots=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from jw_chat_agent_poc.tools.general_view_backend import (
@@ -16,6 +16,10 @@ from jw_chat_agent_poc.tools.general_view_backend import (
 
 class GeneralViewMartLoadError(GeneralViewBackendError):
     """Raised when exact general-view mart rows cannot be loaded safely."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,10 +102,15 @@ class MariaDbGeneralMartReader:
                         )
                         brand_row = cursor.fetchone()
         except pymysql.MySQLError as exc:
-            raise GeneralViewMartLoadError("general-view mart query failed") from exc
+            raise GeneralViewMartLoadError(
+                "general-view mart query failed",
+                reason=_mart_query_failure_reason(exc),
+            ) from exc
 
-        if not market_row or (brand and not brand_row):
-            raise GeneralViewMartLoadError("general-view exact mart row not found")
+        if not market_row:
+            raise GeneralViewMartLoadError("general-view market row not found", reason="zero_rows")
+        if brand and not brand_row:
+            raise GeneralViewMartLoadError("general-view brand row not found", reason="brand_row_missing")
         return GeneralMartRows(
             atc4_code=str(market_row["atc4_code"]),
             atc4_description=str(market_row["atc4_desc"] or f"ATC4 {atc4.upper()}"),
@@ -127,14 +136,18 @@ class GeneralViewMartBackend:
         try:
             rows = self.reader.read(atc4, brand, source, measure)
             return _market_from_rows(rows)
-        except GeneralViewMartLoadError:
-            return self.fallback.market(atc4, brand, source, measure)
+        except GeneralViewMartLoadError as exc:
+            return replace(
+                self.fallback.market(atc4, brand, source, measure),
+                selected_data_path="backend_fallback",
+                fallback_reason=exc.reason,
+            )
 
 
 def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
     periods = set(rows.market_size_series) | set(rows.brand_ranking) | set(rows.brand_metric_history)
     if not periods:
-        raise GeneralViewMartLoadError("general-view mart rows contain no periods")
+        raise GeneralViewMartLoadError("general-view mart rows contain no periods", reason="missing_period")
     period = max(periods)
     ranking_rows = rows.brand_ranking.get(period, [])
     member_brands = tuple(
@@ -174,7 +187,17 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         top_brands=member_brands[:5],
         market_size_series=tuple(sorted(rows.market_size_series.items())),
         member_brands=member_brands,
+        selected_data_path="direct_mart",
     )
+
+
+def _mart_query_failure_reason(exc: BaseException) -> str:
+    error_code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+    if error_code == 1146:
+        return "table_missing"
+    if error_code in {2002, 2003, 2005, 2006, 2013}:
+        return "connect_error"
+    return "query_error"
 
 
 def _json_dict(raw: str | dict[str, Any] | None) -> dict[str, Any]:
