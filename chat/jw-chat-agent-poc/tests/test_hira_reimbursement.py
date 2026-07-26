@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -9,6 +10,7 @@ from jw_chat_agent_poc.tool_use.reimbursement_evidence import reimbursement_enve
 from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
     AbsentReimbursementStore,
+    CacheLookupStatus,
     CacheStatus,
     HiraReimbursementHttpClient,
     MariaDbReimbursementStore,
@@ -234,17 +236,19 @@ def test_cache_entry_without_raw_text_falls_back_to_realtime() -> None:
 
 
 class _DbCursor:
-    def __init__(self, row: dict | None) -> None:
-        self.row = row
+    def __init__(self, rows: dict | None | list[dict | None]) -> None:
+        self.rows = list(rows) if isinstance(rows, list) else [rows]
         self.sql = ""
         self.params = None
+        self.executions: list[tuple[str, object]] = []
 
     def execute(self, sql: str, params=None) -> None:
         self.sql = sql
         self.params = params
+        self.executions.append((sql, params))
 
     def fetchone(self):
-        return self.row
+        return self.rows.pop(0)
 
     def __enter__(self):
         return self
@@ -254,8 +258,8 @@ class _DbCursor:
 
 
 class _DbConnection:
-    def __init__(self, row: dict | None) -> None:
-        self.cursor_instance = _DbCursor(row)
+    def __init__(self, rows: dict | None | list[dict | None]) -> None:
+        self.cursor_instance = _DbCursor(rows)
         self.closed = False
 
     def cursor(self) -> _DbCursor:
@@ -268,7 +272,10 @@ class _DbConnection:
 def test_mariadb_store_reads_only_authoritative_raw_text() -> None:
     raw_text = "1. 대상\n  가. 신생혈관성 연령관련 황반변성\n2. 투여 기준\n  14회 이내"
     connection = _DbConnection(
-        {
+        [
+            {"brand_match": 1},
+            {"notice_match": 1},
+            {
             "brand_name": "아일리아",
             "title": "항혈관내피성장인자 주사제",
             "raw_text": raw_text,
@@ -276,7 +283,8 @@ def test_mariadb_store_reads_only_authoritative_raw_text() -> None:
             "collected_at": NOW.replace(hour=9, minute=30, tzinfo=None),
             "notice_no": "보건복지부 고시 제2026-101호",
             "source_url": "https://www.hira.or.kr/rc/example.do",
-        }
+            },
+        ]
     )
 
     result = MariaDbReimbursementStore(connect=lambda: connection).get_reimbursement_criteria(
@@ -287,15 +295,80 @@ def test_mariadb_store_reads_only_authoritative_raw_text() -> None:
     assert result.data.raw_text == raw_text
     assert result.data.collected_at.tzinfo is UTC
     assert result.source_date == "2026-06-24"
-    sql = connection.cursor_instance.sql
+    sql = "\n".join(statement for statement, _params in connection.cursor_instance.executions)
     assert "hira_benefit_notice_brand" in sql
     assert "hira_benefit_notice" in sql
     assert "raw_text" in sql
     assert "target_condition" not in sql
     assert "exclusion_rule" not in sql
     assert "dosage_limit" not in sql
-    assert connection.cursor_instance.params == ("아일리아",)
+    assert [params for _sql, params in connection.cursor_instance.executions] == [
+        ("아일리아",),
+        ("아일리아",),
+        ("아일리아",),
+    ]
     assert connection.closed is True
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    (
+        ([None], CacheLookupStatus.BRAND_UNMATCHED),
+        ([{"brand_match": 1}, None], CacheLookupStatus.ZERO_ROWS),
+        (
+            [{"brand_match": 1}, {"notice_match": 1}, None],
+            CacheLookupStatus.EMPTY_RAW_TEXT,
+        ),
+    ),
+)
+def test_mariadb_store_classifies_each_data_miss(
+    rows: list[dict | None],
+    expected: CacheLookupStatus,
+) -> None:
+    result = MariaDbReimbursementStore(
+        connect=lambda: _DbConnection(rows),
+        schema_name="reimbursement_stage",
+    ).get_reimbursement_criteria("아일리아")
+
+    assert result.lookup_status is expected
+    assert result.schema_name == "reimbursement_stage"
+    assert result.data is None
+
+
+class _FailingDbCursor(_DbCursor):
+    def __init__(self, error: Exception) -> None:
+        super().__init__([])
+        self.error = error
+
+    def execute(self, sql: str, params=None) -> None:
+        raise self.error
+
+
+class _FailingDbConnection(_DbConnection):
+    def __init__(self, error: Exception) -> None:
+        self.cursor_instance = _FailingDbCursor(error)
+        self.closed = False
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    (
+        (RuntimeError("connection refused"), CacheLookupStatus.CONNECT_ERROR),
+        (RuntimeError(1146, "table missing"), CacheLookupStatus.TABLE_MISSING),
+    ),
+)
+def test_mariadb_store_classifies_read_errors(
+    error: Exception,
+    expected: CacheLookupStatus,
+) -> None:
+    with pytest.raises(ReimbursementStoreError) as caught:
+        MariaDbReimbursementStore(
+            connect=lambda: _FailingDbConnection(error),
+            schema_name="reimbursement_stage",
+        ).get_reimbursement_criteria("아일리아")
+
+    assert caught.value.lookup_status is expected
+    assert caught.value.schema_name == "reimbursement_stage"
 
 
 def test_mariadb_store_is_read_only_for_realtime_fallback() -> None:
@@ -343,6 +416,135 @@ def test_reimbursement_evidence_exposes_raw_text_without_reconstruction() -> Non
     assert "target_condition" not in envelope.raw
     assert "exclusion_rule" not in envelope.raw
     assert "dosage_limit" not in envelope.raw
+
+
+@pytest.mark.parametrize(
+    ("lookup_status", "criterion"),
+    (
+        (CacheLookupStatus.ZERO_ROWS, None),
+        (CacheLookupStatus.BRAND_UNMATCHED, None),
+        (
+            CacheLookupStatus.EMPTY_RAW_TEXT,
+            ReimbursementCriterion(
+                brand_name="아일리아",
+                title="원문 없음",
+                raw_text=" ",
+                source_date=None,
+                collected_at=NOW,
+                notice_number=None,
+                source_url="https://www.hira.or.kr/rc/example.do",
+            ),
+        ),
+    ),
+)
+def test_cache_miss_taxonomy_reaches_trace_and_keeps_realtime_fallback(
+    lookup_status: CacheLookupStatus,
+    criterion: ReimbursementCriterion | None,
+) -> None:
+    live = _criterion()
+    result = ReimbursementLookupService(
+        store=_Store(
+            ReimbursementCacheResult(
+                CacheStatus.NOT_FOUND,
+                criterion,
+                None,
+                lookup_status=lookup_status,
+                schema_name="reimbursement_stage",
+            )
+        ),
+        realtime=_Realtime(live),
+        now=lambda: NOW,
+    ).lookup("아일리아")
+
+    envelope = reimbursement_envelope(result, subject="아일리아")
+
+    assert result.retrieval == "realtime"
+    assert result.data == live
+    assert result.cache_lookup_status is lookup_status
+    assert result.cache_schema == "reimbursement_stage"
+    assert envelope.raw["cache_lookup_status"] == lookup_status.value
+    assert envelope.raw["cache_schema"] == "reimbursement_stage"
+
+
+@pytest.mark.parametrize(
+    "lookup_status",
+    (CacheLookupStatus.CONNECT_ERROR, CacheLookupStatus.TABLE_MISSING),
+)
+def test_cache_read_error_taxonomy_reaches_trace_without_credentials(
+    lookup_status: CacheLookupStatus,
+) -> None:
+    live = _criterion()
+    store = _Store(ReimbursementCacheResult(CacheStatus.NOT_FOUND, None, None))
+
+    def failed_read(_brand_name: str) -> ReimbursementCacheResult:
+        raise ReimbursementStoreError(
+            "masked cache failure",
+            lookup_status=lookup_status,
+            schema_name="reimbursement_stage",
+        )
+
+    store.get_reimbursement_criteria = failed_read  # type: ignore[method-assign]
+    result = ReimbursementLookupService(
+        store=store,
+        realtime=_Realtime(live),
+        now=lambda: NOW,
+    ).lookup("아일리아")
+    envelope = reimbursement_envelope(result, subject="아일리아")
+
+    assert result.retrieval == "realtime"
+    assert result.cache_lookup_status is lookup_status
+    assert envelope.raw["cache_lookup_status"] == lookup_status.value
+    assert envelope.raw["cache_schema"] == "reimbursement_stage"
+    assert "password" not in str(envelope.raw).lower()
+
+
+def test_absent_store_and_hit_have_distinct_cache_telemetry() -> None:
+    live = _criterion()
+    absent = ReimbursementLookupService(
+        store=AbsentReimbursementStore(),
+        realtime=_Realtime(live),
+        now=lambda: NOW,
+    ).lookup("아일리아")
+    hit_realtime = _Realtime(error=AssertionError("cache hit must not call realtime"))
+    hit = ReimbursementLookupService(
+        store=_Store(
+            ReimbursementCacheResult(
+                CacheStatus.FRESH,
+                live,
+                live.source_date,
+                lookup_status=CacheLookupStatus.HIT,
+                schema_name="reimbursement_stage",
+            )
+        ),
+        realtime=hit_realtime,
+        now=lambda: NOW,
+    ).lookup("아일리아")
+
+    assert absent.cache_lookup_status is CacheLookupStatus.STORE_ABSENT
+    assert hit.cache_lookup_status is CacheLookupStatus.HIT
+    assert hit.retrieval == "cache"
+    assert hit_realtime.calls == []
+
+
+def test_reimbursement_database_env_is_dedicated_and_falls_back_to_cache_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_HOST", "db.internal")
+    monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
+    monkeypatch.setenv("CHAT_CACHE_DB_USER", "chat")
+    monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
+    monkeypatch.delenv("CHAT_REIMBURSEMENT_DB_NAME", raising=False)
+
+    fallback = configured_reimbursement_store()
+    assert isinstance(fallback, MariaDbReimbursementStore)
+    assert fallback.schema_name == "jw_mart"
+
+    monkeypatch.setenv("CHAT_REIMBURSEMENT_DB_NAME", "reimbursement_stage")
+    dedicated = configured_reimbursement_store()
+
+    assert isinstance(dedicated, MariaDbReimbursementStore)
+    assert dedicated.schema_name == "reimbursement_stage"
+    assert os.environ["CHAT_CACHE_DB_NAME"] == "jw_mart"
 
 
 class _Response:

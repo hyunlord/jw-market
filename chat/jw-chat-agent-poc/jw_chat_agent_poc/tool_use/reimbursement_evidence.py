@@ -30,7 +30,12 @@ def reimbursement_envelope(
             ok=False,
             preview=message,
             evidence=(),
-            raw={"retrieval": result.retrieval, "cache_status": result.cache_status.value},
+            raw={
+                "retrieval": result.retrieval,
+                "cache_status": result.cache_status.value,
+                "cache_lookup_status": result.cache_lookup_status.value,
+                "cache_schema": result.cache_schema,
+            },
             error_code=error_code,
             error_message=message,
         )
@@ -54,6 +59,8 @@ def reimbursement_envelope(
         raw={
             "retrieval": result.retrieval,
             "cache_status": result.cache_status.value,
+            "cache_lookup_status": result.cache_lookup_status.value,
+            "cache_schema": result.cache_schema,
             "cache_write": result.cache_write,
             "notice_number": data.notice_number,
             "source_url": data.source_url,
