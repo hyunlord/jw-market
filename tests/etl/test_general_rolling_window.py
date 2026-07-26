@@ -195,6 +195,29 @@ def test_enriched_ubist_period_scope_uses_global_source_history(
     assert _available_ubist_periods() == periods[-60:]
 
 
+def test_enriched_ubist_scope_uses_its_own_latest_period_when_raw_is_newer(
+    tmp_path,
+) -> None:
+    enriched_periods = _month_labels(2020, 12, 65)
+    output = tmp_path / "enriched.parquet"
+    frame = pd.DataFrame(
+        {
+            "source": ["ubist"] * len(enriched_periods),
+            "period_yyyymm": [
+                period.replace("-", "") for period in enriched_periods
+            ],
+        }
+    )
+    with duckdb.connect() as connection:
+        connection.register("source", frame)
+        connection.execute(f"COPY source TO '{output}' (FORMAT PARQUET)")
+
+    selected = _available_ubist_periods(enriched_pattern=str(output))
+
+    assert selected == enriched_periods[-60:]
+    assert selected[-1] == "2026-04"
+
+
 def test_five_year_cagr_uses_actual_elapsed_span_inside_60_month_window() -> None:
     periods = _month_labels(2021, 6, 60)
     history = {period: 100.0 + index for index, period in enumerate(periods)}

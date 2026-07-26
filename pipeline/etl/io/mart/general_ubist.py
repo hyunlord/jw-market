@@ -283,7 +283,25 @@ def _extract_atc4_code(value: object) -> str:
     return extract_atc4(value)[0]
 
 
-def _available_ubist_periods() -> tuple[str, ...]:
+def _available_ubist_periods(
+    *,
+    enriched_pattern: str | None = None,
+) -> tuple[str, ...]:
+    if enriched_pattern is not None:
+        with duckdb.connect() as connection:
+            periods = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    f"""
+                    SELECT DISTINCT period_yyyymm
+                    FROM read_parquet({_sql_literal(enriched_pattern)})
+                    WHERE source='ubist' AND period_yyyymm IS NOT NULL
+                    ORDER BY period_yyyymm
+                    """
+                ).fetchall()
+            )
+        return rolling_period_scope(periods, source="ubist")
+
     source_periods: list[str] = []
     for path_text in glob.glob(ubist_glob()):
         path = Path(path_text)
@@ -883,7 +901,9 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
 
     limit = f"LIMIT {int(max_rows)}" if max_rows else ""
     parquet_glob = enriched_glob(ml)
-    period_filter = _ubist_period_filter_sql(_available_ubist_periods())
+    period_filter = _ubist_period_filter_sql(
+        _available_ubist_periods(enriched_pattern=parquet_glob)
+    )
     enriched_source = f"""
         SELECT * EXCLUDE (raw_rx_amt, raw_rx_qty),
                raw_rx_amt AS rx_amt,
