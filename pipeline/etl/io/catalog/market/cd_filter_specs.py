@@ -5,6 +5,9 @@ from typing import Any
 
 from pipeline.etl.io.catalog.market.cd_filter_schema import CD_FILTER_COLUMNS
 from pipeline.etl.io.catalog._lib.catalog_text import clean_text
+from pipeline.etl.mi_master_registry import (
+    default_mi_master_registry,
+)
 import json
 
 
@@ -209,6 +212,21 @@ def raw_filter_records(source_file_version_value: str, ingested_at: datetime) ->
             "dosage_form": None,
         },
     ]
+    existing_ids = {str(row["cd_filter_id"]) for row in rows}
+    rows.extend(
+        {
+            "cd_filter_id": str(spec["cd_filter_id"]),
+            "name": str(spec["name"]),
+            "atc3": None,
+            "atc4": None,
+            "molecule": None,
+            "class": None,
+            "nhi": None,
+            "dosage_form": None,
+        }
+        for spec in default_mi_master_registry().cd_specs
+        if str(spec["cd_filter_id"]) not in existing_ids
+    )
     return [
         {
             **row,

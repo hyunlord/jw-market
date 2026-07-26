@@ -6,6 +6,11 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
+    default_mi_master_registry,
+)
+
 
 def _nfc(value: object) -> str:
     # NFC-normalize so validation compares logical content, not Unicode encoding.
@@ -15,13 +20,11 @@ def _nfc(value: object) -> str:
     return unicodedata.normalize("NFC", str(value))
 
 from pipeline.etl.io.catalog._lib.common import count_by, read_parquet_rows, utc_now_text, write_records_parquet
-from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
 
 DEFAULT_MARKET_DEFINITION_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
 DEFAULT_QA_FILE = Path("parquet/master_qa/master_qa.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_jw_products/dim_jw_products.parquet")
 
-EXPECTED_ROW_COUNT = expected_int("dim_jw_products.row_count")
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
 
 DIM_JW_PRODUCTS_COLUMNS = (
@@ -34,53 +37,36 @@ DIM_JW_PRODUCTS_COLUMNS = (
     "ingested_at",
 )
 
-EXPECTED_FINAL_ROWS = (
-    ("strategy_001", "라베칸 라베칸듀오", "라베칸", "sheet split"),
-    ("strategy_001", "라베칸 라베칸듀오", "라베칸듀오", "sheet split"),
-    ("strategy_002", "제이클", "제이클", "sheet split"),
-    ("strategy_003", "가드렛 가드메트", "가드렛", "sheet split (molecule market)"),
-    ("strategy_003", "가드렛 가드메트", "가드메트", "sheet split (molecule market)"),
-    ("strategy_004", "타발리스", "타발리스", "sheet split"),
-    ("strategy_005", "시그마트", "시그마트", "sheet split"),
-    ("strategy_006", "리바로 리바로젯", "리바로", "sheet split"),
-    ("strategy_006", "리바로 리바로젯", "리바로젯", "sheet split"),
-    ("strategy_007", "리바로페노", "리바로페노", "sheet split"),
-    ("strategy_008", "리바로하이 리바로브이", "리바로하이", "sheet split"),
-    ("strategy_008", "리바로하이 리바로브이", "리바로브이", "sheet split"),
-    ("strategy_009", "트루패스 피나스타 제이다트", "트루패스", "sheet split"),
-    ("strategy_009", "트루패스 피나스타 제이다트", "피나스타", "sheet split"),
-    ("strategy_009", "트루패스 피나스타 제이다트", "제이다트", "sheet split"),
-    ("strategy_010", "뉴트로진 모빌리아", "뉴트로진", "sheet split"),
-    ("strategy_010", "뉴트로진 모빌리아", "모빌리아", "sheet split"),
-    ("strategy_011", "악템라", "악템라", "sheet split"),
-    ("strategy_012", "페린젝트 베노훼럼", "페린젝트", "sheet split"),
-    ("strategy_012", "페린젝트 베노훼럼", "베노훼럼", "sheet split"),
-    ("strategy_013", "헴리브라", "헴리브라", "sheet split"),
-    ("strategy_014", "위너프 위너프A+", "위너프", "sheet split"),
-    (
-        "strategy_014",
-        "위너프 위너프A+",
-        "위너프에이플러스",
-        "sheet split (renamed from 위너프A+)",
-    ),
-    ("strategy_015", "엔커버", "엔커버", "sheet split"),
-    ("strategy_016", "플라주오피", "플라주오피", "sheet split"),
-)
+def build_jw_product_specs(
+    registry: MiMasterRegistry | None = None,
+) -> tuple[tuple[str, str, str, str], ...]:
+    active_registry = registry or default_mi_master_registry()
+    market_names = {
+        market.strategic_market_id: market.sheet_name
+        for market in active_registry.market_sheets
+    }
+    return tuple(
+        (
+            target.strategic_market_id,
+            market_names[target.strategic_market_id],
+            target.jw_product_name,
+            target.source_note,
+        )
+        for target in active_registry.target_brands
+    )
 
-EXPECTED_MARKET_DISTRIBUTION = expected_mapping("dim_jw_products.market_distribution")
+
+EXPECTED_FINAL_ROWS = build_jw_product_specs()
+EXPECTED_ROW_COUNT = len(EXPECTED_FINAL_ROWS)
+EXPECTED_MARKET_DISTRIBUTION = {
+    market_id: sum(1 for row in EXPECTED_FINAL_ROWS if row[0] == market_id)
+    for market_id in dict.fromkeys(row[0] for row in EXPECTED_FINAL_ROWS)
+}
 
 
 def jw_product_id(strategic_market_id: str, jw_product_name: str) -> str:
     digest = hashlib.sha256(jw_product_name.encode("utf-8")).hexdigest()[:16]
     return f"{strategic_market_id}:{digest}"
-
-
-def source_note_for(strategic_market_id: str, jw_product_name: str) -> str:
-    if strategic_market_id == "strategy_003":
-        return "sheet split (molecule market)"
-    if strategic_market_id == "strategy_014" and jw_product_name == "위너프에이플러스":
-        return "sheet split (renamed from 위너프A+)"
-    return "sheet split"
 
 
 def _source_file_version_from_market_definition(market_definition_records: list[dict[str, Any]]) -> str:
@@ -149,26 +135,17 @@ def load_dim_jw_product_records(
                 f"expected={expected_market_name!r}, actual={actual_market_name!r}"
             )
 
-    for strategic_market_id in sorted(market_by_id):
-        market_name = str(market_by_id[strategic_market_id].get("market_name") or "")
-        if not market_name:
-            raise ValueError(f"empty market_name: {strategic_market_id}")
-        for token in market_name.split():
-            jw_product_name = (
-                "위너프에이플러스"
-                if strategic_market_id == "strategy_014" and token == "위너프A+"
-                else token
+    for strategic_market_id, market_name, jw_product_name, source_note in EXPECTED_FINAL_ROWS:
+        records.append(
+            make_record(
+                strategic_market_id,
+                market_name,
+                jw_product_name,
+                source_note,
+                source_file_version,
+                timestamp,
             )
-            records.append(
-                make_record(
-                    strategic_market_id,
-                    market_name,
-                    jw_product_name,
-                    source_note_for(strategic_market_id, jw_product_name),
-                    source_file_version,
-                    timestamp,
-                )
-            )
+        )
 
     validate_records(records)
     return records

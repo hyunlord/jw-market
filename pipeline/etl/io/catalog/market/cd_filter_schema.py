@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from pipeline.etl.io.catalog._lib.expected_counts import expected_int
+from pipeline.etl.mi_master_registry import (
+    default_mi_master_registry,
+)
 
 DEFAULT_MARKET_DEFINITION_FILE = Path(
     "parquet/master_market_definition/master_market_definition.parquet"
@@ -16,10 +18,11 @@ DEFAULT_OUTPUT_FILE = Path("parquet/cd_filter/cd_filter.parquet")
 # source_file_version을 여기서도 강제한다. CD filter만 과거 파일을 허용하는
 # 방식은 rank/market size drift를 만든 경험이 있어 기각했다.
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-EXPECTED_ROW_COUNT = expected_int("cd_filter.row_count")
 EXPECTED_CD_FILTER_IDS = tuple(
-    f"cdf_{index:03d}" for index in range(1, EXPECTED_ROW_COUNT + 1)
+    str(spec["cd_filter_id"])
+    for spec in default_mi_master_registry().cd_specs
 )
+EXPECTED_ROW_COUNT = len(EXPECTED_CD_FILTER_IDS)
 ML_EQUALS_CD_FILTER_IDS = {"cdf_004", "cdf_006", "cdf_007", "cdf_014", "cdf_016", "cdf_017"}
 JSON_ARRAY_COLUMNS = ("atc3", "atc4", "molecule", "class")
 FILTER_COLUMNS = ("atc3", "atc4", "molecule", "class", "nhi", "dosage_form")

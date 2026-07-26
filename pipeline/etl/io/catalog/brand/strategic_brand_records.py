@@ -19,7 +19,6 @@ from pipeline.etl.io.catalog.brand.strategic_brand_logic import (
     make_name,
     normalize_for_match,
     null_if_excluded,
-    source_value_by_header,
     source_version_from_ml_market,
     strategic_fields,
 )
@@ -29,6 +28,7 @@ from pipeline.etl.io.catalog.brand.strategic_atc4_expansion import (
 )
 from pipeline.etl.io.catalog.brand.strategic_brand_schema import EXPECTED_COLUMNS, MERGE_NAME_BY_NAME
 from pipeline.etl.io.catalog.brand.strategic_brand_schema import validate_records
+from pipeline.etl.mi_master_registry import apply_record_rules
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_CATALOG_PATH = PROJECT_ROOT / "pipeline" / "etl" / "config" / "master_column_mapping_catalog.md"
@@ -43,6 +43,24 @@ def _source_row_id_from_brand_id(brand_id: Any) -> int:
         return int(str(brand_id).rsplit("_", 1)[1])
     except (IndexError, TypeError, ValueError):
         return 0
+
+
+def _apply_source_rules(
+    headers: list[Any] | tuple[Any, ...],
+    values: list[Any] | tuple[Any, ...],
+    standard_values: dict[str, Any],
+    sheet_name: str,
+) -> dict[str, Any]:
+    raw = {
+        str(header).strip(): value
+        for header, value in zip(headers, values)
+        if header is not None
+    }
+    return apply_record_rules(
+        standard_values,
+        stage="strategic_brand_source",
+        context={"sheet_name": sheet_name, "raw": raw},
+    )
 
 
 def _assign_cd_id_for_atc4_codes(
@@ -199,18 +217,25 @@ def load_strategic_brand_records(
                 if row_excluded:
                     continue
                 standard_values, extras = master_drug.apply_column_mapping(headers, values, metadata)
-                if config.strategic_market_id == "strategy_002":
-                    # A1: 제이클의 "Recode Class(성분)"은 class grouping이지
-                    # molecule display가 아니다. molecule은 raw MOLECULE DESC로
-                    # 남겨야 Class와 Molecule level이 서로 다른 축이 된다.
-                    # class 그룹을 molecule에 재사용하는 대안은 002 IQVIA에서
-                    # Molecule==Class를 만들었기 때문에 기각했다.
-                    standard_values["molecule"] = source_value_by_header(headers, values, "MOLECULE DESC")
+                standard_values = _apply_source_rules(
+                    headers,
+                    values,
+                    standard_values,
+                    config.sheet_name,
+                )
                 if source_row_id in explicit_overrides:
                     standard_values.update(explicit_overrides[source_row_id])
-                name = make_name(standard_values, config.strategic_market_id, source_row_id)
+                name = make_name(
+                    standard_values,
+                    source_row_id,
+                    sheet_name=config.sheet_name,
+                )
                 sheet_name_keys.add(normalize_for_match(name))
-                fields = strategic_fields(standard_values, extras, strategic_market_id=config.strategic_market_id)
+                fields = strategic_fields(
+                    standard_values,
+                    extras,
+                    sheet_name=config.sheet_name,
+                )
                 atc4_code = extract_atc_code(fields.get("atc4_code"))
                 if atc4_code:
                     allowed_atc4_by_name[normalize_for_match(name)].add(atc4_code)
@@ -236,10 +261,20 @@ def load_strategic_brand_records(
                     stats["excluded_rows"][config.strategic_market_id] += 1
 
                 standard_values, extras = master_drug.apply_column_mapping(headers, values, metadata)
+                standard_values = _apply_source_rules(
+                    headers,
+                    values,
+                    standard_values,
+                    config.sheet_name,
+                )
                 if source_row_id in explicit_overrides:
                     standard_values.update(explicit_overrides[source_row_id])
 
-                name = make_name(standard_values, config.strategic_market_id, source_row_id)
+                name = make_name(
+                    standard_values,
+                    source_row_id,
+                    sheet_name=config.sheet_name,
+                )
                 if name.startswith("unknown_row_"):
                     stats["unknown_name_rows"].append(
                         {
@@ -247,7 +282,11 @@ def load_strategic_brand_records(
                             "source_row_id": source_row_id,
                         }
                     )
-                fields = strategic_fields(standard_values, extras)
+                fields = strategic_fields(
+                    standard_values,
+                    extras,
+                    sheet_name=config.sheet_name,
+                )
                 match_context = dict(fields)
                 match_context["ml_id"] = ml_id
                 cd_id, candidates = assign_cd_id(match_context, cd_markets_for_ml, filter_by_id)

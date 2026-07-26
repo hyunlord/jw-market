@@ -207,10 +207,6 @@ strategic_brand:
 cd_brand:
   row_count: 2379
 
-postfix_rebuild_strategic:
-  ml_market_count: 16
-  jw_canonical_rows: 25
-
 postfix_canonical:
   canonical_brand_rows: 25
 

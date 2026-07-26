@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import pyarrow as pa
 
-from pipeline.etl.io.catalog._lib.expected_counts import expected_mapping
+from pipeline.etl.mi_master_registry import (
+    default_mi_master_registry,
+)
 
 DEFAULT_MARKET_DEFINITION_FILE = Path(
     "parquet/master_market_definition/master_market_definition.parquet"
@@ -19,7 +22,6 @@ DEFAULT_OUTPUT_FILE = Path("parquet/ml_market/ml_market.parquet")
 # ml_market parquet가 4/22이면 원인분석/시장현황이 다른 시장정의를 보게 되어
 # 기각한다.
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-EXPECTED_DATA_SOURCE_COUNTS = expected_mapping("ml_market.data_source_counts")
 EXPECTED_STRATEGY_005_SOURCE = "ubist"
 
 ANALYZE_COLUMNS = (
@@ -32,160 +34,18 @@ ANALYZE_COLUMNS = (
     "analyze_fish_oil",
 )
 
-# D-46 manual analyze matrix.
-#
-# These seven booleans are not derived from R14-R18 markers or detail-sheet
-# header existence anymore. Phase 14 Step 14-9-1 found that raw markings and
-# materialized strategic fields diverge in several markets, so the intended
-# analysis axes are now an explicit staging dictionary. Keep every ml_id present
-# and update this matrix directly when business intent changes.
-ANALYZE_MATRIX: dict[str, dict[str, bool]] = {
-    "ml_001": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_002": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": True,
-        "strength_pack": False,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_003": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": True,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_004": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": True,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_005": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_006": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": True,
-        "nhi_type": False,
-        "ox_gx": True,
-        "fish_oil": False,
-    },
-    "ml_007": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_008": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_009": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_010": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_011": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": False,
-        "ox_gx": True,
-        "fish_oil": False,
-    },
-    "ml_012": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": True,
-        "strength_pack": True,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_013": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": False,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_014": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": True,
-        "strength_pack": True,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": True,
-    },
-    "ml_015": {
-        "class": False,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": True,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-    "ml_016": {
-        "class": True,
-        "molecule": True,
-        "dosage_form": False,
-        "strength_pack": True,
-        "nhi_type": True,
-        "ox_gx": False,
-        "fish_oil": False,
-    },
-}
+# Analysis axes are derived from MI Master markers and detail-sheet headers.
+# Non-inferable business decisions live in mi_master_rules.yaml.
+ANALYZE_MATRIX: dict[str, dict[str, bool]] = (
+    default_mi_master_registry().analyze_matrix
+)
 EXPECTED_ML_IDS = tuple(ANALYZE_MATRIX)
+EXPECTED_DATA_SOURCE_COUNTS = dict(
+    Counter(
+        sheet.source_type.lower()
+        for sheet in default_mi_master_registry().market_sheets
+    )
+)
 EXPECTED_MARKET_IDS = tuple(
     f"strategy_{ml_id.removeprefix('ml_')}" for ml_id in EXPECTED_ML_IDS
 )

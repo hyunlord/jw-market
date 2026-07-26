@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from pipeline.etl.io.catalog.postfix.text import normalize_brand_name
+from pipeline.etl.mi_master_registry import apply_record_rules
 
 ML_ID = "ml_003"
 
@@ -109,8 +110,11 @@ def build_fixed_catalog(strategic_brand_path: Path, raw_path: Path, limit_per_mo
             record["판매사"] = item.get("company")
             record["is_jw"] = False
             record["is_target"] = False
-            if str(record.get("molecule")).upper() == "TIRZEPATIDE":
-                record["class"] = "GLP-1RA"
+            record = apply_record_rules(
+                record,
+                stage="ml_postfix",
+                context={"sheet_name": "가드렛 가드메트"},
+            )
             new_rows.append(record)
     fixed = pd.concat([keep, jw_rows, pd.DataFrame(new_rows, columns=catalog.columns), atc4_expanded_rows], ignore_index=True)
     stats = {

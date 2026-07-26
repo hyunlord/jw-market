@@ -1,0 +1,1210 @@
+{
+  "contract": "api_response_golden_v2",
+  "samples": [
+    {
+      "name": "general_ubist_sales_c10a1",
+      "request": {
+        "view": "general",
+        "source": "ubist",
+        "measure": "sales",
+        "filters": {
+          "atc4": [
+            "C10A1"
+          ]
+        }
+      },
+      "canonical_sha256": "1e00e276ff140338e24eee8344c4bc085dd3af1abf9344e9214f1b983cb28b75",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "brand": "동적 시장",
+          "brand_key": "dynamic_general_02c417660e",
+          "brand_name": "동적 시장",
+          "data": {
+            "analysis_level_market_status": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "analysis_levels": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "brand_ranking": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "brand_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_concentration_trend": {
+              "periods": [],
+              "hhi_values": []
+            },
+            "company_ranking": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "ei_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "growth_contribution": {
+              "by_brand": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "by_company": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "market_start": 0.0,
+              "market_end": 0.0,
+              "market_growth": 0.0
+            },
+            "growth_contribution_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "hhi_recent": null,
+            "hhi_series_5y": [],
+            "kpi": {},
+            "level_top5_trend": {
+              "available_levels": [],
+              "default_level": null,
+              "by_level": {},
+              "note": "동적 일반뷰는 ATC4/molecule filter로 정의되므로 MI Master 전략 레벨 overlay를 적용하지 않는다."
+            },
+            "market_size_series": [
+              {
+                "period": "2026-05",
+                "value": 1.0,
+                "yoy_growth_pct": null,
+                "mom_growth_pct": null,
+                "sales_krw": 1.0
+              }
+            ],
+            "sources_data": {
+              "periods_unit": "월",
+              "periods_count": 1,
+              "market_size_series": [
+                {
+                  "period": "2026-05",
+                  "value": 1.0,
+                  "yoy_growth_pct": null,
+                  "mom_growth_pct": null,
+                  "sales_krw": 1.0
+                }
+              ],
+              "market_yoy_series": {
+                "2026-05": null
+              },
+              "market_yoy_recent_pct": null,
+              "hhi_series_5y": [],
+              "hhi_recent": null,
+              "cagr_5y_pct": null
+            },
+            "target_customer_competition": {
+              "available_in_view": [],
+              "target_type": "동적 시장",
+              "targets": [],
+              "views": [],
+              "note": "동적 일반뷰 MVP에는 전략뷰 target customer overlay가 없다."
+            }
+          },
+          "market_id": "dynamic_general_02c417660e",
+          "market_meta": {
+            "strategic_market_id": "dynamic_general_02c417660e",
+            "market_name": "동적 시장: ATC4 C10A1",
+            "market_name_short": "동적 시장",
+            "market_label_kor": "동적 시장: ATC4 C10A1",
+            "market_definition_label": "동적 시장: ATC4 C10A1",
+            "market_definition_full": "ATC4=C10A1; molecule=-",
+            "filters": {
+              "view": "general",
+              "atc4": [
+                "C10A1"
+              ],
+              "molecule": [],
+              "source": "ubist",
+              "measure": "sales"
+            },
+            "view": "general",
+            "mkt_team": "Runtime",
+            "brand_list": [],
+            "atc_codes": [
+              "C10A1"
+            ],
+            "view_source_id": "dynamic_general",
+            "atc_count": 1,
+            "nhi_type": null,
+            "sources": [
+              "UBIST"
+            ],
+            "source_label": "UBIST",
+            "is_dual_source": false,
+            "measures": [
+              "sales",
+              "volume"
+            ],
+            "measures_label": {
+              "primary": "처방조제액",
+              "secondary": null
+            },
+            "available_levels": [],
+            "direct_competition_count": 0,
+            "market_size_recent": 1.0,
+            "market_cagr_5y_pct": null,
+            "mom_growth_meta": {
+              "end_period": "2026-05",
+              "reason": "latest_available"
+            },
+            "is_jw": false,
+            "is_target": false
+          },
+          "markets": [
+            {
+              "market_id": "dynamic_general_02c417660e",
+              "is_primary": true
+            }
+          ],
+          "measure": "sales",
+          "source": "UBIST",
+          "unit_label": "KRW",
+          "view": "general"
+        }
+      }
+    },
+    {
+      "name": "general_ubist_qty_a02b2",
+      "request": {
+        "view": "general",
+        "source": "ubist",
+        "measure": "qty",
+        "filters": {
+          "atc4": [
+            "A02B2"
+          ]
+        }
+      },
+      "canonical_sha256": "72622a0ca3012bf93099e15c463c869da6d45438ded1c01738805cb9c637c75c",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "brand": "동적 시장",
+          "brand_key": "dynamic_general_3b26c64e5f",
+          "brand_name": "동적 시장",
+          "data": {
+            "analysis_level_market_status": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "analysis_levels": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "brand_ranking": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "brand_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_concentration_trend": {
+              "periods": [],
+              "hhi_values": []
+            },
+            "company_ranking": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "ei_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "growth_contribution": {
+              "by_brand": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "by_company": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "market_start": 0.0,
+              "market_end": 0.0,
+              "market_growth": 0.0
+            },
+            "growth_contribution_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "hhi_recent": null,
+            "hhi_series_5y": [],
+            "kpi": {},
+            "level_top5_trend": {
+              "available_levels": [],
+              "default_level": null,
+              "by_level": {},
+              "note": "동적 일반뷰는 ATC4/molecule filter로 정의되므로 MI Master 전략 레벨 overlay를 적용하지 않는다."
+            },
+            "market_size_series": [
+              {
+                "period": "2026-05",
+                "value": 1.0,
+                "yoy_growth_pct": null,
+                "mom_growth_pct": null,
+                "sales_krw": 1.0
+              }
+            ],
+            "sources_data": {
+              "periods_unit": "월",
+              "periods_count": 1,
+              "market_size_series": [
+                {
+                  "period": "2026-05",
+                  "value": 1.0,
+                  "yoy_growth_pct": null,
+                  "mom_growth_pct": null,
+                  "sales_krw": 1.0
+                }
+              ],
+              "market_yoy_series": {
+                "2026-05": null
+              },
+              "market_yoy_recent_pct": null,
+              "hhi_series_5y": [],
+              "hhi_recent": null,
+              "cagr_5y_pct": null
+            },
+            "target_customer_competition": {
+              "available_in_view": [],
+              "target_type": "동적 시장",
+              "targets": [],
+              "views": [],
+              "note": "동적 일반뷰 MVP에는 전략뷰 target customer overlay가 없다."
+            }
+          },
+          "market_id": "dynamic_general_3b26c64e5f",
+          "market_meta": {
+            "strategic_market_id": "dynamic_general_3b26c64e5f",
+            "market_name": "동적 시장: ATC4 A02B2",
+            "market_name_short": "동적 시장",
+            "market_label_kor": "동적 시장: ATC4 A02B2",
+            "market_definition_label": "동적 시장: ATC4 A02B2",
+            "market_definition_full": "ATC4=A02B2; molecule=-",
+            "filters": {
+              "view": "general",
+              "atc4": [
+                "A02B2"
+              ],
+              "molecule": [],
+              "source": "ubist",
+              "measure": "qty"
+            },
+            "view": "general",
+            "mkt_team": "Runtime",
+            "brand_list": [],
+            "atc_codes": [
+              "A02B2"
+            ],
+            "view_source_id": "dynamic_general",
+            "atc_count": 1,
+            "nhi_type": null,
+            "sources": [
+              "UBIST"
+            ],
+            "source_label": "UBIST",
+            "is_dual_source": false,
+            "measures": [
+              "sales",
+              "volume"
+            ],
+            "measures_label": {
+              "primary": "qty",
+              "secondary": null
+            },
+            "available_levels": [],
+            "direct_competition_count": 0,
+            "market_size_recent": 1.0,
+            "market_cagr_5y_pct": null,
+            "mom_growth_meta": {
+              "end_period": "2026-05",
+              "reason": "latest_available"
+            },
+            "is_jw": false,
+            "is_target": false
+          },
+          "markets": [
+            {
+              "market_id": "dynamic_general_3b26c64e5f",
+              "is_primary": true
+            }
+          ],
+          "measure": "qty",
+          "source": "UBIST",
+          "unit_label": "Unit",
+          "view": "general"
+        }
+      }
+    },
+    {
+      "name": "general_iqvia_sales_a06b2",
+      "request": {
+        "view": "general",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "atc4": [
+            "A06B2"
+          ]
+        }
+      },
+      "canonical_sha256": "d06afa014b2a6eb77d1307dfcbf3c6f86c8362fea59e6f035e3288f9c9f6d720",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "brand": "동적 시장",
+          "brand_key": "dynamic_general_01c4f37990",
+          "brand_name": "동적 시장",
+          "data": {
+            "analysis_level_market_status": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "analysis_levels": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "brand_ranking": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "brand_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_concentration_trend": {
+              "periods": [],
+              "hhi_values": []
+            },
+            "company_ranking": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "ei_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "growth_contribution": {
+              "by_brand": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "by_company": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "market_start": 0.0,
+              "market_end": 0.0,
+              "market_growth": 0.0
+            },
+            "growth_contribution_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "hhi_recent": null,
+            "hhi_series_5y": [],
+            "kpi": {},
+            "level_top5_trend": {
+              "available_levels": [],
+              "default_level": null,
+              "by_level": {},
+              "note": "동적 일반뷰는 ATC4/molecule filter로 정의되므로 MI Master 전략 레벨 overlay를 적용하지 않는다."
+            },
+            "market_size_series": [
+              {
+                "period": "2026-05",
+                "value": 1.0,
+                "yoy_growth_pct": null,
+                "mom_growth_pct": null,
+                "sales_krw": 1.0
+              }
+            ],
+            "sources_data": {
+              "periods_unit": "월",
+              "periods_count": 1,
+              "market_size_series": [
+                {
+                  "period": "2026-05",
+                  "value": 1.0,
+                  "yoy_growth_pct": null,
+                  "mom_growth_pct": null,
+                  "sales_krw": 1.0
+                }
+              ],
+              "market_yoy_series": {
+                "2026-05": null
+              },
+              "market_yoy_recent_pct": null,
+              "hhi_series_5y": [],
+              "hhi_recent": null,
+              "cagr_5y_pct": null
+            },
+            "target_customer_competition": {
+              "available_in_view": [],
+              "target_type": "동적 시장",
+              "targets": [],
+              "views": [],
+              "note": "동적 일반뷰 MVP에는 전략뷰 target customer overlay가 없다."
+            }
+          },
+          "market_id": "dynamic_general_01c4f37990",
+          "market_meta": {
+            "strategic_market_id": "dynamic_general_01c4f37990",
+            "market_name": "동적 시장: ATC4 A06B2",
+            "market_name_short": "동적 시장",
+            "market_label_kor": "동적 시장: ATC4 A06B2",
+            "market_definition_label": "동적 시장: ATC4 A06B2",
+            "market_definition_full": "ATC4=A06B2; molecule=-",
+            "filters": {
+              "view": "general",
+              "atc4": [
+                "A06B2"
+              ],
+              "molecule": [],
+              "source": "iqvia",
+              "measure": "sales"
+            },
+            "view": "general",
+            "mkt_team": "Runtime",
+            "brand_list": [],
+            "atc_codes": [
+              "A06B2"
+            ],
+            "view_source_id": "dynamic_general",
+            "atc_count": 1,
+            "nhi_type": null,
+            "sources": [
+              "IQVIA"
+            ],
+            "source_label": "IQVIA",
+            "is_dual_source": false,
+            "measures": [
+              "counting_unit",
+              "dosage_unit",
+              "sales",
+              "unit"
+            ],
+            "measures_label": {
+              "primary": "처방조제액",
+              "secondary": null
+            },
+            "available_levels": [],
+            "direct_competition_count": 0,
+            "market_size_recent": 1.0,
+            "market_cagr_5y_pct": null,
+            "mom_growth_meta": {
+              "end_period": "2026-05",
+              "reason": "latest_available"
+            },
+            "is_jw": false,
+            "is_target": false
+          },
+          "markets": [
+            {
+              "market_id": "dynamic_general_01c4f37990",
+              "is_primary": true
+            }
+          ],
+          "measure": "sales",
+          "source": "IQVIA",
+          "unit_label": "KRW",
+          "view": "general"
+        }
+      }
+    },
+    {
+      "name": "general_iqvia_qty_b02e9",
+      "request": {
+        "view": "general",
+        "source": "iqvia",
+        "measure": "qty",
+        "filters": {
+          "atc4": [
+            "B02E9"
+          ]
+        }
+      },
+      "canonical_sha256": "4a8731414487beee493d416e11e2b5c469c9d6c75ed1ad552a7a48591cf02ad3",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "brand": "동적 시장",
+          "brand_key": "dynamic_general_9c12529d6f",
+          "brand_name": "동적 시장",
+          "data": {
+            "analysis_level_market_status": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "analysis_levels": {
+              "levels": [],
+              "channels": [
+                "전체"
+              ],
+              "period_unit": "월",
+              "periods_monthly": [
+                "2026-05"
+              ],
+              "periods_quarterly": [],
+              "data": {}
+            },
+            "brand_ranking": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "brand_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "brands": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_concentration_trend": {
+              "periods": [],
+              "hhi_values": []
+            },
+            "company_ranking": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "company_ranking_stacked": {
+              "years": [],
+              "yearly": [],
+              "companies": [],
+              "top_brands": [],
+              "series": {},
+              "rankings_by_year": {},
+              "period_count_by_year": {}
+            },
+            "ei_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "growth_contribution": {
+              "by_brand": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "by_company": {
+                "top_contributors": [],
+                "others_total": 0.0
+              },
+              "market_start": 0.0,
+              "market_end": 0.0,
+              "market_growth": 0.0
+            },
+            "growth_contribution_ms_matrix": {
+              "data": [],
+              "ms_avg_pct": 0.0,
+              "share_avg_pct": 0.0
+            },
+            "hhi_recent": null,
+            "hhi_series_5y": [],
+            "kpi": {},
+            "level_top5_trend": {
+              "available_levels": [],
+              "default_level": null,
+              "by_level": {},
+              "note": "동적 일반뷰는 ATC4/molecule filter로 정의되므로 MI Master 전략 레벨 overlay를 적용하지 않는다."
+            },
+            "market_size_series": [
+              {
+                "period": "2026-05",
+                "value": 1.0,
+                "yoy_growth_pct": null,
+                "mom_growth_pct": null,
+                "sales_krw": 1.0
+              }
+            ],
+            "sources_data": {
+              "periods_unit": "월",
+              "periods_count": 1,
+              "market_size_series": [
+                {
+                  "period": "2026-05",
+                  "value": 1.0,
+                  "yoy_growth_pct": null,
+                  "mom_growth_pct": null,
+                  "sales_krw": 1.0
+                }
+              ],
+              "market_yoy_series": {
+                "2026-05": null
+              },
+              "market_yoy_recent_pct": null,
+              "hhi_series_5y": [],
+              "hhi_recent": null,
+              "cagr_5y_pct": null
+            },
+            "target_customer_competition": {
+              "available_in_view": [],
+              "target_type": "동적 시장",
+              "targets": [],
+              "views": [],
+              "note": "동적 일반뷰 MVP에는 전략뷰 target customer overlay가 없다."
+            }
+          },
+          "market_id": "dynamic_general_9c12529d6f",
+          "market_meta": {
+            "strategic_market_id": "dynamic_general_9c12529d6f",
+            "market_name": "동적 시장: ATC4 B02E9",
+            "market_name_short": "동적 시장",
+            "market_label_kor": "동적 시장: ATC4 B02E9",
+            "market_definition_label": "동적 시장: ATC4 B02E9",
+            "market_definition_full": "ATC4=B02E9; molecule=-",
+            "filters": {
+              "view": "general",
+              "atc4": [
+                "B02E9"
+              ],
+              "molecule": [],
+              "source": "iqvia",
+              "measure": "qty"
+            },
+            "view": "general",
+            "mkt_team": "Runtime",
+            "brand_list": [],
+            "atc_codes": [
+              "B02E9"
+            ],
+            "view_source_id": "dynamic_general",
+            "atc_count": 1,
+            "nhi_type": null,
+            "sources": [
+              "IQVIA"
+            ],
+            "source_label": "IQVIA",
+            "is_dual_source": false,
+            "measures": [
+              "counting_unit",
+              "dosage_unit",
+              "sales",
+              "unit"
+            ],
+            "measures_label": {
+              "primary": "qty",
+              "secondary": null
+            },
+            "available_levels": [],
+            "direct_competition_count": 0,
+            "market_size_recent": 1.0,
+            "market_cagr_5y_pct": null,
+            "mom_growth_meta": {
+              "end_period": "2026-05",
+              "reason": "latest_available"
+            },
+            "is_jw": false,
+            "is_target": false
+          },
+          "markets": [
+            {
+              "market_id": "dynamic_general_9c12529d6f",
+              "is_primary": true
+            }
+          ],
+          "measure": "qty",
+          "source": "IQVIA",
+          "unit_label": "Unit",
+          "view": "general"
+        }
+      }
+    },
+    {
+      "name": "ml_jacle",
+      "request": {
+        "view": "strategic_ml",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "market_landscape",
+          "focus_brand_key": "제이클"
+        }
+      },
+      "canonical_sha256": "f08c982845a904e0d7f99b1e2d9be6b2efb53d74a205bf3435a7d46009e6269b",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "제이클"
+          },
+          "view": "strategic_ml",
+          "market_meta": {
+            "view": "strategic_ml"
+          }
+        }
+      }
+    },
+    {
+      "name": "ml_gardlet",
+      "request": {
+        "view": "strategic_ml",
+        "source": "ubist",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "market_landscape",
+          "focus_brand_key": "가드렛"
+        }
+      },
+      "canonical_sha256": "9cb4e7afa15ad685881a7b71c7f3b6b8aa1fe4e30f0dd4d0c095fefffe8d64d5",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "가드렛"
+          },
+          "view": "strategic_ml",
+          "market_meta": {
+            "view": "strategic_ml"
+          }
+        }
+      }
+    },
+    {
+      "name": "ml_livalo",
+      "request": {
+        "view": "strategic_ml",
+        "source": "ubist",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "market_landscape",
+          "focus_brand_key": "리바로"
+        }
+      },
+      "canonical_sha256": "066865b5cb4d29d4f110656fabc6851821ea01bfce01ccf748d413485eaeb4ee",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "리바로"
+          },
+          "view": "strategic_ml",
+          "market_meta": {
+            "view": "strategic_ml"
+          }
+        }
+      }
+    },
+    {
+      "name": "ml_ferinject",
+      "request": {
+        "view": "strategic_ml",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "market_landscape",
+          "focus_brand_key": "페린젝트"
+        }
+      },
+      "canonical_sha256": "566d29ad112363a022c2d615505e8cf40f527f4309e16098ac4464eb28d2c5e0",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "페린젝트"
+          },
+          "view": "strategic_ml",
+          "market_meta": {
+            "view": "strategic_ml"
+          }
+        }
+      }
+    },
+    {
+      "name": "cd_jacle",
+      "request": {
+        "view": "strategic_cd",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "competitive_dynamics",
+          "focus_brand_key": "제이클"
+        }
+      },
+      "canonical_sha256": "7da06730a8f94f5286fd13224a3486e0d8d5111dd6af43b494c99199d5e4418e",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "제이클"
+          },
+          "view": "strategic_cd",
+          "market_meta": {
+            "view": "strategic_cd"
+          }
+        }
+      }
+    },
+    {
+      "name": "cd_gardlet",
+      "request": {
+        "view": "strategic_cd",
+        "source": "ubist",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "competitive_dynamics",
+          "focus_brand_key": "가드렛"
+        }
+      },
+      "canonical_sha256": "4af02a737dc99fd2217e75f2272e5d5414e08bb0faa3f47b597c15038e859325",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "가드렛"
+          },
+          "view": "strategic_cd",
+          "market_meta": {
+            "view": "strategic_cd"
+          }
+        }
+      }
+    },
+    {
+      "name": "cd_livalo",
+      "request": {
+        "view": "strategic_cd",
+        "source": "ubist",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "competitive_dynamics",
+          "focus_brand_key": "리바로"
+        }
+      },
+      "canonical_sha256": "6e6690e6707172c5987435532606aac5a8a20aa791053b50431b856a778d79f4",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "리바로"
+          },
+          "view": "strategic_cd",
+          "market_meta": {
+            "view": "strategic_cd"
+          }
+        }
+      }
+    },
+    {
+      "name": "cd_ferinject",
+      "request": {
+        "view": "strategic_cd",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "competitive_dynamics",
+          "focus_brand_key": "페린젝트"
+        }
+      },
+      "canonical_sha256": "21e46bbbb1dacb1a36c92ee953bdd3759398f49decc594507ad78b12816534b5",
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "페린젝트"
+          },
+          "view": "strategic_cd",
+          "market_meta": {
+            "view": "strategic_cd"
+          }
+        }
+      }
+    },
+    {
+      "name": "ml_tavalisse",
+      "request": {
+        "view": "strategic_ml",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "market_landscape",
+          "focus_brand_key": "타발리스"
+        }
+      },
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "타발리스"
+          },
+          "view": "strategic_ml",
+          "market_meta": {
+            "view": "strategic_ml"
+          }
+        }
+      },
+      "canonical_sha256": "a3a0cd1ba764bb2ac1186e6a5c1273a3db92ef9768dfde758b68cb5080ad256c"
+    },
+    {
+      "name": "ml_actemra",
+      "request": {
+        "view": "strategic_ml",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "market_landscape",
+          "focus_brand_key": "악템라"
+        }
+      },
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "악템라"
+          },
+          "view": "strategic_ml",
+          "market_meta": {
+            "view": "strategic_ml"
+          }
+        }
+      },
+      "canonical_sha256": "7bc70f7731aa53bbfe2f4ccd842421f188c550c91809b3c52010843f945d0c9b"
+    },
+    {
+      "name": "cd_hemlibra",
+      "request": {
+        "view": "strategic_cd",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "competitive_dynamics",
+          "focus_brand_key": "헴리브라"
+        }
+      },
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "헴리브라"
+          },
+          "view": "strategic_cd",
+          "market_meta": {
+            "view": "strategic_cd"
+          }
+        }
+      },
+      "canonical_sha256": "3b2f7f27f85ccbd52246550273c5f0afac194d8c283567efa86cd8646ed0caa2"
+    },
+    {
+      "name": "cd_winnerf",
+      "request": {
+        "view": "strategic_cd",
+        "source": "iqvia",
+        "measure": "sales",
+        "filters": {
+          "view_kind": "competitive_dynamics",
+          "focus_brand_key": "위너프"
+        }
+      },
+      "canonical_response": {
+        "status": "SUCCESS",
+        "result": {
+          "data": {
+            "kpi": {
+              "target_brand_sales": 1.0
+            },
+            "selected_brand": "위너프"
+          },
+          "view": "strategic_cd",
+          "market_meta": {
+            "view": "strategic_cd"
+          }
+        }
+      },
+      "canonical_sha256": "9d84a4076545e978e7a28d9bb005f9d768e43fc8dc9d4390d9af03b91406f7d7"
+    }
+  ],
+  "fixture_scope": "dynamic-market route with deterministic resolver, aggregator, and strategic payload fixtures"
+}

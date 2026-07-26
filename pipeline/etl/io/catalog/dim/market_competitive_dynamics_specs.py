@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from pipeline.etl.mi_master_registry import (
+    default_mi_master_registry,
+)
+
 CD_FILTER_RAW_JSON_BY_ID: dict[str, str] = {
     "cd_001": "[{\"column_id\":\"C\",\"label\":null,\"product_name_kor\":\"라베칸/라베칸듀오\",\"row_id\":48,\"value\":\"라베칸: [A2B2] 프로톤 펌프 억제제 - Rabeprazole 단일제 \"},{\"column_id\":\"C\",\"label\":null,\"product_name_kor\":\"라베칸/라베칸듀오\",\"row_id\":49,\"value\":\"라베칸 듀오: [A2B2] 프로톤 펌프 억제제 - Rabeprazole/제산제 FDC \"},{\"column_id\":\"C\",\"label\":null,\"product_name_kor\":\"라베칸/라베칸듀오\",\"row_id\":50,\"value\":null}]",
     "cd_002": "[{\"column_id\":\"D\",\"label\":null,\"product_name_kor\":\"제이클\",\"row_id\":48,\"value\":\"A06B1 & A06B2 - 비급여(NON_NHI) \"},{\"column_id\":\"D\",\"label\":null,\"product_name_kor\":\"제이클\",\"row_id\":49,\"value\":null},{\"column_id\":\"D\",\"label\":null,\"product_name_kor\":\"제이클\",\"row_id\":50,\"value\":null}]",
@@ -24,7 +28,7 @@ CD_FILTER_RAW_JSON_BY_ID: dict[str, str] = {
     "cd_019": "[{\"column_id\":\"V\",\"label\":null,\"product_name_kor\":\"플라주오피\",\"row_id\":48,\"value\":\"K01A31/2-ELECTROLYTE SOLUTIONS - Acetated Balanced Crystalloid \"},{\"column_id\":\"V\",\"label\":null,\"product_name_kor\":\"플라주오피\",\"row_id\":49,\"value\":\"K01A11/1-ELECTROLYTE SOLUTIONS - Acetated Balanced Crystalloid \"},{\"column_id\":\"V\",\"label\":null,\"product_name_kor\":\"플라주오피\",\"row_id\":50,\"value\":null}]",
 }
 
-CD_SPECS: tuple[dict[str, Any], ...] = (
+_CD_BUSINESS_SPECS: tuple[dict[str, Any], ...] = (
     {
         "competitive_dynamics_id": "cd_001",
         "strategic_market_id": "strategy_001",
@@ -236,3 +240,52 @@ CD_SPECS: tuple[dict[str, Any], ...] = (
         "filter_kind": "plajuopi_acetated",
     },
 )
+
+
+def _excel_column_name(column_id: int) -> str:
+    name = ""
+    index = column_id
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _build_cd_specs() -> tuple[dict[str, Any], ...]:
+    business_by_id = {
+        str(spec["competitive_dynamics_id"]): spec
+        for spec in _CD_BUSINESS_SPECS
+    }
+    specs: list[dict[str, Any]] = []
+    for topology in default_mi_master_registry().cd_specs:
+        cd_id = str(topology["cd_id"])
+        column_ids = tuple(int(value) for value in topology["column_ids"])
+        business = business_by_id.get(
+            cd_id,
+            {
+                "cd_definition_type": "ml_equals_cd_by_empty",
+                "cd_definition_brand_class": "default_sheet_all",
+                "cd_filter_expression": "sheet 전체",
+                "filter_kind": "sheet_all",
+            },
+        )
+        specs.append(
+            {
+                **business,
+                "competitive_dynamics_id": cd_id,
+                "strategic_market_id": str(topology["strategic_market_id"]),
+                "product_name_kor": business.get(
+                    "product_name_kor",
+                    topology["name"],
+                ),
+                "col_in_master_excel": "+".join(
+                    _excel_column_name(column_id)
+                    for column_id in column_ids
+                ),
+                "column_ids": column_ids,
+            }
+        )
+    return tuple(specs)
+
+
+CD_SPECS: tuple[dict[str, Any], ...] = _build_cd_specs()
