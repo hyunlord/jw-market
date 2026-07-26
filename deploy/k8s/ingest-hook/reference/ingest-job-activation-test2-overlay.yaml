@@ -1,8 +1,7 @@
-# Human-reviewable production activation overlay. NOT applied directly.
+# Human-reviewable test2 activation overlay. NOT applied directly.
 #
-# This contract is mutually exclusive with ingest-job-template.yaml's
-# INGEST_LOAD_STAGING_ROOT. job_launcher renders these fields only when the
-# explicit STAGE 5 environment is armed after the PL gate.
+# This mirrors the production activation contract while keeping category table
+# targets isolated from production serving schemas.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -18,27 +17,27 @@ spec:
             - name: INGEST_LOAD_TARGET_ROOT
               value: /market-output
             - name: INGEST_LOAD_PRODUCTION_DB
-              value: jw_mart
+              value: jw_mart_test_stage2
             - name: INGEST_MART_PROMOTION_APPROVED
               value: "1"
             - name: INGEST_MART_SOURCE_DB
-              value: jw_mart
+              value: jw_mart_test_stage2
             - name: INGEST_MART_TARGET_DB
-              value: jw_mart
+              value: jw_mart_test_stage2
             - name: INGEST_MART_BUILD_PREFIX
-              value: jw_mart_ingest
+              value: jw_mart_test2_ingest
             - name: INGEST_CATEGORY_ACTIVATION_APPROVED
               value: "1"
             - name: INGEST_CATEGORY_ACTIVATION_BUILD_PREFIX
-              value: jw_mart_ingest_category
+              value: jw_mart_test2_ingest_category
             - name: INGEST_CATEGORY_TARGET_IQVIA_NSA_DB
-              value: jw_mart
+              value: jw_mart_test_stage2
             - name: INGEST_CATEGORY_TARGET_CSD_RAW_DB
-              value: jw_brand_activity_raw
+              value: jw_brand_activity_raw_test2
             - name: INGEST_CATEGORY_TARGET_CSD_STAGE_DB
-              value: jw_brand_activity_stage
+              value: jw_brand_activity_stage_test2
             - name: INGEST_CATEGORY_TARGET_MI_MASTER_DB
-              value: jw_mart
+              value: jw_mart_test_stage2
             - name: INGEST_PUBLICATION_EPOCH_TABLE
               value: mart_publication_epoch
             - name: INGEST_PUBLICATION_PROVENANCE_TABLE

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -79,6 +80,54 @@ MASTER_QA_COLUMNS = (
 
 EXPECTED_QA_IDS = tuple(f"qa_{index:04d}" for index in range(1, EXPECTED_ROW_COUNT + 1))
 
+QA_HEADER_ALIASES = {
+    "번호": "row_number",
+    "no": "row_number",
+    "no.": "row_number",
+    "id": "row_number",
+    "질문 유형": "question_type",
+    "질문유형": "question_type",
+    "문의 유형": "question_type",
+    "문의유형": "question_type",
+    "question type": "question_type",
+    "question_type": "question_type",
+    "시장": "market_name",
+    "시장명": "market_name",
+    "대상 시장": "market_name",
+    "market": "market_name",
+    "market name": "market_name",
+    "market_name": "market_name",
+    "질문": "question_text",
+    "문의": "question_text",
+    "question": "question_text",
+    "question text": "question_text",
+    "question_text": "question_text",
+    "답변": "answer_text",
+    "answer": "answer_text",
+    "answer text": "answer_text",
+    "answer_text": "answer_text",
+    "비고": "source_remark",
+    "마케팅 비고": "source_remark",
+    "remark": "source_remark",
+    "source remark": "source_remark",
+    "source_remark": "source_remark",
+}
+REQUIRED_QA_FIELDS = (
+    "question_type",
+    "market_name",
+    "question_text",
+    "answer_text",
+    "source_remark",
+)
+QA_RAW_FIELD_ORDER = {
+    "row_number": 0,
+    "question_type": 1,
+    "market_name": 2,
+    "question_text": 3,
+    "answer_text": 4,
+    "source_remark": 5,
+}
+
 MARKET_NAME_ALIASES = {
     "공통": None,
     "라베칸": "strategy_001",
@@ -134,6 +183,73 @@ def blank_record() -> dict[str, Any]:
     return {column: None for column in MASTER_QA_COLUMNS}
 
 
+def _normalize_qa_header(value: object) -> str | None:
+    if value is None:
+        return None
+    text = unicodedata.normalize("NFC", str(value)).strip()
+    text = text.removeprefix("\ufeff").strip().casefold()
+    return text or None
+
+
+def _qa_field_positions(headers: list[Any]) -> dict[str, int]:
+    normalized_positions: dict[str, int] = {}
+    field_positions: dict[str, int] = {}
+    for position, header in enumerate(headers):
+        normalized = _normalize_qa_header(header)
+        if normalized is None:
+            continue
+        if normalized in normalized_positions:
+            raise ValueError(
+                "normalized header collision: "
+                f"{normalized!r} at columns {normalized_positions[normalized] + 1} "
+                f"and {position + 1}"
+            )
+        normalized_positions[normalized] = position
+
+        field = QA_HEADER_ALIASES.get(normalized)
+        if field is None:
+            continue
+        if field in field_positions:
+            previous = field_positions[field]
+            raise ValueError(
+                "normalized header collision: "
+                f"multiple headers map to {field!r} at columns {previous + 1} "
+                f"and {position + 1}"
+            )
+        field_positions[field] = position
+
+    missing = [field for field in REQUIRED_QA_FIELDS if field not in field_positions]
+    if missing:
+        raise ValueError(f"required Q&A headers missing: {missing}")
+    return field_positions
+
+
+def _qa_value(values: tuple[Any, ...], positions: dict[str, int], field: str) -> Any:
+    position = positions[field]
+    return values[position] if position < len(values) else None
+
+
+def _canonical_raw_payload(
+    headers: list[Any],
+    values: tuple[Any, ...],
+    source_row_id: int,
+) -> dict[str, Any]:
+    width = max(len(headers), len(values))
+    padded_headers = headers + [None] * (width - len(headers))
+    padded_values = list(values) + [None] * (width - len(values))
+    cells = list(zip(padded_headers, padded_values))
+
+    def order_key(cell: tuple[Any, Any]) -> tuple[int, str]:
+        normalized = _normalize_qa_header(cell[0])
+        field = QA_HEADER_ALIASES.get(normalized or "")
+        return QA_RAW_FIELD_ORDER.get(field or "", 100), normalized or ""
+
+    cells.sort(key=order_key)
+    ordered_headers = [header for header, _ in cells]
+    ordered_values = [value for _, value in cells]
+    return build_raw_row_payload(ordered_headers, ordered_values, source_row_id=source_row_id)
+
+
 def load_qa_records(
     xlsx_path: Path,
     ingested_at: str | None = None,
@@ -153,6 +269,7 @@ def load_qa_records(
         headers = list(
             next(ws.iter_rows(min_row=HEADER_ROW, max_row=HEADER_ROW, values_only=True))
         )
+        field_positions = _qa_field_positions(headers)
         timestamp = ingested_at or utc_now_text()
         stats = QALoadStats()
         records: list[dict[str, Any]] = []
@@ -168,12 +285,12 @@ def load_qa_records(
                 continue
 
             qa_index += 1
-            raw_payload = build_raw_row_payload(headers, values, source_row_id=source_row_id)
-            question_type = values[1] if len(values) > 1 else None
-            market_name = values[2] if len(values) > 2 else None
-            question_text = values[3] if len(values) > 3 else None
-            answer_text = values[4] if len(values) > 4 else None
-            source_remark = values[5] if len(values) > 5 else None
+            raw_payload = _canonical_raw_payload(headers, values, source_row_id)
+            question_type = _qa_value(values, field_positions, "question_type")
+            market_name = _qa_value(values, field_positions, "market_name")
+            question_text = _qa_value(values, field_positions, "question_text")
+            answer_text = _qa_value(values, field_positions, "answer_text")
+            source_remark = _qa_value(values, field_positions, "source_remark")
             actions = {
                 "question_type": question_type,
                 "market_name": market_name,

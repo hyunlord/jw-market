@@ -233,11 +233,18 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     monkeypatch.setenv("MARIADB_HOST", "db.example")
     monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
     monkeypatch.setenv("INGEST_REHEARSAL_ROOT", "/tmp/ingest-rehearsal")
+    monkeypatch.setenv("BUILD_GIT_SHA", "a" * 40)
+    monkeypatch.setenv(
+        "INGEST_JOB_IMAGE",
+        "registry.example/jw-pipeline@sha256:" + ("b" * 64),
+    )
     body = render_job(category="ubist", manifest_sha=SHA, manifest_path="_manifests/m.json", namespace="llmops")
     env = body["spec"]["template"]["spec"]["containers"][0]["env"]
     by_name = {e["name"]: e for e in env}
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
+    assert by_name["BUILD_GIT_SHA"]["value"] == "a" * 40
+    assert by_name["INGEST_JOB_IMAGE"]["value"].endswith("b" * 64)
     assert by_name["MARIADB_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "jw-mart-d2-writer"
     assert by_name["INGEST_S3_BUCKET"]["valueFrom"]["secretKeyRef"]["key"] == "MINIO_MARKET_BUCKET"
     assert by_name["MINIO_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-ingest-hook-minio"

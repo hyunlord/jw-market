@@ -47,7 +47,7 @@ def test_v1_happy_path_records_stages_in_code_order(service, bucket, tmp_path):
     by_stage = {e.stage: e for e in events}
     # order is the declared code order
     assert [e.stage for e in events] == [
-        "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
+        "g3", "load", "load_verify", "production_load", "mart_build", "sigma", "post_gate",
         "mart_publish", "refresh", "signal",
     ]
     assert by_stage["g3"].status == STAGE_COMPLETE
@@ -55,6 +55,7 @@ def test_v1_happy_path_records_stages_in_code_order(service, bucket, tmp_path):
     assert by_stage["post_gate"].status == STAGE_COMPLETE
     # rehearsal skips these three with a reason (V-4)
     assert by_stage["load_verify"].status == STAGE_SKIPPED
+    assert by_stage["production_load"].status == STAGE_SKIPPED
     assert by_stage["mart_build"].status == STAGE_SKIPPED
     assert by_stage["sigma"].status == STAGE_SKIPPED
     assert by_stage["mart_publish"].status == STAGE_SKIPPED
@@ -83,7 +84,7 @@ def test_v1_stages_exposed_on_status_api(service, client, bucket, tmp_path):
     ).json()
     stage_names = [s["stage"] for s in status["stages"]]
     assert stage_names == [
-        "job_submit", "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
+        "job_submit", "g3", "load", "load_verify", "production_load", "mart_build", "sigma", "post_gate",
         "mart_publish", "refresh", "signal",
     ]
     assert status["current_stage"] is None  # completed run has no in-flight stage

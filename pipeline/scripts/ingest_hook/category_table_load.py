@@ -208,7 +208,12 @@ def _load_mi_master(request: LoadRequest) -> LoadOutcome:
     )
     before = {table: _count_rows_if_present(request.target_db, table) for table in tables}
     summary = master_market_group_load.load(
-        request.sources[0], schema=request.target_db, save=True
+        request.sources[0],
+        schema=request.target_db,
+        save=True,
+        connection_factory=lambda: ingest_config.open_mart_connection(
+            request.target_db
+        ),
     )
     rebuilt = {
         master_market_group_load.MARKET_DEFINITION_TABLE: summary.market_definition,

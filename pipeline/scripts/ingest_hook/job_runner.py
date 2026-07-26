@@ -69,6 +69,7 @@ class _StageTracker:
         "g3",
         "load",
         "load_verify",
+        "production_load",
         "mart_build",
         "sigma",
         "post_gate",
@@ -99,11 +100,11 @@ class _StageTracker:
         self._record(name, "running", started=_stamp())
         print(f"[stage] {name} start({self._seq[name]}/{self._n})")
 
-    def done(self, rc: int = 0) -> None:
+    def done(self, rc: int = 0, *, reason: str | None = None) -> None:
         if self._current is None:
             return
         name, dur = self._current, self._elapsed_ms()
-        self._record(name, "complete", finished=_stamp(), duration_ms=dur)
+        self._record(name, "complete", reason=reason, finished=_stamp(), duration_ms=dur)
         print(f"[stage] {name} end rc={rc}")
         self._current = None
         self._t0 = None
@@ -341,6 +342,108 @@ def _emit_completion_signal(
     print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")
 
 
+def publish_completion(
+    category: str,
+    epoch: str,
+    run_id: str,
+    connection_factory=None,
+    dry_run: bool = False,
+    provenance=None,
+):
+    from pipeline.scripts.ingest_hook.publication_signal import (
+        publish_completion as _publish_completion,
+    )
+
+    return _publish_completion(
+        category,
+        epoch,
+        run_id,
+        connection_factory=connection_factory,
+        dry_run=dry_run,
+        provenance=provenance,
+    )
+
+
+def _record_publication_status(
+    *,
+    ledger,
+    identity: tuple[str, str, str],
+    run_id: str,
+    mode: str,
+    rows_loaded: int,
+    publication_result,
+) -> None:
+    ledger.record_signal(
+        *identity,
+        run_id=run_id,
+        event="publication",
+        mode=mode,
+        rows_loaded=rows_loaded,
+        delivery_status=publication_result.status,
+        attempts=1,
+        reason=publication_result.reason,
+        payload=publication_result.as_status_payload(),
+    )
+
+
+def _publication_was_committed(publication_result) -> bool:
+    """Return whether epoch and provenance crossed the durable commit boundary."""
+    return (
+        publication_result.status == "recorded"
+        and publication_result.mart_publication_epoch is not None
+    )
+
+
+def _activate_category_tables(manifest, load_result: dict, run_id: str):
+    """Publish a verified non-UBIST staging manifest to declared target tables."""
+    from pipeline.scripts.ingest_hook import category_activation
+
+    if not category_activation.supports(manifest.category):
+        return None
+    target_dir = load_result.get("target_dir")
+    if target_dir is None:
+        raise RuntimeError(
+            f"category {manifest.category!r} activation has no staging manifest"
+        )
+    return category_activation.activate(
+        manifest.category,
+        Path(target_dir) / "_manifest.json",
+        manifest.epoch,
+        run_id,
+    )
+
+
+def _refresh_category(spec) -> None:
+    """Execute the versioned, category-scoped refresh plan."""
+    from pipeline.scripts.ingest_hook.downstream_refresh import commands
+
+    production_db = os.environ.get("INGEST_LOAD_PRODUCTION_DB", "").strip()
+    prior = {
+        name: os.environ.get(name)
+        for name in ("MARIADB_DATABASE", "DB_NAME")
+    }
+    try:
+        if production_db:
+            os.environ["MARIADB_DATABASE"] = production_db
+            os.environ["DB_NAME"] = production_db
+        for argv in commands(spec):
+            _run_commands("refresh", argv)
+    finally:
+        for name, value in prior.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _restore_category_after_downstream_failure(spec, activation_result) -> None:
+    """Restore published tables and refresh consumers back to the prior state."""
+    from pipeline.scripts.ingest_hook import category_activation
+
+    category_activation.restore(activation_result)
+    _refresh_category(spec)
+
+
 def run(
     manifest_path: Path,
     *,
@@ -386,9 +489,11 @@ def run(
     activation_succeeded = False
     ledger_completed = False
     completion_signal_emitted = False
+    publication_committed = False
     baseline_live_snapshot = None
     baseline_manifest_sha = None
     activation_journal = None
+    category_activation_result = None
     try:
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
@@ -406,6 +511,7 @@ def run(
             table = _rehearsal_load(manifest, input_root, rehearsal_root)
             tracker.done()
             tracker.skip("load_verify", "rehearsal (sqlite staging)")
+            tracker.skip("production_load", "rehearsal (production tables untouched)")
             tracker.skip("mart_build", "rehearsal (mart untouched)")
             tracker.skip("sigma", "rehearsal (mart untouched)")
             conn = sqlite3.connect(str(rehearsal_root / "staging.db"))
@@ -559,6 +665,7 @@ def run(
             staging_verify = load_result["staging_verify"]
             if staging_verify:
                 # Isolated J5 verification: real loader exercised, zero mart write.
+                tracker.skip("production_load", "staging-verify (production tables untouched)")
                 tracker.skip("mart_build", "staging-verify (mart untouched)")
                 tracker.skip("sigma", "staging-verify (mart untouched)")
                 tracker.skip("post_gate", "staging-verify (mart untouched)")
@@ -567,6 +674,24 @@ def run(
                 print("gate=sigma status=skipped reason=staging-verify (mart untouched)")
                 print("phase=refresh status=skipped reason=staging-verify (orchestrator untouched)")
             else:
+                from pipeline.scripts.ingest_hook import category_activation
+
+                if category_activation.supports(manifest.category):
+                    tracker.enter("production_load")
+                    category_activation_result = _activate_category_tables(
+                        manifest, load_result, run_id
+                    )
+                    tracker.done(
+                        reason=(
+                            f"tables={len(category_activation_result.target_tables)}; "
+                            f"published={category_activation_result.published}"
+                        )
+                    )
+                else:
+                    tracker.skip(
+                        "production_load",
+                        "category uses corpus/mart activation instead of table activation",
+                    )
                 # 3) Build an isolated mart from the candidate corpus, then gate it.
                 if mart_activation is not None:
                     from pipeline.scripts.ingest_hook import ubist_mart_activation
@@ -589,13 +714,16 @@ def run(
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
                     tracker.done()
-                elif spec.sigma_source:
+                elif spec.sigma_source and category_activation_result is None:
                     raise RuntimeError("live mart load has no isolated activation plan")
                 else:
-                    tracker.skip("mart_build", "category has no mart activation")
+                    tracker.skip(
+                        "mart_build",
+                        "category uses scoped production tables and downstream refresh",
+                    )
 
                 # 4) Σ/post-gate checks run against the isolated build, never stale live tables.
-                if spec.sigma_source:
+                if spec.sigma_source and mart_activation is not None:
                     from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
 
                     affected = tuple(sorted(report.observed_periods)) or (manifest.epoch,)
@@ -650,8 +778,8 @@ def run(
                     tracker.done()
                     tracker.complete("sigma")  # sigma_check ran inside run_post_gates and passed
                 else:
-                    tracker.skip("sigma", "category has no sigma_source")
-                    tracker.skip("post_gate", "category has no sigma_source")
+                    tracker.skip("sigma", "no isolated mart candidate for this category")
+                    tracker.skip("post_gate", "no isolated mart candidate for this category")
 
                 # 5) Only a gated candidate may replace corpus + serving mart.
                 if mart_activation is not None:
@@ -718,7 +846,10 @@ def run(
                     print(f"phase=mart_publish status=complete tables={len(publish_actions)}")
                     tracker.done()
                 else:
-                    tracker.skip("mart_publish", "category has no mart activation")
+                    tracker.skip(
+                        "mart_publish",
+                        "production table activation already completed atomically",
+                    )
                 tracker.enter("refresh")
                 if activation_journal is not None:
                     ubist_mart_activation.update_activation_journal(
@@ -732,13 +863,68 @@ def run(
                         "phase=refresh mode=shadow status=complete "
                         f"target_db={mart_activation.target_db} counts={counts}"
                     )
-                else:
-                    _run_commands("refresh", spec.refresh_argv)
+                try:
+                    if not (is_shadow and mart_activation is not None):
+                        _refresh_category(spec)
+                    publication_connection = writer_conn
+                    close_publication_connection = False
+                    if publication_connection is None:
+                        publication_connection = config.open_mart_connection()
+                        close_publication_connection = True
+                    try:
+                        from pipeline.scripts.ingest_hook.publication_signal import (
+                            build_provenance,
+                        )
+
+                        provenance = build_provenance(
+                            manifest.files,
+                            file_rows=report.file_rows,
+                            periods=periods or {manifest.epoch},
+                        )
+                        publication_result = publish_completion(
+                            manifest.category,
+                            manifest.epoch,
+                            run_id,
+                            connection_factory=lambda: publication_connection,
+                            dry_run=not callable(
+                                getattr(publication_connection, "cursor", None)
+                            ),
+                            provenance=provenance,
+                        )
+                        publication_committed = _publication_was_committed(
+                            publication_result
+                        )
+                        _record_publication_status(
+                            ledger=ledger,
+                            identity=identity,
+                            run_id=run_id,
+                            mode=mode,
+                            rows_loaded=rows_loaded,
+                            publication_result=publication_result,
+                        )
+                    finally:
+                        if close_publication_connection:
+                            publication_connection.close()
+                except Exception:
+                    if (
+                        category_activation_result is not None
+                        and not publication_committed
+                    ):
+                        _restore_category_after_downstream_failure(
+                            spec, category_activation_result
+                        )
+                    raise
                 if activation_journal is not None:
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "refresh_succeeded"
                     )
-                tracker.done()
+                tracker.done(
+                    reason=(
+                        f"publication_signal={publication_result.status}; "
+                        "mart_publication_epoch="
+                        f"{publication_result.mart_publication_epoch}"
+                    )
+                )
                 if load_result["epoch_rows"] is not None:
                     report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
                 if activation_journal is not None:
@@ -777,6 +963,20 @@ def run(
                 rows_loaded=rows_loaded,
                 periods=periods, started_at=started_at, failure_reason=None,
             )
+        if category_activation_result is not None:
+            try:
+                from pipeline.scripts.ingest_hook import category_activation
+
+                category_activation.finalize(category_activation_result)
+                print(
+                    "phase=production_load cleanup=complete "
+                    f"build_schema={category_activation_result.build_schema}"
+                )
+            except Exception as cleanup_exc:
+                print(
+                    "phase=production_load cleanup=deferred "
+                    f"reason={type(cleanup_exc).__name__}: {cleanup_exc}"
+                )
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
     except PostGateError as exc:
@@ -804,9 +1004,9 @@ def run(
         print(f"result=gate_failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     except (UnknownCategoryError, RuntimeError) as exc:
-        if ledger_completed:
+        if ledger_completed or publication_committed:
             print(
-                f"result=committed_with_postcommit_error reason={type(exc).__name__}: {exc}",
+                f"result=published_with_postcommit_error reason={type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 1
@@ -822,9 +1022,9 @@ def run(
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:  # fail loud while preserving ledger/signal evidence
-        if ledger_completed:
+        if ledger_completed or publication_committed:
             print(
-                f"result=committed_with_postcommit_error reason={type(exc).__name__}: {exc}",
+                f"result=published_with_postcommit_error reason={type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 1
@@ -840,7 +1040,11 @@ def run(
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     finally:
-        if mart_activation is not None and not activation_succeeded:
+        if (
+            mart_activation is not None
+            and not activation_succeeded
+            and not publication_committed
+        ):
             from pipeline.scripts.ingest_hook import ubist_mart_activation
 
             if activation_journal is not None and writer_conn is not None:

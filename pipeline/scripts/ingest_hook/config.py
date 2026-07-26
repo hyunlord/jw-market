@@ -18,12 +18,15 @@ ENV_REHEARSAL_ROOT = "INGEST_REHEARSAL_ROOT"    # set => job_runner isolation mo
 # INGEST_S3_BUCKET (s3_input.ENV_BUCKET): set => submissions read from MinIO/S3
 ENV_LOAD_STAGING_ROOT = "INGEST_LOAD_STAGING_ROOT"  # set => real load -> staging root, mart refresh SKIPPED (isolated verify)
 ENV_LOAD_STAGING_DB = "INGEST_LOAD_STAGING_DB"      # required isolated DB for category table adapters (jw_ingest_*)
+ENV_LOAD_PRODUCTION_DB = "INGEST_LOAD_PRODUCTION_DB"  # explicit serving schema for approved table activation
 ENV_LOAD_SHADOW_ROOT = "INGEST_LOAD_SHADOW_ROOT"    # set => full UBIST gates + isolated mart publish
 ENV_SHADOW_LEDGER_SQLITE = "INGEST_SHADOW_LEDGER_SQLITE"  # shadow-only ledger on the RWX output volume
 ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output root (live parquet root); refresh runs
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
+ENV_PUBLICATION_EPOCH_TABLE = "INGEST_PUBLICATION_EPOCH_TABLE"
+ENV_PUBLICATION_PROVENANCE_TABLE = "INGEST_PUBLICATION_PROVENANCE_TABLE"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -126,7 +129,11 @@ def open_mart_connection(database: str | None = None):
         port=int(os.environ.get("MARIADB_PORT") or os.environ.get("DB_PORT", "3306")),
         user=os.environ.get("MARIADB_USER") or os.environ.get("DB_USER", ""),
         password=os.environ.get("MARIADB_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
-        database=database or resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
+        database=(
+            database
+            or os.environ.get(ENV_LOAD_PRODUCTION_DB, "").strip()
+            or resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME")
+        ),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
     )

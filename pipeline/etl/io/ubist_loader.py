@@ -14,6 +14,7 @@ import json
 import math
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unicodedata
@@ -32,6 +33,7 @@ import pyarrow.parquet as pq
 from pipeline.etl.lib.ops_utils import configure_logging, find_project_root
 from pipeline.etl.lib.storage import get_data_path
 from pipeline.etl.io.source_headers import normalize_source_header
+from pipeline.etl.io.workbook_content import load_workbook_by_content
 
 
 LOGGER = configure_logging(__name__)
@@ -98,6 +100,7 @@ METRIC_COLUMNS = list(METRIC_MAP.values())
 LINEAGE_COLUMNS = ["source_file", "source_folder", "source_sheet", "source_row_no", "ingested_at"]
 STATIC_METADATA_COLUMNS = PATENT_DIMENSIONS
 BUSINESS_GRAIN_COLUMNS = CANONICAL_DIMENSIONS + ["period_yyyymm"]
+UBIST_NATURAL_KEY_COLUMNS = BUSINESS_GRAIN_COLUMNS
 BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + METRIC_COLUMNS
 DEDUP_SORT_COLUMNS = ["source_file", "source_sheet", "source_row_no"]
 DEDUP_METADATA_SORT_COLUMNS = ["_static_meta_score"] + DEDUP_SORT_COLUMNS
@@ -355,6 +358,59 @@ def row_has_identifier(base: dict[str, object]) -> bool:
     return any(base.get(col) for col in ("약품코드", "제품", "성분", "브랜드"))
 
 
+def normalized_natural_key(row: dict[str, object]) -> tuple[str, ...]:
+    values: list[str] = []
+    for column in UBIST_NATURAL_KEY_COLUMNS:
+        value = _dedup_key_value(row.get(column))
+        if value is None:
+            source = row.get("source_file") or "<unknown>"
+            sheet = row.get("source_sheet") or "<unknown>"
+            row_no = row.get("source_row_no") or "<unknown>"
+            raise RuntimeError(
+                f"missing UBIST natural key column {column!r} in {source} sheet={sheet} row={row_no}"
+            )
+        values.append(str(value))
+    return tuple(values)
+
+
+def insert_source_natural_key(
+    connection: sqlite3.Connection,
+    *,
+    key: tuple[str, ...],
+    source_file: str,
+    source_sheet: str,
+    source_row_no: int,
+) -> None:
+    encoded_key = json.dumps(key, ensure_ascii=False, separators=(",", ":"))
+    try:
+        connection.execute(
+            "INSERT INTO natural_keys (key, source_file, source_sheet, source_row_no) VALUES (?, ?, ?, ?)",
+            (encoded_key, source_file, source_sheet, source_row_no),
+        )
+    except sqlite3.IntegrityError as exc:
+        first = connection.execute(
+            "SELECT source_sheet, source_row_no FROM natural_keys WHERE key = ?",
+            (encoded_key,),
+        ).fetchone()
+        first_sheet, first_row = first if first else ("<unknown>", "<unknown>")
+        raise RuntimeError(
+            "duplicate UBIST natural key in "
+            f"{source_file}: first sheet={first_sheet} row={first_row}; "
+            f"duplicate sheet={source_sheet} row={source_row_no}"
+        ) from exc
+
+
+def validate_source_natural_key(connection: sqlite3.Connection, row: dict[str, object]) -> None:
+    key = normalized_natural_key(row)
+    insert_source_natural_key(
+        connection,
+        key=key,
+        source_file=str(row["source_file"]),
+        source_sheet=str(row["source_sheet"]),
+        source_row_no=int(row["source_row_no"]),
+    )
+
+
 def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
     """Build a source-derived Generic lookup from workbooks that include it.
 
@@ -367,7 +423,7 @@ def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     rows_seen = 0
     for xlsx_path in xlsx_paths:
-        workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        workbook = load_workbook_by_content(xlsx_path, read_only=True, data_only=True)
         try:
             for sheet_name in workbook.sheetnames:
                 worksheet = workbook[sheet_name]
@@ -408,47 +464,70 @@ def fill_generic_from_lookup(base: dict[str, object], generic_lookup: dict[str, 
             return
 
 
-def iter_xlsx_rows(xlsx_path: Path, generic_lookup: dict[str, str] | None = None):
-    workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-    try:
-        for sheet_name in workbook.sheetnames:
-            worksheet = workbook[sheet_name]
-            rows_iter = worksheet.iter_rows(values_only=True)
-            try:
-                header1 = next(rows_iter)
-                header2 = next(rows_iter)
-            except StopIteration:
-                continue
-
-            mapping = classify_sheet(sheet_name, header1, header2)
-            loaded_at = now_kst()
-
-            for row_no, row in enumerate(rows_iter, start=3):
-                base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
-                if not row_has_identifier(base):
+def iter_xlsx_rows(
+    xlsx_path: Path,
+    generic_lookup: dict[str, str] | None = None,
+    *,
+    validate_natural_keys: bool = True,
+):
+    with tempfile.TemporaryDirectory(prefix="ubist-source-key-") as work_dir_name:
+        key_db_path = Path(work_dir_name) / "natural_keys.sqlite"
+        key_connection = sqlite3.connect(str(key_db_path))
+        key_connection.execute(
+            """
+            CREATE TABLE natural_keys (
+                key TEXT PRIMARY KEY,
+                source_file TEXT NOT NULL,
+                source_sheet TEXT NOT NULL,
+                source_row_no INTEGER NOT NULL
+            )
+            """
+        )
+        workbook = load_workbook_by_content(xlsx_path, read_only=True, data_only=True)
+        try:
+            for sheet_name in workbook.sheetnames:
+                worksheet = workbook[sheet_name]
+                rows_iter = worksheet.iter_rows(values_only=True)
+                try:
+                    header1 = next(rows_iter)
+                    header2 = next(rows_iter)
+                except StopIteration:
                     continue
-                fill_generic_from_lookup(base, generic_lookup)
-                base.update(
-                    {
-                        "source_file": xlsx_path.name,
-                        "source_folder": source_folder_for(xlsx_path),
-                        "source_sheet": sheet_name,
-                        "source_row_no": row_no,
-                        "ingested_at": loaded_at,
-                    }
-                )
 
-                period_metrics: dict[str, dict[str, float | None]] = defaultdict(dict)
-                for idx, _, metric, period in mapping.metric_cols:
-                    period_metrics[period][metric] = to_number_or_none(row[idx] if idx < len(row) else None)
+                mapping = classify_sheet(sheet_name, header1, header2)
+                loaded_at = now_kst()
 
-                for period, metrics in period_metrics.items():
-                    output = dict(base)
-                    output.update(metrics)
-                    output["period_yyyymm"] = period
-                    yield period, output
-    finally:
-        workbook.close()
+                for row_no, row in enumerate(rows_iter, start=3):
+                    base = {canonical: to_string_or_none(row[idx] if idx < len(row) else None) for idx, _, canonical in mapping.dim_cols}
+                    if not row_has_identifier(base):
+                        continue
+                    fill_generic_from_lookup(base, generic_lookup)
+                    base.update(
+                        {
+                            "source_file": xlsx_path.name,
+                            "source_folder": source_folder_for(xlsx_path),
+                            "source_sheet": sheet_name,
+                            "source_row_no": row_no,
+                            "ingested_at": loaded_at,
+                        }
+                    )
+
+                    period_metrics: dict[str, dict[str, float | None]] = defaultdict(dict)
+                    for idx, _, metric, period in mapping.metric_cols:
+                        period_metrics[period][metric] = to_number_or_none(row[idx] if idx < len(row) else None)
+
+                    for period, metrics in period_metrics.items():
+                        output = dict(base)
+                        output.update(metrics)
+                        output["period_yyyymm"] = period
+                        if validate_natural_keys:
+                            validate_source_natural_key(key_connection, output)
+                        yield period, output
+        finally:
+            try:
+                workbook.close()
+            finally:
+                key_connection.close()
 
 
 def prepare_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -947,7 +1026,7 @@ def dry_run(xlsx_paths: list[Path], limit_rows: int = 3) -> None:
     print("# UBIST Parquet Loader Dry Run\n")
     for xlsx_path in xlsx_paths:
         print(f"## Source: {xlsx_path}\n")
-        workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        workbook = load_workbook_by_content(xlsx_path, read_only=True, data_only=True)
         for sheet_name in workbook.sheetnames:
             worksheet = workbook[sheet_name]
             rows_iter = worksheet.iter_rows(values_only=True)
@@ -996,7 +1075,7 @@ def manifest_source_files(manifest: dict[str, object]) -> set[str]:
 
 def summarize_source(path: Path) -> SourceSummary:
     periods: set[str] = set()
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    workbook = load_workbook_by_content(path, read_only=True, data_only=True)
     try:
         for sheet_name in workbook.sheetnames:
             worksheet = workbook[sheet_name]
@@ -1024,13 +1103,17 @@ def existing_partition_for(target: Path, period: str) -> Path:
 
 
 def source_period_frame(path: Path, period: str) -> pd.DataFrame:
-    rows = [row for row_period, row in iter_xlsx_rows(path) if row_period == period]
+    rows = [
+        row
+        for row_period, row in iter_xlsx_rows(path, validate_natural_keys=False)
+        if row_period == period
+    ]
     return prepare_frame(rows)
 
 
 def source_period_frames(path: Path, periods: set[str]) -> dict[str, pd.DataFrame]:
     rows_by_period: dict[str, list[dict[str, object]]] = {period: [] for period in periods}
-    for row_period, row in iter_xlsx_rows(path):
+    for row_period, row in iter_xlsx_rows(path, validate_natural_keys=False):
         if row_period in rows_by_period:
             rows_by_period[row_period].append(row)
     return {period: prepare_frame(rows) for period, rows in rows_by_period.items()}

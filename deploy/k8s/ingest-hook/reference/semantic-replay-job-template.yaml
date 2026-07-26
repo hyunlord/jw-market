@@ -1,0 +1,64 @@
+# Reference template for provenance replay verification.
+#
+# Render the image digest, roots, and source-specific business columns before
+# submission. This verifier is intentionally separate from jw-ingest-hook: the
+# 512Mi trigger only validates manifests and launches Jobs.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: jw-ingest-semantic-replay-
+  namespace: llmops
+  labels:
+    app: jw-ingest-semantic-replay
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 259200
+  template:
+    metadata:
+      labels:
+        app: jw-ingest-semantic-replay
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verifier
+          image: <immutable-image@sha256>
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - pipeline.scripts.ingest_hook.semantic_replay
+          args:
+            - --expected-root
+            - <expected-parquet-root>
+            - --actual-root
+            - <rebuilt-parquet-root>
+            - --business-column
+            - <business-column-1>
+            - --business-column
+            - <business-column-2>
+            - --memory-limit
+            - 768MB
+            - --threads
+            - "1"
+            - --temp-directory
+            - /replay-tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: market-output
+              mountPath: /market-output
+              readOnly: true
+            - name: replay-tmp
+              mountPath: /replay-tmp
+      volumes:
+        - name: market-output
+          persistentVolumeClaim:
+            claimName: llmops-market-output
+        - name: replay-tmp
+          emptyDir: {}

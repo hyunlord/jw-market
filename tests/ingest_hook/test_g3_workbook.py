@@ -8,6 +8,8 @@ parser (ubist_loader) so G3 and the loader share one contract.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 
 import pytest
@@ -92,3 +94,30 @@ def test_good_workbook_is_fast(bucket):
     start = time.monotonic()
     _validate(bucket, manifest_path)
     assert time.monotonic() - start < 5.0
+
+
+def test_workbook_content_is_independent_of_extension(bucket):
+    manifest_path = write_ubist_workbook_submission(bucket)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    original = bucket / manifest["files"][0]["path"]
+    renamed = original.with_suffix(".payload")
+    original.rename(renamed)
+    manifest["files"][0]["path"] = renamed.relative_to(bucket).as_posix()
+    manifest["files"][0]["sha256"] = hashlib.sha256(renamed.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = _validate(bucket, manifest_path)
+
+    assert report.category == "ubist"
+
+
+def test_fake_xlsx_container_is_rejected(bucket):
+    manifest_path = write_ubist_workbook_submission(bucket)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    workbook = bucket / manifest["files"][0]["path"]
+    workbook.write_text("period,brand,value\n2026-07,Drug A,1\n", encoding="utf-8")
+    manifest["files"][0]["sha256"] = hashlib.sha256(workbook.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(G3Error, match="does not contain an Office workbook"):
+        _validate(bucket, manifest_path)

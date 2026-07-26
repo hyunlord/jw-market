@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import openpyxl
-
+from pipeline.scripts.ingest_hook.source_fingerprint import open_workbook_by_content, single_matching_sheet
 from pipeline.scripts.etl.brand_activity.km_core import (
     CellValue,
     KeywordEvent,
@@ -13,7 +12,6 @@ from pipeline.scripts.etl.brand_activity.km_core import (
     normalize_spaces,
     normalize_text,
     parse_period_ym,
-    read_header_row,
     row_is_empty,
     source_sha256,
 )
@@ -48,16 +46,25 @@ def _cell(values: tuple[CellValue, ...], index: int) -> str:
 
 def read_keyword_events(workbook_path: Path) -> list[KeywordEvent]:
     """Read `Keywords` rows exactly once each, preserving duplicate events."""
-    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+    candidate = single_matching_sheet(workbook_path, "iqvia_csd_keyword")
+    workbook = open_workbook_by_content(workbook_path)
     try:
-        sheet = workbook["Keywords"]
-        headers = read_header_row(sheet, max_col=40)
+        sheet = workbook[candidate.sheet_name]
+        header_values = next(
+            sheet.iter_rows(
+                min_row=candidate.header_row_no,
+                max_row=candidate.header_row_no,
+                max_col=40,
+                values_only=True,
+            )
+        )
+        headers = [normalize_spaces(normalize_text(value)) for value in header_values]
         indexes = header_index(headers, KEYWORD_HEADERS)
         workbook_hash = source_sha256(workbook_path)
         rows: list[KeywordEvent] = []
         for source_row_no, values in enumerate(
-            sheet.iter_rows(min_row=2, max_col=len(headers), values_only=True),
-            start=2,
+            sheet.iter_rows(min_row=candidate.header_row_no + 1, max_col=len(headers), values_only=True),
+            start=candidate.header_row_no + 1,
         ):
             if row_is_empty(values):
                 continue
@@ -81,7 +88,7 @@ def read_keyword_events(workbook_path: Path) -> list[KeywordEvent]:
                     what_other_materials=_cell(values, indexes["WHAT OTHER MATERIALS"]),
                     other_comments=_cell(values, indexes["OTHER COMMENTS"]),
                     source_file=workbook_path.name,
-                    source_sheet="Keywords",
+                    source_sheet=candidate.sheet_name,
                     source_row_no=source_row_no,
                     source_file_sha256=workbook_hash,
                 )

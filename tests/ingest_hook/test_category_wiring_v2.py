@@ -168,26 +168,16 @@ def test_v1_new_categories_use_the_table_loader_contract(
     assert "pipeline.scripts.ingest_hook.category_table_load" in spec.load_argv
     assert spec.load_verify == "table_manifest"
     assert spec.load_batch_files is True
-    assert spec.production_load_supported is False
+    assert spec.production_load_supported is True
 
 
 @pytest.mark.parametrize(
     "category", ["iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword", "mi_master"]
 )
-def test_staging_artifact_loader_fails_closed_in_production(
-    tmp_path, monkeypatch, category
-):
-    workbook = tmp_path / f"{category}.xlsx"
-    {
-        "iqvia_nsa": _nsa,
-        "iqvia_csd_channel": _csd,
-        "iqvia_csd_keyword": _keyword,
-        "mi_master": _mi_master,
-    }[category](workbook)
-    epoch = "2026-Q1" if category == "iqvia_nsa" else "2026-03"
-    manifest = load_manifest(_manifest(tmp_path, category, workbook, epoch, None))
-    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
-    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "production-root"))
+def test_table_loaders_are_enabled_only_with_a_bounded_activation_contract(category):
+    from pipeline.scripts.ingest_hook import category_activation
 
-    with pytest.raises(RuntimeError, match="refusing production completion"):
-        job_runner._real_load(manifest, resolve_category(category), tmp_path)
+    spec = resolve_category(category)
+
+    assert spec.production_load_supported is True
+    assert category_activation.supports(category) is True

@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, TypeVar
+from typing import Any, Callable, Final, TypeVar
 
 import pymysql
 
@@ -66,7 +66,14 @@ class MarketGroupLoadError(RuntimeError):
     """Raised when MI Master market-group loading would violate the contract."""
 
 
-def load(xlsx_path: Path, *, schema: str = SCHEMA, save: bool = True, ingested_at: str | None = None) -> LoadSummary:
+def load(
+    xlsx_path: Path,
+    *,
+    schema: str = SCHEMA,
+    save: bool = True,
+    ingested_at: str | None = None,
+    connection_factory: Callable[[], Any] | None = None,
+) -> LoadSummary:
     """Build MI Master records and optionally replace the isolated stage tables."""
     safe_schema = _validated_schema(schema)
     stable_ingested_at = ingested_at or _source_ingested_at(xlsx_path)
@@ -85,7 +92,12 @@ def load(xlsx_path: Path, *, schema: str = SCHEMA, save: bool = True, ingested_a
     if len(mapping_records) != EXPECTED_MAPPING_ROW_COUNT:
         raise MarketGroupLoadError(f"mapping row count mismatch: expected {EXPECTED_MAPPING_ROW_COUNT}, got {len(mapping_records)}")
     if save:
-        _replace_tables(safe_schema, market_definition_rows, mapping_records)
+        _replace_tables(
+            safe_schema,
+            market_definition_rows,
+            mapping_records,
+            connection_factory=connection_factory,
+        )
     return LoadSummary(
         schema=safe_schema,
         market_definition=len(market_definition_rows),
@@ -94,9 +106,19 @@ def load(xlsx_path: Path, *, schema: str = SCHEMA, save: bool = True, ingested_a
     )
 
 
-def _replace_tables(schema: str, market_definition_rows: list[dict[str, Any]], mapping_records: list[dict[str, Any]]) -> None:
+def _replace_tables(
+    schema: str,
+    market_definition_rows: list[dict[str, Any]],
+    mapping_records: list[dict[str, Any]],
+    *,
+    connection_factory: Callable[[], Any] | None = None,
+) -> None:
     """Create and replace only the two MI Master stage tables."""
-    connection = connect_mariadb(read_env_file())
+    connection = (
+        connection_factory()
+        if connection_factory is not None
+        else connect_mariadb(read_env_file())
+    )
     try:
         with connection.cursor() as cursor:
             cursor.execute("START TRANSACTION")

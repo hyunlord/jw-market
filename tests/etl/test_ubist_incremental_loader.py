@@ -129,7 +129,10 @@ class _ReadOnlyWorkbook:
 
 def test_generic_lookup_closes_each_read_only_workbook(monkeypatch, tmp_path):
     workbook = _ReadOnlyWorkbook()
-    monkeypatch.setattr(openpyxl, "load_workbook", lambda *_args, **_kwargs: workbook)
+    monkeypatch.setattr(
+        "pipeline.etl.io.ubist_loader.load_workbook_by_content",
+        lambda *_args, **_kwargs: workbook,
+    )
 
     lookup = build_generic_lookup([tmp_path / "source.xlsx"])
 
@@ -139,9 +142,12 @@ def test_generic_lookup_closes_each_read_only_workbook(monkeypatch, tmp_path):
 
 def test_row_iterator_closes_read_only_workbook_after_full_consumption(monkeypatch, tmp_path):
     workbook = _ReadOnlyWorkbook()
-    monkeypatch.setattr(openpyxl, "load_workbook", lambda *_args, **_kwargs: workbook)
+    monkeypatch.setattr(
+        "pipeline.etl.io.ubist_loader.load_workbook_by_content",
+        lambda *_args, **_kwargs: workbook,
+    )
 
-    rows = list(iter_xlsx_rows(tmp_path / "source.xlsx"))
+    rows = list(iter_xlsx_rows(tmp_path / "source.xlsx", validate_natural_keys=False))
 
     assert len(rows) == 1
     assert workbook.closed is True
@@ -149,8 +155,11 @@ def test_row_iterator_closes_read_only_workbook_after_full_consumption(monkeypat
 
 def test_row_iterator_closes_read_only_workbook_when_consumer_stops_early(monkeypatch, tmp_path):
     workbook = _ReadOnlyWorkbook()
-    monkeypatch.setattr(openpyxl, "load_workbook", lambda *_args, **_kwargs: workbook)
-    rows = iter_xlsx_rows(tmp_path / "source.xlsx")
+    monkeypatch.setattr(
+        "pipeline.etl.io.ubist_loader.load_workbook_by_content",
+        lambda *_args, **_kwargs: workbook,
+    )
+    rows = iter_xlsx_rows(tmp_path / "source.xlsx", validate_natural_keys=False)
 
     next(rows)
     rows.close()

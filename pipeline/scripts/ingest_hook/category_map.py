@@ -63,8 +63,8 @@ class CategorySpec:
     # True when all files must be passed to one loader invocation so its row
     # counts describe the submission atomically rather than one workbook.
     load_batch_files: bool = False
-    # New table adapters are deliberately staging-only until a separate PL gate
-    # provisions production schemas and enables mart refresh.
+    # Production-capable table adapters still require category_activation's
+    # explicit target-schema and approval gates before they can publish.
     production_load_supported: bool = True
 
 
@@ -109,7 +109,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         sigma_source="iqvia_nsa", load_input_flag="--file",
         load_target_flag="--target-dir", load_epoch_flag="--epoch",
         load_verify="table_manifest", workbook_reader="iqvia_nsa",
-        load_batch_files=True, production_load_supported=False,
+        load_batch_files=True, production_load_supported=True,
     ),
     CategorySpec(
         key="iqvia_csd_channel", description="IQVIA CSD channel dynamics workbook",
@@ -118,7 +118,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_channel", load_batch_files=True,
-        production_load_supported=False,
+        production_load_supported=True,
     ),
     CategorySpec(
         key="iqvia_csd_keyword", description="IQVIA CSD keyword workbook",
@@ -127,7 +127,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_keyword", load_batch_files=True,
-        production_load_supported=False,
+        production_load_supported=True,
     ),
     CategorySpec(
         key="mi_master", description="MI Master workbook resubmission",
@@ -136,7 +136,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="mi_master",
-        load_batch_files=True, production_load_supported=False,
+        load_batch_files=True, production_load_supported=True,
     ),
     CategorySpec(
         key="skeleton",

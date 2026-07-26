@@ -401,6 +401,8 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
     monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
     monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(target_root))
     monkeypatch.setenv(ubist_mart_activation.ENV_PROMOTION_APPROVED, "1")
+    monkeypatch.setenv("BUILD_GIT_SHA", "1234567")
+    monkeypatch.setenv("INGEST_JOB_IMAGE", "registry/ingest@sha256:" + ("a" * 64))
     order: list[str] = []
 
     class Connection:
@@ -515,6 +517,8 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     manifest_path = write_submission(bucket)
     manifest = load_manifest(manifest_path)
     shadow_root = tmp_path / "market-output" / "shadow"
+    monkeypatch.setenv("BUILD_GIT_SHA", "1234567")
+    monkeypatch.setenv("INGEST_JOB_IMAGE", "registry/ingest@sha256:" + ("a" * 64))
     live_root = shadow_root / "ubist"
     live_root.mkdir(parents=True)
     (live_root / "_manifest.json").write_text(

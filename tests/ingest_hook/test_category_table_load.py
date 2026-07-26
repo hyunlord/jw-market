@@ -105,6 +105,51 @@ def test_mi_master_requires_exactly_one_workbook(
         category_table_load.load("mi_master", [], tmp_path / "target", "2026-03")
 
 
+def test_mi_master_uses_ingest_writer_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "MI Master.xlsx"
+    source.touch()
+    connection = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        category_table_load,
+        "_count_rows_if_present",
+        lambda database, table: 1,
+    )
+    monkeypatch.setattr(
+        category_table_load,
+        "_count_rows",
+        lambda database, table: 1,
+    )
+    monkeypatch.setattr(
+        category_table_load.ingest_config,
+        "open_mart_connection",
+        lambda database: connection,
+    )
+
+    from pipeline.scripts.etl.brand_activity import master_market_group_load
+
+    def fake_load(path, *, schema, save, connection_factory):
+        captured["connection"] = connection_factory()
+        return master_market_group_load.LoadSummary(schema, 1, 1, True)
+
+    monkeypatch.setattr(master_market_group_load, "load", fake_load)
+    request = category_table_load.LoadRequest(
+        category="mi_master",
+        sources=(source,),
+        target_dir=tmp_path,
+        epoch="2026-03",
+        target_db="jw_ingest_test",
+    )
+
+    result = category_table_load._load_mi_master(request)
+
+    assert captured["connection"] is connection
+    assert result.primary.rows_after == 1
+
+
 def test_unknown_category_fails_closed(tmp_path: Path) -> None:
     source = tmp_path / "source.xlsx"
     source.write_bytes(b"fixture")

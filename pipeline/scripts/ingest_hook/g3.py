@@ -14,16 +14,13 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pipeline.etl.io.source_headers import normalize_source_header
 from pipeline.scripts.ingest_hook.category_map import CategorySpec
 from pipeline.scripts.ingest_hook.contract import Manifest, ManifestFile
-
-_CSV_SUFFIXES = {".csv"}
-_WORKBOOK_SUFFIXES = {".xlsx"}
-
 
 class G3Error(ValueError):
     """Structural validation failed; the load phase must not start."""
@@ -101,10 +98,23 @@ def _validate_workbook(
     failures: list[str],
     report: G3Report,
 ) -> None:
-    """G4 — validate a wide workbook with the loader's own parser (never a
-    G3-local copy) so G3 and the loader cannot disagree on what a valid workbook
-    is (STOP ③: one contract, not two). Only the two header rows per sheet are
-    read — no data rows are streamed — so an 80MB file is judged in seconds."""
+    """Validate content classification, then run exactly one canonical parser.
+
+    Candidate selection is header-bounded. Full row validation is performed
+    only by the selected loader contract, avoiding five competing full parses.
+    """
+    from pipeline.scripts.ingest_hook.workbook_contracts import classify
+
+    try:
+        detected = classify(path, epoch)
+    except Exception as exc:
+        failures.append(f"{entry.path}: workbook category detection failed ({exc})")
+        return
+    if detected != spec.key:
+        failures.append(
+            f"{entry.path}: internal structure is {detected}, not declared category {spec.key}"
+        )
+        return
     if spec.workbook_reader == "ubist":
         _validate_ubist_workbook(path, entry, epoch, failures, report)
         return
@@ -212,8 +222,7 @@ def validate(
             failures.append(f"{entry.path}: sha256 mismatch (manifest {entry.sha256[:12]}…, actual {actual_sha[:12]}…)")
             continue
 
-        suffix = path.suffix.lower()
-        if suffix in _WORKBOOK_SUFFIXES:
+        if zipfile.is_zipfile(path):
             if spec.workbook_reader:
                 # G4: validate the workbook structure with the loader's own parser
                 # so a valid-sha but structurally-broken workbook cannot pass.
@@ -227,12 +236,19 @@ def validate(
                 )
                 _check_declared_period(entry, manifest.epoch, failures)
             continue
-        if suffix not in _CSV_SUFFIXES:
-            failures.append(f"{entry.path}: unsupported suffix {suffix!r} (contract expects .csv/.xlsx)")
-            continue
 
-        # 2) schema
-        header, row_count = _read_csv_header_and_count(path)
+        # Non-ZIP sources are parsed as delimited text by content. A renamed
+        # workbook or a fake .xlsx therefore cannot steer category selection.
+        if path.suffix.casefold() in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            failures.append(
+                f"{entry.path}: workbook extension does not contain an Office workbook"
+            )
+            continue
+        try:
+            header, row_count = _read_csv_header_and_count(path)
+        except (OSError, UnicodeError, csv.Error) as exc:
+            failures.append(f"{entry.path}: unsupported or corrupt file content ({exc})")
+            continue
         missing = [column for column in spec.required_columns if normalize_source_header(column) not in header]
         if missing:
             failures.append(f"{entry.path}: missing required columns {missing} (header={header})")

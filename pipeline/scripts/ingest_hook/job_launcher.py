@@ -31,6 +31,7 @@ _PASSTHROUGH_VALUES = (
     "INGEST_REHEARSAL_ROOT",  # C-phase isolation: staging stays pod-local
     "INGEST_LOAD_STAGING_ROOT",  # J5 real-loader staging output (mart refresh skipped)
     "INGEST_LOAD_STAGING_DB",    # isolated jw_ingest_* target for table adapters
+    "INGEST_LOAD_PRODUCTION_DB", # approved table-loader activation target
     "INGEST_LOAD_SHADOW_ROOT",   # full gates with isolated corpus + mart only
     "INGEST_SHADOW_LEDGER_SQLITE",
     "INGEST_SHADOW_TARGET_DB",
@@ -44,10 +45,20 @@ _PASSTHROUGH_VALUES = (
     "INGEST_MART_SOURCE_DB",
     "INGEST_MART_TARGET_DB",
     "INGEST_MART_BUILD_PREFIX",
+    "INGEST_CATEGORY_ACTIVATION_APPROVED",
+    "INGEST_CATEGORY_ACTIVATION_BUILD_PREFIX",
+    "INGEST_CATEGORY_TARGET_IQVIA_NSA_DB",
+    "INGEST_CATEGORY_TARGET_CSD_RAW_DB",
+    "INGEST_CATEGORY_TARGET_CSD_STAGE_DB",
+    "INGEST_CATEGORY_TARGET_MI_MASTER_DB",
     "INGEST_INPUT_BACKEND",
     "INGEST_INPUT_ROOT",
     "INGEST_COMPLETION_WEBHOOK_URL",
     "INGEST_COMPLETION_WEBHOOK_ATTEMPTS",
+    "INGEST_PUBLICATION_EPOCH_TABLE",
+    "INGEST_PUBLICATION_PROVENANCE_TABLE",
+    "BUILD_GIT_SHA",
+    "INGEST_JOB_IMAGE",
 )
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)

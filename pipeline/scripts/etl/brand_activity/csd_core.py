@@ -7,9 +7,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Final
 
-import openpyxl
-
-from pipeline.etl.io.source_headers import normalize_source_header
+from pipeline.scripts.ingest_hook.source_fingerprint import (
+    normalize_loader_header,
+    open_workbook_by_content,
+)
 
 
 EXPECTED_HEADERS: Final[tuple[str, ...]] = (
@@ -143,21 +144,24 @@ def source_month_key(source_file: str) -> tuple[int, int, str]:
 
 
 def _header_index(header_row: tuple[object, ...]) -> dict[str, int]:
-    normalized = {normalize_source_header(value): index for index, value in enumerate(header_row) if value is not None}
-    missing = [header for header in EXPECTED_HEADERS if normalize_source_header(header) not in normalized]
+    normalized = {normalize_loader_header(value): index for index, value in enumerate(header_row) if value is not None}
+    missing = [header for header in EXPECTED_HEADERS if normalize_loader_header(header) not in normalized]
     if missing:
         raise ValueError(f"CSD market sheet header mismatch: missing {missing}")
-    return {header: normalized[normalize_source_header(header)] for header in EXPECTED_HEADERS}
+    return {header: normalized[normalize_loader_header(header)] for header in EXPECTED_HEADERS}
 
 
-def iter_market_rows(workbook_path: Path, sheet_name: str) -> list[CsdRow]:
-    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+def iter_market_rows(workbook_path: Path, sheet_name: str, *, header_row_no: int = 7) -> list[CsdRow]:
+    workbook = open_workbook_by_content(workbook_path)
     try:
         sheet = workbook[sheet_name]
-        header = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
+        header = next(sheet.iter_rows(min_row=header_row_no, max_row=header_row_no, values_only=True))
         indexes = _header_index(header)
         rows: list[CsdRow] = []
-        for source_row_no, values in enumerate(sheet.iter_rows(min_row=8, values_only=True), start=8):
+        for source_row_no, values in enumerate(
+            sheet.iter_rows(min_row=header_row_no + 1, values_only=True),
+            start=header_row_no + 1,
+        ):
             if not any(normalize_text(value) for value in values):
                 continue
             if not is_total_region(values[indexes["Region"]]):
@@ -180,11 +184,16 @@ def iter_market_rows(workbook_path: Path, sheet_name: str) -> list[CsdRow]:
         workbook.close()
 
 
-def scan_market_sheet(workbook_path: Path, sheet_name: str) -> tuple[list[CsdRow], MarketSheetScan]:
-    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+def scan_market_sheet(
+    workbook_path: Path,
+    sheet_name: str,
+    *,
+    header_row_no: int = 7,
+) -> tuple[list[CsdRow], MarketSheetScan]:
+    workbook = open_workbook_by_content(workbook_path)
     try:
         sheet = workbook[sheet_name]
-        header = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
+        header = next(sheet.iter_rows(min_row=header_row_no, max_row=header_row_no, values_only=True))
         indexes = _header_index(header)
         rows: list[CsdRow] = []
         regions: defaultdict[str, int] = defaultdict(int)
@@ -192,7 +201,10 @@ def scan_market_sheet(workbook_path: Path, sheet_name: str) -> tuple[list[CsdRow
         raw_rows = 0
         total_sum = 0
         bad_measure_rows = 0
-        for source_row_no, values in enumerate(sheet.iter_rows(min_row=8, values_only=True), start=8):
+        for source_row_no, values in enumerate(
+            sheet.iter_rows(min_row=header_row_no + 1, values_only=True),
+            start=header_row_no + 1,
+        ):
             if not any(normalize_text(value) for value in values):
                 continue
             raw_rows += 1

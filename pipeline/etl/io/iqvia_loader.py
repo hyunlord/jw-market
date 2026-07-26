@@ -36,6 +36,11 @@ from pipeline.etl.io.iqvia_scope import (
 from pipeline.etl.io.source_headers import normalize_source_header
 from pipeline.etl.lib.ops_utils import configure_logging, find_project_root, first_existing, retry
 from pipeline.etl.lib.storage import get_data_path
+from pipeline.scripts.ingest_hook.source_fingerprint import (
+    matching_sheets,
+    normalize_loader_header,
+    open_workbook_by_content,
+)
 
 
 LOGGER = configure_logging(__name__)
@@ -318,17 +323,17 @@ def _display_source_header(value: object, idx: int) -> str:
 
 def _nsa_header_maps() -> tuple[dict[str, str], dict[str, str]]:
     static = {
-        normalize_source_header(header): header
+        normalize_loader_header(header): header
         for header in NSA_STATIC_HEADER_NAMES | {NSA_PERIOD_HEADER}
     }
     static.update(
         {
-            normalize_source_header(alias): canonical
+            normalize_loader_header(alias): canonical
             for alias, canonical in NSA_HEADER_ALIASES.items()
         }
     )
     metrics = {
-        normalize_source_header(metric): metric
+        normalize_loader_header(metric): metric
         for metric in NSA_PARQUET_METRICS
     }
     return static, metrics
@@ -343,14 +348,14 @@ def canonicalize_nsa_headers(
     unexpected: list[str] = []
     for idx, value in enumerate(headers_raw):
         display = _display_source_header(value, idx)
-        lookup = normalize_source_header(value)
+        lookup = normalize_loader_header(value)
         canonical = static_map.get(lookup) if lookup else None
         if canonical is None and lookup:
             canonical = metric_map.get(lookup)
         if canonical is None and lookup:
             period_match = re.match(r"^(\d{1,2})/(\d{4})_(.+)$", display)
             if period_match:
-                metric = metric_map.get(normalize_source_header(period_match.group(3)))
+                metric = metric_map.get(normalize_loader_header(period_match.group(3)))
                 if metric:
                     canonical = f"{int(period_match.group(1)):02d}/{period_match.group(2)}_{metric}"
         if canonical is None:
@@ -812,17 +817,26 @@ def iter_nsa_xlsx(
 ) -> Iterator[dict[str, Any]]:
     quarter_scope = normalize_iqvia_quarters(quarters)
     atc4_scope = normalize_iqvia_atc4_codes(atc4_codes)
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    for ws in wb.worksheets:
+    candidates = matching_sheets(path, "iqvia_nsa")
+    if not candidates:
+        _raise_nsa_header_diagnostic(path)
+    if len(candidates) > 1:
+        names = [candidate.sheet_name for candidate in candidates]
+        raise HeaderContractError(f"IQVIA NSA workbook has multiple matching sheets: {names}")
+    candidate = candidates[0]
+    wb = open_workbook_by_content(path)
+    try:
+        ws = wb[candidate.sheet_name]
         rows = ws.iter_rows(values_only=True)
-        try:
-            headers_raw = next(rows)
-        except StopIteration:
-            continue
+        for _ in range(candidate.header_row_no):
+            try:
+                headers_raw = next(rows)
+            except StopIteration as exc:
+                raise HeaderContractError(f"IQVIA NSA header disappeared from {path}:{ws.title}") from exc
         headers = canonicalize_nsa_headers(headers_raw, source=f"{path}:{ws.title}")
         periods = nsa_period_columns(headers)
         static_cols = [c for c in headers if not re.match(r"^\d{1,2}/\d{4}_", c) and c not in NSA_PARQUET_METRICS]
-        for row_no, values in enumerate(rows, start=2):
+        for row_no, values in enumerate(rows, start=candidate.header_row_no + 1):
             if all(v is None for v in values):
                 continue
             raw = row_to_payload(dict(zip(headers, values)))
@@ -872,6 +886,34 @@ def iter_nsa_xlsx(
                     atc4_codes=atc4_scope,
                 ):
                     yield record
+    finally:
+        wb.close()
+
+
+def _raise_nsa_header_diagnostic(path: Path) -> None:
+    """Report the concrete NSA header defect when no exact fingerprint matches."""
+    workbook = open_workbook_by_content(path)
+    try:
+        for worksheet in workbook.worksheets:
+            for row_no, values in enumerate(
+                worksheet.iter_rows(
+                    min_row=1,
+                    max_row=12,
+                    values_only=True,
+                ),
+                start=1,
+            ):
+                if not any(value is not None and str(value).strip() for value in values):
+                    continue
+                canonicalize_nsa_headers(
+                    values,
+                    source=f"{path}:{worksheet.title}:row={row_no}",
+                )
+        raise HeaderContractError(
+            f"IQVIA NSA workbook has 0 matching sheets: {path}"
+        )
+    finally:
+        workbook.close()
 
 
 def source_sheets_for_resume(files: list[Path]) -> list[SourceSheet]:

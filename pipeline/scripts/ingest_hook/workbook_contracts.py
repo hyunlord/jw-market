@@ -12,8 +12,69 @@ class WorkbookSummary:
     detail: str
 
 
+class WorkbookClassificationError(ValueError):
+    """Raised when workbook content matches zero or multiple source contracts."""
+
+
+def classify(path: Path, epoch: str) -> str:
+    """Return one content-derived category without materializing every parser."""
+    matches: list[str] = []
+    errors: dict[str, str] = {}
+    for category in (
+        "ubist",
+        "iqvia_nsa",
+        "iqvia_csd_channel",
+        "iqvia_csd_keyword",
+    ):
+        try:
+            _matches_structure(category, path)
+        except Exception as exc:  # each parser is an independent candidate
+            errors[category] = f"{type(exc).__name__}: {exc}"
+        else:
+            matches.append(category)
+    if not matches:
+        # MI Master has several heterogeneous sheet contracts. Run its canonical
+        # extractor only after the four cheap header fingerprints reject, so an
+        # NSA/CSD upload never pays for a full MI catalog extraction.
+        try:
+            _mi_master(path, epoch)
+        except Exception as exc:
+            errors["mi_master"] = f"{type(exc).__name__}: {exc}"
+        else:
+            matches.append("mi_master")
+    if len(matches) != 1:
+        detail = "; ".join(f"{key}={value}" for key, value in errors.items())
+        if not matches:
+            raise WorkbookClassificationError(
+                f"workbook content matches 0 categories; {detail}"
+            )
+        raise WorkbookClassificationError(
+            f"workbook content is ambiguous across categories {matches}"
+        )
+    return matches[0]
+
+
+def _matches_structure(category: str, path: Path) -> None:
+    if category == "ubist":
+        from pipeline.etl.io.ubist_loader import summarize_source
+
+        if not summarize_source(path).periods:
+            raise ValueError("UBIST workbook has no metric periods")
+        return
+    from pipeline.scripts.ingest_hook.source_fingerprint import (
+        single_matching_sheet,
+    )
+
+    single_matching_sheet(path, category)
+
+
 def summarize(category: str, path: Path, epoch: str) -> WorkbookSummary:
+    return _summary_for(category, path, epoch)
+
+
+def _summary_for(category: str, path: Path, epoch: str) -> WorkbookSummary:
     readers = {
+        "ubist": _ubist,
         "iqvia_nsa": _nsa,
         "iqvia_csd_channel": _csd,
         "iqvia_csd_keyword": _keyword,
@@ -26,43 +87,56 @@ def summarize(category: str, path: Path, epoch: str) -> WorkbookSummary:
     return reader(path, epoch)
 
 
-def _nsa(path: Path, _epoch: str) -> WorkbookSummary:
-    from pipeline.etl.io.iqvia_loader import iter_nsa_xlsx
+def _ubist(path: Path, _epoch: str) -> WorkbookSummary:
+    from pipeline.etl.io.ubist_loader import summarize_source
 
-    rows = list(iter_nsa_xlsx(path))
-    if not rows:
-        raise ValueError("IQVIA NSA workbook has no parseable metric rows")
-    periods = frozenset(
-        f"{int(row['period_yyyy']):04d}-Q{int(row['period_quarter'])}" for row in rows
+    summary = summarize_source(path)
+    if not summary.periods:
+        raise ValueError("UBIST workbook has no metric periods")
+    return WorkbookSummary(
+        1,
+        frozenset(summary.periods),
+        "ubist_loader.summarize_source",
     )
-    return WorkbookSummary(len(rows), periods, "iqvia_loader.iter_nsa_xlsx")
+
+
+def _nsa(path: Path, _epoch: str) -> WorkbookSummary:
+    from pipeline.scripts.ingest_hook.source_fingerprint import fingerprint_source
+
+    fingerprint = fingerprint_source(path, "iqvia_nsa")
+    if fingerprint.natural_key_count <= 0:
+        raise ValueError("IQVIA NSA workbook has no parseable metric rows")
+    return WorkbookSummary(
+        fingerprint.natural_key_count,
+        fingerprint.periods,
+        "iqvia_loader.iter_nsa_xlsx",
+    )
 
 
 def _csd(path: Path, _epoch: str) -> WorkbookSummary:
-    from pipeline.scripts.etl.brand_activity.csd_core import iter_market_rows, select_market_sheets
+    from pipeline.scripts.ingest_hook.source_fingerprint import fingerprint_source
 
-    import openpyxl
-
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    try:
-        sheets = select_market_sheets(tuple(workbook.sheetnames))
-    finally:
-        workbook.close()
-    if not sheets:
-        raise ValueError("CSD workbook has no canonical '* Market' sheet")
-    rows = [row for sheet in sheets for row in iter_market_rows(path, sheet)]
-    if not rows:
+    fingerprint = fingerprint_source(path, "iqvia_csd_channel")
+    if fingerprint.natural_key_count <= 0:
         raise ValueError("CSD workbook has no TOTAL-region rows")
-    return WorkbookSummary(len(rows), frozenset(row.period_ym for row in rows), "csd_core.iter_market_rows")
+    return WorkbookSummary(
+        fingerprint.natural_key_count,
+        fingerprint.periods,
+        "csd_core.iter_market_rows",
+    )
 
 
 def _keyword(path: Path, _epoch: str) -> WorkbookSummary:
-    from pipeline.scripts.etl.brand_activity.ingest_keyword import read_keyword_events
+    from pipeline.scripts.ingest_hook.source_fingerprint import fingerprint_source
 
-    rows = read_keyword_events(path)
-    if not rows:
+    fingerprint = fingerprint_source(path, "iqvia_csd_keyword")
+    if fingerprint.natural_key_count <= 0:
         raise ValueError("Keyword workbook has no event rows")
-    return WorkbookSummary(len(rows), frozenset(row.period_ym for row in rows), "ingest_keyword.read_keyword_events")
+    return WorkbookSummary(
+        fingerprint.natural_key_count,
+        fingerprint.periods,
+        "ingest_keyword.read_keyword_events",
+    )
 
 
 def _mi_master(path: Path, epoch: str) -> WorkbookSummary:
