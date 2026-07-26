@@ -2369,6 +2369,16 @@ def crawl_once(
                     if dt is not None:
                         parsed_dates.append(dt)
 
+                    if (
+                        cutoff is not None
+                        and dt is not None
+                        and dt.date() < cutoff.date()
+                    ):
+                        # A valid old article is fully processed for future dedupe even
+                        # though its body is outside the collection window.
+                        append_scraped_url(url, history_file=hf)
+                        continue
+
                     if cutoff is None or _is_within_cutoff(effective_date, cutoff):
                         source_name = _normalized_source_name(site_name)
                         if try_merge_article_without_llm(
