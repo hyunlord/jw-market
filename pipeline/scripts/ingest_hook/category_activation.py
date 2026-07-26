@@ -228,6 +228,10 @@ def load(connection: Any, plan: ActivationPlan) -> tuple[dict[str, int], tuple[s
     bootstrapped_tables: list[str] = []
     with connection.cursor() as cursor:
         cursor.execute(f"CREATE SCHEMA IF NOT EXISTS `{plan.build_schema}`")
+        for target_schema in dict.fromkeys(
+            target.target_schema for target in plan.targets
+        ):
+            cursor.execute(f"CREATE SCHEMA IF NOT EXISTS `{target_schema}`")
         for evidence, target in zip(plan.tables, plan.targets, strict=True):
             target_exists = bool(
                 _writable_columns(

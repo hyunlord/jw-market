@@ -268,6 +268,10 @@ def test_activate_bootstraps_missing_target_with_one_atomic_rename(
     result = activation.activate("iqvia_nsa", manifest, "2026-Q1", "run-1")
 
     statements = [sql for sql, _params in connection.statements]
+    assert (
+        "CREATE SCHEMA IF NOT EXISTS `jw_ingest_shadow_iqvia`"
+        in statements
+    )
     assert not any(" existing" in sql for sql in statements if sql.startswith("INSERT INTO"))
     assert [
         sql for sql in statements if sql.startswith("RENAME TABLE")
