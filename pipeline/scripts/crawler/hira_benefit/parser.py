@@ -5,12 +5,16 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from html.parser import HTMLParser
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from .models import NoticeListItem, ParsedNotice, ParseStatus
 
 _DATE_RE = re.compile(r"\b(20\d{2})[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?\b")
 _NOTICE_RE = re.compile(r"(?:고시\s*)?(제\s*\d{4}\s*-\s*\d+\s*호)")
+_POPUP_CALL_RE = re.compile(
+    r"viewInsuAdtCrtr\(\s*\d+\s*,\s*['\"](\d{8})['\"]\s*,"
+    r"\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]"
+)
 _FIELD_HEADINGS = {
     "target_condition": (
         "투여대상",
@@ -54,6 +58,7 @@ def _parse_date(value: str) -> date | None:
 class _Row:
     texts: list[str] = field(default_factory=list)
     hrefs: list[str] = field(default_factory=list)
+    popup_calls: list[str] = field(default_factory=list)
     link_texts: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -68,11 +73,19 @@ class _ListParser(HTMLParser):
         if tag.lower() == "tr":
             self._row = _Row()
         if self._row is not None and tag.lower() == "a":
-            href = dict(attrs).get("href")
+            attributes = dict(attrs)
+            href = attributes.get("href")
+            onclick = attributes.get("onclick")
+            link_key = None
             if href:
                 self._row.hrefs.append(href)
                 self._row.link_texts.setdefault(href, [])
-                self._active_href = href
+                link_key = href
+            if onclick and _POPUP_CALL_RE.search(onclick):
+                self._row.popup_calls.append(onclick)
+                self._row.link_texts.setdefault(onclick, [])
+                link_key = onclick
+            self._active_href = link_key
 
     def handle_data(self, data: str) -> None:
         if self._row is not None and _clean(data):
@@ -95,21 +108,45 @@ def parse_list_html(html: str, *, base_url: str) -> tuple[NoticeListItem, ...]:
     seen: set[str] = set()
     for row in parser.rows:
         href = next((value for value in row.hrefs if "brdBltNo=" in value), None)
-        if href is None:
+        popup_call = row.popup_calls[0] if row.popup_calls else None
+        link_key = href
+        if href is not None:
+            notice_id = (
+                parse_qs(urlparse(href).query).get("brdBltNo", [""])[0].strip()
+            )
+            source_url = urljoin(base_url, href)
+        elif popup_call is not None:
+            popup_match = _POPUP_CALL_RE.search(popup_call)
+            if popup_match is None:
+                continue
+            meeting_date, sequence, registration_sequence = popup_match.groups()
+            notice_id = f"{meeting_date}-{sequence}-{registration_sequence}"
+            source_url = urljoin(
+                base_url,
+                "/rc/insu/insuadtcrtr/InsuAdtCrtrPopup.do?"
+                + urlencode(
+                    {
+                        "mtgHmeDd": meeting_date,
+                        "sno": sequence,
+                        "mtgMtrRegSno": registration_sequence,
+                    }
+                ),
+            )
+            link_key = popup_call
+        else:
             continue
-        notice_id = parse_qs(urlparse(href).query).get("brdBltNo", [""])[0].strip()
         row_text = _clean(" ".join(row.texts))
         notice_date = _parse_date(row_text)
         if not notice_id or notice_date is None or notice_id in seen:
             continue
-        title = _clean(" ".join(row.link_texts.get(href, []))) or notice_id
+        title = _clean(" ".join(row.link_texts.get(link_key or "", []))) or notice_id
         seen.add(notice_id)
         result.append(
             NoticeListItem.create(
                 source_notice_id=notice_id,
                 title=title,
                 notice_date=notice_date,
-                source_url=urljoin(base_url, href),
+                source_url=source_url,
             )
         )
     return tuple(result)

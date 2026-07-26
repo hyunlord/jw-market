@@ -34,6 +34,15 @@ class HiraStageRequest:
     stage: str
 
 
+def completed_stage_receipt(receipt_path: Path) -> dict[str, object] | None:
+    """Return a durable complete receipt that makes a stage resumable."""
+
+    if not receipt_path.is_file():
+        return None
+    receipt = read_json(receipt_path)
+    return receipt if receipt.get("status") == "complete" else None
+
+
 def raise_for_stage_result(
     *,
     stage: str,
@@ -68,6 +77,10 @@ async def run_hira_benefit_stage(request: HiraStageRequest) -> dict[str, object]
         )
     config = request.config
     root = run_dir(config.state_root, config.run_id)
+    receipt_path = root / f"{request.stage}.receipt.json"
+    completed = completed_stage_receipt(receipt_path)
+    if completed is not None:
+        return completed
     config_path = root / "workflow_input.json"
     if not config_path.exists():
         write_json(config_path, asdict(config))
@@ -86,7 +99,6 @@ async def run_hira_benefit_stage(request: HiraStageRequest) -> dict[str, object]
         heartbeat=activity.heartbeat,
         stage=request.stage,
     )
-    receipt_path = root / f"{request.stage}.receipt.json"
     return raise_for_stage_result(
         stage=request.stage,
         return_code=return_code,

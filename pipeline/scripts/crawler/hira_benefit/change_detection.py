@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 from .models import NoticeListItem
@@ -9,7 +10,7 @@ from .models import NoticeListItem
 
 class FirstRunMode(str, Enum):
     BACKFILL_ALL = "backfill_all"
-    RECENT_N = "recent_n"
+    DATE_BOUNDARY = "date_boundary"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +42,7 @@ def plan_changes(
     *,
     stored: Mapping[str, StoredNoticeState] | None,
     first_run_mode: FirstRunMode | str | None = None,
-    recent_limit: int | None = None,
+    notice_date_boundary: date | str | None = None,
 ) -> ChangePlan:
     """Plan detail fetches without treating brdBltNo as a monotonic watermark."""
 
@@ -50,10 +51,19 @@ def plan_changes(
         if first_run_mode is None:
             raise ValueError("first_run_mode is required when no crawl state exists")
         mode = FirstRunMode(first_run_mode)
-        if mode is FirstRunMode.RECENT_N:
-            if recent_limit is None or recent_limit <= 0:
-                raise ValueError("recent_limit must be positive for recent_n")
-            selected = ordered[:recent_limit]
+        if mode is FirstRunMode.DATE_BOUNDARY:
+            if notice_date_boundary is None:
+                raise ValueError(
+                    "notice_date_boundary is required for date_boundary"
+                )
+            boundary = (
+                date.fromisoformat(notice_date_boundary)
+                if isinstance(notice_date_boundary, str)
+                else notice_date_boundary
+            )
+            selected = tuple(
+                item for item in ordered if item.notice_date >= boundary
+            )
             skipped = max(0, len(ordered) - len(selected))
         else:
             selected = ordered

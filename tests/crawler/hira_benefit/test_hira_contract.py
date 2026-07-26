@@ -22,8 +22,8 @@ def test_timeout_budget_is_hira_specific_and_has_three_x_margin() -> None:
     config = HiraWorkflowInput(
         run_id="hira-20260725",
         state_root="/tmp/hira-state",
-        first_run_mode="recent_n",
-        recent_limit=500,
+        first_run_mode="date_boundary",
+        notice_date_boundary="2023-12-29",
     )
 
     assert config.expected_seconds <= config.workflow_timeout_seconds / 3
@@ -77,8 +77,17 @@ def test_each_success_gate_fails_closed(field: str) -> None:
     assert field in result.failures
 
 
-def test_first_run_configuration_is_fail_closed() -> None:
-    with pytest.raises(ValueError, match="recent_limit"):
+def test_date_boundary_first_run_configuration_is_fail_closed() -> None:
+    with pytest.raises(ValueError, match="notice_date_boundary"):
+        HiraWorkflowInput(
+            run_id="hira-20260725",
+            state_root="/tmp/hira-state",
+            first_run_mode="date_boundary",
+        )
+
+
+def test_row_count_recent_n_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="date_boundary"):
         HiraWorkflowInput(
             run_id="hira-20260725",
             state_root="/tmp/hira-state",
