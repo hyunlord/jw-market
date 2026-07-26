@@ -48,10 +48,25 @@ from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOU
 
 _DESCRIPTIONS = {record.name: record.description for record in TOOL_DESCRIPTION_CATALOG}
 _FAILED_STATUSES = frozenset({"error", "unsupported", "inapplicable", "no_data"})
+_CLINICAL_DETAIL_DESIGN_FIELDS = frozenset(
+    {"enrollment", "outcomes", "start_date", "primary_completion_date"}
+)
 
 
 def _clinical_detail_value_present(value: Any) -> bool:
     return value is not None and value != "" and value != () and value != []
+
+
+def _clinical_detail_requested_fields(user_text: str) -> frozenset[str] | None:
+    lowered = user_text.casefold()
+    requested: set[str] = set()
+    if any(token in lowered for token in ("inclusion", "exclusion", "선정기준", "제외기준")):
+        requested.add("eligibility")
+    if any(token in lowered for token in ("임상 디자인", "대상", "평가변수", "기간")):
+        requested.update(_CLINICAL_DETAIL_DESIGN_FIELDS)
+    elif any(token in lowered for token in ("outcome", "결과지표", "평가 변수")):
+        requested.add("outcomes")
+    return frozenset(requested) or None
 
 
 class ExternalToolRegistry:
@@ -71,8 +86,12 @@ class ExternalToolRegistry:
             realtime=HiraReimbursementHttpClient(),
         )
 
-    def list_for_query(self, _user_text: str) -> tuple[ToolSpec, ...]:
+    def list_for_query(self, user_text: str) -> tuple[ToolSpec, ...]:
         mcp_timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S + float(self._external.timeout_s) + 1.0
+        clinical_detail = partial(
+            self._clinical_detail,
+            requested_fields=_clinical_detail_requested_fields(user_text),
+        )
         definitions = (
             ("local_molecule_lookup", BrandInput, self._local_molecule, 1.0, ("local", "molecule")),
             ("get_drug_main_ingredient", BrandInput, self._mfds_main_ingredient, mcp_timeout_s, ("external", "mfds")),
@@ -84,7 +103,7 @@ class ExternalToolRegistry:
             ("mfds_easy_drug", BrandInput, self._mfds_easy_drug, mcp_timeout_s, ("external", "mfds")),
             ("mfds_clinical_trial_kr", ClinicalQueryInput, self._clinical_kr, mcp_timeout_s, ("external", "mfds")),
             ("clinicaltrials_v2_search", ClinicalQueryInput, self._clinical_global, mcp_timeout_s, ("external", "clinicaltrials")),
-            ("clinicaltrials_study_details", NctIdInput, self._clinical_detail, mcp_timeout_s, ("external", "clinicaltrials")),
+            ("clinicaltrials_study_details", NctIdInput, clinical_detail, mcp_timeout_s, ("external", "clinicaltrials")),
             ("mfds_patent", IngredientInput, partial(self._ingredient_call, "mfds_patent", "국내 특허"), mcp_timeout_s, ("external", "mfds")),
             ("mfds_fda_orangebook", IngredientInput, partial(self._ingredient_call, "mfds_fda_orangebook", "미국 특허/독점권"), mcp_timeout_s, ("external", "orangebook")),
             ("hira_disease_name_code", DiseaseCodeInput, partial(self._disease_call, "hira_disease_name_code", "질병명/상병코드"), mcp_timeout_s, ("external", "hira", "grounding")),
@@ -295,7 +314,12 @@ class ExternalToolRegistry:
             return _clinical_condition_absence_envelope(call, envelope)
         return envelope
 
-    def _clinical_detail(self, payload: BaseModel) -> ToolEnvelope:
+    def _clinical_detail(
+        self,
+        payload: BaseModel,
+        *,
+        requested_fields: frozenset[str] | None,
+    ) -> ToolEnvelope:
         request = NctIdInput.model_validate(payload.model_dump())
         call = self._external.clinicaltrials_study_details(request.nct_id)
         detail = call.render_data.get("detail")
@@ -303,12 +327,17 @@ class ExternalToolRegistry:
             return _external_call_envelope(call, request.nct_id, "임상시험 상세")
         url = str(call.safe_url or "")
         missing_reasons = {
+            "enrollment": "ClinicalTrials 상세 응답에서 등록 인원을 확인할 수 없습니다.",
             "start_date": "ClinicalTrials 상세 응답에서 시험 시작일을 확인할 수 없습니다.",
             "primary_completion_date": (
                 "ClinicalTrials 상세 응답에서 일차 완료일을 확인할 수 없습니다."
             ),
             "outcomes": "ClinicalTrials 상세 응답에서 결과지표를 확인할 수 없습니다.",
+            "eligibility": "ClinicalTrials 상세 응답에서 선정·제외 기준을 확인할 수 없습니다.",
         }
+        legacy_missing_fields = frozenset(
+            {"start_date", "primary_completion_date", "outcomes"}
+        )
         facts = tuple(
             EvidenceFact(
                 fact_id=f"{call.tool}:{request.nct_id}:{index}",
@@ -354,7 +383,16 @@ class ExternalToolRegistry:
                 ),
                 start=1,
             )
-            if _clinical_detail_value_present(value) or key in missing_reasons
+            if (requested_fields is None or key in requested_fields)
+            and (
+                _clinical_detail_value_present(value)
+                or key
+                in (
+                    missing_reasons
+                    if requested_fields is not None
+                    else legacy_missing_fields
+                )
+            )
         )
         if not facts:
             return _error("NO_EVIDENCE", "ClinicalTrials 상세 응답에 검증 가능한 필드가 없습니다.")

@@ -830,15 +830,22 @@ def test_forced_legacy_permission_question_uses_nedrug_without_mart_text(
 
 
 @pytest.mark.parametrize(
-    "question",
+    ("question", "expected_metrics"),
     (
-        "NCT05151731의 inclusion 및 exclusion Criteria 알려줘",
-        "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+        (
+            "NCT05151731의 inclusion 및 exclusion Criteria 알려줘",
+            {"선정·제외 기준"},
+        ),
+        (
+            "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+            {"등록 인원", "결과지표"},
+        ),
     ),
 )
 def test_nct_detail_questions_project_actual_fields_to_markdown_evidence(
     monkeypatch,
     question: str,
+    expected_metrics: set[str],
 ) -> None:
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
     payload = run_external_tool_agent(
@@ -853,8 +860,54 @@ def test_nct_detail_questions_project_actual_fields_to_markdown_evidence(
     assert _facts_returned(payload["markdown_response"])["evidence_count"] == len(evidence)
     assert {fact["source_grade"] for fact in evidence} == {"AUTHORITATIVE"}
     assert {fact["entity"] for fact in evidence} == {"NCT05151731"}
-    assert "선정·제외 기준" in {fact["metric"] for fact in evidence}
+    assert {fact["metric"] for fact in evidence} == expected_metrics
     assert all("확인할 수 없습니다" not in fact["value"] for fact in evidence)
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_metrics"),
+    (
+        (
+            "NCT05151731의 inclusion 및 exclusion Criteria 알려줘",
+            {"선정·제외 기준"},
+        ),
+        (
+            "NCT05151731 임상 디자인(대상, 평가변수, 기간)을 알려줘",
+            {"등록 인원", "결과지표", "시험 시작일", "일차 완료일"},
+        ),
+    ),
+)
+def test_nct_detail_projects_only_the_sections_requested_by_the_f21_question(
+    monkeypatch,
+    question: str,
+    expected_metrics: set[str],
+) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+
+    payload = run_external_tool_agent(
+        question,
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+        provider=_ChoiceSequence((ToolChoice(None, {}, "unused", call_id=None),)),
+    )
+
+    evidence = payload["tool_calls"][0]["render_data"]["evidence"]
+    assert {fact["metric"] for fact in evidence} == expected_metrics
+    if "선정·제외 기준" in expected_metrics:
+        assert "앞부분 200자까지만 제공됩니다" in payload["answer"]
+        assert "clinicaltrials.gov/study/NCT05151731" in payload["answer"]
+    else:
+        assert "선정·제외 기준" not in payload["answer"]
+        assert "등록 인원" in payload["answer"]
+        assert "결과지표" in payload["answer"]
+        assert (
+            "시험 시작일 = ClinicalTrials 상세 응답에서 시험 시작일을 확인할 수 없습니다."
+            in payload["answer"]
+        )
+        assert (
+            "일차 완료일 = ClinicalTrials 상세 응답에서 일차 완료일을 확인할 수 없습니다."
+            in payload["answer"]
+        )
 
 
 def test_unbranded_clinical_review_uses_disease_query_not_full_question_as_drug() -> None:
