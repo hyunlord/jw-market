@@ -132,6 +132,7 @@ def test_trigger_production_overlay_is_not_shadow_or_staging() -> None:
         Path(TRIGGER_PRODUCTION_OVERLAY).read_text(encoding="utf-8")
     )
     container = overlay["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == config.DEFAULT_JOB_IMAGE
     assert container["env"][0] == {"$patch": "replace"}
     env = _overlay_env(overlay)
 
