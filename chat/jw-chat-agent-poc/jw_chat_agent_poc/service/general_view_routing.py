@@ -61,6 +61,8 @@ class _Backend(Protocol):
 
 class _StrategicMembership(Protocol):
     def resolve(self, question: str, allow_default: bool = False): ...
+    def explicit_market(self, question: str) -> tuple[str, str] | None: ...
+    def market_members(self, question: str) -> tuple[str, ...]: ...
 
 
 class _GeneralMembership(Protocol):
@@ -177,10 +179,12 @@ class GeneralViewService:
         source = requested_source or "ubist"
         measure = "sales"
         brand = _brand_hint(question)
+        explicit_strategic_market = self._explicit_strategic_market(question)
         try:
             brand = str(self._strategic_membership.resolve(question, allow_default=False).canonical_brand)
         except (AttributeError, LookupError, OSError, TypeError, ValueError):
-            pass
+            if explicit_strategic_market:
+                brand = ""
         resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
         try:
@@ -194,7 +198,7 @@ class GeneralViewService:
                     if candidates:
                         source = alternate_source
             else:
-                candidates = ()
+                candidates = self._strategic_market_candidates(question, source)
             if not candidates:
                 raise GeneralViewBackendError("ATC4 후보를 찾지 못했습니다")
             markets = self._fetch_candidates(candidates, resolved_brand or None, source, measure)
@@ -229,6 +233,38 @@ class GeneralViewService:
             if candidates:
                 return candidates, brand
         return self._backend.candidates(brand, source), brand
+
+    def _strategic_market_candidates(self, question: str, source: str) -> tuple[AtcCandidate, ...]:
+        explicit_market = getattr(self._strategic_membership, "explicit_market", None)
+        market_members = getattr(self._strategic_membership, "market_members", None)
+        if not callable(explicit_market) or not callable(market_members):
+            return ()
+        market = explicit_market(question)
+        if market is None:
+            return ()
+        if self._general_membership is None:
+            raise GeneralViewBackendError(
+                f"전략시장 '{market[1]}'의 구성 브랜드와 ATC4 멤버십을 연결할 수 없습니다"
+            )
+        brands = market_members(question)
+        if not brands:
+            raise GeneralViewBackendError(f"전략시장 '{market[1]}'의 구성 브랜드를 확인할 수 없습니다")
+        candidates_by_code: dict[str, AtcCandidate] = {}
+        for member_brand in brands:
+            candidates, _ = self._membership_resolution(member_brand, source)
+            for candidate in candidates:
+                candidates_by_code.setdefault(candidate.code, candidate)
+        candidates = tuple(candidates_by_code[code] for code in sorted(candidates_by_code))
+        if len(candidates) > 1:
+            codes = ", ".join(candidate.code for candidate in candidates)
+            raise GeneralViewBackendError(
+                f"전략시장 '{market[1]}'이 복수 ATC4에 걸쳐 일반뷰를 하나로 확정할 수 없습니다: {codes}"
+            )
+        if not candidates:
+            raise GeneralViewBackendError(
+                f"전략시장 '{market[1]}'의 구성 브랜드에 대응하는 ATC4를 확인할 수 없습니다"
+            )
+        return candidates
 
     def _fetch_candidates(
         self,

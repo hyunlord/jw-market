@@ -565,9 +565,13 @@ def _answer_question(
     with sink_context:
         deep_request = parse_deep_research_request(question)
         effective_question = deep_request.question
+        known_brand = getattr(market_scope_resolver, "has_explicit_brand_anchor", None)
         with trace_span("conversation_state_load", "in-memory conversation state lookup"):
             state = store.conversations.get_or_create(conversation_id)
-        if conversation_id and not state.turns and requires_previous_turn(effective_question):
+        if conversation_id and not state.turns and requires_previous_turn(
+            effective_question,
+            known_brand=known_brand,
+        ):
             _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id)
             with trace_span("conversation_state_reload", "state lookup after persisted history hydration"):
                 state = store.conversations.get_or_create(state.conversation_id)
@@ -589,7 +593,11 @@ def _answer_question(
         )
         previous_turn = state.turns[-1] if state.turns else None
         with trace_span("anaphora_resolution", "deterministic previous-turn slot resolution"):
-            routing_resolution = resolve_anaphora(effective_question, previous_turn)
+            routing_resolution = resolve_anaphora(
+                effective_question,
+                previous_turn,
+                known_brand=known_brand,
+            )
         routing_question = routing_resolution.resolved_question
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
         metric_owner = structured_metric_owner(routing_question)
@@ -1497,7 +1505,11 @@ def _answer_with_conversation(
         return _prepend_pending_notice(result)
     state = store.conversations.get_or_create(conversation_id)
     previous_turn = state.turns[-1] if state.turns else None
-    resolution = resolve_anaphora(question, previous_turn)
+    resolution = resolve_anaphora(
+        question,
+        previous_turn,
+        known_brand=getattr(market_scope_resolver, "has_explicit_brand_anchor", None),
+    )
     if resolution.unresolved_reference:
         return unresolved_reference_result(question)
     if resolution.reusable_ranked is not None:

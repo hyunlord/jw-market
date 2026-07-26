@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any
+from typing import Any, Callable
 
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
 from jw_chat_agent_poc.service.conversation import (
@@ -44,6 +44,14 @@ _GENERIC_REFERENCE_RE = re.compile(
 )
 _BRAND_PRONOUN_FOLLOWUP_RE = re.compile(
     r"^\s*(?P<pronoun>걔|얘|쟤)(?=(?:은|는|이|가|도)?(?:\s|[?!.]|$))",
+    re.IGNORECASE,
+)
+_BARE_MARKET_FOLLOWUP_RE = re.compile(
+    r"^\s*(?P<intent>시장\s*규모|일반뷰로)(?:은|는|이|가)?[?!.]?\s*$",
+    re.IGNORECASE,
+)
+_BARE_BRAND_SWITCH_RE = re.compile(
+    r"^\s*(?P<brand>[0-9A-Za-z가-힣+_.-]{2,40}?)(?:은|는|이|가)[?!.]?\s*$",
     re.IGNORECASE,
 )
 _YEAR_PERIOD_RE = re.compile(r"^\s*(?P<year>20\d{2})(?:년)?\s*$")
@@ -191,7 +199,12 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     )
 
 
-def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> AnaphoraResolution:
+def resolve_anaphora(
+    question: str,
+    previous_turn: ConversationTurn | None,
+    *,
+    known_brand: Callable[[str], bool] | None = None,
+) -> AnaphoraResolution:
     metric_followup = _METRIC_ONLY_FOLLOWUP_RE.match(question)
     if metric_followup is not None:
         if previous_turn is None or not previous_turn.slots.anchor_brand:
@@ -247,6 +260,32 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
             resolved_question=_BRAND_PRONOUN_FOLLOWUP_RE.sub(brand, question, count=1),
             brand=brand,
             interpretation_notice=f"{brand}을 가리키는 것으로 이해했어요.",
+        )
+    bare_market_followup = _BARE_MARKET_FOLLOWUP_RE.match(question)
+    if bare_market_followup is not None:
+        if previous_turn is None or not previous_turn.slots.market:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        market = previous_turn.slots.market_definition or previous_turn.slots.market
+        intent = bare_market_followup.group("intent")
+        normalized_intent = re.sub(r"\s+", "", intent)
+        resolved_intent = "규모는?" if normalized_intent.startswith("시장규모") and market.endswith("시장") else (
+            "시장 규모는?" if normalized_intent.startswith("시장규모") else "일반뷰로는?"
+        )
+        return AnaphoraResolution(
+            resolved_question=f"{market} {resolved_intent}",
+            interpretation_notice=f"{market}의 {resolved_intent[:-1]} 요청으로 이해했어요.",
+        )
+    bare_brand_switch = _bare_brand_switch(question, known_brand)
+    if bare_brand_switch is not None:
+        if previous_turn is None:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        intent = _turn_intent(previous_turn)
+        if not intent:
+            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        return AnaphoraResolution(
+            resolved_question=f"{bare_brand_switch} {intent}은?",
+            brand=bare_brand_switch,
+            interpretation_notice=f"{bare_brand_switch}의 {intent}로 이해했어요.",
         )
     contrast = _CONTRAST_FOLLOWUP_RE.match(question)
     if contrast is not None:
@@ -312,13 +351,19 @@ def resolve_anaphora(question: str, previous_turn: ConversationTurn | None) -> A
     return AnaphoraResolution(resolved_question=resolved, brand=brand, reusable_ranked=reusable)
 
 
-def requires_previous_turn(question: str) -> bool:
+def requires_previous_turn(
+    question: str,
+    *,
+    known_brand: Callable[[str], bool] | None = None,
+) -> bool:
     return bool(
         _CONTRAST_FOLLOWUP_RE.match(question)
         or _METRIC_ONLY_FOLLOWUP_RE.match(question)
         or _PERIOD_ONLY_FOLLOWUP_RE.match(question)
         or _RELATIVE_PERIOD_FOLLOWUP_RE.match(question)
         or _BRAND_PRONOUN_FOLLOWUP_RE.match(question)
+        or _BARE_MARKET_FOLLOWUP_RE.match(question)
+        or _bare_brand_switch(question, known_brand)
         or _GENERIC_REFERENCE_RE.match(question)
         or _implicit_brand_followup(question)
         or any(pattern.search(question) for pattern in _REFERENCE_RES)
@@ -358,6 +403,16 @@ def _implicit_brand_followup(question: str) -> tuple[str, str] | None:
     if not normalized or _IMPLICIT_BRAND_FOLLOWUP_BODY_RE.fullmatch(normalized) is None:
         return None
     return (match.group("prefix") or "", intent)
+
+
+def _bare_brand_switch(question: str, known_brand: Callable[[str], bool] | None) -> str | None:
+    if known_brand is None:
+        return None
+    match = _BARE_BRAND_SWITCH_RE.fullmatch(question)
+    if match is None:
+        return None
+    brand = match.group("brand")
+    return brand if known_brand(brand) else None
 
 
 def _inheritable_intent(question: str) -> str:

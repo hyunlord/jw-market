@@ -7,6 +7,7 @@ import pytest
 from jw_chat_agent_poc.service import app as service_app
 from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
+from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.service.general_view_routing import (
     GeneralRoute,
     GeneralViewService,
@@ -96,6 +97,13 @@ def _payload(*, atc4: str = "C10A1", source: str = "ubist", measure: str = "sale
             },
         },
     }
+
+
+def test_fixture_resolver_exposes_strategic_market_members_for_reverse_mapping() -> None:
+    members = BrandResolver(mode="fixture").market_members("고지혈증 시장 일반뷰로는?")
+
+    assert "리바로" in members
+    assert "리바로젯" in members
 
 
 def test_parse_general_market_response_accepts_mislabeled_top_level_view() -> None:
@@ -248,6 +256,56 @@ class StrategicMembershipWithExplicitMarket(StrategicMembership):
         if "고지혈증 시장" in question:
             return "ml_006", "고지혈증 치료제 시장"
         return None
+
+
+class StrategicMembershipWithMarketMembers(StrategicMembershipWithExplicitMarket):
+    def market_members(self, question: str) -> tuple[str, ...]:
+        return ("리바로", "리바로젯") if self.explicit_market(question) else ()
+
+
+def test_strategic_market_reverse_mapping_fails_closed_for_multiple_atc4_codes() -> None:
+    memberships = (
+        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10A1", "스타틴", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10C0", "지질조절 복합제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        StrategicMembershipWithMarketMembers({"리바로", "리바로젯"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
+
+    assert result["general_view_contract"]["unavailable"] is True
+    assert "복수 ATC4" in result["answer"]
+    assert "C10A1" in result["answer"]
+    assert "C10C0" in result["answer"]
+    assert backend.market_calls == []
+
+
+def test_strategic_market_reverse_mapping_uses_only_a_unique_atc4_code() -> None:
+    memberships = (
+        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10A1", "스타틴", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = _market("C10A1", 10.0)
+    service = GeneralViewService(
+        backend,
+        StrategicMembershipWithMarketMembers({"리바로", "리바로젯"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("고지혈증 시장 일반뷰로는?", compact=False, dual=False)
+
+    assert result["general_view_contract"]["atc4_code"] == "C10A1"
+    assert backend.market_calls == [("C10A1", None, "ubist", "sales")]
 
 
 def test_membership_cache_preserves_all_atc4_sources_and_avoids_backend_candidate_scan() -> None:

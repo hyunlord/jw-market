@@ -148,6 +148,28 @@ class BrandResolver:
             self._market_universe(runtime_items, self._fixture_items),
         )
 
+    def market_members(self, question: str) -> tuple[str, ...]:
+        runtime_items = self._items()
+        requested_market = self._explicit_market(
+            question,
+            self._market_universe(runtime_items, self._fixture_items),
+        )
+        if requested_market is None:
+            return ()
+        requested_market_id = requested_market[0]
+        return tuple(
+            sorted(
+                {
+                    str(item["canonical_brand"])
+                    for item in runtime_items
+                    if any(
+                        self._equivalent_market_id(requested_market_id, {market_id})
+                        for market_id, _ in self._item_memberships(item)
+                    )
+                }
+            )
+        )
+
     def supported_brand_count(self) -> int:
         return len(self._items())
 
