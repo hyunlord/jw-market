@@ -17,13 +17,13 @@ spec:
             - name: INGEST_LOAD_TARGET_ROOT
               value: /market-output
             - name: INGEST_LOAD_PRODUCTION_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_MART_PROMOTION_APPROVED
               value: "1"
             - name: INGEST_MART_SOURCE_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_MART_TARGET_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_MART_BUILD_PREFIX
               value: jw_mart_ingest
             - name: INGEST_CATEGORY_ACTIVATION_APPROVED
@@ -31,13 +31,13 @@ spec:
             - name: INGEST_CATEGORY_ACTIVATION_BUILD_PREFIX
               value: jw_mart_ingest_category
             - name: INGEST_CATEGORY_TARGET_IQVIA_NSA_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_CATEGORY_TARGET_CSD_RAW_DB
               value: jw_brand_activity_raw
             - name: INGEST_CATEGORY_TARGET_CSD_STAGE_DB
               value: jw_brand_activity_stage
             - name: INGEST_CATEGORY_TARGET_MI_MASTER_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_PUBLICATION_EPOCH_TABLE
               value: mart_publication_epoch
             - name: INGEST_PUBLICATION_PROVENANCE_TABLE
@@ -57,7 +57,7 @@ spec:
             - name: MARIADB_PORT
               value: "3306"
             - name: MARIADB_DATABASE
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: MARIADB_USER
               valueFrom:
                 secretKeyRef:

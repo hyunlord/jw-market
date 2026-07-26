@@ -245,6 +245,40 @@ def test_activate_nsa_uses_20_quarter_candidate_and_atomic_publish(
     ]
     assert result.published is True
     assert result.row_counts == {"iqvia_nsa_quarterly_raw": 2}
+    assert result.bootstrapped_tables == ()
+
+
+def test_activate_bootstraps_missing_target_with_one_atomic_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _manifest(tmp_path / "_manifest.json")
+    _shadow_env(monkeypatch)
+    connection = Connection(fetchone_values=[2])
+    monkeypatch.setattr(activation, "connect", lambda *_args, **_kwargs: connection)
+    monkeypatch.setattr(
+        activation,
+        "_writable_columns",
+        lambda _cursor, schema, _table, *, required=True: (
+            ("period_label", "payload")
+            if schema == "jw_ingest_stage_test"
+            else ()
+        ),
+    )
+
+    result = activation.activate("iqvia_nsa", manifest, "2026-Q1", "run-1")
+
+    statements = [sql for sql, _params in connection.statements]
+    assert not any(" existing" in sql for sql in statements if sql.startswith("INSERT INTO"))
+    assert [
+        sql for sql in statements if sql.startswith("RENAME TABLE")
+    ] == [
+        "RENAME TABLE "
+        "`jw_ingest_shadow_category_build_run_1`.`iqvia_nsa_quarterly_raw` "
+        "TO `jw_ingest_shadow_iqvia`.`iqvia_nsa_quarterly_raw`"
+    ]
+    assert result.bootstrapped_tables == (
+        "jw_ingest_shadow_iqvia.iqvia_nsa_quarterly_raw",
+    )
 
 
 def test_finalize_drops_only_published_backup_and_build_schema(
@@ -536,3 +570,38 @@ def test_restore_uses_one_atomic_rename_for_all_tables_and_cleans_publish_artifa
     assert connection.commits == 1
     assert connection.rollbacks == 0
     assert connection.closed is True
+
+
+def test_restore_bootstrapped_target_removes_only_new_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _shadow_env(monkeypatch)
+    connection = Connection(fetchone_values=[1])
+    monkeypatch.setattr(activation, "connect", lambda *_args, **_kwargs: connection)
+    result = _published_result()
+    result = activation.ActivationResult(
+        category=result.category,
+        epoch=result.epoch,
+        run_id=result.run_id,
+        build_schema=result.build_schema,
+        tables=result.tables,
+        target_tables=result.target_tables,
+        row_counts=result.row_counts,
+        dry_run=result.dry_run,
+        published=result.published,
+        bootstrapped_tables=result.target_tables,
+    )
+
+    activation.restore(result)
+
+    statements = [sql for sql, _params in connection.statements]
+    assert [
+        sql for sql in statements if sql.startswith("RENAME TABLE")
+    ] == [
+        "RENAME TABLE `jw_ingest_shadow_iqvia`.`iqvia_nsa_quarterly_raw` "
+        "TO `jw_ingest_shadow_iqvia`.`iqvia_nsa_quarterly_raw__failed_run_1`"
+    ]
+    assert (
+        "DROP TABLE IF EXISTS "
+        "`jw_ingest_shadow_iqvia`.`iqvia_nsa_quarterly_raw__failed_run_1`"
+    ) in statements

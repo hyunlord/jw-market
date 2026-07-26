@@ -73,6 +73,7 @@ class ActivationResult:
     row_counts: dict[str, int]
     dry_run: bool
     published: bool
+    bootstrapped_tables: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,10 +123,16 @@ def activate(
         return _result(plan, row_counts={}, dry_run=True, published=False)
     connection = connect()
     try:
-        row_counts = load(connection, plan)
-        publish(connection, plan)
+        row_counts, bootstrapped_tables = load(connection, plan)
+        publish(connection, plan, bootstrapped_tables)
         connection.commit()
-        return _result(plan, row_counts=row_counts, dry_run=False, published=True)
+        return _result(
+            plan,
+            row_counts=row_counts,
+            dry_run=False,
+            published=True,
+            bootstrapped_tables=bootstrapped_tables,
+        )
     except Exception:
         rollback = getattr(connection, "rollback", None)
         if callable(rollback):
@@ -162,6 +169,9 @@ def finalize(result: ActivationResult) -> None:
     try:
         with connection.cursor() as cursor:
             for target in plan.targets:
+                target_name = f"{target.target_schema}.{target.table}"
+                if target_name in plan.result.bootstrapped_tables:
+                    continue
                 old_table = _old_table_name(target.table, result.run_id)
                 cursor.execute(
                     "DROP TABLE IF EXISTS "
@@ -212,12 +222,23 @@ def prepare(
     )
 
 
-def load(connection: Any, plan: ActivationPlan) -> dict[str, int]:
+def load(connection: Any, plan: ActivationPlan) -> tuple[dict[str, int], tuple[str, ...]]:
     """Build and validate candidate tables from verified staging tables."""
     row_counts: dict[str, int] = {}
+    bootstrapped_tables: list[str] = []
     with connection.cursor() as cursor:
         cursor.execute(f"CREATE SCHEMA IF NOT EXISTS `{plan.build_schema}`")
         for evidence, target in zip(plan.tables, plan.targets, strict=True):
+            target_exists = bool(
+                _writable_columns(
+                    cursor,
+                    target.target_schema,
+                    target.table,
+                    required=False,
+                )
+            )
+            if not target_exists:
+                bootstrapped_tables.append(f"{target.target_schema}.{target.table}")
             cursor.execute(
                 f"DROP TABLE IF EXISTS `{plan.build_schema}`.`{evidence.table}`"
             )
@@ -225,7 +246,13 @@ def load(connection: Any, plan: ActivationPlan) -> dict[str, int]:
                 f"CREATE TABLE `{plan.build_schema}`.`{evidence.table}` "
                 f"LIKE `{evidence.schema}`.`{evidence.table}`"
             )
-            _insert_candidate_rows(cursor, plan, evidence, target)
+            _insert_candidate_rows(
+                cursor,
+                plan,
+                evidence,
+                target,
+                target_exists=target_exists,
+            )
             cursor.execute(
                 f"SELECT COUNT(*) FROM `{plan.build_schema}`.`{evidence.table}`"
             )
@@ -235,21 +262,28 @@ def load(connection: Any, plan: ActivationPlan) -> dict[str, int]:
                     f"candidate table is empty: {plan.build_schema}.{evidence.table}"
                 )
             row_counts[evidence.table] = rows
-    return row_counts
+    return row_counts, tuple(bootstrapped_tables)
 
 
-def publish(connection: Any, plan: ActivationPlan) -> None:
+def publish(
+    connection: Any,
+    plan: ActivationPlan,
+    bootstrapped_tables: tuple[str, ...] = (),
+) -> None:
     """Swap every candidate table into its target schema with one RENAME TABLE."""
     moves: list[str] = []
+    bootstrap = set(bootstrapped_tables)
     for target in plan.targets:
-        backup = f"{target.table}__old_{plan.run_id}"
-        moves.extend(
-            (
+        target_name = f"{target.target_schema}.{target.table}"
+        if target_name not in bootstrap:
+            backup = f"{target.table}__old_{plan.run_id}"
+            moves.append(
                 f"`{target.target_schema}`.`{target.table}` "
-                f"TO `{target.target_schema}`.`{backup}`",
-                f"`{plan.build_schema}`.`{target.table}` "
-                f"TO `{target.target_schema}`.`{target.table}`",
+                f"TO `{target.target_schema}`.`{backup}`"
             )
+        moves.append(
+            f"`{plan.build_schema}`.`{target.table}` "
+            f"TO `{target.target_schema}`.`{target.table}`"
         )
     with connection.cursor() as cursor:
         cursor.execute("RENAME TABLE " + ", ".join(moves))
@@ -264,14 +298,16 @@ def restore_publish(connection: Any, plan: RestorePlan) -> None:
         for target in plan.targets:
             old_table = _old_table_name(target.table, plan.result.run_id)
             failed_table = _failed_table_name(target.table, plan.result.run_id)
-            moves.extend(
-                (
-                    f"`{target.target_schema}`.`{target.table}` "
-                    f"TO `{target.target_schema}`.`{failed_table}`",
-                    f"`{target.target_schema}`.`{old_table}` "
-                    f"TO `{target.target_schema}`.`{target.table}`",
-                )
+            target_name = f"{target.target_schema}.{target.table}"
+            moves.append(
+                f"`{target.target_schema}`.`{target.table}` "
+                f"TO `{target.target_schema}`.`{failed_table}`"
             )
+            if target_name not in plan.result.bootstrapped_tables:
+                moves.append(
+                    f"`{target.target_schema}`.`{old_table}` "
+                    f"TO `{target.target_schema}`.`{target.table}`"
+                )
             failed_tables.append(
                 f"`{target.target_schema}`.`{failed_table}`"
             )
@@ -301,6 +337,7 @@ def _result(
     row_counts: dict[str, int],
     dry_run: bool,
     published: bool,
+    bootstrapped_tables: tuple[str, ...] = (),
 ) -> ActivationResult:
     return ActivationResult(
         category=plan.category,
@@ -314,6 +351,7 @@ def _result(
         row_counts=row_counts,
         dry_run=dry_run,
         published=published,
+        bootstrapped_tables=bootstrapped_tables,
     )
 
 
@@ -443,6 +481,9 @@ def _assert_restore_ready(cursor: Any, plan: RestorePlan) -> None:
             raise ActivationError(
                 f"rollback target missing: {target.target_schema}.{target.table}"
             )
+        target_name = f"{target.target_schema}.{target.table}"
+        if target_name in plan.result.bootstrapped_tables:
+            continue
         if not _table_exists(cursor, target.target_schema, old_table):
             raise ActivationError(
                 f"rollback backup missing: {target.target_schema}.{old_table}"
@@ -500,10 +541,14 @@ def _insert_candidate_rows(
     plan: ActivationPlan,
     evidence: TableEvidence,
     target: TableTarget,
+    *,
+    target_exists: bool,
 ) -> None:
     match evidence.table:
         case _ if evidence.table in _RAW_TABLES:
-            _insert_append_candidate(cursor, plan, evidence, target)
+            _insert_append_candidate(
+                cursor, plan, evidence, target, target_exists=target_exists
+            )
         case "iqvia_nsa_quarterly_raw":
             _insert_period_candidate(
                 cursor,
@@ -512,6 +557,7 @@ def _insert_candidate_rows(
                 target,
                 period_column="period_label",
                 allowed_periods=plan.nsa_quarters,
+                target_exists=target_exists,
             )
         case "csd_channel_dynamics_stage":
             _insert_period_candidate(
@@ -520,9 +566,16 @@ def _insert_candidate_rows(
                 evidence,
                 target,
                 period_column="period_ym",
+                target_exists=target_exists,
             )
         case "km_keyword_event_stage":
-            _insert_keyword_stage_candidate(cursor, plan, evidence, target)
+            _insert_keyword_stage_candidate(
+                cursor,
+                plan,
+                evidence,
+                target,
+                target_exists=target_exists,
+            )
         case "stg_master_market_definition" | "stg_master_mapping_table":
             cursor.execute(
                 f"INSERT INTO `{plan.build_schema}`.`{evidence.table}` "
@@ -539,18 +592,22 @@ def _insert_append_candidate(
     plan: ActivationPlan,
     evidence: TableEvidence,
     target: TableTarget,
+    *,
+    target_exists: bool,
 ) -> None:
     candidate = f"`{plan.build_schema}`.`{evidence.table}`"
     columns, existing_columns, staged_columns = _copy_columns(
         cursor,
         evidence,
         target,
+        target_exists=target_exists,
     )
-    cursor.execute(
-        f"INSERT INTO {candidate} ({columns}) "
-        f"SELECT {existing_columns} "
-        f"FROM `{target.target_schema}`.`{target.table}` existing"
-    )
+    if target_exists:
+        cursor.execute(
+            f"INSERT INTO {candidate} ({columns}) "
+            f"SELECT {existing_columns} "
+            f"FROM `{target.target_schema}`.`{target.table}` existing"
+        )
     cursor.execute(
         f"INSERT IGNORE INTO {candidate} ({columns}) "
         f"SELECT {staged_columns} "
@@ -566,6 +623,7 @@ def _insert_period_candidate(
     *,
     period_column: str,
     allowed_periods: tuple[str, ...] = (),
+    target_exists: bool,
 ) -> None:
     candidate = f"`{plan.build_schema}`.`{evidence.table}`"
     staged = f"`{evidence.schema}`.`{evidence.table}`"
@@ -574,6 +632,7 @@ def _insert_period_candidate(
         cursor,
         evidence,
         target,
+        target_exists=target_exists,
     )
     window_sql = ""
     parameters: tuple[str, ...] | None = None
@@ -581,15 +640,16 @@ def _insert_period_candidate(
         placeholders = ", ".join(["%s"] * len(allowed_periods))
         window_sql = f" AND existing.`{period_column}` IN ({placeholders})"
         parameters = allowed_periods
-    cursor.execute(
-        f"INSERT INTO {candidate} ({columns}) "
-        f"SELECT {existing_columns} FROM {target_table} existing "
-        "WHERE NOT EXISTS ("
-        f"SELECT 1 FROM {staged} staged "
-        f"WHERE staged.`{period_column}` = existing.`{period_column}`"
-        f"){window_sql}",
-        parameters,
-    )
+    if target_exists:
+        cursor.execute(
+            f"INSERT INTO {candidate} ({columns}) "
+            f"SELECT {existing_columns} FROM {target_table} existing "
+            "WHERE NOT EXISTS ("
+            f"SELECT 1 FROM {staged} staged "
+            f"WHERE staged.`{period_column}` = existing.`{period_column}`"
+            f"){window_sql}",
+            parameters,
+        )
     staged_window_sql = ""
     if allowed_periods:
         placeholders = ", ".join(["%s"] * len(allowed_periods))
@@ -605,14 +665,17 @@ def _copy_columns(
     cursor: Any,
     evidence: TableEvidence,
     target: TableTarget,
+    *,
+    target_exists: bool,
 ) -> tuple[str, str, str]:
     staged_columns = _writable_columns(cursor, evidence.schema, evidence.table)
-    target_columns = _writable_columns(cursor, target.target_schema, target.table)
-    if staged_columns != target_columns:
-        raise ActivationError(
-            "staging/target writable-column mismatch for "
-            f"{evidence.table}: staging={staged_columns} target={target_columns}"
-        )
+    if target_exists:
+        target_columns = _writable_columns(cursor, target.target_schema, target.table)
+        if staged_columns != target_columns:
+            raise ActivationError(
+                "staging/target writable-column mismatch for "
+                f"{evidence.table}: staging={staged_columns} target={target_columns}"
+            )
     columns = ", ".join(f"`{column}`" for column in staged_columns)
     return (
         columns,
@@ -621,7 +684,13 @@ def _copy_columns(
     )
 
 
-def _writable_columns(cursor: Any, schema: str, table: str) -> tuple[str, ...]:
+def _writable_columns(
+    cursor: Any,
+    schema: str,
+    table: str,
+    *,
+    required: bool = True,
+) -> tuple[str, ...]:
     cursor.execute(
         "SELECT COLUMN_NAME, EXTRA FROM information_schema.COLUMNS "
         "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
@@ -633,7 +702,7 @@ def _writable_columns(cursor: Any, schema: str, table: str) -> tuple[str, ...]:
         if "auto_increment" not in str(extra).casefold()
         and "generated" not in str(extra).casefold()
     )
-    if not columns:
+    if not columns and required:
         raise ActivationError(f"no writable columns found for {schema}.{table}")
     return columns
 
@@ -643,9 +712,14 @@ def _insert_keyword_stage_candidate(
     plan: ActivationPlan,
     evidence: TableEvidence,
     target: TableTarget,
+    *,
+    target_exists: bool,
 ) -> None:
     candidate = f"`{plan.build_schema}`.`{evidence.table}`"
     staged_table = f"`{evidence.schema}`.`{evidence.table}`"
+    if not target_exists:
+        cursor.execute(f"INSERT INTO {candidate} SELECT * FROM {staged_table}")
+        return
     target_table = f"`{target.target_schema}`.`{target.table}`"
     columns = ", ".join(f"`{column}`" for column in _KEYWORD_STAGE_COLUMNS)
     selected = ", ".join(f"staged.`{column}`" for column in _KEYWORD_STAGE_COLUMNS)

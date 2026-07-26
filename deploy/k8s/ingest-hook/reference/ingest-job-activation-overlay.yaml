@@ -13,18 +13,18 @@ spec:
     spec:
       containers:
         - name: ingest
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:030f81837d05b8789b879fc04ddf0865a7953ddd2cb9d26fc8b707bf394e5e12
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:5f18f01ae8b429936cc2bf09eb8a1795f53e23ad1131182882fa8e4d03cefd25
           env:
             - name: INGEST_LOAD_TARGET_ROOT
               value: /market-output
             - name: INGEST_LOAD_PRODUCTION_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_MART_PROMOTION_APPROVED
               value: "1"
             - name: INGEST_MART_SOURCE_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_MART_TARGET_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_MART_BUILD_PREFIX
               value: jw_mart_ingest
             - name: INGEST_CATEGORY_ACTIVATION_APPROVED
@@ -32,13 +32,13 @@ spec:
             - name: INGEST_CATEGORY_ACTIVATION_BUILD_PREFIX
               value: jw_mart_ingest_category
             - name: INGEST_CATEGORY_TARGET_IQVIA_NSA_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_CATEGORY_TARGET_CSD_RAW_DB
               value: jw_brand_activity_raw
             - name: INGEST_CATEGORY_TARGET_CSD_STAGE_DB
               value: jw_brand_activity_stage
             - name: INGEST_CATEGORY_TARGET_MI_MASTER_DB
-              value: jw_mart
+              value: jw_mart_d2_stage_20260630_r2
             - name: INGEST_PUBLICATION_EPOCH_TABLE
               value: mart_publication_epoch
             - name: INGEST_PUBLICATION_PROVENANCE_TABLE

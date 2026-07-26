@@ -15,11 +15,12 @@ PRODUCTION_CATEGORIES = (
     "mi_master",
 )
 TARGET_ENVS = {
-    "INGEST_CATEGORY_TARGET_IQVIA_NSA_DB": "jw_mart",
+    "INGEST_CATEGORY_TARGET_IQVIA_NSA_DB": "jw_mart_d2_stage_20260630_r2",
     "INGEST_CATEGORY_TARGET_CSD_RAW_DB": "jw_brand_activity_raw",
     "INGEST_CATEGORY_TARGET_CSD_STAGE_DB": "jw_brand_activity_stage",
-    "INGEST_CATEGORY_TARGET_MI_MASTER_DB": "jw_mart",
+    "INGEST_CATEGORY_TARGET_MI_MASTER_DB": "jw_mart_d2_stage_20260630_r2",
 }
+SERVING_DB = "jw_mart_d2_stage_20260630_r2"
 ACTIVATION_OVERLAYS = (
     "ingest-job-activation-overlay.yaml",
     "ingest-job-activation-test2-overlay.yaml",
@@ -57,7 +58,7 @@ def test_rendered_production_job_inherits_activation_and_publication_contract(
 ) -> None:
     image = "registry.example/jw-pipeline@sha256:" + ("b" * 64)
     monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output")
-    monkeypatch.setenv("INGEST_LOAD_PRODUCTION_DB", "jw_mart")
+    monkeypatch.setenv("INGEST_LOAD_PRODUCTION_DB", SERVING_DB)
     monkeypatch.setenv("INGEST_MART_PROMOTION_APPROVED", "1")
     monkeypatch.setenv("INGEST_PUBLICATION_EPOCH_TABLE", "mart_publication_epoch")
     monkeypatch.setenv("INGEST_COMPLETION_WEBHOOK_URL", COMPLETION_URL)
@@ -77,7 +78,7 @@ def test_rendered_production_job_inherits_activation_and_publication_contract(
         env = {item["name"]: item.get("value") for item in container["env"]}
 
         assert env["INGEST_LOAD_TARGET_ROOT"] == "/market-output"
-        assert env["INGEST_LOAD_PRODUCTION_DB"] == "jw_mart"
+        assert env["INGEST_LOAD_PRODUCTION_DB"] == SERVING_DB
         assert env["INGEST_MART_PROMOTION_APPROVED"] == "1"
         assert env["INGEST_PUBLICATION_EPOCH_TABLE"] == "mart_publication_epoch"
         assert env["INGEST_COMPLETION_WEBHOOK_URL"] == COMPLETION_URL
@@ -133,7 +134,7 @@ def test_trigger_production_overlay_is_not_shadow_or_staging() -> None:
     env = _overlay_env(overlay)
 
     assert env["INGEST_LOAD_TARGET_ROOT"]["value"] == "/market-output"
-    assert env["INGEST_LOAD_PRODUCTION_DB"]["value"] == "jw_mart"
+    assert env["INGEST_LOAD_PRODUCTION_DB"]["value"] == SERVING_DB
     assert env["INGEST_MART_PROMOTION_APPROVED"]["value"] == "1"
     assert env["INGEST_CATEGORY_ACTIVATION_APPROVED"]["value"] == "1"
     assert env["INGEST_PUBLICATION_PROVENANCE_TABLE"]["value"] == (
