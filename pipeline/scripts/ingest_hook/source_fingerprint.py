@@ -123,8 +123,17 @@ def single_matching_sheet(path: Path, category: str) -> SourceCandidate:
 
 
 def fingerprint_source(path: Path, category: str) -> SourceFingerprint:
-    candidate = single_matching_sheet(path, category)
-    digest = _natural_key_digest(path, candidate)
+    candidates = matching_sheets(path, category)
+    if not candidates:
+        raise SourceFingerprintError(
+            f"0 matching workbook structures for {category}: missing required headers"
+        )
+    if category != "iqvia_csd_channel" and len(candidates) > 1:
+        names = [candidate.sheet_name for candidate in candidates]
+        raise SourceFingerprintError(
+            f"multiple matching workbook structures for {category}: {names}"
+        )
+    digest = _natural_key_digest(path, candidates)
     if digest.row_count == 0:
         raise SourceFingerprintError(f"missing natural keys for {category}")
     required_headers = _required_headers(category)
@@ -140,8 +149,8 @@ def fingerprint_source(path: Path, category: str) -> SourceFingerprint:
     ).hexdigest()
     return SourceFingerprint(
         category=category,
-        sheet_name=candidate.sheet_name,
-        header_row_no=candidate.header_row_no,
+        sheet_name=",".join(candidate.sheet_name for candidate in candidates),
+        header_row_no=candidates[0].header_row_no,
         periods=digest.periods,
         natural_keys=frozenset(),
         natural_key_count=digest.row_count,
@@ -217,35 +226,59 @@ def _has_nsa_period_metrics(keys: dict[str, int]) -> bool:
     return any(required.issubset(metrics) for metrics in periods.values())
 
 
-def _natural_key_digest(path: Path, candidate: SourceCandidate) -> NaturalKeyDigest:
+def _natural_key_digest(
+    path: Path,
+    candidates: Sequence[SourceCandidate],
+) -> NaturalKeyDigest:
     workbook = open_workbook_by_content(path)
     try:
-        sheet = workbook[candidate.sheet_name]
-        rows = sheet.iter_rows(min_row=candidate.header_row_no + 1, values_only=True)
         with TemporaryDirectory(prefix="source-fingerprint-") as temp_root:
             connection = sqlite3.connect(Path(temp_root) / "natural_keys.sqlite")
             try:
                 connection.execute("CREATE TABLE natural_keys (key_json TEXT PRIMARY KEY)")
                 periods: set[str] = set()
                 row_count = 0
-                for values in rows:
-                    if not any(normalize_cell(value) for value in values):
-                        continue
-                    keys = tuple(_row_keys(candidate, values))
-                    if not keys:
-                        continue
-                    for key in keys:
-                        if any(not part for part in key):
-                            raise SourceFingerprintError(f"null natural key for {candidate.category}")
-                        key_json = json.dumps(key, ensure_ascii=False, separators=(",", ":"))
-                        try:
-                            connection.execute("INSERT INTO natural_keys (key_json) VALUES (?)", (key_json,))
-                        except sqlite3.IntegrityError as exc:
-                            raise SourceFingerprintError(
-                                f"duplicate natural key for {candidate.category}: {key}"
-                            ) from exc
-                        periods.add(key[0])
-                        row_count += 1
+                for candidate in candidates:
+                    sheet = workbook[candidate.sheet_name]
+                    rows = sheet.iter_rows(
+                        min_row=candidate.header_row_no + 1,
+                        values_only=True,
+                    )
+                    for source_row_no, values in enumerate(
+                        rows,
+                        start=candidate.header_row_no + 1,
+                    ):
+                        if not any(normalize_cell(value) for value in values):
+                            continue
+                        keys = tuple(_row_keys(candidate, values))
+                        if not keys:
+                            continue
+                        for key in keys:
+                            if any(not part for part in key):
+                                raise SourceFingerprintError(
+                                    f"null natural key for {candidate.category}"
+                                )
+                            identity_key = (
+                                (*key, str(source_row_no))
+                                if candidate.category == "iqvia_csd_keyword"
+                                else key
+                            )
+                            key_json = json.dumps(
+                                identity_key,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            )
+                            try:
+                                connection.execute(
+                                    "INSERT INTO natural_keys (key_json) VALUES (?)",
+                                    (key_json,),
+                                )
+                            except sqlite3.IntegrityError as exc:
+                                raise SourceFingerprintError(
+                                    f"duplicate natural key for {candidate.category}: {key}"
+                                ) from exc
+                            periods.add(key[0])
+                            row_count += 1
                 return NaturalKeyDigest(
                     periods=frozenset(periods),
                     row_count=row_count,

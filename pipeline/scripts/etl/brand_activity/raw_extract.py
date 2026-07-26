@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import openpyxl
-
 from pipeline.scripts.etl.brand_activity.csd_core import (
     CsdRow,
     _header_index,
@@ -14,10 +12,13 @@ from pipeline.scripts.etl.brand_activity.csd_core import (
     normalize_text,
     parse_period_ym,
     parse_product_details,
-    select_market_sheets,
     source_month_key,
 )
 from pipeline.scripts.etl.brand_activity.km_core import JsonValue, source_period_from_name
+from pipeline.scripts.ingest_hook.source_fingerprint import (
+    matching_sheets,
+    open_workbook_by_content,
+)
 
 KEYWORD_WORKBOOK_PATTERN = "*Keywords for JW*.xlsx"
 
@@ -96,33 +97,42 @@ def discover_keyword_source_files(roots: SourceRoots) -> list[Path]:
 
 def read_csd_source_rows(workbook_path: Path, workbook_hash: str) -> list[CsdSourceRow]:
     """Read CSD market sheets, preserving non-TOTAL rows in raw staging."""
-    source_period = _source_period_for_csd(workbook_path)
-    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+    candidates = matching_sheets(workbook_path, "iqvia_csd_channel")
+    if not candidates:
+        raise ValueError("CSD workbook has no content-matching source sheets")
+    workbook = open_workbook_by_content(workbook_path)
     try:
-        selected_sheets = set(select_market_sheets(tuple(workbook.sheetnames)))
-        market_sheets = tuple(
-            sheet_name
-            for sheet_name in workbook.sheetnames
-            if sheet_name.endswith("Market") or sheet_name.endswith("Market2")
-        )
         rows: list[CsdSourceRow] = []
-        for sheet_name in market_sheets:
-            sheet = workbook[sheet_name]
-            header = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True))
+        for candidate in candidates:
+            sheet = workbook[candidate.sheet_name]
+            header = next(
+                sheet.iter_rows(
+                    min_row=candidate.header_row_no,
+                    max_row=candidate.header_row_no,
+                    values_only=True,
+                )
+            )
             indexes = _header_index(header)
-            for source_row_no, values in enumerate(sheet.iter_rows(min_row=8, values_only=True), start=8):
+            for source_row_no, values in enumerate(
+                sheet.iter_rows(
+                    min_row=candidate.header_row_no + 1,
+                    values_only=True,
+                ),
+                start=candidate.header_row_no + 1,
+            ):
                 if not any(normalize_text(value) for value in values):
                     continue
                 product_details = parse_product_details(values[indexes["Product Details"]])
                 region = normalize_text(values[indexes["Region"]])
+                period_ym = parse_period_ym(values[indexes["Related date"]])
                 rows.append(
                     CsdSourceRow(
                         source_file=workbook_path.name,
                         source_file_sha256=workbook_hash,
-                        source_sheet=sheet_name,
+                        source_sheet=candidate.sheet_name,
                         source_row_no=source_row_no,
-                        source_period_ym=source_period,
-                        period_ym=parse_period_ym(values[indexes["Related date"]]),
+                        source_period_ym=period_ym,
+                        period_ym=period_ym,
                         market=normalize_text(values[indexes["Market"]]),
                         jw_channel=normalize_text(values[indexes["JW Channel"]]),
                         region=region,
@@ -130,7 +140,7 @@ def read_csd_source_rows(workbook_path: Path, workbook_hash: str) -> list[CsdSou
                         manufacturer=normalize_text(values[indexes["Manufacturer"]]),
                         representing_company=normalize_text(values[indexes["Representing Company"]]),
                         product_details=product_details,
-                        selected_for_stage=sheet_name in selected_sheets and is_total_region(region),
+                        selected_for_stage=is_total_region(region),
                     )
                 )
         return rows

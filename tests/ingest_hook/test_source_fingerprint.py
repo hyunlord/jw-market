@@ -8,6 +8,7 @@ import pytest
 from pipeline.scripts.ingest_hook import workbook_contracts
 from pipeline.scripts.ingest_hook.source_fingerprint import SourceFingerprintError, fingerprint_source
 from pipeline.scripts.ingest_hook.workbook_contracts import classify, summarize
+from pipeline.scripts.etl.brand_activity.raw_extract import read_csd_source_rows
 
 
 def _save(path: Path, rows_by_sheet: dict[str, list[list[object | None]]]) -> Path:
@@ -137,6 +138,33 @@ def test_fingerprint_accepts_equivalent_headers_and_ignores_sheet_names(tmp_path
     assert summarize("iqvia_csd_channel", second, "2026-07").rows == 1
 
 
+def test_csd_fingerprint_and_loader_aggregate_all_content_matching_sheets(tmp_path: Path) -> None:
+    first_rows = _csd_rows()
+    second_rows = _csd_rows(
+        data=["Aug 2026", "Cardiology", "TOTAL", "TOTAL", "Drug B", "Maker B", "JW", 20]
+    )
+    path = _save(
+        tmp_path / "arbitrary.payload",
+        {
+            "Renamed One": first_rows,
+            "Renamed Two": second_rows,
+            "Cover": [["not", "source", "data"]],
+        },
+    )
+
+    fingerprint = fingerprint_source(path, "iqvia_csd_channel")
+    rows = read_csd_source_rows(path, "a" * 64)
+
+    assert fingerprint.natural_key_count == 2
+    assert fingerprint.periods == frozenset({"2026-07", "2026-08"})
+    assert [(row.period_ym, row.market, row.product_details) for row in rows] == [
+        ("2026-07", "Diabetes", 10),
+        ("2026-08", "Cardiology", 20),
+    ]
+    assert all(row.selected_for_stage for row in rows)
+    assert {row.source_period_ym for row in rows} == {"2026-07", "2026-08"}
+
+
 def test_keyword_sheet_name_does_not_matter(tmp_path: Path) -> None:
     # Given a Keyword workbook whose sheet is not named Keywords.
     path = _save(tmp_path / "upload.xlsx", {"User Renamed This": _keyword_rows()})
@@ -180,7 +208,6 @@ def test_keyword_sheet_name_does_not_matter(tmp_path: Path) -> None:
             },
             "null natural key",
         ),
-        ({"Only": _keyword_rows() + _keyword_rows()[1:]}, "duplicate natural key"),
         (
             {"Only": _keyword_rows(headers=["Related date", "\ufeffrelated date", *_keyword_rows()[0][1:]])},
             "normalized-header collision",
@@ -198,6 +225,18 @@ def test_fingerprint_rejects_ambiguous_or_invalid_keyword_sources(
     # When/Then internal fingerprinting fails closed.
     with pytest.raises(SourceFingerprintError, match=message):
         fingerprint_source(path, "iqvia_csd_keyword")
+
+
+def test_keyword_duplicate_events_are_distinct_source_rows(tmp_path: Path) -> None:
+    path = _save(
+        tmp_path / "repeated-events.xlsx",
+        {"Anything": _keyword_rows() + _keyword_rows()[1:]},
+    )
+
+    fingerprint = fingerprint_source(path, "iqvia_csd_keyword")
+
+    assert fingerprint.natural_key_count == 2
+    assert fingerprint.periods == frozenset({"2026-07"})
 
 
 def test_nsa_discovery_skips_unrelated_sheets_without_using_sheet_name(tmp_path: Path) -> None:
