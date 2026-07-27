@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +13,7 @@ from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_ow
 from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.orchestrator.markdown_renderers import market_members_md
+from jw_chat_agent_poc.resolver.catalog_membership import MariaDbCatalogMembershipReader
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
@@ -66,6 +69,75 @@ class _StrategicMembership(Protocol):
     def market_members(self, question: str) -> tuple[str, ...]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class StrategicMarketDefinition:
+    market_id: str
+    data_source: str
+    atc4_codes: tuple[str, ...]
+
+
+class _StrategicMarketDefinitionReader(Protocol):
+    def resolve(self, market_id: str) -> StrategicMarketDefinition | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class MariaDbStrategicMarketDefinitionReader:
+    catalog: MariaDbCatalogMembershipReader = field(default_factory=MariaDbCatalogMembershipReader)
+
+    def resolve(self, market_id: str) -> StrategicMarketDefinition | None:
+        import pymysql
+
+        with pymysql.connect(
+            host=self.catalog.host,
+            port=self.catalog.port,
+            user=self.catalog.user,
+            password=self.catalog.password,
+            database=self.catalog.database,
+            connect_timeout=self.catalog.connect_timeout_s,
+            read_timeout=self.catalog.read_timeout_s,
+            write_timeout=self.catalog.read_timeout_s,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT ml_id, data_source, atc_codes_json
+                    FROM catalog_ml_market
+                    WHERE ml_id = %s
+                    """,
+                    (market_id,),
+                )
+                rows = tuple(cursor.fetchall())
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError(f"catalog_ml_market primary-key lookup returned {len(rows)} rows")
+        row = rows[0]
+        raw_codes = row.get("atc_codes_json")
+        if isinstance(raw_codes, str):
+            raw_codes = json.loads(raw_codes)
+        if raw_codes is None:
+            raw_codes = ()
+        if not isinstance(raw_codes, (list, tuple)):
+            raise ValueError("catalog_ml_market.atc_codes_json must be an array")
+        codes: list[str] = []
+        for raw_code in raw_codes:
+            code = str(raw_code or "").strip().upper()
+            if not code:
+                continue
+            if _ATC4_PATTERN.fullmatch(code) is None:
+                raise ValueError(f"catalog_ml_market contains invalid ATC4 code: {code}")
+            if code not in codes:
+                codes.append(code)
+        return StrategicMarketDefinition(
+            market_id=str(row.get("ml_id") or market_id),
+            data_source=str(row.get("data_source") or "").strip().lower(),
+            atc4_codes=tuple(codes),
+        )
+
+
 class _GeneralMembership(Protocol):
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]: ...
 
@@ -78,10 +150,12 @@ class GeneralViewService:
         *,
         enabled: bool,
         general_membership: _GeneralMembership | None = None,
+        market_definition_reader: _StrategicMarketDefinitionReader | None = None,
     ) -> None:
         self._backend = backend
         self._strategic_membership = strategic_membership
         self._general_membership = general_membership
+        self._market_definition_reader = market_definition_reader
         self.enabled = enabled
 
     @classmethod
@@ -90,7 +164,13 @@ class GeneralViewService:
         ttl_seconds = float(os.environ.get("GENERAL_VIEW_MEMBERSHIP_TTL_SECONDS", "300"))
         membership = TtlGeneralMembershipCache(MariaDbGeneralMembershipReader(), ttl_seconds=ttl_seconds)
         backend = GeneralViewMartBackend(MariaDbGeneralMartReader(), GeneralViewBackend())
-        return cls(backend, strategic_membership, enabled=enabled, general_membership=membership)
+        return cls(
+            backend,
+            strategic_membership,
+            enabled=enabled,
+            general_membership=membership,
+            market_definition_reader=MariaDbStrategicMarketDefinitionReader(),
+        )
 
     def route(self, question: str) -> GeneralRoute:
         if not self.enabled:
@@ -194,7 +274,8 @@ class GeneralViewService:
         source = requested_source or "ubist"
         measure = "sales"
         brand = _brand_hint(question)
-        explicit_strategic_market = self._explicit_strategic_market(question)
+        strategic_market = self._strategic_market(question)
+        explicit_strategic_market = strategic_market is not None
         try:
             brand = str(self._strategic_membership.resolve(question, allow_default=False).canonical_brand)
         except (AttributeError, LookupError, OSError, TypeError, ValueError):
@@ -203,22 +284,59 @@ class GeneralViewService:
         resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
         membership_source = "not_applicable"
+        selection_trace = self._selection_trace(question, strategic_market)
         try:
             if explicit_atc4:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
                 membership_source = "explicit_atc4"
-            elif brand:
-                candidates, resolved_brand, membership_source = self._membership_resolution(brand, source)
-                if not candidates and requested_source is None:
-                    alternate_source = "iqvia" if source == "ubist" else "ubist"
-                    candidates, resolved_brand, membership_source = self._membership_resolution(
-                        brand,
-                        alternate_source,
+                selection_trace.update(
+                    atc4_source="fallback",
+                    candidate_atc4_codes=[explicit_atc4],
+                    reduction_reason="explicit_atc4",
+                )
+            elif strategic_market is not None:
+                candidates, definition_source, fallback_reason = self._catalog_market_candidates(
+                    strategic_market[0],
+                    requested_source=requested_source,
+                )
+                if candidates:
+                    source = definition_source
+                    resolved_brand = ""
+                    membership_source = "catalog_definition"
+                    selection_trace.update(
+                        atc4_source="catalog_definition",
+                        candidate_atc4_codes=[candidate.code for candidate in candidates],
+                        reduction_reason=None,
                     )
-                    if candidates:
-                        source = alternate_source
+                else:
+                    selection_trace["reduction_reason"] = fallback_reason
+                    candidates, resolved_brand, membership_source, source = self._brand_or_market_candidates(
+                        question,
+                        brand,
+                        source,
+                        requested_source=requested_source,
+                    )
+                    selection_trace.update(
+                        atc4_source=_public_atc4_source(membership_source),
+                        candidate_atc4_codes=[candidate.code for candidate in candidates],
+                    )
+            elif brand:
+                candidates, resolved_brand, membership_source, source = self._brand_or_market_candidates(
+                    question,
+                    brand,
+                    source,
+                    requested_source=requested_source,
+                )
+                selection_trace.update(
+                    atc4_source=_public_atc4_source(membership_source),
+                    candidate_atc4_codes=[candidate.code for candidate in candidates],
+                )
             else:
                 candidates, membership_source = self._strategic_market_candidates(question, source)
+                selection_trace.update(
+                    atc4_source=_public_atc4_source(membership_source),
+                    candidate_atc4_codes=[candidate.code for candidate in candidates],
+                )
             if not candidates:
                 raise GeneralViewBackendError("ATC4 후보를 찾지 못했습니다")
             hhi_requested = _asks_hhi(question)
@@ -248,9 +366,9 @@ class GeneralViewService:
                     question=question,
                 )
                 contract["membership_source"] = membership_source
+                contract.update(selection_trace)
                 return _multi_result(question, ordered_markets, contract, started_at=started_at)
             if explicit_strategic_market and len(markets) > 1:
-                strategic_market = self._strategic_market(question)
                 if strategic_market is None:
                     raise GeneralViewBackendError("전략시장 정보를 다시 확인할 수 없습니다")
                 ordered_markets = tuple(sorted(markets, key=lambda item: item.atc4_code))
@@ -262,6 +380,7 @@ class GeneralViewService:
                     question=question,
                 )
                 contract["membership_source"] = membership_source
+                contract.update(selection_trace)
                 return _multi_result(question, ordered_markets, contract, started_at=started_at)
             selected = max(markets, key=lambda item: item.brand_value if item.brand_value is not None else float("-inf"))
             descriptions = {market.atc4_code: market.atc4_description for market in markets}
@@ -272,12 +391,82 @@ class GeneralViewService:
             ]
             contract = _contract(selected, other_candidates=others, compact=compact, dual=dual, question=question)
             contract["membership_source"] = membership_source
+            contract.update(selection_trace)
             return _result(question, selected, contract, started_at=started_at)
         except GeneralViewBackendError as exc:
             reason = str(exc)
             if asks_market_members(question) and "ATC4 후보" in reason:
                 reason = "시장 매핑이 확인되지 않습니다"
-            return _unavailable_result(question, reason, dual=dual, started_at=started_at)
+            return _unavailable_result(
+                question,
+                reason,
+                dual=dual,
+                started_at=started_at,
+                selection_trace=selection_trace,
+            )
+
+    def _selection_trace(self, question: str, market: tuple[str, str] | None) -> dict[str, Any]:
+        members: tuple[str, ...] = ()
+        if market is not None:
+            market_members = getattr(self._strategic_membership, "market_members", None)
+            if callable(market_members):
+                try:
+                    members = tuple(market_members(question))
+                except (LookupError, OSError, TypeError, ValueError):
+                    members = ()
+        return {
+            "input_market": market[0] if market is not None else None,
+            "atc4_source": "fallback",
+            "candidate_atc4_codes": [],
+            "member_brand_count": len(members),
+            "reduction_reason": None,
+        }
+
+    def _catalog_market_candidates(
+        self,
+        market_id: str,
+        *,
+        requested_source: str | None,
+    ) -> tuple[tuple[AtcCandidate, ...], str, str | None]:
+        reader = self._market_definition_reader
+        if reader is None:
+            return (), requested_source or "ubist", "catalog_definition_reader_unavailable"
+        try:
+            definition = reader.resolve(market_id)
+        except (LookupError, OSError, TypeError, ValueError):
+            return (), requested_source or "ubist", "catalog_definition_load_error"
+        if definition is None:
+            return (), requested_source or "ubist", "catalog_definition_missing"
+        if not definition.atc4_codes:
+            return (), requested_source or definition.data_source or "ubist", "catalog_definition_empty"
+        source = requested_source or definition.data_source or "ubist"
+        return (
+            tuple(AtcCandidate(code, f"ATC4 {code}") for code in definition.atc4_codes),
+            source,
+            None,
+        )
+
+    def _brand_or_market_candidates(
+        self,
+        question: str,
+        brand: str,
+        source: str,
+        *,
+        requested_source: str | None,
+    ) -> tuple[tuple[AtcCandidate, ...], str, str, str]:
+        if not brand:
+            candidates, membership_source = self._strategic_market_candidates(question, source)
+            return candidates, "", membership_source, source
+        candidates, resolved_brand, membership_source = self._membership_resolution(brand, source)
+        if not candidates and requested_source is None:
+            alternate_source = "iqvia" if source == "ubist" else "ubist"
+            candidates, resolved_brand, membership_source = self._membership_resolution(
+                brand,
+                alternate_source,
+            )
+            if candidates:
+                source = alternate_source
+        return candidates, resolved_brand, membership_source, source
 
     def _membership_resolution(
         self,
@@ -488,6 +677,7 @@ def _result(
         cache_hit=False,
     )
     _attach_data_path_trace(call, market)
+    _attach_selection_trace(call, contract)
     return {
         "question": question,
         "resolution": {"canonical_brand": market.brand, "atc4_code": market.atc4_code},
@@ -504,6 +694,11 @@ def _result(
             "general_view": True,
             "selected_data_path": market.selected_data_path,
             "membership_source": contract.get("membership_source"),
+            "input_market": contract.get("input_market"),
+            "atc4_source": contract.get("atc4_source"),
+            "candidate_atc4_codes": contract.get("candidate_atc4_codes"),
+            "member_brand_count": contract.get("member_brand_count"),
+            "reduction_reason": contract.get("reduction_reason"),
         },
         "tool_calls": [call],
         "answer": contract["section_markdown"],
@@ -535,6 +730,28 @@ def _combined_source(sources: set[str]) -> str:
     return "mixed"
 
 
+def _public_atc4_source(source: str) -> str:
+    if source == "catalog_definition":
+        return "catalog_definition"
+    if source == "membership_db":
+        return "brand_membership"
+    return "fallback"
+
+
+def _attach_selection_trace(call: dict[str, Any], contract: dict[str, Any]) -> None:
+    trace = call.get("qa_trace")
+    if not isinstance(trace, dict):
+        return
+    for field_name in (
+        "input_market",
+        "atc4_source",
+        "candidate_atc4_codes",
+        "member_brand_count",
+        "reduction_reason",
+    ):
+        trace[field_name] = contract.get(field_name)
+
+
 def _multi_result(
     question: str,
     markets: tuple[GeneralMarket, ...],
@@ -559,6 +776,7 @@ def _multi_result(
             cache_hit=False,
         )
         _attach_data_path_trace(call, market)
+        _attach_selection_trace(call, contract)
         tool_calls.append(call)
     return {
         "question": question,
@@ -578,6 +796,11 @@ def _multi_result(
             "general_view": True,
             "selected_data_path": contract.get("selected_data_path"),
             "membership_source": contract.get("membership_source"),
+            "input_market": contract.get("input_market"),
+            "atc4_source": contract.get("atc4_source"),
+            "candidate_atc4_codes": contract.get("candidate_atc4_codes"),
+            "member_brand_count": contract.get("member_brand_count"),
+            "reduction_reason": contract.get("reduction_reason"),
         },
         "tool_calls": tool_calls,
         "answer": contract["section_markdown"],
@@ -594,6 +817,7 @@ def _unavailable_result(
     *,
     dual: bool,
     started_at: datetime,
+    selection_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text = f"## 일반뷰 (ATC4)\n\n일반뷰 데이터를 현재 조회할 수 없습니다. ({reason})"
     contract = {
@@ -611,6 +835,7 @@ def _unavailable_result(
         "section_markdown": text,
         "unavailable": True,
     }
+    contract.update(selection_trace or {})
     call = {"source": "jw-market-backend-api", "tool": "general_view_unavailable", "render_data": contract}
     attach_tool_qa_trace(
         call,
@@ -619,6 +844,7 @@ def _unavailable_result(
         row_count=0,
         cache_hit=False,
     )
+    _attach_selection_trace(call, contract)
     return {
         "question": question,
         "decomposition": [{"intent": "general_view_unavailable", "view_type": "general_view"}],
@@ -628,6 +854,11 @@ def _unavailable_result(
             "deterministic": True,
             "general_view": True,
             "unavailable": True,
+            "input_market": contract.get("input_market"),
+            "atc4_source": contract.get("atc4_source"),
+            "candidate_atc4_codes": contract.get("candidate_atc4_codes"),
+            "member_brand_count": contract.get("member_brand_count"),
+            "reduction_reason": contract.get("reduction_reason"),
         },
         "tool_calls": [call],
         "answer": text,

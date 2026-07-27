@@ -12,6 +12,7 @@ from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.service.general_view_routing import (
     GeneralRoute,
     GeneralViewService,
+    StrategicMarketDefinition,
     _atc4_code,
     _brand_hint,
     _source,
@@ -269,6 +270,146 @@ class StrategicMembershipWithMarketMembers(StrategicMembershipWithExplicitMarket
 
     def market_members(self, question: str) -> tuple[str, ...]:
         return self._market_members if self.explicit_market(question) else ()
+
+
+class LiveLivaloStrategicMembership(StrategicMembershipWithMarketMembers):
+    def resolve(self, question: str, allow_default: bool = False):
+        if "리바로 리바로젯" in question:
+            return type(
+                "Resolution",
+                (),
+                {"canonical_brand": "리바로젯", "market_id": "ml_006", "market_ids": ("ml_006",)},
+            )()
+        return super().resolve(question, allow_default=allow_default)
+
+    def explicit_market(self, question: str) -> tuple[str, str] | None:
+        if "리바로 리바로젯" in question:
+            return "ml_006", "리바로 리바로젯"
+        return super().explicit_market(question)
+
+
+class StaticStrategicMarketDefinitionReader:
+    def __init__(self, definitions: dict[str, StrategicMarketDefinition | None]) -> None:
+        self._definitions = definitions
+
+    def resolve(self, market_id: str) -> StrategicMarketDefinition | None:
+        return self._definitions.get(market_id)
+
+
+def _live_livalo_general_view_service(
+    definition: StrategicMarketDefinition | None,
+) -> tuple[GeneralViewService, FakeBackend]:
+    memberships = (
+        GeneralBrandMembership("리바로", "리바로", "C10A1", "스타틴류", "ubist"),
+        GeneralBrandMembership("리바로젯", "리바로젯", "C10C", "지질조절제 복합제제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = replace(
+        _market("C10A1", 10.0),
+        atc4_description="스타틴류 (HMG-CoA 환원효소 억제제)",
+        market_size=100_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    backend.market_map["C10C"] = replace(
+        _market("C10C", 20.0),
+        atc4_description="지질조절제 복합제제",
+        market_size=40_000_000_000,
+        brand=None,
+        brand_value=None,
+    )
+    service = GeneralViewService(
+        backend,
+        LiveLivaloStrategicMembership({"리바로", "리바로젯"}),
+        enabled=True,
+        general_membership=cache,
+        market_definition_reader=StaticStrategicMarketDefinitionReader({"ml_006": definition}),
+    )
+    return service, backend
+
+
+def test_explicit_strategic_market_uses_catalog_atc4_definition_before_brand_membership() -> None:
+    service, backend = _live_livalo_general_view_service(
+        StrategicMarketDefinition(
+            market_id="ml_006",
+            data_source="ubist",
+            atc4_codes=("C10A1", "C10C"),
+        )
+    )
+
+    result = service.answer("리바로 리바로젯 일반뷰로는?", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["atc4_codes"] == ["C10A1", "C10C"]
+    assert [section["atc4_code"] for section in contract["atc4_sections"]] == ["C10A1", "C10C"]
+    assert sorted(backend.market_calls) == [
+        ("C10A1", None, "ubist", "sales"),
+        ("C10C", None, "ubist", "sales"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("definition", "expected_codes", "expected_source", "expected_reason"),
+    (
+        (
+            StrategicMarketDefinition("ml_006", "ubist", ("C10A1", "C10C")),
+            ["C10A1", "C10C"],
+            "catalog_definition",
+            None,
+        ),
+        (
+            StrategicMarketDefinition("ml_006", "ubist", ("C10C",)),
+            ["C10C"],
+            "catalog_definition",
+            None,
+        ),
+        (
+            StrategicMarketDefinition("ml_006", "ubist", ()),
+            ["C10C"],
+            "brand_membership",
+            "catalog_definition_empty",
+        ),
+        (
+            None,
+            ["C10C"],
+            "brand_membership",
+            "catalog_definition_missing",
+        ),
+    ),
+)
+def test_strategic_market_definition_failure_injection_is_explicit(
+    definition: StrategicMarketDefinition | None,
+    expected_codes: list[str],
+    expected_source: str,
+    expected_reason: str | None,
+) -> None:
+    service, _ = _live_livalo_general_view_service(definition)
+
+    result = service.answer("리바로 리바로젯 일반뷰로는?", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    actual_codes = contract.get("atc4_codes") or [contract["atc4_code"]]
+    trace = result["tool_calls"][0]["qa_trace"]
+    diagnostic = {
+        "input_market": trace["input_market"],
+        "atc4_source": trace["atc4_source"],
+        "candidate_atc4_codes": trace["candidate_atc4_codes"],
+        "member_brand_count": trace["member_brand_count"],
+        "reduction_reason": trace["reduction_reason"],
+    }
+    print(diagnostic)
+    assert actual_codes == expected_codes
+    assert diagnostic == {
+        "input_market": "ml_006",
+        "atc4_source": expected_source,
+        "candidate_atc4_codes": expected_codes,
+        "member_brand_count": 2,
+        "reduction_reason": expected_reason,
+    }
+    assert "question" not in diagnostic
+    assert "answer" not in diagnostic
+    assert "fragment" not in diagnostic
 
 
 def test_strategic_market_reverse_mapping_fails_closed_for_multiple_atc4_codes() -> None:
