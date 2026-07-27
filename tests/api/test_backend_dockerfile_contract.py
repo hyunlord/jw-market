@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import re
 import shlex
 from collections import deque
@@ -178,7 +179,11 @@ def _docker_copy_sources(dockerfile_text: str) -> tuple[str, ...]:
         if not line.upper().startswith("COPY "):
             continue
 
-        tokens = shlex.split(line[5:].strip())
+        copy_value = line[5:].strip()
+        if copy_value.startswith("["):
+            tokens = json.loads(copy_value)
+        else:
+            tokens = shlex.split(copy_value)
         while tokens and tokens[0].startswith("--"):
             tokens.pop(0)
         if len(tokens) >= 2:
@@ -258,6 +263,18 @@ def test_backend_requirements_include_import_time_etl_dependencies() -> None:
     )
 
 
+def test_backend_image_includes_import_time_mi_master_asset() -> None:
+    dockerfile = Path("api/Dockerfile")
+    copy_sources = _docker_copy_sources(dockerfile.read_text(encoding="utf-8"))
+    source = "data/JW 주요 약품 수동 매핑"
+
+    assert source in copy_sources, (
+        "API startup reads the canonical MI Master workbook, but its source "
+        f"directory is absent from Docker COPY: {source}"
+    )
+    assert Path(source).is_dir(), f"Docker COPY source does not exist: {source}"
+
+
 def _missing_import_time_dependencies(requirements: str) -> tuple[str, ...]:
     required = ("openpyxl>=3.1", "pyarrow==24.0.0", "duckdb==1.5.4")
     return tuple(dependency for dependency in required if dependency not in requirements)
@@ -267,6 +284,17 @@ def test_contract_names_missing_import_time_dependency() -> None:
     requirements = "openpyxl>=3.1\npyarrow==24.0.0\n"
 
     assert _missing_import_time_dependencies(requirements) == ("duckdb==1.5.4",)
+
+
+def test_contract_parses_json_array_copy_with_spaces(tmp_path: Path) -> None:
+    source = "data/JW 주요 약품 수동 매핑"
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        f'COPY ["{source}", "/app/{source}"]\n',
+        encoding="utf-8",
+    )
+
+    assert _docker_copy_sources(dockerfile.read_text(encoding="utf-8")) == (source,)
 
 
 def _write_synthetic_api(
