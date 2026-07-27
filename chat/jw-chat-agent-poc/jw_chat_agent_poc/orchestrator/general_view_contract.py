@@ -19,7 +19,7 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     if contract.get("mode") == "dual" and not strategic_answer.startswith("## 전략뷰 (market_landscape)"):
         strategic_answer = f"## 전략뷰 (market_landscape)\n\n{strategic_answer}"
     parts = [strategic_answer]
-    if section not in answer:
+    if not _section_present(answer, section):
         parts.append(section)
     combined = "\n\n".join(part for part in parts if part)
     for label in labels:
@@ -28,6 +28,13 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     if contract.get("mode") == "dual" and DUAL_WARNING not in combined:
         combined = "\n\n".join((combined, f"> {DUAL_WARNING}"))
     return combined
+
+
+def _section_present(answer: str, section: str) -> bool:
+    if section in answer:
+        return True
+    _, separator, body = section.partition("\n")
+    return bool(separator and body.strip() and body.strip() in answer)
 
 
 def _scope_labels(contract: dict[str, Any]) -> tuple[str, ...]:
