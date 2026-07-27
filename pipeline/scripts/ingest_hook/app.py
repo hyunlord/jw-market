@@ -29,6 +29,7 @@ from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, 
 from pipeline.scripts.ingest_hook.ledger import (
     STATUS_COMPLETE,
     STATUS_FAILED,
+    STATUS_QUEUED,
     Ledger,
     LedgerConnectionError,
 )
@@ -78,6 +79,23 @@ class IngestService:
         entry = self.ledger.next_queued(category)
         if entry is None:
             return None
+        return self._submit_entry(entry)
+
+    def promote_exact(self, epoch: str, category: str, manifest_sha: str) -> str | None:
+        """Promote one exact queued identity while preserving category serialisation."""
+        if self.ledger.running_in_category(category) > 0:
+            return None
+        entry = self.ledger.status(epoch, category, manifest_sha)
+        if entry is None:
+            raise RuntimeError("exact promotion identity is absent from the ledger")
+        if entry.status != STATUS_QUEUED:
+            raise RuntimeError(
+                f"exact promotion requires queued status, got {entry.status!r}"
+            )
+        return self._submit_entry(entry)
+
+    def _submit_entry(self, entry) -> str:
+        category = entry.category
         run_id = self.now()
         started_at = datetime.now(timezone.utc).isoformat()
         try:
@@ -397,7 +415,17 @@ class IngestService:
             manifest_path=stored_path,
             uploaded_by=manifest.uploaded_by,
         )
-        launched = self.promote(manifest.category) if decision.action == "queued" else None
+        launched = None
+        if decision.action == "queued":
+            launched = (
+                self.promote_exact(
+                    manifest.epoch,
+                    manifest.category,
+                    manifest.manifest_sha,
+                )
+                if config.webhook_promote_exact()
+                else self.promote(manifest.category)
+            )
         return {
             "epoch": manifest.epoch,
             "category": manifest.category,
