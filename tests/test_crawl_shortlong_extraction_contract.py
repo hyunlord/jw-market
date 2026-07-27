@@ -7,7 +7,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PROTECTED_BLOB_SHA256 = {
-    "api/Dockerfile": "e89feb8e6708177a37275896e17fbaa6ba04a86342b4defdbb8ca594bca73723",
+    # Repinned 2026-07-28: the API image now includes the contract/domain
+    # packages proven reachable by tests/api/test_backend_dockerfile_contract.py.
+    "api/Dockerfile": "a7fb8f50032f2ede2d64e9184a255f31c65d5bf439edf467e7bc42093e9f41ab",
     "pipeline/scripts/agent3/repository.py": "83af919e96eac24b372fa500c7fdb920b1e23e9abfb91352134bc98305fec858",
     "pipeline/scripts/agent3/run_source.py": "be4dcaf7cffb77cdcb0898970597a76d12349822ecdf3ff4aebd633aa794c376",
     "pipeline/scripts/agent3/strength_candidate_extractor.py": "67773b5947f4eb36b79c85edb421a9c1002d413450dbb001f842b91f2c8cb271",
