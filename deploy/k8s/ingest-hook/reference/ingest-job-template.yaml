@@ -94,11 +94,11 @@ spec:
                   key: password
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: "2"
+              memory: 8Gi
             limits:
               cpu: "2"
-              memory: 4Gi
+              memory: 8Gi
           volumeMounts:
             - name: ingest-input
               mountPath: /nfs-root/autoIngestion

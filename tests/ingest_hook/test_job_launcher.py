@@ -418,6 +418,10 @@ def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
         for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert env["INGEST_MART_PROMOTION_APPROVED"]["value"] == "1"
+    assert body["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "2", "memory": "8Gi"},
+        "limits": {"cpu": "2", "memory": "8Gi"},
+    }
     assert env["INGEST_MART_SOURCE_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_TARGET_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_BUILD_PREFIX"]["value"] == "jw_mart_ingest"
