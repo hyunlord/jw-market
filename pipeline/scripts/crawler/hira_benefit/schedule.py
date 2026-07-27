@@ -16,9 +16,13 @@ from temporalio.client import (
     ScheduleSpec,
 )
 
-from .contract import HiraWorkflowInput
-from .temporal_workflow import (
+from .contract import (
     SCHEDULE_RUN_ID,
+    SCHEDULED_DETAIL_NOTICES,
+    HiraWorkflowInput,
+    scheduled_workflow_input,
+)
+from .temporal_workflow import (
     TASK_QUEUE,
     WORKFLOW_NAME,
 )
@@ -27,21 +31,16 @@ SCHEDULE_ID = "jw-hira-benefit-daily-v1"
 SCHEDULE_WORKFLOW_ID = "jw-hira-benefit-daily-v1-run"
 TIME_ZONE_NAME = "Asia/Seoul"
 
-
-def scheduled_workflow_input(
-    *,
-    state_root: str,
-    notice_date_boundary: str,
-    run_id: str = SCHEDULE_RUN_ID,
-) -> HiraWorkflowInput:
-    """Build incremental input with a fail-closed date-boundary fallback."""
-
-    return HiraWorkflowInput(
-        run_id=run_id,
-        state_root=state_root,
-        first_run_mode="date_boundary",
-        notice_date_boundary=notice_date_boundary,
-    )
+__all__ = [
+    "SCHEDULED_DETAIL_NOTICES",
+    "SCHEDULE_ID",
+    "SCHEDULE_RUN_ID",
+    "SCHEDULE_WORKFLOW_ID",
+    "TIME_ZONE_NAME",
+    "build_daily_schedule",
+    "create_schedule",
+    "scheduled_workflow_input",
+]
 
 
 def build_daily_schedule(
