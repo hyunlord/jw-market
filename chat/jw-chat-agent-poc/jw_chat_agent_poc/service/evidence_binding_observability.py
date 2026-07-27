@@ -41,10 +41,10 @@ _MAX_FACT_REFS: Final = 8
 _MAX_METRIC_SUMMARIES: Final = 8
 _MAX_AXIS_SUMMARIES: Final = 4
 _MAX_BLOCKED_TOKEN_REFS: Final = 16
-_MAX_TEXT_FRAGMENTS: Final = 8
-_TEXT_CONTEXT_RADIUS: Final = 96
-_MAX_TEXT_FRAGMENT_CHARS: Final = 256
-_MAX_TEXT_PROJECTION_CHARS: Final = 2_048
+_MAX_CONTEXTS: Final = 8
+_CONTEXT_RADIUS: Final = 96
+_MAX_CONTEXT_CHARS: Final = 256
+_MAX_PROJECTED_CONTEXT_CHARS: Final = 2_048
 
 
 def binding_pipeline_observability(
@@ -153,30 +153,30 @@ def binding_pipeline_observability(
     }
 
 
-def binding_text_observability(
+def binding_context_observability(
     *,
     question: str,
     answer: str,
     expected_entities: Sequence[str],
     gate: BindingVerification,
-    text_projection_allowed: bool,
+    context_projection_allowed: bool,
 ) -> dict[str, Any]:
     if not gate.blocked_numbers:
         return {}
     expected = expected_entity_set(question, expected_entities)
     claim_text = without_bound_identifiers(answer, expected)
     return {
-        "binder_input_text": _blocked_context_projection(
+        "binder_input_context": _blocked_context_projection(
             claim_text,
             _claim_occurrences(claim_text),
             gate.blocked_numbers,
-            allowed=text_projection_allowed,
+            allowed=context_projection_allowed,
         ),
-        "pre_binding_answer_text": _blocked_context_projection(
+        "pre_binding_answer_context": _blocked_context_projection(
             answer,
             _claim_occurrences(answer),
             gate.blocked_numbers,
-            allowed=text_projection_allowed,
+            allowed=context_projection_allowed,
         ),
     }
 
@@ -217,14 +217,14 @@ def _blocked_context_projection(
     allowed: bool,
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "scope": "blocked_token_contexts",
+        "scope": "blocked_token_context_metadata",
         "available": allowed and bool(blocked_numbers),
         "omitted_reason": "",
-        "source_text_included_in_full": False,
-        "fragments": (),
-        "fragment_count": 0,
-        "fragments_truncated": False,
-        "emitted_chars": 0,
+        "source_text_included": False,
+        "contexts": (),
+        "context_count": 0,
+        "contexts_truncated": False,
+        "projected_context_chars": 0,
     }
     if not allowed:
         base["available"] = False
@@ -251,51 +251,48 @@ def _blocked_context_projection(
         base["omitted_reason"] = "blocked_token_not_found"
         return base
 
-    fragments: list[dict[str, Any]] = []
-    emitted_chars = 0
+    contexts: list[dict[str, Any]] = []
+    projected_context_chars = 0
     for occurrence in blocked_occurrences:
-        if len(fragments) >= _MAX_TEXT_FRAGMENTS:
+        if len(contexts) >= _MAX_CONTEXTS:
             break
-        start = max(0, int(occurrence["start"]) - _TEXT_CONTEXT_RADIUS)
-        end = min(len(text), int(occurrence["end"]) + _TEXT_CONTEXT_RADIUS)
-        fragment = text[start:end]
-        if len(fragment) > _MAX_TEXT_FRAGMENT_CHARS:
-            fragment = fragment[:_MAX_TEXT_FRAGMENT_CHARS]
-            end = start + len(fragment)
-        remaining = _MAX_TEXT_PROJECTION_CHARS - emitted_chars
+        start = max(0, int(occurrence["start"]) - _CONTEXT_RADIUS)
+        end = min(len(text), int(occurrence["end"]) + _CONTEXT_RADIUS)
+        context = text[start:end]
+        if len(context) > _MAX_CONTEXT_CHARS:
+            context = context[:_MAX_CONTEXT_CHARS]
+            end = start + len(context)
+        remaining = _MAX_PROJECTED_CONTEXT_CHARS - projected_context_chars
         if remaining <= 0:
             break
-        if len(fragment) > remaining:
-            fragment = fragment[:remaining]
-            end = start + len(fragment)
-        if fragment == text and len(fragment) > int(occurrence["end"]) - int(
-            occurrence["start"]
-        ):
-            if int(occurrence["start"]) > 0:
-                start += 1
-                fragment = text[start:end]
-            else:
-                end -= 1
-                fragment = text[start:end]
-        fragments.append(
+        if len(context) > remaining:
+            context = context[:remaining]
+            end = start + len(context)
+        contexts.append(
             {
                 "token_ref": occurrence["token_ref"],
                 "occurrence_id": occurrence["occurrence_id"],
                 "char_range": (occurrence["start"], occurrence["end"]),
                 "context_char_range": (start, end),
-                "text": fragment,
+                "context_chars": len(context),
+                "context_utf8_bytes": len(context.encode()),
+                "context_sha256": hashlib.sha256(context.encode()).hexdigest(),
+                "expected_metrics": claim_metrics_for_token(
+                    text,
+                    str(occurrence["token"]),
+                ),
                 "leading_truncated": start > 0,
                 "trailing_truncated": end < len(text),
             }
         )
-        emitted_chars += len(fragment)
+        projected_context_chars += len(context)
 
-    base["fragments"] = tuple(fragments)
-    base["fragment_count"] = len(fragments)
-    base["fragments_truncated"] = len(fragments) < len(
+    base["contexts"] = tuple(contexts)
+    base["context_count"] = len(contexts)
+    base["contexts_truncated"] = len(contexts) < len(
         dict.fromkeys(blocked_numbers)
     )
-    base["emitted_chars"] = emitted_chars
+    base["projected_context_chars"] = projected_context_chars
     return base
 
 

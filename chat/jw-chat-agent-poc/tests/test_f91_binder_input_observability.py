@@ -7,8 +7,8 @@ from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact
 from jw_chat_agent_poc.service.app import _apply_evidence_binding_gate
 from jw_chat_agent_poc.service.evidence_binding import BindingVerification
 from jw_chat_agent_poc.service.evidence_binding_observability import (
+    binding_context_observability,
     binding_pipeline_observability,
-    binding_text_observability,
 )
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 
@@ -27,7 +27,7 @@ def _gate(*blocked_numbers: str) -> BindingVerification:
 def _observability(
     answer: str,
     *blocked_numbers: str,
-    text_projection_allowed: bool = True,
+    context_projection_allowed: bool = True,
 ) -> dict[str, object]:
     gate = _gate(*blocked_numbers)
     pipeline = binding_pipeline_observability(
@@ -45,17 +45,17 @@ def _observability(
             "discard_reason": "",
         },
     )
-    text = binding_text_observability(
+    context = binding_context_observability(
         question="리바로 매출 알려줘",
         answer=answer,
         expected_entities=("리바로",),
         gate=gate,
-        text_projection_allowed=text_projection_allowed,
+        context_projection_allowed=context_projection_allowed,
     )
-    return {**pipeline, **text}
+    return {**pipeline, **context}
 
 
-def test_binder_and_pre_binding_text_are_exposed_as_bounded_blocked_contexts() -> None:
+def test_binder_and_pre_binding_contexts_expose_only_bounded_metadata() -> None:
     answer = (
         "리바로 매출 설명입니다. "
         "2025-12 매출은 90.86억원이고 2026-02 매출은 75.08억원입니다."
@@ -69,18 +69,19 @@ def test_binder_and_pre_binding_text_are_exposed_as_bounded_blocked_contexts() -
         "75.08억원",
     )
 
-    binder_text = trace["binder_input_text"]
-    pre_binding_text = trace["pre_binding_answer_text"]
-    assert binder_text["scope"] == "blocked_token_contexts"
-    assert pre_binding_text["scope"] == "blocked_token_contexts"
-    assert binder_text["available"] is True
-    assert pre_binding_text["available"] is True
-    assert len(binder_text["fragments"]) == 4
-    assert len(pre_binding_text["fragments"]) == 4
-    assert all(item["text"] for item in binder_text["fragments"])
-    assert all(item["text"] for item in pre_binding_text["fragments"])
-    assert binder_text["source_text_included_in_full"] is False
-    assert pre_binding_text["source_text_included_in_full"] is False
+    binder_context = trace["binder_input_context"]
+    pre_binding_context = trace["pre_binding_answer_context"]
+    assert binder_context["scope"] == "blocked_token_context_metadata"
+    assert pre_binding_context["scope"] == "blocked_token_context_metadata"
+    assert binder_context["available"] is True
+    assert pre_binding_context["available"] is True
+    assert len(binder_context["contexts"]) == 4
+    assert len(pre_binding_context["contexts"]) == 4
+    assert binder_context["source_text_included"] is False
+    assert pre_binding_context["source_text_included"] is False
+    serialized = json.dumps(trace, ensure_ascii=False)
+    assert "리바로 매출 설명입니다" not in serialized
+    assert '"text"' not in serialized
 
 
 def test_blocked_occurrences_are_prioritized_within_existing_eight_item_cap() -> None:
@@ -113,32 +114,32 @@ def test_blocked_occurrences_are_prioritized_within_existing_eight_item_cap() ->
     assert emitted_blocked_refs == expected_blocked_refs
 
 
-def test_file_grounded_answer_omits_text_fragments() -> None:
+def test_file_grounded_answer_omits_context_metadata() -> None:
     sensitive = "환자 홍길동의 2026-02 수치는 75.08억원입니다."
 
     trace = _observability(
         sensitive,
         "2026-02",
         "75.08억원",
-        text_projection_allowed=False,
+        context_projection_allowed=False,
     )
 
     serialized = json.dumps(trace, ensure_ascii=False)
-    assert trace["binder_input_text"] == {
-        "scope": "blocked_token_contexts",
+    assert trace["binder_input_context"] == {
+        "scope": "blocked_token_context_metadata",
         "available": False,
         "omitted_reason": "file_grounded_answer",
-        "source_text_included_in_full": False,
-        "fragments": (),
-        "fragment_count": 0,
-        "fragments_truncated": False,
-        "emitted_chars": 0,
+        "source_text_included": False,
+        "contexts": (),
+        "context_count": 0,
+        "contexts_truncated": False,
+        "projected_context_chars": 0,
     }
-    assert trace["pre_binding_answer_text"] == trace["binder_input_text"]
+    assert trace["pre_binding_answer_context"] == trace["binder_input_context"]
     assert "홍길동" not in serialized
 
 
-def test_text_projection_is_bounded_and_marks_truncation() -> None:
+def test_context_projection_is_bounded_and_marks_truncation() -> None:
     blocked = tuple(f"{index + 100}.123억원" for index in range(16))
     answer = "\n".join(
         f"{'문맥' * 80} {token} {'추가' * 80}"
@@ -147,12 +148,15 @@ def test_text_projection_is_bounded_and_marks_truncation() -> None:
 
     trace = _observability(answer, *blocked)
 
-    for key in ("binder_input_text", "pre_binding_answer_text"):
+    for key in ("binder_input_context", "pre_binding_answer_context"):
         projection = trace[key]
-        assert projection["emitted_chars"] <= 2_048
-        assert projection["fragment_count"] <= 8
-        assert projection["fragments_truncated"] is True
-        assert all(len(item["text"]) <= 256 for item in projection["fragments"])
+        assert projection["projected_context_chars"] <= 2_048
+        assert projection["context_count"] <= 8
+        assert projection["contexts_truncated"] is True
+        assert all(
+            item["context_chars"] <= 256 for item in projection["contexts"]
+        )
+        assert all("text" not in item for item in projection["contexts"])
 
 
 def test_missing_blocked_token_never_exposes_unrelated_context() -> None:
@@ -161,17 +165,17 @@ def test_missing_blocked_token_never_exposes_unrelated_context() -> None:
         "999.99억원",
     )
 
-    assert trace["binder_input_text"]["available"] is False
+    assert trace["binder_input_context"]["available"] is False
     assert (
-        trace["binder_input_text"]["omitted_reason"]
+        trace["binder_input_context"]["omitted_reason"]
         == "blocked_token_not_found"
     )
-    assert trace["binder_input_text"]["fragments"] == ()
-    assert trace["pre_binding_answer_text"]["fragments"] == ()
+    assert trace["binder_input_context"]["contexts"] == ()
+    assert trace["pre_binding_answer_context"]["contexts"] == ()
     assert "민감한 주변 문맥" not in json.dumps(trace, ensure_ascii=False)
 
 
-def test_bounded_text_reaches_public_trace_and_file_answers_remain_omitted() -> None:
+def test_safe_context_metadata_reaches_public_trace_and_file_answers_remain_omitted() -> None:
     fact = EvidenceFact(
         fact_id="market-size",
         label="시장규모",
@@ -211,9 +215,17 @@ def test_bounded_text_reaches_public_trace_and_file_answers_remain_omitted() -> 
     )
 
     claims = trace["qa_trace"]["claims"]
-    assert claims["binder_input_text"]["available"] is True
-    assert claims["pre_binding_answer_text"]["available"] is True
-    assert claims["binder_input_text"]["fragments"]
+    assert claims["binder_input_context"]["available"] is True
+    assert claims["pre_binding_answer_context"]["available"] is True
+    assert claims["binder_input_context"]["contexts"]
+    serialized_claims = json.dumps(claims, ensure_ascii=False)
+    assert answer not in serialized_claims
+    assert "리바로 매출은" not in serialized_claims
+    assert all(
+        "text" not in item
+        for key in ("binder_input_context", "pre_binding_answer_context")
+        for item in claims[key]["contexts"]
+    )
 
     file_result = dict(result)
     file_result.pop("_qa_claim_gate", None)
@@ -226,7 +238,7 @@ def test_bounded_text_reaches_public_trace_and_file_answers_remain_omitted() -> 
     serialized = json.dumps(file_result["_qa_claim_gate"], ensure_ascii=False)
     assert "업로드 문서 비공개 원문" not in serialized
     assert (
-        file_result["_qa_claim_gate"]["binder_input_text"]["omitted_reason"]
+        file_result["_qa_claim_gate"]["binder_input_context"]["omitted_reason"]
         == "file_grounded_answer"
     )
 
@@ -239,6 +251,6 @@ def test_bounded_text_reaches_public_trace_and_file_answers_remain_omitted() -> 
         scoped_result,
     )
     assert (
-        scoped_result["_qa_claim_gate"]["binder_input_text"]["omitted_reason"]
+        scoped_result["_qa_claim_gate"]["binder_input_context"]["omitted_reason"]
         == "file_grounded_answer"
     )
