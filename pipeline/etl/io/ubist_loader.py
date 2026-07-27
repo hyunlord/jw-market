@@ -490,6 +490,14 @@ def iter_xlsx_rows(xlsx_path: Path, generic_lookup: dict[str, str] | None = None
         workbook.close()
 
 
+def count_source_rows_by_period(xlsx_path: Path) -> dict[str, int]:
+    """Count the exact rows the loader would emit for each workbook period."""
+    counts: Counter[str] = Counter()
+    for period, _ in iter_xlsx_rows(xlsx_path):
+        counts[period] += 1
+    return dict(counts)
+
+
 def prepare_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     for col in COLUMNS:

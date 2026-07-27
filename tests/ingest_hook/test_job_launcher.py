@@ -13,10 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA = "f" * 64
 EXPECTED_API_NODE_AFFINITY = {
     "nodeAffinity": {
-        "preferredDuringSchedulingIgnoredDuringExecution": [
-            {
-                "weight": 100,
-                "preference": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+            "nodeSelectorTerms": [
+                {
                     "matchExpressions": [
                         {
                             "key": "cloud.google.com/gke-nodepool",
@@ -24,9 +23,9 @@ EXPECTED_API_NODE_AFFINITY = {
                             "values": ["knp-jw-agn-dev-genos-api-01"],
                         }
                     ]
-                },
-            }
-        ]
+                }
+            ]
+        }
     }
 }
 
@@ -43,7 +42,7 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
 
 
-def test_rendered_job_prefers_api_node_pool_without_forcing_scheduling():
+def test_rendered_job_requires_api_node_pool_for_nfs_mounts():
     body = render_job(
         category="ubist",
         manifest_sha=SHA,
@@ -56,7 +55,7 @@ def test_rendered_job_prefers_api_node_pool_without_forcing_scheduling():
     assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
 
 
-def test_reference_job_prefers_same_api_node_pool():
+def test_reference_job_requires_same_api_node_pool():
     template = yaml.safe_load(
         (
             REPO_ROOT

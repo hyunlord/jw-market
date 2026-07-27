@@ -199,17 +199,14 @@ def render_job(
             "template": {
                 "metadata": {"labels": {"app": "jw-ingest"}},
                 "spec": {
-                    # Temporary mitigation from
-                    # ubist_shadow_nfs_identity_audit_20260723T2239KST:
-                    # api-01 can mount the NFS volumes while db-02 times out.
-                    # Keep this preferred so capacity can still schedule Jobs;
-                    # route/firewall/NFSv3 policy remains an infrastructure fix.
+                    # api-01 can mount both NFS volumes while db-02 times out
+                    # before the ingest container starts. Keep Jobs pending
+                    # instead of scheduling them onto a node that cannot run.
                     "affinity": {
                         "nodeAffinity": {
-                            "preferredDuringSchedulingIgnoredDuringExecution": [
-                                {
-                                    "weight": 100,
-                                    "preference": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": {
+                                "nodeSelectorTerms": [
+                                    {
                                         "matchExpressions": [
                                             {
                                                 "key": "cloud.google.com/gke-nodepool",
@@ -219,9 +216,9 @@ def render_job(
                                                 ],
                                             }
                                         ]
-                                    },
-                                }
-                            ]
+                                    }
+                                ]
+                            }
                         }
                     },
                     "restartPolicy": "Never",

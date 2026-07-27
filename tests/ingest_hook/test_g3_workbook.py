@@ -85,6 +85,19 @@ def test_workbook_declared_rows_feed_crash_floor(bucket):
         _validate(bucket, manifest_path, previous_total_rows=1000)
 
 
+def test_workbook_without_declared_rows_counts_loader_rows(bucket):
+    manifest_path = write_ubist_workbook_submission(
+        bucket,
+        periods=("2026-07",),
+        declared_rows=None,
+    )
+
+    report = _validate(bucket, manifest_path, previous_total_rows=5)
+
+    assert report.total_rows == 3
+    assert any("rows counted via loader iterator" in note for note in report.notes)
+
+
 def test_good_workbook_is_fast(bucket):
     # Header-only judgment: even a small workbook must decide well under the
     # multi-second budget; this asserts we never stream data rows.
