@@ -65,6 +65,17 @@ remaining failures are the unchanged `brand_activity/test_auto_topic_core.py`
 node IDs recorded in the baseline JSON; this change does not waive or modify
 them.
 
+### 2026-07-27 UBIST incremental baseline change
+
+The row-level UBIST merge, rolling-window, and catalog refresh work added 12
+passing cases to the canonical root collection. The measured baseline changed
+from `2227 collected / 2217 passed / 5 failed / 5 skipped` to `2239 collected /
+2229 passed / 5 failed / 5 skipped`.
+
+No failure node ID was added, removed, or replaced. The five remaining failures
+are the unchanged `brand_activity/test_auto_topic_core.py` node IDs recorded in
+the baseline JSON.
+
 ## Audit evidence
 
 Every audit that reports a full regression must preserve:
