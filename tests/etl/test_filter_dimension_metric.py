@@ -19,10 +19,22 @@ def test_iqvia_registry_exposes_enabled_dimensions_including_pack() -> None:
     enabled = sidecar.enabled_dimension_specs("iqvia_nsa")
     names = {spec.dimension_type for spec in enabled}
 
-    assert names == {"mfr", "molecule_type", "molecule_desc", "strength", "nhi", "pack"}
+    assert names == {
+        "mfr",
+        "molecule_type",
+        "molecule_desc",
+        "dosage_form",
+        "strength",
+        "nhi",
+        "pack",
+    }
     assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["molecule_desc"].enabled is True
     assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["pack"].enabled is True
     assert sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["pack"].source_columns == ("pack_desc",)
+    dosage_form = sidecar.DIMENSION_REGISTRY["iqvia_nsa"]["dosage_form"]
+    assert dosage_form.source_columns == ("dosage_form",)
+    assert dosage_form.api_name == "dosage_form"
+    assert dosage_form.api_name != sidecar.DIMENSION_REGISTRY["ubist"]["form"].api_name
 
 
 def test_dimension_value_normalization_collapses_whitespace_and_excludes_empty_values() -> None:
@@ -131,6 +143,7 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
                 "company": "MFR A",
                 "manufacturer": "MFR A",
                 "molecule_type": "Single",
+                "dosage_form": "TABLETS",
                 "strength": "10MG",
                 "nhi_type": "급여",
                 "molecule_desc": "CARTEOLOL",
@@ -148,6 +161,7 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
                 "company": "MFR A",
                 "manufacturer": "MFR A",
                 "molecule_type": "Combination",
+                "dosage_form": "CAPSULES",
                 "strength": "20MG",
                 "nhi_type": "비급여",
                 "molecule_desc": "DORZOLAMIDE",
@@ -175,7 +189,17 @@ def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
     assert molecule["dimension_value"] == "CARTEOLOL"
     assert molecule["raw_value_history"] == {"2025-01": 125.0}
     assert "molecule_desc" in dimension_types
+    assert "dosage_form" in dimension_types
     assert "pack" in dimension_types
+    dosage_rows = [
+        row
+        for row in rows
+        if row["dimension_type"] == "dosage_form"
+    ]
+    assert [(row["product_code"], row["dimension_value"]) for row in dosage_rows] == [
+        ("P1", "TABLETS"),
+        ("P2", "CAPSULES"),
+    ]
     pack = next(
         row
         for row in rows

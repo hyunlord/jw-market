@@ -46,6 +46,7 @@ class IqviaAnalysisLevel(BaseModel):
     mfr_name_kor: list[str] = Field(default_factory=list, description="IQVIA 제조사 한글명 필터.", examples=[["JW중외제약"]])
     molecule_type: list[str] = Field(default_factory=list, description="IQVIA molecule type 필터.")
     molecule_desc: list[str] = Field(default_factory=list, description="IQVIA molecule desc 성분 필터.")
+    dosage_form: list[str] = Field(default_factory=list, description="IQVIA NFC dosage form 필터.")
     pack_desc: list[str] = Field(default_factory=list, description="IQVIA pack desc 필터.")
     strength: list[str] = Field(default_factory=list, description="IQVIA strength 필터.")
     nhi_type: list[str] = Field(default_factory=list, description="IQVIA NHI type 필터.")

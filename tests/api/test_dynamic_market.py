@@ -2848,12 +2848,19 @@ def test_general_dimension_payload_drops_iqvia_value_slice() -> None:
             "source": "iqvia",
             "filters": {
                 "atc4": ["A10C1"],
-                "analysis_level": {"iqvia": {"audit_code": ["KPA"], "pack_desc": ["PACK"]}},
+                "analysis_level": {
+                    "iqvia": {
+                        "audit_code": ["KPA"],
+                        "dosage_form": ["TABLETS"],
+                        "pack_desc": ["PACK"],
+                    }
+                },
             },
         }
     )
 
     payload = request.filters.analysis_level.to_dimension_payload(source=request.source)["iqvia"]
+    assert payload["dosage_form"] == ["TABLETS"]
     assert payload["pack_desc"] == ["PACK"]
     assert "audit_code" not in payload
 

@@ -20,6 +20,7 @@ def test_build_filter_option_payload_includes_iqvia_molecule_desc_dimension() ->
             filter_options.DimensionOptionRow("mfr", "제조사A", "제조사a", 3),
             filter_options.DimensionOptionRow("molecule_type", "SINGLE", "single", 2),
             filter_options.DimensionOptionRow("molecule_desc", "CARTEOLOL", "carteolol", 2),
+            filter_options.DimensionOptionRow("dosage_form", "TABLETS", "tablets", 2),
             filter_options.DimensionOptionRow("strength", "5MG", "5mg", 1),
             filter_options.DimensionOptionRow("nhi", "NHI", "nhi", 1),
         ),
@@ -30,6 +31,7 @@ def test_build_filter_option_payload_includes_iqvia_molecule_desc_dimension() ->
         "mfr_name_kor",
         "molecule_type",
         "molecule_desc",
+        "dosage_form",
         "strength",
         "nhi_type",
     ]
@@ -315,6 +317,7 @@ def test_iqvia_filter_options_exposes_portal_dimension_aliases() -> None:
     # Given: canonical IQVIA sidecar rows.
     rows = (
         filter_options.DimensionOptionRow("mfr", "JW중외제약", "jw중외제약", 1),
+        filter_options.DimensionOptionRow("dosage_form", "TABLETS", "tablets", 1),
         filter_options.DimensionOptionRow("nhi", "급여", "급여", 1),
         filter_options.DimensionOptionRow("pack", "30 TAB", "30 tab", 1),
     )
@@ -331,6 +334,7 @@ def test_iqvia_filter_options_exposes_portal_dimension_aliases() -> None:
     # Then: dimension types match the portal's existing contract.
     assert [item["dimension_type"] for item in payload["dimensions"]] == [
         "mfr_name_kor",
+        "dosage_form",
         "pack_desc",
         "nhi_type",
     ]
@@ -338,8 +342,18 @@ def test_iqvia_filter_options_exposes_portal_dimension_aliases() -> None:
 
 def test_iqvia_filter_option_selections_accept_canonical_and_portal_aliases() -> None:
     # Given: equivalent selections using the old and portal-facing names.
-    canonical = {"mfr": ["jw중외제약"], "nhi": ["급여"], "pack": ["30 tab"]}
-    aliases = {"mfr_name_kor": ["jw중외제약"], "nhi_type": ["급여"], "pack_desc": ["30 tab"]}
+    canonical = {
+        "mfr": ["jw중외제약"],
+        "dosage_form": ["tablets"],
+        "nhi": ["급여"],
+        "pack": ["30 tab"],
+    }
+    aliases = {
+        "mfr_name_kor": ["jw중외제약"],
+        "dosage_form": ["tablets"],
+        "nhi_type": ["급여"],
+        "pack_desc": ["30 tab"],
+    }
 
     # When: both request forms cross the filter-options boundary.
     parsed_canonical = filter_options._parse_selection_map(canonical, source="iqvia_nsa")
@@ -348,6 +362,7 @@ def test_iqvia_filter_option_selections_accept_canonical_and_portal_aliases() ->
     # Then: both resolve to the canonical sidecar keys used by SQL filtering.
     assert parsed_canonical == parsed_aliases == {
         "mfr": ("jw중외제약",),
+        "dosage_form": ("tablets",),
         "nhi": ("급여",),
         "pack": ("30 tab",),
     }
