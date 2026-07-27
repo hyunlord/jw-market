@@ -44,6 +44,9 @@ NEW_APP = "5e6f1629511710279fd2f5dc89d1052b877a52da"
 def live_deployment() -> dict:
     """deploy/jw-ingest-hook as observed on 2026-07-27, env order verbatim."""
     return {
+        # kubectl -o json always includes kind; the module derives the pod-template path
+        # from it and refuses to guess when it is missing.
+        "kind": "Deployment",
         "metadata": {"name": "jw-ingest-hook", "resourceVersion": "418899321"},
         "spec": {"template": {"spec": {"containers": [{
             "name": "trigger",

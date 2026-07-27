@@ -42,6 +42,20 @@ is only satisfied if both move together, and a single atomic patch is what enfor
 """
 from __future__ import annotations
 
+# Where the pod template sits differs by kind, and the difference is not cosmetic: a
+# CronJob's containers are two levels deeper. Deriving it from the object's own `kind`
+# keeps the caller from having to know, and an unrecognised kind raises rather than
+# defaulting to the Deployment shape — guessing the path is how you patch the wrong thing.
+TEMPLATE_PATHS = {
+    "Deployment": "/spec/template",
+    "StatefulSet": "/spec/template",
+    "DaemonSet": "/spec/template",
+    "ReplicaSet": "/spec/template",
+    "Job": "/spec/template",
+    "CronJob": "/spec/jobTemplate/spec/template",
+}
+
+# Retained for the Deployment case so existing callers and their tests keep working.
 ENV_PATH = "/spec/template/spec/containers/{ci}/env/{ei}"
 CONTAINER_PATH = "/spec/template/spec/containers/{ci}"
 
@@ -50,11 +64,47 @@ class PatchTargetError(RuntimeError):
     """The patch cannot be built safely against the observed spec."""
 
 
+def template_path(obj: dict) -> str:
+    """Pod-template JSON-Pointer prefix for ``obj``, from its own ``kind``.
+
+    Raises on a missing or unknown kind. A default would silently produce a
+    Deployment-shaped path for a CronJob, and the patch would then either fail
+    confusingly or — worse, if the shapes happened to line up — write somewhere else.
+    """
+    kind = obj.get("kind")
+    if not kind:
+        raise PatchTargetError(
+            "object has no 'kind'; pass the object as returned by "
+            "'kubectl get <kind> <name> -o json' so the template path can be derived"
+        )
+    if kind not in TEMPLATE_PATHS:
+        raise PatchTargetError(
+            f"unsupported kind {kind!r}; known kinds: {sorted(TEMPLATE_PATHS)}"
+        )
+    return TEMPLATE_PATHS[kind]
+
+
+def container_path(obj: dict, container_index: int) -> str:
+    return f"{template_path(obj)}/spec/containers/{container_index}"
+
+
+def env_path(obj: dict, container_index: int, env_index: int) -> str:
+    return f"{container_path(obj, container_index)}/env/{env_index}"
+
+
 def _containers(deployment: dict) -> list[dict]:
+    node = deployment
     try:
-        return deployment["spec"]["template"]["spec"]["containers"]
+        for token in [t for t in template_path(deployment).split("/") if t]:
+            node = node[token]
+        return node["spec"]["containers"]
+    except PatchTargetError:
+        raise
     except (KeyError, TypeError) as exc:
-        raise PatchTargetError(f"deployment has no container list: {exc}") from exc
+        raise PatchTargetError(
+            f"{deployment.get('kind')} has no container list at "
+            f"{template_path(deployment)}/spec/containers: {exc}"
+        ) from exc
 
 
 def resolve_container_index(deployment: dict, container: str) -> int:
@@ -124,6 +174,7 @@ def build_patch(
         raise PatchTargetError("nothing to patch: pass image and/or env_values")
 
     ci = resolve_container_index(deployment, container)
+    cpath = container_path(deployment, ci)
     ops: list[dict] = []
 
     if assert_resource_version:
@@ -136,13 +187,13 @@ def build_patch(
         ops.append({"op": "test", "path": "/metadata/resourceVersion", "value": version})
 
     # Assert the container index still holds the container we resolved.
-    ops.append({"op": "test", "path": CONTAINER_PATH.format(ci=ci) + "/name", "value": container})
+    ops.append({"op": "test", "path": cpath + "/name", "value": container})
 
     if image is not None:
         current = _containers(deployment)[ci].get("image")
         if current is None:
             raise PatchTargetError(f"container {container!r} has no image field")
-        ops.append({"op": "test", "path": CONTAINER_PATH.format(ci=ci) + "/image", "value": current})
+        ops.append({"op": "test", "path": cpath + "/image", "value": current})
 
     # Resolve every env target BEFORE emitting any replace, so a bad target aborts the
     # whole build rather than producing a partial patch.
@@ -152,7 +203,7 @@ def build_patch(
         resolved.append((name, ei, _literal_value(deployment, ci, ei, name)))
 
     for name, ei, current in resolved:
-        base = ENV_PATH.format(ci=ci, ei=ei)
+        base = env_path(deployment, ci, ei)
         # name test: the index still holds this variable.
         ops.append({"op": "test", "path": base + "/name", "value": name})
         # value test: /value exists (so this is a literal, not a valueFrom) and is
@@ -160,11 +211,11 @@ def build_patch(
         ops.append({"op": "test", "path": base + "/value", "value": current})
 
     if image is not None:
-        ops.append({"op": "replace", "path": CONTAINER_PATH.format(ci=ci) + "/image", "value": image})
+        ops.append({"op": "replace", "path": cpath + "/image", "value": image})
     for name, ei, _current in resolved:
         ops.append({
             "op": "replace",
-            "path": ENV_PATH.format(ci=ci, ei=ei) + "/value",
+            "path": env_path(deployment, ci, ei) + "/value",
             "value": env_values[name],
         })
     return ops
@@ -174,7 +225,8 @@ def describe(deployment: dict, container: str, names: list[str]) -> str:
     """Human-readable resolution table, for the operator to read before applying."""
     ci = resolve_container_index(deployment, container)
     env = _containers(deployment)[ci].get("env", [])
-    lines = [f"container {container!r} -> containers[{ci}]  (resolved by name)"]
+    lines = [f"{deployment.get('kind')} template at {template_path(deployment)}",
+             f"container {container!r} -> containers[{ci}]  (resolved by name)"]
     for i, entry in enumerate(env):
         kind = "value" if "value" in entry else ("valueFrom" if "valueFrom" in entry else "?")
         mark = " <- TARGET" if entry.get("name") in names else ""
