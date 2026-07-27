@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Mapping
 
-from jw_chat_agent_poc.tools.cause_backend import CauseBackend, CauseMarket
 from jw_chat_agent_poc.tools.query_layer.catalog import (
     QueryCatalog,
     default_catalog,
@@ -70,7 +69,6 @@ class StrategicQueryLayer:
         store: TtlStrategicMartStore | None = None,
         result_store: QueryResultStore | None = None,
         ttl_seconds: int = 300,
-        cause_backend: CauseBackend | None = None,
     ) -> None:
         if store is not None:
             self._store = store
@@ -79,7 +77,6 @@ class StrategicQueryLayer:
         else:
             self._store = shared_strategic_mart_store(ttl_seconds)
         self._results = result_store or QueryResultStore()
-        self._cause_backend = cause_backend
 
     def catalog_for_brand(self, brand: str | None, market: str | None = None) -> QueryCatalog:
         snapshot = self._snapshot()
@@ -123,8 +120,6 @@ class StrategicQueryLayer:
     ) -> dict[str, Any]:
         definition = metric_definition(metric)
         measure = definition.measure
-        if metric.casefold() == "hhi" and self._cause_backend is not None:
-            return self._cause_brand_metric(brand, metric, source=source)
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
         source = source or _default_source_for_metric(snapshot, market, brand, period, measure)
@@ -196,8 +191,6 @@ class StrategicQueryLayer:
         market: str | None = None,
         source: str = "",
     ) -> dict[str, Any]:
-        if metric.casefold() == "hhi" and self._cause_backend is not None:
-            return self._cause_brand_metric(brand, metric, source=source)
         snapshot = self._snapshot()
         market = _required_market(snapshot, brand, market)
         source = source or _default_source_for_metric(snapshot, market, brand, "latest")
@@ -220,8 +213,6 @@ class StrategicQueryLayer:
         }
 
     def market_scope(self, brand: str, market: str | None = None) -> dict[str, Any]:
-        if self._cause_backend is not None:
-            return self._cause_market_scope(brand)
         return self.market_scope_from_mart(brand, market=market)
 
     def market_scope_from_mart(self, brand: str, market: str | None = None) -> dict[str, Any]:
@@ -412,8 +403,6 @@ class StrategicQueryLayer:
         source: str = "",
         metric: str = "sales",
     ) -> dict[str, Any]:
-        if self._cause_backend is not None:
-            return self._cause_top_brands(brand, limit=limit, source=source)
         definition = metric_definition(metric)
         measure = definition.measure
         snapshot = self._snapshot()
@@ -461,49 +450,6 @@ class StrategicQueryLayer:
             "limit": limit,
         }
         return {"source": source_label(selected_source), "tool": "get_brand_metric", "summary_text": f"{brand} 시장 상위 브랜드를 전략 mart에서 조회했습니다.", "render_data": data}
-
-    def _cause_market_scope(self, brand: str) -> dict[str, Any]:
-        market = self._cause_market(brand)
-        data = market.render_market_scope(limit=10)
-        data["query_result_id"] = self._results.put(list(data["level_segments"]))
-        return {
-            "source": source_label(market.source),
-            "tool": "get_market_landscape",
-            "summary_text": f"{brand}이 속한 {market.market_name} 시장을 backend API에서 조회했습니다.",
-            "render_data": data,
-            "backend_trace": market.trace.as_dict(),
-        }
-
-    def _cause_top_brands(self, brand: str, *, limit: int, source: str) -> dict[str, Any]:
-        market = self._cause_market(brand, source=source)
-        data = market.render_market_scope(limit=limit)
-        data["query_result_id"] = self._results.put(list(data["level_segments"]))
-        return {
-            "source": source_label(market.source),
-            "tool": "get_brand_metric",
-            "summary_text": f"{market.market_name} 시장 상위 브랜드를 backend API에서 조회했습니다.",
-            "render_data": data,
-            "backend_trace": market.trace.as_dict(),
-        }
-
-    def _cause_brand_metric(self, brand: str, metric: str, *, source: str) -> dict[str, Any]:
-        market = self._cause_market(brand, source=source)
-        data = market.render_brand_metric(metric)
-        data["query_result_id"] = self._results.put(result_rows_from_render_data(data))
-        return {
-            "source": source_label(market.source),
-            "tool": "get_brand_metric",
-            "summary_text": metric_summary(brand, data, source_label(market.source)).replace(
-                "전략 mart 지표",
-                "backend API 지표",
-            ),
-            "render_data": data,
-            "backend_trace": market.trace.as_dict(),
-        }
-
-    def _cause_market(self, brand: str, *, source: str = "") -> CauseMarket:
-        assert self._cause_backend is not None
-        return self._cause_backend.market(brand, source=source)
 
     def dimension_breakdown(
         self,

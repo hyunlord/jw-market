@@ -96,7 +96,7 @@ class GeneralViewService:
         if not self.enabled:
             return GeneralRoute.EXISTING
         normalized = _normalize(question)
-        if _has_explicit_strategic_signal(normalized):
+        if _has_explicit_strategic_view_signal(normalized):
             return GeneralRoute.EXISTING
         if _has_explicit_general_signal(normalized):
             return GeneralRoute.GENERAL_ONLY
@@ -210,13 +210,34 @@ class GeneralViewService:
                 candidates, membership_source = self._strategic_market_candidates(question, source)
             if not candidates:
                 raise GeneralViewBackendError("ATC4 후보를 찾지 못했습니다")
+            hhi_requested = _asks_hhi(question)
+            if hhi_requested and len(candidates) > _STRATEGIC_MARKET_SPLIT_LIMIT:
+                codes = ", ".join(f"{candidate.code} ({candidate.description})" for candidate in candidates)
+                raise GeneralViewBackendError(
+                    f"일반뷰 ATC4가 분리 표시 상한 {_STRATEGIC_MARKET_SPLIT_LIMIT}개를 초과합니다. "
+                    f"ATC4를 지정해 조회해 주세요. 전체 후보: {codes}"
+                )
             markets = self._fetch_candidates(
                 candidates,
                 resolved_brand or None,
                 source,
                 measure,
-                require_all=explicit_strategic_market,
+                require_all=explicit_strategic_market or hhi_requested,
             )
+            if hhi_requested and any(market.hhi_recent is None for market in markets):
+                missing = ", ".join(market.atc4_code for market in markets if market.hhi_recent is None)
+                raise GeneralViewBackendError(f"ATC4 {missing}의 HHI 데이터가 없습니다")
+            if hhi_requested and len(markets) > 1:
+                ordered_markets = tuple(sorted(markets, key=lambda item: item.atc4_code))
+                contract = _multi_contract(
+                    f"{resolved_brand or brand} 일반뷰",
+                    ordered_markets,
+                    compact=compact,
+                    dual=dual,
+                    question=question,
+                )
+                contract["membership_source"] = membership_source
+                return _multi_result(question, ordered_markets, contract, started_at=started_at)
             if explicit_strategic_market and len(markets) > 1:
                 strategic_market = self._strategic_market(question)
                 if strategic_market is None:
@@ -374,6 +395,8 @@ def _contract(
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
     }
+    if _asks_hhi(question):
+        contract["hhi_recent"] = market.hhi_recent
     if market.fallback_reason is not None:
         contract["fallback_reason"] = market.fallback_reason
     contract.update(member_fields)
@@ -617,6 +640,10 @@ def _render_section(
             blocks.append(f"점유율 분모: ATC4 {market.atc4_code} 시장 전체 {market.measure}")
         return "\n\n".join(blocks)
     lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {market.atc4_description}"]
+    if _asks_hhi(question):
+        lines.append(f"- ATC4: {market.atc4_code}")
+        if market.hhi_recent is not None:
+            lines.append(f"- HHI ({market.period}): {market.hhi_recent:,.4f}")
     if window is not None:
         label, value = window
         lines.append(f"- 시장 규모 ({label}): {_format_value(value, market.unit)}")
@@ -717,7 +744,7 @@ def _has_explicit_general_signal(normalized: str) -> bool:
     )
 
 
-def _has_explicit_strategic_signal(normalized: str) -> bool:
+def _has_explicit_strategic_view_signal(normalized: str) -> bool:
     return bool(_STRATEGIC_MARKET_ID_PATTERN.search(normalized)) or any(
         token in normalized
         for token in (
@@ -729,11 +756,14 @@ def _has_explicit_strategic_signal(normalized: str) -> bool:
             "경쟁시장",
             "competitive_dynamics",
             "cd기준",
-            "hhi",
             "cr5",
             "집중도",
         )
     )
+
+
+def _asks_hhi(question: str) -> bool:
+    return "hhi" in _normalize(question)
 
 
 def _asks_market_metric(normalized: str) -> bool:
