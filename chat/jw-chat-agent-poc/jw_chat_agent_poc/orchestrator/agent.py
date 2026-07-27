@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from enum import StrEnum
+import logging
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Final
 
 from jw_chat_agent_poc.agent_loop import ToolUseAgent, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.routing import is_top_n_intent
@@ -85,6 +87,59 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 
 
 __all__ = ("ChatAgent", "HIRA_DISEASE_MAPPINGS")
+
+LOGGER = logging.getLogger("uvicorn.error")
+
+
+class QueryFailureReason(StrEnum):
+    MARKET_UNRESOLVED = "market_unresolved"
+    MARKET_AMBIGUOUS = "market_ambiguous"
+    RECORD_ABSENT = "record_absent"
+    SOURCE_ABSENT = "source_absent"
+    PERIOD_ABSENT = "period_absent"
+    VALUE_ABSENT = "value_absent"
+    UNKNOWN = "unknown"
+
+
+_QUERY_FAILURE_PATTERNS: Final[
+    tuple[tuple[QueryFailureReason, tuple[str, ...]], ...]
+] = (
+    (
+        QueryFailureReason.MARKET_AMBIGUOUS,
+        ("belongs to multiple markets", "multiple markets", "market ambiguous"),
+    ),
+    (
+        QueryFailureReason.MARKET_UNRESOLVED,
+        (
+            "market is unresolved",
+            "has no market for brand",
+            "not a member of requested market",
+        ),
+    ),
+    (
+        QueryFailureReason.SOURCE_ABSENT,
+        ("unavailable for source", "source absent", "source not found"),
+    ),
+    (
+        QueryFailureReason.PERIOD_ABSENT,
+        ("period not found", "periods missing", "history missing"),
+    ),
+    (
+        QueryFailureReason.VALUE_ABSENT,
+        ("value missing", "measure unavailable", "value absent"),
+    ),
+    (
+        QueryFailureReason.RECORD_ABSENT,
+        ("brand not found", "metric row missing", "market not found"),
+    ),
+)
+_CONNECTION_STRING_RE: Final = re.compile(
+    r"(?i)\b(?:jdbc:)?(?:mysql|mariadb|postgres(?:ql)?|mongodb(?:\+srv)?|redis)://[^\s]+"
+)
+_BEARER_TOKEN_RE: Final = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+")
+_SECRET_ASSIGNMENT_RE: Final = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret|authorization)\s*[:=]\s*[^\s,;]+"
+)
 
 
 class ChatAgent:
@@ -900,6 +955,13 @@ def _query_failed_metric_call(
     error: BaseException,
 ) -> dict[str, Any]:
     message = "요청한 기간의 지표 조회에 실패했습니다. 데이터가 없다는 뜻은 아니며, 확인되지 않은 수치를 추정하지 않습니다."
+    reason_code = _query_failure_reason(error)
+    LOGGER.warning(
+        "metric query failed reason_code=%s error_type=%s error_message=%s",
+        reason_code.value,
+        type(error).__name__,
+        _sanitize_exception_message(error),
+    )
     return {
         "source": "strategic_mart",
         "tool": "query_failed",
@@ -910,9 +972,28 @@ def _query_failed_metric_call(
             "status": "query_failed",
             "message": message,
             "error_type": type(error).__name__,
+            "reason_code": reason_code.value,
             "requested_filters": dict(filter_entries),
         },
     }
+
+
+def _query_failure_reason(error: BaseException) -> QueryFailureReason:
+    normalized = str(error).casefold()
+    return next(
+        (
+            reason
+            for reason, patterns in _QUERY_FAILURE_PATTERNS
+            if any(pattern in normalized for pattern in patterns)
+        ),
+        QueryFailureReason.UNKNOWN,
+    )
+
+
+def _sanitize_exception_message(error: BaseException) -> str:
+    message = _CONNECTION_STRING_RE.sub("[REDACTED_CONNECTION_STRING]", str(error))
+    message = _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", message)
+    return _SECRET_ASSIGNMENT_RE.sub(r"\1=[REDACTED]", message)
 
 
 def _market_ambiguity_result(question: str, resolution: Any) -> dict[str, Any]:

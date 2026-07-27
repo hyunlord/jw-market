@@ -21,6 +21,24 @@ _NEWS_QUERY_STOPWORDS = frozenset(
         "확인해줘",
     }
 )
+_NEWS_PRESENTATION_TERMS = frozenset(
+    {
+        "기사",
+    }
+)
+_NEWS_REQUEST_TERMS = frozenset(
+    {
+        "알려줘",
+        "알려주세요",
+        "뭐",
+        "뭐야",
+        "무엇",
+        "있나",
+        "있나요",
+        "있어",
+        "있어요",
+    }
+)
 _METRIC_INTENT_WORDS = frozenset(
     {
         "매출",
@@ -47,7 +65,7 @@ def normalize_news_query(value: str, *, brand: str = "") -> str:
     tokens: list[str] = []
     for raw_token in normalized.split():
         token = _strip_particle(raw_token)
-        if _is_search_noise(token, brand_terms):
+        if not _is_meaningful_news_term(token, brand_terms):
             continue
         if token not in tokens:
             tokens.append(token)
@@ -61,9 +79,18 @@ def _strip_particle(token: str) -> str:
     return token
 
 
-def _is_search_noise(token: str, brand_terms: set[str]) -> bool:
+def _is_meaningful_news_term(token: str, brand_terms: set[str]) -> bool:
     if not token or token in brand_terms:
-        return True
-    if token in _NEWS_QUERY_STOPWORDS or token in _METRIC_INTENT_WORDS:
-        return True
-    return token.isdigit()
+        return False
+    if (
+        token in _NEWS_QUERY_STOPWORDS
+        or token in _NEWS_PRESENTATION_TERMS
+        or token in _NEWS_REQUEST_TERMS
+        or token in _METRIC_INTENT_WORDS
+    ):
+        return False
+    if token.isdigit():
+        return False
+    # Interrogative/request-only residue is not a corpus term. Brand tagging has
+    # already narrowed the corpus, so an uncertain residue must not filter it.
+    return re.search(r"(?:뭐|무엇|어때|알려(?:줘|주세요)?|있(?:나|나요|어|어요))$", token) is None

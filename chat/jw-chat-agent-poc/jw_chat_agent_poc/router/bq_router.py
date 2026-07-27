@@ -145,6 +145,7 @@ class BQRouter:
         if (
             any(k in question for k in ("시장 규모", "시장규모", "성장", "성장 추이", "전망", "매출", "판매", "시계열", "월별", "모멘텀"))
             or any(k in lower for k in ("hhi", "momentum", "monthly", "ei"))
+            or _is_source_comparison_question(question)
             or (not has_documents and wants_market_narrative(question))
         ):
             sources = ["metrics"]
@@ -260,6 +261,17 @@ class BQRouter:
             )
             return not any(token in question.lower() for token in metric_or_api_tokens)
         return False
+
+
+def _is_source_comparison_question(question: str) -> bool:
+    lower = question.casefold()
+    has_ubist = "ubist" in lower
+    has_iqvia = "iqvia" in lower or "iqvia nsa" in lower
+    compares_sources = any(
+        marker in lower
+        for marker in ("비교", "대조", "교차", "차이", "다르", "왜", " vs ", " versus ")
+    )
+    return has_ubist and has_iqvia and compares_sources
 
 
 def _is_forecast_question(question: str) -> bool:
