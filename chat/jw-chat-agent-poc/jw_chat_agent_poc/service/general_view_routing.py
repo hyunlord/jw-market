@@ -427,11 +427,13 @@ def _multi_contract(
         section = _contract(market, other_candidates=[], compact=compact, dual=dual, question=question)
         section["market_size"] = market.market_size
         section["market_size_recent_krw"] = market.market_size
-        section["section_markdown"] = section["section_markdown"].replace(
-            "## 일반뷰 (ATC4)",
-            f"### ATC4 {market.atc4_code} — {market.atc4_description}",
-            1,
+        public_label = _public_atc4_market_label(market)
+        section_heading = (
+            f"### ATC4 {market.atc4_code}"
+            if public_label == f"ATC4 {market.atc4_code}"
+            else f"### ATC4 {market.atc4_code} — {public_label}"
         )
+        section["section_markdown"] = section["section_markdown"].replace("## 일반뷰 (ATC4)", section_heading, 1)
         sections.append(section)
     codes = [market.atc4_code for market in markets]
     selected_paths = {market.selected_data_path for market in markets}
@@ -650,7 +652,7 @@ def _render_section(
         if not compact:
             blocks.append(f"점유율 분모: ATC4 {market.atc4_code} 시장 전체 {market.measure}")
         return "\n\n".join(blocks)
-    lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {market.atc4_description}"]
+    lines = ["## 일반뷰 (ATC4)", "", f"- 시장: {_public_atc4_market_label(market)}"]
     if _asks_hhi(question):
         lines.append(f"- ATC4: {market.atc4_code}")
         if market.hhi_recent is not None:
@@ -686,9 +688,20 @@ def _render_section(
 def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str, float] | None:
     if not re.search(r"최근\s*(?:1년|12\s*개월)", question):
         return None
+    normalized_source = re.sub(r"[_\s]+", " ", market.source.strip().upper())
+    if normalized_source in {"IQVIA", "IQVIA NSA"}:
+        points = tuple(
+            (period, value)
+            for period, value in market.market_size_series
+            if re.fullmatch(r"\d{4}-Q[1-4]", period)
+        )
+        if len(points) < 4:
+            raise GeneralViewBackendError("IQVIA 소스는 분기 단위이며 최근 4분기 데이터가 부족합니다")
+        selected = points[-4:]
+        return f"최근 4분기 합계 {selected[0][0]}~{selected[-1][0]}", sum(value for _, value in selected)
     points = tuple((period, value) for period, value in market.market_size_series if re.fullmatch(r"\d{4}-\d{2}", period))
     if len(points) < 12:
-        raise GeneralViewBackendError("최근 12개월 시장 규모를 계산할 월별 데이터가 부족합니다")
+        raise GeneralViewBackendError("UBIST 소스는 월 단위이며 최근 12개월 데이터가 부족합니다")
     selected = points[-12:]
     return f"최근 12개월 합계 {selected[0][0]}~{selected[-1][0]}", sum(value for _, value in selected)
 
@@ -716,7 +729,7 @@ def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, A
         "status": "ok",
         "market": market.atc4_code,
         "market_id": market.atc4_code,
-        "market_name": market.atc4_description,
+        "market_name": _public_atc4_market_label(market),
         "scope": "market",
         "scope_label": "시장 구성 브랜드",
         "level": "Brand",
@@ -730,10 +743,11 @@ def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, A
         "other_member_count": len(other_rows),
         "sort": "sales_desc",
         "limit": limit.applied,
+        "display_limit": limit.applied,
     }
     if limit.requested is not None:
         fields["requested_limit"] = limit.requested
-        fields["limit_capped"] = limit.capped
+        fields["limit_capped"] = limit.capped and len(population) > limit.applied
     if other_only and other_share is not None:
         fields["other_total_share_pct"] = other_share
     return fields
@@ -743,6 +757,13 @@ def _format_value(value: float, unit: str) -> str:
     if unit.upper() == "KRW":
         return f"{value / 100_000_000:,.1f}억원"
     return f"{value:,.2f} {unit}".strip()
+
+
+def _public_atc4_market_label(market: GeneralMarket) -> str:
+    description = market.atc4_description.strip()
+    if re.search(r"[가-힣]", description):
+        return description
+    return f"ATC4 {market.atc4_code}"
 
 
 def _normalize(question: str) -> str:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from jw_chat_agent_poc.orchestrator.provenance_model import sanitize_internal_provenance_labels
+
 
 DUAL_WARNING = "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다"
 
@@ -9,7 +11,7 @@ DUAL_WARNING = "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수�
 def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) -> str:
     if not contract:
         return answer
-    section = str(contract.get("section_markdown") or "").strip()
+    section = sanitize_internal_provenance_labels(str(contract.get("section_markdown") or "")).strip()
     if not section:
         return answer
     labels = _scope_labels(contract)

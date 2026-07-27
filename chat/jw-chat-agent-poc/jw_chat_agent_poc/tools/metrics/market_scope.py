@@ -135,6 +135,7 @@ class MarketScopeResolver:
                     resolution.canonical_brand,
                     view_type,
                     started_at=started_at,
+                    market_display_name=resolution.market_name,
                 )
             snapshot = self._cache.snapshot()
             card = find_brand_card(snapshot.market_status, resolution.canonical_brand)
@@ -241,6 +242,7 @@ class MarketScopeResolver:
             "market_landscape",
             started_at=started_at,
             use_mart=True,
+            market_display_name=resolution.market_name,
         )
 
     def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
@@ -266,7 +268,11 @@ class MarketScopeResolver:
             return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "market_id", market_id)
         if member_query and member_limit.requested is not None:
             data["requested_limit"] = member_limit.requested
-            data["limit_capped"] = member_limit.capped
+            data["display_limit"] = member_limit.applied
+            data["limit_capped"] = (
+                member_limit.capped
+                and int(data.get("total_brands_in_market") or 0) > member_limit.applied
+            )
             call["render_data"] = data
         source = str(data.get("source_label") or call.get("source") or "")
         attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
@@ -372,12 +378,17 @@ class MarketScopeResolver:
         data["view_label"] = view_label(view_type)
         if member_query and member_limit.requested is not None:
             data["requested_limit"] = member_limit.requested
-            data["limit_capped"] = member_limit.capped
+            data["display_limit"] = member_limit.applied
+            data["limit_capped"] = (
+                member_limit.capped
+                and int(data.get("total_brands_in_market") or 0) > member_limit.applied
+            )
         call["render_data"] = data
         if member_query:
             qualifier = "상위 5개 밖의 " if data.get("other_members_only") else ""
+            market_subject = market_name if market_name.endswith("시장") else f"{market_name} 시장"
             call["summary_text"] = (
-                f"{market_name} 시장의 {qualifier}구성 브랜드를 전략 mart에서 조회했습니다. "
+                f"{market_subject}의 {qualifier}구성 브랜드를 전략 mart에서 조회했습니다. "
                 f"총 {int(data.get('total_brands_in_market') or 0):,}개 중 "
                 f"{int(data.get('displayed_brand_count') or 0):,}개 표시"
             )
