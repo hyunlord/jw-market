@@ -98,6 +98,17 @@ No failure node ID was added, removed, or replaced. The five remaining failures
 are the unchanged `brand_activity/test_auto_topic_core.py` node IDs recorded in
 the baseline JSON.
 
+### 2026-07-28 ingest catalog seed-path baseline change
+
+The ingest catalog rebuild added one passing case proving that its `inputs_dir`
+matches the image's canonical `/app/inputs` molecule-worklist location. The
+measured baseline changed from `2258 collected / 2248 passed / 5 failed /
+5 skipped` to `2259 collected / 2249 passed / 5 failed / 5 skipped`.
+
+No failure node ID was added, removed, or replaced. The five remaining failures
+are the unchanged `brand_activity/test_auto_topic_core.py` node IDs recorded in
+the baseline JSON.
+
 ## Audit evidence
 
 Every audit that reports a full regression must preserve:

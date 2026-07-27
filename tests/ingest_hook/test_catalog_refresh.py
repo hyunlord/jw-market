@@ -161,3 +161,28 @@ def test_missing_mi_master_fails_before_catalog_generation(tmp_path: Path) -> No
             **_ensure_args(tmp_path, tmp_path / "catalog", missing),
             build=lambda *_: pytest.fail("missing input must not build"),
         )
+
+
+def test_ingest_catalog_rebuild_uses_repository_molecule_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pipeline.etl.lib.storage import PROJECT_ROOT
+
+    captured: dict[str, Path] = {}
+
+    def fake_run(params: dict[str, Path]) -> int:
+        captured.update(params)
+        return 0
+
+    monkeypatch.setattr(catalog_refresh.s2_catalog, "run", fake_run)
+
+    rc = catalog_refresh._run_s2_catalog(
+        tmp_path / "output",
+        tmp_path / "catalog",
+        mi_master=tmp_path / "mi.xlsx",
+        ubist_dir=tmp_path / "ubist",
+        iqvia_nsa_dir=tmp_path / "iqvia",
+    )
+
+    assert rc == 0
+    assert captured["inputs_dir"] == PROJECT_ROOT / "inputs"

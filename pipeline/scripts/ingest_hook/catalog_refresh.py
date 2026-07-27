@@ -137,7 +137,7 @@ def _run_s2_catalog(
             "input_file": mi_master,
             "catalog_root": catalog_root,
             "cache_dir": PROJECT_ROOT / "data" / "cache",
-            "inputs_dir": PROJECT_ROOT / "data",
+            "inputs_dir": PROJECT_ROOT / "inputs",
             "ubist_dir": ubist_dir,
             "iqvia_nsa_dir": iqvia_nsa_dir,
         }
