@@ -76,6 +76,17 @@ No failure node ID was added, removed, or replaced. The five remaining failures
 are the unchanged `brand_activity/test_auto_topic_core.py` node IDs recorded in
 the baseline JSON.
 
+### 2026-07-28 publication provenance baseline change
+
+Fail-closed publication provenance added five passing cases for the valid
+running-image identity and four rejection or rollback paths. The measured
+baseline changed from `2249 collected / 2239 passed / 5 failed / 5 skipped` to
+`2254 collected / 2244 passed / 5 failed / 5 skipped`.
+
+No failure node ID was added, removed, or replaced. The five remaining failures
+are the unchanged `brand_activity/test_auto_topic_core.py` node IDs recorded in
+the baseline JSON.
+
 ## Audit evidence
 
 Every audit that reports a full regression must preserve:
