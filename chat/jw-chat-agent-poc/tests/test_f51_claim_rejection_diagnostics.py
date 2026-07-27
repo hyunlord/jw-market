@@ -16,7 +16,13 @@ from jw_chat_agent_poc.service.evidence_binding_rules import (
 )
 
 
-_LEGACY_BEHAVIOR_SHA256 = "39f2d450bad9e803a476cd308b6dbc86ca38311cb927092e21ca466477861419"
+# Re-baselined by the RC1 metric-scope round (codex/a-rc1-metric-scope-20260728).
+# Exactly one corpus entry moved: in "metric_mismatch" the period token 2026-05 is
+# no longer blocked, so blocked_numbers goes ["80.39억원","2026-05"] -> ["80.39억원"]
+# and blocked_claim_count 2 -> 1. A period token is now expected as 기간 and clears
+# the metric axis; the mislabeled 시장규모 fact behind 80.39억원 is still refused.
+# Pre-change value: 39f2d450bad9e803a476cd308b6dbc86ca38311cb927092e21ca466477861419
+_LEGACY_BEHAVIOR_SHA256 = "22481c96ee294838955176dc088191383a1c4e0189992ecdec81a0a9f21a267f"
 
 
 def _fact(
