@@ -692,6 +692,7 @@ def deduplicate_partition_file(
                 WHERE "ingested_at" = _latest_ingested_at
                 GROUP BY {grain_columns}, _latest_ingested_at
                 HAVING count(DISTINCT row({value_columns})) > 1
+                ORDER BY {grain_columns}, _latest_ingested_at
                 LIMIT 1
                 """
             ).fetchone()
