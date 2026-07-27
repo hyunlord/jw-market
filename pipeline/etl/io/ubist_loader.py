@@ -10,8 +10,10 @@ period partition so the full load does not need to materialize in memory.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import sys
@@ -98,6 +100,25 @@ BUSINESS_GRAIN_COLUMNS = CANONICAL_DIMENSIONS + ["period_yyyymm"]
 BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + METRIC_COLUMNS
 DEDUP_SORT_COLUMNS = ["source_file", "source_sheet", "source_row_no"]
 DEDUP_METADATA_SORT_COLUMNS = ["_static_meta_score"] + DEDUP_SORT_COLUMNS
+
+# 기간 단위 교체 --------------------------------------------------------------
+# 같은 기간을 다시 올리면 그 기간에서 ★그 업로드가 담당하던 몫을 통째로 바꾼다.
+#
+# ★ INGEST_PERIOD_REPLACE=0 으로 두면 예전 append+dedup 경로로 되돌아간다.
+#   그 경로에서 정정본은 다음과 같이 처리된다. 어느 쪽도 "정정 반영" 이 아니다.
+#     · 같은 파일명 재업로드 → manifest 이름 대조에서 걸러져 ★아예 적재되지 않는다
+#     · 측정값 정정        → 옛 행과 새 행이 ★공존하고 mart 가 SUM 하여 이중계상된다
+#                            (pipeline/etl/io/mart/general_ubist.py 의 SUM(rx_amt))
+#     · 특허/PMS 등 정정   → 이 6개 열은 grain 에도 dedup 키에도 없어 conflict 로
+#                            잡히지 않으며, 생존 행은 ★source_file 알파벳 순서가 정한다
+#   즉 0 은 "안전한 기본값" 이 아니라 ★정정본이 조용히 유실되는 설정이다.
+INGEST_PERIOD_REPLACE_ENV = "INGEST_PERIOD_REPLACE"
+INGEST_PERIOD_REPLACE_SCOPE_ENV = "INGEST_PERIOD_REPLACE_SCOPE"
+REPLACE_SCOPE_SOURCE_FILE = "source_file"
+REPLACE_SCOPE_SOURCE_FOLDER = "source_folder"
+REPLACE_SCOPE_PERIOD = "period"
+REPLACE_SCOPES = (REPLACE_SCOPE_SOURCE_FILE, REPLACE_SCOPE_SOURCE_FOLDER, REPLACE_SCOPE_PERIOD)
+FALSEY = {"0", "false", "no", "off"}
 COLUMNS = (
     CANONICAL_DIMENSIONS
     + PATENT_DIMENSIONS
@@ -157,6 +178,16 @@ class SourceSummary:
     source_file: str
     source_folder: str
     periods: tuple[str, ...]
+    digest: str = ""
+
+
+@dataclass(frozen=True)
+class PurgeTarget:
+    """교체를 위해 기존 파티션에서 걷어낼 행의 범위."""
+
+    period: str
+    scope: str
+    value: str
 
 
 @dataclass
@@ -165,6 +196,28 @@ class IncrementalPlan:
     skip: list[SourceSummary]
     conflicts: list[dict[str, str]]
     loaded_source_files: set[str]
+    # 이름은 이미 적재됐지만 내용 digest 가 달라진 정정본. 옛 몫을 걷어내고 다시 넣는다.
+    replace: list[SourceSummary] = field(default_factory=list)
+    # 구 manifest 라 digest 가 없어 정정 여부를 ★판정할 수 없는 파일.
+    # 모른다는 사실을 성공으로 적지 않기 위해 별도로 들고 다닌다 (조항 ②).
+    undetermined: list[SourceSummary] = field(default_factory=list)
+
+    @property
+    def load_paths(self) -> list[Path]:
+        return [summary.path for summary in self.add + self.replace]
+
+    def purge_targets(self, scope: str) -> list[PurgeTarget]:
+        targets: list[PurgeTarget] = []
+        for summary in self.replace:
+            if scope == REPLACE_SCOPE_SOURCE_FILE:
+                value = summary.source_file
+            elif scope == REPLACE_SCOPE_SOURCE_FOLDER:
+                value = summary.source_folder
+            else:
+                value = ""
+            for period in summary.periods:
+                targets.append(PurgeTarget(period=period, scope=scope, value=value))
+        return targets
 
 
 def now_kst() -> str:
@@ -309,6 +362,30 @@ def source_folder_for(path: Path) -> str:
 def normalized_source_file(path_or_name: Path | str) -> str:
     name = path_or_name.name if isinstance(path_or_name, Path) else str(path_or_name)
     return unicodedata.normalize("NFC", name)
+
+
+def period_replace_enabled() -> bool:
+    """기간 단위 교체 사용 여부. 기본 켜짐. 끄는 의미는 상단 상수 주석 참조."""
+    return os.environ.get(INGEST_PERIOD_REPLACE_ENV, "1").strip().lower() not in FALSEY
+
+
+def period_replace_scope() -> str:
+    """교체 키. 기본은 형제 파일을 건드리지 않는 (기간, 파일) 조합."""
+    scope = os.environ.get(INGEST_PERIOD_REPLACE_SCOPE_ENV, REPLACE_SCOPE_SOURCE_FILE).strip()
+    if scope not in REPLACE_SCOPES:
+        raise ValueError(
+            f"{INGEST_PERIOD_REPLACE_SCOPE_ENV} must be one of {REPLACE_SCOPES}, got {scope!r}"
+        )
+    return scope
+
+
+def file_digest(path: Path) -> str:
+    """재업로드가 '내용이 바뀐 정정본' 인지 가르는 유일한 근거."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def classify_sheet(sheet_name: str, header1: tuple[object, ...], header2: tuple[object, ...]) -> SheetMapping:
@@ -585,6 +662,60 @@ def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
     return report
 
 
+def purge_partition_rows(target_root: Path, targets: list[PurgeTarget]) -> dict[str, int]:
+    """교체 대상 행을 파티션에서 걷어낸다.
+
+    호출자는 ★tmp 사본 위에서 이 함수를 부른다. 원본 target 은 건드리지 않으며,
+    tmp 전체가 원자 rename 으로 교체되므로 중간 실패 시 기존 데이터가 그대로 남는다.
+    파티션 파일 자체도 임시 파일에 쓴 뒤 replace 하여 부분 기록 상태를 남기지 않는다.
+    """
+    removed: dict[str, int] = {}
+    if not targets:
+        return removed
+
+    by_period: dict[str, list[PurgeTarget]] = defaultdict(list)
+    for target in targets:
+        by_period[target.period].append(target)
+
+    for period in sorted(by_period):
+        year, month = period.split("-")
+        path = target_root / f"year={year}" / f"month={month}" / "data.parquet"
+        if not path.exists():
+            # 교체 대상 기간이 아직 없으면 걷어낼 것도 없다. 신규 적재와 같다.
+            removed[period] = 0
+            continue
+
+        frame = pq.read_table(path).select(COLUMNS).to_pandas()
+        before = len(frame)
+        mask = pd.Series(False, index=frame.index)
+        for target in by_period[period]:
+            if target.scope == REPLACE_SCOPE_PERIOD:
+                mask.loc[:] = True
+                break
+            column = "source_file" if target.scope == REPLACE_SCOPE_SOURCE_FILE else "source_folder"
+            column_values = frame[column].map(lambda value: unicodedata.normalize("NFC", str(value)) if value is not None else None)
+            mask |= column_values == unicodedata.normalize("NFC", target.value)
+
+        kept = frame[~mask]
+        removed[period] = before - len(kept)
+        temp_path = path.with_suffix(".purge.tmp")
+        pq.write_table(
+            pa.Table.from_pandas(kept.reindex(columns=COLUMNS), schema=SCHEMA, preserve_index=False),
+            temp_path,
+            compression="snappy",
+        )
+        temp_path.replace(path)
+        LOGGER.info(
+            "UBIST period replace purge period=%s scope=%s rows_before=%s rows_removed=%s rows_kept=%s",
+            period,
+            by_period[period][0].scope,
+            before,
+            removed[period],
+            len(kept),
+        )
+    return removed
+
+
 class PartitionWriter:
     def __init__(self, target_root: Path):
         self.target_root = target_root
@@ -669,6 +800,7 @@ def load_to_parquet(
     mode: str,
     truncate: bool,
     previous_manifest: dict[str, object] | None = None,
+    purge_targets: list[PurgeTarget] | None = None,
 ) -> dict[str, PartitionStats]:
     timestamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
     tmp_target = target.parent / f"{target.name}.__tmp_{timestamp}"
@@ -682,6 +814,11 @@ def load_to_parquet(
         shutil.copytree(target, tmp_target, dirs_exist_ok=True)
     elif mode != "replace":
         raise ValueError(f"Unsupported mode: {mode}")
+
+    # ★ 교체는 tmp 사본 위에서, ★새 행을 쓰기 전에 끝내야 한다.
+    #   PartitionWriter._open_writer 가 기존 파티션을 읽어 새 writer 로 옮기므로
+    #   그 뒤에 지우면 방금 쓴 새 행까지 함께 지워진다.
+    purged = purge_partition_rows(tmp_target, purge_targets or [])
 
     buffers: dict[str, list[dict[str, object]]] = defaultdict(list)
     writer = PartitionWriter(tmp_target)
@@ -701,6 +838,11 @@ def load_to_parquet(
     finally:
         writer.close()
 
+    # 교체했는데 새 파일이 그 기간에 한 행도 주지 않은 경우에도 manifest 가 옛 row_count 를
+    # 들고 있으면 안 된다. 걷어낸 기간은 전부 실제 파일에서 다시 세어 stats 에 넣는다.
+    for period in purged:
+        if period not in writer.stats:
+            writer.stats[period] = PartitionStats()
     deduplicate_written_partitions(tmp_target, writer.stats)
     write_manifest(tmp_target, writer.stats, xlsx_paths, previous_manifest=previous_manifest)
 
@@ -727,6 +869,7 @@ def write_manifest(
     xlsx_paths: list[Path],
     *,
     previous_manifest: dict[str, object] | None = None,
+    source_digests: dict[str, str] | None = None,
 ) -> None:
     generated_at = now_kst()
     previous_partitions = {}
@@ -752,6 +895,19 @@ def write_manifest(
     )
     if not previous_manifest:
         source_file_count = len(xlsx_paths)
+
+    # 재업로드가 정정본인지 여부는 ★파일명이 아니라 내용 digest 로만 가를 수 있다.
+    digests: dict[str, str] = {}
+    if previous_manifest:
+        recorded = previous_manifest.get("source_file_digests")
+        if isinstance(recorded, dict):
+            digests.update({str(name): str(value) for name, value in recorded.items()})
+    if source_digests:
+        digests.update(source_digests)
+    else:
+        for path in xlsx_paths:
+            digests[normalized_source_file(path)] = file_digest(path)
+
     manifest = {
         "schema_version": "1.0",
         "generated_at": generated_at,
@@ -775,6 +931,12 @@ def write_manifest(
             "retained_distinct": ["판매사2"],
         },
         "source_file_count": source_file_count,
+        "source_file_digests": dict(sorted(digests.items())),
+        "period_replace_policy": {
+            "enabled": period_replace_enabled(),
+            "scope": period_replace_scope(),
+            "decision": "same name + different digest = replace that upload's share of the period",
+        },
         "partitions": [partition_entries[period] for period in sorted(partition_entries)],
     }
     target.mkdir(parents=True, exist_ok=True)
@@ -853,7 +1015,15 @@ def summarize_source(path: Path) -> SourceSummary:
         source_file=normalized_source_file(path),
         source_folder=unicodedata.normalize("NFC", source_folder_for(path)),
         periods=tuple(sorted(periods)),
+        digest=file_digest(path),
     )
+
+
+def manifest_source_digests(manifest: dict[str, object]) -> dict[str, str]:
+    recorded = manifest.get("source_file_digests")
+    if not isinstance(recorded, dict):
+        return {}
+    return {unicodedata.normalize("NFC", str(name)): str(value) for name, value in recorded.items()}
 
 
 def existing_partition_for(target: Path, period: str) -> Path:
@@ -874,12 +1044,53 @@ def source_period_frames(path: Path, periods: set[str]) -> dict[str, pd.DataFram
     return {period: prepare_frame(rows) for period, rows in rows_by_period.items()}
 
 
-def incremental_plan(xlsx_paths: list[Path], target: Path) -> IncrementalPlan:
+def incremental_plan(
+    xlsx_paths: list[Path],
+    target: Path,
+    *,
+    replace_enabled: bool | None = None,
+) -> IncrementalPlan:
     manifest = read_manifest(target)
     loaded = manifest_source_files(manifest)
+    digests = manifest_source_digests(manifest)
     summaries = [summarize_source(path) for path in xlsx_paths]
+    if replace_enabled is None:
+        replace_enabled = period_replace_enabled()
+
     add = [summary for summary in summaries if summary.source_file not in loaded]
-    skip = [summary for summary in summaries if summary.source_file in loaded]
+    reloaded = [summary for summary in summaries if summary.source_file in loaded]
+
+    skip: list[SourceSummary] = []
+    replace: list[SourceSummary] = []
+    undetermined: list[SourceSummary] = []
+    for summary in reloaded:
+        if not replace_enabled:
+            skip.append(summary)
+            continue
+        recorded = digests.get(summary.source_file)
+        if recorded is None:
+            # digest 가 없는 구 manifest. 정정본인지 ★알 수 없다.
+            # 모르는 것을 "동일" 로 적으면 조항 ② 위반이므로 별도로 분리해 경고한다.
+            undetermined.append(summary)
+            skip.append(summary)
+            LOGGER.warning(
+                "UBIST reupload digest unknown source_file=%s: manifest has no digest, "
+                "cannot tell correction from duplicate; skipped without replacing",
+                summary.source_file,
+            )
+            continue
+        if recorded == summary.digest:
+            skip.append(summary)
+            continue
+        replace.append(summary)
+        LOGGER.warning(
+            "UBIST reupload detected source_file=%s periods=%s digest %s -> %s: "
+            "replacing this upload's share of those periods",
+            summary.source_file,
+            ",".join(summary.periods),
+            recorded[:12],
+            summary.digest[:12],
+        )
 
     known_paths = {normalized_source_file(path): path for path in xlsx_paths}
     if UBIST_ROOT.exists():
@@ -893,9 +1104,18 @@ def incremental_plan(xlsx_paths: list[Path], target: Path) -> IncrementalPlan:
             existing.append(by_name[name])
         elif name in known_paths:
             existing.append(summarize_source(known_paths[name]))
+    # 충돌 판정은 ★신규 파일에만 건다. 교체 대상은 옛 몫을 먼저 걷어내므로
+    # 자기 자신과의 겹침이 당연하고, 그것을 충돌로 부르면 교체가 매번 막힌다.
     conflicts = detect_period_conflicts(add, existing)
     conflicts.extend(detect_content_overlaps(add, target))
-    return IncrementalPlan(add=add, skip=skip, conflicts=conflicts, loaded_source_files=loaded)
+    return IncrementalPlan(
+        add=add,
+        skip=skip,
+        conflicts=conflicts,
+        loaded_source_files=loaded,
+        replace=replace,
+        undetermined=undetermined,
+    )
 
 
 def detect_period_conflicts(add: list[SourceSummary], existing: list[SourceSummary]) -> list[dict[str, str]]:
@@ -960,12 +1180,22 @@ def print_incremental_plan(plan: IncrementalPlan) -> None:
     print("# UBIST Incremental Plan\n")
     print(f"- loaded source files in manifest: {len(plan.loaded_source_files)}")
     print(f"- add candidates: {len(plan.add)}")
+    print(f"- period replacements: {len(plan.replace)}")
     print(f"- skipped already loaded: {len(plan.skip)}")
+    print(f"- undetermined (no digest in manifest): {len(plan.undetermined)}")
     print(f"- conflicts: {len(plan.conflicts)}\n")
 
     print("## ADD")
     for summary in plan.add:
         print(f"- {summary.path} | periods={summary.periods[0]}..{summary.periods[-1]} ({len(summary.periods)})")
+    if plan.replace:
+        print("\n## REPLACE (same name, different content)")
+        for summary in plan.replace:
+            print(f"- {summary.source_file} | periods={','.join(summary.periods)} | digest={summary.digest[:12]}")
+    if plan.undetermined:
+        print("\n## UNDETERMINED (manifest has no digest — correction cannot be detected)")
+        for summary in plan.undetermined:
+            print(f"- {summary.source_file}")
     print("\n## SKIP")
     for summary in plan.skip:
         print(f"- {summary.path}")
@@ -1001,7 +1231,9 @@ def run_incremental_ubist_load(
     )
     xlsx_paths = [p.resolve() for p in paths] if paths is not None else discover_xlsx(args)
     manifest = read_manifest(target)
-    plan = incremental_plan(xlsx_paths, target)
+    replace_enabled = period_replace_enabled()
+    scope = period_replace_scope() if replace_enabled else REPLACE_SCOPE_SOURCE_FILE
+    plan = incremental_plan(xlsx_paths, target, replace_enabled=replace_enabled)
     print_incremental_plan(plan)
     if dry:
         return {}
@@ -1012,15 +1244,26 @@ def run_incremental_ubist_load(
             "UBIST incremental period conflicts allowed for append+dedup conflicts=%s",
             len(plan.conflicts),
         )
-    if not plan.add:
-        LOGGER.info("UBIST incremental load has no new source files target=%s", target)
+    load_paths = plan.load_paths
+    if not load_paths:
+        LOGGER.info("UBIST incremental load has no new or changed source files target=%s", target)
         return {}
+    purge_targets = plan.purge_targets(scope) if replace_enabled else []
+    if scope == REPLACE_SCOPE_PERIOD and purge_targets:
+        LOGGER.warning(
+            "UBIST period replace scope=period will drop ★all source files' rows in periods=%s",
+            ",".join(sorted({target_.period for target_ in purge_targets})),
+        )
+    # 걷어낼 것이 없으면 purge 인자를 아예 넘기지 않는다. 교체가 없는 경로의
+    # 호출 형태를 예전 그대로 두어 기존 호출자·테스트 더블과의 계약을 깨지 않는다.
+    purge_kwargs = {"purge_targets": purge_targets} if purge_targets else {}
     return load_to_parquet(
-        [summary.path for summary in plan.add],
+        load_paths,
         target,
         mode="append",
         truncate=True,
         previous_manifest=manifest,
+        **purge_kwargs,
     )
 
 
