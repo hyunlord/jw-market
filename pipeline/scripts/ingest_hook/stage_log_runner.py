@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 from pipeline.scripts.ingest_hook import config, stage_logs
 
@@ -15,7 +16,13 @@ _STAGE_MARKER = re.compile(
 )
 
 
-def run(*, manifest: Path, run_id: str, job_name: str) -> int:
+def run(
+    *,
+    manifest: Path,
+    run_id: str,
+    job_name: str,
+    on_stage: Callable[[str, str], None] | None = None,
+) -> int:
     root = config.log_root()
     full_path = stage_logs.full_log_path(root, job_name=job_name)
     stage_logs.ensure_log_file(full_path)
@@ -50,6 +57,8 @@ def run(*, manifest: Path, run_id: str, job_name: str) -> int:
             marker_stage = marker.group(1) if marker else None
             if marker_stage and " start" in line:
                 current_stage = marker_stage
+                if on_stage is not None:
+                    on_stage(marker_stage, "running")
             target_stage = marker_stage or current_stage
             if target_stage:
                 path = stage_logs.stage_log_path(
@@ -59,6 +68,9 @@ def run(*, manifest: Path, run_id: str, job_name: str) -> int:
                 with path.open("a", encoding="utf-8") as stage_file:
                     stage_file.write(durable_line)
             if marker_stage and (" end" in line or " skipped" in line):
+                if on_stage is not None:
+                    status = "skipped" if " skipped" in line else "complete"
+                    on_stage(marker_stage, status)
                 current_stage = None
     return process.wait()
 

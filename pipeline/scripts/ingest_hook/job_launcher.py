@@ -56,6 +56,28 @@ _LOCAL_INPUT_VOLUME = "ingest-input"
 _LOCAL_INPUT_PVC = "llmops-nfs-root"
 _LOCAL_INPUT_SUB_PATH = "autoIngestion"
 _MARKET_OUTPUT_VOLUME = "market-output"
+_TEST_READER_SECRET = "jw-mart-d2-reader"
+_TEST_RESULT_MOUNT = "/test-results"
+_TEST_WORK_MOUNT = "/market-output"
+_TEST_SOURCE_MOUNT = "/source-market-output"
+
+
+def _test_snapshot_mount_path(env_name: str) -> str:
+    configured = os.environ.get(env_name, "").strip()
+    if not configured:
+        raise RuntimeError(f"{env_name} is required")
+    source = Path(configured)
+    try:
+        relative = source.relative_to(config.MARKET_OUTPUT_ROOT)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{env_name} must be below {config.MARKET_OUTPUT_ROOT}"
+        ) from exc
+    if not relative.parts:
+        raise RuntimeError(
+            f"{env_name} must be a child of {config.MARKET_OUTPUT_ROOT}"
+        )
+    return str(Path(_TEST_SOURCE_MOUNT) / relative)
 
 
 def _job_env() -> list[dict]:
@@ -254,6 +276,277 @@ def render_job(
             },
         },
     }
+
+
+def _test_input_env() -> list[dict]:
+    env: list[dict] = []
+
+    def secret_ref(name: str, secret: str, key: str) -> None:
+        env.append(
+            {
+                "name": name,
+                "valueFrom": {"secretKeyRef": {"name": secret, "key": key}},
+            }
+        )
+
+    local_input = os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
+    if local_input:
+        env.extend(
+            [
+                {"name": config.ENV_INPUT_BACKEND, "value": "local"},
+                {"name": config.ENV_INPUT_ROOT, "value": str(config.input_root())},
+            ]
+        )
+    else:
+        env.append({"name": config.ENV_INPUT_BACKEND, "value": "s3"})
+        for name in ("MINIO_ENDPOINT", "MINIO_REGION"):
+            if os.environ.get(name):
+                env.append({"name": name, "value": os.environ[name]})
+        secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")
+        secret_ref("MINIO_ACCESS_KEY", _MINIO_READ_SECRET, "MINIO_ACCESS_KEY")
+        secret_ref("MINIO_SECRET_KEY", _MINIO_READ_SECRET, "MINIO_SECRET_KEY")
+    return env
+
+
+def render_test_job(
+    *,
+    category: str,
+    manifest_sha: str,
+    manifest_path: str,
+    run_id: str,
+    requested_by: str,
+    namespace: str | None = None,
+) -> dict:
+    """Render a self-contained test load with pod-local DB and work storage."""
+    safe_run = "".join(char for char in run_id.lower() if char.isalnum())[:20]
+    if not safe_run:
+        raise ValueError("run_id must contain an alphanumeric character")
+    name = job_name(f"test-{category}", manifest_sha, safe_run)
+    source_host = os.environ.get("INGEST_TEST_SOURCE_DB_HOST", "").strip()
+    source_database = os.environ.get("INGEST_TEST_SOURCE_DB_NAME", "").strip()
+    if not source_host or not source_database:
+        raise RuntimeError(
+            "INGEST_TEST_SOURCE_DB_HOST and INGEST_TEST_SOURCE_DB_NAME are required"
+        )
+    local_root = (
+        config.input_root()
+        if os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
+        else None
+    )
+    source_port = os.environ.get("INGEST_TEST_SOURCE_DB_PORT", "3306")
+    source_corpus_root = _test_snapshot_mount_path(
+        "INGEST_TEST_SOURCE_CORPUS_ROOT"
+    )
+    source_catalog_root = _test_snapshot_mount_path(
+        "INGEST_TEST_SOURCE_CATALOG_ROOT"
+    )
+    test_database = f"jw_mart_test_{safe_run}"
+    target_database = f"jw_mart_ingest_shadow_{safe_run}"
+    build_prefix = f"jw_mart_ingest_shadow_build_{safe_run}_"
+    shadow_root = f"{_TEST_WORK_MOUNT}/ingest-test-{safe_run}"
+    local_db_password = f"test-{safe_run}"
+    runner_env: list[dict] = [
+        {"name": "INGEST_TEST_RUN_ID", "value": run_id},
+        {"name": "INGEST_TEST_REQUESTED_BY", "value": requested_by},
+        {"name": config.ENV_TEST_RUN_ROOT, "value": f"{_TEST_RESULT_MOUNT}/ingest-test-runs"},
+        {"name": "MARIADB_HOST", "value": "127.0.0.1"},
+        {"name": "MARIADB_PORT", "value": "3306"},
+        {"name": "MARIADB_USER", "value": "root"},
+        {"name": "MARIADB_PASSWORD", "value": local_db_password},
+        {"name": "MARIADB_ROOT_PASSWORD", "value": local_db_password},
+        {"name": "MARIADB_DATABASE", "value": test_database},
+        {"name": "MARIADB_SOURCE_DATABASE", "value": test_database},
+        {
+            "name": config.ENV_LEDGER_SQLITE,
+            "value": f"{shadow_root}/ledger.sqlite",
+        },
+        {"name": config.ENV_LOAD_SHADOW_ROOT, "value": shadow_root},
+        {"name": "INGEST_SHADOW_TARGET_DB", "value": target_database},
+        {"name": "INGEST_SHADOW_BUILD_PREFIX", "value": build_prefix},
+        {"name": "INGEST_SHADOW_CATALOG_ROOT", "value": f"{shadow_root}/catalog"},
+        {
+            "name": "INGEST_TEST_SOURCE_CATALOG_ROOT",
+            "value": source_catalog_root,
+        },
+        {
+            "name": "INGEST_SHADOW_SEED_ROOT",
+            "value": source_corpus_root,
+        },
+        {"name": "INGEST_TEST_SOURCE_DB_HOST", "value": source_host},
+        {"name": "INGEST_TEST_SOURCE_DB_PORT", "value": source_port},
+        {"name": "INGEST_TEST_SOURCE_DB_NAME", "value": source_database},
+        {
+            "name": "INGEST_TEST_SOURCE_DB_USER",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": _TEST_READER_SECRET,
+                    "key": "username",
+                }
+            },
+        },
+        {
+            "name": "INGEST_TEST_SOURCE_DB_PASSWORD",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": _TEST_READER_SECRET,
+                    "key": "password",
+                }
+            },
+        },
+        *_test_input_env(),
+    ]
+    runner_mounts = [
+        {"name": "test-work", "mountPath": _TEST_WORK_MOUNT},
+        {"name": "test-db", "mountPath": "/var/lib/mysql"},
+        {"name": "test-lifecycle", "mountPath": "/lifecycle"},
+        {"name": "test-results", "mountPath": _TEST_RESULT_MOUNT},
+        {
+            "name": "source-market-output",
+            "mountPath": _TEST_SOURCE_MOUNT,
+            "readOnly": True,
+        },
+    ]
+    if local_root is not None:
+        runner_mounts.append(
+            {
+                "name": _LOCAL_INPUT_VOLUME,
+                "mountPath": str(local_root),
+                "subPath": _LOCAL_INPUT_SUB_PATH,
+                "readOnly": True,
+            }
+        )
+    volumes: list[dict] = [
+        {"name": "test-work", "emptyDir": {"sizeLimit": "500Gi"}},
+        {"name": "test-db", "emptyDir": {"sizeLimit": "250Gi"}},
+        {"name": "test-lifecycle", "emptyDir": {"sizeLimit": "1Mi"}},
+        {
+            "name": "test-results",
+            "persistentVolumeClaim": {"claimName": config.MARKET_OUTPUT_PVC},
+        },
+        {
+            "name": "source-market-output",
+            "persistentVolumeClaim": {"claimName": config.MARKET_OUTPUT_PVC},
+        },
+    ]
+    if local_root is not None:
+        volumes.append(
+            {
+                "name": _LOCAL_INPUT_VOLUME,
+                "persistentVolumeClaim": {"claimName": _LOCAL_INPUT_PVC},
+            }
+        )
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": name,
+            "namespace": namespace or config.job_namespace(),
+            "labels": {
+                "app": "jw-ingest-test",
+                "jw-ingest/category": category,
+                "jw-ingest/test-run": safe_run,
+            },
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "activeDeadlineSeconds": 21600,
+            "ttlSecondsAfterFinished": 3600,
+            "template": {
+                "metadata": {
+                    "labels": {
+                        "app": "jw-ingest-test",
+                        "jw-ingest/test-run": safe_run,
+                    }
+                },
+                "spec": {
+                    "restartPolicy": "Never",
+                    "containers": [
+                        {
+                            "name": "test-load",
+                            "image": config.job_image(),
+                            "imagePullPolicy": "IfNotPresent",
+                            "command": [
+                                "python",
+                                "-m",
+                                "pipeline.scripts.ingest_hook.test_run_runner",
+                                "--manifest",
+                                manifest_path,
+                                "--run-id",
+                                run_id,
+                                "--job-name",
+                                name,
+                            ],
+                            "env": runner_env,
+                            "volumeMounts": runner_mounts,
+                            "resources": {
+                                "requests": {"cpu": "1500m", "memory": "6Gi"},
+                                "limits": {"cpu": "3", "memory": "12Gi"},
+                            },
+                        },
+                        {
+                            "name": "mariadb",
+                            "image": os.environ.get(
+                                "INGEST_TEST_MARIADB_IMAGE", "mariadb:11.4"
+                            ),
+                            "command": [
+                                "sh",
+                                "-ec",
+                                (
+                                    "docker-entrypoint.sh mariadbd & pid=$!; "
+                                    "while [ ! -f /lifecycle/done ]; do "
+                                    "kill -0 $pid 2>/dev/null || exit 1; sleep 2; done; "
+                                    'mariadb-admin --password="$MARIADB_ROOT_PASSWORD" '
+                                    "--protocol=tcp -h127.0.0.1 -uroot shutdown "
+                                    "|| kill -TERM $pid; wait $pid"
+                                ),
+                            ],
+                            "env": [
+                                {
+                                    "name": "MARIADB_ROOT_PASSWORD",
+                                    "value": local_db_password,
+                                }
+                            ],
+                            "volumeMounts": [
+                                {"name": "test-db", "mountPath": "/var/lib/mysql"},
+                                {
+                                    "name": "test-lifecycle",
+                                    "mountPath": "/lifecycle",
+                                },
+                            ],
+                            "resources": {
+                                "requests": {"cpu": "500m", "memory": "2Gi"},
+                                "limits": {"cpu": "1", "memory": "4Gi"},
+                            },
+                        },
+                    ],
+                    "volumes": volumes,
+                },
+            },
+        },
+    }
+
+
+def submit_test_job(
+    *,
+    category: str,
+    manifest_sha: str,
+    manifest_path: str,
+    run_id: str,
+    requested_by: str,
+    transport: Transport | None = None,
+    namespace: str | None = None,
+) -> str:
+    body = render_test_job(
+        category=category,
+        manifest_sha=manifest_sha,
+        manifest_path=manifest_path,
+        run_id=run_id,
+        requested_by=requested_by,
+        namespace=namespace,
+    )
+    send = transport or _in_cluster_transport
+    send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)
+    return str(body["metadata"]["name"])
 
 
 def _in_cluster_transport(url_path: str, body: dict) -> dict:

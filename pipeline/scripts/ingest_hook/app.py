@@ -32,6 +32,11 @@ from pipeline.scripts.ingest_hook.ledger import (
     Ledger,
     LedgerConnectionError,
 )
+from pipeline.scripts.ingest_hook.test_runs import (
+    ActiveTestRunError,
+    TERMINAL_STATUSES,
+    TestRunStore,
+)
 
 
 class WebhookPayload(BaseModel):
@@ -43,6 +48,15 @@ class ForceStopPayload(BaseModel):
     category: str
     manifest_sha: str
     run_id: str
+    requested_by: str
+
+
+class TestRunPayload(BaseModel):
+    manifest_path: str
+    requested_by: str
+
+
+class CancelTestRunPayload(BaseModel):
     requested_by: str
 
 
@@ -59,6 +73,7 @@ class IngestService:
         timestamp=None,
         sleep=None,
         deletion_attempts: int = 30,
+        test_run_store: TestRunStore | None = None,
     ):
         self.ledger = ledger
         self.input_root = input_root
@@ -70,6 +85,7 @@ class IngestService:
         self.timestamp = timestamp or (lambda: datetime.now(timezone.utc).isoformat())
         self.sleep = sleep or _sleep
         self.deletion_attempts = deletion_attempts
+        self.test_run_store = test_run_store
 
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
@@ -408,6 +424,176 @@ class IngestService:
             "job_name": launched,
         }
 
+    def test_capabilities(self) -> dict:
+        return {
+            "test_load": {
+                "ubist": {
+                    "supported": True,
+                    "minimum_duration_seconds": 1225,
+                    "execution": "full-production-path-in-disposable-mariadb",
+                },
+                "iqvia_nsa": {
+                    "supported": False,
+                    "reason": "snapshot overlay and end-to-end mart activation are not complete",
+                },
+                "iqvia_csd_channel": {
+                    "supported": False,
+                    "reason": "category has no complete mart refresh path",
+                },
+                "iqvia_csd_keyword": {
+                    "supported": False,
+                    "reason": "category has no complete mart refresh path",
+                },
+                "mi_master": {
+                    "supported": False,
+                    "reason": "catalog regeneration preview is not yet isolated end-to-end",
+                },
+            }
+        }
+
+    def _require_test_store(self) -> TestRunStore:
+        if self.test_run_store is None:
+            raise HTTPException(status_code=503, detail="test load is not configured")
+        return self.test_run_store
+
+    def _reconcile_terminal_test_jobs(self, category: str) -> None:
+        store = self._require_test_store()
+        for record in store.active_for_category(category):
+            if not record.job_name:
+                continue
+            try:
+                observation = job_launcher.inspect_job(
+                    record.job_name,
+                    transport=self.inspect_transport,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"test Job status unavailable: {type(exc).__name__}",
+                ) from exc
+            if observation.status not in {"Absent", "Failed"}:
+                continue
+            store.update(
+                record.run_id,
+                status="failed",
+                current_stage=None,
+                reason=(
+                    f"test Job {observation.status.lower()}; "
+                    "disposable resources are no longer active"
+                ),
+            )
+
+    def start_test_run(self, manifest_path: str, requested_by: str) -> dict:
+        store = self._require_test_store()
+        actor = requested_by.strip()
+        if not actor:
+            raise HTTPException(status_code=422, detail="requested_by is required")
+        try:
+            manifest, stored_path = self._read_manifest(manifest_path)
+        except ContractError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not manifest.complete:
+            raise HTTPException(status_code=409, detail="manifest must be complete")
+        capability = self.test_capabilities()["test_load"].get(manifest.category)
+        if not capability or not capability["supported"]:
+            reason = (capability or {}).get("reason", "category is unsupported")
+            raise HTTPException(
+                status_code=422,
+                detail=f"test load unsupported for {manifest.category}: {reason}",
+            )
+        if (
+            self.ledger.running_in_category(manifest.category) > 0
+            or self.ledger.next_queued(manifest.category) is not None
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="production ingest has priority for this category",
+            )
+        self._reconcile_terminal_test_jobs(manifest.category)
+        try:
+            record = store.create(
+                category=manifest.category,
+                epoch=manifest.epoch,
+                manifest_sha=manifest.manifest_sha,
+                manifest_path=stored_path,
+                requested_by=actor,
+            )
+        except ActiveTestRunError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            name = job_launcher.submit_test_job(
+                category=manifest.category,
+                manifest_sha=manifest.manifest_sha,
+                manifest_path=stored_path,
+                run_id=record.run_id,
+                requested_by=actor,
+                transport=self.transport,
+            )
+        except Exception as exc:
+            store.update(
+                record.run_id,
+                status="failed",
+                reason=f"job submission failed: {type(exc).__name__}: {exc}",
+            )
+            raise
+        return store.update(record.run_id, job_name=name).as_dict()
+
+    def get_test_run(self, run_id: str) -> dict:
+        store = self._require_test_store()
+        try:
+            record = store.get(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="unknown test run")
+        return record.as_dict()
+
+    def cancel_test_run(self, run_id: str, requested_by: str) -> dict:
+        store = self._require_test_store()
+        try:
+            record = store.get(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="unknown test run")
+        if record.status in TERMINAL_STATUSES:
+            return record.as_dict()
+        if not record.job_name:
+            return store.update(
+                run_id,
+                status="cancelled",
+                reason=f"cancelled before Job submission by {requested_by.strip()}",
+            ).as_dict()
+        observation = job_launcher.inspect_job(
+            record.job_name, transport=self.inspect_transport
+        )
+        if observation.status in {"Pending", "Running"}:
+            job_launcher.delete_job(
+                record.job_name,
+                observation=observation,
+                transport=self.delete_transport,
+            )
+            terminal_observation = observation
+            for attempt in range(self.deletion_attempts):
+                terminal_observation = job_launcher.inspect_job(
+                    record.job_name,
+                    transport=self.inspect_transport,
+                )
+                if terminal_observation.status == "Absent":
+                    break
+                if attempt + 1 < self.deletion_attempts:
+                    self.sleep(1)
+            if terminal_observation.status != "Absent":
+                raise HTTPException(
+                    status_code=503,
+                    detail="test Job deletion was not confirmed; run remains active",
+                )
+        return store.update(
+            run_id,
+            status="cancelled",
+            reason=f"cancelled by {requested_by.strip()}",
+        ).as_dict()
+
 
 def create_app(service: IngestService) -> FastAPI:
     app = FastAPI(title="jw-ingest-hook", docs_url=None, redoc_url=None)
@@ -430,6 +616,22 @@ def create_app(service: IngestService) -> FastAPI:
     @app.post("/ingest/webhook")
     def webhook(payload: WebhookPayload) -> dict:
         return service.receive_webhook(payload.manifest_path)
+
+    @app.get("/ingest/capabilities")
+    def capabilities() -> dict:
+        return service.test_capabilities()
+
+    @app.post("/ingest/test-runs", status_code=202)
+    def create_test_run(payload: TestRunPayload) -> dict:
+        return service.start_test_run(payload.manifest_path, payload.requested_by)
+
+    @app.get("/ingest/test-runs/{run_id}")
+    def test_run_status(run_id: str) -> dict:
+        return service.get_test_run(run_id)
+
+    @app.post("/ingest/test-runs/{run_id}/cancel")
+    def cancel_test_run(run_id: str, payload: CancelTestRunPayload) -> dict:
+        return service.cancel_test_run(run_id, payload.requested_by)
 
     @app.get("/ingest/status")
     def status(epoch: str, category: str, manifest_sha: str) -> dict:
@@ -579,4 +781,11 @@ def build() -> FastAPI:
     ledger = config.open_configured_ledger()
     s3 = config.open_input_source()
     input_root = None if s3 is not None else config.input_root()
-    return create_app(IngestService(ledger, input_root, s3=s3))
+    return create_app(
+        IngestService(
+            ledger,
+            input_root,
+            s3=s3,
+            test_run_store=TestRunStore(config.test_run_root()),
+        )
+    )

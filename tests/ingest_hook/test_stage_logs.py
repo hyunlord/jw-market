@@ -292,6 +292,45 @@ def test_stage_runner_tees_masked_full_and_stage_logs(
     assert "password=[REDACTED]" in captured.out
 
 
+def test_stage_runner_reports_live_stage_transitions(
+    tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "logs"
+    monkeypatch.setattr(stage_log_runner.config, "log_root", lambda: root)
+
+    class FakeProcess:
+        stdout = iter([
+            "[stage] g3 start(1/2)\n",
+            "[stage] g3 end rc=0\n",
+            "[stage] load skipped reason=test\n",
+        ])
+
+        @staticmethod
+        def wait():
+            return 0
+
+    monkeypatch.setattr(
+        stage_log_runner.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+    transitions = []
+
+    rc = stage_log_runner.run(
+        manifest=tmp_path / "manifest.json",
+        run_id="run1",
+        job_name="jw-ingest-ubist-eecd1a6a-run1",
+        on_stage=lambda stage, status: transitions.append((stage, status)),
+    )
+
+    assert rc == 0
+    assert transitions == [
+        ("g3", "running"),
+        ("g3", "complete"),
+        ("load", "skipped"),
+    ]
+
+
 def test_log_api_returns_success_and_explicit_missing_reason(
     sqlite_ledger, bucket, tmp_path: Path, monkeypatch
 ):

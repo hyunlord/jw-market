@@ -24,8 +24,10 @@ ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output roo
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
+ENV_TEST_RUN_ROOT = "INGEST_TEST_RUN_ROOT"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
+DEFAULT_TEST_RUN_ROOT = "/market-output/ingest-test-runs"
 MARKET_OUTPUT_ROOT = Path("/market-output")
 MARKET_OUTPUT_PVC = "llmops-market-output"
 
@@ -48,6 +50,10 @@ def log_root_hint() -> str:
 
 def log_root() -> Path:
     return Path(log_root_hint())
+
+
+def test_run_root() -> Path:
+    return Path(os.environ.get(ENV_TEST_RUN_ROOT, DEFAULT_TEST_RUN_ROOT))
 
 
 def completion_webhook() -> tuple[str, int]:

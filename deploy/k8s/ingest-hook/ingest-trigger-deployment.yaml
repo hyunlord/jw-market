@@ -53,6 +53,18 @@ spec:
               value: /nfs-root/autoIngestion
             - name: INGEST_LOG_ROOT
               value: /market-output/ingest-logs
+            - name: INGEST_TEST_RUN_ROOT
+              value: /market-output/ingest-test-runs
+            - name: INGEST_TEST_SOURCE_DB_HOST
+              value: llmops-mariadb-service.llmops.svc.cluster.local
+            - name: INGEST_TEST_SOURCE_DB_PORT
+              value: "3306"
+            - name: INGEST_TEST_SOURCE_DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            - name: INGEST_TEST_SOURCE_CORPUS_ROOT
+              value: /market-output/ubist
+            - name: INGEST_TEST_SOURCE_CATALOG_ROOT
+              value: /market-output/shadow/catalog
             # Receiver is intentionally unset until jw-agent publishes its
             # endpoint. job_launcher passes both values to every ingest Job.
             - name: INGEST_COMPLETION_WEBHOOK_URL

@@ -7,7 +7,11 @@ import yaml
 import pytest
 
 from pipeline.scripts.ingest_hook import config
-from pipeline.scripts.ingest_hook.job_launcher import render_job, submit_job
+from pipeline.scripts.ingest_hook.job_launcher import (
+    render_job,
+    render_test_job,
+    submit_job,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA = "f" * 64
@@ -150,6 +154,99 @@ def test_rendered_job_sanitizes_category_for_kubernetes_name():
     assert body["metadata"]["labels"]["jw-ingest/category"] == "iqvia_nsa"
 
 
+def test_test_job_is_disposable_and_has_no_operating_writer_credentials(monkeypatch):
+    monkeypatch.setenv("MARIADB_HOST", "operating-db.internal")
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output/ubist")
+    monkeypatch.setenv("INGEST_MART_PROMOTION_APPROVED", "1")
+    monkeypatch.setenv("INGEST_TEST_SOURCE_DB_HOST", "reader.internal")
+    monkeypatch.setenv("INGEST_TEST_SOURCE_DB_NAME", "jw_mart_d2_stage_20260630_r2")
+    monkeypatch.setenv("INGEST_TEST_SOURCE_CORPUS_ROOT", "/market-output/ubist")
+    monkeypatch.setenv(
+        "INGEST_TEST_SOURCE_CATALOG_ROOT",
+        "/market-output/shadow/catalog",
+    )
+
+    body = render_test_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        run_id="test-run-123",
+        requested_by="pl@example.test",
+        namespace="llmops",
+    )
+
+    pod = body["spec"]["template"]["spec"]
+    assert body["metadata"]["name"].startswith("jw-ingest-test-ubist-")
+    assert body["spec"]["activeDeadlineSeconds"] == 21600
+    assert {item["name"] for item in pod["containers"]} == {"test-load", "mariadb"}
+    runner = next(item for item in pod["containers"] if item["name"] == "test-load")
+    mariadb = next(item for item in pod["containers"] if item["name"] == "mariadb")
+    env = {item["name"]: item for item in runner["env"]}
+    mariadb_env = {item["name"]: item for item in mariadb["env"]}
+    assert env["MARIADB_HOST"]["value"] == "127.0.0.1"
+    assert env["MARIADB_DATABASE"]["value"].startswith("jw_mart_test_")
+    assert env["INGEST_LOAD_SHADOW_ROOT"]["value"].startswith(
+        "/market-output/ingest-test-"
+    )
+    assert env["INGEST_SHADOW_TARGET_DB"]["value"].startswith(
+        "jw_mart_ingest_shadow_"
+    )
+    assert env["INGEST_SHADOW_BUILD_PREFIX"]["value"].startswith(
+        "jw_mart_ingest_shadow_"
+    )
+    assert env["INGEST_SHADOW_CATALOG_ROOT"]["value"] == (
+        f"{env['INGEST_LOAD_SHADOW_ROOT']['value']}/catalog"
+    )
+    assert env["INGEST_TEST_SOURCE_CATALOG_ROOT"]["value"] == (
+        "/source-market-output/shadow/catalog"
+    )
+    assert env["INGEST_SHADOW_SEED_ROOT"]["value"] == "/source-market-output/ubist"
+    assert env["INGEST_TEST_RUN_ID"]["value"] == "test-run-123"
+    assert env["INGEST_TEST_REQUESTED_BY"]["value"] == "pl@example.test"
+    assert env["INGEST_TEST_SOURCE_DB_HOST"]["value"] == "reader.internal"
+    assert env["INGEST_TEST_SOURCE_DB_USER"]["valueFrom"]["secretKeyRef"]["name"] == (
+        "jw-mart-d2-reader"
+    )
+    assert env["MARIADB_PASSWORD"]["value"]
+    assert env["MARIADB_ROOT_PASSWORD"]["value"] == env["MARIADB_PASSWORD"]["value"]
+    assert mariadb_env["MARIADB_ROOT_PASSWORD"]["value"] == env["MARIADB_PASSWORD"]["value"]
+    assert "MARIADB_ALLOW_EMPTY_ROOT_PASSWORD" not in mariadb_env
+    assert 'mariadb-admin --password="$MARIADB_ROOT_PASSWORD"' in mariadb["command"][-1]
+    assert "INGEST_LOAD_TARGET_ROOT" not in env
+    assert "INGEST_MART_PROMOTION_APPROVED" not in env
+    assert all(
+        item.get("valueFrom", {}).get("secretKeyRef", {}).get("name") != "jw-mart-d2-writer"
+        for item in runner["env"]
+    )
+    volumes = {item["name"]: item for item in pod["volumes"]}
+    assert volumes["test-work"]["emptyDir"]["sizeLimit"] == "500Gi"
+    assert volumes["test-db"]["emptyDir"]["sizeLimit"] == "250Gi"
+    assert volumes["test-lifecycle"]["emptyDir"]["sizeLimit"] == "1Mi"
+    assert volumes["test-results"]["persistentVolumeClaim"]["claimName"] == (
+        "llmops-market-output"
+    )
+    mounts = {item["name"]: item for item in runner["volumeMounts"]}
+    assert mounts["test-work"]["mountPath"] == "/market-output"
+
+
+def test_test_job_rejects_snapshot_roots_outside_market_output(monkeypatch):
+    monkeypatch.setenv("INGEST_TEST_SOURCE_DB_HOST", "reader.internal")
+    monkeypatch.setenv("INGEST_TEST_SOURCE_DB_NAME", "serving")
+    monkeypatch.setenv("INGEST_TEST_SOURCE_CORPUS_ROOT", "/market-output/ubist")
+    monkeypatch.setenv("INGEST_TEST_SOURCE_CATALOG_ROOT", "/tmp/catalog")
+
+    with pytest.raises(RuntimeError, match="INGEST_TEST_SOURCE_CATALOG_ROOT"):
+        render_test_job(
+            category="ubist",
+            manifest_sha=SHA,
+            manifest_path="/data/m.json",
+            run_id="test-run-123",
+            requested_by="pl@example.test",
+            namespace="llmops",
+        )
+
+
 def test_ingest_manifests_pin_the_default_job_image():
     """Internal identity: every tracked ingest manifest runs config.DEFAULT_JOB_IMAGE.
 
@@ -171,6 +268,15 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert "INGEST_LOAD_TARGET_ROOT" not in trigger_env
     assert trigger_env["INGEST_INPUT_BACKEND"]["value"] == "local"
     assert trigger_env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
+    assert trigger_env["INGEST_TEST_RUN_ROOT"]["value"] == (
+        "/market-output/ingest-test-runs"
+    )
+    assert trigger_env["INGEST_TEST_SOURCE_DB_HOST"]["value"] == (
+        "llmops-mariadb-service.llmops.svc.cluster.local"
+    )
+    assert trigger_env["INGEST_TEST_SOURCE_DB_NAME"]["value"] == (
+        "jw_mart_d2_stage_20260630_r2"
+    )
     trigger_mounts = {item["name"]: item for item in trigger["volumeMounts"]}
     assert trigger_mounts["ingest-input"]["mountPath"] == "/nfs-root/autoIngestion"
     assert trigger_mounts["ingest-input"]["readOnly"] is True
