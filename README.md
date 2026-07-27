@@ -50,7 +50,11 @@ tests/      파이썬 테스트 스위트
 
 ## 4. 개발 참고
 
-- 테스트: `pytest tests/` (일부 컴포넌트는 자체 `tests/` 서브트리 — 예: `tests/ingest_hook`).
+- 정본 회귀: `python3 pipeline/scripts/gates/canonical_regression.py`.
+  정확한 범위·baseline 갱신 규약은
+  `pipeline/scripts/gates/CANONICAL_REGRESSION.md`를 따른다.
+- `chat/jw-chat-agent-poc`와 `chat/wf301-vdb-bridge`는 독립 컴포넌트로 각 디렉터리의
+  테스트 명령을 별도로 실행한다.
 - 작업 브랜치는 `develop`. 금지 lineage(`BRANCH_POLICY.md`)는 병합하지 않는다.
 - 로컬 경로를 코드에 하드코딩하지 않는다. 백업 등 사용자별 경로는 환경변수로
   (예: 브랜드활동 audit 백업은 `JW_BACKUP_DIR`, 미설정 시 `~/jw_backups`).
