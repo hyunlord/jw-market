@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "collected": 2218,
-  "passed": 2205,
-  "failed": 8,
+  "collected": 2227,
+  "passed": 2217,
+  "failed": 5,
   "errors": 0,
   "skipped": 5,
   "failure_node_ids": [
@@ -10,10 +10,7 @@
     "tests/analysis/brand_activity/test_auto_topic_core.py::test_build_market_samples_uses_final_mi_master_market_scopes_only",
     "tests/analysis/brand_activity/test_auto_topic_core.py::test_mi_master_group_map_groups_livalo_and_gardlet",
     "tests/analysis/brand_activity/test_auto_topic_core.py::test_mi_master_sanity_is_not_applicable_for_delta_without_reference_pairs",
-    "tests/analysis/brand_activity/test_auto_topic_core.py::test_scope_metadata_uses_mi_master_scopes_and_keeps_csd_missing_with_fallback",
-    "tests/deploy/test_strategic_reload_publish.py::test_dry_run_checks_rows_without_swapping",
-    "tests/deploy/test_strategic_reload_publish.py::test_publish_calls_atomic_rename_for_each_reload_table",
-    "tests/deploy/test_strategic_reload_publish.py::test_publish_restores_successful_backups_after_later_failure"
+    "tests/analysis/brand_activity/test_auto_topic_core.py::test_scope_metadata_uses_mi_master_scopes_and_keeps_csd_missing_with_fallback"
   ],
   "error_node_ids": []
 }
