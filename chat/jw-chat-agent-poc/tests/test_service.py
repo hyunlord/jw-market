@@ -3932,6 +3932,7 @@ def test_disease_candidates_are_stored_and_direct_code_followup_resumes_stats() 
     pending = store.conversations.get_pending("disease-candidates")
     assert pending is not None
     assert pending.kind == "hira_disease_code"
+    assert external.name_code_inputs[0] == "당뇨병성 망막병증"
     assert [candidate.sick_cd for candidate in pending.disease_candidates] == [
         "E10.3",
         "E11.3",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
+from jw_chat_agent_poc.tool_use.integration import disease_query_from_question
 
 
 DIRECT_HIRA_ABSENT_QUESTIONS = (
@@ -28,6 +29,12 @@ SUPPORTED_BRAND_HIRA_QUESTIONS = (
     "트루패스 환자수 알려줘",
     "뉴트로진 환자수 알려줘",
 )
+
+
+def test_live_f68_question_preserves_the_full_disease_name_for_candidate_lookup() -> None:
+    question = "당뇨병성 망막병증의 환자수 통계 알려줘"
+
+    assert disease_query_from_question(question) == "당뇨병성 망막병증"
 
 
 @pytest.mark.parametrize("question", DIRECT_HIRA_ABSENT_QUESTIONS)
