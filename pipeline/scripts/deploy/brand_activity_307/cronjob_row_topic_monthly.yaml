@@ -321,6 +321,11 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.name
+            - name: GENOS_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: GENOS_BEARER_TOKEN
+                  name: jw-chat-agent-poc-secrets
             image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:e8205158a93cf4cc34abdee2b35a8a3c3d96a4f2fb887e823a58d5a68cb9368a
             imagePullPolicy: IfNotPresent
             name: row-topic-monthly
