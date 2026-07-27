@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
@@ -32,7 +33,14 @@ import pymysql
 SCHEMA: Final = "jw_brand_activity_stage"
 KEYWORD_TABLE: Final = "km_keyword_event_stage"
 RUNS_TABLE: Final = "mart_brand_activity_topic_runs"
+HANDOFF_TABLE: Final = "mart_brand_activity_assignment_handoff"
 DEFAULT_JSON_URL: Final = "http://code-serving-238:8080/json"
+OBSERVATION_TARGET_MODE: Final = "monthly_observation"
+ASSIGNMENT_NOT_REQUIRED: Final = "not_required"
+PRODUCER_NOOP: Final = "producer_noop"
+PRODUCER_STARTED: Final = "producer_started"
+PRODUCER_FAILED: Final = "producer_failed"
+PRODUCER_COMPLETE: Final = "producer_complete"
 
 JsonObject = dict[str, Any]
 PostJson = Callable[[str, JsonObject, int], JsonObject]
@@ -225,11 +233,34 @@ def main() -> int:
         },
     )
     if decision.action is PreflightAction.FAIL:
+        _record_producer_observation(
+            status=PRODUCER_FAILED,
+            fingerprint=decision.current.stage_hash_fingerprint,
+            reason="fingerprint_seed_missing",
+        )
         return 1
     if decision.action is PreflightAction.NOOP:
+        _record_producer_observation(
+            status=PRODUCER_NOOP,
+            fingerprint=decision.current.stage_hash_fingerprint,
+            reason="input_unchanged",
+        )
         return 0
 
-    result = run_topic_job(config)
+    _record_producer_observation(
+        status=PRODUCER_STARTED,
+        fingerprint=decision.current.stage_hash_fingerprint,
+        reason="topic_run_started",
+    )
+    try:
+        result = run_topic_job(config)
+    except Exception:
+        _record_producer_observation(
+            status=PRODUCER_FAILED,
+            fingerprint=decision.current.stage_hash_fingerprint,
+            reason="topic_run_exception",
+        )
+        raise
     _log(
         "result",
         {
@@ -241,7 +272,17 @@ def main() -> int:
         },
     )
     if result.status != "done" or not _db_save_ok(result.db_save_summary):
+        _record_producer_observation(
+            status=PRODUCER_FAILED,
+            fingerprint=decision.current.stage_hash_fingerprint,
+            reason="topic_run_or_db_save_failed",
+        )
         return 1
+    _record_producer_observation(
+        status=PRODUCER_COMPLETE,
+        fingerprint=decision.current.stage_hash_fingerprint,
+        reason="topic_run_complete",
+    )
     return 0
 
 
@@ -379,6 +420,69 @@ def _int(value: Any) -> int:
 def _log(event: str, payload: JsonObject) -> None:
     """Emit a compact structured log line with no secrets."""
     print(json.dumps({"event": event, **payload}, ensure_ascii=False, sort_keys=True), flush=True)
+
+
+def _record_producer_observation(
+    *,
+    status: str,
+    fingerprint: str,
+    reason: str,
+) -> None:
+    """Persist observability without changing the producer's existing exit decision."""
+    try:
+        with connect_mariadb() as connection:
+            sql = f"""
+INSERT INTO `{_config_from_env().stage_schema}`.`{HANDOFF_TABLE}`
+ (run_id, target_mode, input_fingerprint,
+  expected_scope_count, stored_scope_count, scope_identity_sha256,
+  assignment_population_count, assignment_population_sha256,
+  axis_status, assignment_status, last_error)
+VALUES (%s, %s, %s, 0, 0, %s, 0, %s, %s, %s, %s)
+ON DUPLICATE KEY UPDATE
+ target_mode=VALUES(target_mode),
+ input_fingerprint=VALUES(input_fingerprint),
+ axis_status=VALUES(axis_status),
+ assignment_status=VALUES(assignment_status),
+ last_error=VALUES(last_error),
+ updated_at=CURRENT_TIMESTAMP
+""".strip()
+            empty_identity = hashlib.sha256(b"").hexdigest()
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql,
+                    (
+                        _observation_run_id(),
+                        OBSERVATION_TARGET_MODE,
+                        _fingerprint(fingerprint),
+                        empty_identity,
+                        empty_identity,
+                        status,
+                        ASSIGNMENT_NOT_REQUIRED,
+                        reason[:512],
+                    ),
+                )
+    except Exception as exc:  # noqa: BLE001 - observation failure must never block the monthly job.
+        _log(
+            "producer_observation_write_failed",
+            {"status": status, "error_type": type(exc).__name__},
+        )
+
+
+def _observation_run_id(observed_at: datetime | None = None) -> str:
+    """Share one UTC-month key between the monthly producer and consumer."""
+    instant = observed_at or datetime.now(timezone.utc)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return f"monthly-axis-observation:{instant.astimezone(timezone.utc):%Y-%m}"
+
+
+def _fingerprint(value: str) -> str:
+    normalized = value.strip().lower()
+    if len(normalized) == 64 and all(
+        character in "0123456789abcdef" for character in normalized
+    ):
+        return normalized
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 if __name__ == "__main__":
