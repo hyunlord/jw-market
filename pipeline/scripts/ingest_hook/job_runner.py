@@ -572,6 +572,24 @@ def run(
                         if is_shadow
                         else ubist_mart_activation.production_catalog_root_from_env()
                     )
+                    catalog_conn = config.open_mart_connection(mart_activation.source_db)
+                    try:
+                        catalog_preparation = ubist_mart_activation.prepare_catalog_for_mart(
+                            catalog_root=catalog_root,
+                            ubist_dir=load_result["target_dir"],
+                            source_db=mart_activation.source_db,
+                            conn=catalog_conn,
+                            run_id=run_id,
+                            output_parent=target_root,
+                        )
+                    finally:
+                        catalog_conn.close()
+                    print(
+                        "phase=catalog_preflight status=complete "
+                        f"action={catalog_preparation.action} "
+                        f"mi_master_sha256={catalog_preparation.mi_master_sha256} "
+                        f"parity_tables={len(catalog_preparation.parity)}"
+                    )
                     print(
                         f"phase=mart_build status=start build_db={mart_activation.build_db} "
                         f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"

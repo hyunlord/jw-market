@@ -12,9 +12,7 @@ from typing import Any, Callable
 
 from pipeline.etl.io.catalog.paths import (
     CATALOG_ROOT_ENV,
-    CatalogProvisioningError,
     resolve_catalog_root,
-    validate_catalog_materialization,
 )
 from pipeline.scripts.deploy.mart_load_ops import (
     PublishAction,
@@ -37,6 +35,7 @@ ENV_BUILD_PREFIX = "INGEST_MART_BUILD_PREFIX"
 ENV_SHADOW_TARGET_DB = "INGEST_SHADOW_TARGET_DB"
 ENV_SHADOW_BUILD_PREFIX = "INGEST_SHADOW_BUILD_PREFIX"
 ENV_SHADOW_CATALOG_ROOT = "INGEST_SHADOW_CATALOG_ROOT"
+ENV_CATALOG_IQVIA_NSA_DIR = "INGEST_CATALOG_IQVIA_NSA_DIR"
 ENV_SHADOW_CRASH_AT = "INGEST_SHADOW_CRASH_AT"
 ENV_SHADOW_FAILURE_AT = "INGEST_SHADOW_FAILURE_AT"
 SHADOW_FAILURE_SIGMA_PARTS_WHOLE = "sigma_parts_whole"
@@ -50,7 +49,6 @@ GENERAL_TABLES = (
 )
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_S4_REQUIRED_CATALOGS = frozenset({"strategic_brand", "strategic_product"})
 _S4_MUTATED_ENV = (
     "MARIADB_DATABASE",
     "MARIADB_SOURCE_DATABASE",
@@ -148,24 +146,43 @@ def shadow_catalog_root_from_env(shadow_root: Path) -> Path:
     boundary = shadow_root.resolve()
     if not root.is_relative_to(boundary):
         raise RuntimeError("isolated shadow catalog must be inside the shadow root")
-    required = root / "strategic_brand" / "strategic_brand.parquet"
-    if not required.is_file():
-        raise RuntimeError(f"isolated shadow catalog is missing strategic_brand.parquet: {required}")
     return root
 
 
 def production_catalog_root_from_env() -> Path:
-    """Resolve and validate the production S4 catalog before mart build starts."""
+    """Resolve the NFS production catalog; preparation validates or rebuilds it."""
 
-    root = resolve_catalog_root(_PROJECT_ROOT).resolve()
-    try:
-        validate_catalog_materialization(
-            root,
-            required_names=_S4_REQUIRED_CATALOGS,
-        )
-    except CatalogProvisioningError as exc:
-        raise RuntimeError(f"catalog preflight failed before s4 mart: {exc}") from exc
-    return root
+    return resolve_catalog_root(_PROJECT_ROOT).resolve()
+
+
+def prepare_catalog_for_mart(
+    *,
+    catalog_root: Path,
+    ubist_dir: Path,
+    source_db: str,
+    conn: Any,
+    run_id: str,
+    output_parent: Path,
+):
+    """Ensure the NFS catalog matches the current MI Master before S4 starts."""
+
+    from pipeline.etl.io.iqvia_loader import DEFAULT_NSA_PARQUET_DIR
+    from pipeline.etl.lib.storage import get_mi_master_path
+    from pipeline.scripts.ingest_hook.catalog_refresh import ensure_nfs_catalog
+
+    iqvia_nsa_dir = Path(
+        os.environ.get(ENV_CATALOG_IQVIA_NSA_DIR, str(DEFAULT_NSA_PARQUET_DIR))
+    )
+    return ensure_nfs_catalog(
+        catalog_root=catalog_root,
+        mi_master=get_mi_master_path(),
+        ubist_dir=ubist_dir,
+        iqvia_nsa_dir=iqvia_nsa_dir,
+        target_db=source_db,
+        conn=conn,
+        run_id=run_id,
+        output_parent=output_parent,
+    )
 
 
 def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:

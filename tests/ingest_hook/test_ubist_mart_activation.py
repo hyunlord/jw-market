@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from pipeline.scripts.ingest_hook import ubist_mart_activation as activation
@@ -23,7 +25,7 @@ def _provision_catalog(root: Path, *names: str) -> None:
     for name in names:
         path = build_root / name / f"{name}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(name.encode("utf-8"))
+        pq.write_table(pa.table({"name": [name]}), path)
         results.append(_CatalogResult(name=name, output_path=path))
     publish_catalog_outputs(results, build_root=build_root, catalog_root=root)
 
@@ -155,7 +157,9 @@ def test_shadow_catalog_root_requires_isolated_canonical_catalog(tmp_path, monke
     assert activation.shadow_catalog_root_from_env(shadow_root) == catalog_root.resolve()
 
 
-def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monkeypatch) -> None:
+def test_shadow_catalog_root_rejects_external_catalog_but_allows_refresh_target(
+    tmp_path, monkeypatch
+) -> None:
     shadow_root = tmp_path / "shadow"
     external = tmp_path / "external"
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(external))
@@ -165,8 +169,7 @@ def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monke
 
     internal = shadow_root / "catalog"
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(internal))
-    with pytest.raises(RuntimeError, match="strategic_brand.parquet"):
-        activation.shadow_catalog_root_from_env(shadow_root)
+    assert activation.shadow_catalog_root_from_env(shadow_root) == internal.resolve()
 
 
 def test_production_catalog_preflight_validates_before_s4(tmp_path, monkeypatch) -> None:
@@ -177,14 +180,13 @@ def test_production_catalog_preflight_validates_before_s4(tmp_path, monkeypatch)
     assert activation.production_catalog_root_from_env() == catalog_root.resolve()
 
 
-def test_production_catalog_preflight_names_missing_artifact(tmp_path, monkeypatch) -> None:
+def test_production_catalog_resolver_leaves_validation_to_refresh(tmp_path, monkeypatch) -> None:
     catalog_root = tmp_path / "catalog"
     _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
     (catalog_root / "strategic_product" / "strategic_product.parquet").unlink()
     monkeypatch.setenv(activation.CATALOG_ROOT_ENV, str(catalog_root))
 
-    with pytest.raises(RuntimeError, match="before s4 mart.*strategic_product"):
-        activation.production_catalog_root_from_env()
+    assert activation.production_catalog_root_from_env() == catalog_root.resolve()
 
 
 def test_shadow_activation_isolated_without_production_approval(monkeypatch) -> None:

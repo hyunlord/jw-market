@@ -41,6 +41,25 @@ class CatalogSyncResult:
     dry_run: bool
 
 
+@dataclass(frozen=True)
+class CatalogParityResult:
+    parquet_name: str
+    table_name: str
+    candidate_rows: int
+    serving_rows: int
+    missing_primary_keys: tuple[str, ...]
+    added_primary_keys: tuple[str, ...]
+    changed_primary_keys: tuple[str, ...]
+
+    @property
+    def matches(self) -> bool:
+        return not (
+            self.missing_primary_keys
+            or self.added_primary_keys
+            or self.changed_primary_keys
+        )
+
+
 CATALOG_ML_MARKET = CatalogTableSpec(
     parquet_name="ml_market",
     table_name="catalog_ml_market",
@@ -180,6 +199,61 @@ def catalog_table_specs() -> tuple[CatalogTableSpec, ...]:
     return CATALOG_TABLES
 
 
+def compare_catalog_to_serving(
+    conn: pymysql.connections.Connection,
+    *,
+    target_db: str,
+    catalog_root: Path,
+) -> tuple[CatalogParityResult, ...]:
+    """Compare catalog business columns to serving tables with deterministic PK ordering."""
+
+    results: list[CatalogParityResult] = []
+    for spec in CATALOG_TABLES:
+        candidate_rows, _, _ = _load_catalog_rows(catalog_root, spec)
+        compare_columns = tuple(
+            column.name
+            for column in spec.columns
+            if column.name not in {"ingested_at", "catalog_manifest_hash"}
+        )
+        projection = ", ".join(quote_id(name) for name in compare_columns)
+        sql = (
+            f"SELECT {projection} FROM {quote_id(target_db)}.{quote_id(spec.table_name)} "
+            f"ORDER BY {quote_id(spec.primary_key)}"
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            serving_rows = list(cursor.fetchall())
+        candidate_by_key = {
+            str(row.get(spec.primary_key) or ""): _business_row(row, compare_columns)
+            for row in candidate_rows
+        }
+        serving_by_key = {
+            str(row.get(spec.primary_key) or ""): _business_row(row, compare_columns)
+            for row in serving_rows
+        }
+        candidate_keys = set(candidate_by_key)
+        serving_keys = set(serving_by_key)
+        shared = candidate_keys & serving_keys
+        results.append(
+            CatalogParityResult(
+                parquet_name=spec.parquet_name,
+                table_name=spec.table_name,
+                candidate_rows=len(candidate_rows),
+                serving_rows=len(serving_rows),
+                missing_primary_keys=tuple(sorted(serving_keys - candidate_keys)),
+                added_primary_keys=tuple(sorted(candidate_keys - serving_keys)),
+                changed_primary_keys=tuple(
+                    sorted(
+                        key
+                        for key in shared
+                        if candidate_by_key[key] != serving_by_key[key]
+                    )
+                ),
+            )
+        )
+    return tuple(results)
+
+
 def quote_id(value: str) -> str:
     if not value or "`" in value or "\x00" in value:
         raise ValueError(f"unsafe SQL identifier: {value}")
@@ -245,6 +319,13 @@ def _json_value(value: object) -> object:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def _business_row(
+    row: dict[str, object],
+    columns: Sequence[str],
+) -> tuple[object, ...]:
+    return tuple(_json_value(row.get(column)) for column in columns)
 
 
 def _create_catalog_table(conn: pymysql.connections.Connection, target_db: str, spec: CatalogTableSpec) -> None:

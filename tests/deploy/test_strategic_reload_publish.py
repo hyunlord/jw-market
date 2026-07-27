@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from pipeline.etl.io.catalog.paths import publish_catalog_outputs
@@ -18,6 +20,11 @@ class _CatalogResult:
     rows: int = 1
 
 
+def _write_catalog_artifact(path: Path, name: str) -> None:
+    path.parent.mkdir(parents=True)
+    pq.write_table(pa.table({"name": [name]}), path)
+
+
 @pytest.fixture
 def provisioned_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     project_root = tmp_path / "repo"
@@ -26,8 +33,7 @@ def provisioned_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     results = []
     for name in sorted(publish.PUBLISH_REQUIRED_CATALOGS):
         output_path = build_root / name / f"{name}.parquet"
-        output_path.parent.mkdir(parents=True)
-        output_path.write_bytes(f"fixture:{name}".encode())
+        _write_catalog_artifact(output_path, name)
         results.append(_CatalogResult(name=name, output_path=output_path))
     publish_catalog_outputs(
         results,
@@ -86,8 +92,7 @@ def test_resolve_catalog_root_requires_output_catalog(tmp_path, monkeypatch) -> 
     results = []
     for name in sorted(publish.PUBLISH_REQUIRED_CATALOGS):
         output_path = build_root / name / f"{name}.parquet"
-        output_path.parent.mkdir(parents=True)
-        output_path.write_bytes(name.encode())
+        _write_catalog_artifact(output_path, name)
         results.append(_CatalogResult(name=name, output_path=output_path))
     publish_catalog_outputs(
         results,

@@ -458,6 +458,16 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "production_catalog_root_from_env",
         lambda: tmp_path / "provisioned-catalog",
     )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "prepare_catalog_for_mart",
+        lambda **_kwargs: order.append("catalog_preflight")
+        or type(
+            "CatalogPreparation",
+            (),
+            {"action": "reused", "mi_master_sha256": "a" * 64, "parity": ()},
+        )(),
+    )
     real_promote = ubist_mart_activation.promote_candidate_corpus
     monkeypatch.setattr(
         ubist_mart_activation,
@@ -594,6 +604,16 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     )
     monkeypatch.setattr(
         ubist_mart_activation, "build_shadow", lambda *_args, **_kwargs: order.append("mart_build")
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "prepare_catalog_for_mart",
+        lambda **_kwargs: order.append("catalog_preflight")
+        or type(
+            "CatalogPreparation",
+            (),
+            {"action": "reused", "mi_master_sha256": "a" * 64, "parity": ()},
+        )(),
     )
     monkeypatch.setattr(
         ubist_mart_activation,

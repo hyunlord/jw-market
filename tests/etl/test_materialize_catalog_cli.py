@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from pipeline.etl.io.catalog.paths import publish_catalog_outputs
@@ -20,7 +22,7 @@ def _publish(root: Path, name: str) -> None:
     build = root.parent / "build"
     artifact = build / name / f"{name}.parquet"
     artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b"fixture")
+    pq.write_table(pa.table({"id": [1]}), artifact)
     publish_catalog_outputs(
         [_Result(name=name, output_path=artifact)],
         build_root=build,

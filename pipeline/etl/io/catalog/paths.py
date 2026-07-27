@@ -6,7 +6,10 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Iterable, Mapping, Protocol
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 CATALOG_BUILD_RELATIVE = Path("parquet")
@@ -87,6 +90,7 @@ def publish_catalog_outputs(
     build_root: Path,
     catalog_root: Path,
     required_names: frozenset[str] | None = None,
+    source_fingerprints: Mapping[str, str] | None = None,
 ) -> tuple[PublishedCatalog, ...]:
     """Promote one complete s2 build tree to the canonical catalog root."""
 
@@ -137,9 +141,12 @@ def publish_catalog_outputs(
                 sha256=source_hash,
             )
         )
-    _write_catalog_manifest(catalog_root, tuple(published), results_by_name={
-        result.name: result for result, _, _ in sources
-    })
+    _write_catalog_manifest(
+        catalog_root,
+        tuple(published),
+        results_by_name={result.name: result for result, _, _ in sources},
+        source_fingerprints=source_fingerprints or {},
+    )
     return tuple(published)
 
 
@@ -147,6 +154,7 @@ def validate_catalog_materialization(
     catalog_root: Path,
     *,
     required_names: frozenset[str] = frozenset(),
+    expected_source_fingerprints: Mapping[str, str] | None = None,
 ) -> tuple[PublishedCatalog, ...]:
     """Validate a complete checksummed catalog snapshot without modifying it."""
 
@@ -167,6 +175,21 @@ def validate_catalog_materialization(
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         raise CatalogIntegrityError("catalog manifest artifacts must be a non-empty list")
+    sources = payload.get("source_fingerprints", {})
+    if not isinstance(sources, dict) or any(
+        not isinstance(key, str)
+        or not isinstance(value, str)
+        or len(value) != 64
+        for key, value in sources.items()
+    ):
+        raise CatalogIntegrityError("catalog manifest source_fingerprints must contain SHA256 values")
+    for source_name, expected_sha in (expected_source_fingerprints or {}).items():
+        actual_sha = sources.get(source_name)
+        if actual_sha != expected_sha:
+            raise CatalogIntegrityError(
+                f"catalog source fingerprint mismatch: {source_name} "
+                f"expected={expected_sha} actual={actual_sha}"
+            )
 
     validated: list[PublishedCatalog] = []
     seen_names: set[str] = set()
@@ -177,6 +200,7 @@ def validate_catalog_materialization(
         relative = item.get("path")
         expected_sha = item.get("sha256")
         expected_size = item.get("size")
+        expected_rows = item.get("rows")
         if (
             not isinstance(name, str)
             or not name
@@ -186,6 +210,8 @@ def validate_catalog_materialization(
             or len(expected_sha) != 64
             or not isinstance(expected_size, int)
             or expected_size < 0
+            or not isinstance(expected_rows, int)
+            or expected_rows < 0
         ):
             raise CatalogIntegrityError(f"invalid catalog manifest artifact: {item!r}")
         seen_names.add(name)
@@ -203,6 +229,15 @@ def validate_catalog_materialization(
         if actual_sha != expected_sha:
             raise CatalogIntegrityError(
                 f"catalog SHA256 mismatch: {relative} expected={expected_sha} actual={actual_sha}"
+            )
+        try:
+            actual_rows = pq.ParquetFile(path).metadata.num_rows
+        except (OSError, pa.ArrowInvalid) as exc:
+            raise CatalogIntegrityError(f"catalog parquet is unreadable: {relative}") from exc
+        if actual_rows != expected_rows:
+            raise CatalogIntegrityError(
+                f"catalog row count mismatch: {relative} "
+                f"expected={expected_rows} actual={actual_rows}"
             )
         validated.append(
             PublishedCatalog(
@@ -271,6 +306,7 @@ def _write_catalog_manifest(
     published: tuple[PublishedCatalog, ...],
     *,
     results_by_name: dict[str, CatalogResult],
+    source_fingerprints: Mapping[str, str],
 ) -> None:
     artifacts = [
         {
@@ -285,6 +321,7 @@ def _write_catalog_manifest(
     payload = {
         "schema_version": CATALOG_MANIFEST_SCHEMA_VERSION,
         "artifacts": artifacts,
+        "source_fingerprints": dict(sorted(source_fingerprints.items())),
     }
     manifest = catalog_root / CATALOG_MANIFEST_NAME
     temporary = manifest.with_name(f".{manifest.name}.publishing")
@@ -304,3 +341,12 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    """Return a source fingerprint using the same streaming contract as artifacts."""
+
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"catalog source file not found: {source}")
+    return _sha256(source)
