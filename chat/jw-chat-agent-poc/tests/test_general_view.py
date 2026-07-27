@@ -350,31 +350,42 @@ def test_explicit_strategic_market_uses_catalog_atc4_definition_before_brand_mem
 
 
 @pytest.mark.parametrize(
-    ("definition", "expected_codes", "expected_source", "expected_reason"),
+    ("definition", "expected_codes", "expected_source", "expected_reason", "expected_excluded"),
     (
         (
             StrategicMarketDefinition("ml_006", "ubist", ("C10A1", "C10C")),
             ["C10A1", "C10C"],
             "catalog_definition",
             None,
+            0,
         ),
         (
             StrategicMarketDefinition("ml_006", "ubist", ("C10C",)),
             ["C10C"],
             "catalog_definition",
             None,
+            0,
+        ),
+        (
+            StrategicMarketDefinition("ml_006", "ubist", ("C10A1",), excluded_atc4_count=1),
+            ["C10A1"],
+            "catalog_definition",
+            "catalog_code_invalid",
+            1,
         ),
         (
             StrategicMarketDefinition("ml_006", "ubist", ()),
             ["C10C"],
             "brand_membership",
             "catalog_definition_empty",
+            0,
         ),
         (
             None,
             ["C10C"],
             "brand_membership",
-            "catalog_definition_missing",
+            "catalog_row_absent",
+            0,
         ),
     ),
 )
@@ -383,6 +394,7 @@ def test_strategic_market_definition_failure_injection_is_explicit(
     expected_codes: list[str],
     expected_source: str,
     expected_reason: str | None,
+    expected_excluded: int,
 ) -> None:
     service, _ = _live_livalo_general_view_service(definition)
 
@@ -396,6 +408,7 @@ def test_strategic_market_definition_failure_injection_is_explicit(
         "atc4_source": trace["atc4_source"],
         "candidate_atc4_codes": trace["candidate_atc4_codes"],
         "member_brand_count": trace["member_brand_count"],
+        "excluded_atc4_count": trace["excluded_atc4_count"],
         "reduction_reason": trace["reduction_reason"],
     }
     print(diagnostic)
@@ -405,6 +418,7 @@ def test_strategic_market_definition_failure_injection_is_explicit(
         "atc4_source": expected_source,
         "candidate_atc4_codes": expected_codes,
         "member_brand_count": 2,
+        "excluded_atc4_count": expected_excluded,
         "reduction_reason": expected_reason,
     }
     assert "question" not in diagnostic

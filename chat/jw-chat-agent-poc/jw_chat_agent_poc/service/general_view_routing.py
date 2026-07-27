@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,10 +37,24 @@ from jw_chat_agent_poc.tools.metrics.market_scope_intent import (
 )
 
 
+LOGGER = logging.getLogger(__name__)
+
+# Live catalog and membership snapshots contain UBIST 3-5 character codes,
+# while IQVIA and combined catalog rows use the five-character form.
 _ATC4_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])([A-Za-z]\d{2}[A-Za-z]\d)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])([A-Za-z]\d{1,2}[A-Za-z]\d?)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+_CATALOG_ATC4_PATTERNS = {
+    "ubist": re.compile(r"[A-Z]\d{1,2}[A-Z]\d?"),
+    "iqvia": re.compile(r"[A-Z]\d{2}[A-Z]\d"),
+    "both": re.compile(r"[A-Z]\d{2}[A-Z]\d"),
+}
+_CONNECTION_STRING_RE = re.compile(r"(?i)\b(?:mysql|mariadb)://[^\s]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key)\s*=\s*[^\s,;]+"
+)
+_CATALOG_CONNECTION_ERROR_CODES = frozenset({2002, 2003, 2005, 2006, 2013})
 _IQVIA_SOURCE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:IQVIA|NSA)(?![A-Za-z0-9])|아이큐비아",
     re.IGNORECASE,
@@ -74,6 +89,13 @@ class StrategicMarketDefinition:
     market_id: str
     data_source: str
     atc4_codes: tuple[str, ...]
+    excluded_atc4_count: int = 0
+
+
+class CatalogDefinitionLoadError(RuntimeError):
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class _StrategicMarketDefinitionReader(Protocol):
@@ -87,54 +109,83 @@ class MariaDbStrategicMarketDefinitionReader:
     def resolve(self, market_id: str) -> StrategicMarketDefinition | None:
         import pymysql
 
-        with pymysql.connect(
-            host=self.catalog.host,
-            port=self.catalog.port,
-            user=self.catalog.user,
-            password=self.catalog.password,
-            database=self.catalog.database,
-            connect_timeout=self.catalog.connect_timeout_s,
-            read_timeout=self.catalog.read_timeout_s,
-            write_timeout=self.catalog.read_timeout_s,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True,
-        ) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT ml_id, data_source, atc_codes_json
-                    FROM catalog_ml_market
-                    WHERE ml_id = %s
-                    """,
-                    (market_id,),
-                )
-                rows = tuple(cursor.fetchall())
+        try:
+            with pymysql.connect(
+                host=self.catalog.host,
+                port=self.catalog.port,
+                user=self.catalog.user,
+                password=self.catalog.password,
+                database=self.catalog.database,
+                connect_timeout=self.catalog.connect_timeout_s,
+                read_timeout=self.catalog.read_timeout_s,
+                write_timeout=self.catalog.read_timeout_s,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT ml_id, data_source, atc_codes_json
+                        FROM catalog_ml_market
+                        WHERE ml_id = %s
+                        """,
+                        (market_id,),
+                    )
+                    rows = tuple(cursor.fetchall())
+        except pymysql.MySQLError as exc:
+            error_code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+            reason_code = (
+                "catalog_db_unreachable"
+                if error_code in _CATALOG_CONNECTION_ERROR_CODES
+                else "catalog_parse_error"
+            )
+            raise CatalogDefinitionLoadError(
+                reason_code,
+                "catalog_ml_market query failed",
+            ) from exc
         if not rows:
             return None
         if len(rows) != 1:
             raise ValueError(f"catalog_ml_market primary-key lookup returned {len(rows)} rows")
         row = rows[0]
+        source = str(row.get("data_source") or "").strip().lower()
         raw_codes = row.get("atc_codes_json")
         if isinstance(raw_codes, str):
-            raw_codes = json.loads(raw_codes)
+            try:
+                raw_codes = json.loads(raw_codes)
+            except json.JSONDecodeError as exc:
+                raise CatalogDefinitionLoadError(
+                    "catalog_parse_error",
+                    "catalog_ml_market.atc_codes_json is not valid JSON",
+                ) from exc
         if raw_codes is None:
             raw_codes = ()
         if not isinstance(raw_codes, (list, tuple)):
-            raise ValueError("catalog_ml_market.atc_codes_json must be an array")
+            raise CatalogDefinitionLoadError(
+                "catalog_parse_error",
+                "catalog_ml_market.atc_codes_json must be an array",
+            )
+        pattern = _CATALOG_ATC4_PATTERNS.get(source)
         codes: list[str] = []
+        excluded_count = 0
         for raw_code in raw_codes:
             code = str(raw_code or "").strip().upper()
-            if not code:
+            if not code or pattern is None or pattern.fullmatch(code) is None:
+                excluded_count += 1
                 continue
-            if _ATC4_PATTERN.fullmatch(code) is None:
-                raise ValueError(f"catalog_ml_market contains invalid ATC4 code: {code}")
             if code not in codes:
                 codes.append(code)
+        if raw_codes and not codes:
+            raise CatalogDefinitionLoadError(
+                "catalog_all_codes_invalid",
+                f"catalog_ml_market contains no valid ATC4 codes for source={source or 'missing'}",
+            )
         return StrategicMarketDefinition(
             market_id=str(row.get("ml_id") or market_id),
-            data_source=str(row.get("data_source") or "").strip().lower(),
+            data_source=source,
             atc4_codes=tuple(codes),
+            excluded_atc4_count=excluded_count,
         )
 
 
@@ -295,7 +346,12 @@ class GeneralViewService:
                     reduction_reason="explicit_atc4",
                 )
             elif strategic_market is not None:
-                candidates, definition_source, fallback_reason = self._catalog_market_candidates(
+                (
+                    candidates,
+                    definition_source,
+                    fallback_reason,
+                    excluded_count,
+                ) = self._catalog_market_candidates(
                     strategic_market[0],
                     requested_source=requested_source,
                 )
@@ -306,10 +362,14 @@ class GeneralViewService:
                     selection_trace.update(
                         atc4_source="catalog_definition",
                         candidate_atc4_codes=[candidate.code for candidate in candidates],
-                        reduction_reason=None,
+                        excluded_atc4_count=excluded_count,
+                        reduction_reason=fallback_reason,
                     )
                 else:
-                    selection_trace["reduction_reason"] = fallback_reason
+                    selection_trace.update(
+                        excluded_atc4_count=excluded_count,
+                        reduction_reason=fallback_reason,
+                    )
                     candidates, resolved_brand, membership_source, source = self._brand_or_market_candidates(
                         question,
                         brand,
@@ -419,6 +479,7 @@ class GeneralViewService:
             "atc4_source": "fallback",
             "candidate_atc4_codes": [],
             "member_brand_count": len(members),
+            "excluded_atc4_count": 0,
             "reduction_reason": None,
         }
 
@@ -427,23 +488,32 @@ class GeneralViewService:
         market_id: str,
         *,
         requested_source: str | None,
-    ) -> tuple[tuple[AtcCandidate, ...], str, str | None]:
+    ) -> tuple[tuple[AtcCandidate, ...], str, str | None, int]:
         reader = self._market_definition_reader
         if reader is None:
-            return (), requested_source or "ubist", "catalog_definition_reader_unavailable"
+            return (), requested_source or "ubist", "catalog_definition_reader_unavailable", 0
         try:
             definition = reader.resolve(market_id)
-        except (LookupError, OSError, TypeError, ValueError):
-            return (), requested_source or "ubist", "catalog_definition_load_error"
+        except (CatalogDefinitionLoadError, LookupError, OSError, TypeError, ValueError) as exc:
+            reason_code = _catalog_definition_failure_reason(exc)
+            logged_error = exc.__cause__ if exc.__cause__ is not None else exc
+            LOGGER.warning(
+                "catalog definition load failed reason_code=%s error_type=%s error_message=%s",
+                reason_code,
+                type(logged_error).__name__,
+                _sanitize_catalog_exception(logged_error),
+            )
+            return (), requested_source or "ubist", reason_code, 0
         if definition is None:
-            return (), requested_source or "ubist", "catalog_definition_missing"
+            return (), requested_source or "ubist", "catalog_row_absent", 0
         if not definition.atc4_codes:
-            return (), requested_source or definition.data_source or "ubist", "catalog_definition_empty"
+            return (), requested_source or definition.data_source or "ubist", "catalog_definition_empty", 0
         source = requested_source or definition.data_source or "ubist"
         return (
             tuple(AtcCandidate(code, f"ATC4 {code}") for code in definition.atc4_codes),
             source,
-            None,
+            "catalog_code_invalid" if definition.excluded_atc4_count else None,
+            definition.excluded_atc4_count,
         )
 
     def _brand_or_market_candidates(
@@ -698,6 +768,7 @@ def _result(
             "atc4_source": contract.get("atc4_source"),
             "candidate_atc4_codes": contract.get("candidate_atc4_codes"),
             "member_brand_count": contract.get("member_brand_count"),
+            "excluded_atc4_count": contract.get("excluded_atc4_count"),
             "reduction_reason": contract.get("reduction_reason"),
         },
         "tool_calls": [call],
@@ -738,6 +809,19 @@ def _public_atc4_source(source: str) -> str:
     return "fallback"
 
 
+def _catalog_definition_failure_reason(error: BaseException) -> str:
+    if isinstance(error, CatalogDefinitionLoadError):
+        return error.reason_code
+    if isinstance(error, OSError):
+        return "catalog_db_unreachable"
+    return "catalog_parse_error"
+
+
+def _sanitize_catalog_exception(error: BaseException) -> str:
+    message = _CONNECTION_STRING_RE.sub("[REDACTED_CONNECTION_STRING]", str(error))
+    return _SECRET_ASSIGNMENT_RE.sub(r"\1=[REDACTED]", message)
+
+
 def _attach_selection_trace(call: dict[str, Any], contract: dict[str, Any]) -> None:
     trace = call.get("qa_trace")
     if not isinstance(trace, dict):
@@ -747,6 +831,7 @@ def _attach_selection_trace(call: dict[str, Any], contract: dict[str, Any]) -> N
         "atc4_source",
         "candidate_atc4_codes",
         "member_brand_count",
+        "excluded_atc4_count",
         "reduction_reason",
     ):
         trace[field_name] = contract.get(field_name)
@@ -800,6 +885,7 @@ def _multi_result(
             "atc4_source": contract.get("atc4_source"),
             "candidate_atc4_codes": contract.get("candidate_atc4_codes"),
             "member_brand_count": contract.get("member_brand_count"),
+            "excluded_atc4_count": contract.get("excluded_atc4_count"),
             "reduction_reason": contract.get("reduction_reason"),
         },
         "tool_calls": tool_calls,
@@ -858,6 +944,7 @@ def _unavailable_result(
             "atc4_source": contract.get("atc4_source"),
             "candidate_atc4_codes": contract.get("candidate_atc4_codes"),
             "member_brand_count": contract.get("member_brand_count"),
+            "excluded_atc4_count": contract.get("excluded_atc4_count"),
             "reduction_reason": contract.get("reduction_reason"),
         },
         "tool_calls": [call],
