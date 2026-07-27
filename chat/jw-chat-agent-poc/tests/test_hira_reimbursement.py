@@ -133,9 +133,8 @@ def test_not_found_uses_realtime_and_persists_when_store_supports_it() -> None:
     assert store.writes == [live]
 
 
-def test_absent_store_skips_persistence_but_still_returns_realtime_data() -> None:
-    live = _criterion()
-    realtime = _Realtime(live)
+def test_absent_store_skips_realtime_lookup() -> None:
+    realtime = _Realtime(error=AssertionError("absent store must not call HIRA"))
 
     result = ReimbursementLookupService(
         store=AbsentReimbursementStore(),
@@ -143,9 +142,10 @@ def test_absent_store_skips_persistence_but_still_returns_realtime_data() -> Non
         now=lambda: NOW,
     ).lookup("아일리아")
 
-    assert result.ok is True
-    assert result.retrieval == "realtime"
-    assert result.cache_write == "skipped_store_unavailable"
+    assert result.ok is False
+    assert result.retrieval == "typed_unavailable"
+    assert result.error_code == "NO_EVIDENCE"
+    assert realtime.calls == []
 
 
 def test_cache_write_failure_does_not_discard_verified_realtime_result() -> None:
@@ -184,7 +184,15 @@ def test_cache_read_failure_falls_back_to_realtime() -> None:
 
 def test_realtime_timeout_returns_typed_unavailable() -> None:
     result = ReimbursementLookupService(
-        store=AbsentReimbursementStore(),
+        store=_Store(
+            ReimbursementCacheResult(
+                CacheStatus.NOT_FOUND,
+                None,
+                None,
+                lookup_status=CacheLookupStatus.ZERO_ROWS,
+                schema_name="reimbursement_stage",
+            )
+        ),
         realtime=_Realtime(error=requests.Timeout("deadline")),
         now=lambda: NOW,
     ).lookup("아일리아")
@@ -193,6 +201,53 @@ def test_realtime_timeout_returns_typed_unavailable() -> None:
     assert result.data is None
     assert result.error_code == "TOOL_TIMEOUT"
     assert result.retrieval == "typed_unavailable"
+    assert result.cache_lookup_status is CacheLookupStatus.ZERO_ROWS
+
+
+def test_absent_store_returns_immediate_typed_notice_without_realtime() -> None:
+    realtime = _Realtime(error=requests.Timeout("deadline"))
+
+    result = ReimbursementLookupService(
+        store=AbsentReimbursementStore(),
+        realtime=realtime,
+        now=lambda: NOW,
+    ).lookup("로수젯")
+    envelope = reimbursement_envelope(result, subject="로수젯")
+
+    assert result.ok is False
+    assert result.retrieval == "typed_unavailable"
+    assert result.error_code == "NO_EVIDENCE"
+    assert result.cache_lookup_status is CacheLookupStatus.STORE_ABSENT
+    assert realtime.calls == []
+    assert envelope.preview == (
+        "급여기준 조회 기능은 현재 준비 중입니다. "
+        "심사평가원(HIRA) 사이트에서 직접 확인해 주세요."
+    )
+    assert envelope.raw["cache_lookup_status"] == "store_absent"
+
+    trace = trace_envelope(
+        question="로수젯 급여기준 알려줘",
+        result={
+            "tool_calls": [
+                {
+                    "tool": "hira_reimbursement_criteria",
+                    "status": "error",
+                    "render_data": envelope.model_dump(mode="json"),
+                }
+            ],
+            "markdown_response": {"fact_md": "", "data_md": ""},
+        },
+        answer=envelope.preview,
+        charts=(),
+        timing={"stages": []},
+        conversation_id="f70-store-absent",
+    )
+
+    assert trace["qa_trace"]["final"] == {
+        "disposition": "unavailable",
+        "body_empty": False,
+        "failure_kind": "tool_error",
+    }
 
 
 def test_future_cache_timestamp_is_not_treated_as_fresh() -> None:
@@ -582,7 +637,7 @@ def test_absent_store_and_hit_have_distinct_cache_telemetry() -> None:
     live = _criterion()
     absent = ReimbursementLookupService(
         store=AbsentReimbursementStore(),
-        realtime=_Realtime(live),
+        realtime=_Realtime(error=AssertionError("absent store must not call HIRA")),
         now=lambda: NOW,
     ).lookup("아일리아")
     hit_realtime = _Realtime(error=AssertionError("cache hit must not call realtime"))
@@ -601,6 +656,7 @@ def test_absent_store_and_hit_have_distinct_cache_telemetry() -> None:
     ).lookup("아일리아")
 
     assert absent.cache_lookup_status is CacheLookupStatus.STORE_ABSENT
+    assert absent.retrieval == "typed_unavailable"
     assert hit.cache_lookup_status is CacheLookupStatus.HIT
     assert hit.retrieval == "cache"
     assert hit_realtime.calls == []
