@@ -1228,7 +1228,7 @@ def test_general_member_request_discloses_the_twenty_row_cap() -> None:
     assert contract["requested_limit"] == 50
     assert contract["limit_capped"] is True
     assert "총 100개 중 20개 표시" in result["answer"]
-    assert "표시 상한 20개" in result["answer"]
+    assert "응답 표시 정책상 최대 20개" in result["answer"]
 
 
 def test_explicit_source_does_not_fallback_to_another_membership_source() -> None:

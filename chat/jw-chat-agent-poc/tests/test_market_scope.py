@@ -233,7 +233,7 @@ def test_named_market_member_count_is_forwarded_as_a_bounded_limit() -> None:
     assert data["requested_limit"] == 50
     assert data["limit_capped"] is True
     assert "총 555개 중 20개 표시" in result["answer"]
-    assert "표시 상한 20개" in result["answer"]
+    assert "응답 표시 정책상 최대 20개" in result["answer"]
 
 
 def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:

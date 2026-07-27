@@ -245,7 +245,11 @@ class MarketScopeResolver:
             return self._unsupported("전략 mart 응답 구조가 비어 있습니다.", question, "market_id", market_id)
         if member_query and member_limit.requested is not None:
             data["requested_limit"] = member_limit.requested
-            data["limit_capped"] = member_limit.capped
+            data["display_limit"] = member_limit.applied
+            data["limit_capped"] = (
+                member_limit.capped
+                and int(data.get("total_brands_in_market") or 0) > member_limit.applied
+            )
             call["render_data"] = data
         source = str(data.get("source_label") or call.get("source") or "")
         attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
@@ -351,7 +355,11 @@ class MarketScopeResolver:
         data["view_label"] = view_label(view_type)
         if member_query and member_limit.requested is not None:
             data["requested_limit"] = member_limit.requested
-            data["limit_capped"] = member_limit.capped
+            data["display_limit"] = member_limit.applied
+            data["limit_capped"] = (
+                member_limit.capped
+                and int(data.get("total_brands_in_market") or 0) > member_limit.applied
+            )
         call["render_data"] = data
         if member_query:
             qualifier = "상위 5개 밖의 " if data.get("other_members_only") else ""
