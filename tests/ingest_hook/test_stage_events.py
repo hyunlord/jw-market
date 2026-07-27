@@ -5,8 +5,11 @@ Covers the review gates:
   V-2 failure injection -> failing stage recorded `failed` with reason (g3, post_gate)
   V-4 conditional skips recorded `skipped` with reason (rehearsal)
   V-5 retry accumulates per run_id (no overwrite of prior attempts)
-  V-6 stage-record write failure must NOT fail the load (best-effort, S-4)
+  V-6 stage-record write failure is ignored ONLY behind REQUIRE_STAGE_LEDGER_STRICT=0
+      (the former unconditional best-effort contract, kept as the escape hatch)
   V-7 /ingest/status keeps its original fields (backward compatible)
+  B-4 stage recording is fail-closed by default, in both directions
+  D-2 an already-failing run keeps its result line when the signal stage row is lost
 """
 from __future__ import annotations
 
@@ -154,6 +157,7 @@ def test_v6_stage_record_failure_is_ignored_only_when_strict_is_disabled(
     Kept verbatim as the ``REQUIRE_STAGE_LEDGER_STRICT=0`` escape hatch so the old
     behavior stays covered; the default is fail-closed (see the B-4 cases below).
     """
+    _skip_observation_preflight(monkeypatch)
     monkeypatch.setenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, "0")
     # Drop the stage table so every record_stage INSERT errors; the load must still complete.
     sqlite_ledger._execute("DROP TABLE ingest_stage_event")  # test-only sabotage
@@ -168,33 +172,63 @@ def test_v6_stage_record_failure_is_ignored_only_when_strict_is_disabled(
 
 
 def _fail_stage_writes(ledger, *, only_stage: str | None = None, exc: Exception | None = None):
-    """Make ingest_stage_event statements raise, optionally just one stage's write.
+    """Make ingest_stage_event WRITES raise, optionally just one stage's write.
 
     Patches ``_execute`` rather than ``record_stage`` so the real strict-mode policy
     inside ``record_stage`` is the thing under test.
+
+    Scoped to INSERT/UPDATE on purpose: the scenario is "the write fails", and the
+    observation preflight reads the same table's schema before the run starts. Failing
+    reads too would trip that separate gate and this test would no longer exercise
+    record_stage at all. The preflight's own read-failure behaviour is covered by
+    test_observation_preflight.py.
     """
     original = ledger._execute
     failure = exc or sqlite3.OperationalError("no such table: ingest_stage_event")
 
     def patched(sql, params=()):
-        if "ingest_stage_event" in sql and (only_stage is None or only_stage in params):
+        is_write = sql.lstrip().upper().startswith(("INSERT", "UPDATE"))
+        if is_write and "ingest_stage_event" in sql and (only_stage is None or only_stage in params):
             raise failure
         return original(sql, params)
 
     ledger._execute = patched
 
 
+def _skip_observation_preflight(monkeypatch):
+    """Isolate record_stage policy from the separate observation-preflight gate.
+
+    These cases delete or sabotage ingest_stage_event, which the preflight is designed to
+    catch first — correctly, since the ingest genuinely must not start. That refusal is
+    asserted in test_observation_preflight.py. Here the subject is what record_stage does
+    once a run IS underway, so the earlier gate is stood down explicitly rather than
+    weakened.
+    """
+    monkeypatch.setattr(job_runner.observation_preflight, "verify", lambda _ledger: {})
+
+
 def test_b4_1_missing_stage_table_fails_the_run_with_a_named_reason(
-    monkeypatch, sqlite_ledger, bucket, tmp_path
+    monkeypatch, capsys, sqlite_ledger, bucket, tmp_path
 ):
+    _skip_observation_preflight(monkeypatch)
     monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
     sqlite_ledger._execute("DROP TABLE ingest_stage_event")
     manifest_path = write_submission(bucket)
 
-    with pytest.raises(StageLedgerWriteError, match=r"ingest_stage_event.*_DDL_STAGE_MYSQL"):
-        job_runner.run(
-            manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
-        )
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    # Before the D-2 guard this escaped as a bare StageLedgerWriteError traceback and the
+    # reason was lost. The run still fails, and now the named reason survives in the
+    # reported result line.
+    assert rc == 1
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "result=failed" in combined
+    assert "StageLedgerWriteError" in combined
+    assert "ingest_stage_event" in combined
+    assert "_DDL_STAGE_MYSQL" in combined
+    assert "result=complete " not in combined
 
     # The terminal ledger transition still happened, so the category is not stranded
     # in `running` — that is exactly what the status="failed" carve-out protects.
@@ -219,8 +253,9 @@ def test_b4_2_successful_recording_keeps_the_existing_behavior(
 
 
 def test_b4_3_permission_or_connection_error_also_fails_closed(
-    monkeypatch, sqlite_ledger, bucket, tmp_path
+    monkeypatch, capsys, sqlite_ledger, bucket, tmp_path
 ):
+    _skip_observation_preflight(monkeypatch)
     monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
     _fail_stage_writes(
         sqlite_ledger,
@@ -230,15 +265,22 @@ def test_b4_3_permission_or_connection_error_also_fails_closed(
     )
     manifest_path = write_submission(bucket)
 
-    with pytest.raises(StageLedgerWriteError, match="command denied"):
-        job_runner.run(
-            manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
-        )
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    assert rc == 1
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "result=failed" in combined
+    assert "command denied" in combined
+    assert "result=complete " not in combined
+    assert sqlite_ledger.status("2026-07", "ubist", _sha(manifest_path)).status == "failed"
 
 
 def test_b4_4_flag_zero_restores_the_legacy_ignored_behavior(
     monkeypatch, sqlite_ledger, bucket, tmp_path
 ):
+    _skip_observation_preflight(monkeypatch)
     monkeypatch.setenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, "0")
     _fail_stage_writes(sqlite_ledger)
     manifest_path = write_submission(bucket)
@@ -271,6 +313,55 @@ def test_b4_5_load_committed_but_recording_lost_does_not_report_success(
     assert "result=complete " not in combined
     sha = _sha(manifest_path)
     assert sqlite_ledger.status("2026-07", "ubist", sha).status == "complete"
+
+
+def test_d2_already_failing_run_keeps_its_result_line_when_the_signal_row_is_lost(
+    monkeypatch, capsys, sqlite_ledger, bucket, tmp_path
+):
+    """A gate failure plus a lost signal-stage row must still print result=gate_failed.
+
+    Before the guard, the StageLedgerWriteError raised from tracker.complete("signal")
+    escaped run()'s except handler and replaced the reported outcome with a traceback.
+    The ledger was already terminal so nothing was lost, but the reason the run failed
+    was no longer in the log.
+    """
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    rows = [
+        ("2026-07", "Class", "리바로", 10.0),
+        ("2026-07", "Class", "리바로젯", 20.0),
+        ("2026-07", "전체", "-", 99.0),  # whole != Σ parts -> post-gate PG-1 fails
+    ]
+    manifest_path = write_submission(bucket, rows=rows)
+    _fail_stage_writes(sqlite_ledger, only_stage="signal")
+
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    assert rc == 1
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "result=gate_failed" in combined
+    assert "PG-1" in combined
+    # the lost stage row is reported, not hidden
+    assert "stage row for the signal step was not recorded" in combined
+    assert sqlite_ledger.status("2026-07", "ubist", _sha(manifest_path)).status == "gate_failed"
+
+
+def test_d2_guard_does_not_mask_the_success_path(
+    monkeypatch, capsys, sqlite_ledger, bucket, tmp_path
+):
+    """Same injection on a SUCCEEDING run must still refuse to report success."""
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    manifest_path = write_submission(bucket)
+    _fail_stage_writes(sqlite_ledger, only_stage="signal")
+
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    assert rc == 1
+    combined = capsys.readouterr()
+    assert "result=committed_with_postcommit_error" in (combined.out + combined.err)
+    assert "stage row for the signal step was not recorded" not in (combined.out + combined.err)
 
 
 def test_b4_6_failed_stage_row_never_preempts_the_terminal_transition(

@@ -29,11 +29,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline.scripts.ingest_hook import config
+from pipeline.scripts.ingest_hook import config, observation_preflight
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
-from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
+from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_COMPLETE,
+    STATUS_QUEUED,
+    Ledger,
+    StageLedgerWriteError,
+)
 from pipeline.scripts.ingest_hook.post_gate import (
     PostGateError,
     SigmaEvidence,
@@ -62,10 +67,17 @@ def _stamp() -> str:
 class _StageTracker:
     """Records each job_runner stage to ingest_stage_event + stdout markers.
 
-    Purely observational (S-4): the ledger recorder swallows its own DB errors, so
-    a recording failure never breaks the load. Markers use the R-1 form
-    ``[stage] <name> start(i/N)`` / ``end rc=N`` so a silent kill (OOM/eviction)
-    leaves the failing stage as the last marker in the durable log.
+    Observation is required evidence, not decoration. ``enter``/``done``/``complete``/
+    ``skip`` record forward progress and therefore propagate
+    :class:`StageLedgerWriteError` when the row cannot be persisted
+    (``REQUIRE_STAGE_LEDGER_STRICT``, default on) — a lost row means the step outcome is
+    unknown, so the run must not report success. ``fail`` is the one exception: it is
+    called immediately before the terminal ``mark_failed``/``mark_gate_failed``
+    transition, so its write failure is reported without raising, because stranding the
+    ledger row in ``running`` would block the category's FIFO forever.
+
+    Markers use the R-1 form ``[stage] <name> start(i/N)`` / ``end rc=N`` so a silent
+    kill (OOM/eviction) leaves the failing stage as the last marker in the durable log.
     Rows accumulate per run_id (S-3): a retry passes a new run_id, never overwriting.
     """
 
@@ -352,8 +364,26 @@ def _emit_completion_signal(
             f"{type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-    # Stage observation is also best-effort (record_stage swallows DB errors).
-    tracker.complete("signal", reason=f"delivery={result.status}; attempts={result.attempts}")
+    # Stage recording is fail-closed for forward progress (record_stage raises
+    # StageLedgerWriteError), so this call can fail the run — which is correct on the
+    # success path: the signal is durable but its step evidence is not, and run() turns
+    # that into result=committed_with_postcommit_error.
+    #
+    # On the failure paths this function is called from inside run()'s except handlers,
+    # where the ledger is ALREADY terminal. Letting the raise escape there replaces the
+    # `result=failed` / `result=gate_failed` line with a traceback and loses the reason
+    # the run actually failed. Nothing is hidden: the lost stage row is reported and the
+    # exit code stays non-zero either way.
+    try:
+        tracker.complete("signal", reason=f"delivery={result.status}; attempts={result.attempts}")
+    except StageLedgerWriteError:
+        if event == "complete":
+            raise
+        print(
+            f"[signal] stage row for the signal step was not recorded; keeping the "
+            f"original {event} result as the reported outcome",
+            file=sys.stderr,
+        )
     print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")
 
 
@@ -372,6 +402,18 @@ def run(
     except ContractError as exc:
         print(f"gate=contract status=fail reason={exc}", file=sys.stderr)
         return 2
+
+    # Precondition, not policy: verify the ledger can record this run BEFORE touching
+    # it. Runs first so a missing activation DDL names the artifact to apply instead of
+    # surfacing later as a lost signal or an unexplained write error. rc=3 is distinct
+    # from the contract gate (2) and from a load failure (1), and nothing is written —
+    # the ledger schema is exactly what is not trusted here.
+    try:
+        observation_preflight.verify(ledger)
+    except observation_preflight.ObservationPreflightError as exc:
+        print(f"gate=observation_preflight status=fail reason={exc}", file=sys.stderr)
+        return 3
+    print("gate=observation_preflight status=pass tables=4")
 
     identity = (manifest.epoch, manifest.category, manifest.manifest_sha)
     entry = ledger.status(*identity)

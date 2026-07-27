@@ -157,6 +157,12 @@ sample_news_*.json
 # DB dumps (NOT migrations)
 *.dump
 *.sql
+# ingest observation activation DDL: reviewable artifacts, not dumps. All four are listed
+# explicitly because *.sql above hides them by default. ingest-signal-event.sql was
+# tracked without a negation, so a fresh clone kept it only by accident of history.
+!deploy/k8s/ingest-hook/reference/ingest-ledger.sql
+!deploy/k8s/ingest-hook/reference/ingest-stage-event.sql
+!deploy/k8s/ingest-hook/reference/ingest-signal-event.sql
 !deploy/k8s/ingest-hook/reference/ingest-status-transition.sql
 !pipeline/migrations/*.sql
 !pipeline/migrations/**/*.sql

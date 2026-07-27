@@ -249,6 +249,58 @@ CREATE TABLE IF NOT EXISTS ingest_status_transition (
 """
 
 
+# The four tables Ledger writes, each mapped to the tracked activation artifact that
+# creates it. Every entry must have a file: the 2026-07-22 incident was a DDL that
+# landed in code with no artifact and no runbook line, so nobody applied it.
+OBSERVATION_TABLES: dict[str, str] = {
+    "ingest_ledger": "deploy/k8s/ingest-hook/reference/ingest-ledger.sql",
+    "ingest_stage_event": "deploy/k8s/ingest-hook/reference/ingest-stage-event.sql",
+    "ingest_signal_event": "deploy/k8s/ingest-hook/reference/ingest-signal-event.sql",
+    "ingest_status_transition": "deploy/k8s/ingest-hook/reference/ingest-status-transition.sql",
+}
+
+_DDL_BY_TABLE: dict[str, tuple[str, str]] = {
+    "ingest_ledger": (_DDL_SQLITE, _DDL_MYSQL),
+    "ingest_stage_event": (_DDL_STAGE_SQLITE, _DDL_STAGE_MYSQL),
+    "ingest_signal_event": (_DDL_SIGNAL_SQLITE, _DDL_SIGNAL_MYSQL),
+    "ingest_status_transition": (_DDL_TRANSITION_SQLITE, _DDL_TRANSITION_MYSQL),
+}
+
+_KEY_CLAUSE_PREFIXES = ("unique", "key", "primary", "constraint", "index", "fulltext")
+
+
+def ddl_column_names(ddl: str) -> list[str]:
+    """Column names declared by a CREATE TABLE statement, in declaration order.
+
+    Deliberately reads NAMES ONLY. An earlier round tried to compare whole column
+    definitions and produced false drift verdicts, because MariaDB rewrites the text it
+    is given (int display widths, ``DEFAULT NULL`` vs ``NULL``, inline PRIMARY KEY split
+    into its own clause). Column names survive that rewriting untouched, so a name-set
+    comparison is decidable; type comparison is not, without a full canonicaliser.
+    """
+    body = ddl[ddl.index("(") + 1 : ddl.rindex(")")]
+    names: list[str] = []
+    depth = 0
+    current = ""
+    for char in body:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            fragment, current = current, ""
+        else:
+            current += char
+            continue
+        tokens = fragment.split()
+        if tokens and tokens[0].lower() not in _KEY_CLAUSE_PREFIXES:
+            names.append(tokens[0].strip("`"))
+    tokens = current.split()
+    if tokens and tokens[0].lower() not in _KEY_CLAUSE_PREFIXES:
+        names.append(tokens[0].strip("`"))
+    return names
+
+
 # config is imported lazily in the two helpers below: config.open_configured_ledger
 # imports this module, so a module-level `import config` here would be circular.
 # The env-var name is owned by config so the two modules cannot drift apart.
@@ -357,6 +409,68 @@ class Ledger:
             else _DDL_TRANSITION_MYSQL
         )
         self._conn.commit()
+
+    # -- schema observation (read-only; never creates or alters) ------------
+    def live_column_names(self, table: str) -> list[str] | None:
+        """Columns of ``table`` as the connected schema actually has them.
+
+        ``None`` means the table does not exist. Read-only in both dialects: sqlite
+        uses PRAGMA, mysql reads information_schema for the CONNECTED database only
+        (``DATABASE()``), so it can never report a same-named table in another schema.
+        """
+        if self._dialect == "sqlite":
+            cursor = self._execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+            if cursor.fetchone() is None:
+                return None
+            # PRAGMA takes no bind parameters; table names come from OBSERVATION_TABLES,
+            # never from user input, and the identifier is validated just above.
+            cursor = self._execute(f"PRAGMA table_info({table})")
+            return [str(tuple(row.values())[1] if isinstance(row, dict) else row[1]) for row in cursor.fetchall()]
+        cursor = self._execute(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS"
+            " WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?"
+            " ORDER BY ORDINAL_POSITION",
+            (table,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+        return [str(tuple(row.values())[0] if isinstance(row, dict) else row[0]) for row in rows]
+
+    def observation_schema_report(self) -> dict[str, dict]:
+        """Per-table verdict: ``ok`` | ``absent`` | ``columns_differ``.
+
+        Purely a read. Callers decide what to do; see observation_preflight.
+        """
+        report: dict[str, dict] = {}
+        for table, artifact in OBSERVATION_TABLES.items():
+            expected = ddl_column_names(_DDL_BY_TABLE[table][0 if self._dialect == "sqlite" else 1])
+            try:
+                actual = self.live_column_names(table)
+            except Exception as exc:  # noqa: BLE001 — an unreadable schema is not a pass
+                # Permission denied, dead connection, information_schema unavailable:
+                # the schema is UNKNOWN, which must not read as "fine". Reported as its
+                # own verdict so the preflight can name the cause instead of letting a
+                # raw driver error escape from the middle of an ingest.
+                report[table] = {"verdict": "unreadable", "artifact": artifact,
+                                 "expected_columns": expected, "actual_columns": None,
+                                 "error": f"{type(exc).__name__}: {exc}"}
+                continue
+            if actual is None:
+                report[table] = {"verdict": "absent", "artifact": artifact,
+                                 "expected_columns": expected, "actual_columns": None}
+                continue
+            missing = [name for name in expected if name not in actual]
+            unexpected = [name for name in actual if name not in expected]
+            report[table] = {
+                "verdict": "ok" if not missing and not unexpected else "columns_differ",
+                "artifact": artifact,
+                "expected_columns": expected,
+                "actual_columns": actual,
+                "missing_columns": missing,
+                "unexpected_columns": unexpected,
+            }
+        return report
 
     # -- helpers -----------------------------------------------------------
     def _execute(self, sql: str, params: tuple = ()):

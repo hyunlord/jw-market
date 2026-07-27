@@ -135,11 +135,33 @@ G-4 sweep). 전체: `python -m pytest tests/ingest_hook -q`.
 ## 파일럿 이후 활성화 절차 (PL 게이트)
 
 1. 계약 정본과 `contract.py`/`category_map.py` 필드 대사 (D_design F-1)
-2. mart DB 에 `ingest_ledger` 및 append-only
-   `ingest_status_transition` DDL 적용
-   (`ledger.py`의 `_DDL_MYSQL`, `reference/ingest-status-transition.sql`)
-3. D-3a 격리 검증 완료 후에만 production output root 와 sweep resume 여부 결정
-4. 사이트에 webhook URL(`/ingest/webhook`)·상태 URL(`/ingest/status`) 공유
+2. ★대상 스키마에 관측 테이블 **네 개 전부** DDL 적용.
+   하나라도 빠지면 그 테이블에 쓰는 증적이 조용히 사라진다.
+
+   | 테이블 | activation 아티팩트 | 코드 정본 |
+   |---|---|---|
+   | `ingest_ledger` | `reference/ingest-ledger.sql` | `ledger.py:_DDL_MYSQL` |
+   | `ingest_stage_event` | `reference/ingest-stage-event.sql` | `ledger.py:_DDL_STAGE_MYSQL` |
+   | `ingest_signal_event` | `reference/ingest-signal-event.sql` | `ledger.py:_DDL_SIGNAL_MYSQL` |
+   | `ingest_status_transition` | `reference/ingest-status-transition.sql` | `ledger.py:_DDL_TRANSITION_MYSQL` |
+
+   ★ **서빙 스키마를 새로 자를 때마다 이 단계를 반복해야 한다.** 대상 스키마 이름이
+   버전에 묶여 있으므로(`MARIADB_DATABASE`, 예: `jw_mart_d2_stage_20260630_r2`)
+   스키마를 교체하면 네 테이블이 다시 없는 상태에서 시작한다. Job 은 DDL 을 스스로
+   만들지 않는다(활성화는 PL 게이트).
+
+   실제 사고 기록: `_DDL_SIGNAL_MYSQL`(2026-07-22 커밋)이 이 단계에서 누락되어
+   2026-07-25 의 814,221행 적재가 완료 신호를 잃었다. 그래서 아래 3번이 추가되었다.
+3. ★`job_runner` 의 `observation_preflight` 게이트가 인입 시작 전 네 테이블을 확인한다.
+   누락 시 적용할 파일명을 출력하고 rc=3 으로 중단하며, ledger 에 아무것도 쓰지 않는다.
+   플래그가 없다 — 정책이 아니라 전제 확인이다.
+4. D-3a 격리 검증 완료 후에만 production output root 와 sweep resume 여부 결정
+5. 사이트에 webhook URL(`/ingest/webhook`)·상태 URL(`/ingest/status`) 공유
+
+★ 주의: `/ingest/status` 는 **트리거 서비스가 바인딩된 원장**을 읽는다.
+`INGEST_LOAD_SHADOW_ROOT` 가 설정되어 있으면 트리거는 shadow sqlite 원장을 읽으므로,
+sweep·Job 이 기록하는 mart DB 원장과 **다른 상태를 반환한다**. 상태 URL 을 공유하기 전에
+트리거의 원장 분기(`config.open_configured_ledger`)가 운영 원장을 가리키는지 확인한다.
 
 이미지 배포 및 source-to-digest 추적 규약은
 `docs/runbooks/immutable_image_references.md` 를 따른다.
