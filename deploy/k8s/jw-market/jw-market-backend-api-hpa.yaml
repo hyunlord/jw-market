@@ -1,0 +1,45 @@
+# jw-market-backend-api HPA
+#
+# 라이브 정본화: 2026-07-27 (ops_issues_findings_20260727_1510).
+# 이 파일 이전에는 저장소에 HPA 매니페스트가 없었고 라이브에만 존재했다.
+#
+# 설계 메모 (변경 전 반드시 읽을 것):
+#  - metrics 는 memory 단일이다. CPU 트리거를 "함께" 추가하지 말 것 —
+#    HPA 는 메트릭별 desired replica 의 **최댓값**을 취하므로, CPU 가 낮아도
+#    memory 가 목표를 넘으면 memory 가 항상 이겨 파드가 줄지 않는다.
+#  - averageUtilization 의 분모는 **파드 단위 request 합**이다.
+#    현재 = app 1Gi + istio-proxy sidecar 128Mi = 1152Mi.
+#    따라서 Deployment 의 memory request 를 바꾸면 이 목표치도 재검토해야 한다.
+#  - 75% 근거: 정상상태 파드 사용량 649Mi(=app 581Mi + sidecar 68Mi) → 56.3%.
+#    60% 였을 때는 여유가 +3.7pp 뿐이라 재고착 위험이 있었다. 75% 는 +18.7pp.
+#    같은 namespace 관행과도 일치(llmops-litellm 80 / vertex-openai-proxy 75 / vlm-worker 70).
+#  - ★ maxReplicas: 8 은 **우리가 설정한 값이 아니다**. 2026-07-27 라이브 대조 시
+#    last-applied 는 4, 라이브는 8 이었다(출처 불명, 이번 작업 이전의 누군가의 변경).
+#    "저장소를 라이브에 맞춘다" 원칙에 따라 라이브값 8 을 그대로 기록했을 뿐이며
+#    8 이 옳다는 검증은 하지 않았다. 원출처 확인 후 조정 여지 있음.
+#  - memory 단일 메트릭 + 상한 있는 in-process LRU 캐시(strategic_runtime_cache, 64엔트리)
+#    조합에서는 CPU-bound 부하가 늘어도 memory 가 거의 오르지 않는다.
+#    즉 실질 스케일아웃이 잘 일어나지 않으므로 **minReplicas 가 사실상 용량 하한**이다.
+#    목표 동시 처리량이 정해지면 minReplicas 로 조절한다.
+#
+# 적용:
+#   kubectl apply -f deploy/k8s/jw-market/jw-market-backend-api-hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: jw-market-backend-api-hpa
+  namespace: llmops
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: jw-market-backend-api
+  minReplicas: 4
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75

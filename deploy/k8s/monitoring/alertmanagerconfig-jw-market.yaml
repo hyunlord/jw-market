@@ -1,0 +1,76 @@
+# ╔════════════════════════════════════════════════════════════════════════╗
+# ║  적용 금지 — 수신처 미확정 (2026-07-27)                                  ║
+# ║  url 이 PLACEHOLDER 인 상태로 apply 하면 알림이 존재하지 않는 주소로      ║
+# ║  전송 시도되어 Alertmanager 에 전송 실패가 계속 쌓인다.                  ║
+# ║  수신처가 확정된 뒤 url(또는 slack/email 블록)을 채우고 적용할 것.        ║
+# ╚════════════════════════════════════════════════════════════════════════╝
+#
+# 왜 이 방식인가 — Alertmanager 기본 설정을 건드리지 않는다
+# ---------------------------------------------------------
+# monitoring/prom Alertmanager 는 Helm(kube-prometheus-stack 80.4.1) 소관이며
+# 기본 설정이 `route.receiver: "null"` (차트 기본값, 모든 알림 폐기)이다.
+# Helm values 나 alertmanager-prom Secret 을 직접 고치면 플랫폼 소관 침범 +
+# 다음 helm upgrade 에서 원복된다.
+#
+# 대신 Alertmanager CR 이 확장 지점을 열어두고 있다(2026-07-27 실측):
+#   alertmanagerConfigSelector          = {}   <- 모든 AlertmanagerConfig 수집
+#   alertmanagerConfigNamespaceSelector = {}   <- 모든 namespace
+# 따라서 우리 namespace(llmops)에 AlertmanagerConfig 를 두면 operator 가
+# 생성 설정에 **서브 라우트로 병합**한다. 기본 설정 파일은 그대로다.
+#
+# matcherStrategy 는 기본값(OnNamespace)이라 operator 가 `namespace="llmops"`
+# 매처를 자동으로 붙인다 -> **우리 namespace 알림만** 이 수신처로 가고
+# 플랫폼(cicd/gpu-operator 등) 알림은 기존대로 "null" 로 남는다.
+#
+# amtool 사전 검증 완료 (2026-07-27, 병합 예상 설정 기준)
+#   KubeJobFailed         namespace=llmops       -> jw-market-notify   ✔
+#   KubeContainerOOMKilled namespace=llmops      -> jw-market-notify   ✔
+#   KubeHpaMaxedOut       namespace=llmops       -> jw-market-notify   ✔
+#   KubePodNotReady       namespace=cicd         -> null  (플랫폼 무영향 확인) ✔
+#   KubeDaemonSetNotScheduled ns=gpu-operator    -> null  (플랫폼 무영향 확인) ✔
+#   Watchdog                                     -> null  (정상 억제)  ✔
+#
+# 적용 전 확인 사항
+#   1) 수신처 확정 (아래 §수신처 후보)
+#   2) 자격증명이 필요하면 Secret 을 llmops 에 먼저 생성
+#      (AlertmanagerConfig 는 **같은 namespace 의 Secret 만** 참조 가능)
+#   3) kubectl apply -f 후 검증:
+#      kubectl exec -n monitoring alertmanager-prom-0 -c alertmanager -- \
+#        amtool config routes test --config.file=/etc/alertmanager/config_out/alertmanager.env.yaml \
+#        alertname=KubeJobFailed namespace=llmops severity=warning
+#      -> "null" 이 아니라 이 receiver 이름이 나와야 한다
+#
+# 수신처 후보 (2026-07-27 조사 결과: 클러스터에 사용 가능한 자격증명 **없음**)
+#   - Slack   : incoming webhook URL 필요. 클러스터 내 기존 자격증명 0건
+#   - Email   : SMTP 릴레이 미확인. global.smtp_* 는 차트 기본값(미설정) 그대로
+#   - Webhook : 사내 수신 엔드포인트가 있으면 가장 간단
+#   - llmops-notify-api(GenOS 내부 알림 서비스)가 존재하나 ConfigMap 상
+#     DB/MQ/Redis 만 참조하며 외부 채널 설정이 보이지 않는다. API 계약 미확인 →
+#     Alertmanager 수신처로 쓸 수 있는지 플랫폼 확인 필요
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: jw-market-alerts
+  namespace: llmops
+spec:
+  route:
+    receiver: jw-market-notify
+    groupBy: [namespace, alertname]
+    groupWait: 30s
+    groupInterval: 5m
+    # 기본 라우트(12h)보다 짧게 — 미해소 장애를 4시간마다 다시 알린다
+    repeatInterval: 4h
+  receivers:
+    - name: jw-market-notify
+      webhookConfigs:
+        - url: http://PLACEHOLDER-RECEIVER.invalid/alert   # ← 확정 후 교체
+          sendResolved: true
+      # --- Slack 을 쓸 경우 예시 (webhookConfigs 대신)
+      # slackConfigs:
+      #   - apiURL:
+      #       name: jw-market-alert-slack     # llmops ns 의 Secret 이름
+      #       key: webhook-url
+      #     channel: "#jw-market-alerts"
+      #     sendResolved: true
+      #     title: '{{ .CommonLabels.alertname }} ({{ .Status }})'
+      #     text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'

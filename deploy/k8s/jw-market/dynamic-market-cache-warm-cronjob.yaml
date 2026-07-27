@@ -10,7 +10,7 @@ spec:
   failedJobsHistoryLimit: 2
   jobTemplate:
     spec:
-      backoffLimit: 0
+      backoffLimit: 2
       activeDeadlineSeconds: 1800
       template:
         spec:
