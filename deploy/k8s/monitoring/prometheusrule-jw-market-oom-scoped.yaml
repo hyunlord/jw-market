@@ -1,0 +1,45 @@
+# 안2 · OOM 규칙 축소판 — 적용 금지 (범위 선택은 PL 몫)
+# 안1(prometheusrule-jw-market-oom.yaml)과 **택일**한다.
+#
+# 차이
+#   안1: namespace="llmops" 전체 -> chat-agent OOM 도 우리 규칙이 발화시킨다
+#   안2: pod 이름 정규식으로 우리 워크로드만
+#
+# 실측 대조 (2026-07-27, 24h range, evidence/oom_rule_validation.txt)
+#   안1 = 5 series : jw-chat-agent-poc **4건** + jw-ingest-hook 1건
+#   안2 = 1 series : jw-ingest-hook 1건        <- chat-agent 4건 제외 확인
+#
+# 판단 재료
+#   · chat-agent OOM 은 실재하는 문제다(24h 4건). 다만 **채팅 영역 소관**이라
+#     우리 규칙으로 우리에게 알림이 오면 대응 주체가 어긋난다.
+#   · 반대로 안2 로 좁히면 chat-agent OOM 을 **아무도 못 본다** — 채팅 영역이
+#     자체 규칙을 갖기 전까지는 안1 이 오히려 안전할 수 있다.
+#   · alertname 은 안1 과 동일(KubeContainerOOMKilled)하다. 두 파일을 **동시에
+#     적용하면 규칙이 중복 등록**되므로 반드시 하나만 적용할 것.
+#
+# ★ 미적용. 배치 ns 는 llmops(우리 소관) — ruleNamespaceSelector={} 라 수집된다.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: jw-market-oom-rules
+  namespace: llmops
+  labels:
+    release: prom
+spec:
+  groups:
+    - name: jw-market-oom
+      rules:
+        - alert: KubeContainerOOMKilled
+          expr: |
+            (increase(kube_pod_container_status_restarts_total{namespace="llmops",pod=~"^(jw-market|jw-data-portal|jw-ingest|jw-cache-refresh|jw-news|jw-brand-activity|dynamic-market-cache-warm|r1-|f116).*"}[10m]) >= 1)
+            and ignoring(reason)
+            (max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace="llmops"}[10m]) == 1)
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Container OOMKilled (jw-market scope)."
+            description: >-
+              Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }}
+              was OOMKilled. 컨테이너 memory limit 을 초과했다. limit 증액 또는
+              작업 단위 축소(청킹/스필) 중 하나가 필요하다.

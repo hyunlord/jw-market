@@ -39,10 +39,39 @@ receivers:
 
 ## 파일
 
-| 파일 | 상태 | 설명 |
-|---|---|---|
-| `prometheusrule-jw-market-oom.yaml` | **미적용** | 누락된 OOMKilled 규칙. ns=llmops(우리 소관)에 배치. PromQL 검증 완료 |
-| `alertmanagerconfig-jw-market.yaml` | **미적용 · 수신처 PLACEHOLDER** | 알림 전달 경로. 수신처 확정 전 apply 금지 |
+**★ 범위(scope)는 두 안 중 택일이며 PL 판단 사항이다. 같은 역할의 파일을 동시에 적용하지 말 것**
+(각 쌍은 `metadata.name` 이 동일하다).
+
+| 파일 | 안 | 상태 | 설명 |
+|---|---|---|---|
+| `alertmanagerconfig-jw-market.yaml` | 안1 | **미적용 · PLACEHOLDER** | llmops **namespace 전체**. 단순하지만 남의 알림 10건이 섞인다 |
+| `alertmanagerconfig-jw-market-scoped.yaml` | 안2 | **미적용 · PLACEHOLDER** | 워크로드 식별 라벨 정규식으로 **우리 것만**. 새 워크로드 추가 시 정규식 갱신 필요 |
+| `prometheusrule-jw-market-oom.yaml` | 안1 | **미적용** | llmops 전체 OOM. 24h 기준 5건(chat-agent 4 포함) |
+| `prometheusrule-jw-market-oom-scoped.yaml` | 안2 | **미적용** | 우리 워크로드만. 24h 기준 1건 |
+
+### 범위 문제 (2026-07-27 정정)
+
+`llmops` 는 **공유 namespace** 다. 우리 것 외에 chat-agent · litellm · vertex-proxy ·
+code-serving · preprocessor · workflow · mcp-*(GenOS)가 함께 들어 있다.
+따라서 `namespace="llmops"` 단일 매처는 "우리 알림만"이 아니다.
+
+실측 — llmops 발화 **29건**의 소관 분포:
+
+| 소관 | 건수 |
+|---|---|
+| jw market | **18** |
+| platform/GenOS | 6 |
+| jw agent | 3 |
+| jw chat | 1 |
+| [미확인] | 1 |
+
+**단일 매처로 우리 것만 고를 수 없는 이유**: kube-prometheus-stack 알림은
+워크로드 식별 라벨이 알림마다 다르다 — `KubeJobFailed`=`job_name`,
+`KubeDeploymentReplicasMismatch`=`deployment`, `KubeHpaMaxedOut`=`horizontalpodautoscaler`,
+`KubePodNotReady`/`KubeContainerWaiting`=`pod`. **owner/team 공통 라벨은 없다**
+(`service` 라벨은 `prom-kube-state-metrics` = 지표 수집원이지 워크로드가 아니다).
+게다가 KSM 원천 알림은 `pod` 라벨이 **exporter 파드**라 pod 기준 필터로는 안 잡힌다.
+→ 안2 는 라벨별 서브라우트 4개로 구성했다.
 
 ## 왜 Alertmanager 기본 설정을 고치지 않는가
 

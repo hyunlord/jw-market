@@ -20,28 +20,77 @@
 #     - 1Gi 로 올리면 파드 request 1152Mi, utilization 56.3% 가 되어 정상 범위로 들어온다.
 #   cpu request/limit, memory limit 은 변경하지 않는다(기존 값 그대로 명시해 고정).
 #
+# ★ 2026-07-27 수정 (alert_recheck 라운드) — D-1
+#   - 이전 판은 patch 경로에 containers/0 인덱스를 **하드코딩**했다.
+#     이 Deployment 에는 istio 가 사이드카를 주입하므로 컨테이너 배열 구성이
+#     바뀌면 **엉뚱한 컨테이너에 리소스를 덮어쓸 위험**이 있었다.
+#     -> 컨테이너 **이름으로 인덱스를 조회**해서 patch 하도록 변경.
+#   - 선언만 하고 쓰지 않던 container 변수를 실제로 사용하도록 수정.
+#   - --type=json 의 replace 는 **경로가 없으면 실패**하므로, 대상 경로 존재 여부를
+#     확인해 없으면 add 로 자동 전환하는 preflight 추가.
+#
 # 적용:
 #   sh deploy/k8s/jw-market/apply-backend-api-resources.sh
-# 확인(변경 없이 diff 만):
+# 확인(변경 없이 진단 + 서버 검증만):
 #   DRY_RUN=1 sh deploy/k8s/jw-market/apply-backend-api-resources.sh
 set -eu
 
 namespace=${NAMESPACE:-llmops}
-deployment=jw-market-backend-api
-container=jw-market-backend-api
+deployment=${DEPLOYMENT:-jw-market-backend-api}
+container=${CONTAINER:-jw-market-backend-api}
 
-patch='[
-  {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"1Gi"},
-  {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/cpu","value":"200m"},
-  {"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"3Gi"},
-  {"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/cpu","value":"1"}
+req_cpu=200m
+req_mem=1Gi
+lim_cpu=1
+lim_mem=3Gi
+
+# ---- 컨테이너 이름 -> 인덱스 조회 (인덱스 하드코딩 금지)
+idx=$(kubectl -n "$namespace" get deploy "$deployment" -o json | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+cs=d['spec']['template']['spec']['containers']
+name='$container'
+for i,c in enumerate(cs):
+    if c['name']==name:
+        print(i); sys.exit(0)
+sys.stderr.write('container %r not found; present=%s\n' % (name,[c['name'] for c in cs]))
+sys.exit(1)
+")
+echo "[info] container '$container' -> containers[$idx]  (이름 조회, 하드코딩 아님)"
+
+# ---- preflight: 대상 경로 존재 여부 -> replace / add 결정
+op_for() {  # $1=requests|limits  $2=cpu|memory
+  v=$(kubectl -n "$namespace" get deploy "$deployment" \
+        -o "jsonpath={.spec.template.spec.containers[$idx].resources.$1.$2}" 2>/dev/null || true)
+  [ -n "$v" ] && echo replace || echo add
+}
+op_rc=$(op_for requests cpu); op_rm=$(op_for requests memory)
+op_lc=$(op_for limits cpu);   op_lm=$(op_for limits memory)
+
+cur=$(kubectl -n "$namespace" get deploy "$deployment" \
+        -o "jsonpath={.spec.template.spec.containers[$idx].resources}" 2>/dev/null || true)
+echo "[info] current resources: ${cur:-<none>}"
+echo "[info] ops: requests.cpu=$op_rc requests.memory=$op_rm limits.cpu=$op_lc limits.memory=$op_lm"
+
+# resources 자체가 없으면 빈 객체를 먼저 만든다
+pre=""
+[ -z "$cur" ] && pre='{"op":"add","path":"/spec/template/spec/containers/'"$idx"'/resources","value":{}},'
+
+patch='['"$pre"'
+  {"op":"'"$op_rc"'","path":"/spec/template/spec/containers/'"$idx"'/resources/requests/cpu","value":"'"$req_cpu"'"},
+  {"op":"'"$op_rm"'","path":"/spec/template/spec/containers/'"$idx"'/resources/requests/memory","value":"'"$req_mem"'"},
+  {"op":"'"$op_lc"'","path":"/spec/template/spec/containers/'"$idx"'/resources/limits/cpu","value":"'"$lim_cpu"'"},
+  {"op":"'"$op_lm"'","path":"/spec/template/spec/containers/'"$idx"'/resources/limits/memory","value":"'"$lim_mem"'"}
 ]'
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  echo "[dry-run] current resources:"
-  kubectl -n "$namespace" get deploy "$deployment" \
-    -o jsonpath='{.spec.template.spec.containers[0].resources}{"\n"}'
-  echo "[dry-run] would patch container '$container' to: requests cpu=200m memory=1Gi / limits cpu=1 memory=3Gi"
+  echo "[dry-run] target: containers[$idx] ('$container')"
+  echo "[dry-run] desired: requests cpu=$req_cpu memory=$req_mem / limits cpu=$lim_cpu memory=$lim_mem"
+  echo "[dry-run] payload:"
+  echo "$patch"
+  echo "[dry-run] server-side 검증(실제 변경 없음) 결과 resources:"
+  kubectl -n "$namespace" patch deploy "$deployment" --type=json -p "$patch" --dry-run=server \
+    -o "jsonpath={.spec.template.spec.containers[$idx].resources}{\"\n\"}"
   exit 0
 fi
 

@@ -22,6 +22,15 @@
 # 매처를 자동으로 붙인다 -> **우리 namespace 알림만** 이 수신처로 가고
 # 플랫폼(cicd/gpu-operator 등) 알림은 기존대로 "null" 로 남는다.
 #
+# ★★ 범위 주의 (2026-07-27 정정) — 이 안은 "우리 알림만" 이 아니다
+#   llmops 는 **공유 namespace** 다. chat-agent · litellm · vertex-proxy ·
+#   code-serving · preprocessor · workflow · mcp-* (GenOS 플랫폼)이 함께 있다.
+#   실측(Alertmanager /api/v2/alerts): llmops 발화 29건의 소관 분포
+#     jw market 18 · platform/GenOS 6 · jw agent 3 · jw chat 1 · [미확인] 1
+#   -> 이 안(안1)을 적용하면 **우리 소관이 아닌 10건도 함께 수신**된다.
+#   우리 워크로드만 받으려면 -> alertmanagerconfig-jw-market-scoped.yaml (안2)
+#   ★ 두 파일은 metadata.name 이 같으므로 **반드시 하나만** 적용할 것.
+#
 # amtool 사전 검증 완료 (2026-07-27, 병합 예상 설정 기준)
 #   KubeJobFailed         namespace=llmops       -> jw-market-notify   ✔
 #   KubeContainerOOMKilled namespace=llmops      -> jw-market-notify   ✔
