@@ -9,6 +9,8 @@ data:
   row_topic_monthly_wrapper.py: |
     from __future__ import annotations
 
+    from dataclasses import dataclass
+    from datetime import datetime, timezone
     import json
     import os
     from pathlib import Path
@@ -23,6 +25,23 @@ data:
     HANDOFF_TABLE = "mart_brand_activity_assignment_handoff"
     DEFAULT_MAX_CALLS = int(os.environ.get("ROW_TOPIC_MAX_CALLS", "350"))
     GATE_MAX_CALLS = int(os.environ.get("ROW_TOPIC_GATE_MAX_CALLS", "5"))
+    OBSERVATION_TARGET_MODE = "monthly_observation"
+    PRODUCER_NOOP = "producer_noop"
+    PRODUCER_STARTED = "producer_started"
+    PRODUCER_FAILED = "producer_failed"
+    PRODUCER_COMPLETE = "producer_complete"
+
+
+    @dataclass(frozen=True, slots=True)
+    class ProducerObservation:
+        status: str
+        reason: str
+
+
+    @dataclass(frozen=True, slots=True)
+    class ConsumerOutcome:
+        code: str
+        reason: str
 
 
     def _prepare_environment() -> Path:
@@ -132,11 +151,13 @@ data:
             else _pending_topic_set_versions()
         )
         if not versions:
+            outcome = classify_absent_receipt(_producer_observation())
             print(
                 json.dumps(
                     {
                         "event": "row_topic_noop",
-                        "reason": "no_complete_pending_axis_receipt",
+                        "producer_outcome": outcome.code,
+                        "reason": outcome.reason,
                         "calls": 0,
                         "inserts": 0,
                     },
@@ -148,6 +169,67 @@ data:
         for version in versions:
             _process_version(mode, version)
         return 0
+
+
+    def _producer_observation() -> ProducerObservation | None:
+        try:
+            with _connect() as connection:
+                sql = f"""
+    SELECT axis_status, last_error
+    FROM `{SCHEMA}`.`{HANDOFF_TABLE}`
+    WHERE run_id=%s AND target_mode=%s
+    LIMIT 1
+    """.strip()
+                with connection.cursor() as cursor:
+                    cursor.execute(sql, (_observation_run_id(), OBSERVATION_TARGET_MODE))
+                    row = cursor.fetchone()
+        except Exception as exc:  # noqa: BLE001 - observation failure must not block assignment.
+            print(
+                json.dumps(
+                    {
+                        "event": "row_topic_observation_read_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return ProducerObservation(
+                status="observation_read_failed",
+                reason=type(exc).__name__,
+            )
+        if not row:
+            return None
+        return ProducerObservation(
+            status=str(row["axis_status"]),
+            reason=str(row.get("last_error") or ""),
+        )
+
+
+    def classify_absent_receipt(
+        observation: ProducerObservation | None,
+    ) -> ConsumerOutcome:
+        """Classify missing assignment work without changing the zero exit code."""
+        if observation is None:
+            return ConsumerOutcome("D_producer_not_run", "producer_observation_missing")
+        if observation.status == PRODUCER_NOOP:
+            return ConsumerOutcome("B_normal_noop", "producer_input_unchanged")
+        if observation.status == PRODUCER_STARTED:
+            return ConsumerOutcome("C_producer_failed", "producer_started_but_receipt_missing")
+        if observation.status == PRODUCER_FAILED:
+            return ConsumerOutcome("C_producer_failed", "producer_failed_before_receipt")
+        if observation.status == "observation_read_failed":
+            return ConsumerOutcome("C_producer_failed", "producer_observation_read_failed")
+        if observation.status == PRODUCER_COMPLETE:
+            return ConsumerOutcome("A_producer_complete", "producer_complete_no_pending_assignment")
+        return ConsumerOutcome("C_producer_failed", "producer_observation_unrecognized")
+
+
+    def _observation_run_id(observed_at: datetime | None = None) -> str:
+        instant = observed_at or datetime.now(timezone.utc)
+        if instant.tzinfo is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        return f"monthly-axis-observation:{instant.astimezone(timezone.utc):%Y-%m}"
 
 
     def _process_version(mode: str, version: str) -> None:
