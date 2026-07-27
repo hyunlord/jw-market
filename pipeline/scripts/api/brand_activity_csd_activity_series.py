@@ -69,8 +69,7 @@ def get_csd_activity_series(payload: Mapping[str, Any]) -> JsonMap | None:
             market_id=request.market_id,
             selected_brand=request.selected_brand,
             filter_payload=_brand_set_filter_payload(request),
-            ranking_quarters=quarters,
-            prefilter_strategic_choices=True,
+            source=request.source,
         )
     except BrandSetInputError as exc:
         raise CsdActivitySeriesInputError(str(exc)) from exc

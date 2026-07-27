@@ -22,6 +22,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     CsdTimeseriesNoMappingError,
     JsonMap,
     ViewConfig,
+    canonical_brand_activity_source,
     display_csd_market,
     first,
     float_value,
@@ -60,8 +61,7 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
             market_id=request["market_id"],
             selected_brand=request["selected_brand"],
             filter_payload=request["filter"],
-            ranking_quarters=quarters,
-            prefilter_strategic_choices=True,
+            source=request["source"],
         )
     except BrandSetInputError as exc:
         raise CsdTimeseriesInputError(str(exc)) from exc
@@ -367,6 +367,7 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
         "view": view,
         "market_id": market_id,
         "selected_brand": selected_brand,
+        "source": canonical_brand_activity_source(payload.get("source")),
         "csd_market": text(payload.get("csd_market")).strip() or None,
         "filter": filter_payload,
         "mode": text(payload.get("mode")) or "absolute",
