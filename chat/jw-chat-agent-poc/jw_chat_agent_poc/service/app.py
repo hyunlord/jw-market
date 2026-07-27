@@ -89,6 +89,7 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
+from jw_chat_agent_poc.service.process_observability import process_observability
 from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
     ConversationStore,
@@ -374,6 +375,7 @@ def create_app(
         return {
             "conversation": store.conversations.observability(),
             **resolver.runtime_observability(),
+            "process": process_observability(),
         }
 
     @app.post(

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
+from jw_chat_agent_poc.service import process_observability as process_observability_module
 from jw_chat_agent_poc.service.app import SessionStore, create_app
 from jw_chat_agent_poc.resolver.catalog_membership import (
     StaticCatalogMembershipReader,
@@ -59,6 +62,7 @@ def test_runtime_memory_observability_endpoint_is_aggregate_only() -> None:
         "strategic_mart",
         "catalog",
         "general_membership",
+        "process",
     }
     assert set(payload["strategic_mart"]) >= {
         "row_count",
@@ -74,6 +78,20 @@ def test_runtime_memory_observability_endpoint_is_aggregate_only() -> None:
         "refresh_successes",
         "refresh_failures",
     }
+    process = payload["process"]
+    assert set(process) == {
+        "process_start_time",
+        "process_uptime_seconds",
+        "observed_at",
+        "current_rss_bytes",
+    }
+    process_start_time = datetime.fromisoformat(process["process_start_time"])
+    observed_at = datetime.fromisoformat(process["observed_at"])
+    assert process_start_time.tzinfo == UTC
+    assert observed_at.tzinfo == UTC
+    assert process_start_time <= observed_at
+    assert process["process_uptime_seconds"] >= 0
+    assert process["current_rss_bytes"] is None or process["current_rss_bytes"] > 0
     rendered = repr(payload)
     assert "secret-conversation" not in rendered
     assert "private question" not in rendered
@@ -109,6 +127,20 @@ def test_snapshot_observability_reports_rows_points_age_and_refresh_counts() -> 
     assert metrics["snapshot_age_seconds"] is not None
     assert metrics["refresh_successes"] == 1
     assert metrics["refresh_failures"] == 0
+
+
+def test_process_observability_reads_current_linux_rss_from_procfs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    proc_statm = tmp_path / "statm"
+    proc_statm.write_text("100 25 0 0 0 0 0\n", encoding="ascii")
+    monkeypatch.setattr(process_observability_module, "_PROC_STATM", proc_statm)
+    monkeypatch.setattr(process_observability_module.os, "sysconf", lambda _name: 4096)
+
+    metrics = process_observability_module.process_observability()
+
+    assert metrics["current_rss_bytes"] == 25 * 4096
 
 
 def test_catalog_and_general_membership_observability_reports_loaded_rows() -> None:
