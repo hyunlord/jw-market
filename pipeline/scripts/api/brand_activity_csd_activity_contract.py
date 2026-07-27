@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Literal, Mapping, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from pipeline.scripts.api.brand_activity_csd_shared import JsonMap, text
+from pipeline.scripts.api.brand_activity_csd_shared import JsonMap, canonical_brand_activity_source, text
 from pipeline.scripts.api.models.brand_activity import MarketFilter
 
 
@@ -38,6 +38,7 @@ class ParsedCsdActivityRequest:
     view: str
     market_id: str | None
     selected_brand: str
+    source: str
     filter_payload: JsonMap
     entity_level: CsdEntityLevel
     csd_channel: str
@@ -62,6 +63,7 @@ class CsdActivitySeriesRequest(BaseModel):
 
     view: str = Field(description="분석 뷰. general, strategic_ml 또는 strategic_cd.")
     selected_brand: str | list[str] = Field(description="강조/시장 결정 브랜드. 문자열 또는 BFF 호환 문자열 배열.")
+    source: str = Field("iqvia_nsa", description="매출 cohort 소스. IQVIA 또는 UBIST.")
     filters: MarketFilter = Field(
         default_factory=MarketFilter,
         description="시장·차원 필터. nested ATC4와 IQVIA 분석레벨·audit_code 구조를 명시합니다.",
@@ -75,6 +77,11 @@ class CsdActivitySeriesRequest(BaseModel):
     csd_market: str | None = Field(default=None, description="선택 CSD 시장. 미지정 시 매핑된 전체 시장과 합산을 반환합니다.")
     selected_entities: list[str] = Field(default_factory=list, max_length=MAX_ENTITIES, description="사용자 지정 브랜드/회사 최대 6개. 미지정 시 선택 + top5.")
     period: CsdActivitySeriesPeriod | None = Field(default=None, description="분기 window. 미지정 시 최신 1년, 최대 3년으로 제한.")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_source(cls, value: Any) -> str:
+        return canonical_brand_activity_source(value)
 
 
 def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityRequest:
@@ -91,6 +98,7 @@ def parse_activity_request(payload: Mapping[str, Any]) -> ParsedCsdActivityReque
         view=view,
         market_id=market_id,
         selected_brand=selected_brand,
+        source=canonical_brand_activity_source(payload.get("source")),
         filter_payload=filter_payload,
         entity_level=_typed_value(payload.get("entity_level"), ALLOWED_ENTITY_LEVELS, "entity_level", "brand"),
         csd_channel=_typed_value(payload.get("csd_channel"), ALLOWED_CHANNELS, "csd_channel", "TOTAL"),

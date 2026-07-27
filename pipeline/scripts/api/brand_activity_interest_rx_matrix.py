@@ -12,6 +12,7 @@ from pipeline.scripts.api.brand_activity_csd_shared import (
     CsdTimeseriesAmbiguousMarketError,
     CsdTimeseriesNoMappingError,
     JsonMap,
+    canonical_brand_activity_source,
     first,
     float_value,
     text,
@@ -48,6 +49,7 @@ class MatrixRequest:
     view: str
     market_id: str | None
     selected_brand: str
+    source: str
     filter_payload: JsonMap
     visit_location: str
     specialty: str
@@ -89,7 +91,7 @@ def get_interest_rx_matrix(payload: Mapping[str, Any]) -> JsonMap | None:
             market_id=request.market_id,
             selected_brand=request.selected_brand,
             filter_payload=request.filter_payload,
-            prefilter_strategic_choices=True,
+            source=request.source,
         )
     except BrandSetInputError as exc:
         raise InterestRxMatrixInputError(str(exc)) from exc
@@ -123,6 +125,7 @@ def _parse_request(payload: Mapping[str, Any]) -> MatrixRequest:
         view=view,
         market_id=market_id,
         selected_brand=selected_brand,
+        source=canonical_brand_activity_source(payload.get("source")),
         filter_payload=filter_payload,
         visit_location=text(payload.get("visit_location")) or "전체",
         specialty=text(payload.get("specialty")) or "전체",

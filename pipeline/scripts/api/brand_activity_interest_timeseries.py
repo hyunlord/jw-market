@@ -19,7 +19,14 @@ from typing import Any, Mapping
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, BrandSetResolution, resolve_brand_set
-from pipeline.scripts.api.brand_activity_csd_shared import BrandChoice, BrandMeta, JsonMap, float_value, text
+from pipeline.scripts.api.brand_activity_csd_shared import (
+    BrandChoice,
+    BrandMeta,
+    JsonMap,
+    canonical_brand_activity_source,
+    float_value,
+    text,
+)
 from pipeline.scripts.api.brand_activity_interest_rx_config import INTEREST_LEVELS
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
 from pipeline.scripts.api.brand_activity_interest_rx_source import _market_clause
@@ -60,6 +67,7 @@ class TimeseriesRequest:
     view: str
     market_id: str | None
     selected_brand: str
+    source: str
     filter_payload: JsonMap
     visit_locations: tuple[str, ...]
     specialties: tuple[str, ...]
@@ -87,7 +95,7 @@ def get_interest_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
             market_id=request.market_id,
             selected_brand=request.selected_brand,
             filter_payload=request.filter_payload,
-            prefilter_strategic_choices=True,
+            source=request.source,
         )
     except BrandSetInputError as exc:
         raise InterestTimeseriesInputError(str(exc)) from exc
@@ -132,6 +140,7 @@ def _parse_request(payload: Mapping[str, Any]) -> TimeseriesRequest:
         view=view,
         market_id=market_id,
         selected_brand=selected_brand,
+        source=canonical_brand_activity_source(payload.get("source")),
         filter_payload=filter_payload,
         visit_locations=_filter_tuple(payload.get("visit_location")),
         specialties=_filter_tuple(payload.get("specialty")),

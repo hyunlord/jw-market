@@ -15,6 +15,12 @@ RX_MEASURES: Final[tuple[str, ...]] = ("sales", "unit", "counting_unit", "dosage
 PUBLIC_MEASURES: Final[tuple[str, ...]] = ("activity", *RX_MEASURES)
 SOURCE: Final = "iqvia_nsa"
 RANKING_MEASURE: Final = "sales"
+SOURCE_ALIASES: Final = {
+    "iqvia": SOURCE,
+    "iqvia_nsa": SOURCE,
+    "nsa": SOURCE,
+    "ubist": "ubist",
+}
 
 
 class CsdTimeseriesInputError(RuntimeError):
@@ -42,6 +48,16 @@ class CsdTimeseriesAmbiguousMarketError(RuntimeError):
     def __init__(self, message: str, *, candidates: Sequence[JsonMap] = ()) -> None:
         super().__init__(message)
         self.candidates = tuple(dict(item) for item in candidates)
+
+
+def canonical_brand_activity_source(value: Any) -> str:
+    """Return the canonical mart source used by cause and Brand Activity."""
+
+    candidate = text(value).strip().casefold() or SOURCE
+    canonical = SOURCE_ALIASES.get(candidate)
+    if canonical is None:
+        raise ValueError(f"unsupported source: {candidate}")
+    return canonical
 
 
 @dataclass(frozen=True, slots=True)

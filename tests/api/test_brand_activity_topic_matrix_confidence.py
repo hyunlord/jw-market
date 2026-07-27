@@ -130,6 +130,7 @@ def test_post_topic_service_keeps_topic_brand_contract(monkeypatch) -> None:
         "topics",
         "topic_shares",
         "event_count",
+        "data_status",
         "etc_pct",
         "brand_specific_topics",
     }

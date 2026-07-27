@@ -215,6 +215,7 @@ class BrandActivityBaseRequest(BaseModel):
         description="분석 뷰. [입력] general=일반뷰, strategic_ml=전략뷰-시장조망, strategic_cd=전략뷰-경쟁구도.",
     )
     selected_brand: str = Field(..., description="선택 브랜드. [프론트] 강조 대상이며 전략뷰에서는 시장 결정자.")
+    source: str = Field("iqvia_nsa", description="매출 cohort 소스. IQVIA 또는 UBIST.")
     filters: MarketFilter = Field(
         default_factory=MarketFilter,
         description="시장 필터(ATC+분석레벨+채널). 차원 내 OR, 차원 간 AND. 기존 flat dict extra 필드도 호환.",
@@ -237,6 +238,13 @@ class BrandActivityBaseRequest(BaseModel):
             if data.get(key) is None:
                 data[key] = {}
         return data
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def normalize_source(cls, value: Any) -> str:
+        from pipeline.scripts.api.brand_activity_csd_shared import canonical_brand_activity_source
+
+        return canonical_brand_activity_source(value)
 
 
 class CsdTimeseriesRequest(BrandActivityBaseRequest):

@@ -6,6 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Final, Sequence
 
+import pymysql
+
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import (
@@ -14,7 +16,7 @@ from pipeline.scripts.api.brand_activity_brand_resolver import (
     resolve_brand_set,
 )
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
-from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
+from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta, canonical_brand_activity_source
 from pipeline.scripts.api.brand_activity_topics import (
     JsonValue,
     _fetch_topic_rows,
@@ -36,6 +38,7 @@ KEYWORD_FILTER_COLUMNS: Final = {
     "prescription_evolution": "prescription_evolution",
 }
 LOGGER = logging.getLogger(__name__)
+
 
 class TopicRequestError(RuntimeError):
     """Raised when a topic matrix request cannot be parsed."""
@@ -68,13 +71,19 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             market_id=request["market_id"],
             selected_brand=request["selected_brand"],
             filter_payload=_json_object(request.get("filter")),
-            prefilter_strategic_choices=True,
+            source=_text(request.get("source")),
         )
     except BrandSetInputError as exc:
         raise TopicRequestError(str(exc)) from exc
     if brand_set is None:
         return None
-    topic_rows = _fetch_topic_rows()
+    topic_query_failed = False
+    try:
+        topic_rows = _fetch_topic_rows()
+    except pymysql.MySQLError:
+        LOGGER.exception("brand activity topic scope query failed")
+        topic_rows = []
+        topic_query_failed = True
     aliases = _alias_lookup()
     topic_scope = _topic_scope(brand_set=brand_set, topic_rows=topic_rows)
     topic_index = _topic_brand_index([topic_scope]) if topic_scope else {}
@@ -122,12 +131,14 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                     product_codes=product_codes_by_brand.get(choice.brand_key, ()),
                     top_n=int(request["top_n"]),
                     company_name=company_names.get(choice.brand_key),
+                    query_failed=topic_query_failed,
                 )
                 if topic_scope
                 else _empty_topic_brand_item(
                     brand_set,
                     choice_key=choice.brand_key,
                     company_name=company_names.get(choice.brand_key),
+                    query_failed=topic_query_failed,
                 )
             )
             for choice in brand_set.choices
@@ -158,6 +169,7 @@ def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
         "view": view,
         "market_id": market_id,
         "selected_brand": selected_brand,
+        "source": canonical_brand_activity_source(payload.get("source")),
         "filter": filter_payload,
         "visit_location": _filter_values(_payload_or_filter_value(payload, filter_payload, "visit_location")),
         "specialty": _filter_values(_payload_or_filter_value(payload, filter_payload, "specialty")),
@@ -187,6 +199,7 @@ def _empty_topic_brand_item(
     *,
     choice_key: str,
     company_name: str | None = None,
+    query_failed: bool = False,
 ) -> dict[str, JsonValue]:
     """Project an empty topic payload when no assignment scope is available."""
     choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
@@ -198,6 +211,12 @@ def _empty_topic_brand_item(
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
         "event_count": 0,
+        "data_status": topic_data_status(
+            event_count=0,
+            has_mapping=True,
+            source_present=False,
+            query_failed=query_failed,
+        ),
         "topic_shares": [],
         "topics": [],
         "etc_pct": 100.0,
@@ -216,21 +235,27 @@ def _sliced_topic_brand_item(
     product_codes: Sequence[str],
     top_n: int,
     company_name: str | None = None,
+    query_failed: bool = False,
 ) -> dict[str, JsonValue]:
     """Project one brand from row-topic assignments under keyword filters."""
     meta = brand_set.brand_meta[choice_key]
     choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
-    rows = _fetch_sliced_topic_rows(
-        scope_id=_text(topic_scope.get("scope_id")),
-        topic_set_version=_text(topic_scope.get("topic_set_version")),
-        product_codes=product_codes,
-        visit_locations=_filter_tuple(request.get("visit_location")),
-        specialties=_filter_tuple(request.get("specialty")),
-        interests=_filter_tuple(request.get("interest")),
-        prescription_evolutions=_filter_tuple(request.get("prescription_evolution")),
-        period_start=_text(request.get("period_start")),
-        period_end=_text(request.get("period_end")),
-    )
+    try:
+        rows = _fetch_sliced_topic_rows(
+            scope_id=_text(topic_scope.get("scope_id")),
+            topic_set_version=_text(topic_scope.get("topic_set_version")),
+            product_codes=product_codes,
+            visit_locations=_filter_tuple(request.get("visit_location")),
+            specialties=_filter_tuple(request.get("specialty")),
+            interests=_filter_tuple(request.get("interest")),
+            prescription_evolutions=_filter_tuple(request.get("prescription_evolution")),
+            period_start=_text(request.get("period_start")),
+            period_end=_text(request.get("period_end")),
+        )
+    except pymysql.MySQLError:
+        LOGGER.exception("brand activity topic assignment query failed: brand=%s", choice_key)
+        rows = []
+        query_failed = True
     stored = _stored_brand_topics(product_codes, topic_index, aliases)
     axis_labels = _axis_topic_label_index(topic_scope)
     brand_labels = _brand_topic_label_index(stored)
@@ -275,11 +300,37 @@ def _sliced_topic_brand_item(
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
         "event_count": event_count,
+        "data_status": topic_data_status(
+            event_count=event_count,
+            has_mapping=bool(product_codes),
+            source_present=stored is not None,
+            query_failed=query_failed,
+        ),
         "topic_shares": ranked_topics,
         "topics": ranked_topics,
         "etc_pct": max(0.0, 100.0 - sum(_number(topic.get("share_pct")) for topic in ranked_topics)),
         "brand_specific_topics": brand_topics,
     }
+
+
+def topic_data_status(
+    *,
+    event_count: int,
+    has_mapping: bool,
+    source_present: bool,
+    query_failed: bool,
+) -> dict[str, JsonValue]:
+    """Describe keyword availability without collapsing distinct failures."""
+
+    if query_failed:
+        return {"code": "unknown", "label": "모름"}
+    if not has_mapping:
+        return {"code": "mapping_failure", "label": "매핑 실패"}
+    if event_count > 0:
+        return {"code": "available", "label": None}
+    if not source_present:
+        return {"code": "source_absent", "label": "데이터 없음"}
+    return {"code": "zero", "label": "0"}
 
 
 def _stored_brand_topics(

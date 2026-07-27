@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pymysql
 import pytest
 
 
@@ -1111,6 +1112,32 @@ def test_missing_catalog_topic_scope_returns_explicit_reason(monkeypatch, caplog
     assert result["reason"] == "no_topic_scope:stored_scopes_missing"
     assert len(result["brands"]) == 2
     assert "reason=no_topic_scope:stored_scopes_missing" in caplog.text
+
+
+def test_topic_query_failure_is_http_200_and_distinct_from_empty_data(monkeypatch) -> None:
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(
+        topic_matrix,
+        "_fetch_topic_rows",
+        lambda: (_ for _ in ()).throw(pymysql.OperationalError(2006, "injected")),
+    )
+    monkeypatch.setattr(topic_matrix, "_company_names_by_brand", lambda *_a, **_k: {})
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "source": "IQVIA",
+            "filters": {"atc4": ["C10A1"]},
+        },
+    )
+
+    assert response.status_code == 200
+    statuses = [brand["data_status"] for brand in response.json()["data"]["brands"]]
+    assert statuses
+    assert set(status["code"] for status in statuses) == {"unknown"}
+    assert set(status["label"] for status in statuses) == {"모름"}
 
 
 def test_topic_scope_failure_reason_distinguishes_missing_selection_from_mismatch(monkeypatch) -> None:
