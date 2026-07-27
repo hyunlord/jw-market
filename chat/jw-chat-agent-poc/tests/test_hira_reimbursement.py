@@ -433,12 +433,13 @@ def test_mariadb_store_is_read_only_for_realtime_fallback() -> None:
     assert store.put_reimbursement_criteria(_criterion()) is False
 
 
-def test_configured_store_requires_complete_chat_cache_credentials(monkeypatch) -> None:
+def test_configured_store_requires_complete_reimbursement_credentials(monkeypatch) -> None:
     for name in (
         "CHAT_CACHE_DB_HOST",
         "CHAT_CACHE_DB_NAME",
         "CHAT_CACHE_DB_USER",
         "CHAT_CACHE_DB_PASSWORD",
+        "CHAT_REIMBURSEMENT_DB_NAME",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -448,6 +449,7 @@ def test_configured_store_requires_complete_chat_cache_credentials(monkeypatch) 
     monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
     monkeypatch.setenv("CHAT_CACHE_DB_USER", "chat")
     monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
+    monkeypatch.setenv("CHAT_REIMBURSEMENT_DB_NAME", "reimbursement_stage")
 
     assert isinstance(configured_reimbursement_store(), MariaDbReimbursementStore)
 
@@ -662,7 +664,7 @@ def test_absent_store_and_hit_have_distinct_cache_telemetry() -> None:
     assert hit_realtime.calls == []
 
 
-def test_reimbursement_database_env_is_dedicated_and_falls_back_to_cache_env(
+def test_reimbursement_store_is_absent_without_dedicated_database_env(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("CHAT_CACHE_DB_HOST", "db.internal")
@@ -671,9 +673,30 @@ def test_reimbursement_database_env_is_dedicated_and_falls_back_to_cache_env(
     monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
     monkeypatch.delenv("CHAT_REIMBURSEMENT_DB_NAME", raising=False)
 
-    fallback = configured_reimbursement_store()
-    assert isinstance(fallback, MariaDbReimbursementStore)
-    assert fallback.schema_name == "jw_mart"
+    store = configured_reimbursement_store()
+    realtime = _Realtime(error=AssertionError("absent store must not call HIRA"))
+    result = ReimbursementLookupService(
+        store=store,
+        realtime=realtime,
+        now=lambda: NOW,
+    ).lookup("로수젯")
+    envelope = reimbursement_envelope(result, subject="로수젯")
+
+    assert isinstance(store, AbsentReimbursementStore)
+    assert result.cache_lookup_status is CacheLookupStatus.STORE_ABSENT
+    assert result.retrieval == "typed_unavailable"
+    assert realtime.calls == []
+    assert envelope.preview == (
+        "급여기준 조회 기능은 현재 준비 중입니다. "
+        "심사평가원(HIRA) 사이트에서 직접 확인해 주세요."
+    )
+
+
+def test_reimbursement_store_uses_dedicated_database_env(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_HOST", "db.internal")
+    monkeypatch.setenv("CHAT_CACHE_DB_NAME", "jw_mart")
+    monkeypatch.setenv("CHAT_CACHE_DB_USER", "chat")
+    monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
 
     monkeypatch.setenv("CHAT_REIMBURSEMENT_DB_NAME", "reimbursement_stage")
     dedicated = configured_reimbursement_store()

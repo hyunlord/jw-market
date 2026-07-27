@@ -501,10 +501,7 @@ def _connect_reimbursement_db() -> _Connection:
 
 
 def _reimbursement_database_name() -> str:
-    return (
-        os.environ.get("CHAT_REIMBURSEMENT_DB_NAME")
-        or os.environ.get("CHAT_CACHE_DB_NAME", "")
-    ).strip()
+    return os.environ.get("CHAT_REIMBURSEMENT_DB_NAME", "").strip()
 
 
 def _effective_lookup_status(cached: ReimbursementCacheResult) -> CacheLookupStatus:
