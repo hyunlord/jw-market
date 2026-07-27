@@ -126,10 +126,9 @@ def _direction_line(brand: str, data: dict[str, Any]) -> str:
     sales_word = _direction_word(sales_delta)
     if not share_word or not sales_word:
         return ""
-    connector = "했으나," if share_delta * sales_delta < 0 else "했고,"
     return (
         f"{brand} 점유율은 {pct_value(share_start)}에서 {pct_value(share_end)}로 "
-        f"{abs(share_delta):.2f}%p {share_word}{connector} 처방조제액은 "
+        f"{abs(share_delta):.2f}%p {share_word}했습니다. 매출은 "
         f"{eok_value(None, sales_start)}에서 {eok_value(None, sales_end)}으로 "
         f"{eok_value(None, abs(sales_delta))} {sales_word}했습니다."
     )

@@ -24,7 +24,11 @@ from jw_chat_agent_poc.tool_use.routing_v4_types import (
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    CacheLookupStatus,
+    CacheStatus,
     HiraReimbursementHttpClient,
+    MariaDbReimbursementStore,
+    ReimbursementCacheResult,
     ReimbursementCriterion,
 )
 
@@ -74,6 +78,24 @@ def _without_v4_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
     diagnostics.pop("routing_v4", None)
     copied["router_diagnostics"] = diagnostics
     return copied
+
+
+def _enable_recoverable_reimbursement_cache(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_HOST", "cache.internal")
+    monkeypatch.setenv("CHAT_CACHE_DB_USER", "chat")
+    monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
+    monkeypatch.setenv("CHAT_REIMBURSEMENT_DB_NAME", "reimbursement_stage")
+    monkeypatch.setattr(
+        MariaDbReimbursementStore,
+        "get_reimbursement_criteria",
+        lambda self, _brand: ReimbursementCacheResult(
+            CacheStatus.NOT_FOUND,
+            None,
+            None,
+            lookup_status=CacheLookupStatus.ZERO_ROWS,
+            schema_name=self.schema_name,
+        ),
+    )
 
 
 def test_missing_invalid_and_explicit_off_modes_are_byte_equivalent(monkeypatch) -> None:
@@ -466,6 +488,7 @@ def test_enforce_executes_raw_validated_arguments_but_records_normalized_ccs(mon
 
 def test_enforce_reimbursement_uses_hira_criteria(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
+    _enable_recoverable_reimbursement_cache(monkeypatch)
 
     def reimbursement(_self, brand: str) -> ReimbursementCriterion:
         assert brand == "아일리아"

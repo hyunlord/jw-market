@@ -23,7 +23,12 @@ def reimbursement_envelope(
 ) -> ToolEnvelope:
     if not result.ok or result.data is None:
         error_code = result.error_code or "NO_EVIDENCE"
-        if result.cache_lookup_status is CacheLookupStatus.BRAND_UNMATCHED:
+        if result.cache_lookup_status is CacheLookupStatus.STORE_ABSENT:
+            message = (
+                "급여기준 조회 기능은 현재 준비 중입니다. "
+                "심사평가원(HIRA) 사이트에서 직접 확인해 주세요."
+            )
+        elif result.cache_lookup_status is CacheLookupStatus.BRAND_UNMATCHED:
             message = "해당 브랜드는 아직 급여기준 색인 대상이 아닙니다."
         else:
             message = {

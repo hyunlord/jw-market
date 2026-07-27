@@ -328,7 +328,10 @@ class ReimbursementLookupService:
                 cache_lookup_status=lookup_status,
                 cache_schema=cache_schema,
             )
-        if lookup_status is CacheLookupStatus.BRAND_UNMATCHED:
+        if lookup_status in {
+            CacheLookupStatus.STORE_ABSENT,
+            CacheLookupStatus.BRAND_UNMATCHED,
+        }:
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,

@@ -38,7 +38,11 @@ from jw_chat_agent_poc.resolver import BrandResolution, BrandResolver
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.tools.external import ExternalCall
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
+    CacheLookupStatus,
+    CacheStatus,
     HiraReimbursementHttpClient,
+    MariaDbReimbursementStore,
+    ReimbursementCacheResult,
     ReimbursementCriterion,
 )
 from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOUT_S
@@ -58,6 +62,24 @@ class _ChoiceSequence:
         choice = self.choices[self.calls]
         self.calls += 1
         return choice
+
+
+def _enable_recoverable_reimbursement_cache(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_CACHE_DB_HOST", "cache.internal")
+    monkeypatch.setenv("CHAT_CACHE_DB_USER", "chat")
+    monkeypatch.setenv("CHAT_CACHE_DB_PASSWORD", "masked-test-value")
+    monkeypatch.setenv("CHAT_REIMBURSEMENT_DB_NAME", "reimbursement_stage")
+    monkeypatch.setattr(
+        MariaDbReimbursementStore,
+        "get_reimbursement_criteria",
+        lambda self, _brand: ReimbursementCacheResult(
+            CacheStatus.NOT_FOUND,
+            None,
+            None,
+            lookup_status=CacheLookupStatus.ZERO_ROWS,
+            schema_name=self.schema_name,
+        ),
+    )
 
 
 def test_external_tool_agent_early_return_preserves_dynamic_brand_resolution(monkeypatch) -> None:
@@ -847,6 +869,8 @@ def test_forced_legacy_reimbursement_question_uses_hira_without_mart_text(
     monkeypatch,
     question: str,
 ) -> None:
+    _enable_recoverable_reimbursement_cache(monkeypatch)
+
     def reimbursement_fetch(
         _client: HiraReimbursementHttpClient,
         brand: str,
@@ -1514,6 +1538,7 @@ def test_registry_forwards_mfds_clinical_condition_and_default_intervention() ->
 
 def test_fixture_tool_pack_executes_all_23_specs_with_evidence(monkeypatch) -> None:
     # Given: schema-valid fixture inputs for every registered external tool.
+    _enable_recoverable_reimbursement_cache(monkeypatch)
     payloads: dict[str, dict[str, str]] = {
         "local_molecule_lookup": {"brand": "리바로"},
         "get_drug_main_ingredient": {"brand": "리바로"},
