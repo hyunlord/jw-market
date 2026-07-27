@@ -60,28 +60,32 @@ class _GeneralBackend:
         )
 
 
-def _live_catalog_resolver() -> BrandResolver:
+def _catalog_resolver(memberships: tuple[dict[str, str], ...]) -> BrandResolver:
     membership = TtlCatalogMembershipReader(
-        StaticCatalogMembershipReader(
-            (
-                {
-                    "brand": "리바로",
-                    "market_id": "ml_006",
-                    "market_name": "리바로 리바로젯",
-                },
-                {
-                    "brand": "리바로젯",
-                    "market_id": "ml_006",
-                    "market_name": "리바로 리바로젯",
-                },
-            )
-        ),
+        StaticCatalogMembershipReader(memberships),
         ttl_seconds=300,
     )
     return BrandResolver(
         mode="cache",
         brand_reader=StaticMetricsCacheReader(cache_brands=[], market_status=[]),
         membership_reader=membership,
+    )
+
+
+def _live_catalog_resolver() -> BrandResolver:
+    return _catalog_resolver(
+        (
+            {
+                "brand": "리바로",
+                "market_id": "ml_006",
+                "market_name": "리바로 리바로젯",
+            },
+            {
+                "brand": "리바로젯",
+                "market_id": "ml_006",
+                "market_name": "리바로 리바로젯",
+            },
+        )
     )
 
 
@@ -95,21 +99,37 @@ def test_gen1116_capture_contains_the_market_label_and_split_regressions() -> No
     assert "리바로 리바로젯 시장의 구성 브랜드" in captures["strategic_members"]["text"]
 
 
-def test_live_catalog_brand_list_uses_the_existing_human_market_alias() -> None:
+def test_live_catalog_market_name_is_preserved_verbatim() -> None:
     resolution = _live_catalog_resolver().resolve("리바로 시장 구성 브랜드 50개")
 
     assert resolution.market_id == "ml_006"
-    assert resolution.market_name == "고지혈증 치료제 시장"
-    assert "리바로 리바로젯" not in resolution.market_names
+    assert resolution.market_name == "리바로 리바로젯"
+    assert resolution.market_names == ("리바로 리바로젯",)
 
 
-def test_internal_market_id_uses_the_existing_human_market_alias() -> None:
-    resolver = _live_catalog_resolver()
+def test_brand_shaped_catalog_market_name_is_not_replaced() -> None:
+    resolver = _catalog_resolver(
+        (
+            {
+                "brand": "페린젝트",
+                "market_id": "ml_010",
+                "market_name": "페린젝트 베노훼럼",
+            },
+            {
+                "brand": "베노훼럼",
+                "market_id": "ml_010",
+                "market_name": "페린젝트 베노훼럼",
+            },
+        )
+    )
 
-    assert resolver._public_market_name("ml_006", "ml_006", {"리바로", "리바로젯"}) == "고지혈증 치료제 시장"
+    resolution = resolver.resolve("페린젝트 매출")
+
+    assert resolution.market_id == "ml_010"
+    assert resolution.market_name == "페린젝트 베노훼럼"
 
 
-def test_human_market_alias_keeps_the_f47_two_atc_split() -> None:
+def test_catalog_market_name_keeps_the_f47_two_atc_split() -> None:
     resolver = _live_catalog_resolver()
     service = GeneralViewService(
         _GeneralBackend(),
@@ -118,7 +138,7 @@ def test_human_market_alias_keeps_the_f47_two_atc_split() -> None:
         general_membership=_GeneralMembership(),
     )
 
-    result = service.answer("고지혈증 치료제 시장 일반뷰로는?", compact=False, dual=False)
+    result = service.answer("리바로 리바로젯 일반뷰로는?", compact=False, dual=False)
 
     assert result["general_view_contract"]["atc4_codes"] == ["C10A1", "C10C"]
     assert "### ATC4 C10A1" in result["answer"]
