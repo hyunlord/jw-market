@@ -15,9 +15,14 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline.scripts.ingest_hook import job_runner
+from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.app import IngestService, create_app
-from pipeline.scripts.ingest_hook.ledger import STAGE_COMPLETE, STAGE_FAILED, STAGE_SKIPPED
+from pipeline.scripts.ingest_hook.ledger import (
+    STAGE_COMPLETE,
+    STAGE_FAILED,
+    STAGE_SKIPPED,
+    StageLedgerWriteError,
+)
 from ingest_fixtures import GOOD_ROWS, write_submission
 
 
@@ -141,14 +146,149 @@ def test_v5_retry_accumulates_per_run_id(sqlite_ledger):
     assert runs == {"runA": "failed", "runB": "complete"}  # prior attempt preserved, not overwritten
 
 
-def test_v6_stage_record_failure_does_not_fail_the_load(sqlite_ledger, bucket, tmp_path):
+def test_v6_stage_record_failure_is_ignored_only_when_strict_is_disabled(
+    monkeypatch, sqlite_ledger, bucket, tmp_path
+):
+    """The legacy S-4 best-effort contract, now reachable only behind the flag.
+
+    Kept verbatim as the ``REQUIRE_STAGE_LEDGER_STRICT=0`` escape hatch so the old
+    behavior stays covered; the default is fail-closed (see the B-4 cases below).
+    """
+    monkeypatch.setenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, "0")
     # Drop the stage table so every record_stage INSERT errors; the load must still complete.
     sqlite_ledger._execute("DROP TABLE ingest_stage_event")  # test-only sabotage
     manifest_path = write_submission(bucket)
     rc = job_runner.run(manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s")
-    assert rc == 0  # observation failure swallowed (S-4); load unaffected
+    assert rc == 0  # observation failure ignored on request; load unaffected
     sha = _sha(manifest_path)
     assert sqlite_ledger.status("2026-07", "ubist", sha).status == "complete"
+
+
+# -- B-4 failure injection: stage recording is fail-closed by default ----------
+
+
+def _fail_stage_writes(ledger, *, only_stage: str | None = None, exc: Exception | None = None):
+    """Make ingest_stage_event statements raise, optionally just one stage's write.
+
+    Patches ``_execute`` rather than ``record_stage`` so the real strict-mode policy
+    inside ``record_stage`` is the thing under test.
+    """
+    original = ledger._execute
+    failure = exc or sqlite3.OperationalError("no such table: ingest_stage_event")
+
+    def patched(sql, params=()):
+        if "ingest_stage_event" in sql and (only_stage is None or only_stage in params):
+            raise failure
+        return original(sql, params)
+
+    ledger._execute = patched
+
+
+def test_b4_1_missing_stage_table_fails_the_run_with_a_named_reason(
+    monkeypatch, sqlite_ledger, bucket, tmp_path
+):
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    sqlite_ledger._execute("DROP TABLE ingest_stage_event")
+    manifest_path = write_submission(bucket)
+
+    with pytest.raises(StageLedgerWriteError, match=r"ingest_stage_event.*_DDL_STAGE_MYSQL"):
+        job_runner.run(
+            manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+        )
+
+    # The terminal ledger transition still happened, so the category is not stranded
+    # in `running` — that is exactly what the status="failed" carve-out protects.
+    assert sqlite_ledger.status("2026-07", "ubist", _sha(manifest_path)).status == "failed"
+
+
+def test_b4_2_successful_recording_keeps_the_existing_behavior(
+    monkeypatch, sqlite_ledger, bucket, tmp_path
+):
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    manifest_path = write_submission(bucket)
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    assert rc == 0
+    sha = _sha(manifest_path)
+    assert sqlite_ledger.status("2026-07", "ubist", sha).status == "complete"
+    assert [e.stage for e in _events(sqlite_ledger, "2026-07", sha)] == [
+        "g3", "load", "load_verify", "mart_build", "sigma", "post_gate",
+        "mart_publish", "refresh", "signal",
+    ]
+
+
+def test_b4_3_permission_or_connection_error_also_fails_closed(
+    monkeypatch, sqlite_ledger, bucket, tmp_path
+):
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    _fail_stage_writes(
+        sqlite_ledger,
+        exc=sqlite3.OperationalError(
+            "INSERT command denied to user 'jw_mart_d2_writer' for table 'ingest_stage_event'"
+        ),
+    )
+    manifest_path = write_submission(bucket)
+
+    with pytest.raises(StageLedgerWriteError, match="command denied"):
+        job_runner.run(
+            manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+        )
+
+
+def test_b4_4_flag_zero_restores_the_legacy_ignored_behavior(
+    monkeypatch, sqlite_ledger, bucket, tmp_path
+):
+    monkeypatch.setenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, "0")
+    _fail_stage_writes(sqlite_ledger)
+    manifest_path = write_submission(bucket)
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    assert rc == 0
+    assert sqlite_ledger.status("2026-07", "ubist", _sha(manifest_path)).status == "complete"
+
+
+def test_b4_5_load_committed_but_recording_lost_does_not_report_success(
+    monkeypatch, capsys, sqlite_ledger, bucket, tmp_path
+):
+    """Only the final stage row fails, after the ledger is already complete.
+
+    The data is committed, so the ledger must stay `complete`, but the run must not
+    print result=complete or exit 0 — the step evidence is unknown.
+    """
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    manifest_path = write_submission(bucket)
+    _fail_stage_writes(sqlite_ledger, only_stage="signal")
+
+    rc = job_runner.run(
+        manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=tmp_path / "s"
+    )
+    assert rc == 1
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "result=committed_with_postcommit_error" in combined
+    assert "result=complete " not in combined
+    sha = _sha(manifest_path)
+    assert sqlite_ledger.status("2026-07", "ubist", sha).status == "complete"
+
+
+def test_b4_6_failed_stage_row_never_preempts_the_terminal_transition(
+    monkeypatch, sqlite_ledger, bucket, tmp_path
+):
+    """status="failed" writes are reported, not raised (queue-safety carve-out)."""
+    monkeypatch.delenv(config.ENV_REQUIRE_STAGE_LEDGER_STRICT, raising=False)  # default = 1
+    identity = ("2026-07", "ubist", "c" * 64)
+    _fail_stage_writes(sqlite_ledger)
+    # No exception: a lost `failed` row must not stop the caller from reaching
+    # mark_failed / mark_gate_failed.
+    sqlite_ledger.record_stage(
+        *identity, run_id="runF", seq=1, stage="g3", status="failed", reason="boom"
+    )
+    with pytest.raises(StageLedgerWriteError):
+        sqlite_ledger.record_stage(
+            *identity, run_id="runF", seq=1, stage="g3", status="complete"
+        )
 
 
 def test_v7_status_api_is_backward_compatible(client, bucket):

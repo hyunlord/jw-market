@@ -91,6 +91,9 @@ class IngestService:
             )
         except Exception as exc:  # noqa: BLE001 - transport is an external boundary
             reason = f"job submission failed: {type(exc).__name__}: {exc}"
+            # status="failed" is reported-not-raised by record_stage, so the
+            # mark_failed below always runs and the original submission error is
+            # re-raised to the caller. Nothing is reported as success here.
             self.ledger.record_stage(
                 entry.epoch,
                 category,
@@ -110,6 +113,12 @@ class IngestService:
                 reason=reason,
             )
             raise
+        # The Job now exists in Kubernetes, so record that truth in the ledger
+        # BEFORE the observation row. record_stage is fail-closed for forward
+        # progress; if it were first, a stage-table outage would skip mark_running
+        # and leave the row queued, and the next promote would submit a second Job
+        # for the same submission under a new run_id.
+        self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         self.ledger.record_stage(
             entry.epoch,
             category,
@@ -121,7 +130,6 @@ class IngestService:
             started_at=started_at,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-        self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
 
     def reconcile_terminal_jobs(self) -> dict:
@@ -437,17 +445,25 @@ def create_app(service: IngestService) -> FastAPI:
         if entry is None:
             raise HTTPException(status_code=404, detail="unknown submission identity")
         # Additive only (backward compatible): existing keys are unchanged; the
-        # stage list / current_stage / log_ref are new. stage_events reads are
-        # best-effort — a stage-table read failure degrades to an empty list, never
-        # a 500, so status stays available even before the stage table is activated.
+        # stage list / current_stage / log_ref / observation_* are new.
+        #
+        # An observation read failure still degrades to an empty list instead of a
+        # 500 — the ledger row itself is readable and callers depend on getting it.
+        # But an empty list must not be indistinguishable from a failed read, so the
+        # failure is reported in observation_available / observation_error rather
+        # than silently discarded. `available=true` + `[]` means there genuinely are
+        # no rows; `available=false` means the rows are unknown.
+        observation_errors: list[str] = []
         try:
             events = service.ledger.stage_events(epoch, category, manifest_sha)
-        except Exception:  # noqa: BLE001 — observation must not break status
+        except Exception as exc:  # noqa: BLE001 — reported below, not swallowed
             events = []
+            observation_errors.append(f"stage_events: {type(exc).__name__}: {exc}")
         try:
             signals = service.ledger.signal_events(epoch, category, manifest_sha)
-        except Exception:  # observation remains additive and best-effort
+        except Exception as exc:  # noqa: BLE001 — reported below, not swallowed
             signals = []
+            observation_errors.append(f"signal_events: {type(exc).__name__}: {exc}")
         current_stage = next(
             (event.stage for event in reversed(events) if event.status == "running"), None
         )
@@ -462,6 +478,8 @@ def create_app(service: IngestService) -> FastAPI:
             "received_at": entry.received_at,
             "finished_at": entry.finished_at,
             # -- new (additive) --
+            "observation_available": not observation_errors,
+            "observation_error": "; ".join(observation_errors) or None,
             "current_stage": current_stage,
             "stages": [
                 {

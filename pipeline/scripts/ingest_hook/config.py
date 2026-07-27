@@ -25,6 +25,7 @@ ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for j
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
 ENV_REQUIRE_SIGNAL_LEDGER_STRICT = "REQUIRE_SIGNAL_LEDGER_STRICT"
+ENV_REQUIRE_STAGE_LEDGER_STRICT = "REQUIRE_STAGE_LEDGER_STRICT"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -57,6 +58,13 @@ def completion_webhook() -> tuple[str, int]:
     return endpoint, min(max(attempts, 3), 5)
 
 
+def _strict_flag(name: str) -> bool:
+    value = os.environ.get(name, "1").strip()
+    if value not in {"0", "1"}:
+        raise RuntimeError(f"{name} must be 0 or 1, received {value!r}")
+    return value == "1"
+
+
 def require_signal_ledger_strict() -> bool:
     """Require durable signal recording, defaulting to fail-closed.
 
@@ -64,12 +72,21 @@ def require_signal_ledger_strict() -> bool:
     behavior where a signal ledger write failure is logged and ignored.
     """
 
-    value = os.environ.get(ENV_REQUIRE_SIGNAL_LEDGER_STRICT, "1").strip()
-    if value not in {"0", "1"}:
-        raise RuntimeError(
-            f"{ENV_REQUIRE_SIGNAL_LEDGER_STRICT} must be 0 or 1, received {value!r}"
-        )
-    return value == "1"
+    return _strict_flag(ENV_REQUIRE_SIGNAL_LEDGER_STRICT)
+
+
+def require_stage_ledger_strict() -> bool:
+    """Require durable per-stage recording, defaulting to fail-closed.
+
+    A lost stage row means the run's step-level evidence is unknown, not that the
+    step succeeded, so forward-progress recording failures must surface. Setting
+    REQUIRE_STAGE_LEDGER_STRICT=0 restores the legacy best-effort behavior where
+    the failure is printed to stderr and the run continues — which is why the
+    per-stage observation silently disappeared whenever ingest_stage_event was
+    unavailable. Keep it at 1 unless an emergency needs the old behavior back.
+    """
+
+    return _strict_flag(ENV_REQUIRE_STAGE_LEDGER_STRICT)
 
 
 def input_root() -> Path:

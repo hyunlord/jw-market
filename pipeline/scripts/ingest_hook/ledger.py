@@ -42,6 +42,15 @@ except Exception:  # pragma: no cover - sqlite-only environments have no pymysql
 _MYSQL_GONE_AWAY_CODES = (2006, 2013)
 
 
+class StageLedgerWriteError(RuntimeError):
+    """A per-stage observation row could not be persisted.
+
+    Raised by ``Ledger.record_stage`` for forward-progress statuses when
+    ``REQUIRE_STAGE_LEDGER_STRICT`` is on (the default). The caller must not turn
+    this into a success: the stage outcome is unknown, not complete.
+    """
+
+
 class LedgerConnectionError(RuntimeError):
     """The mysql ledger connection could not be revived (ping + reconnect + one
     retry all failed).
@@ -114,8 +123,12 @@ CREATE TABLE IF NOT EXISTS ingest_ledger (
 
 # Per-stage observation table. Separate from ingest_ledger (not extra columns)
 # because one submission runs N stages and may be retried under new run_ids —
-# a 1:N child keyed by the ledger identity + run_id + seq. Purely observational:
-# a write failure here must never fail the load (see Ledger.record_stage).
+# a 1:N child keyed by the ledger identity + run_id + seq. Observation is required
+# evidence, not decoration: a forward-progress write failure here fails the run by
+# default (REQUIRE_STAGE_LEDGER_STRICT), because a missing stage row means the step
+# outcome is unknown rather than successful. See Ledger.record_stage for the one
+# bounded exception — recording a *failed* stage never preempts the terminal ledger
+# transition that unblocks the category queue.
 STAGE_RUNNING = "running"
 STAGE_COMPLETE = "complete"
 STAGE_FAILED = "failed"
@@ -234,6 +247,21 @@ CREATE TABLE IF NOT EXISTS ingest_status_transition (
   KEY idx_status_transition_identity (epoch, category, manifest_sha, id)
 )
 """
+
+
+# config is imported lazily in the two helpers below: config.open_configured_ledger
+# imports this module, so a module-level `import config` here would be circular.
+# The env-var name is owned by config so the two modules cannot drift apart.
+def _stage_strict_enabled() -> bool:
+    from pipeline.scripts.ingest_hook import config
+
+    return config.require_stage_ledger_strict()
+
+
+def _stage_strict_env_name() -> str:
+    from pipeline.scripts.ingest_hook import config
+
+    return config.ENV_REQUIRE_STAGE_LEDGER_STRICT
 
 
 def _now() -> str:
@@ -944,7 +972,7 @@ class Ledger:
             return None
         return sum(json.loads(raw).values())
 
-    # -- stage observation (best-effort; never fails the load) ---------------
+    # -- stage observation (fail-closed by default) ---------------------------
     def record_stage(
         self,
         epoch: str,
@@ -959,13 +987,31 @@ class Ledger:
         started_at: str | None = None,
         finished_at: str | None = None,
         duration_ms: int | None = None,
+        strict: bool | None = None,
     ) -> None:
-        """Upsert one stage row by (identity, run_id, seq). Best-effort by design:
+        """Upsert one stage row by (identity, run_id, seq). Fail-closed by default.
 
-        observation must never break the load (S-4). Any DB error is swallowed with
-        an stderr note; the run continues. Rows accumulate per run_id — a retry uses
-        a new run_id and never overwrites a prior attempt's history (S-3).
+        Rows accumulate per run_id — a retry uses a new run_id and never overwrites
+        a prior attempt's history (S-3).
+
+        Failure handling is decided by ``status``, so callers need no extra wiring:
+
+        * forward progress (``running`` / ``complete`` / ``skipped``) — a write
+          failure raises :class:`StageLedgerWriteError` under
+          ``REQUIRE_STAGE_LEDGER_STRICT`` (default ``1``). Losing the row means the
+          step outcome is unknown, so the run must not report success.
+        * ``failed`` — reported on stderr and never raised. These calls sit
+          immediately *before* the terminal ``mark_failed`` / ``mark_gate_failed``
+          transition; raising here would skip that transition and strand the row in
+          ``running``, blocking the whole category's FIFO forever. The run is
+          already failing and exits non-zero, so nothing is misreported as success.
+
+        ``strict`` overrides the env for callers that must not preempt a required
+        ledger transition; pass it only with a comment saying why.
         """
+        forward_progress = status != STAGE_FAILED
+        if strict is None:
+            strict = forward_progress and _stage_strict_enabled()
         try:
             existing = self._execute(
                 "SELECT id FROM ingest_stage_event"
@@ -990,10 +1036,28 @@ class Ledger:
                     (stage, status, reason, finished_at, duration_ms, started_at,
                      epoch, category, manifest_sha, run_id, seq),
                 )
-        except Exception as exc:  # noqa: BLE001 — observation is best-effort (S-4)
+        except Exception as exc:  # noqa: BLE001 — policy is decided just below
             import sys
-            print(f"[stage] record failed (ignored; load continues): {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+
+            if strict:
+                raise StageLedgerWriteError(
+                    f"stage observation write failed for stage={stage} status={status} "
+                    f"({type(exc).__name__}: {exc}); the configured ledger schema must "
+                    "contain ingest_stage_event. Apply the activation DDL "
+                    "(ledger.py _DDL_STAGE_MYSQL, the same statement Ledger.ensure_table "
+                    f"runs) before retrying, or set {_stage_strict_env_name()}=0 to "
+                    "restore the legacy best-effort behavior"
+                ) from exc
+            # Not raised on purpose. Either the operator disabled strict mode, or
+            # this is the `failed` status recorded right before the terminal ledger
+            # transition, which must not be preempted (see the docstring). The run
+            # still exits non-zero, so this is reported — never swallowed into a
+            # success.
+            print(
+                f"[stage] record failed (reported; not raised for status={status}): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
 
     def stage_events(self, epoch: str, category: str, manifest_sha: str) -> list[StageEvent]:
         cursor = self._execute(
