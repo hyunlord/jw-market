@@ -18,6 +18,7 @@ from jw_chat_agent_poc.service.evidence_binding import (
     _matches_display_rounding,
 )
 from jw_chat_agent_poc.service.evidence_binding_rules import (
+    _markdown_table_cells,
     binding_claim_number_tokens,
     claim_metrics_for_token,
     entity_matches,
@@ -37,6 +38,7 @@ from jw_chat_agent_poc.service.evidence_binding_rules import (
 )
 
 _MAX_OCCURRENCES: Final = 8
+_MAX_METRIC_SOURCE_COUNT: Final = 16
 _MAX_FACT_REFS: Final = 8
 _MAX_METRIC_SUMMARIES: Final = 8
 _MAX_AXIS_SUMMARIES: Final = 4
@@ -64,6 +66,14 @@ def binding_pipeline_observability(
     occurrences = _claim_occurrences(claim_text)
     if not occurrences:
         return {}
+
+    # The gate decided on its own claim_text (evidence_binding.py). This module
+    # rebuilds one from the same inputs, but nothing enforces that app.py keeps
+    # feeding both the same answer. Every token the gate blocked must therefore
+    # be present in the text observed here; if it is not, the two inputs have
+    # diverged and the tier readings below describe a different string.
+    observed_tokens = {str(item["token"]) for item in occurrences}
+    decision_path_agrees = set(gate.blocked_numbers).issubset(observed_tokens)
 
     facts_by_id = {fact.fact_id: fact for fact in facts}
     rejection_reasons = {
@@ -129,6 +139,7 @@ def binding_pipeline_observability(
         "occurrences": projected,
         "occurrences_emitted": len(projected),
         "occurrences_truncated": len(occurrences) > _MAX_OCCURRENCES,
+        "decision_path_agrees": decision_path_agrees,
         "binder_input": {
             "basis": "claim_text_after_expected_identifier_removal",
             "chars": len(claim_text),
@@ -388,6 +399,48 @@ def _claim_occurrences(text: str) -> tuple[dict[str, Any], ...]:
     )
 
 
+def _without_table_lines(text: str) -> str:
+    """Blank every markdown table line, keeping the line structure intact.
+
+    Deleting the lines would merge the prose segments on either side, and
+    claim_metrics_for_token splits on newline runs, so a merged segment can
+    change the answer the segment branch gives. Blanking preserves both the
+    line count and the segment boundaries, and leaves only the table branch
+    without input.
+    """
+    # split("\n") rather than splitlines() so a trailing newline survives the
+    # round trip; splitlines() would drop it and shorten the text.
+    return "\n".join(
+        "" if _markdown_table_cells(line) else line for line in text.split("\n")
+    )
+
+
+def _metric_inference(answer: str, question: str, token: str) -> dict[str, Any]:
+    """Report which branch of claim_metrics_for_token supplied the metric.
+
+    The segment branch returns before the table branch is reachable, so
+    re-running the same function without table lines cannot change what the
+    segment branch would have answered - it can only remove the table branch.
+    A non-empty result therefore proves the segment branch produced the live
+    value. Nothing derived from the answer text is returned.
+    """
+    metrics = claim_metrics_for_token(answer, token)
+    if not metrics:
+        tier = "question_fallback" if question_metrics(question) else "none"
+        source_count = 0
+    elif claim_metrics_for_token(_without_table_lines(answer), token):
+        tier = "segment"
+        source_count = 0
+    else:
+        tier = "table_header"
+        source_count = min(len(metrics), _MAX_METRIC_SOURCE_COUNT)
+    return {
+        "tier": tier,
+        "source_count": source_count,
+        "claim_text_length": len(answer),
+    }
+
+
 def _occurrence_trace(
     occurrence: Mapping[str, Any],
     *,
@@ -488,6 +541,7 @@ def _occurrence_trace(
         "unit": token_unit(token),
         "char_range": (occurrence["start"], occurrence["end"]),
         "location": occurrence["location"],
+        "metric_inference": _metric_inference(answer, question, token),
         "expected": {
             "basis": "token_global_current_binder",
             "entity": tuple(sorted(expected)),
