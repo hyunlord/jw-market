@@ -47,6 +47,10 @@ from pipeline.scripts.ingest_hook.post_gate import (
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 
 
+class SignalLedgerWriteError(RuntimeError):
+    """The completion signal could not be recorded durably."""
+
+
 def _run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
 
@@ -293,7 +297,7 @@ def _emit_completion_signal(
     rows_loaded: int,
     periods: set[str], started_at: str, failure_reason: str | None,
 ) -> None:
-    """Best-effort delivery and durable observation; never changes ingest result."""
+    """Deliver the completion signal and require its durable ledger record."""
     from urllib.parse import urlencode
 
     from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, PublishResult, publish
@@ -334,8 +338,20 @@ def _emit_completion_signal(
             rows_loaded=rows_loaded, delivery_status=result.status,
             attempts=result.attempts, reason=result.reason, payload=signal.as_dict(),
         )
-    except Exception as exc:  # signal observation cannot break a successful load
-        print(f"[signal] ledger record failed (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        if config.require_signal_ledger_strict():
+            raise SignalLedgerWriteError(
+                "completion signal ledger write failed "
+                f"({type(exc).__name__}: {exc}); the configured ledger schema must "
+                "contain ingest_signal_event. Run the activation migration that calls "
+                "Ledger.ensure_table before retrying"
+            ) from exc
+        print(
+            "[signal] ledger record failed "
+            f"(ignored; {config.ENV_REQUIRE_SIGNAL_LEDGER_STRICT}=0): "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
     # Stage observation is also best-effort (record_stage swallows DB errors).
     tracker.complete("signal", reason=f"delivery={result.status}; attempts={result.attempts}")
     print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")

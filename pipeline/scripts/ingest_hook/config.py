@@ -24,6 +24,7 @@ ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output roo
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
+ENV_REQUIRE_SIGNAL_LEDGER_STRICT = "REQUIRE_SIGNAL_LEDGER_STRICT"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -54,6 +55,21 @@ def completion_webhook() -> tuple[str, int]:
     endpoint = os.environ.get(ENV_COMPLETION_WEBHOOK_URL, "").strip()
     attempts = int(os.environ.get(ENV_COMPLETION_WEBHOOK_ATTEMPTS, "4"))
     return endpoint, min(max(attempts, 3), 5)
+
+
+def require_signal_ledger_strict() -> bool:
+    """Require durable signal recording, defaulting to fail-closed.
+
+    Setting REQUIRE_SIGNAL_LEDGER_STRICT=0 restores the legacy best-effort
+    behavior where a signal ledger write failure is logged and ignored.
+    """
+
+    value = os.environ.get(ENV_REQUIRE_SIGNAL_LEDGER_STRICT, "1").strip()
+    if value not in {"0", "1"}:
+        raise RuntimeError(
+            f"{ENV_REQUIRE_SIGNAL_LEDGER_STRICT} must be 0 or 1, received {value!r}"
+        )
+    return value == "1"
 
 
 def input_root() -> Path:

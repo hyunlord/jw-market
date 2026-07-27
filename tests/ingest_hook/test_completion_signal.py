@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
-from pipeline.scripts.ingest_hook import job_runner
+from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, publish
 from pipeline.scripts.ingest_hook.completion_signal import PublishResult
 from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -92,6 +93,122 @@ def test_v5_success_signal_is_recorded_and_exposed(sqlite_ledger, bucket, tmp_pa
     assert events[0].mode == "staging"
     assert events[0].rows_loaded == 6
     assert events[0].delivery_status == "disabled"
+
+
+def test_signal_ledger_missing_table_fails_closed_by_default(
+    monkeypatch, sqlite_ledger
+) -> None:
+    monkeypatch.delenv(config.ENV_REQUIRE_SIGNAL_LEDGER_STRICT, raising=False)
+    monkeypatch.setattr(
+        sqlite_ledger,
+        "record_signal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("no such table: ingest_signal_event")
+        ),
+    )
+
+    with pytest.raises(
+        job_runner.SignalLedgerWriteError,
+        match=r"ingest_signal_event.*Ledger\.ensure_table",
+    ):
+        job_runner._emit_completion_signal(
+            ledger=sqlite_ledger,
+            tracker=type("Tracker", (), {"complete": lambda *_args, **_kwargs: None})(),
+            identity=("2026-03", "iqvia_csd_keyword", "b" * 64),
+            run_id="missing-table",
+            event="complete",
+            mode="staging",
+            rows_before=1,
+            rows_after=2,
+            rows_loaded=1,
+            periods={"2026-03"},
+            started_at="2026-07-22T00:00:00Z",
+            failure_reason=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "write_error",
+    [PermissionError("insert denied"), ConnectionError("ledger unavailable")],
+)
+def test_signal_ledger_permission_or_connection_error_fails_closed(
+    monkeypatch, sqlite_ledger, write_error
+) -> None:
+    monkeypatch.delenv(config.ENV_REQUIRE_SIGNAL_LEDGER_STRICT, raising=False)
+    monkeypatch.setattr(
+        sqlite_ledger,
+        "record_signal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(write_error),
+    )
+
+    with pytest.raises(job_runner.SignalLedgerWriteError, match=type(write_error).__name__):
+        job_runner._emit_completion_signal(
+            ledger=sqlite_ledger,
+            tracker=type("Tracker", (), {"complete": lambda *_args, **_kwargs: None})(),
+            identity=("2026-03", "iqvia_csd_keyword", "c" * 64),
+            run_id="write-error",
+            event="complete",
+            mode="staging",
+            rows_before=1,
+            rows_after=2,
+            rows_loaded=1,
+            periods={"2026-03"},
+            started_at="2026-07-22T00:00:00Z",
+            failure_reason=None,
+        )
+
+
+def test_signal_ledger_strict_zero_restores_legacy_ignore(
+    monkeypatch, sqlite_ledger, capsys
+) -> None:
+    monkeypatch.setenv(config.ENV_REQUIRE_SIGNAL_LEDGER_STRICT, "0")
+    monkeypatch.setattr(
+        sqlite_ledger,
+        "record_signal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("insert denied")),
+    )
+
+    job_runner._emit_completion_signal(
+        ledger=sqlite_ledger,
+        tracker=type("Tracker", (), {"complete": lambda *_args, **_kwargs: None})(),
+        identity=("2026-03", "iqvia_csd_keyword", "d" * 64),
+        run_id="legacy-ignore",
+        event="complete",
+        mode="staging",
+        rows_before=1,
+        rows_after=2,
+        rows_loaded=1,
+        periods={"2026-03"},
+        started_at="2026-07-22T00:00:00Z",
+        failure_reason=None,
+    )
+
+    assert "ledger record failed (ignored; REQUIRE_SIGNAL_LEDGER_STRICT=0)" in capsys.readouterr().err
+
+
+def test_successful_execution_with_signal_write_failure_is_not_successful(
+    monkeypatch, sqlite_ledger, bucket, tmp_path, capsys
+) -> None:
+    monkeypatch.delenv(config.ENV_REQUIRE_SIGNAL_LEDGER_STRICT, raising=False)
+    monkeypatch.setattr(
+        sqlite_ledger,
+        "record_signal",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("insert denied")),
+    )
+    manifest_path = write_submission(bucket)
+
+    rc = job_runner.run(
+        manifest_path,
+        input_root=bucket,
+        ledger=sqlite_ledger,
+        rehearsal_root=tmp_path / "staging",
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "result=complete" not in captured.out
+    assert "result=committed_with_postcommit_error" in captured.err
+    assert "SignalLedgerWriteError" in captured.err
 
 
 def test_v10_delivery_failure_does_not_break_success(monkeypatch, sqlite_ledger, bucket, tmp_path):
