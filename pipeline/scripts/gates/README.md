@@ -278,3 +278,9 @@ python3 pipeline/scripts/gates/release_acceptance.py f116-correctness \
 The evidence must come from independent mart SQL and live API observations.
 Reusing one generated payload as both actual and expected is not acceptance
 evidence.
+
+## Canonical repository regression
+
+Run `python3 pipeline/scripts/gates/canonical_regression.py` from a clean
+worktree. The exact root-suite contract and evidence requirements are in
+`pipeline/scripts/gates/CANONICAL_REGRESSION.md`.
