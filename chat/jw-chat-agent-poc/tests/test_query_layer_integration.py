@@ -96,6 +96,70 @@ def test_query_catalog_exposes_class2_only_for_split_market() -> None:
     assert {axis["key"] for axis in catalog.market_structure["axes"]} == {"class_1", "class_2"}
 
 
+def test_query_catalog_does_not_advertise_dosage_form_from_class_only_rows() -> None:
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_class_only_records()))
+
+    catalog = layer.catalog_for_brand("리바로")
+
+    assert "dosage_form" not in catalog.dimensions
+
+
+def test_class_only_rows_cannot_satisfy_a_dosage_form_filter() -> None:
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(_class_only_records())),
+    )
+
+    execution = facade.execute(
+        "query",
+        {
+            "brand": "리바로",
+            "spec": (
+                '{"market":"ml_006","source":"ubist",'
+                '"dimensions":["dosage_form"],"group_by":["dosage_form"],'
+                '"metrics":["sales"],"filters":{"dosage_form":"스타틴"}}'
+            ),
+        },
+    )
+
+    assert execution.call["tool"] == "query_failed"
+    assert execution.call["render_data"]["status"] == "query_failed"
+    assert "수치를 추정하지 않습니다" in execution.call["render_data"]["message"]
+
+
+def test_missing_class_and_dosage_form_keeps_query_failed_contract() -> None:
+    records = tuple(
+        replace(record, by_dimension={key: value for key, value in record.by_dimension.items() if key != "class"})
+        for record in _class_only_records()
+    )
+    facade = AgentToolFacade(
+        metrics=_metrics_tool(),
+        resolver=BrandResolver(),
+        allowed_brands=("리바로",),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(records)),
+    )
+
+    execution = facade.execute(
+        "query",
+        {
+            "brand": "리바로",
+            "spec": (
+                '{"market":"ml_006","source":"ubist",'
+                '"dimensions":["dosage_form"],"group_by":["dosage_form"],'
+                '"metrics":["sales"]}'
+            ),
+        },
+    )
+
+    assert execution.call["tool"] == "query_failed"
+    assert execution.call["render_data"]["status"] == "query_failed"
+    assert execution.call["render_data"]["message"] == (
+        "요청한 지표 조회 실행이 실패했습니다. 데이터가 없다는 뜻은 아니며, 수치를 추정하지 않습니다."
+    )
+
+
 def test_market_structure_falls_back_to_sibling_sources_for_split_metadata() -> None:
     """Given one source lacks class columns, market structure is still inferred from sibling source rows."""
 
@@ -1368,6 +1432,27 @@ def _split_class_records() -> tuple[MartRecord, ...]:
     return tuple(
         _split_record(brand, float(value), periods[0], total, class_1, class_2)
         for brand, (value, class_1, class_2) in values.items()
+    )
+
+
+def _class_only_records() -> tuple[MartRecord, ...]:
+    periods = ("2026-04",)
+    values = {
+        "리바로": (4_000_000_000.0,),
+        "리피토": (6_000_000_000.0,),
+    }
+    totals = [sum(series[0] for series in values.values())]
+    return tuple(
+        replace(
+            _record_with_market("ml_006", brand, series, periods, totals),
+            dimension_data={},
+            by_dimension={
+                "company": "테스트제약",
+                "molecule": f"{brand}성분",
+                "class": "스타틴",
+            },
+        )
+        for brand, series in values.items()
     )
 
 

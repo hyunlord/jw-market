@@ -105,7 +105,7 @@ def dimension_value(record: MartRecord, key: str) -> str:
     if key == "class_2":
         return record.class_2() or "unknown"
     if key == "dosage_form":
-        return record.dosage_form() or record.class_label() or "unknown"
+        return record.dosage_form() or "unknown"
     if key == "nhi_type":
         return record.nhi_type() or "unknown"
     if key == "ox_gx":
