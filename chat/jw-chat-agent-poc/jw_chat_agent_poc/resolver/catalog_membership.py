@@ -207,6 +207,8 @@ class TtlCatalogMembershipReader:
         self._lock = threading.Lock()
         self._load_lock = threading.Lock()
         self._refreshing = False
+        self._refresh_successes = 0
+        self._refresh_failures = 0
         if prewarm:
             self.prewarm()
 
@@ -239,10 +241,16 @@ class TtlCatalogMembershipReader:
             with self._lock:
                 if self._rows is not None:
                     return self._rows
-            rows = self._source.load()
+            try:
+                rows = self._source.load()
+            except Exception:
+                with self._lock:
+                    self._refresh_failures += 1
+                raise
             with self._lock:
                 self._rows = rows
                 self._loaded_at = time.monotonic()
+                self._refresh_successes += 1
                 return rows
 
     def _refresh(self) -> None:
@@ -252,11 +260,27 @@ class TtlCatalogMembershipReader:
             logger.exception("catalog membership TTL refresh failed")
             with self._lock:
                 self._refreshing = False
+                self._refresh_failures += 1
             return
         with self._lock:
             self._rows = rows
             self._loaded_at = time.monotonic()
             self._refreshing = False
+            self._refresh_successes += 1
+
+    def observability(self) -> dict[str, int | float | bool | None]:
+        with self._lock:
+            return {
+                "row_count": len(self._rows or ()),
+                "snapshot_age_seconds": (
+                    round(max(0.0, time.monotonic() - self._loaded_at), 3)
+                    if self._rows is not None
+                    else None
+                ),
+                "refresh_successes": self._refresh_successes,
+                "refresh_failures": self._refresh_failures,
+                "refreshing": self._refreshing,
+            }
 
 
 _SHARED_LOCK = threading.Lock()

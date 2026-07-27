@@ -409,6 +409,8 @@ class TtlStrategicMartStore:
         self._snapshot_lock = threading.Lock()
         self._load_lock = threading.Lock()
         self._refreshing = False
+        self._refresh_successes = 0
+        self._refresh_failures = 0
         if prewarm:
             self.prewarm()
 
@@ -451,9 +453,15 @@ class TtlStrategicMartStore:
                 current = self._snapshot
                 if current is not None:
                     return current
-            current = self._reader.load()
+            try:
+                current = self._reader.load()
+            except Exception:
+                with self._snapshot_lock:
+                    self._refresh_failures += 1
+                raise
             with self._snapshot_lock:
                 self._snapshot = current
+                self._refresh_successes += 1
             return current
 
     def _start_refresh_locked(self) -> None:
@@ -475,16 +483,42 @@ class TtlStrategicMartStore:
         except Exception:  # noqa: BLE001 - refresh failure must preserve the serving snapshot
             with self._snapshot_lock:
                 self._refreshing = False
+                self._refresh_failures += 1
             logger.exception("strategic mart TTL refresh failed")
             return
         with self._snapshot_lock:
             self._snapshot = snapshot
             self._refreshing = False
+            self._refresh_successes += 1
         startup_timing_logger.info(
             "strategic mart TTL refresh completed elapsed_s=%.3f records=%d",
             time.monotonic() - started_at,
             len(snapshot.records),
         )
+
+    def observability(self) -> dict[str, int | float | bool | None]:
+        with self._snapshot_lock:
+            snapshot = self._snapshot
+            if snapshot is None:
+                row_count = 0
+                market_point_count = 0
+                brand_point_count = 0
+                snapshot_age_seconds = None
+            else:
+                row_count = len(snapshot.records)
+                market_point_count = len(snapshot.derived.market_points)
+                brand_point_count = len(snapshot.derived.brand_points)
+                snapshot_age_seconds = round(max(0.0, time.monotonic() - snapshot.loaded_at), 3)
+            return {
+                "row_count": row_count,
+                "derived_point_count": market_point_count + brand_point_count,
+                "market_point_count": market_point_count,
+                "brand_point_count": brand_point_count,
+                "snapshot_age_seconds": snapshot_age_seconds,
+                "refresh_successes": self._refresh_successes,
+                "refresh_failures": self._refresh_failures,
+                "refreshing": self._refreshing,
+            }
 
 
 _SHARED_STORE_LOCK = threading.Lock()

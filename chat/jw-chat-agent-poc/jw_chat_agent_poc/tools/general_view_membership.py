@@ -121,6 +121,10 @@ class TtlGeneralMembershipCache:
         self._expires_at = 0.0
         self._index = _EMPTY_INDEX
         self._lock = threading.Lock()
+        self._row_count = 0
+        self._loaded_at = 0.0
+        self._refresh_successes = 0
+        self._refresh_failures = 0
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         resolution = self.resolve(brand, source)
@@ -168,8 +172,29 @@ class TtlGeneralMembershipCache:
             now = time.monotonic()
             if now < self._expires_at:
                 return
-            self._index = _build_index(self._reader.load())
+            try:
+                memberships = self._reader.load()
+            except Exception:
+                self._refresh_failures += 1
+                raise
+            self._index = _build_index(memberships)
+            self._row_count = len(memberships)
+            self._loaded_at = now
+            self._refresh_successes += 1
             self._expires_at = now + self._ttl_seconds
+
+    def observability(self) -> dict[str, int | float | None]:
+        with self._lock:
+            return {
+                "row_count": self._row_count,
+                "snapshot_age_seconds": (
+                    round(max(0.0, time.monotonic() - self._loaded_at), 3)
+                    if self._loaded_at
+                    else None
+                ),
+                "refresh_successes": self._refresh_successes,
+                "refresh_failures": self._refresh_failures,
+            }
 
 
 def _build_index(memberships: tuple[GeneralBrandMembership, ...]) -> _MembershipIndex:

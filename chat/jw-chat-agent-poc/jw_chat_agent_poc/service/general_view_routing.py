@@ -169,6 +169,17 @@ class GeneralViewService:
         except (GeneralMembershipLoadError, LookupError, OSError, TypeError, ValueError):
             return False
 
+    def observability(self) -> dict[str, int | float | None]:
+        metrics = getattr(self._general_membership, "observability", None)
+        if callable(metrics):
+            return metrics()
+        return {
+            "row_count": 0,
+            "snapshot_age_seconds": None,
+            "refresh_successes": 0,
+            "refresh_failures": 0,
+        }
+
     def answer(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         started_at = qa_trace_started_at()
         member_period = requested_period(question) if asks_market_members(question) else None
