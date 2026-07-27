@@ -41,6 +41,10 @@ _MAX_FACT_REFS: Final = 8
 _MAX_METRIC_SUMMARIES: Final = 8
 _MAX_AXIS_SUMMARIES: Final = 4
 _MAX_BLOCKED_TOKEN_REFS: Final = 16
+_MAX_TEXT_FRAGMENTS: Final = 8
+_TEXT_CONTEXT_RADIUS: Final = 96
+_MAX_TEXT_FRAGMENT_CHARS: Final = 256
+_MAX_TEXT_PROJECTION_CHARS: Final = 2_048
 
 
 def binding_pipeline_observability(
@@ -66,6 +70,10 @@ def binding_pipeline_observability(
         rejection.token: rejection.reason
         for rejection in gate.rejections
     }
+    prioritized_occurrences = _prioritize_blocked_occurrences(
+        occurrences,
+        gate.blocked_numbers,
+    )
     projected = tuple(
         _occurrence_trace(
             occurrence,
@@ -80,7 +88,7 @@ def binding_pipeline_observability(
             rejection_reasons=rejection_reasons,
             blocked_numbers=set(gate.blocked_numbers),
         )
-        for occurrence in occurrences[:_MAX_OCCURRENCES]
+        for occurrence in prioritized_occurrences[:_MAX_OCCURRENCES]
     )
     blocked_refs = tuple(
         _blocked_token_ref(
@@ -119,6 +127,7 @@ def binding_pipeline_observability(
         "fact_inventory": _stage_inventory(facts),
         "occurrence_count": len(occurrences),
         "occurrences": projected,
+        "occurrences_emitted": len(projected),
         "occurrences_truncated": len(occurrences) > _MAX_OCCURRENCES,
         "binder_input": {
             "basis": "claim_text_after_expected_identifier_removal",
@@ -142,6 +151,152 @@ def binding_pipeline_observability(
             ),
         },
     }
+
+
+def binding_text_observability(
+    *,
+    question: str,
+    answer: str,
+    expected_entities: Sequence[str],
+    gate: BindingVerification,
+    text_projection_allowed: bool,
+) -> dict[str, Any]:
+    if not gate.blocked_numbers:
+        return {}
+    expected = expected_entity_set(question, expected_entities)
+    claim_text = without_bound_identifiers(answer, expected)
+    return {
+        "binder_input_text": _blocked_context_projection(
+            claim_text,
+            _claim_occurrences(claim_text),
+            gate.blocked_numbers,
+            allowed=text_projection_allowed,
+        ),
+        "pre_binding_answer_text": _blocked_context_projection(
+            answer,
+            _claim_occurrences(answer),
+            gate.blocked_numbers,
+            allowed=text_projection_allowed,
+        ),
+    }
+
+
+def _prioritize_blocked_occurrences(
+    occurrences: Sequence[Mapping[str, Any]],
+    blocked_numbers: Sequence[str],
+) -> tuple[Mapping[str, Any], ...]:
+    blocked_refs = tuple(_hash_ref("token", token) for token in blocked_numbers)
+    selected: list[Mapping[str, Any]] = []
+    selected_ids: set[str] = set()
+    for token_ref in blocked_refs:
+        occurrence = next(
+            (
+                item
+                for item in occurrences
+                if item["token_ref"] == token_ref
+            ),
+            None,
+        )
+        if occurrence is None:
+            continue
+        selected.append(occurrence)
+        selected_ids.add(str(occurrence["occurrence_id"]))
+    selected.extend(
+        item
+        for item in occurrences
+        if str(item["occurrence_id"]) not in selected_ids
+    )
+    return tuple(selected)
+
+
+def _blocked_context_projection(
+    text: str,
+    occurrences: Sequence[Mapping[str, Any]],
+    blocked_numbers: Sequence[str],
+    *,
+    allowed: bool,
+) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "scope": "blocked_token_contexts",
+        "available": allowed and bool(blocked_numbers),
+        "omitted_reason": "",
+        "source_text_included_in_full": False,
+        "fragments": (),
+        "fragment_count": 0,
+        "fragments_truncated": False,
+        "emitted_chars": 0,
+    }
+    if not allowed:
+        base["available"] = False
+        base["omitted_reason"] = "file_grounded_answer"
+        return base
+    if not blocked_numbers:
+        base["available"] = False
+        base["omitted_reason"] = "no_blocked_tokens"
+        return base
+
+    occurrences_by_ref = {
+        str(item["token_ref"]): item
+        for item in reversed(occurrences)
+    }
+    blocked_occurrences = tuple(
+        occurrences_by_ref[token_ref]
+        for token_ref in dict.fromkeys(
+            _hash_ref("token", token) for token in blocked_numbers
+        )
+        if token_ref in occurrences_by_ref
+    )
+    if not blocked_occurrences:
+        base["available"] = False
+        base["omitted_reason"] = "blocked_token_not_found"
+        return base
+
+    fragments: list[dict[str, Any]] = []
+    emitted_chars = 0
+    for occurrence in blocked_occurrences:
+        if len(fragments) >= _MAX_TEXT_FRAGMENTS:
+            break
+        start = max(0, int(occurrence["start"]) - _TEXT_CONTEXT_RADIUS)
+        end = min(len(text), int(occurrence["end"]) + _TEXT_CONTEXT_RADIUS)
+        fragment = text[start:end]
+        if len(fragment) > _MAX_TEXT_FRAGMENT_CHARS:
+            fragment = fragment[:_MAX_TEXT_FRAGMENT_CHARS]
+            end = start + len(fragment)
+        remaining = _MAX_TEXT_PROJECTION_CHARS - emitted_chars
+        if remaining <= 0:
+            break
+        if len(fragment) > remaining:
+            fragment = fragment[:remaining]
+            end = start + len(fragment)
+        if fragment == text and len(fragment) > int(occurrence["end"]) - int(
+            occurrence["start"]
+        ):
+            if int(occurrence["start"]) > 0:
+                start += 1
+                fragment = text[start:end]
+            else:
+                end -= 1
+                fragment = text[start:end]
+        fragments.append(
+            {
+                "token_ref": occurrence["token_ref"],
+                "occurrence_id": occurrence["occurrence_id"],
+                "char_range": (occurrence["start"], occurrence["end"]),
+                "context_char_range": (start, end),
+                "text": fragment,
+                "leading_truncated": start > 0,
+                "trailing_truncated": end < len(text),
+            }
+        )
+        emitted_chars += len(fragment)
+
+    base["fragments"] = tuple(fragments)
+    base["fragment_count"] = len(fragments)
+    base["fragments_truncated"] = len(fragments) < len(
+        dict.fromkeys(blocked_numbers)
+    )
+    base["emitted_chars"] = emitted_chars
+    return base
 
 
 def _blocked_token_ref(

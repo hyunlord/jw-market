@@ -203,6 +203,10 @@ def _qa_trace(
     pipeline_observability = claim_items.get("pipeline_observability")
     if isinstance(pipeline_observability, Mapping):
         claim_trace["pipeline_observability"] = dict(pipeline_observability)
+    for key in ("binder_input_text", "pre_binding_answer_text"):
+        text_observability = claim_items.get(key)
+        if isinstance(text_observability, Mapping):
+            claim_trace[key] = dict(text_observability)
     qa_trace = {
         "request": {
             "request_id": trace_id,
