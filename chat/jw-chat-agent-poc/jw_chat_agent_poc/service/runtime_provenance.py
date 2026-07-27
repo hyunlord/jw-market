@@ -291,6 +291,7 @@ def _qa_tool_calls(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
                 "atc4_source": trace_items.get("atc4_source"),
                 "candidate_atc4_codes": _atc4_code_list(trace_items.get("candidate_atc4_codes")),
                 "member_brand_count": _optional_int(trace_items.get("member_brand_count")),
+                "excluded_atc4_count": _optional_int(trace_items.get("excluded_atc4_count")),
                 "reduction_reason": trace_items.get("reduction_reason"),
             }
         )
