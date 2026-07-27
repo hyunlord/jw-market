@@ -148,7 +148,9 @@ def test_resolve_brand_set_reuses_resolved_context(monkeypatch) -> None:
         source="ubist",
         resolved_context=_context(),
     )
-    assert result is None
+    assert result is not None
+    assert [choice.brand_key for choice in result.choices] == ["선택브랜드"]
+    assert result.competitors_reason == "lookup_failed"
     assert captured == {"market_id": "ml_003", "source": "ubist"}
 
 

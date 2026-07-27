@@ -13,6 +13,7 @@ from pipeline.scripts.api import db
 from pipeline.scripts.api.brand_activity_brand_resolver import (
     BrandSetInputError,
     BrandSetResolution,
+    competitor_status_payload,
     resolve_brand_set,
 )
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
@@ -118,6 +119,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                 "brand_set": "channel_axis_applied" if brand_set.channel_axis else "base",
                 "payload": payload_source,
             },
+            **competitor_status_payload(brand_set),
         },
         "brands": [
             (

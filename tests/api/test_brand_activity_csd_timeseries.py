@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.scripts.api import brand_activity_csd_timeseries as service
 from pipeline.scripts.api import brand_activity_csd_shared as shared
+from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetResolution
 from pipeline.scripts.api.routes import brand_activity
 
 
@@ -507,13 +508,23 @@ def test_csd_timeseries_activity_preserves_monthly_keys(monkeypatch) -> None:
 
 def test_csd_timeseries_scope_keeps_quarters_and_adds_activity_months() -> None:
     view = shared.ViewConfig("brand", "market", "atc4_code", "atc4_name", "sales_rank", True)
+    brand_set = BrandSetResolution(
+        view_name="general",
+        market_id="C10A1",
+        selected_brand="LIVALO",
+        view=view,
+        market_row={"atc4_code": "C10A1", "atc4_name": "LIVALO"},
+        brand_rows=(),
+        brand_meta={"LIVALO": shared.BrandMeta("LIVALO", "LIVALO", ("LIVALO",), True)},
+        choices=(),
+        candidates=(),
+        ranking_quarter="2025-Q1",
+        applied_filter={},
+    )
     payload = service._scope_payload(
         {"view": "general", "market_id": "C10A1", "filter": {}, "mode": "absolute"},
-        view,
-        {"atc4_code": "C10A1", "atc4_name": "LIVALO"},
+        brand_set,
         shared.BrandMeta("LIVALO", "LIVALO", ("LIVALO",), True),
-        "2025-Q1",
-        {},
         shared.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),
         (shared.CsdCrosswalk("LIVALO Market", "LIVALO", ("LIVALO",), 1),),
         ["2025-Q1"],
@@ -522,6 +533,8 @@ def test_csd_timeseries_scope_keeps_quarters_and_adds_activity_months() -> None:
 
     assert payload["quarters"] == ["2025-Q1"]
     assert payload["activity_months"] == ["2025-01", "2025-02", "2025-03"]
+    assert payload["competitors_available"] is False
+    assert payload["competitors_reason"] == "none_matched"
 
 
 def test_resolve_csd_markets_includes_same_ml_franchise_sibling(monkeypatch) -> None:

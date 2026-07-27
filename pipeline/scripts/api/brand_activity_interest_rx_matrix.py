@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
-from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, BrandSetResolution, resolve_brand_set
+from pipeline.scripts.api.brand_activity_brand_resolver import (
+    BrandSetInputError,
+    BrandSetResolution,
+    competitor_status_payload,
+    resolve_brand_set,
+)
 from pipeline.scripts.api.brand_activity_csd_shared import (
     BrandChoice,
     BrandMeta,
@@ -308,6 +313,7 @@ def _scope_payload(inputs: MatrixInputs) -> JsonMap:
         "applied_filter": inputs.brand_set.applied_filter,
         "applied_filters": inputs.brand_set.applied_filter,
         "resolved_market": _resolved_market_payload(inputs),
+        **competitor_status_payload(inputs.brand_set),
     }
     if inputs.csd_availability is not None:
         scope["csd_availability"] = inputs.csd_availability

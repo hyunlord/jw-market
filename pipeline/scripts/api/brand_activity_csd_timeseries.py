@@ -5,7 +5,12 @@ from typing import Any, Mapping
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import configured_variants_for, normalize_iqvia_en
 from pipeline.scripts.api import db
-from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, resolve_brand_set
+from pipeline.scripts.api.brand_activity_brand_resolver import (
+    BrandSetInputError,
+    BrandSetResolution,
+    competitor_status_payload,
+    resolve_brand_set,
+)
 from pipeline.scripts.api.brand_activity_csd_presence import iqvia_product_codes_by_brand
 from pipeline.scripts.api.catalog import DISPLAY_BRANDS, get_display_brand
 from pipeline.scripts.api.brand_activity_csd_shared import (
@@ -99,11 +104,8 @@ def get_csd_timeseries(payload: Mapping[str, Any]) -> JsonMap | None:
     return {
         "scope": _scope_payload(
             request,
-            brand_set.view,
-            brand_set.market_row,
+            brand_set,
             selected_meta,
-            brand_set.ranking_quarter,
-            brand_set.applied_filter,
             crosswalk,
             crosswalks,
             quarters,
@@ -377,16 +379,15 @@ def _parse_request(payload: Mapping[str, Any]) -> JsonMap:
 
 def _scope_payload(
     request: JsonMap,
-    view: ViewConfig,
-    market_row: JsonMap,
+    brand_set: BrandSetResolution,
     selected_meta: BrandMeta,
-    ranking_quarter: str,
-    applied_filter: JsonMap,
     crosswalk: CsdCrosswalk,
     crosswalks: tuple[CsdCrosswalk, ...],
     quarters: list[str],
     activity_months: tuple[str, ...],
 ) -> JsonMap:
+    view = brand_set.view
+    market_row = brand_set.market_row
     return {
         "view": request["view"],
         "market_id": str(market_row.get(view.market_key) or request["market_id"]),
@@ -395,12 +396,12 @@ def _scope_payload(
         "csd_markets": [item.display_market for item in crosswalks],
         "selected_brand": {"brand_key": selected_meta.brand_key, "product_code": first(selected_meta.product_codes)},
         "ranking_measure": RANKING_MEASURE,
-        "ranking_quarter": ranking_quarter,
+        "ranking_quarter": brand_set.ranking_quarter,
         "filter": request["filter"],
-        "applied_filter": applied_filter,
-        "applied_filters": applied_filter,
+        "applied_filter": brand_set.applied_filter,
+        "applied_filters": brand_set.applied_filter,
         "filter_effect": {
-            "brand_set": "channel_axis_applied" if applied_filter.get("channel_axis") else "base",
+            "brand_set": "channel_axis_applied" if brand_set.applied_filter.get("channel_axis") else "base",
             "activity": "csd_total_channel",
             "rx": "iqvia_nsa_public_measures",
         },
@@ -409,6 +410,7 @@ def _scope_payload(
         "activity_months": list(activity_months),
         "measures": list(PUBLIC_MEASURES),
         "mode": request["mode"],
+        **competitor_status_payload(brand_set),
     }
 
 

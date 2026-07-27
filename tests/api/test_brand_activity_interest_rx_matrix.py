@@ -63,6 +63,8 @@ def test_interest_rx_service_returns_dynamic_period_distributions_and_scores(mon
 
     # Then
     assert payload is not None
+    assert payload["scope"]["competitors_available"] is True
+    assert payload["scope"]["competitors_reason"] == "ok"
     assert payload["period"] == {
         "start": "2023-12",
         "end": "2025-12",

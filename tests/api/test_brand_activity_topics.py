@@ -133,6 +133,31 @@ def test_post_topics_route_wraps_filtered_brand_payload(monkeypatch) -> None:
     assert captured["filters"]["channel_axis"] == {"iqvia": {"audit_code": ["KHPA"]}}
 
 
+def test_post_topics_route_keeps_selected_brand_when_competitor_lookup_failed(monkeypatch) -> None:
+    expected = {
+        "scope": {
+            "view": "strategic_ml",
+            "competitors_available": False,
+            "competitors_reason": "lookup_failed",
+        },
+        "brands": [{"brand_key": "리바로", "event_count": 0, "topic_shares": []}],
+    }
+    monkeypatch.setattr(brand_activity, "get_topic_brand_payload", lambda _payload: expected)
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로",
+            "source": "iqvia",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == expected
+
+
 def test_post_topics_route_accepts_list_keyword_filters(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -375,6 +400,8 @@ def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeyp
 
     assert payload is not None
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
+    assert payload["scope"]["competitors_available"] is True
+    assert payload["scope"]["competitors_reason"] == "ok"
     assert payload["scope"]["sliced"] is False
     assert payload["scope"]["filter_effect"]["payload"] == "row_topic_assignment_unfiltered"
     assert payload["brands"][0]["brand_key"] == "리바로"

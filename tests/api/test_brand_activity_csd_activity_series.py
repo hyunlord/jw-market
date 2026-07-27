@@ -59,6 +59,8 @@ def test_activity_series_company_axis_uses_channel_and_ranks_by_quarter(monkeypa
     )
 
     assert payload is not None
+    assert payload["scope"]["competitors_available"] is True
+    assert payload["scope"]["competitors_reason"] == "ok"
     assert payload["entity_level"] == "company"
     assert payload["channel"] == "GH+SHPPI"
     assert payload["period"]["quarters"] == ["2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4"]

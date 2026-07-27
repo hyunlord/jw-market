@@ -18,7 +18,12 @@ from typing import Any, Mapping
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
-from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, BrandSetResolution, resolve_brand_set
+from pipeline.scripts.api.brand_activity_brand_resolver import (
+    BrandSetInputError,
+    BrandSetResolution,
+    competitor_status_payload,
+    resolve_brand_set,
+)
 from pipeline.scripts.api.brand_activity_csd_shared import (
     BrandChoice,
     BrandMeta,
@@ -339,6 +344,7 @@ def _scope_payload(request: TimeseriesRequest, brand_set: BrandSetResolution) ->
             "market_label": market_name,
             "source": "filters" if request.view == "general" else f"brand:{request.selected_brand}",
         },
+        **competitor_status_payload(brand_set),
     }
 
 

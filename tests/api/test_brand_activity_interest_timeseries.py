@@ -188,6 +188,8 @@ def test_three_views_and_brand_set_matches_choices(monkeypatch, view, extra):
     ]))
     out = service.get_interest_timeseries({"view": view, "selected_brand": "리바로", **extra})
     assert out["scope"]["view"] == view
+    assert out["scope"]["competitors_available"] is True
+    assert out["scope"]["competitors_reason"] == "ok"
     assert [b["brand_key"] for b in out["brands"]] == ["리바로", "크레스토"]  # == resolve_brand_set choices
     assert out["levels"] == list(service.INTEREST_LEVELS)
 

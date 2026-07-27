@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Final, Mapping, Sequence
+from typing import Any, Final, Literal, Mapping, Sequence
+
+import pymysql
 
 from pipeline.contracts.serving_tables import GENERAL_FILTER_DIMENSION_TABLE as FILTER_DIMENSION_TABLE
 from pipeline.domain.molecules import split_molecule_components
@@ -44,6 +46,7 @@ from pipeline.scripts.api.market_scope.types import MarketScopeOption, OptionTyp
 
 MAX_BRAND_SET_SIZE: Final = 6
 GENERAL_IQVIA_SIDE_CAR_DIMENSIONS: Final = ("mfr", "molecule_type", "molecule_desc", "pack", "strength", "nhi")
+CompetitorsReason = Literal["ok", "none_matched", "source_unsupported", "lookup_failed"]
 
 
 class BrandSetInputError(RuntimeError):
@@ -106,6 +109,8 @@ class BrandSetResolution:
     candidates: tuple[BrandCandidate, ...]
     ranking_quarter: str
     applied_filter: JsonMap
+    competitors_available: bool | None = None
+    competitors_reason: CompetitorsReason | None = None
     channel_axis: ChannelAxisFilter | None = None
 
 
@@ -139,24 +144,53 @@ def resolve_brand_set(
             filter_payload=raw_filter_payload,
             source=source,
         )
+    strategic_context: DeepAnalysisContext | None = None
+    source_unsupported = False
+    lookup_failed = False
     if view_name in {"strategic_ml", "strategic_cd"}:
         if resolved_context is not None:
             # F-055: the caller already resolved this exact strategic context;
             # re-resolving here repeated the expensive mart scans per request.
-            # Preserve its source-specific market identity as well.
-            resolved_market_id = resolved_context.market_id
-            resolved_selected_brand = resolved_context.brand_key
-            resolved_source = resolved_context.db_source
+            strategic_context = resolved_context
+            requested_public_source = "iqvia" if source == SOURCE else source
+            allowed_sources = getattr(resolved_context, "market_allowed_sources", ())
+            source_unsupported = bool(allowed_sources) and requested_public_source not in allowed_sources
         else:
-            context = _resolve_strategic_brand_context(
-                selected_brand,
-                view_name=view_name,
-                market_id=resolved_market_id,
-                source=source,
-            )
-            resolved_market_id = context.market_id
-            resolved_selected_brand = context.brand_key
-            resolved_source = context.db_source
+            try:
+                strategic_context = _resolve_strategic_brand_context(
+                    selected_brand,
+                    view_name=view_name,
+                    market_id=resolved_market_id,
+                    source=source,
+                )
+            except BrandSetInputError as exc:
+                if exc.error != "source_not_available":
+                    raise
+                source_unsupported = True
+                try:
+                    strategic_context = _resolve_strategic_brand_context(
+                        selected_brand,
+                        view_name=view_name,
+                        market_id=resolved_market_id,
+                        source=None,
+                    )
+                except pymysql.MySQLError:
+                    lookup_failed = True
+            except pymysql.MySQLError:
+                lookup_failed = True
+        if strategic_context is not None:
+            resolved_market_id = strategic_context.market_id
+            resolved_selected_brand = strategic_context.brand_key
+        # Keep the source requested by the portal. A catalog fallback context is
+        # identity evidence only; using its source would silently return UBIST
+        # competitors for an unsupported IQVIA request.
+        resolved_source = (
+            source
+            if source_unsupported
+            else strategic_context.db_source
+            if strategic_context is not None
+            else source
+        )
     if not resolved_market_id:
         raise BrandSetInputError("market_id is required")
 
@@ -170,48 +204,96 @@ def resolve_brand_set(
         if len(requested_atc4) > 1:
             brand_market_ids = tuple(dict.fromkeys((resolved_market_id, *requested_atc4)))
 
-    market_row = None
+    market_row: JsonMap | None = None
     ranked_brand_keys: tuple[str, ...] | None = None
     is_unfiltered_strategic = view_name in {"strategic_ml", "strategic_cd"} and not raw_filter_payload
-    if restrict_strategic_to_ranking and is_unfiltered_strategic:
-        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
-        if market_row is not None:
-            ranking = _latest_ranking(market_row, view.ranking_column)
-            ranked_brand_keys = _ranking_brand_keys(ranking, selected_brand=resolved_selected_brand)
-    if ranked_brand_keys:
-        brand_rows = tuple(_fetch_brand_rows(view, brand_market_ids, source=resolved_source, brand_keys=ranked_brand_keys))
-    else:
-        brand_rows = tuple(_fetch_brand_rows(view, brand_market_ids, source=resolved_source))
-    if not brand_rows:
+    brand_rows: tuple[JsonMap, ...] = ()
+    if not source_unsupported and not lookup_failed:
+        try:
+            if restrict_strategic_to_ranking and is_unfiltered_strategic:
+                market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+                if market_row is not None:
+                    ranking = _latest_ranking(market_row, view.ranking_column)
+                    ranked_brand_keys = _ranking_brand_keys(ranking, selected_brand=resolved_selected_brand)
+            if ranked_brand_keys:
+                brand_rows = tuple(
+                    _fetch_brand_rows(
+                        view,
+                        brand_market_ids,
+                        source=resolved_source,
+                        brand_keys=ranked_brand_keys,
+                    )
+                )
+            else:
+                brand_rows = tuple(_fetch_brand_rows(view, brand_market_ids, source=resolved_source))
+            if market_row is None:
+                market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
+        except pymysql.MySQLError:
+            lookup_failed = True
+            brand_rows = ()
+            market_row = None
+    if view_name == "general" and market_row is None and not lookup_failed:
+        # A missing general market is still a structured market_not_found
+        # response. Only an actual lookup failure may fall back to the selected
+        # request brand so "missing" and "unknown" remain distinct outcomes.
         return None
     if market_row is None:
-        market_row = _fetch_market_row(view, resolved_market_id, source=resolved_source)
-    if market_row is None:
-        return None
+        market_row = _fallback_market_row(view, resolved_market_id, strategic_context)
     ranking = _latest_ranking(market_row, view.ranking_column)
     brand_meta = _brand_meta_by_key(brand_rows, has_is_jw=view.has_is_jw)
     if view_name == "general":
         resolved_selected_brand = _resolve_general_selected_brand_key(resolved_selected_brand, brand_meta)
     if resolved_selected_brand not in brand_meta:
-        return None
+        brand_meta[resolved_selected_brand] = _fallback_selected_meta(
+            resolved_selected_brand,
+            strategic_context=strategic_context,
+        )
     effective_filter_payload = _filter_payload_for_effective_market(raw_filter_payload, resolved_market_id, market_scope_market_id is not None)
     applied_filter = applied_brand_filter(view_name, resolved_market_id, effective_filter_payload)
     channel_axis = parse_audit_code_axis(effective_filter_payload) if view_name == "general" else None
-    validate_audit_code_axis(brand_rows, channel_axis)
-    candidates = _brand_candidates(
-        view_name,
-        brand_rows,
-        brand_meta,
-        ranking,
-        audit_code_axis=channel_axis,
-        source=resolved_source,
+    if brand_rows:
+        validate_audit_code_axis(brand_rows, channel_axis)
+    selected_candidate = BrandCandidate(
+        meta=brand_meta[resolved_selected_brand],
+        dimensions={},
+        sales_rank=None,
+        sales_value=0.0,
     )
+    candidates: tuple[BrandCandidate, ...] = (selected_candidate,)
+    if not source_unsupported and not lookup_failed:
+        try:
+            resolved_candidates = _brand_candidates(
+                view_name,
+                brand_rows,
+                brand_meta,
+                ranking,
+                audit_code_axis=channel_axis,
+                source=resolved_source,
+            )
+        except pymysql.MySQLError:
+            lookup_failed = True
+        else:
+            candidates = (
+                resolved_candidates
+                if any(candidate.meta.brand_key == resolved_selected_brand for candidate in resolved_candidates)
+                else (selected_candidate, *resolved_candidates)
+            )
     choices = _select_choices(
         candidates,
         selected_brand=resolved_selected_brand,
         applied_filter=applied_filter,
         rank_by_latest_period=rank_by_latest_period,
     )
+    competitors_available = len(choices) > 1
+    competitors_reason: CompetitorsReason
+    if lookup_failed:
+        competitors_reason = "lookup_failed"
+    elif source_unsupported:
+        competitors_reason = "source_unsupported"
+    elif competitors_available:
+        competitors_reason = "ok"
+    else:
+        competitors_reason = "none_matched"
     return BrandSetResolution(
         view_name=view_name,
         market_id=resolved_market_id,
@@ -224,7 +306,61 @@ def resolve_brand_set(
         candidates=candidates,
         ranking_quarter=ranking["quarter"],
         applied_filter=applied_filter,
+        competitors_available=competitors_available,
+        competitors_reason=competitors_reason,
         channel_axis=channel_axis,
+    )
+
+
+def competitor_status_payload(brand_set: BrandSetResolution) -> JsonMap:
+    """Return the additive competitor lookup status shared by all five APIs."""
+
+    available = getattr(brand_set, "competitors_available", None)
+    if available is None:
+        available = len(brand_set.choices) > 1
+    reason = getattr(brand_set, "competitors_reason", None)
+    if reason is None:
+        reason = "ok" if available else "none_matched"
+    return {
+        "competitors_available": available,
+        "competitors_reason": reason,
+    }
+
+
+def _fallback_market_row(
+    view: ViewConfig,
+    market_id: str,
+    strategic_context: DeepAnalysisContext | None,
+) -> JsonMap:
+    return {
+        view.market_key: market_id,
+        view.market_name_column: (
+            strategic_context.market_name
+            if strategic_context is not None and strategic_context.market_name
+            else market_id
+        ),
+        view.ranking_column: {},
+    }
+
+
+def _fallback_selected_meta(
+    selected_brand: str,
+    *,
+    strategic_context: DeepAnalysisContext | None,
+) -> BrandMeta:
+    display = get_display_brand(selected_brand)
+    brand_name = (
+        strategic_context.brand_name
+        if strategic_context is not None and strategic_context.brand_name
+        else display.brand_name
+        if display is not None
+        else selected_brand
+    )
+    return BrandMeta(
+        brand_key=selected_brand,
+        brand_name=brand_name,
+        product_codes=(),
+        is_jw=display is not None,
     )
 
 
@@ -368,7 +504,7 @@ def _resolve_strategic_brand_context(
     *,
     view_name: str,
     market_id: str | None,
-    source: str,
+    source: str | None,
 ) -> DeepAnalysisContext:
     """Resolve strategic membership through the shared catalog contract."""
 

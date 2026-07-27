@@ -5,7 +5,12 @@ from typing import Any, Mapping
 
 from pipeline.scripts.analysis.brand_activity.alias.normalize import normalize_iqvia_en
 from pipeline.scripts.api import db
-from pipeline.scripts.api.brand_activity_brand_resolver import BrandSetInputError, BrandSetResolution, resolve_brand_set
+from pipeline.scripts.api.brand_activity_brand_resolver import (
+    BrandSetInputError,
+    BrandSetResolution,
+    competitor_status_payload,
+    resolve_brand_set,
+)
 from pipeline.scripts.api.brand_activity_csd_activity_contract import (
     DEFAULT_QUARTERS,
     MAX_ENTITIES,
@@ -297,6 +302,7 @@ def _scope_payload(
         "filter": request.filter_payload,
         "applied_filter": brand_set.applied_filter,
         "quarters": list(quarters),
+        **competitor_status_payload(brand_set),
     }
 
 
