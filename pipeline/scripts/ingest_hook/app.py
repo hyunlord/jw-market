@@ -126,6 +126,16 @@ class IngestService:
                 reason=reason,
             )
             raise
+        if self.test_run_store is not None:
+            for test_run in self.test_run_store.active_for_category(category):
+                self.test_run_store.update(
+                    test_run.run_id,
+                    stale_preview=True,
+                    reason=(
+                        "production ingest started after the test snapshot; "
+                        "preview values may be stale"
+                    ),
+                )
         self.ledger.record_stage(
             entry.epoch,
             category,

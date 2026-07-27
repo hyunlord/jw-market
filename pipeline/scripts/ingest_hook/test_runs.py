@@ -33,6 +33,7 @@ class TestRunRecord:
     stages: tuple[dict, ...] = ()
     result: dict | None = None
     reason: str | None = None
+    stale_preview: bool = False
 
     def as_dict(self) -> dict:
         payload = asdict(self)

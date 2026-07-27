@@ -112,6 +112,28 @@ def test_test_run_is_rejected_while_production_identity_is_queued(
     assert fake_transport.submitted == []
 
 
+def test_production_promotion_marks_an_active_test_preview_stale(
+    sqlite_ledger, bucket, fake_transport, tmp_path
+):
+    manifest = write_submission(bucket)
+    service = _service(sqlite_ledger, bucket, fake_transport, tmp_path)
+    active = service.test_run_store.create(
+        category="ubist",
+        epoch="2026-07",
+        manifest_sha="b" * 64,
+        manifest_path="/input/test-manifest.json",
+        requested_by="pl@example.test",
+    )
+    service.test_run_store.update(active.run_id, status="running")
+
+    service.receive_webhook(str(manifest))
+
+    stale = service.test_run_store.get(active.run_id)
+    assert stale is not None
+    assert stale.stale_preview is True
+    assert "snapshot" in (stale.reason or "")
+
+
 def test_test_run_status_and_cancel_use_test_identity_only(
     sqlite_ledger, bucket, fake_transport, tmp_path
 ):
