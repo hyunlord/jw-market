@@ -238,14 +238,17 @@ class ToolUseAgent:
                 else None
             )
             if bq_plan is not None:
-                with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                # Named apart from the structured branch below: a single shared span
+                # name made "a deterministic plan ran" observable but left "which
+                # contract ran" unknowable from the span alone.
+                with stage(timing, "deterministic_plan_bq", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
                     decision = bq_plan.decision
                     deterministic_plan_hit = True
                     deterministic_plan_kind = f"BQ:{bq_plan.contract.contract_id}"
                     bq_missing_sources = bq_plan.missing_sources
                     progress.summary = " -> ".join(call.name for call in decision.tool_calls)
             elif structured_plan is not None:
-                with stage(timing, "deterministic_plan", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
+                with stage(timing, "deterministic_plan_structured", f"브랜드={brand_detail}; 기간={period_detail}") as progress:
                     decision = structured_plan.decision
                     deterministic_plan_hit = True
                     deterministic_plan_kind = structured_plan.kind

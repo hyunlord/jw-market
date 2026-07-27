@@ -57,7 +57,11 @@ _PUBLIC_STAGE_NAMES = {
     "market_snapshot": "시장 데이터 준비",
     "agent_pre_resolve": "질문 해석",
     "llm_plan": "분석 계획",
+    # Three internal names, one user-facing step: the BQ and structured branches
+    # are told apart in the trace, not in the progress feed.
     "deterministic_plan": "조회 계획 확정",
+    "deterministic_plan_bq": "조회 계획 확정",
+    "deterministic_plan_structured": "조회 계획 확정",
     "strict_query_plan": "데이터 조회 설계",
     "completion_queries": "추가 지표 조회",
     "answer_contract_preflight": "필수 근거 확인",
