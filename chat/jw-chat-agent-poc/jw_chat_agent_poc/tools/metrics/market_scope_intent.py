@@ -21,11 +21,14 @@ _MARKET_SCOPE_RE = re.compile(
 _BRAND_TOKEN_RE = re.compile(r"([가-힣A-Za-z0-9+_-]{2,80})\s*$")
 _BRAND_PARTICLES = ("이랑", "랑", "와", "과", "은", "는", "이", "가", "의")
 _MARKET_MEMBER_DISPLAY_DEFAULT = 20
-_MARKET_MEMBER_DISPLAY_MAX = 20
 _MARKET_MEMBER_COUNT_PATTERNS = (
     re.compile(r"(?:브랜드|제품|품목|구성원)\s*(-?\d+)\s*개", re.IGNORECASE),
     re.compile(r"(?:상위|top)\s*(-?\d+)\s*(?:개)?(?:\s*(?:브랜드|제품|품목|구성원))?", re.IGNORECASE),
     re.compile(r"(-?\d+)\s*개(?:만)?(?:\s*(?:알려|보여|표시|나열))?", re.IGNORECASE),
+)
+_MARKET_MEMBER_ALL_RE = re.compile(
+    r"(?:브랜드|제품|품목|구성원)\s*(?:전부|전체)|(?:전부|전체)\s*(?:브랜드|제품|품목|구성원)",
+    re.IGNORECASE,
 )
 _MARKET_MEMBER_METRIC_CUES = ("점유율", "매출", "규모", "hhi", "cr5", "집중도", "성장", "증감", "추이")
 
@@ -41,8 +44,9 @@ class MarketScopeIntent:
 @dataclass(frozen=True, slots=True)
 class MarketMemberLimit:
     requested: int | None
-    applied: int
+    applied: int | None
     capped: bool
+    all_requested: bool = False
 
 
 def detect_market_scope_intent(question: str) -> MarketScopeIntent | None:
@@ -90,11 +94,12 @@ def asks_market_members(question: str) -> bool:
 
 
 def requested_market_member_limit(question: str) -> MarketMemberLimit:
+    if _MARKET_MEMBER_ALL_RE.search(question):
+        return MarketMemberLimit(requested=None, applied=None, capped=False, all_requested=True)
     requested = _requested_market_member_count(question)
     if requested is None or requested <= 0:
         return MarketMemberLimit(requested=requested, applied=_MARKET_MEMBER_DISPLAY_DEFAULT, capped=False)
-    applied = min(requested, _MARKET_MEMBER_DISPLAY_MAX)
-    return MarketMemberLimit(requested=requested, applied=applied, capped=requested > applied)
+    return MarketMemberLimit(requested=requested, applied=requested, capped=False)
 
 
 def _requested_market_member_count(question: str) -> int | None:

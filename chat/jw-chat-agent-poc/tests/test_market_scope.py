@@ -226,14 +226,48 @@ def test_named_market_member_count_is_forwarded_as_a_bounded_limit() -> None:
 
     result = resolver.answer_named_market("고지혈증 시장 브랜드 50개")
 
-    assert query_layer.limits == [20]
+    assert query_layer.limits == [50]
     data = result["tool_calls"][0]["render_data"]
     assert data["total_brands_in_market"] == 555
-    assert data["displayed_brand_count"] == 20
+    assert data["displayed_brand_count"] == 50
     assert data["requested_limit"] == 50
-    assert data["limit_capped"] is True
-    assert "총 555개 중 20개 표시" in result["answer"]
-    assert "응답 표시 정책상 최대 20개" in result["answer"]
+    assert data["limit_capped"] is False
+    assert "전체 555개 · 요청 50개 · 표시 50개" in result["answer"]
+    assert "표시 상한" not in result["answer"]
+
+
+def test_strategic_market_member_request_returns_all_555_rows() -> None:
+    records = tuple(
+        MartRecord(
+            ml_id="ml_006",
+            brand_name=f"브랜드{rank}",
+            source="ubist",
+            measure="sales",
+            metric_history={"2026-05": {"raw_value": float(556 - rank)}},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+        for rank in range(1, 556)
+    )
+    resolver = MarketScopeResolver(
+        cache_reader=StaticMetricsCacheReader(cache_brands=[], market_status={}),
+        query_layer=StrategicQueryLayer(reader=StaticStrategicMartReader(records)),
+    )
+
+    result = resolver.answer_market_id(
+        "고지혈증 시장 구성 브랜드 전부",
+        market_id="ml_006",
+    )
+
+    data = result["tool_calls"][0]["render_data"]
+    assert data["total_brands_in_market"] == 555
+    assert data["displayed_brand_count"] == 555
+    assert len(data["member_brands"]) == 555
+    assert "전체 555개 · 전체 요청 · 표시 555개" in result["answer"]
+    assert "브랜드555" in result["answer"]
+    assert "표시 상한" not in result["answer"]
 
 
 def test_market_scope_uses_query_layer_without_legacy_cause_reader() -> None:

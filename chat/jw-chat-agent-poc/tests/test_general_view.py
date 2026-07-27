@@ -1190,9 +1190,10 @@ def test_general_member_full_listing_request_stays_bounded() -> None:
 
     result = service.answer("아일리아 시장 브랜드 전부 나열해줘", compact=False, dual=False)
 
-    assert result["general_view_contract"]["displayed_brand_count"] == 20
-    assert "총 100개 중 20개 표시" in result["answer"]
-    assert "브랜드21" not in result["answer"]
+    assert result["general_view_contract"]["displayed_brand_count"] == 100
+    assert "전체 100개 · 전체 요청 · 표시 100개" in result["answer"]
+    assert "브랜드100" in result["answer"]
+    assert "표시 상한" not in result["answer"]
 
 
 def test_exact_strategic_member_question_keeps_strategic_route_priority() -> None:
@@ -1265,7 +1266,7 @@ def test_unqualified_brand_uses_its_only_available_membership_source() -> None:
 
 
 @pytest.mark.parametrize(
-    ("question", "requested", "applied", "capped"),
+    ("question", "requested", "legacy_applied", "legacy_capped"),
     (
         ("고지혈증 시장 브랜드 50개", 50, 20, True),
         ("고지혈증 시장 상위 50개", 50, 20, True),
@@ -1281,15 +1282,35 @@ def test_unqualified_brand_uses_its_only_available_membership_source() -> None:
 def test_market_member_count_phrases_are_separate_bounded_display_limits(
     question: str,
     requested: int,
-    applied: int,
-    capped: bool,
+    legacy_applied: int,
+    legacy_capped: bool,
 ) -> None:
     request = market_scope_intent.requested_market_member_limit(question)
 
     assert asks_market_members(question) is True
     assert request.requested == requested
-    assert request.applied == applied
-    assert request.capped is capped
+    assert request.applied == (requested if requested > 0 else 20)
+    assert request.capped is False
+    assert request.all_requested is False
+    assert legacy_applied > 0
+    assert isinstance(legacy_capped, bool)
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "고지혈증 시장 브랜드 전부",
+        "고지혈증 시장 구성 브랜드 전체",
+    ),
+)
+def test_market_member_all_phrases_request_the_full_population(question: str) -> None:
+    request = market_scope_intent.requested_market_member_limit(question)
+
+    assert asks_market_members(question) is True
+    assert request.requested is None
+    assert request.applied is None
+    assert request.capped is False
+    assert request.all_requested is True
 
 
 def test_number_in_market_name_is_not_treated_as_a_display_limit() -> None:
@@ -1334,7 +1355,7 @@ def test_general_member_request_applies_requested_limit_below_cap() -> None:
     assert contract["displayed_brand_count"] == 10
     assert contract["requested_limit"] == 10
     assert contract["limit"] == 10
-    assert "총 30개 중 10개 표시" in result["answer"]
+    assert "전체 30개 · 요청 10개 · 표시 10개" in result["answer"]
     assert "브랜드11" not in result["answer"]
 
 
@@ -1365,11 +1386,67 @@ def test_general_member_request_discloses_the_twenty_row_cap() -> None:
     result = service.answer("아일리아 시장 브랜드 50개", compact=False, dual=False)
 
     contract = result["general_view_contract"]
-    assert contract["displayed_brand_count"] == 20
+    assert contract["displayed_brand_count"] == 50
     assert contract["requested_limit"] == 50
-    assert contract["limit_capped"] is True
-    assert "총 100개 중 20개 표시" in result["answer"]
-    assert "응답 표시 정책상 최대 20개" in result["answer"]
+    assert contract["limit_capped"] is False
+    assert "전체 100개 · 요청 50개 · 표시 50개" in result["answer"]
+    assert "표시 상한" not in result["answer"]
+
+
+def test_general_member_count_matrix_returns_requested_or_available_rows() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    market = _market("S01P0", 10.0)
+    all_members = tuple(
+        replace(market.top_brands[0], brand=f"브랜드{index}", rank=index)
+        for index in range(1, 556)
+    )
+    backend.market_map["S01P0"] = replace(
+        market,
+        brand="아일리아",
+        top_brands=all_members[:5],
+        member_brands=all_members,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+    cases = (
+        ("아일리아 시장 브랜드 50개", 50),
+        ("아일리아 시장 브랜드 상위 50개", 50),
+        ("아일리아 시장 브랜드 top 50", 50),
+        ("아일리아 시장 브랜드 20개만", 20),
+        ("아일리아 시장 브랜드 100개", 100),
+        ("아일리아 시장 브랜드 555개", 555),
+        ("아일리아 시장 브랜드 전부", 555),
+        ("아일리아 시장 브랜드 전체", 555),
+        ("아일리아 시장 브랜드 0개", 20),
+        ("아일리아 시장 브랜드 -5개", 20),
+        ("아일리아 시장에 어떤 브랜드들이 있어?", 20),
+    )
+
+    for question, expected_count in cases:
+        result = service.answer(question, compact=False, dual=False)
+        contract = result["general_view_contract"]
+
+        assert contract["displayed_brand_count"] == expected_count, question
+        assert len(contract["member_brands"]) == expected_count, question
+        if question in {
+            "아일리아 시장 브랜드 0개",
+            "아일리아 시장 브랜드 -5개",
+            "아일리아 시장에 어떤 브랜드들이 있어?",
+        }:
+            assert f"총 555개 중 {expected_count}개 표시" in result["answer"], question
+        elif "전부" in question or "전체" in question:
+            assert f"전체 555개 · 전체 요청 · 표시 {expected_count}개" in result["answer"], question
+        else:
+            assert f"전체 555개 · 요청 {expected_count}개 · 표시 {expected_count}개" in result["answer"], question
+        assert "표시 상한" not in result["answer"], question
 
 
 def test_explicit_source_does_not_fallback_to_another_membership_source() -> None:

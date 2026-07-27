@@ -315,7 +315,7 @@ class StrategicQueryLayer:
         *,
         market: str | None = None,
         period: str = "latest",
-        limit: int = 20,
+        limit: int | None = 20,
         include_other: bool = False,
     ) -> dict[str, Any]:
         snapshot = self._snapshot()
@@ -329,7 +329,7 @@ class StrategicQueryLayer:
             raise LookupError(
                 f"mart market period not found: market={selected_market} period={selected_period}"
             )
-        bounded = max(1, min(int(limit), 50))
+        bounded = len(ranked) if limit is None else max(1, int(limit))
         selected = ranked[5 : 5 + bounded] if include_other else ranked[:bounded]
         data: dict[str, Any] = {
             "status": "ok",
