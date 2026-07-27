@@ -128,7 +128,7 @@ class QueryCatalog:
             available.append("molecule")
         if structure.get("display_axis") == CLASS_2_KEY:
             available.append(CLASS_2_KEY)
-        elif any(record.dosage_form() or record.class_label() for record in records):
+        elif any(record.dosage_form() for record in records):
             available.append("dosage_form")
         dynamic_dimensions = _business_dimensions(records, structure)
         available.extend(dynamic_dimensions)
