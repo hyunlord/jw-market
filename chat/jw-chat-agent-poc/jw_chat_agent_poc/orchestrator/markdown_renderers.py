@@ -62,11 +62,19 @@ def market_members_md(data: dict[str, Any]) -> str:
     other_members_only = bool(data.get("other_members_only"))
     has_other_total = "other_member_count" in data
     other_total = int(data.get("other_member_count") or 0)
-    display_scope = (
-        f"기타 {other_total:,}개 중 {displayed:,}개 표시"
-        if other_members_only and has_other_total
-        else f"총 {total:,}개 중 {displayed:,}개 표시"
-    )
+    requested = data.get("requested_limit")
+    if other_members_only and has_other_total:
+        display_scope = f"기타 {other_total:,}개 중 {displayed:,}개 표시"
+    elif isinstance(requested, int):
+        all_returned = displayed == total and requested >= total
+        display_scope = (
+            f"전체 {total:,}개 · 요청 {requested:,}개 · 표시 {displayed:,}개"
+            + (" (전체 제공)" if all_returned else "")
+        )
+    elif data.get("requested_all"):
+        display_scope = f"전체 {total:,}개 · 전체 요청 · 표시 {displayed:,}개"
+    else:
+        display_scope = f"총 {total:,}개 중 {displayed:,}개 표시"
     overview_rows: list[tuple[str, Any]] = [
         ("시장", data.get("market_name") or data.get("market") or "-"),
         ("기준기간", data.get("period") or "-"),
@@ -80,13 +88,6 @@ def market_members_md(data: dict[str, Any]) -> str:
         ("항목", "내용"),
         tuple(overview_rows),
     )
-    if data.get("limit_capped"):
-        requested = int(data.get("requested_limit") or displayed)
-        display_limit = int(data.get("display_limit") or displayed)
-        overview = (
-            f"{overview}\n\n요청한 {requested:,}개에는 응답 표시 정책상 "
-            f"최대 {display_limit:,}개를 한 번에 제공합니다."
-        )
     if not member_names:
         if other_members_only and has_other_total:
             return f"{overview}\n\n상위 5개 외 기타 브랜드가 없습니다."

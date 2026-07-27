@@ -940,7 +940,8 @@ def _requested_market_window(question: str, market: GeneralMarket) -> tuple[str,
 def _requested_member_rows(market: GeneralMarket, question: str) -> tuple[TopBrand, ...]:
     population = market.member_brands or market.top_brands
     selected = population[5:] if asks_other_market_members(question) else population
-    return selected[: requested_market_member_limit(question).applied]
+    applied = requested_market_member_limit(question).applied
+    return selected if applied is None else selected[:applied]
 
 
 def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, Any]:
@@ -973,12 +974,15 @@ def _member_contract_fields(market: GeneralMarket, question: str) -> dict[str, A
         "other_members_only": other_only,
         "other_member_count": len(other_rows),
         "sort": "sales_desc",
-        "limit": limit.applied,
-        "display_limit": limit.applied,
+        "limit": len(members) if limit.applied is None else limit.applied,
+        "display_limit": len(members) if limit.applied is None else limit.applied,
     }
-    if limit.requested is not None:
+    if limit.requested is not None and limit.requested > 0:
         fields["requested_limit"] = limit.requested
-        fields["limit_capped"] = limit.capped and len(population) > limit.applied
+        fields["limit_capped"] = False
+    elif limit.all_requested:
+        fields["requested_all"] = True
+        fields["limit_capped"] = False
     if other_only and other_share is not None:
         fields["other_total_share_pct"] = other_share
     return fields

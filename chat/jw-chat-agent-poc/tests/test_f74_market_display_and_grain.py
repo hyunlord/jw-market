@@ -105,17 +105,17 @@ def test_fifty_member_request_explains_the_fixed_twenty_row_policy() -> None:
         {
             "market_name": "고지혈증 시장",
             "period": "2026-05",
-            "member_brands": [f"브랜드{index}" for index in range(1, 21)],
-            "displayed_brand_count": 20,
+            "member_brands": [f"브랜드{index}" for index in range(1, 51)],
+            "displayed_brand_count": 50,
             "total_brands_in_market": 555,
             "requested_limit": 50,
-            "display_limit": 20,
-            "limit_capped": True,
+            "display_limit": 50,
+            "limit_capped": False,
         }
     )
 
-    assert "응답 표시 정책상 최대 20개" in markdown
-    assert "총 555개 중 20개 표시" in markdown
+    assert "표시 상한" not in markdown
+    assert "전체 555개 · 요청 50개 · 표시 50개" in markdown
 
 
 def test_fifty_member_request_does_not_call_a_nine_brand_population_a_cap() -> None:
@@ -136,7 +136,9 @@ def test_fifty_member_request_does_not_call_a_nine_brand_population_a_cap() -> N
 
     result = service.answer("아일리아 시장 구성 브랜드 50개", compact=False, dual=False)
 
-    assert "총 9개 중 9개 표시" in result["answer"]
+    assert "전체 9개 · 요청 50개 · 표시 9개" in result["answer"]
+    assert "요청 50개" in result["answer"]
+    assert "전체 제공" in result["answer"]
     assert "표시 상한 9개" not in result["answer"]
     assert "상한" not in result["answer"]
 
@@ -145,7 +147,7 @@ def test_sanitized_general_view_contract_does_not_append_the_same_cap_notice_twi
     section = (
         "## 일반뷰 (ATC4)\n\n"
         "ml_006 시장의 구성 브랜드를 전략 mart에서 조회했습니다.\n\n"
-        "요청한 50개에는 응답 표시 정책상 최대 20개를 한 번에 제공합니다."
+        "전체 50개 · 요청 50개 · 표시 50개"
     )
     contract = {
         "mode": "general_only",
@@ -159,4 +161,4 @@ def test_sanitized_general_view_contract_does_not_append_the_same_cap_notice_twi
 
     answer = enforce_general_view_contract(already_sanitized, contract)
 
-    assert answer.count("응답 표시 정책상 최대 20개") == 1
+    assert answer.count("전체 50개 · 요청 50개 · 표시 50개") == 1

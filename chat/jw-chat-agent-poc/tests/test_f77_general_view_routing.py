@@ -55,7 +55,7 @@ class _StrategicQueryLayer:
         assert brand == "리바로"
         assert market is None
         assert period == "latest"
-        assert limit == 20
+        assert limit == 50
         assert include_other is False
         data = self._base_data()
         data.update(
