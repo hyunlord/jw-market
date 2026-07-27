@@ -96,18 +96,31 @@ def test_forced_sales_fallback_cannot_run_for_prescription_metric(
 
 
 def test_explicit_sales_does_not_hide_a_requested_prescription_metric() -> None:
+    """The prescription stop must stay visible when sales is asked for alongside it.
+
+    The guarantee this test protects is that an unexposed prescription metric is
+    neither hidden nor answered with sales in its place. It used to be enforced
+    by refusing the whole request, which also withheld the sales the user asked
+    for. The stop now applies to its own element: sales is served, and the same
+    refusal wording is still returned for prescription, with no substitution.
+    """
     result = ChatAgent(external_mode="fixture").answer(
         "리바로 최근 매출과 처방 추이를 알려줘"
     )
 
-    assert result["reason_code"] == "FIELD_NOT_EXPOSED"
-    assert result["value"] is None
-    assert result["tool_calls"] == []
-    assert result["proxy"] == {
-        "metric": "sales",
-        "status": "separate_request_only",
-        "substituted": False,
-    }
+    # the prescription element is still refused, verbatim and unsubstituted
+    deferred = result["prescription_metric_deferred"]
+    assert deferred["metric"] == "prescription"
+    assert deferred["reason_code"] == "FIELD_NOT_EXPOSED"
+    assert deferred["substituted"] is False
+    assert "미노출되어 확인할 수 없습니다" in result["answer"]
+    assert "매출 지표로 대체하지 않습니다" in result["answer"]
+    assert {
+        entry["element"]: entry["status"] for entry in result["element_ledger"]
+    } == {"sales": "satisfied", "prescription": "unsupported"}
+
+    # and the sales element the user also asked for is no longer withheld
+    assert result["tool_calls"]
 
 
 def test_response_contract_preserves_typed_prescription_absence() -> None:

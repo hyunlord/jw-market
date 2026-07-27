@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
+from jw_chat_agent_poc.agent_loop.element_ledger import market_scope_defers_to_contract
 from jw_chat_agent_poc.agent_loop.factory import (
     ambiguous_brand_result,
     build_chat_agent_dependencies,
@@ -1875,6 +1876,13 @@ def _answer_existing_without_pending(
         return agent.answer(question, documents)
     if intent is not None and not has_brand_anchor:
         has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
+    if intent is not None and market_scope_defers_to_contract(question):
+        # The market-scope shortcut answers one period. When the slot extractor
+        # has already selected a multi-period contract, serving the shortcut
+        # would drop the trend the question asked for, so the request is handed
+        # to the agent loop that implements that contract. Questions without a
+        # trend element are untouched and keep taking the shortcut.
+        intent = None
     if intent is not None and has_brand_anchor:
         if intent.requires_clarification:
             brand = intent.brand_hint or "해당 브랜드"

@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from jw_chat_agent_poc import genos_config
+from jw_chat_agent_poc.agent_loop.element_ledger import disposition_from_ledger
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
@@ -178,7 +179,16 @@ def _qa_trace(
     if detected_failure_kind and disposition in {"", "answered"}:
         disposition = "unavailable"
     if not disposition:
-        disposition = "empty" if not answer.strip() else "answered"
+        # Prefer what was actually delivered per requested element. A non-empty
+        # body is not evidence that the request was served: a request whose only
+        # element was refused still carries the refusal notice as its body.
+        ledger = result.get("element_ledger")
+        aggregated = (
+            disposition_from_ledger(tuple(ledger))
+            if isinstance(ledger, (list, tuple))
+            else None
+        )
+        disposition = aggregated or ("empty" if not answer.strip() else "answered")
     final = {
         "disposition": disposition,
         "body_empty": not bool(answer.strip()),
