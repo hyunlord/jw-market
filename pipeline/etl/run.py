@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -199,11 +200,24 @@ def main(argv: list[str] | None = None) -> int:
         "mode": mode_name(args),
     }
     print(f"[etl] 모드={params['mode']} period={params['period']}")
+    # 업로드→반영 소요를 구간별로 지목하려면 스테이지 경계 시각이 남아야 한다.
+    # 별도 저장소를 만들지 않고 로그로만 남긴다. 실패한 스테이지도 소요를 남긴다.
+    run_started = time.perf_counter()
+    elapsed_by_stage: list[tuple[str, float]] = []
     for stage in select_stages(args):
-        rc = stage.run(params)
+        stage_started = time.perf_counter()
+        try:
+            rc = stage.run(params)
+        finally:
+            stage_elapsed = time.perf_counter() - stage_started
+            elapsed_by_stage.append((stage.STAGE, stage_elapsed))
+            print(f"[etl] 소요 stage={stage.STAGE} elapsed_sec={stage_elapsed:.3f}")
         if rc != 0:
-            print(f"[etl] 실패 stage={stage.STAGE} rc={rc}")
+            print(f"[etl] 실패 stage={stage.STAGE} rc={rc} elapsed_sec={stage_elapsed:.3f}")
             return int(rc)
+    total = time.perf_counter() - run_started
+    breakdown = " ".join(f"{name.split()[0]}={value:.3f}" for name, value in elapsed_by_stage)
+    print(f"[etl] 소요 합계 elapsed_sec={total:.3f} 구간={breakdown}")
     print("[etl] 완료 rc=0")
     return 0
 
