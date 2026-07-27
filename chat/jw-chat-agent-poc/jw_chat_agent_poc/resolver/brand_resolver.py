@@ -79,7 +79,6 @@ class BrandResolver:
         items = json.loads(path.read_text(encoding="utf-8"))
         self._sidecar_by_brand = {str(item["canonical_brand"]): item for item in items}
         self._fixture_items = items
-        self._fixture_market_names = self._unique_fixture_market_names(items)
         self._mode = mode or os.environ.get("CHAT_RESOLVER_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
         self._membership_reader = membership_reader
         self._molecule_reader = molecule_reader
@@ -262,12 +261,6 @@ class BrandResolver:
     ) -> list[dict[str, Any]]:
         if self._mode != "cache":
             return list(self._fixture_items)
-        member_brands_by_market: dict[str, set[str]] = {}
-        for membership in memberships:
-            market_id = str(membership.get("market_id") or "").strip()
-            brand = str(membership.get("brand") or "").strip()
-            if market_id and brand:
-                member_brands_by_market.setdefault(market_id, set()).add(brand)
         merged: dict[str, dict[str, Any]] = {}
         for brand in cache_brands:
             name = str(brand.get("brand") or "")
@@ -317,15 +310,9 @@ class BrandResolver:
                     "cache_brands"
                 ):
                     item["support_source"] = membership_source
-                market_id = str(membership.get("market_id") or "")
-                incoming_market_name = str(membership.get("market_name") or "")
                 pair = (
-                    market_id,
-                    self._public_market_name(
-                        market_id,
-                        incoming_market_name,
-                        member_brands_by_market.get(market_id, set()),
-                    ),
+                    str(membership.get("market_id") or ""),
+                    str(membership.get("market_name") or ""),
                 )
                 if pair[0] and pair not in item["market_memberships"]:
                     item["market_memberships"].append(pair)
@@ -353,52 +340,6 @@ class BrandResolver:
                 if additions and "mart_brand_molecule" not in item["support_source"]:
                     item["support_source"] = f"{item['support_source']}+mart_brand_molecule"
         return list(merged.values())
-
-    @staticmethod
-    def _unique_fixture_market_names(items: list[dict[str, Any]]) -> dict[str, str]:
-        names_by_id: dict[str, set[str]] = {}
-        for item in items:
-            market_id = str(item.get("market_id") or "").strip()
-            market_name = str(item.get("market_name") or "").strip()
-            if market_id and market_name:
-                names_by_id.setdefault(market_id, set()).add(market_name)
-        return {
-            market_id: next(iter(names))
-            for market_id, names in names_by_id.items()
-            if len(names) == 1
-        }
-
-    def _public_market_name(
-        self,
-        market_id: str,
-        incoming_name: str,
-        member_brands: set[str],
-    ) -> str:
-        internal_market_name = bool(
-            re.fullmatch(r"(?:ml|strategy|cd)_\d+", incoming_name.strip(), re.IGNORECASE)
-        )
-        if not internal_market_name and not self._is_brand_list_market_name(incoming_name, member_brands):
-            return incoming_name
-        return self._fixture_market_names.get(market_id, "전략시장")
-
-    @staticmethod
-    def _is_brand_list_market_name(market_name: str, member_brands: set[str]) -> bool:
-        remainder = BrandResolver._normalize(market_name)
-        if not remainder:
-            return False
-        normalized_brands = sorted(
-            {BrandResolver._normalize(brand) for brand in member_brands if brand},
-            key=len,
-            reverse=True,
-        )
-        matched = 0
-        while remainder:
-            brand = next((candidate for candidate in normalized_brands if remainder.startswith(candidate)), None)
-            if brand is None:
-                return False
-            remainder = remainder[len(brand) :]
-            matched += 1
-        return matched >= 2
 
     def _matching_spans(
         self,
