@@ -33,6 +33,14 @@ _METRIC_TERMS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("순위", ("순위", "rank")),
     ("기간", ("기준기간", "기간")),
 )
+# Units whose base metric is unambiguous. Percent shapes are absent on purpose:
+# "%" is shared by 시장점유율 / CAGR / 매출 변화율, and "%p" belongs to a derived
+# metric, so narrowing either would release a deliberate block. The first entry
+# of each tuple is the canonical choice when a sentence names no compatible one.
+_BASE_METRICS_BY_UNIT: Final[dict[str, tuple[str, ...]]] = {
+    "억원": ("매출", "시장규모"),
+    "원": ("매출", "시장규모"),
+}
 _ORDERED_LIST_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^\s*\d+[.)]\s+")
 _NUMBER_OCCURRENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9])"
@@ -104,10 +112,44 @@ def claim_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:
     segments = re.split(r"(?<=[.!?。])\s+|\n+", answer)
     for segment in segments:
         if token in claim_number_tokens(segment):
-            metrics = question_metrics(segment)
+            metrics = _metrics_consistent_with_token(question_metrics(segment), token)
             if metrics:
                 return metrics
     return _table_header_metrics_for_token(answer, token)
+
+
+def _metrics_consistent_with_token(
+    metrics: tuple[str, ...],
+    token: str,
+) -> tuple[str, ...]:
+    """Keep only the metrics the token's own shape can actually carry.
+
+    A sentence is scanned as a whole, so every metric word in it is returned for
+    every number in it. That is how a currency amount standing in a sentence
+    about 점유율 ends up expected as 시장점유율 while its unit says 억원 — the two
+    axes are read at different scopes and nothing reconciles them.
+
+    Only shapes with an unambiguous base metric take part: a period token, and
+    the currency units. Percent shapes are deliberately left alone; they are
+    shared by 시장점유율, CAGR and 매출 변화율, and narrowing them would also turn a
+    derived-metric expectation into one that matches its own derived fact, which
+    would release the deliberate F66 blocks.
+
+    The mapping stays on BASE metrics for the same reason: expecting 매출 keeps a
+    매출 변화 fact refused, and expecting 시장점유율 keeps a 점유율 변화 fact refused.
+    """
+    if not metrics:
+        return metrics
+    if explicit_periods(token):
+        return ("기간",)
+    allowed = _BASE_METRICS_BY_UNIT.get(token_unit(token))
+    if not allowed:
+        return metrics
+    narrowed = tuple(metric for metric in metrics if metric in allowed)
+    if narrowed:
+        return narrowed
+    # The sentence named a metric the token cannot be. Trust the token.
+    return (allowed[0],)
 
 
 def _table_header_metrics_for_token(answer: str, token: str) -> tuple[str, ...]:

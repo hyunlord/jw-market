@@ -185,11 +185,14 @@ def test_table_blanking_preserves_newline_structure(text: str) -> None:
 
 
 def test_table_blanking_keeps_the_segment_answer_but_drops_the_table_answer() -> None:
+    # The assertion is on the segment answer being PRESERVED rather than on a
+    # literal metric. The literal used to be ("시장점유율",) for a 억원 amount,
+    # which was the RC1 defect itself; what this test protects is the
+    # discriminator's premise, and that premise is unchanged.
     answer = "점유율은 90.86억원 입니다.\n" + TABLE
-    assert claim_metrics_for_token(answer, "90.86억원") == ("시장점유율",)
-    assert claim_metrics_for_token(_without_table_lines(answer), "90.86억원") == (
-        "시장점유율",
-    )
+    with_tables = claim_metrics_for_token(answer, "90.86억원")
+    assert with_tables, "the segment branch must answer for this input"
+    assert claim_metrics_for_token(_without_table_lines(answer), "90.86억원") == with_tables
     # and the table-only answer must disappear once blanked
     assert claim_metrics_for_token(_without_table_lines(TABLE), "90.86억원") == ()
 
