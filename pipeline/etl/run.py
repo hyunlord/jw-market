@@ -114,12 +114,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--incremental",
         action="store_true",
-        help="For UBIST s1, compare source files to target _manifest.json and append only new files.",
-    )
-    parser.add_argument(
-        "--allow-overlap-dedup",
-        action="store_true",
-        help="For UBIST incremental loads, allow same-folder period overlap and rely on business+metric dedup.",
+        help="For UBIST s1, merge every selected workbook by business row identity.",
     )
     parser.add_argument(
         "--ubist-mode",
@@ -227,7 +222,6 @@ def main(argv: list[str] | None = None) -> int:
         "dry_run": args.dry_run,
         "sync_catalog_db": args.sync_catalog_db,
         "incremental": args.incremental,
-        "allow_overlap_dedup": args.allow_overlap_dedup,
         "ubist_mode": args.ubist_mode,
         "exclude_ubist_months": list(args.exclude_ubist_month),
         "mode": mode_name(args),

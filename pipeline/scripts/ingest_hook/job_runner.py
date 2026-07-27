@@ -247,11 +247,6 @@ def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | 
     source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
     for sources in source_batches:
         argv = list(spec.load_argv)
-        shadow_overlap_dedup = (
-            manifest.category == "ubist" and config.load_mode() == "shadow"
-        )
-        if shadow_overlap_dedup:
-            argv.append("--allow-overlap-dedup")
         for source in sources:
             argv.extend([spec.load_input_flag, source])
         if spec.load_target_flag:

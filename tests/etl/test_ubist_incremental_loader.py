@@ -18,8 +18,8 @@ from pipeline.etl.io.ubist_loader import (
     build_generic_lookup,
     deduplicate_business_grain,
     deduplicate_partition_file,
-    incremental_plan,
     iter_xlsx_rows,
+    prune_ubist_partitions,
     run_incremental_ubist_load,
 )
 
@@ -166,31 +166,39 @@ def _write_partition(target: Path, period: str, rows: list[dict[str, object]]) -
     pq.write_table(table, path)
 
 
-def test_business_grain_dedup_ignores_static_metadata_and_prefers_populated_values():
+def test_business_grain_merge_treats_patent_metadata_as_values():
     rows = [
-        _ubist_row(source_file="a.xlsx", source_row_no=4),
-        _ubist_row(source_file="b.xlsx", source_row_no=3, PMS만료일="2030-01-01", Generic="Original"),
+        _ubist_row(source_file="a.xlsx", source_row_no=4, ingested_at="2026-06-17T00:00:00"),
+        _ubist_row(
+            source_file="b.xlsx",
+            source_row_no=3,
+            PMS만료일="2030-01-01",
+            Generic="Original",
+            ingested_at="2026-06-18T00:00:00",
+        ),
     ]
 
     deduped, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
 
     assert len(deduped) == 1
-    assert report.duplicate_groups == 1
-    assert report.duplicate_rows_removed == 1
+    assert report.duplicate_groups == 0
+    assert report.duplicate_rows_removed == 0
+    assert report.conflict_groups == 1
     assert deduped.iloc[0]["source_file"] == "b.xlsx"
     assert deduped.iloc[0]["PMS만료일"] == "2030-01-01"
     assert deduped.iloc[0]["Generic"] == "Original"
 
 
-def test_business_grain_dedup_preserves_metric_conflicts():
+def test_business_grain_merge_resolves_metric_conflicts_by_ingest_time():
     rows = [
-        _ubist_row(source_file="a.xlsx", rx_amt=100.0),
-        _ubist_row(source_file="b.xlsx", rx_amt=101.0),
+        _ubist_row(source_file="a.xlsx", rx_amt=100.0, ingested_at="2026-06-17T00:00:00"),
+        _ubist_row(source_file="b.xlsx", rx_amt=101.0, ingested_at="2026-06-18T00:00:00"),
     ]
 
     deduped, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
 
-    assert len(deduped) == 2
+    assert len(deduped) == 1
+    assert deduped.iloc[0]["rx_amt"] == 101.0
     assert report.duplicate_rows_removed == 0
     assert report.conflict_groups == 1
     assert report.conflict_rows == 2
@@ -214,10 +222,29 @@ def test_partition_dedup_spills_without_materializing_full_table(monkeypatch, tm
         tmp_path,
         "2026-02",
         [
-            _ubist_row(source_file="a.xlsx", source_row_no=4),
-            _ubist_row(source_file="b.xlsx", source_row_no=3, PMS만료일="2030-01-01", Generic="Original"),
-            _ubist_row(source_file="c.xlsx", source_row_no=5, 제품="충돌제품", 약품코드="P002"),
-            _ubist_row(source_file="d.xlsx", source_row_no=6, 제품="충돌제품", 약품코드="P002", rx_amt=101.0),
+            _ubist_row(source_file="a.xlsx", source_row_no=4, ingested_at="2026-06-17T00:00:00"),
+            _ubist_row(
+                source_file="b.xlsx",
+                source_row_no=3,
+                PMS만료일="2030-01-01",
+                Generic="Original",
+                ingested_at="2026-06-18T00:00:00",
+            ),
+            _ubist_row(
+                source_file="c.xlsx",
+                source_row_no=5,
+                제품="충돌제품",
+                약품코드="P002",
+                ingested_at="2026-06-17T00:00:00",
+            ),
+            _ubist_row(
+                source_file="d.xlsx",
+                source_row_no=6,
+                제품="충돌제품",
+                약품코드="P002",
+                rx_amt=101.0,
+                ingested_at="2026-06-18T00:00:00",
+            ),
         ],
     )
     partition = tmp_path / "year=2026" / "month=02" / "data.parquet"
@@ -236,23 +263,41 @@ def test_partition_dedup_spills_without_materializing_full_table(monkeypatch, tm
         ).fetchall()
 
     assert report.rows_before == 4
-    assert report.rows_after == 3
-    assert report.duplicate_rows_removed == 1
-    assert report.conflict_groups == 1
-    assert report.conflict_rows == 2
+    assert report.rows_after == 2
+    assert report.duplicate_rows_removed == 0
+    assert report.conflict_groups == 2
+    assert report.conflict_rows == 4
     assert rows == [
         ("b.xlsx", 100.0, "2030-01-01", "Original"),
-        ("c.xlsx", 100.0, None, None),
         ("d.xlsx", 101.0, None, None),
     ]
 
 
 def test_partition_dedup_matches_in_memory_contract(tmp_path):
     rows = [
-        _ubist_row(source_file="a.xlsx", source_row_no=4),
-        _ubist_row(source_file="b.xlsx", source_row_no=3, PMS만료일="2030-01-01", Generic="Original"),
-        _ubist_row(source_file="c.xlsx", source_row_no=5, 제품="충돌제품", 약품코드="P002"),
-        _ubist_row(source_file="d.xlsx", source_row_no=6, 제품="충돌제품", 약품코드="P002", rx_amt=101.0),
+        _ubist_row(source_file="a.xlsx", source_row_no=4, ingested_at="2026-06-17T00:00:00"),
+        _ubist_row(
+            source_file="b.xlsx",
+            source_row_no=3,
+            PMS만료일="2030-01-01",
+            Generic="Original",
+            ingested_at="2026-06-18T00:00:00",
+        ),
+        _ubist_row(
+            source_file="c.xlsx",
+            source_row_no=5,
+            제품="충돌제품",
+            약품코드="P002",
+            ingested_at="2026-06-17T00:00:00",
+        ),
+        _ubist_row(
+            source_file="d.xlsx",
+            source_row_no=6,
+            제품="충돌제품",
+            약품코드="P002",
+            rx_amt=101.0,
+            ingested_at="2026-06-18T00:00:00",
+        ),
         _ubist_row(source_file="e.xlsx", source_row_no=7, 제품="고유제품", 약품코드="P003", rx_amt=None),
     ]
     expected_frame, expected_report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
@@ -274,77 +319,104 @@ def test_partition_dedup_matches_in_memory_contract(tmp_path):
     )
 
 
-def test_incremental_plan_skips_manifest_source_files_and_adds_new_ones(tmp_path):
+def test_row_merge_is_idempotent_for_same_file_reupload() -> None:
+    # Given: the same business row is uploaded twice at different times.
+    rows = [
+        _ubist_row(ingested_at="2026-07-27T10:00:00"),
+        _ubist_row(ingested_at="2026-07-27T11:00:00"),
+    ]
+
+    # When: rows are merged by business identity and values.
+    merged, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+
+    # Then: one latest lineage row remains without a value conflict.
+    assert len(merged) == 1
+    assert merged.iloc[0]["ingested_at"] == "2026-07-27T11:00:00"
+    assert report.conflict_groups == 0
+
+
+def test_row_merge_deduplicates_same_content_with_different_file_names() -> None:
+    # Given: two differently named files contain the same business row and values.
+    rows = [
+        _ubist_row(source_file="z-old.xlsx", ingested_at="2026-07-27T10:00:00"),
+        _ubist_row(source_file="a-new.xlsx", ingested_at="2026-07-27T11:00:00"),
+    ]
+
+    # When: rows are merged.
+    merged, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+
+    # Then: the row is not double-counted and filename ordering is irrelevant.
+    assert len(merged) == 1
+    assert merged.iloc[0]["source_file"] == "a-new.xlsx"
+    assert report.duplicate_rows_removed == 1
+
+
+def test_row_merge_uses_later_ingested_value_and_records_metric_conflict() -> None:
+    # Given: the same identity has different metrics at different ingest times.
+    rows = [
+        _ubist_row(source_file="a-old.xlsx", rx_amt=100.0, ingested_at="2026-07-27T10:00:00"),
+        _ubist_row(source_file="z-new.xlsx", rx_amt=125.0, ingested_at="2026-07-27T11:00:00"),
+    ]
+
+    # When: rows are merged.
+    merged, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+
+    # Then: the later value wins and the discarded value remains auditable.
+    assert len(merged) == 1
+    assert merged.iloc[0]["rx_amt"] == 125.0
+    assert report.conflict_groups == 1
+    assert report.conflicts[0]["winner"]["rx_amt"] == 125.0
+    assert report.conflicts[0]["discarded"][0]["rx_amt"] == 100.0
+
+
+def test_row_merge_stops_when_different_values_have_same_ingest_time() -> None:
+    # Given: one ingest batch contains two different values for the same identity.
+    rows = [
+        _ubist_row(source_file="a.xlsx", rx_amt=100.0, ingested_at="2026-07-27T10:00:00"),
+        _ubist_row(source_file="b.xlsx", rx_amt=125.0, ingested_at="2026-07-27T10:00:00"),
+    ]
+
+    # When/Then: the loader refuses to invent a winner.
+    with pytest.raises(RuntimeError, match="same ingest time"):
+        deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+
+
+def test_row_merge_uses_later_ingested_patent_value_and_records_conflict() -> None:
+    # Given: only a patent value differs and filename order favors the older row.
+    rows = [
+        _ubist_row(
+            source_file="a-old.xlsx",
+            PMS만료일="2030-01-01",
+            ingested_at="2026-07-27T10:00:00",
+        ),
+        _ubist_row(
+            source_file="z-new.xlsx",
+            PMS만료일="2031-01-01",
+            ingested_at="2026-07-27T11:00:00",
+        ),
+    ]
+
+    # When: rows are merged.
+    merged, report = deduplicate_business_grain(pd.DataFrame(rows), "2026-02")
+
+    # Then: patent fields participate in value comparison and later ingest wins.
+    assert len(merged) == 1
+    assert merged.iloc[0]["PMS만료일"] == "2031-01-01"
+    assert report.conflict_groups == 1
+
+
+def test_incremental_load_reads_all_three_files_without_manifest_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: three files are submitted and one filename already appears in the manifest.
     target = tmp_path / "target"
-    _write_manifest(target, ["loaded.xlsx"])
-    loaded = _workbook(tmp_path / "loaded.xlsx", ["2025-07"])
-    new = _workbook(tmp_path / "new.xlsx", ["2025-08"])
-
-    plan = incremental_plan([loaded, new], target)
-
-    assert [summary.source_file for summary in plan.skip] == ["loaded.xlsx"]
-    assert [summary.source_file for summary in plan.add] == ["new.xlsx"]
-    assert plan.conflicts == []
-
-
-def test_incremental_plan_reports_content_overlap_across_folders(tmp_path):
-    target = tmp_path / "target"
-    _write_manifest(target, [])
-    _write_partition(
-        target,
-        "2025-07",
-        [
-            _ubist_row(
-                **{col: None for col in BUSINESS_GRAIN_COLUMNS if col not in {"제품", "period_yyyymm"}},
-                제품="테스트",
-                period_yyyymm="2025-07",
-                rx_amt=1.0,
-                rx_cnt=None,
-                rx_qty=None,
-                source_file="old-source.xlsx",
-            )
-        ],
-    )
-    new = _workbook(tmp_path / "other-folder" / "new-source.xlsx", ["2025-07"])
-
-    plan = incremental_plan([new], target)
-
-    assert len(plan.conflicts) == 1
-    assert plan.conflicts[0]["period_yyyymm"] == "2025-07"
-    assert plan.conflicts[0]["reason"] == "content-level fact+metric overlap"
-    assert plan.conflicts[0]["left"] == "old-source.xlsx"
-    assert plan.conflicts[0]["right"] == "new-source.xlsx"
-
-
-def test_incremental_plan_reports_same_folder_period_overlap(tmp_path):
-    target = tmp_path / "target"
-    _write_manifest(target, [])
-    first = _workbook(tmp_path / "종병 2501-07.xlsx", ["2025-07"])
-    second = _workbook(tmp_path / "종병 2507-12.xlsx", ["2025-07", "2025-08"])
-
-    plan = incremental_plan([first, second], target)
-
-    assert len(plan.conflicts) == 1
-    assert plan.conflicts[0]["period_yyyymm"] == "2025-07"
-    assert plan.conflicts[0]["left"] == "종병 2501-07.xlsx"
-    assert plan.conflicts[0]["right"] == "종병 2507-12.xlsx"
-
-
-def test_incremental_load_stops_on_period_overlap_by_default(tmp_path):
-    target = tmp_path / "target"
-    _write_manifest(target, [])
-    first = _workbook(tmp_path / "종병 2501-07.xlsx", ["2025-07"])
-    second = _workbook(tmp_path / "종병 2507-12.xlsx", ["2025-07", "2025-08"])
-
-    with pytest.raises(RuntimeError, match="period conflicts"):
-        run_incremental_ubist_load(target=target, paths=[first, second])
-
-
-def test_incremental_load_allows_period_overlap_when_dedup_enabled(tmp_path, monkeypatch):
-    target = tmp_path / "target"
-    _write_manifest(target, [])
-    first = _workbook(tmp_path / "종병 2501-07.xlsx", ["2025-07"])
-    second = _workbook(tmp_path / "종병 2507-12.xlsx", ["2025-07", "2025-08"])
+    _write_manifest(target, ["first.xlsx"])
+    paths = [
+        _workbook(tmp_path / "first.xlsx", ["2026-06"]),
+        _workbook(tmp_path / "second.xlsx", ["2026-06"]),
+        _workbook(tmp_path / "third.xlsx", ["2026-06"]),
+    ]
     loaded_paths: list[Path] = []
 
     def fake_load_to_parquet(paths, target, *, mode, truncate, previous_manifest):
@@ -353,6 +425,70 @@ def test_incremental_load_allows_period_overlap_when_dedup_enabled(tmp_path, mon
 
     monkeypatch.setattr("pipeline.etl.io.ubist_loader.load_to_parquet", fake_load_to_parquet)
 
-    run_incremental_ubist_load(target=target, paths=[first, second], allow_overlap_dedup=True)
+    # When: the incremental loader runs.
+    run_incremental_ubist_load(target=target, paths=paths)
 
-    assert loaded_paths == [first.resolve(), second.resolve()]
+    # Then: every submitted workbook reaches row-level merge regardless of filename history.
+    assert loaded_paths == [path.resolve() for path in paths]
+
+
+def test_generic_lookup_uses_existing_corpus_when_increment_has_no_generic(
+    tmp_path: Path,
+) -> None:
+    # Given: the durable corpus knows Generic but the increment contains no patent block.
+    target = tmp_path / "target"
+    _write_partition(
+        target,
+        "2026-05",
+        [_ubist_row(제품="전량제품", 약품코드="FULL001", Generic="Original")],
+    )
+
+    # When: the deterministic lookup is built for an empty incremental file set.
+    lookup = build_generic_lookup([], parquet_root=target)
+
+    # Then: Generic is derived from the full durable corpus.
+    assert lookup["code:full001"] == "Original"
+    assert lookup["product:전량제품"] == "Original"
+
+
+def test_incremental_load_stops_when_no_workbooks_are_selected(tmp_path: Path) -> None:
+    # Given: a valid target manifest exists but the upload contains no xlsx files.
+    target = tmp_path / "target"
+    _write_manifest(target, [])
+
+    # When/Then: absence is explicit rather than a successful no-op.
+    with pytest.raises(RuntimeError, match="No xlsx files selected"):
+        run_incremental_ubist_load(target=target, paths=[])
+
+
+def _create_partition_markers(target: Path, periods: list[str]) -> None:
+    for period in periods:
+        year, month = period.split("-")
+        partition = target / f"year={year}" / f"month={month}"
+        partition.mkdir(parents=True)
+        (partition / "data.parquet").touch()
+
+
+def test_load_retention_keeps_all_66_months(tmp_path: Path) -> None:
+    periods = pd.period_range("2021-01", periods=66, freq="M").strftime("%Y-%m").tolist()
+    _create_partition_markers(tmp_path, periods)
+
+    removed = prune_ubist_partitions(tmp_path)
+
+    assert removed == ()
+    assert len(list(tmp_path.glob("year=*/month=*/data.parquet"))) == 66
+
+
+def test_load_retention_removes_oldest_partition_after_72_months(tmp_path: Path) -> None:
+    periods = pd.period_range("2021-01", periods=73, freq="M").strftime("%Y-%m").tolist()
+    _create_partition_markers(tmp_path, periods)
+
+    removed = prune_ubist_partitions(tmp_path)
+
+    assert removed == ("2021-01",)
+    remaining = sorted(
+        f"{path.parent.parent.name.removeprefix('year=')}-{path.parent.name.removeprefix('month=')}"
+        for path in tmp_path.glob("year=*/month=*/data.parquet")
+    )
+    assert len(remaining) == 72
+    assert remaining[0] == "2021-02"

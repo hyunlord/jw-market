@@ -43,6 +43,7 @@ UBIST_ROOT = get_data_path(
 )
 TARGET_DIR = ROOT / "output" / "ubist"
 KST = ZoneInfo("Asia/Seoul")
+UBIST_LOAD_RETENTION_MONTHS = 6 * 12
 
 CANONICAL_DIMENSIONS = [
     "제조사",
@@ -98,9 +99,8 @@ METRIC_COLUMNS = list(METRIC_MAP.values())
 LINEAGE_COLUMNS = ["source_file", "source_folder", "source_sheet", "source_row_no", "ingested_at"]
 STATIC_METADATA_COLUMNS = PATENT_DIMENSIONS
 BUSINESS_GRAIN_COLUMNS = CANONICAL_DIMENSIONS + ["period_yyyymm"]
-BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + METRIC_COLUMNS
-DEDUP_SORT_COLUMNS = ["source_file", "source_sheet", "source_row_no"]
-DEDUP_METADATA_SORT_COLUMNS = ["_static_meta_score"] + DEDUP_SORT_COLUMNS
+VALUE_COLUMNS = METRIC_COLUMNS + PATENT_DIMENSIONS
+BUSINESS_METRIC_COLUMNS = BUSINESS_GRAIN_COLUMNS + VALUE_COLUMNS
 COLUMNS = (
     CANONICAL_DIMENSIONS
     + PATENT_DIMENSIONS
@@ -152,22 +152,7 @@ class DedupReport:
     duplicate_rows_removed: int
     conflict_groups: int
     conflict_rows: int
-
-
-@dataclass(frozen=True)
-class SourceSummary:
-    path: Path
-    source_file: str
-    source_folder: str
-    periods: tuple[str, ...]
-
-
-@dataclass
-class IncrementalPlan:
-    add: list[SourceSummary]
-    skip: list[SourceSummary]
-    conflicts: list[dict[str, str]]
-    loaded_source_files: set[str]
+    conflicts: list[dict[str, object]] = field(default_factory=list)
 
 
 def now_kst() -> str:
@@ -355,7 +340,11 @@ def row_has_identifier(base: dict[str, object]) -> bool:
     return any(base.get(col) for col in ("약품코드", "제품", "성분", "브랜드"))
 
 
-def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
+def build_generic_lookup(
+    xlsx_paths: list[Path],
+    *,
+    parquet_root: Path | None = None,
+) -> dict[str, str]:
     """Build a source-derived Generic lookup from workbooks that include it.
 
     The 2026.03/04 UBIST workbooks do not carry the patent block, while the
@@ -366,6 +355,27 @@ def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
 
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     rows_seen = 0
+    if parquet_root is not None and any(parquet_root.glob("year=*/month=*/data.parquet")):
+        parquet_glob = str(parquet_root / "year=*" / "month=*" / "data.parquet")
+        with duckdb.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT "약품코드", "제품", "브랜드", "Generic", count(*) AS occurrences
+                FROM read_parquet(?, union_by_name=true)
+                WHERE "Generic" IS NOT NULL
+                  AND trim(CAST("Generic" AS VARCHAR)) <> ''
+                GROUP BY ALL
+                """,
+                [parquet_glob],
+            ).fetchall()
+        for code, product, brand, generic_value, occurrences in existing:
+            generic = normalize_generic_value(generic_value)
+            if not generic:
+                continue
+            base = {"약품코드": code, "제품": product, "브랜드": brand}
+            for key in generic_lookup_keys(base):
+                counts[key][generic] += int(occurrences)
+            rows_seen += int(occurrences)
     for xlsx_path in xlsx_paths:
         workbook = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
         try:
@@ -391,7 +401,11 @@ def build_generic_lookup(xlsx_paths: list[Path]) -> dict[str, str]:
         finally:
             workbook.close()
 
-    lookup = {key: counter.most_common(1)[0][0] for key, counter in counts.items() if counter}
+    lookup = {
+        key: sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        for key, counter in counts.items()
+        if counter
+    }
     LOGGER.info("generic lookup built rows=%s keys=%s", f"{rows_seen:,}", f"{len(lookup):,}")
     return lookup
 
@@ -464,12 +478,8 @@ def prepare_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     return frame.reindex(columns=COLUMNS)
 
 
-def _metric_tuple_key(row: pd.Series) -> tuple[float | None, ...]:
-    values: list[float | None] = []
-    for column in METRIC_COLUMNS:
-        value = row[column]
-        values.append(None if pd.isna(value) else float(value))
-    return tuple(values)
+def _value_tuple_key(row: pd.Series) -> tuple[object, ...]:
+    return tuple(_dedup_key_value(row[column]) for column in VALUE_COLUMNS)
 
 
 def _has_metadata_value(value: object) -> bool:
@@ -491,89 +501,93 @@ def _dedup_key_value(value: object) -> object:
         return None
     if isinstance(value, float) and math.isnan(value):
         return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            pass
     if isinstance(value, str):
         text = unicodedata.normalize("NFC", value.strip())
         return text or None
     return value
 
 
-def fact_metric_key_set(frame: pd.DataFrame) -> set[tuple[object, ...]]:
-    prepared = frame.reindex(columns=BUSINESS_METRIC_COLUMNS)
-    return {
-        tuple(_dedup_key_value(value) for value in row)
-        for row in prepared.itertuples(index=False, name=None)
-    }
-
-
-def fact_metric_source_map(frame: pd.DataFrame) -> dict[tuple[object, ...], set[str]]:
-    prepared = frame.reindex(columns=BUSINESS_METRIC_COLUMNS + ["source_file"])
-    sources: dict[tuple[object, ...], set[str]] = defaultdict(set)
-    for row in prepared.itertuples(index=False, name=None):
-        key = tuple(_dedup_key_value(value) for value in row[:-1])
-        source = _dedup_key_value(row[-1])
-        if source:
-            sources[key].add(str(source))
-    return sources
-
-
-def fact_metric_overlaps(left: pd.DataFrame, right: pd.DataFrame) -> set[tuple[object, ...]]:
-    return fact_metric_key_set(left) & fact_metric_key_set(right)
-
-
 def deduplicate_business_grain(frame: pd.DataFrame, period: str) -> tuple[pd.DataFrame, DedupReport]:
-    """Replace the 2026-02 should_skip workaround with metric-safe grain dedup.
+    """Merge one UBIST business row independently of file names.
 
-    Lineage and static metadata columns are excluded from identity. Rows are
-    collapsed only when the fact grain and metrics are identical, preferring the
-    row with populated patent/PMS/approval metadata and then using the stable
-    ``source_file, source_sheet, source_row_no`` order. If the same fact grain
-    has different metrics, all rows are preserved and the conflict is reported
-    so the loader never hides data loss behind deduplication.
+    The latest ``ingested_at`` wins when values differ. If the latest timestamp
+    contains more than one value set, no deterministic winner exists and the
+    load fails before publishing the partition.
     """
     if frame.empty:
         return frame, DedupReport(period, 0, 0, 0, 0, 0, 0)
 
     work = frame.reindex(columns=COLUMNS).copy()
-    work["_metric_tuple"] = work.apply(_metric_tuple_key, axis=1)
-    metric_counts = work.groupby(BUSINESS_GRAIN_COLUMNS, dropna=False)["_metric_tuple"].nunique()
-    conflict_keys = metric_counts[metric_counts > 1].reset_index()[BUSINESS_GRAIN_COLUMNS]
-    if conflict_keys.empty:
-        work["_metric_conflict"] = False
-    else:
-        conflict_keys = conflict_keys.assign(_metric_conflict=True)
-        work = work.merge(conflict_keys, on=BUSINESS_GRAIN_COLUMNS, how="left")
-        work["_metric_conflict"] = work["_metric_conflict"].fillna(False).astype(bool)
+    work["_value_tuple"] = work.apply(_value_tuple_key, axis=1)
+    retained: list[pd.Series] = []
+    conflicts: list[dict[str, object]] = []
+    duplicate_groups = 0
+    duplicate_rows_removed = 0
+    conflict_rows = 0
 
-    safe = work[~work["_metric_conflict"]]
-    conflicts = work[work["_metric_conflict"]]
-    duplicate_sizes = safe.groupby(BUSINESS_METRIC_COLUMNS, dropna=False).size()
-    duplicate_groups = int((duplicate_sizes > 1).sum())
-    duplicate_rows_removed = int((duplicate_sizes[duplicate_sizes > 1] - 1).sum())
+    for _, group in work.groupby(BUSINESS_GRAIN_COLUMNS, dropna=False, sort=False):
+        value_counts = group["_value_tuple"].value_counts(dropna=False)
+        if len(value_counts) == 1 and len(group) > 1:
+            duplicate_groups += 1
+            duplicate_rows_removed += len(group) - 1
 
-    safe = safe.assign(_static_meta_score=_metadata_completeness_score(safe))
-    stable_safe = safe.sort_values(
-        DEDUP_METADATA_SORT_COLUMNS,
-        ascending=[False, True, True, True],
-        kind="mergesort",
-    )
-    deduped_safe = stable_safe.drop_duplicates(subset=BUSINESS_METRIC_COLUMNS, keep="first")
-    result = pd.concat([deduped_safe, conflicts], ignore_index=True)
-    result = result.drop(columns=["_metric_tuple", "_metric_conflict", "_static_meta_score"], errors="ignore")
-    result = result.sort_values(DEDUP_SORT_COLUMNS, kind="mergesort").reset_index(drop=True)
+        latest_at = group["ingested_at"].max()
+        latest = group[group["ingested_at"] == latest_at]
+        if latest["_value_tuple"].nunique(dropna=False) > 1:
+            identity = {
+                column: _dedup_key_value(group.iloc[0][column])
+                for column in BUSINESS_GRAIN_COLUMNS
+            }
+            raise RuntimeError(
+                "UBIST row conflict has different values at the same ingest time: "
+                f"period={period} ingested_at={latest_at} identity={identity}"
+            )
+
+        winner = latest.iloc[-1]
+        retained.append(winner)
+        if len(value_counts) > 1:
+            conflict_rows += len(group)
+            discarded = group.drop(index=winner.name)
+            conflicts.append(
+                {
+                    "identity": {
+                        column: _dedup_key_value(winner[column])
+                        for column in BUSINESS_GRAIN_COLUMNS
+                    },
+                    "winner": {
+                        column: _dedup_key_value(winner[column])
+                        for column in VALUE_COLUMNS + LINEAGE_COLUMNS
+                    },
+                    "discarded": [
+                        {
+                            column: _dedup_key_value(row[column])
+                            for column in VALUE_COLUMNS + LINEAGE_COLUMNS
+                        }
+                        for _, row in discarded.iterrows()
+                    ],
+                }
+            )
+
+    result = pd.DataFrame(retained).drop(columns=["_value_tuple"], errors="ignore")
+    result = result.sort_values(BUSINESS_GRAIN_COLUMNS + ["ingested_at"], kind="mergesort").reset_index(drop=True)
     report = DedupReport(
         period=period,
         rows_before=len(frame),
         rows_after=len(result),
         duplicate_groups=duplicate_groups,
         duplicate_rows_removed=duplicate_rows_removed,
-        conflict_groups=len(conflict_keys),
-        conflict_rows=len(conflicts),
+        conflict_groups=len(conflicts),
+        conflict_rows=conflict_rows,
+        conflicts=conflicts,
     )
     if report.conflict_groups:
-        # Metric conflicts are never collapsed; warning keeps the data visible
-        # while making the collision auditable in loader logs and reports.
         LOGGER.warning(
-            "UBIST metric conflicts preserved period=%s groups=%s rows=%s",
+            "UBIST value conflicts resolved by ingested_at period=%s groups=%s rows=%s",
             period,
             report.conflict_groups,
             report.conflict_rows,
@@ -590,17 +604,20 @@ def deduplicate_business_grain(frame: pd.DataFrame, period: str) -> tuple[pd.Dat
     return result.reindex(columns=COLUMNS), report
 
 
-def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
+def deduplicate_partition_file(
+    path: Path,
+    period: str,
+    *,
+    additional_paths: tuple[Path, ...] = (),
+) -> DedupReport:
     temp_path = path.with_suffix(".dedup.tmp")
     quoted_columns = ", ".join(f'"{column}"' for column in COLUMNS)
     grain_columns = ", ".join(f'"{column}"' for column in BUSINESS_GRAIN_COLUMNS)
-    metric_columns = ", ".join(f'"{column}"' for column in METRIC_COLUMNS)
-    business_metric_columns = ", ".join(f'"{column}"' for column in BUSINESS_METRIC_COLUMNS)
-    stable_order = ", ".join(f'"{column}" ASC NULLS LAST' for column in DEDUP_SORT_COLUMNS)
-    metadata_score = " + ".join(
-        f"CASE WHEN \"{column}\" IS NOT NULL AND trim(CAST(\"{column}\" AS VARCHAR)) <> '' THEN 1 ELSE 0 END"
-        for column in STATIC_METADATA_COLUMNS
-    ) or "0"
+    value_columns = ", ".join(f'"{column}"' for column in VALUE_COLUMNS)
+    output_order = ", ".join(
+        [f'"{column}" ASC NULLS LAST' for column in BUSINESS_GRAIN_COLUMNS]
+        + ['"ingested_at" ASC NULLS LAST', "_source_ordinal ASC"]
+    )
 
     with tempfile.TemporaryDirectory(prefix="ubist-dedup-", dir=path.parent) as work_dir_name:
         work_dir = Path(work_dir_name)
@@ -618,30 +635,60 @@ def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
                 SELECT
                   {quoted_columns},
                   row_number() OVER () AS _source_ordinal,
-                  ({metadata_score}) AS _static_meta_score,
-                  count(DISTINCT row({metric_columns})) OVER (
+                  count(DISTINCT row({value_columns})) OVER (
                     PARTITION BY {grain_columns}
-                  ) AS _metric_variants
+                  ) AS _value_variants,
+                  count(*) OVER (
+                    PARTITION BY {grain_columns}
+                  ) AS _grain_size,
+                  max("ingested_at") OVER (
+                    PARTITION BY {grain_columns}
+                  ) AS _latest_ingested_at
                 FROM read_parquet(?)
                 """,
-                [str(path)],
+                [[str(path), *(str(item) for item in additional_paths)]],
             )
             connection.execute(
                 f"""
-                CREATE TABLE safe_ranked AS
+                CREATE TABLE ranked AS
                 SELECT
                   *,
-                  count(*) OVER (
-                    PARTITION BY {business_metric_columns}
-                  ) AS _duplicate_size,
                   row_number() OVER (
-                    PARTITION BY {business_metric_columns}
-                    ORDER BY _static_meta_score DESC, {stable_order}, _source_ordinal ASC
-                  ) AS _duplicate_rank
+                    PARTITION BY {grain_columns}
+                    ORDER BY "ingested_at" DESC NULLS LAST, _source_ordinal DESC
+                  ) AS _winner_rank
                 FROM annotated
-                WHERE _metric_variants = 1
                 """
             )
+            ambiguous = connection.execute(
+                f"""
+                SELECT {grain_columns}, _latest_ingested_at
+                FROM annotated
+                WHERE "ingested_at" = _latest_ingested_at
+                GROUP BY {grain_columns}, _latest_ingested_at
+                HAVING count(DISTINCT row({value_columns})) > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if ambiguous is not None:
+                raise RuntimeError(
+                    "UBIST row conflict has different values at the same ingest time: "
+                    f"period={period} identity_and_time={ambiguous}"
+                )
+
+            conflict_frame = connection.execute(
+                f"""
+                SELECT {quoted_columns}
+                FROM annotated
+                WHERE _value_variants > 1
+                ORDER BY _source_ordinal
+                """
+            ).df()
+            if conflict_frame.empty:
+                conflict_details: list[dict[str, object]] = []
+            else:
+                _, conflict_report = deduplicate_business_grain(conflict_frame, period)
+                conflict_details = conflict_report.conflicts
             (
                 rows_before,
                 conflict_groups,
@@ -653,12 +700,12 @@ def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
                 f"""
                 SELECT
                   (SELECT count(*) FROM annotated),
-                  (SELECT count(DISTINCT row({grain_columns})) FROM annotated WHERE _metric_variants > 1),
-                  (SELECT count(*) FROM annotated WHERE _metric_variants > 1),
-                  (SELECT count(*) FROM safe_ranked WHERE _duplicate_rank = 1 AND _duplicate_size > 1),
-                  (SELECT coalesce(sum(_duplicate_size - 1), 0) FROM safe_ranked WHERE _duplicate_rank = 1),
-                  (SELECT count(*) FROM annotated WHERE _metric_variants > 1)
-                    + (SELECT count(*) FROM safe_ranked WHERE _duplicate_rank = 1)
+                  (SELECT count(DISTINCT row({grain_columns})) FROM annotated WHERE _value_variants > 1),
+                  (SELECT count(*) FROM annotated WHERE _value_variants > 1),
+                  (SELECT count(*) FROM ranked WHERE _winner_rank = 1 AND _value_variants = 1 AND _grain_size > 1),
+                  (SELECT coalesce(sum(_grain_size - 1), 0) FROM ranked
+                    WHERE _winner_rank = 1 AND _value_variants = 1),
+                  (SELECT count(*) FROM ranked WHERE _winner_rank = 1)
                 """
             ).fetchone()
             temp_sql = str(temp_path).replace("'", "''")
@@ -666,16 +713,9 @@ def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
                 f"""
                 COPY (
                   SELECT {quoted_columns}
-                  FROM (
-                    SELECT {quoted_columns}, _source_ordinal
-                    FROM annotated
-                    WHERE _metric_variants > 1
-                    UNION ALL
-                    SELECT {quoted_columns}, _source_ordinal
-                    FROM safe_ranked
-                    WHERE _duplicate_rank = 1
-                  ) AS retained
-                  ORDER BY {stable_order}, _source_ordinal ASC
+                  FROM ranked
+                  WHERE _winner_rank = 1
+                  ORDER BY {output_order}
                 ) TO '{temp_sql}' (FORMAT PARQUET, COMPRESSION SNAPPY)
                 """
             )
@@ -690,11 +730,12 @@ def deduplicate_partition_file(path: Path, period: str) -> DedupReport:
         duplicate_rows_removed=int(duplicate_rows_removed),
         conflict_groups=int(conflict_groups),
         conflict_rows=int(conflict_rows),
+        conflicts=conflict_details,
     )
     temp_path.replace(path)
     if report.conflict_groups:
         LOGGER.warning(
-            "UBIST metric conflicts preserved period=%s groups=%s rows=%s",
+            "UBIST value conflicts resolved by ingested_at period=%s groups=%s rows=%s",
             period,
             report.conflict_groups,
             report.conflict_rows,
@@ -728,14 +769,24 @@ class PartitionWriter:
         path = self._path_for(period)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and period not in self.loaded_existing:
-            existing = pq.read_table(path).select(COLUMNS)
-            path.unlink()
-            writer = pq.ParquetWriter(path, SCHEMA, compression="snappy")
-            writer.write_table(existing)
+            incoming_path = path.with_name("data.incoming.parquet")
+            if incoming_path.exists():
+                incoming_path.unlink()
+            writer = pq.ParquetWriter(incoming_path, SCHEMA, compression="snappy")
             stats = self.stats[period]
-            stats.row_count += existing.num_rows
-            if "source_file" in existing.column_names:
-                stats.source_files.update(str(value.as_py()) for value in existing["source_file"].unique() if value.as_py())
+            stats.row_count += pq.ParquetFile(path).metadata.num_rows
+            with duckdb.connect() as connection:
+                stats.source_files.update(
+                    row[0]
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT source_file
+                        FROM read_parquet(?)
+                        WHERE source_file IS NOT NULL
+                        """,
+                        [str(path)],
+                    ).fetchall()
+                )
             self.loaded_existing.add(period)
         else:
             writer = pq.ParquetWriter(path, SCHEMA, compression="snappy")
@@ -772,12 +823,26 @@ def deduplicate_written_partitions(target: Path, stats: dict[str, PartitionStats
         path = PartitionWriter(target)._path_for(period)
         if not path.exists():
             continue
+        incoming_path = path.with_name("data.incoming.parquet")
+        additional_paths = (incoming_path,) if incoming_path.exists() else ()
         LOGGER.info("UBIST partition dedup start period=%s path=%s", period, path)
-        report = deduplicate_partition_file(path, period)
+        report = deduplicate_partition_file(path, period, additional_paths=additional_paths)
+        for additional_path in additional_paths:
+            additional_path.unlink(missing_ok=True)
         reports.append(report)
-        table = pq.read_table(path, columns=["source_file"])
-        stats[period].row_count = table.num_rows
-        stats[period].source_files = {str(value.as_py()) for value in table["source_file"].unique() if value.as_py()}
+        stats[period].row_count = pq.ParquetFile(path).metadata.num_rows
+        with duckdb.connect() as connection:
+            stats[period].source_files = {
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT DISTINCT source_file
+                    FROM read_parquet(?)
+                    WHERE source_file IS NOT NULL
+                    """,
+                    [str(path)],
+                ).fetchall()
+            }
     total_removed = sum(report.duplicate_rows_removed for report in reports)
     total_conflicts = sum(report.conflict_groups for report in reports)
     if total_removed or total_conflicts:
@@ -838,7 +903,7 @@ def load_to_parquet(
     buffers: dict[str, list[dict[str, object]]] = defaultdict(list)
     writer = PartitionWriter(tmp_target)
     total_rows = 0
-    generic_lookup = build_generic_lookup(xlsx_paths)
+    generic_lookup = build_generic_lookup(xlsx_paths, parquet_root=tmp_target)
     try:
         for idx, xlsx_path in enumerate(xlsx_paths, start=1):
             LOGGER.info("[%s/%s] reading %s", idx, len(xlsx_paths), xlsx_path)
@@ -864,6 +929,13 @@ def load_to_parquet(
         len(writer.stats),
     )
     deduplicate_written_partitions(tmp_target, writer.stats)
+    removed_periods = prune_ubist_partitions(tmp_target)
+    if removed_periods:
+        LOGGER.info(
+            "UBIST load retention removed oldest partitions count=%s periods=%s",
+            len(removed_periods),
+            list(removed_periods),
+        )
     write_manifest(tmp_target, writer.stats, xlsx_paths, previous_manifest=previous_manifest)
 
     if target.exists():
@@ -883,6 +955,29 @@ def partition_path(period: str) -> str:
     return f"year={year}/month={month}/data.parquet"
 
 
+def prune_ubist_partitions(
+    target: Path,
+    *,
+    retention_months: int = UBIST_LOAD_RETENTION_MONTHS,
+) -> tuple[str, ...]:
+    """Keep the latest configured load partitions in a candidate tree."""
+    partitions: list[tuple[str, Path]] = []
+    for path in target.glob("year=*/month=*/data.parquet"):
+        year = path.parent.parent.name.removeprefix("year=")
+        month = path.parent.name.removeprefix("month=")
+        if len(year) == 4 and len(month) == 2 and year.isdigit() and month.isdigit():
+            partitions.append((f"{year}-{month}", path.parent))
+    partitions.sort(key=lambda item: item[0])
+    remove_count = max(0, len(partitions) - retention_months)
+    removed = tuple(period for period, _ in partitions[:remove_count])
+    for _, month_dir in partitions[:remove_count]:
+        shutil.rmtree(month_dir)
+        year_dir = month_dir.parent
+        if not any(year_dir.iterdir()):
+            year_dir.rmdir()
+    return removed
+
+
 def write_manifest(
     target: Path,
     stats: dict[str, PartitionStats],
@@ -895,7 +990,9 @@ def write_manifest(
     if previous_manifest:
         for entry in previous_manifest.get("partitions", []):
             if isinstance(entry, dict) and entry.get("period_yyyymm"):
-                previous_partitions[str(entry["period_yyyymm"])] = dict(entry)
+                period = str(entry["period_yyyymm"])
+                if (target / partition_path(period)).exists():
+                    previous_partitions[period] = dict(entry)
     partition_entries = previous_partitions
     for period in sorted(stats):
         partition_entries[period] = {
@@ -925,10 +1022,11 @@ def write_manifest(
         "dedup_identity": {
             "fact_grain_columns": BUSINESS_GRAIN_COLUMNS,
             "metric_columns": METRIC_COLUMNS,
+            "patent_value_columns": PATENT_DIMENSIONS,
             "excluded_lineage_columns": LINEAGE_COLUMNS,
-            "excluded_static_metadata_columns": STATIC_METADATA_COLUMNS,
-            "static_metadata_policy": "prefer populated metadata, then source_file/source_sheet/source_row_no",
-            "metric_conflict_policy": "preserve all rows and report conflicts",
+            "winner_policy": "latest ingested_at; fail when latest timestamp has different values",
+            "filename_policy": "record lineage only; never select or skip rows",
+            "conflict_policy": "record identity, winner, and discarded values",
         },
         "dimension_duplicate_policy": {
             "decision": "collapse_duplicate_semantic_headers",
@@ -985,162 +1083,6 @@ def read_manifest(target: Path) -> dict[str, object]:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
-def manifest_source_files(manifest: dict[str, object]) -> set[str]:
-    return {
-        normalized_source_file(source)
-        for entry in manifest.get("partitions", [])
-        if isinstance(entry, dict)
-        for source in entry.get("source_files", [])
-    }
-
-
-def summarize_source(path: Path) -> SourceSummary:
-    periods: set[str] = set()
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    try:
-        for sheet_name in workbook.sheetnames:
-            worksheet = workbook[sheet_name]
-            rows_iter = worksheet.iter_rows(values_only=True)
-            try:
-                header1 = next(rows_iter)
-                header2 = next(rows_iter)
-            except StopIteration:
-                continue
-            mapping = classify_sheet(sheet_name, header1, header2)
-            periods.update(period for _, _, _, period in mapping.metric_cols)
-    finally:
-        workbook.close()
-    return SourceSummary(
-        path=path,
-        source_file=normalized_source_file(path),
-        source_folder=unicodedata.normalize("NFC", source_folder_for(path)),
-        periods=tuple(sorted(periods)),
-    )
-
-
-def existing_partition_for(target: Path, period: str) -> Path:
-    year, month = period.split("-")
-    return target / f"year={year}" / f"month={month}" / "data.parquet"
-
-
-def source_period_frame(path: Path, period: str) -> pd.DataFrame:
-    rows = [row for row_period, row in iter_xlsx_rows(path) if row_period == period]
-    return prepare_frame(rows)
-
-
-def source_period_frames(path: Path, periods: set[str]) -> dict[str, pd.DataFrame]:
-    rows_by_period: dict[str, list[dict[str, object]]] = {period: [] for period in periods}
-    for row_period, row in iter_xlsx_rows(path):
-        if row_period in rows_by_period:
-            rows_by_period[row_period].append(row)
-    return {period: prepare_frame(rows) for period, rows in rows_by_period.items()}
-
-
-def incremental_plan(xlsx_paths: list[Path], target: Path) -> IncrementalPlan:
-    manifest = read_manifest(target)
-    loaded = manifest_source_files(manifest)
-    summaries = [summarize_source(path) for path in xlsx_paths]
-    add = [summary for summary in summaries if summary.source_file not in loaded]
-    skip = [summary for summary in summaries if summary.source_file in loaded]
-
-    known_paths = {normalized_source_file(path): path for path in xlsx_paths}
-    if UBIST_ROOT.exists():
-        for path in UBIST_ROOT.rglob("*.xlsx"):
-            if not path.name.startswith("~$"):
-                known_paths.setdefault(normalized_source_file(path), path.resolve())
-    by_name = {summary.source_file: summary for summary in summaries}
-    existing: list[SourceSummary] = []
-    for name in sorted(loaded):
-        if name in by_name:
-            existing.append(by_name[name])
-        elif name in known_paths:
-            existing.append(summarize_source(known_paths[name]))
-    conflicts = detect_period_conflicts(add, existing)
-    conflicts.extend(detect_content_overlaps(add, target))
-    return IncrementalPlan(add=add, skip=skip, conflicts=conflicts, loaded_source_files=loaded)
-
-
-def detect_period_conflicts(add: list[SourceSummary], existing: list[SourceSummary]) -> list[dict[str, str]]:
-    conflicts: list[dict[str, str]] = []
-    seen: dict[tuple[str, str], SourceSummary] = {}
-
-    # 같은 원천 폴더에서 같은 월을 두 파일이 제공하면 실제 metric-key 충돌
-    # 가능성이 높다. 예: 종병 2501-07과 종병 2507-12의 2025-07 겹침.
-    for summary in existing + add:
-        for period in summary.periods:
-            key = (summary.source_folder, period)
-            previous = seen.get(key)
-            if previous and (summary in add or previous in add):
-                conflicts.append(
-                    {
-                        "period_yyyymm": period,
-                        "source_folder": summary.source_folder,
-                        "left": previous.source_file,
-                        "right": summary.source_file,
-                        "reason": "same source_folder period overlap",
-                    }
-                )
-            else:
-                seen[key] = summary
-    return conflicts
-
-
-def detect_content_overlaps(add: list[SourceSummary], target: Path) -> list[dict[str, str]]:
-    conflicts: list[dict[str, str]] = []
-    existing_cache: dict[str, tuple[pd.DataFrame, dict[tuple[object, ...], set[str]]]] = {}
-
-    for summary in add:
-        existing_periods = {period for period in summary.periods if existing_partition_for(target, period).exists()}
-        if not existing_periods:
-            continue
-        frames_by_period = source_period_frames(summary.path, existing_periods)
-        for period in sorted(existing_periods):
-            partition = existing_partition_for(target, period)
-            if period not in existing_cache:
-                existing_frame = pq.read_table(partition, columns=BUSINESS_METRIC_COLUMNS + ["source_file"]).to_pandas()
-                existing_cache[period] = (existing_frame, fact_metric_source_map(existing_frame))
-            existing_frame, source_map = existing_cache[period]
-            candidate_frame = frames_by_period[period]
-            overlaps = fact_metric_overlaps(existing_frame, candidate_frame)
-            if not overlaps:
-                continue
-            left_sources = sorted({source for key in overlaps for source in source_map.get(key, set())})
-            conflicts.append(
-                {
-                    "period_yyyymm": period,
-                    "source_folder": summary.source_folder,
-                    "left": ", ".join(left_sources[:5]) if left_sources else "existing partition",
-                    "right": summary.source_file,
-                    "reason": "content-level fact+metric overlap",
-                    "overlap_keys": str(len(overlaps)),
-                }
-            )
-    return conflicts
-
-
-def print_incremental_plan(plan: IncrementalPlan) -> None:
-    print("# UBIST Incremental Plan\n")
-    print(f"- loaded source files in manifest: {len(plan.loaded_source_files)}")
-    print(f"- add candidates: {len(plan.add)}")
-    print(f"- skipped already loaded: {len(plan.skip)}")
-    print(f"- conflicts: {len(plan.conflicts)}\n")
-
-    print("## ADD")
-    for summary in plan.add:
-        print(f"- {summary.path} | periods={summary.periods[0]}..{summary.periods[-1]} ({len(summary.periods)})")
-    print("\n## SKIP")
-    for summary in plan.skip:
-        print(f"- {summary.path}")
-    if plan.conflicts:
-        print("\n## CONFLICTS")
-        for conflict in plan.conflicts:
-            print(
-                "- {period_yyyymm} | {source_folder} | {left} <> {right} | {reason}".format(
-                    **conflict
-                )
-            )
-
-
 def run_incremental_ubist_load(
     *,
     target: Path,
@@ -1149,7 +1091,6 @@ def run_incremental_ubist_load(
     file: Path | None = None,
     all_sources: bool = True,
     dry: bool = False,
-    allow_overlap_dedup: bool = False,
 ) -> dict[str, PartitionStats]:
     args = argparse.Namespace(
         all=all_sources,
@@ -1162,23 +1103,17 @@ def run_incremental_ubist_load(
         incremental=True,
     )
     xlsx_paths = [p.resolve() for p in paths] if paths is not None else discover_xlsx(args)
+    if not xlsx_paths:
+        raise RuntimeError("No xlsx files selected for UBIST incremental load")
     manifest = read_manifest(target)
-    plan = incremental_plan(xlsx_paths, target)
-    print_incremental_plan(plan)
     if dry:
-        return {}
-    if plan.conflicts and not allow_overlap_dedup:
-        raise RuntimeError("UBIST incremental load stopped: period conflicts found")
-    if plan.conflicts and allow_overlap_dedup:
-        LOGGER.warning(
-            "UBIST incremental period conflicts allowed for append+dedup conflicts=%s",
-            len(plan.conflicts),
-        )
-    if not plan.add:
-        LOGGER.info("UBIST incremental load has no new source files target=%s", target)
+        print("# UBIST Incremental Row Merge\n")
+        print(f"- selected workbooks: {len(xlsx_paths)}")
+        for path in xlsx_paths:
+            print(f"- {path}")
         return {}
     return load_to_parquet(
-        [summary.path for summary in plan.add],
+        xlsx_paths,
         target,
         mode="append",
         truncate=True,
@@ -1192,12 +1127,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     source.add_argument("--folder", help="Folder containing UBIST xlsx files")
     source.add_argument("--file", help="Single UBIST xlsx file")
     source.add_argument("--all", action="store_true", help="Load all xlsx files below data/UBIST")
-    parser.add_argument("--incremental", action="store_true", help="Compare source files to target _manifest.json and append only new files")
-    parser.add_argument(
-        "--allow-overlap-dedup",
-        action="store_true",
-        help="Allow same-folder period overlap during incremental append; partition dedup keeps identical business+metric rows.",
-    )
+    parser.add_argument("--incremental", action="store_true", help="Merge all selected workbook rows into existing partitions")
     parser.add_argument("--dry-run", action="store_true", help="Analyze schema and sample rows without writing")
     parser.add_argument("--truncate", action="store_true", help="Replace the existing output/ubist target")
     parser.add_argument("--mode", choices=["replace", "append"], default="replace")
@@ -1217,7 +1147,6 @@ def main(argv: list[str]) -> int:
                 target=Path(args.target_dir),
                 paths=xlsx_paths,
                 dry=args.dry_run,
-                allow_overlap_dedup=args.allow_overlap_dedup,
             )
             if not args.dry_run:
                 LOGGER.info("partition summary")

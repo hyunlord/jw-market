@@ -237,7 +237,7 @@ def test_real_load_flattens_production_ubist_to_reader_root(tmp_path, bucket, mo
     assert result["staging_verify"] is False
 
 
-def test_real_load_enables_overlap_dedup_only_for_shadow(tmp_path, bucket, monkeypatch):
+def test_real_load_uses_same_row_merge_contract_for_shadow(tmp_path, bucket, monkeypatch):
     manifest = _manifest(bucket, epoch="2026-03")
     monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
     monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
@@ -258,7 +258,7 @@ def test_real_load_enables_overlap_dedup_only_for_shadow(tmp_path, bucket, monke
         target_dir_override=tmp_path / "shadow-candidate",
     )
 
-    assert "--allow-overlap-dedup" in seen["argv"]
+    assert "--allow-overlap-dedup" not in seen["argv"]
 
 
 def test_real_load_silent_failure_is_caught(staging_env, bucket, monkeypatch):
