@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-import pytest
-
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 from jw_chat_agent_poc.orchestrator.markdown_renderers import market_members_md
 from jw_chat_agent_poc.orchestrator.provenance_model import sanitize_internal_provenance_labels
@@ -92,16 +90,14 @@ def test_iqvia_recent_year_uses_four_observed_quarters_without_monthly_interpola
     assert "월별 데이터가 부족" not in result["answer"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F67 root: the human-readable strategic market label is not persisted before ml_NNN sanitation",
-)
 def test_livalo_market_member_answer_keeps_a_human_readable_market_name() -> None:
-    live_shape = "ml_006 시장의 구성 브랜드를 전략 mart에서 조회했습니다."
+    readable_shape = "고지혈증 시장의 구성 브랜드를 전략 mart에서 조회했습니다."
+    internal_id_shape = "ml_006 시장의 구성 브랜드를 전략 mart에서 조회했습니다."
 
-    public_answer = sanitize_internal_provenance_labels(live_shape)
+    public_answer = sanitize_internal_provenance_labels(readable_shape)
 
     assert public_answer == "고지혈증 시장의 구성 브랜드를 전략 mart에서 조회했습니다."
+    assert sanitize_internal_provenance_labels(internal_id_shape).startswith("— 시장의")
 
 
 def test_fifty_member_request_explains_the_fixed_twenty_row_policy() -> None:

@@ -114,6 +114,7 @@ class MarketScopeResolver:
                     resolution.canonical_brand,
                     view_type,
                     started_at=started_at,
+                    market_display_name=resolution.market_name,
                 )
             snapshot = self._cache.snapshot()
             card = find_brand_card(snapshot.market_status, resolution.canonical_brand)
@@ -220,6 +221,7 @@ class MarketScopeResolver:
             "market_landscape",
             started_at=started_at,
             use_mart=True,
+            market_display_name=resolution.market_name,
         )
 
     def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
@@ -363,8 +365,9 @@ class MarketScopeResolver:
         call["render_data"] = data
         if member_query:
             qualifier = "상위 5개 밖의 " if data.get("other_members_only") else ""
+            market_subject = market_name if market_name.endswith("시장") else f"{market_name} 시장"
             call["summary_text"] = (
-                f"{market_name} 시장의 {qualifier}구성 브랜드를 전략 mart에서 조회했습니다. "
+                f"{market_subject}의 {qualifier}구성 브랜드를 전략 mart에서 조회했습니다. "
                 f"총 {int(data.get('total_brands_in_market') or 0):,}개 중 "
                 f"{int(data.get('displayed_brand_count') or 0):,}개 표시"
             )
