@@ -59,11 +59,12 @@ tests/deploy/test_strategic_reload_publish.py::test_publish_calls_atomic_rename_
 tests/deploy/test_strategic_reload_publish.py::test_publish_restores_successful_backups_after_later_failure
 ```
 
-The measured baseline changed from `2218 collected / 2205 passed / 8 failed /
-5 skipped` to `2227 collected / 2217 passed / 5 failed / 5 skipped`. The five
-remaining failures are the unchanged `brand_activity/test_auto_topic_core.py`
-node IDs recorded in the baseline JSON; this change does not waive or modify
-them.
+Runtime materialization added five more fail-closed cases without changing the
+failure set. The measured baseline changed from `2218 collected / 2205 passed /
+8 failed / 5 skipped` to `2232 collected / 2222 passed / 5 failed / 5
+skipped`. The five remaining failures are the unchanged
+`brand_activity/test_auto_topic_core.py` node IDs recorded in the baseline
+JSON; this change does not waive or modify them.
 
 ## Audit evidence
 
