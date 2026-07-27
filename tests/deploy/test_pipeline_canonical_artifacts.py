@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_SHA256 = {
     "pipeline/scripts/deploy/brand_activity_307/row_topic_monthly_wrapper.py": (
-        "01471fb2269fe6b47d2217cf4052fa83c8628cc47f7d4d7823cf513bc6fe7db0"
+        "e2ad7cd64410b75f2d0c993ce64fb5fb4fa81d2c2ae7c373f59fb20daa5e308d"
     ),
     "pipeline/scripts/agent3/ops/run_agent3_strategic_chunks.py": (
         "7fc704cae11af5af331b0ad3312150e5f650c5ed63b204dc62ea7a339bca1d54"

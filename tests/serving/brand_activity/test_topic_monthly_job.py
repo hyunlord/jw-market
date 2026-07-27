@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from types import TracebackType
 
 import pytest
 
@@ -37,6 +39,172 @@ def test_preflight_starts_when_input_changed() -> None:
 
     assert decision.action is topic_monthly_job.PreflightAction.START
     assert decision.current.stage_hash_fingerprint == "fp-next"
+
+
+def test_main_records_normal_noop_without_starting_topic_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unchanged producer input leaves a durable B outcome and still exits zero."""
+    observations: list[tuple[str, str]] = []
+    current = topic_monthly_job.StageFingerprint(
+        row_count=29346,
+        stage_hash_fingerprint="fp-current",
+    )
+    stored = topic_monthly_job.StoredFingerprint(
+        run_id="previous-run",
+        input_fingerprint="fp-current",
+    )
+    monkeypatch.setattr(topic_monthly_job, "_config_from_env", topic_monthly_job.JobConfig)
+    monkeypatch.setattr(topic_monthly_job, "connect_mariadb", lambda: _Connection())
+    monkeypatch.setattr(topic_monthly_job, "fetch_stage_fingerprint", lambda *_args, **_kwargs: current)
+    monkeypatch.setattr(topic_monthly_job, "fetch_last_stored_fingerprint", lambda *_args, **_kwargs: stored)
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "_record_producer_observation",
+        lambda *, status, fingerprint, reason: observations.append((status, reason)),
+    )
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "run_topic_job",
+        lambda *_args, **_kwargs: pytest.fail("no-op must not start a topic run"),
+    )
+
+    assert topic_monthly_job.main() == 0
+    assert observations == [
+        (topic_monthly_job.PRODUCER_NOOP, "input_unchanged"),
+    ]
+
+
+def test_main_records_failure_before_returning_existing_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing seed leaves a durable C outcome without changing the producer exit."""
+    observations: list[tuple[str, str]] = []
+    current = topic_monthly_job.StageFingerprint(
+        row_count=29346,
+        stage_hash_fingerprint="fp-current",
+    )
+    monkeypatch.setattr(topic_monthly_job, "_config_from_env", topic_monthly_job.JobConfig)
+    monkeypatch.setattr(topic_monthly_job, "connect_mariadb", lambda: _Connection())
+    monkeypatch.setattr(topic_monthly_job, "fetch_stage_fingerprint", lambda *_args, **_kwargs: current)
+    monkeypatch.setattr(topic_monthly_job, "fetch_last_stored_fingerprint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "_record_producer_observation",
+        lambda *, status, fingerprint, reason: observations.append((status, reason)),
+    )
+
+    assert topic_monthly_job.main() == 1
+    assert observations == [
+        (topic_monthly_job.PRODUCER_FAILED, "fingerprint_seed_missing"),
+    ]
+
+
+def test_main_records_started_then_complete_without_changing_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful producer run keeps exit zero and publishes its lifecycle markers."""
+    observations: list[tuple[str, str]] = []
+    current = topic_monthly_job.StageFingerprint(
+        row_count=30000,
+        stage_hash_fingerprint="fp-next",
+    )
+    stored = topic_monthly_job.StoredFingerprint(
+        run_id="previous-run",
+        input_fingerprint="fp-current",
+    )
+    result = topic_monthly_job.RunResult(
+        run_id="new-run",
+        status="done",
+        executed_call_count=3,
+        artifact_sha256="artifact",
+        db_save_summary={"stored_run_rows": 1, "stored_topic_rows": 2},
+        raw_payload={},
+    )
+    monkeypatch.setattr(topic_monthly_job, "_config_from_env", topic_monthly_job.JobConfig)
+    monkeypatch.setattr(topic_monthly_job, "connect_mariadb", lambda: _Connection())
+    monkeypatch.setattr(topic_monthly_job, "fetch_stage_fingerprint", lambda *_args, **_kwargs: current)
+    monkeypatch.setattr(topic_monthly_job, "fetch_last_stored_fingerprint", lambda *_args, **_kwargs: stored)
+    monkeypatch.setattr(topic_monthly_job, "run_topic_job", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "_record_producer_observation",
+        lambda *, status, fingerprint, reason: observations.append((status, reason)),
+    )
+
+    assert topic_monthly_job.main() == 0
+    assert observations == [
+        (topic_monthly_job.PRODUCER_STARTED, "topic_run_started"),
+        (topic_monthly_job.PRODUCER_COMPLETE, "topic_run_complete"),
+    ]
+
+
+def test_main_records_interrupted_run_before_reraising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer exception leaves C evidence while preserving the existing failure."""
+    observations: list[tuple[str, str]] = []
+    current = topic_monthly_job.StageFingerprint(
+        row_count=30000,
+        stage_hash_fingerprint="fp-next",
+    )
+    stored = topic_monthly_job.StoredFingerprint(
+        run_id="previous-run",
+        input_fingerprint="fp-current",
+    )
+    monkeypatch.setattr(topic_monthly_job, "_config_from_env", topic_monthly_job.JobConfig)
+    monkeypatch.setattr(topic_monthly_job, "connect_mariadb", lambda: _Connection())
+    monkeypatch.setattr(topic_monthly_job, "fetch_stage_fingerprint", lambda *_args, **_kwargs: current)
+    monkeypatch.setattr(topic_monthly_job, "fetch_last_stored_fingerprint", lambda *_args, **_kwargs: stored)
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "run_topic_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(topic_monthly_job.SchedulerError("injected")),
+    )
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "_record_producer_observation",
+        lambda *, status, fingerprint, reason: observations.append((status, reason)),
+    )
+
+    with pytest.raises(topic_monthly_job.SchedulerError, match="injected"):
+        topic_monthly_job.main()
+    assert observations == [
+        (topic_monthly_job.PRODUCER_STARTED, "topic_run_started"),
+        (topic_monthly_job.PRODUCER_FAILED, "topic_run_exception"),
+    ]
+
+
+def test_monthly_observation_key_is_stable_within_utc_month() -> None:
+    observed_at = datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc)
+
+    assert topic_monthly_job._observation_run_id(observed_at) == (
+        "monthly-axis-observation:2026-08"
+    )
+
+
+def test_observation_row_cannot_match_pending_assignment_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = _Cursor()
+    monkeypatch.setattr(topic_monthly_job, "connect_mariadb", lambda: _Connection(cursor))
+    monkeypatch.setattr(topic_monthly_job, "_config_from_env", topic_monthly_job.JobConfig)
+    monkeypatch.setattr(
+        topic_monthly_job,
+        "_observation_run_id",
+        lambda _observed_at=None: "monthly-axis-observation:2026-08",
+    )
+
+    topic_monthly_job._record_producer_observation(
+        status=topic_monthly_job.PRODUCER_NOOP,
+        fingerprint="input-fingerprint",
+        reason="input_unchanged",
+    )
+
+    assert cursor.params is not None
+    assert cursor.params[5] == topic_monthly_job.PRODUCER_NOOP
+    assert cursor.params[6] == topic_monthly_job.ASSIGNMENT_NOT_REQUIRED
+    assert cursor.params[6] not in {"pending", "running", "gap"}
 
 
 def test_run_topic_rpc_extracts_run_id_before_polling(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,3 +274,37 @@ def _mcp_payload(payload: dict[str, object]) -> dict[str, object]:
             "structuredContent": payload,
         }
     }
+
+
+class _Connection:
+    def __init__(self, cursor: "_Cursor | None" = None) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> "_Connection":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def cursor(self) -> "_Cursor":
+        assert self._cursor is not None
+        return self._cursor
+
+
+class _Cursor:
+    def __init__(self) -> None:
+        self.params: tuple[object, ...] | None = None
+
+    def __enter__(self) -> "_Cursor":
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _tb: TracebackType | None,
+    ) -> None:
+        return None
+
+    def execute(self, _sql: str, params: tuple[object, ...]) -> None:
+        self.params = params
