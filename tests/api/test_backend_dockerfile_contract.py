@@ -245,6 +245,30 @@ def test_backend_image_covers_static_pipeline_import_graph() -> None:
     )
 
 
+def test_backend_requirements_include_import_time_etl_dependencies() -> None:
+    """The entrypoint imports these ETL libraries before Uvicorn can start."""
+    requirements = Path("pipeline/scripts/api/requirements.txt").read_text(
+        encoding="utf-8"
+    )
+
+    missing = _missing_import_time_dependencies(requirements)
+    assert not missing, (
+        "API entrypoint dependencies are absent from its image requirements: "
+        f"{', '.join(missing)}"
+    )
+
+
+def _missing_import_time_dependencies(requirements: str) -> tuple[str, ...]:
+    required = ("openpyxl>=3.1", "pyarrow==24.0.0", "duckdb==1.5.4")
+    return tuple(dependency for dependency in required if dependency not in requirements)
+
+
+def test_contract_names_missing_import_time_dependency() -> None:
+    requirements = "openpyxl>=3.1\npyarrow==24.0.0\n"
+
+    assert _missing_import_time_dependencies(requirements) == ("duckdb==1.5.4",)
+
+
 def _write_synthetic_api(
     root: Path,
     *,
