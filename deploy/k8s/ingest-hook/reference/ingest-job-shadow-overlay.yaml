@@ -26,6 +26,8 @@ spec:
               value: /market-output/ubist
             - name: INGEST_SHADOW_CATALOG_ROOT
               value: /market-output/shadow/catalog
+            - name: REQUIRE_CORRECTION_REJECT_GATE
+              value: "0"
           resources:
             requests:
               cpu: "2"

@@ -175,14 +175,14 @@ def test_provenance_is_order_independent_and_queryable() -> None:
         files,
         file_rows={"a.xlsx": 11, "b.xlsx": 22},
         periods={"2026-02", "2026-01"},
-        builder_commit="1234567",
+        builder_commit="1" * 40,
         image_digest="repo/image@sha256:" + ("c" * 64),
     )
     reordered = build_provenance(
         list(reversed(files)),
         file_rows={"b.xlsx": 22, "a.xlsx": 11},
         periods={"2026-01", "2026-02"},
-        builder_commit="1234567",
+        builder_commit="1" * 40,
         image_digest="repo/image@sha256:" + ("c" * 64),
     )
     assert provenance.inventory_sha256 == reordered.inventory_sha256
@@ -208,7 +208,7 @@ def test_provenance_is_order_independent_and_queryable() -> None:
         "ubist",
         provenance.inventory_sha256,
         provenance.inventory_json,
-        "1234567",
+        "1" * 40,
         "repo/image@sha256:" + ("c" * 64),
         "2026-01",
         "2026-02",
@@ -265,12 +265,29 @@ def test_provenance_uses_image_version_as_builder_commit(
     assert provenance.builder_commit == image_commit
 
 
+def test_provenance_rejects_short_commit_when_image_version_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.delenv("BUILD_GIT_SHA", raising=False)
+    monkeypatch.delenv("R1_GIT_COMMIT", raising=False)
+
+    with pytest.raises(ValueError, match="full 40-character"):
+        build_provenance(
+            [_ManifestFile("input.xlsx", "a" * 64, 1)],
+            file_rows={},
+            periods={"2026-Q1"},
+            builder_commit="1234567",
+            image_digest="repo/image@sha256:" + ("c" * 64),
+        )
+
+
 def test_same_provenance_retry_reuses_publication_epoch() -> None:
     provenance = build_provenance(
         [_ManifestFile("a.xlsx", "a" * 64, 1)],
         file_rows={"a.xlsx": 1},
         periods={"2026-01"},
-        builder_commit="1234567",
+        builder_commit="1" * 40,
         image_digest="repo/image@sha256:" + ("c" * 64),
     )
     conn = sqlite3.connect(":memory:")
@@ -307,7 +324,7 @@ def test_provenance_table_name_is_fail_closed(
         [_ManifestFile("a.xlsx", "a" * 64, 1)],
         file_rows={"a.xlsx": 1},
         periods={"2026-01"},
-        builder_commit="1234567",
+        builder_commit="1" * 40,
         image_digest="repo/image@sha256:" + ("c" * 64),
     )
 
@@ -326,7 +343,7 @@ def test_provenance_rejects_mutable_or_missing_image_identity() -> None:
         "files": [_ManifestFile("a.xlsx", "a" * 64, 1)],
         "file_rows": {"a.xlsx": 1},
         "periods": {"2026-01"},
-        "builder_commit": "1234567",
+        "builder_commit": "1" * 40,
     }
 
     with pytest.raises(ValueError, match="immutable ingest image"):

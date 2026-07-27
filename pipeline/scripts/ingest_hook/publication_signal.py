@@ -23,7 +23,6 @@ DEFAULT_PUBLICATION_EPOCH_TABLE: Final = "ingest_publication_state"
 ENV_PUBLICATION_PROVENANCE_TABLE: Final = "INGEST_PUBLICATION_PROVENANCE_TABLE"
 DEFAULT_PUBLICATION_PROVENANCE_TABLE: Final = "mart_publication_provenance"
 _SQL_IDENTIFIER: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_GIT_SHA: Final = re.compile(r"^[0-9a-f]{7,64}$")
 _FULL_GIT_SHA: Final = re.compile(r"^[0-9a-f]{40}$")
 _IMMUTABLE_IMAGE: Final = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 KST: Final = timezone(timedelta(hours=9))
@@ -121,8 +120,10 @@ def _resolve_builder_commit(builder_commit: str | None) -> str:
         ),
         "",
     )
-    if not _GIT_SHA.fullmatch(commit):
-        raise ValueError("builder commit SHA is required for mart publication")
+    if not _FULL_GIT_SHA.fullmatch(commit):
+        raise ValueError(
+            "full 40-character builder commit SHA is required for mart publication"
+        )
     return commit
 
 

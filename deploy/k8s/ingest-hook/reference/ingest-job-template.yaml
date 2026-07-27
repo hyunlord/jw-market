@@ -71,6 +71,9 @@ spec:
               value: ""
             - name: INGEST_COMPLETION_WEBHOOK_ATTEMPTS
               value: "4"
+            # Disabled until the correction-rejection policy is separately approved.
+            - name: REQUIRE_CORRECTION_REJECT_GATE
+              value: "0"
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT

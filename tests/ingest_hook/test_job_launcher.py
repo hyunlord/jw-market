@@ -233,6 +233,7 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     monkeypatch.setenv("MARIADB_HOST", "db.example")
     monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
     monkeypatch.setenv("INGEST_REHEARSAL_ROOT", "/tmp/ingest-rehearsal")
+    monkeypatch.setenv("REQUIRE_CORRECTION_REJECT_GATE", "1")
     monkeypatch.setenv("BUILD_GIT_SHA", "a" * 40)
     monkeypatch.setenv(
         "INGEST_JOB_IMAGE",
@@ -243,6 +244,7 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     by_name = {e["name"]: e for e in env}
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
+    assert by_name["REQUIRE_CORRECTION_REJECT_GATE"]["value"] == "1"
     assert "BUILD_GIT_SHA" not in by_name
     assert by_name["INGEST_JOB_IMAGE"]["value"].endswith("b" * 64)
     assert by_name["MARIADB_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "jw-mart-d2-writer"

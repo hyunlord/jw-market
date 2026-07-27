@@ -31,7 +31,7 @@ from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
-from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
+from pipeline.scripts.ingest_hook.contract import ContractError, Manifest, load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
 from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
 from pipeline.scripts.ingest_hook.post_gate import (
@@ -53,6 +53,12 @@ def _run_id() -> str:
 
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _run_correction_gate(manifest: Manifest) -> None:
+    from pipeline.scripts.ingest_hook.correction_gate import enforce
+
+    enforce(manifest)
 
 
 class _StageTracker:
@@ -496,6 +502,9 @@ def run(
     category_activation_result = None
     try:
         spec = resolve_category(manifest.category)
+        # Run before G3/load and therefore before every filename skip or
+        # INSERT IGNORE path in the source-specific loaders.
+        _run_correction_gate(manifest)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
 
         # 1) G3 — always first; a failure here has zero DB effect.

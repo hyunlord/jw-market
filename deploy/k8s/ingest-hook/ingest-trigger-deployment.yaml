@@ -61,6 +61,10 @@ spec:
               value: "4"
             - name: INGEST_JOB_IMAGE
               value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:651a4cf898f0eee9e63f9ef93fe4be52d557b8f7fa50399994deb089b968c550
+            # 0 preserves legacy behavior: changed same-name inputs may be
+            # silently deduplicated. PL approval is required before setting 1.
+            - name: REQUIRE_CORRECTION_REJECT_GATE
+              value: "0"
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT

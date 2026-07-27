@@ -43,6 +43,8 @@ spec:
               value: mart_publication_epoch
             - name: INGEST_PUBLICATION_PROVENANCE_TABLE
               value: mart_publication_provenance
+            - name: REQUIRE_CORRECTION_REJECT_GATE
+              value: "0"
             - name: INGEST_COMPLETION_WEBHOOK_URL
               value: http://jw-ingest-hook.llmops.svc.cluster.local/ingest/reconcile
           volumeMounts:
