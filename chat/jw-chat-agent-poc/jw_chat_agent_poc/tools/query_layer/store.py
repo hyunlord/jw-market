@@ -550,7 +550,22 @@ def _row_status(row: dict[str, Any]) -> str:
 
 
 def _source_key(value: str) -> str:
-    lowered = str(value or "").lower()
-    if lowered in {"iqvia", "iqvia_nsa"}:
+    """Map a requested source label onto its stored key, rejecting unknown labels.
+
+    An unrecognised label used to fall through to "ubist", so a request for a source that
+    does not exist came back as a full, plausible set of UBIST rows. A trailing-padded
+    IQVIA label was worse still: this function had no strip() and so folded it to ubist,
+    while render.source_label matches on startswith("iqvia"), which trailing padding does
+    not disturb - "iqvia_nsa " therefore returned UBIST rows under an IQVIA heading.
+    Unknown labels now raise, and stripping removes the disagreement between the two rules.
+
+    The message keeps the "source not found" wording that _query_failure_reason already
+    maps to QueryFailureReason.SOURCE_ABSENT, so the tool facade reports a typed
+    reason_code without any change to the caller.
+    """
+    normalized = str(value or "").strip().lower()
+    if normalized in {"iqvia", "iqvia_nsa"}:
         return "iqvia_nsa"
-    return "ubist"
+    if normalized == "ubist":
+        return "ubist"
+    raise ValueError(f"mart source not found: source={value!r}")
