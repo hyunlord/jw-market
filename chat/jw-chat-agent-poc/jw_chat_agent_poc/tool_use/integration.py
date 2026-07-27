@@ -518,7 +518,14 @@ def _disease_query(question: str) -> str | None:
         return disease.query
     tokens = re.findall(r"[가-힣A-Za-z0-9]+", question)
     suffixes = ("증", "병", "암", "염", "장애")
-    suffixed = next((token for token in tokens if len(token) >= 2 and token.endswith(suffixes)), None)
+    normalized_tokens = (
+        re.sub(r"(?:의|은|는|이|가|을|를|에서|에|으로|로)$", "", token)
+        for token in tokens
+    )
+    suffixed = next(
+        (token for token in normalized_tokens if len(token) >= 2 and token.endswith(suffixes)),
+        None,
+    )
     if suffixed is not None:
         return suffixed
     parenthetical_component = re.search(

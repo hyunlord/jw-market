@@ -53,6 +53,7 @@ class HiraDiseaseCodeAbsent:
 
 
 HiraDiseaseCodeResolution: TypeAlias = HiraDiseaseCodeResolved | HiraDiseaseCodeAmbiguous | HiraDiseaseCodeAbsent
+MAX_HIRA_DISEASE_CANDIDATES = 5
 
 
 def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
@@ -430,6 +431,7 @@ def _hira_code_ambiguous_call(
     search_call: ExternalCall,
     candidates: tuple[HiraDiseaseCandidate, ...],
 ) -> ExternalCall:
+    visible_candidates = candidates[:MAX_HIRA_DISEASE_CANDIDATES]
     return ExternalCall(
         tool="hira_disease_code_ambiguous",
         source="hira_disease",
@@ -438,7 +440,10 @@ def _hira_code_ambiguous_call(
         render_data={
             "query": query,
             "reason": "multiple_hira_disease_code_candidates",
-            "candidates": [_candidate_dict(candidate) for candidate in candidates],
+            "candidates": [_candidate_dict(candidate) for candidate in visible_candidates],
+            "candidate_total": len(candidates),
+            "candidate_limit": MAX_HIRA_DISEASE_CANDIDATES,
+            "candidates_truncated": len(candidates) > len(visible_candidates),
             "search": search_call.render_data,
         },
         safe_url=search_call.safe_url,

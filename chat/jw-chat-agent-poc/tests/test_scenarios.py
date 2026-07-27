@@ -161,6 +161,74 @@ def test_direct_disease_name_ambiguity_stops_before_stats() -> None:
         {"sickCd": "E11", "sickNm": "2형 당뇨병"},
     ]
     assert all("stats" not in str(call.get("tool")) for call in result["tool_calls"])
+    assert "E10" in result["answer"]
+    assert "1형 당뇨병" in result["answer"]
+    assert "E11" in result["answer"]
+    assert "2형 당뇨병" in result["answer"]
+    assert "어느 것으로 조회할까요" in result["answer"]
+    assert all("ptntCnt" not in str(call.get("render_data")) for call in result["tool_calls"])
+
+
+def test_diabetic_retinopathy_name_never_broadens_to_type2_diabetes() -> None:
+    class _RetinopathySearchExternal(ExternalApiClient):
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="hira_disease",
+                status="fixture",
+                summary_text="HIRA search_disease_code에서 망막병증 후보 여러 건을 확인했습니다.",
+                render_data={
+                    "totalCount": "3",
+                    "items": [
+                        {"sickCd": "E10.3", "sickNm": "1형 당뇨병·망막병증 동반"},
+                        {"sickCd": "E11.3", "sickNm": "2형 당뇨병·망막병증 동반"},
+                        {"sickCd": "E13.3", "sickNm": "기타 명시된 당뇨병·망막병증 동반"},
+                    ],
+                    "request": {"searchText": sick_cd, "diseaseType": "SICK_NM"},
+                },
+            )
+
+    result = ChatAgent(external=_RetinopathySearchExternal()).answer(
+        "당뇨병성 망막병증의 환자수 통계 알려줘"
+    )
+
+    assert result["tool_calls"][0]["tool"] == "hira_disease_code_ambiguous"
+    assert "E10.3" in result["answer"]
+    assert "E11.3" in result["answer"]
+    assert "E13.3" in result["answer"]
+    assert "가드메트" not in result["answer"]
+    assert all(call.get("tool") != "hira_disease_mapping" for call in result["tool_calls"])
+    assert all("stats" not in str(call.get("tool")) for call in result["tool_calls"])
+
+
+def test_large_disease_candidate_set_is_bounded_without_selecting_one() -> None:
+    class _LargeDiseaseSearchExternal(ExternalApiClient):
+        def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+            return ExternalCall(
+                tool="hira_disease_name_code",
+                source="hira_disease",
+                status="fixture",
+                summary_text="HIRA 상병코드 후보를 확인했습니다.",
+                render_data={
+                    "totalCount": "6",
+                    "items": [
+                        {"sickCd": f"A0{index}", "sickNm": f"후보 질병 {index}"}
+                        for index in range(1, 7)
+                    ],
+                    "request": {"searchText": sick_cd, "diseaseType": "SICK_NM"},
+                },
+            )
+
+    result = ChatAgent(external=_LargeDiseaseSearchExternal()).answer("당뇨병 환자수")
+    call = result["tool_calls"][0]
+
+    assert call["tool"] == "hira_disease_code_ambiguous"
+    assert call["render_data"]["candidate_total"] == 6
+    assert call["render_data"]["candidate_limit"] == 5
+    assert len(call["render_data"]["candidates"]) == 5
+    assert "후보 6건 중 앞의 5건만 표시" in result["answer"]
+    assert "A06" not in result["answer"]
+    assert all("stats" not in str(item.get("tool")) for item in result["tool_calls"])
 
 
 def test_direct_short_disease_code_absence_does_not_widen_to_e11_stats() -> None:

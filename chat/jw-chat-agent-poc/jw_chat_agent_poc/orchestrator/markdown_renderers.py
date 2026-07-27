@@ -367,6 +367,25 @@ def series_md(data: dict[str, Any]) -> str:
 
 
 def hira_md(tool: str, data: dict[str, Any]) -> str:
+    if tool == "hira_disease_code_ambiguous":
+        raw_candidates = data.get("candidates")
+        candidates = raw_candidates if isinstance(raw_candidates, list) else []
+        rows = tuple(
+            (candidate.get("sickCd"), candidate.get("sickNm"))
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        )
+        guidance = "어느 것으로 조회할까요? 후보의 상병코드나 설명을 알려주세요."
+        if data.get("candidates_truncated") is True:
+            total = data.get("candidate_total")
+            guidance = (
+                f"후보 {total}건 중 앞의 {len(rows)}건만 표시했습니다. "
+                "조회할 정확한 상병코드를 알려주세요."
+            )
+        return (
+            table("### HIRA 상병코드 후보", ("상병코드", "설명"), rows)
+            + f"\n\n{guidance}\n\n정확한 상병코드로 다시 물어보실 수도 있습니다."
+        )
     if tool == "hira_disease_mapping":
         total = data.get("mapping_total")
         title = "### HIRA 질병 매핑"

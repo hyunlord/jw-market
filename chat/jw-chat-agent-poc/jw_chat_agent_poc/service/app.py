@@ -62,7 +62,7 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     enforce_market_answer_contract,
     render_same_market_sales_answer,
 )
-from jw_chat_agent_poc.orchestrator.hira_disease import is_hira_disease_question
+from jw_chat_agent_poc.orchestrator.hira_disease import explicit_hira_disease_code, is_hira_disease_question
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.response_format_contract import apply_response_format_contract
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
@@ -89,7 +89,13 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
-from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationStore, ConversationTurn, PendingClarification
+from jw_chat_agent_poc.service.conversation import (
+    ConversationSlots,
+    ConversationStore,
+    ConversationTurn,
+    DiseaseCodeCandidateSlot,
+    PendingClarification,
+)
 from jw_chat_agent_poc.service.conversation_context import (
     extract_conversation_slots,
     requires_previous_turn,
@@ -1466,6 +1472,35 @@ def _answer_with_conversation(
     use_direct_agent_loop: bool = False,
 ) -> dict:
     pending = store.conversations.get_pending(conversation_id)
+    if pending is not None and pending.kind == "hira_disease_code":
+        selected = _select_hira_disease_candidate(question, pending.disease_candidates)
+        if selected is not None:
+            store.conversations.clear_pending(conversation_id)
+            resumed_question = f"질병코드 {selected.sick_cd} 기준으로 {pending.original_question}"
+            return _answer_without_pending(
+                market_scope_resolver,
+                agent_factory,
+                conversation_id,
+                resumed_question,
+                external_mode,
+                documents,
+                store,
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
+        explicit_code = explicit_hira_disease_code(question)
+        if explicit_code is not None:
+            store.conversations.clear_pending(conversation_id)
+            resumed_question = f"질병코드 {explicit_code} 기준으로 {pending.original_question}"
+            return _answer_without_pending(
+                market_scope_resolver,
+                agent_factory,
+                conversation_id,
+                resumed_question,
+                external_mode,
+                documents,
+                store,
+                use_direct_agent_loop=use_direct_agent_loop,
+            )
     if pending is not None and pending.kind == "brand_metric":
         store.conversations.clear_pending(conversation_id)
         if _is_brand_metric_clarification_reply(question, market_scope_resolver):
@@ -1528,9 +1563,105 @@ def _answer_with_conversation(
         store,
         use_direct_agent_loop=use_direct_agent_loop,
     )
+    _store_hira_disease_candidates(store, conversation_id, resolution.resolved_question, result)
     if resolution.interpretation_notice:
         return {**result, "conversation_interpretation": resolution.interpretation_notice}
     return result
+
+
+_DISEASE_ORDINALS = {
+    "첫번째": 0,
+    "첫째": 0,
+    "1번": 0,
+    "두번째": 1,
+    "둘째": 1,
+    "2번": 1,
+    "세번째": 2,
+    "셋째": 2,
+    "3번": 2,
+    "네번째": 3,
+    "넷째": 3,
+    "4번": 3,
+    "다섯번째": 4,
+    "다섯째": 4,
+    "5번": 4,
+}
+
+
+def _select_hira_disease_candidate(
+    reply: str,
+    candidates: tuple[DiseaseCodeCandidateSlot, ...],
+) -> DiseaseCodeCandidateSlot | None:
+    normalized = re.sub(r"\s+", "", reply.strip()).casefold()
+    if not normalized or not candidates:
+        return None
+    for candidate in candidates:
+        code = candidate.sick_cd.casefold()
+        if normalized in {code, code.replace(".", "")}:
+            return candidate
+    ordinal = _DISEASE_ORDINALS.get(normalized)
+    if ordinal is not None and ordinal < len(candidates):
+        return candidates[ordinal]
+    if len(normalized) < 2:
+        return None
+    name_matches = tuple(
+        candidate
+        for candidate in candidates
+        if normalized in re.sub(r"\s+", "", candidate.disease_name).casefold()
+    )
+    return name_matches[0] if len(name_matches) == 1 else None
+
+
+def _store_hira_disease_candidates(
+    store: SessionStore,
+    conversation_id: str,
+    original_question: str,
+    result: Mapping[str, Any],
+) -> None:
+    raw_calls = result.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return
+    candidate_call = next(
+        (
+            call
+            for call in raw_calls
+            if isinstance(call, dict) and call.get("tool") == "hira_disease_code_ambiguous"
+        ),
+        None,
+    )
+    if candidate_call is None:
+        return
+    render_data = candidate_call.get("render_data")
+    raw_candidates = render_data.get("candidates") if isinstance(render_data, dict) else None
+    if not isinstance(raw_candidates, list):
+        return
+    candidates = tuple(
+        DiseaseCodeCandidateSlot(
+            sick_cd=str(candidate["sickCd"]).strip().upper(),
+            disease_name=str(candidate["sickNm"]).strip(),
+        )
+        for candidate in raw_candidates
+        if isinstance(candidate, dict)
+        and isinstance(candidate.get("sickCd"), str)
+        and candidate["sickCd"].strip()
+        and isinstance(candidate.get("sickNm"), str)
+        and candidate["sickNm"].strip()
+    )
+    if not candidates:
+        return
+    expires_at = store.conversations.pending_expiry()
+    store.conversations.set_pending(
+        conversation_id,
+        PendingClarification(
+            kind="hira_disease_code",
+            original_question=original_question,
+            brand="",
+            metric="patient_count",
+            created_at=expires_at - store.conversations.pending_ttl_seconds,
+            expires_at=expires_at,
+            disease_candidates=candidates,
+        ),
+    )
 
 
 def _answer_without_pending(

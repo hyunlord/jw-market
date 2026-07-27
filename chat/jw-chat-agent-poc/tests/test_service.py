@@ -13,6 +13,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     unsupported_brand_result,
     unsupported_hira_interface_result,
 )
+from jw_chat_agent_poc.orchestrator import ChatAgent
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.file_search_client import (
     UploadedFileOverview,
@@ -29,7 +30,7 @@ from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
-from jw_chat_agent_poc.tools.external import ExternalApiClient
+from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 from jw_chat_agent_poc.resolver import AmbiguousBrandError, BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
@@ -58,6 +59,111 @@ def _fake_agent_factory(*, external_mode: str = "live") -> FakeAgent:
 def _market_scope_resolver() -> MarketScopeResolver:
     cache_reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
     return MarketScopeResolver(cache_reader=cache_reader)
+
+
+class _DiseaseCandidateExternal(ExternalApiClient):
+    _CANDIDATES = (
+        ("E10.3", "1형 당뇨병·망막병증 동반"),
+        ("E11.3", "2형 당뇨병·망막병증 동반"),
+        ("E13.3", "기타 명시된 당뇨병·망막병증 동반"),
+    )
+
+    def __init__(self) -> None:
+        super().__init__(mode="fixture")
+        self.name_code_inputs: list[str] = []
+
+    def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+        self.name_code_inputs.append(sick_cd)
+        normalized = sick_cd.upper()
+        matched = [
+            {"sickCd": code, "sickNm": name}
+            for code, name in self._CANDIDATES
+            if normalized == code
+        ]
+        items = matched or [
+            {"sickCd": code, "sickNm": name}
+            for code, name in self._CANDIDATES
+        ]
+        return ExternalCall(
+            tool="hira_disease_name_code",
+            source="hira_disease",
+            status="fixture",
+            summary_text="HIRA 상병코드 후보를 확인했습니다.",
+            render_data={
+                "totalCount": str(len(items)),
+                "items": items,
+                "request": {
+                    "searchText": sick_cd,
+                    "diseaseType": "SICK_CD" if matched else "SICK_NM",
+                },
+            },
+        )
+
+    def hira_disease_hospitalization_outpatient_stats(
+        self,
+        sick_cd: str,
+        year: str = "2024",
+    ) -> ExternalCall:
+        return self._stat_call(sick_cd, year, "inpatOpat", "외래", "12345")
+
+    def hira_disease_gender_age_stats(
+        self,
+        sick_cd: str,
+        year: str = "2024",
+    ) -> ExternalCall:
+        return self._stat_call(sick_cd, year, "age", "전체", "12345")
+
+    def hira_disease_institution_class_stats(
+        self,
+        sick_cd: str,
+        year: str = "2024",
+    ) -> ExternalCall:
+        return self._stat_call(sick_cd, year, "grade", "전체", "12345")
+
+    def hira_disease_area_stats(
+        self,
+        sick_cd: str,
+        year: str = "2024",
+    ) -> ExternalCall:
+        return self._stat_call(sick_cd, year, "lcName", "전국", "12345")
+
+    @staticmethod
+    def _stat_call(
+        sick_cd: str,
+        year: str,
+        label_key: str,
+        label: str,
+        patient_count: str,
+    ) -> ExternalCall:
+        disease_name = next(
+            name
+            for code, name in _DiseaseCandidateExternal._CANDIDATES
+            if code == sick_cd
+        )
+        return ExternalCall(
+            tool={
+                "inpatOpat": "hira_disease_hospitalization_outpatient_stats",
+                "age": "hira_disease_gender_age_stats",
+                "grade": "hira_disease_institution_class_stats",
+                "lcName": "hira_disease_area_stats",
+            }[label_key],
+            source="hira_disease",
+            status="fixture",
+            summary_text=f"{sick_cd} 환자 통계를 확인했습니다.",
+            render_data={
+                "totalCount": "1",
+                "items": [
+                    {
+                        label_key: label,
+                        "sickCd": sick_cd,
+                        "sickNm": disease_name,
+                        "ptntCnt": patient_count,
+                    }
+                ],
+                "year": year,
+                "request": {"sickCd": sick_cd, "year": year},
+            },
+        )
 
 
 def test_market_scope_queries_explicit_strategy_id_without_brand_fallback() -> None:
@@ -3801,6 +3907,217 @@ def test_stream_endpoint_preserves_single_turn_fallback_without_pending() -> Non
     assert response.status_code == 200
     assert "fallback:리바로 매출" in response.text
     assert FakeAgent.calls == [("리바로 매출", "live")]
+
+
+def test_disease_candidates_are_stored_and_direct_code_followup_resumes_stats() -> None:
+    external = _DiseaseCandidateExternal()
+
+    def factory(*, external_mode: str = "live") -> ChatAgent:
+        del external_mode
+        return ChatAgent(external=external)
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+
+    first = service_app._answer_with_conversation(
+        store,
+        resolver,
+        factory,
+        "disease-candidates",
+        "당뇨병성 망막병증의 환자수 통계 알려줘",
+        "fixture",
+        [],
+    )
+
+    pending = store.conversations.get_pending("disease-candidates")
+    assert pending is not None
+    assert pending.kind == "hira_disease_code"
+    assert [candidate.sick_cd for candidate in pending.disease_candidates] == [
+        "E10.3",
+        "E11.3",
+        "E13.3",
+    ]
+    assert "E11.3" in first["answer"]
+    assert "12345" not in first["answer"]
+
+    second = service_app._answer_with_conversation(
+        store,
+        resolver,
+        factory,
+        "disease-candidates",
+        "E11.3",
+        "fixture",
+        [],
+    )
+
+    assert store.conversations.get_pending("disease-candidates") is None
+    assert external.name_code_inputs[-1] == "E11.3"
+    assert "E11.3" in second["answer"]
+    assert "12345" in second["answer"]
+
+
+@pytest.mark.parametrize(("reply", "expected_code"), (("2형", "E11.3"), ("두번째", "E11.3")))
+def test_disease_candidate_followup_accepts_unique_name_or_ordinal(
+    reply: str,
+    expected_code: str,
+) -> None:
+    external = _DiseaseCandidateExternal()
+
+    def factory(*, external_mode: str = "live") -> ChatAgent:
+        del external_mode
+        return ChatAgent(external=external)
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    service_app._answer_with_conversation(
+        store,
+        resolver,
+        factory,
+        f"disease-candidates-{reply}",
+        "당뇨병성 망막병증의 환자수 통계 알려줘",
+        "fixture",
+        [],
+    )
+
+    result = service_app._answer_with_conversation(
+        store,
+        resolver,
+        factory,
+        f"disease-candidates-{reply}",
+        reply,
+        "fixture",
+        [],
+    )
+
+    assert external.name_code_inputs[-1] == expected_code
+    assert expected_code in result["answer"]
+    assert "12345" in result["answer"]
+
+
+def test_direct_disease_code_without_candidate_slot_keeps_existing_path() -> None:
+    external = _DiseaseCandidateExternal()
+
+    def factory(*, external_mode: str = "live") -> ChatAgent:
+        del external_mode
+        return ChatAgent(external=external)
+
+    result = service_app._answer_with_conversation(
+        SessionStore(),
+        _market_scope_resolver(),
+        factory,
+        "no-disease-candidate-slot",
+        "질병코드 E11.3 환자수 통계 알려줘",
+        "fixture",
+        [],
+    )
+
+    assert external.name_code_inputs == ["E11.3"]
+    assert "E11.3" in result["answer"]
+    assert "12345" in result["answer"]
+
+
+def test_indirect_disease_reply_without_candidate_slot_stays_unresolved() -> None:
+    external = _DiseaseCandidateExternal()
+
+    def factory(*, external_mode: str = "live") -> ChatAgent:
+        del external_mode
+        return ChatAgent(external=external)
+
+    result = service_app._answer_with_conversation(
+        SessionStore(),
+        _market_scope_resolver(),
+        factory,
+        "no-disease-candidate-slot",
+        "2형",
+        "fixture",
+        [],
+    )
+
+    assert external.name_code_inputs == []
+    assert "12,345명" not in result["answer"]
+
+
+def test_unmatched_disease_candidate_reply_keeps_pending_slot() -> None:
+    store = SessionStore()
+    external = _DiseaseCandidateExternal()
+
+    def factory(*, external_mode: str = "live") -> ChatAgent:
+        del external_mode
+        return ChatAgent(external=external)
+
+    conversation_id = "disease-candidates-retry"
+    service_app._answer_with_conversation(
+        store,
+        _market_scope_resolver(),
+        factory,
+        conversation_id,
+        "당뇨병성 망막병증의 환자수 통계 알려줘",
+        "fixture",
+        [],
+    )
+    service_app._answer_with_conversation(
+        store,
+        _market_scope_resolver(),
+        factory,
+        conversation_id,
+        "잘 모르겠어요",
+        "fixture",
+        [],
+    )
+
+    pending = store.conversations.get_pending(conversation_id)
+    assert pending is not None
+    assert pending.kind == "hira_disease_code"
+    assert [candidate.sick_cd for candidate in pending.disease_candidates] == [
+        "E10.3",
+        "E11.3",
+        "E13.3",
+    ]
+
+
+def test_exact_hidden_disease_code_uses_direct_path_and_clears_pending_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SessionStore()
+    candidates = (
+        *_DiseaseCandidateExternal._CANDIDATES,
+        ("E14.3", "상세 미상 당뇨병·망막병증 동반"),
+        ("H35.0", "배경망막병증 및 망막혈관 변화"),
+        ("H36.0", "달리 분류된 질환에서의 당뇨병성 망막병증"),
+    )
+    monkeypatch.setattr(_DiseaseCandidateExternal, "_CANDIDATES", candidates)
+    external = _DiseaseCandidateExternal()
+
+    def factory(*, external_mode: str = "live") -> ChatAgent:
+        del external_mode
+        return ChatAgent(external=external)
+
+    conversation_id = "disease-candidates-hidden-exact"
+    first = service_app._answer_with_conversation(
+        store,
+        _market_scope_resolver(),
+        factory,
+        conversation_id,
+        "당뇨병성 망막병증의 환자수 통계 알려줘",
+        "fixture",
+        [],
+    )
+    second = service_app._answer_with_conversation(
+        store,
+        _market_scope_resolver(),
+        factory,
+        conversation_id,
+        "질병코드 H36.0",
+        "fixture",
+        [],
+    )
+
+    assert "후보 6건 중 앞의 5건만 표시" in first["answer"]
+    assert "12345" not in first["answer"]
+    assert external.name_code_inputs[-1] == "H36.0"
+    assert "H36.0" in second["answer"]
+    assert "12345" in second["answer"]
+    assert store.conversations.get_pending(conversation_id) is None
 
 
 def test_answer_question_reuses_previous_ranked_brand_series_for_anaphora() -> None:

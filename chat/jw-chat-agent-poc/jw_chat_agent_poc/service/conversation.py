@@ -184,6 +184,12 @@ class ConversationTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class DiseaseCodeCandidateSlot:
+    sick_cd: str
+    disease_name: str
+
+
+@dataclass(frozen=True, slots=True)
 class PendingClarification:
     kind: str
     original_question: str
@@ -191,6 +197,7 @@ class PendingClarification:
     metric: str
     created_at: float
     expires_at: float
+    disease_candidates: tuple[DiseaseCodeCandidateSlot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
