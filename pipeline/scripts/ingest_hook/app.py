@@ -417,6 +417,69 @@ class IngestService:
         }
 
 
+class _Counterpart:
+    """Result of reading the ledger this pod is not bound to.
+
+    ``available`` is the whole point: entry=None means "no such row there" only
+    when available is True.  When available is False the row is simply unknown,
+    and the two must never be reported through the same field.
+    """
+
+    __slots__ = ("ledger", "entry", "available", "error")
+
+    def __init__(self, ledger=None, entry=None, available: bool = False, error: str | None = None):
+        self.ledger = ledger
+        self.entry = entry
+        self.available = available
+        self.error = error
+
+
+def _ledger_source_name() -> str:
+    """Name of the ledger this pod is configured to bind."""
+    try:
+        return config.configured_ledger_source()
+    except Exception:  # noqa: BLE001 — an unreadable env must not 500 the status read
+        return "unknown"
+
+
+def _read_counterpart(epoch: str, category: str, manifest_sha: str):
+    """Read the other ledger, never raising into the response path.
+
+    A failure here must not turn a working status read into a 500 — the bound
+    ledger's answer is still worth returning — but it must not be silently
+    downgraded to "absent" either, so the reason travels in the result.
+    """
+    try:
+        source = config.counterpart_ledger_source()
+    except Exception as exc:  # noqa: BLE001
+        return None, _Counterpart(error=f"{type(exc).__name__}: {exc}")
+    if source is None:
+        return None, _Counterpart(available=True)
+    ledger = None
+    try:
+        ledger = config.open_ledger_by_source(source)
+        entry = ledger.status(epoch, category, manifest_sha)
+        return source, _Counterpart(ledger=ledger, entry=entry, available=True)
+    except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+        return source, _Counterpart(ledger=ledger, error=f"{type(exc).__name__}: {exc}")
+
+
+def _ledgers_agree(answered_entry, other_entry, other_available: bool) -> bool | None:
+    """True/False only when both sides are actually known; None otherwise.
+
+    None means "cannot say" — either the other ledger was unreadable or there is
+    no other ledger to compare against.  It never means "they match".
+    """
+    if not other_available:
+        return None
+    if answered_entry is None or other_entry is None:
+        # One side has no such row. That is a real disagreement only if the
+        # other side does have it, which is the case here (answered_entry came
+        # from a row that exists).
+        return False if (answered_entry is None) != (other_entry is None) else None
+    return answered_entry.status == other_entry.status
+
+
 def create_app(service: IngestService) -> FastAPI:
     app = FastAPI(title="jw-ingest-hook", docs_url=None, redoc_url=None)
 
@@ -441,9 +504,55 @@ def create_app(service: IngestService) -> FastAPI:
 
     @app.get("/ingest/status")
     def status(epoch: str, category: str, manifest_sha: str) -> dict:
-        entry = service.ledger.status(epoch, category, manifest_sha)
-        if entry is None:
-            raise HTTPException(status_code=404, detail="unknown submission identity")
+        # Two ledgers can hold the same identity with different outcomes: the
+        # rehearsal sqlite this pod may be bound to, and the operational mart
+        # ledger the sweep and the ingest Jobs actually write.  The binding is a
+        # side effect of the load-output env, so "which ledger this pod opened"
+        # is not the same question as "which ledger recorded the run".  Read both
+        # and say which one the reported values came from, rather than answering
+        # from whichever one happens to be bound.
+        primary_source = _ledger_source_name()
+        primary_entry = service.ledger.status(epoch, category, manifest_sha)
+        counterpart_source, counterpart = _read_counterpart(epoch, category, manifest_sha)
+
+        # The operational record wins when it has the row; otherwise fall back to
+        # whichever ledger does have it.  Stages and signals are then read from
+        # the SAME ledger as the entry so the row and its evidence never come
+        # from different sides of the split.
+        if primary_source == "d2" and primary_entry is not None:
+            entry, ledger_source, evidence_ledger = primary_entry, primary_source, service.ledger
+        elif counterpart_source == "d2" and counterpart.entry is not None:
+            entry, ledger_source, evidence_ledger = counterpart.entry, "d2", counterpart.ledger
+        elif primary_entry is not None:
+            entry, ledger_source, evidence_ledger = primary_entry, primary_source, service.ledger
+        elif counterpart.entry is not None:
+            entry, ledger_source = counterpart.entry, counterpart_source or "unknown"
+            evidence_ledger = counterpart.ledger
+        else:
+            # Absent from every ledger we could read.  If one was configured but
+            # unreadable we do not actually know it is absent there, so the
+            # detail says so instead of asserting a clean "not found".
+            detail = f"unknown submission identity in {primary_source}"
+            if counterpart.error is not None:
+                detail += f"; {counterpart_source} unreadable: {counterpart.error}"
+            elif counterpart_source is not None:
+                detail += f" or {counterpart_source}"
+            raise HTTPException(status_code=404, detail=detail)
+
+        # The reported "other" ledger is the one that did NOT supply the values
+        # above.  Reporting the counterpart unconditionally would name the same
+        # ledger twice whenever the counterpart is the one that answered, which
+        # would hide exactly the disagreement this field exists to surface.
+        if ledger_source == primary_source:
+            other_source = counterpart_source
+            other_entry = counterpart.entry
+            other_available = counterpart.available
+            other_error = counterpart.error
+        else:
+            other_source = primary_source
+            other_entry = primary_entry
+            other_available = True  # the bound ledger was read to get here
+            other_error = None
         # Additive only (backward compatible): existing keys are unchanged; the
         # stage list / current_stage / log_ref / observation_* are new.
         #
@@ -455,12 +564,12 @@ def create_app(service: IngestService) -> FastAPI:
         # no rows; `available=false` means the rows are unknown.
         observation_errors: list[str] = []
         try:
-            events = service.ledger.stage_events(epoch, category, manifest_sha)
+            events = evidence_ledger.stage_events(epoch, category, manifest_sha)
         except Exception as exc:  # noqa: BLE001 — reported below, not swallowed
             events = []
             observation_errors.append(f"stage_events: {type(exc).__name__}: {exc}")
         try:
-            signals = service.ledger.signal_events(epoch, category, manifest_sha)
+            signals = evidence_ledger.signal_events(epoch, category, manifest_sha)
         except Exception as exc:  # noqa: BLE001 — reported below, not swallowed
             signals = []
             observation_errors.append(f"signal_events: {type(exc).__name__}: {exc}")
@@ -478,6 +587,20 @@ def create_app(service: IngestService) -> FastAPI:
             "received_at": entry.received_at,
             "finished_at": entry.finished_at,
             # -- new (additive) --
+            # Which ledger the values above came from, and what the other one
+            # says.  counterpart_status is None for two different reasons, so
+            # counterpart_available separates "no such row there" from "could
+            # not read there".
+            "ledger_source": ledger_source,
+            "ledger_bound": primary_source,
+            "counterpart_source": other_source,
+            "counterpart_available": other_available,
+            "counterpart_error": other_error,
+            "counterpart_status": other_entry.status if other_entry is not None else None,
+            "counterpart_finished_at": (
+                other_entry.finished_at if other_entry is not None else None
+            ),
+            "ledgers_agree": _ledgers_agree(entry, other_entry, other_available),
             "observation_available": not observation_errors,
             "observation_error": "; ".join(observation_errors) or None,
             "current_stage": current_stage,

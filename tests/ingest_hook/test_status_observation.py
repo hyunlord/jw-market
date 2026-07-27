@@ -123,4 +123,10 @@ def test_c5_original_keys_are_untouched_and_only_additive_keys_appeared(service,
     assert set(body) == set(_ORIGINAL_KEYS) | {
         "observation_available", "observation_error", "current_stage", "stages",
         "signals", "log_ref",
+        # Ledger provenance: which ledger answered, and what the other one says.
+        # _ORIGINAL_KEYS above stays untouched — this set is the allow-list of
+        # ADDED keys, so a removal or rename of an original key still fails here.
+        "ledger_source", "ledger_bound", "counterpart_source",
+        "counterpart_available", "counterpart_error", "counterpart_status",
+        "counterpart_finished_at", "ledgers_agree",
     }

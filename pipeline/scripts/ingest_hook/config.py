@@ -146,6 +146,74 @@ def open_configured_ledger():
     return Ledger(conn, dialect="mysql")
 
 
+def configured_ledger_source() -> str:
+    """Name the ledger open_configured_ledger() would return, without opening it.
+
+    Values match the ``ledger_source`` field the status API reports:
+      "shadow" — the isolated sqlite rehearsal ledger on the RWX volume
+      "sqlite" — an explicitly configured sqlite path (INGEST_LEDGER_SQLITE)
+      "d2"     — the operational mart ledger (mysql)
+    """
+    if load_mode(required=False) == "shadow":
+        return "shadow"
+    if ledger_sqlite_path() is not None:
+        return "sqlite"
+    return "d2"
+
+
+def open_ledger_by_source(source: str):
+    """Open one specific ledger regardless of which one this pod is bound to.
+
+    The status API needs this because the ledger binding is a side effect of the
+    *load output* env — INGEST_LOAD_SHADOW_ROOT decides both — so a pod can be
+    bound to the rehearsal ledger while the operational record it must report
+    lives in the mart ledger.  Opening the other one for a read changes no
+    binding and writes nothing.
+    """
+    from pipeline.scripts.ingest_hook.ledger import Ledger, open_sqlite_ledger
+
+    if source == "shadow":
+        shadow_ledger = os.environ.get(ENV_SHADOW_LEDGER_SQLITE, "").strip()
+        if not shadow_ledger:
+            raise RuntimeError(f"{ENV_SHADOW_LEDGER_SQLITE} is not set")
+        return open_sqlite_ledger(Path(shadow_ledger))
+    if source == "sqlite":
+        sqlite_path = ledger_sqlite_path()
+        if sqlite_path is None:
+            raise RuntimeError(f"{ENV_LEDGER_SQLITE} is not set")
+        return open_sqlite_ledger(sqlite_path)
+    if source != "d2":
+        raise ValueError(f"unknown ledger source: {source!r}")
+
+    import pymysql
+
+    from pipeline.scripts.utils.mart_config import resolve_mart_db_name
+
+    conn = pymysql.connect(
+        host=os.environ.get("MARIADB_HOST") or os.environ.get("DB_HOST", "127.0.0.1"),
+        port=int(os.environ.get("MARIADB_PORT") or os.environ.get("DB_PORT", "3306")),
+        user=os.environ.get("MARIADB_USER") or os.environ.get("DB_USER", ""),
+        password=os.environ.get("MARIADB_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
+        database=resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
+        charset="utf8mb4",
+        autocommit=False,
+    )
+    return Ledger(conn, dialect="mysql")
+
+
+def counterpart_ledger_source() -> str | None:
+    """The ledger this pod is NOT bound to but may still have to report on.
+
+    None means there is no configured counterpart.  That is a different answer
+    from "the counterpart exists but could not be read", and the status API
+    keeps the two apart rather than collapsing both into "no rows".
+    """
+    primary = configured_ledger_source()
+    if primary == "d2":
+        return "shadow" if os.environ.get(ENV_SHADOW_LEDGER_SQLITE, "").strip() else None
+    return "d2"
+
+
 def open_mart_connection(database: str | None = None):
     """pymysql connection to the mart DB the Job env points at (MARIADB_* family)."""
     import os
