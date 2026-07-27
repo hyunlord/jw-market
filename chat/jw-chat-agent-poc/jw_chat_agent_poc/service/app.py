@@ -20,8 +20,10 @@ from uuid import uuid4
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.factory import (
@@ -147,7 +149,14 @@ from jw_chat_agent_poc.service.history_projection import (
     sanitize_http_headers,
     trusted_portal_user_id,
 )
-from jw_chat_agent_poc.service.models import ChatAccepted, ChatAnswer, ChatRequest, HealthResponse
+from jw_chat_agent_poc.service.models import (
+    COMBINED_FILE_CONTEXT_MAX_CHARS,
+    QUESTION_MAX_CHARS,
+    ChatAccepted,
+    ChatAnswer,
+    ChatRequest,
+    HealthResponse,
+)
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.service.startup_warmup import (
@@ -320,6 +329,13 @@ def _require_direct_route_api_key(
     )
 
 
+class InputSizeLimitError(ValueError):
+    def __init__(self, *, field: str, max_chars: int) -> None:
+        super().__init__(f"{field} exceeds {max_chars} characters")
+        self.field = field
+        self.max_chars = max_chars
+
+
 def create_app(
     *,
     agent_factory: AgentFactory | None = None,
@@ -346,6 +362,39 @@ def create_app(
     projection = projection_runtime or HistoryProjectionRuntime.from_env()
     history = history_store or MySQLConversationHistoryStore(projection_outbox=projection.outbox)
     warmup = startup_warmup or DisabledStartupWarmup()
+
+    @app.exception_handler(RequestValidationError)
+    async def compact_input_size_validation_error(
+        request: Request,
+        exc: RequestValidationError,
+    ):
+        if any(error.get("type") == "string_too_long" for error in exc.errors()):
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": {
+                        "code": "input_too_large",
+                        "message": "입력 길이가 허용 범위를 초과했습니다.",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
+
+    @app.exception_handler(InputSizeLimitError)
+    async def combined_input_size_error(
+        _request: Request,
+        exc: InputSizeLimitError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": {
+                    "code": "input_too_large",
+                    "field": exc.field,
+                    "max_chars": exc.max_chars,
+                }
+            },
+        )
 
     @app.on_event("startup")
     def start_history_projection_worker() -> None:
@@ -464,7 +513,7 @@ def create_app(
     )
     def chat_stream(
         session_id: str | None = Query(default=None),
-        question: str | None = Query(default=None),
+        question: str | None = Query(default=None, max_length=QUESTION_MAX_CHARS),
         external_mode: str = Query(default="live"),
         conversation_id: str | None = Query(default=None),
         projection_context: ProjectionRequestContext = Depends(_require_direct_route_api_key),
@@ -1111,8 +1160,14 @@ def _delegated_file_context(
         contexts.append(provided)
     if not contexts:
         return None, (), has_active_upload, deterministic_answer, sql_trace
+    combined = "\n\n".join(dict.fromkeys(contexts))
+    if provided and len(combined) > COMBINED_FILE_CONTEXT_MAX_CHARS:
+        raise InputSizeLimitError(
+            field="combined_file_context",
+            max_chars=COMBINED_FILE_CONTEXT_MAX_CHARS,
+        )
     return (
-        "\n\n".join(dict.fromkeys(contexts)),
+        combined,
         file_source_items,
         has_active_upload,
         deterministic_answer,
