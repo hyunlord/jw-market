@@ -30,7 +30,7 @@ def test_series_answer_combines_context_columns_and_mechanical_insights() -> Non
     assert all(response.markdown == markdown for response in responses)
     assert "| 기간 | 시장점유율(%) | 처방조제액(억원) | 시장규모(억원) |" in markdown
     assert "점유율은 20.00%에서 19.35%로 0.65%p 감소" in markdown
-    assert "처방조제액은 0.80억원에서 0.84억원으로 0.04억원 증가" in markdown
+    assert "매출은 0.80억원에서 0.84억원으로 0.04억원 증가" in markdown
     assert "브랜드 성장률 5.00%" in markdown
     assert "시장 성장률 8.50%" in markdown
     assert "초과성장 -3.50%p" in markdown
@@ -49,7 +49,7 @@ def test_market_narrative_explains_verified_growth_gap_without_inventing_a_cause
     )
     assert "시장 성장 속도에는 못 미쳤습니다" in narrative
     assert "점유율은 20.00%에서 19.35%로 0.65%p 감소" in narrative
-    assert "처방조제액은 0.80억원에서 0.84억원으로 0.04억원 증가" in narrative
+    assert "매출은 0.80억원에서 0.84억원으로 0.04억원 증가" in narrative
     assert "브랜드 성장률 5.00% · 시장 성장률 8.50% · 초과성장 -3.50%p" in narrative
     assert verify_markdown_numbers(narrative, facts).status == "pass"
     assert forbidden_claims(narrative) == ()
@@ -260,7 +260,7 @@ def test_renderer_does_not_emit_non_finite_insight_numbers() -> None:
                 "sales_end_krw": 8_400_000_000.0,
                 "sales_delta_krw": 400_000_000.0,
             },
-            "점유율은 4.00%에서 3.80%로 0.20%p 감소했으나",
+            "점유율은 4.00%에서 3.80%로 0.20%p 감소했습니다.",
         ),
         (
             {
@@ -271,7 +271,7 @@ def test_renderer_does_not_emit_non_finite_insight_numbers() -> None:
                 "sales_end_krw": 8_000_000_000.0,
                 "sales_delta_krw": -400_000_000.0,
             },
-            "점유율은 3.80%에서 4.00%로 0.20%p 증가했으나",
+            "점유율은 3.80%에서 4.00%로 0.20%p 증가했습니다.",
         ),
         (
             {"brand_growth_pct": 6.6, "market_growth_pct": 12.4, "excess_growth_pctp": -5.8},
