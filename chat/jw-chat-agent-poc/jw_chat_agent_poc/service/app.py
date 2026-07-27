@@ -114,6 +114,7 @@ from jw_chat_agent_poc.service.evidence_binding import (
     verify_claim_bindings,
 )
 from jw_chat_agent_poc.service.evidence_binding_observability import (
+    binding_context_observability,
     binding_pipeline_observability,
     evidence_fact_input_inventory,
 )
@@ -2880,6 +2881,18 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         gate=gate,
         fact_input=evidence_fact_input_inventory(result, facts),
     )
+    context_observability = binding_context_observability(
+        question=question,
+        answer=answer,
+        expected_entities=expected_entities,
+        gate=gate,
+        context_projection_allowed=not bool(
+            str(result.get("file_context") or "").strip()
+            or result.get("file_source_items")
+            or str(result.get("context_scope") or "").strip().upper()
+            in {"FILE", "MIXED"}
+        ),
+    )
     previous = result.get("_qa_claim_gate")
     previous_items = previous if isinstance(previous, dict) else {}
     previous_reasons = previous_items.get("blocked_reasons")
@@ -2918,6 +2931,7 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         )
     if observability:
         result["_qa_claim_gate"]["pipeline_observability"] = observability
+    result["_qa_claim_gate"].update(context_observability)
     failure_kind = gate.failure_kind or str(previous_items.get("failure_kind") or "") or None
     if failure_kind:
         result["_qa_claim_gate"]["failure_kind"] = failure_kind
