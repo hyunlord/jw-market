@@ -52,6 +52,7 @@ class GeneralMarket:
     member_brands: tuple[TopBrand, ...] = ()
     selected_data_path: str = "backend_fallback"
     fallback_reason: str | None = None
+    hhi_recent: float | None = None
 
 
 @dataclass(slots=True)
@@ -210,6 +211,8 @@ def parse_general_market_response(
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     kpi = data.get("kpi") if isinstance(data.get("kpi"), dict) else {}
     source_data = data.get("sources_data") if isinstance(data.get("sources_data"), dict) else {}
+    hhi_series = data.get("hhi_series_5y")
+    hhi_recent = _latest_hhi(hhi_series)
     series = source_data.get("market_size_series")
     period = "latest"
     if isinstance(series, list) and series:
@@ -292,6 +295,7 @@ def parse_general_market_response(
             and isinstance(item.get("value"), int | float)
         ),
         member_brands=ranked_members if len(ranked_members) > len(current_brands) else current_brands,
+        hhi_recent=hhi_recent if hhi_recent is not None else _as_float(kpi.get("hhi_recent")),
     )
 
 
@@ -321,6 +325,21 @@ def _as_float(value: object) -> float | None:
 
 def _as_int(value: object) -> int | None:
     return int(value) if isinstance(value, int | float) else None
+
+
+def _latest_hhi(value: object) -> float | None:
+    if isinstance(value, dict):
+        for period in sorted(value, reverse=True):
+            hhi = _as_float(value[period])
+            if hhi is not None:
+                return hhi
+    if isinstance(value, list):
+        rows = [row for row in value if isinstance(row, dict)]
+        for row in sorted(rows, key=lambda item: str(item.get("period") or ""), reverse=True):
+            hhi = _first_float(row, "hhi", "value")
+            if hhi is not None:
+                return hhi
+    return None
 
 
 def _first_float(row: dict[str, Any], *keys: str) -> float | None:

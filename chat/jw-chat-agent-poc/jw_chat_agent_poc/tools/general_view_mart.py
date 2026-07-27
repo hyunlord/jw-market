@@ -33,6 +33,7 @@ class GeneralMartRows:
     brand_ranking: dict[str, list[dict[str, Any]]]
     brand_name: str | None
     brand_metric_history: dict[str, dict[str, Any]]
+    hhi_series: dict[str, float] = field(default_factory=dict)
 
 
 class GeneralMartReader(Protocol):
@@ -81,7 +82,7 @@ class MariaDbGeneralMartReader:
                     cursor.execute(
                         """
                         SELECT atc4_code, atc4_desc, source, measure, unit_label,
-                               market_size_series, brand_ranking
+                               market_size_series, hhi_series, brand_ranking
                         FROM mart_general_market_metric
                         WHERE atc4_code=%s AND source=%s AND measure=%s
                         LIMIT 1
@@ -121,6 +122,7 @@ class MariaDbGeneralMartReader:
             brand_ranking=_ranking_map(market_row["brand_ranking"]),
             brand_name=str(brand_row["brand_name"]) if brand_row else None,
             brand_metric_history=_metric_map(brand_row["metric_history"]) if brand_row else {},
+            hhi_series=_number_map(market_row["hhi_series"]),
         )
 
 
@@ -145,7 +147,12 @@ class GeneralViewMartBackend:
 
 
 def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
-    periods = set(rows.market_size_series) | set(rows.brand_ranking) | set(rows.brand_metric_history)
+    periods = (
+        set(rows.market_size_series)
+        | set(rows.hhi_series)
+        | set(rows.brand_ranking)
+        | set(rows.brand_metric_history)
+    )
     if not periods:
         raise GeneralViewMartLoadError("general-view mart rows contain no periods", reason="missing_period")
     period = max(periods)
@@ -188,6 +195,7 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         market_size_series=tuple(sorted(rows.market_size_series.items())),
         member_brands=member_brands,
         selected_data_path="direct_mart",
+        hhi_recent=rows.hhi_series.get(period),
     )
 
 

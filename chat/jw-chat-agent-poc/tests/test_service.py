@@ -25,14 +25,15 @@ from jw_chat_agent_poc.service.app import SessionStore, _sse_delta, compute_fina
 from jw_chat_agent_poc.service.conversation import ConversationSlots, PendingClarification
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
-from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
+from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
+from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 from jw_chat_agent_poc.resolver import AmbiguousBrandError, BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.router import BQRouter
 
-from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_PAYLOAD
+from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS
 
 
 class FakeAgent:
@@ -56,12 +57,7 @@ def _fake_agent_factory(*, external_mode: str = "live") -> FakeAgent:
 
 def _market_scope_resolver() -> MarketScopeResolver:
     cache_reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
-    cause_reader = StaticCausePayloadReader(
-        {
-            ("리바로", "market_landscape", "UBIST", "sales", "strategy_006"): CAUSE_PAYLOAD,
-        }
-    )
-    return MarketScopeResolver(cache_reader=cache_reader, cause_reader=cause_reader)
+    return MarketScopeResolver(cache_reader=cache_reader)
 
 
 def test_market_scope_queries_explicit_strategy_id_without_brand_fallback() -> None:
@@ -750,28 +746,29 @@ def test_enforce_external_question_bypasses_direct_legacy_loop(monkeypatch) -> N
     assert captured == ["아일리아의 급여기준에 대해서 적응증 별로 설명해줘"]
 
 
-def test_general_only_strategic_metric_stops_before_agent_loop(monkeypatch) -> None:
+def test_general_only_hhi_routes_to_general_view_before_agent_loop(monkeypatch) -> None:
     class Resolver:
-        def is_general_only_brand(self, question: str) -> bool:
+        def general_route(self, question: str) -> GeneralRoute:
             assert question == "아일리아 시장 HHI"
-            return True
+            return GeneralRoute.GENERAL_ONLY
 
-        def answer(self, question: str, *, view_type: str) -> dict:
-            assert view_type == "market_landscape"
+        def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict:
+            assert compact is False
+            assert dual is False
             return {
                 "question": question,
-                "answer": "이 브랜드는 전략시장 정의에 포함되지 않아 해당 분석은 제공되지 않습니다.",
-                "sources": [],
-                "tool_calls": [],
+                "answer": "## 일반뷰 (ATC4)\n\n- ATC4: S01P0\n- HHI (2026-05): 1,234.5678",
+                "sources": ["UBIST"],
+                "tool_calls": [{"tool": "general_view_dynamic_market"}],
             }
 
     def agent_factory(*, external_mode: str = "fixture"):
         del external_mode
-        raise AssertionError("general-only strategic metric must stop before the agent loop")
+        raise AssertionError("general-only HHI must stop before the agent loop")
 
     monkeypatch.setattr(service_app, "should_use_agent_loop", lambda *_args, **_kwargs: True)
 
-    result = service_app._answer_existing_without_pending(
+    result = service_app._answer_without_pending(
         Resolver(),
         agent_factory,
         "general-only-hhi",
@@ -781,7 +778,8 @@ def test_general_only_strategic_metric_stops_before_agent_loop(monkeypatch) -> N
         SessionStore(),
     )
 
-    assert "전략시장 정의에 포함되지 않아" in result["answer"]
+    assert "ATC4: S01P0" in result["answer"]
+    assert "HHI" in result["answer"]
 
 
 def test_direct_agent_loop_bypasses_question_router_for_structured_top_five(monkeypatch) -> None:

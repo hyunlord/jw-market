@@ -1637,15 +1637,6 @@ def _answer_existing_without_pending(
             agent = agent_factory(external_mode=external_mode)
         return agent.answer(question, documents)
     intent = detect_market_scope_intent(question)
-    general_only_check = getattr(market_scope_resolver, "is_general_only_brand", None)
-    if (
-        intent is not None
-        and intent.metric in {"hhi", "cr5", "concentration"}
-        and not documents
-        and callable(general_only_check)
-        and general_only_check(question)
-    ):
-        return market_scope_resolver.answer(question, view_type=intent.view_type or "market_landscape")
     if asks_market_members(question) and not documents:
         if market_scope_resolver.has_explicit_brand_anchor(question):
             return market_scope_resolver.answer(question, view_type="market_landscape")

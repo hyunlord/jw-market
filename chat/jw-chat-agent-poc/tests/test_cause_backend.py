@@ -16,6 +16,7 @@ from jw_chat_agent_poc.tools.cause_backend import (
 from jw_chat_agent_poc.agent_loop.tools import QUERY_FAILED_STATUS, _tool_error
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader
 
 
 class FakeResponse:
@@ -42,31 +43,6 @@ class ScriptedSession:
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
-
-
-class ExplodingReader:
-    def load(self):
-        raise AssertionError("strategic mart fallback must not run")
-
-
-class RecordingCauseBackend:
-    def __init__(self, market, error: CauseBackendError | None = None) -> None:
-        self.market_result = market
-        self.error = error
-        self.calls: list[dict[str, str]] = []
-
-    def market(
-        self,
-        brand: str,
-        *,
-        source: str = "",
-        measure: str = "sales",
-        view: str = "market_landscape",
-    ):
-        self.calls.append({"brand": brand, "source": source, "measure": measure, "view": view})
-        if self.error is not None:
-            raise self.error
-        return self.market_result
 
 
 def test_cause_backend_uses_brand_only_contract_and_projects_internal_ids_out() -> None:
@@ -176,43 +152,44 @@ def test_cause_backend_cache_returns_raw_facts_with_cache_trace() -> None:
     assert cached.trace.endpoint == first.trace.endpoint
 
 
-def test_e1_query_layer_uses_backend_for_scope_top_brands_and_hhi_only() -> None:
-    market = parse_cause_market_response(
-        _cause_payload(),
-        trace=CauseBackendTrace(endpoint="/api/cause/x", status="ok", latency_ms=87.0),
-    )
-    backend = RecordingCauseBackend(market)
-    layer = StrategicQueryLayer(reader=ExplodingReader(), cause_backend=backend)  # type: ignore[arg-type]
+def test_query_layer_uses_serving_mart_for_scope_top_brands_and_hhi() -> None:
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_mart_records()))
 
     scope = layer.market_scope("리바로", market="ml_006")
     top = layer.top_brands("리바로", limit=2, market="ml_006")
     hhi = layer.brand_metric("리바로", "hhi", "latest", market="ml_006")
 
-    assert [call["brand"] for call in backend.calls] == ["리바로", "리바로", "리바로"]
-    assert all("market_id" not in call for call in backend.calls)
-    assert scope["render_data"]["market_size_recent_krw"] == pytest.approx(213_925_043_319.3602)
+    assert scope["render_data"]["market_size_recent_krw"] == pytest.approx(60.0)
     assert [row["brand"] for row in top["render_data"]["level_segments"]] == ["로수젯", "리피토"]
-    assert hhi["render_data"]["hhi_recent"] == pytest.approx(262.4174)
-    assert not _recursive_keys(scope) & {"market_id", "ml_id", "strategic_market_id"}
-    assert scope["backend_trace"]["endpoint"] == "/api/cause/x"
+    assert hhi["render_data"]["hhi_recent"] == pytest.approx(3888.8889)
+    assert "backend_trace" not in scope
 
 
-def test_e1_backend_failure_does_not_fall_back_to_strategic_mart() -> None:
-    error = CauseBackendError(
-        "cause backend unavailable",
-        endpoint="/api/cause/x",
-        status="timeout",
-        latency_ms=10_000.0,
+def test_query_layer_never_calls_cause_backend_when_serving_mart_is_available() -> None:
+    layer = StrategicQueryLayer(reader=StaticStrategicMartReader(_mart_records()))
+
+    assert not hasattr(layer, "_cause_backend")
+    layer.market_scope("리바로", market="ml_006")
+    layer.top_brands("리바로", market="ml_006")
+    layer.brand_metric("리바로", "hhi", "latest", market="ml_006")
+
+
+def _mart_records() -> tuple[MartRecord, ...]:
+    periods = tuple(f"2026-{month:02d}" for month in range(1, 13))
+    return tuple(
+        MartRecord(
+            ml_id="ml_006",
+            brand_name=brand,
+            source="ubist",
+            measure="sales",
+            metric_history={period: {"raw_value": value} for period in periods},
+            channel_data={},
+            specialty_data={},
+            dimension_data={},
+            by_dimension={},
+        )
+        for brand, value in (("로수젯", 30.0), ("리피토", 20.0), ("리바로", 10.0))
     )
-    backend = RecordingCauseBackend(None, error=error)
-    layer = StrategicQueryLayer(reader=ExplodingReader(), cause_backend=backend)  # type: ignore[arg-type]
-
-    with pytest.raises(CauseBackendError):
-        layer.market_scope("리바로", market="ml_006")
-    with pytest.raises(CauseBackendError):
-        layer.top_brands("리바로", market="ml_006")
-    with pytest.raises(CauseBackendError):
-        layer.brand_metric("리바로", "hhi", "latest", market="ml_006")
 
 
 def test_backend_failure_trace_preserves_actual_tool_and_endpoint() -> None:

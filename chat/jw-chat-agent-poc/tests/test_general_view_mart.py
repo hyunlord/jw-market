@@ -26,6 +26,7 @@ class FakeGeneralMartReader:
             },
             brand_name=brand,
             brand_metric_history={"2025-Q4": {"raw_value": 190.0, "ms": 95.0, "rank": 1}, "2026-Q1": {"raw_value": 270.0, "ms": 90.0, "rank": 1}},
+            hhi_series={"2025-Q4": 9050.0, "2026-Q1": 8200.0},
         )
 
 
@@ -53,6 +54,7 @@ def test_mart_backend_uses_latest_period_for_market_brand_and_top_five() -> None
     assert market.brand_value == 270.0
     assert market.brand_share_pct == 90.0
     assert market.brand_rank == 1
+    assert market.hhi_recent == 8200.0
     assert [row.brand for row in market.top_brands] == ["마운자로", "오젠픽"]
 
 

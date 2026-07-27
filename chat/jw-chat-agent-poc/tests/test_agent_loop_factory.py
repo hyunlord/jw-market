@@ -18,10 +18,10 @@ def test_agent_loop_factory_preserves_external_mode_and_default_query_layer(monk
     # When: shared agent-loop dependencies are created for live external mode.
     deps = build_agent_loop_dependencies(external_mode="live")
 
-    # Then: the injected dependencies preserve the mode and cache query-layer contract.
+    # Then: the injected dependencies preserve the mode and use the serving-mart query layer.
     assert deps.external.mode == "live"
     assert deps.query_layer is not None
-    assert deps.query_layer._cause_backend is not None
+    assert not hasattr(deps.query_layer, "_cause_backend")
 
 
 def test_agent_loop_factory_preserves_disabled_query_layer(monkeypatch) -> None:

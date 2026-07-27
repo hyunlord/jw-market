@@ -39,7 +39,6 @@ from jw_chat_agent_poc.tools.metrics.market_scope_helpers import (
     source_label,
     view_label,
 )
-from jw_chat_agent_poc.tools.cause_backend import CauseBackend, CauseBackendError
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 
@@ -48,7 +47,6 @@ class MarketScopeResolver:
         self,
         *,
         cache_reader: MetricsCacheReader | None = None,
-        cause_reader: object | None = None,
         cd_mart_reader: CdMartReader | None = None,
         ttl_seconds: int | None = None,
         general_view_service: GeneralViewService | None = None,
@@ -59,12 +57,9 @@ class MarketScopeResolver:
         self._cache = TtlMetricsCache(cache_reader, ttl_seconds=ttl) if cache_reader is not None else shared_metrics_cache(ttl)
         self._cd_mart_cache = TtlCdMartCache(cd_mart_reader or MariaDbCdMartReader(), ttl_seconds=ttl)
         self._query_layer = query_layer
-        if self._query_layer is None and cache_reader is None and cause_reader is None:
+        if self._query_layer is None and cache_reader is None:
             if os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
-                self._query_layer = StrategicQueryLayer(
-                    ttl_seconds=ttl,
-                    cause_backend=CauseBackend(ttl_seconds=ttl),
-                )
+                self._query_layer = StrategicQueryLayer(ttl_seconds=ttl)
         catalog_membership = membership_reader
         if catalog_membership is None and os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
             catalog_membership = shared_catalog_membership_reader(ttl)
@@ -432,10 +427,7 @@ class MarketScopeResolver:
             "summary_text": message,
             "render_data": render_data,
         }
-        if isinstance(error, CauseBackendError):
-            call["backend_trace"] = error.trace_fields()
-        trace_status = error.status if isinstance(error, CauseBackendError) else "query_failed"
-        attach_tool_qa_trace(call, started_at=started_at, status=trace_status, cache_hit=False)
+        attach_tool_qa_trace(call, started_at=started_at, status="query_failed", cache_hit=False)
         markdown = MarkdownResponseBuilder().build(brand=brand, calls=[call], sources=["backend_api"])
         return {
             "question": question,

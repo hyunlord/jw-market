@@ -176,6 +176,8 @@ def test_parse_general_market_response_preserves_zero_current_metrics() -> None:
     payload["result"]["data"]["ei_ms_matrix"]["data"][1].update(
         {"rank": 0, "value_recent": 0, "share_pct": 0}
     )
+    payload["result"]["data"]["hhi_series_5y"] = [{"period": "2026-04", "hhi": 0.0}]
+    payload["result"]["data"]["kpi"]["hhi_recent"] = 999.0
 
     market = parse_general_market_response(
         payload,
@@ -188,6 +190,7 @@ def test_parse_general_market_response_preserves_zero_current_metrics() -> None:
     assert market.brand_value == 0.0
     assert market.brand_share_pct == 0.0
     assert market.brand_rank == 0
+    assert market.hhi_recent == 0.0
 
 
 def test_parse_general_market_response_fails_closed_when_requested_brand_is_missing() -> None:
@@ -690,14 +693,114 @@ def test_general_only_resolved_brand_routes_to_general_view(question: str) -> No
     assert service.route(question) is GeneralRoute.GENERAL_ONLY
 
 
-def test_general_only_brand_hhi_stays_on_typed_strategic_unavailable_path() -> None:
+def test_general_only_brand_hhi_routes_to_general_view() -> None:
     service = GeneralViewService(
         FakeBackend(),
         GeneralOnlyResolvingMembership({"리바로"}),
         enabled=True,
     )
 
-    assert service.route("아일리아 시장 HHI") is GeneralRoute.EXISTING
+    assert service.route("아일리아 시장 HHI") is GeneralRoute.GENERAL_ONLY
+
+
+@pytest.mark.parametrize("metric", ("CR5", "집중도"))
+def test_general_only_brand_unverified_concentration_metrics_keep_existing_route(metric: str) -> None:
+    service = GeneralViewService(
+        FakeBackend(),
+        GeneralOnlyResolvingMembership({"리바로"}),
+        enabled=True,
+    )
+
+    assert service.route(f"아일리아 시장 {metric}") is GeneralRoute.EXISTING
+
+
+def test_general_only_brand_hhi_is_rendered_from_one_atc4_without_aggregation() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["S01P0"] = replace(
+        _market("S01P0", 8_000_000_000.0),
+        brand="아일리아",
+        hhi_recent=1234.5678,
+        selected_data_path="direct_mart",
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("아일리아 시장 HHI", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["hhi_recent"] == pytest.approx(1234.5678)
+    assert contract["atc4_code"] == "S01P0"
+    assert "일반뷰 (ATC4)" in result["answer"]
+    assert "ATC4 S01P0" in result["answer"]
+    assert "HHI (2026-04): 1,234.5678" in result["answer"]
+    assert "market_id" not in result["answer"]
+
+
+def test_general_only_brand_hhi_splits_two_atc4_without_aggregation() -> None:
+    memberships = (
+        GeneralBrandMembership("복합브랜드", "복합브랜드", "A10A1", "첫 번째 시장", "ubist"),
+        GeneralBrandMembership("복합브랜드", "복합브랜드", "A10B2", "두 번째 시장", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["A10A1"] = replace(
+        _market("A10A1", 10.0),
+        brand="복합브랜드",
+        hhi_recent=111.0,
+    )
+    backend.market_map["A10B2"] = replace(
+        _market("A10B2", 20.0),
+        brand="복합브랜드",
+        hhi_recent=222.0,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("복합브랜드 시장 HHI", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["atc4_codes"] == ["A10A1", "A10B2"]
+    assert [section["hhi_recent"] for section in contract["atc4_sections"]] == [111.0, 222.0]
+    assert "ATC4 A10A1" in result["answer"]
+    assert "ATC4 A10B2" in result["answer"]
+    assert "111.0000" in result["answer"]
+    assert "222.0000" in result["answer"]
+    assert "합계" not in result["answer"]
+    assert "평균" not in result["answer"]
+
+
+def test_general_only_brand_hhi_lists_candidates_without_querying_when_atc4_count_exceeds_limit() -> None:
+    memberships = tuple(
+        GeneralBrandMembership("다중브랜드", "다중브랜드", f"A10A{index}", f"ATC4 {index}", "ubist")
+        for index in range(1, 6)
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    result = service.answer("다중브랜드 시장 HHI", compact=False, dual=False)
+
+    assert result["general_view_contract"]["unavailable"] is True
+    assert "4개를 초과" in result["answer"]
+    assert "ATC4를 지정" in result["answer"]
+    assert backend.market_calls == []
 
 
 def test_general_membership_hit_routes_unknown_strategic_brand_to_general_view() -> None:
