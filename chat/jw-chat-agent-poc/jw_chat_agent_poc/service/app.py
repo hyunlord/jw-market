@@ -1562,6 +1562,8 @@ def _answer_with_conversation(
         return unresolved_reference_result(question)
     if resolution.reusable_ranked is not None:
         return reused_context_result(question, resolution.reusable_ranked, previous_turn.slots if previous_turn else None)
+    if _is_disease_candidate_only_reply(question):
+        return unresolved_reference_result(question)
     result = _answer_without_pending(
         market_scope_resolver,
         agent_factory,
@@ -1595,6 +1597,22 @@ _DISEASE_ORDINALS = {
     "다섯째": 4,
     "5번": 4,
 }
+
+_DISEASE_TYPE_REFERENCES = frozenset(
+    {
+        "1형",
+        "2형",
+        "3형",
+        "제1형",
+        "제2형",
+        "제3형",
+    }
+)
+
+
+def _is_disease_candidate_only_reply(reply: str) -> bool:
+    normalized = re.sub(r"\s+", "", reply.strip()).casefold()
+    return normalized in _DISEASE_ORDINALS or normalized in _DISEASE_TYPE_REFERENCES
 
 
 def _select_hira_disease_candidate(
