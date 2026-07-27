@@ -36,6 +36,8 @@ _PASSTHROUGH_VALUES = (
     "INGEST_SHADOW_TARGET_DB",
     "INGEST_SHADOW_BUILD_PREFIX",
     "INGEST_SHADOW_CATALOG_ROOT",
+    "INGEST_CATALOG_BUCKET",
+    "INGEST_CATALOG_PREFIX",
     "INGEST_SHADOW_SEED_ROOT",
     "INGEST_SHADOW_FAILURE_AT",
     "INGEST_SHADOW_CRASH_AT",
@@ -71,8 +73,13 @@ def _job_env() -> list[dict]:
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
     local_input = os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
+    needs_minio_read = (
+        bool(os.environ.get("INGEST_CATALOG_BUCKET"))
+        or (not local_input and bool(os.environ.get("INGEST_S3_BUCKET")))
+    )
     if not local_input and os.environ.get("INGEST_S3_BUCKET"):
         secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")
+    if needs_minio_read:
         # The portal account is write/list-only by policy; the hook reads with
         # its own read-only MinIO user (GetObject+ListBucket on the bucket).
         secret_ref("MINIO_ACCESS_KEY", _MINIO_READ_SECRET, "MINIO_ACCESS_KEY")

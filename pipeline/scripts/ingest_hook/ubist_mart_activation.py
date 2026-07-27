@@ -14,7 +14,11 @@ from pipeline.etl.io.catalog.paths import (
     CATALOG_ROOT_ENV,
     CatalogProvisioningError,
     resolve_catalog_root,
-    validate_catalog_materialization,
+)
+from pipeline.scripts.ingest_hook.catalog_runtime import (
+    ENV_CATALOG_BUCKET,
+    ENV_CATALOG_PREFIX,
+    materialize_s4_catalog,
 )
 from pipeline.scripts.deploy.mart_load_ops import (
     PublishAction,
@@ -50,7 +54,6 @@ GENERAL_TABLES = (
 )
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_S4_REQUIRED_CATALOGS = frozenset({"strategic_brand", "strategic_product"})
 _S4_MUTATED_ENV = (
     "MARIADB_DATABASE",
     "MARIADB_SOURCE_DATABASE",
@@ -148,10 +151,10 @@ def shadow_catalog_root_from_env(shadow_root: Path) -> Path:
     boundary = shadow_root.resolve()
     if not root.is_relative_to(boundary):
         raise RuntimeError("isolated shadow catalog must be inside the shadow root")
-    required = root / "strategic_brand" / "strategic_brand.parquet"
-    if not required.is_file():
-        raise RuntimeError(f"isolated shadow catalog is missing strategic_brand.parquet: {required}")
-    return root
+    try:
+        return materialize_s4_catalog(root)
+    except CatalogProvisioningError as exc:
+        raise RuntimeError(f"catalog preflight failed before s4 mart: {exc}") from exc
 
 
 def production_catalog_root_from_env() -> Path:
@@ -159,10 +162,7 @@ def production_catalog_root_from_env() -> Path:
 
     root = resolve_catalog_root(_PROJECT_ROOT).resolve()
     try:
-        validate_catalog_materialization(
-            root,
-            required_names=_S4_REQUIRED_CATALOGS,
-        )
+        materialize_s4_catalog(root)
     except CatalogProvisioningError as exc:
         raise RuntimeError(f"catalog preflight failed before s4 mart: {exc}") from exc
     return root

@@ -39,3 +39,16 @@ snapshot even when a later rebuild would have a different timestamp.
 Runtime S4 requires `strategic_brand` and `strategic_product`. Strategic reload
 publication also requires `ml_market`. Missing roots, missing files, malformed
 manifests, and checksum mismatches are distinct fail-closed errors.
+
+Ingest Jobs materialize immediately before S4 when both runtime selectors are
+set:
+
+- `INGEST_CATALOG_BUCKET`: immutable snapshot bucket
+- `INGEST_CATALOG_PREFIX`: immutable snapshot prefix
+
+The trigger passes both selectors and the hook-owned read-only `MINIO_*`
+credentials to each Job. If neither selector is set, S4 validates the
+already-mounted catalog root. Configuring only one selector, losing storage
+access, receiving an empty or partial snapshot, or finding a checksum mismatch
+all stop the Job before S4. A release patch must provide the exact bucket and
+immutable prefix; they intentionally have no defaults.

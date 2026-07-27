@@ -266,6 +266,8 @@ def test_rendered_job_passes_load_staging_root(monkeypatch):
 
 def test_rendered_shadow_job_passes_isolated_catalog_root(monkeypatch):
     monkeypatch.setenv("INGEST_SHADOW_CATALOG_ROOT", "/market-output/shadow/catalog")
+    monkeypatch.setenv("INGEST_CATALOG_BUCKET", "jw-market-catalog")
+    monkeypatch.setenv("INGEST_CATALOG_PREFIX", "snapshots/sha256-demo")
 
     body = render_job(
         category="ubist",
@@ -276,6 +278,10 @@ def test_rendered_shadow_job_passes_isolated_catalog_root(monkeypatch):
 
     env = {e["name"]: e for e in body["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert env["INGEST_SHADOW_CATALOG_ROOT"]["value"] == "/market-output/shadow/catalog"
+    assert env["INGEST_CATALOG_BUCKET"]["value"] == "jw-market-catalog"
+    assert env["INGEST_CATALOG_PREFIX"]["value"] == "snapshots/sha256-demo"
+    assert env["MINIO_ACCESS_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-ingest-hook-minio"
+    assert env["MINIO_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-ingest-hook-minio"
 
 
 def test_rendered_local_job_inherits_backend_root_and_read_only_nfs(monkeypatch):

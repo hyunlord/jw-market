@@ -8,6 +8,7 @@ are tested deterministically with zero external deps.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,28 @@ from pipeline.scripts.ingest_hook.load_verify import (
     verify_epoch_loaded,
     verify_table_load,
 )
+from pipeline.etl.io.catalog.paths import publish_catalog_outputs
 from ingest_fixtures import write_submission
 
 UBIST = resolve_category("ubist")
+
+
+@dataclass(frozen=True)
+class _CatalogResult:
+    name: str
+    output_path: Path
+    rows: int = 1
+
+
+def _provision_catalog(root: Path, *names: str) -> None:
+    build_root = root.parent / "catalog-build"
+    results = []
+    for name in names:
+        path = build_root / name / f"{name}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(name.encode("utf-8"))
+        results.append(_CatalogResult(name=name, output_path=path))
+    publish_catalog_outputs(results, build_root=build_root, catalog_root=root)
 
 
 def test_open_mart_connection_uses_mapping_cursor(monkeypatch):
@@ -530,9 +550,7 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     monkeypatch.delenv(ubist_mart_activation.ENV_PROMOTION_APPROVED, raising=False)
     monkeypatch.setenv(config.ENV_LOAD_SHADOW_ROOT, str(shadow_root))
     catalog_root = shadow_root / "catalog"
-    catalog_file = catalog_root / "strategic_brand" / "strategic_brand.parquet"
-    catalog_file.parent.mkdir(parents=True)
-    catalog_file.write_bytes(b"isolated-catalog")
+    _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
     monkeypatch.setenv(
         ubist_mart_activation.ENV_SHADOW_CATALOG_ROOT, str(catalog_root)
     )

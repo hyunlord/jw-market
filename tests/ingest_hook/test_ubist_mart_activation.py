@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from pipeline.scripts.ingest_hook import catalog_runtime
 from pipeline.scripts.ingest_hook import ubist_mart_activation as activation
-from pipeline.etl.io.catalog.paths import publish_catalog_outputs
+from pipeline.etl.io.catalog.paths import (
+    CatalogEnvironmentError,
+    CatalogIntegrityError,
+    CatalogStorageAccessError,
+    publish_catalog_outputs,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +33,21 @@ def _provision_catalog(root: Path, *names: str) -> None:
         path.write_bytes(name.encode("utf-8"))
         results.append(_CatalogResult(name=name, output_path=path))
     publish_catalog_outputs(results, build_root=build_root, catalog_root=root)
+
+
+def _copy_snapshot(source: Path):
+    def copy(_bucket: str, _prefix: str, destination: Path, **_kwargs) -> int:
+        copied = 0
+        for source_file in source.rglob("*"):
+            if not source_file.is_file():
+                continue
+            target = destination / source_file.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, target)
+            copied += 1
+        return copied
+
+    return copy
 
 
 def test_activation_is_fail_closed_without_explicit_pl_gate(monkeypatch) -> None:
@@ -147,9 +169,7 @@ def test_shadow_catalog_path_is_resolved_after_environment_is_set(
 def test_shadow_catalog_root_requires_isolated_canonical_catalog(tmp_path, monkeypatch) -> None:
     shadow_root = tmp_path / "shadow"
     catalog_root = shadow_root / "catalog"
-    required = catalog_root / "strategic_brand" / "strategic_brand.parquet"
-    required.parent.mkdir(parents=True)
-    required.write_bytes(b"canonical-catalog")
+    _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(catalog_root))
 
     assert activation.shadow_catalog_root_from_env(shadow_root) == catalog_root.resolve()
@@ -165,8 +185,96 @@ def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monke
 
     internal = shadow_root / "catalog"
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(internal))
-    with pytest.raises(RuntimeError, match="strategic_brand.parquet"):
+    with pytest.raises(RuntimeError, match="catalog root not found"):
         activation.shadow_catalog_root_from_env(shadow_root)
+
+
+def test_catalog_storage_snapshot_materializes_before_s4(tmp_path, monkeypatch) -> None:
+    storage = tmp_path / "storage"
+    runtime = tmp_path / "runtime" / "catalog"
+    calls: list[dict[str, object]] = []
+    _provision_catalog(storage, "strategic_brand", "strategic_product")
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_BUCKET, "catalog-bucket")
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_PREFIX, "snapshots/sha256-demo")
+    monkeypatch.setattr(catalog_runtime, "sync_minio_to_local", _copy_snapshot(storage))
+    monkeypatch.setattr(
+        activation,
+        "run_s4_general",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    materialized = catalog_runtime.materialize_s4_catalog(runtime)
+    activation.build_shadow(
+        activation.MartActivation("source", "target", "build"),
+        catalog_root=materialized,
+        ubist_dir=tmp_path / "ubist",
+    )
+
+    assert materialized == runtime.resolve()
+    assert (runtime / "strategic_brand" / "strategic_brand.parquet").is_file()
+    assert calls[0]["catalog_root"] == runtime.resolve()
+
+
+def test_catalog_storage_snapshot_distinguishes_total_absence(tmp_path, monkeypatch) -> None:
+    runtime = tmp_path / "runtime" / "catalog"
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_BUCKET, "catalog-bucket")
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_PREFIX, "snapshots/absent")
+    monkeypatch.setattr(
+        catalog_runtime,
+        "sync_minio_to_local",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    with pytest.raises(CatalogEnvironmentError, match="catalog manifest not found"):
+        catalog_runtime.materialize_s4_catalog(runtime)
+
+
+def test_catalog_storage_snapshot_names_a_partial_absence(tmp_path, monkeypatch) -> None:
+    storage = tmp_path / "storage"
+    runtime = tmp_path / "runtime" / "catalog"
+    _provision_catalog(storage, "strategic_brand", "strategic_product")
+    (storage / "strategic_product" / "strategic_product.parquet").unlink()
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_BUCKET, "catalog-bucket")
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_PREFIX, "snapshots/partial")
+    monkeypatch.setattr(catalog_runtime, "sync_minio_to_local", _copy_snapshot(storage))
+
+    with pytest.raises(
+        CatalogEnvironmentError,
+        match=r"strategic_product/strategic_product\.parquet",
+    ):
+        catalog_runtime.materialize_s4_catalog(runtime)
+
+
+def test_catalog_storage_snapshot_rejects_sha_corruption(tmp_path, monkeypatch) -> None:
+    storage = tmp_path / "storage"
+    runtime = tmp_path / "runtime" / "catalog"
+    _provision_catalog(storage, "strategic_brand", "strategic_product")
+    (storage / "strategic_brand" / "strategic_brand.parquet").write_bytes(b"x" * 15)
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_BUCKET, "catalog-bucket")
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_PREFIX, "snapshots/corrupt")
+    monkeypatch.setattr(catalog_runtime, "sync_minio_to_local", _copy_snapshot(storage))
+
+    with pytest.raises(CatalogIntegrityError, match="SHA256 mismatch"):
+        catalog_runtime.materialize_s4_catalog(runtime)
+
+
+def test_catalog_storage_access_failure_is_not_reported_as_absence(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = tmp_path / "runtime" / "catalog"
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_BUCKET, "catalog-bucket")
+    monkeypatch.setenv(catalog_runtime.ENV_CATALOG_PREFIX, "snapshots/unreachable")
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("endpoint unavailable")
+
+    monkeypatch.setattr(catalog_runtime, "sync_minio_to_local", unavailable)
+
+    with pytest.raises(
+        CatalogStorageAccessError,
+        match="catalog storage access failed.*catalog-bucket/snapshots/unreachable",
+    ):
+        catalog_runtime.materialize_s4_catalog(runtime)
 
 
 def test_production_catalog_preflight_validates_before_s4(tmp_path, monkeypatch) -> None:

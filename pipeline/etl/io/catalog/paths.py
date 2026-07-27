@@ -64,6 +64,10 @@ class CatalogIntegrityError(CatalogProvisioningError):
     """Raised when catalog bytes do not match their published manifest."""
 
 
+class CatalogStorageAccessError(CatalogProvisioningError):
+    """Raised when immutable catalog storage cannot be read."""
+
+
 def build_catalog_root(output_root: Path) -> Path:
     return Path(output_root) / CATALOG_BUILD_RELATIVE
 
