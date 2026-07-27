@@ -9,6 +9,10 @@ from typing import Final
 
 import pymysql
 
+from pipeline.etl.io.catalog.paths import (
+    CatalogProvisioningError,
+    validate_catalog_materialization,
+)
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
 from pipeline.scripts.deploy.mart_load_ops import PROTECTED_TARGETS, PublishAction, _publish_one, connect_admin
 from pipeline.scripts.rollback.recording import (
@@ -31,6 +35,9 @@ STRATEGIC_RELOAD_TABLES: Final[tuple[str, ...]] = (
     "cache_deep_analysis",
 )
 GENERAL_TABLE_PREFIX: Final[str] = "mart_general_"
+PUBLISH_REQUIRED_CATALOGS: Final[frozenset[str]] = frozenset(
+    {"ml_market", "strategic_brand", "strategic_product"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +88,13 @@ def resolve_publish_catalog_root(catalog_root: Path | None) -> Path:
         )
     if not selected.exists():
         raise FileNotFoundError(f"catalog root not found: {selected}")
+    try:
+        validate_catalog_materialization(
+            selected,
+            required_names=PUBLISH_REQUIRED_CATALOGS,
+        )
+    except CatalogProvisioningError as exc:
+        raise RuntimeError(f"strategic reload catalog preflight failed: {exc}") from exc
     return selected
 
 

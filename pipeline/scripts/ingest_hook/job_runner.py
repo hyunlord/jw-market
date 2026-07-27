@@ -575,7 +575,7 @@ def run(
                     catalog_root = (
                         ubist_mart_activation.shadow_catalog_root_from_env(target_root)
                         if is_shadow
-                        else None
+                        else ubist_mart_activation.production_catalog_root_from_env()
                     )
                     print(
                         f"phase=mart_build status=start build_db={mart_activation.build_db} "

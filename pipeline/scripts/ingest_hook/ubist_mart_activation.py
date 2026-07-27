@@ -10,6 +10,12 @@ import re
 import shutil
 from typing import Any, Callable
 
+from pipeline.etl.io.catalog.paths import (
+    CATALOG_ROOT_ENV,
+    CatalogProvisioningError,
+    resolve_catalog_root,
+    validate_catalog_materialization,
+)
 from pipeline.scripts.deploy.mart_load_ops import (
     PublishAction,
     publish_table_group_atomically,
@@ -43,6 +49,8 @@ GENERAL_TABLES = (
     "mart_general_market_metric",
 )
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_S4_REQUIRED_CATALOGS = frozenset({"strategic_brand", "strategic_product"})
 _S4_MUTATED_ENV = (
     "MARIADB_DATABASE",
     "MARIADB_SOURCE_DATABASE",
@@ -143,6 +151,20 @@ def shadow_catalog_root_from_env(shadow_root: Path) -> Path:
     required = root / "strategic_brand" / "strategic_brand.parquet"
     if not required.is_file():
         raise RuntimeError(f"isolated shadow catalog is missing strategic_brand.parquet: {required}")
+    return root
+
+
+def production_catalog_root_from_env() -> Path:
+    """Resolve and validate the production S4 catalog before mart build starts."""
+
+    root = resolve_catalog_root(_PROJECT_ROOT).resolve()
+    try:
+        validate_catalog_materialization(
+            root,
+            required_names=_S4_REQUIRED_CATALOGS,
+        )
+    except CatalogProvisioningError as exc:
+        raise RuntimeError(f"catalog preflight failed before s4 mart: {exc}") from exc
     return root
 
 

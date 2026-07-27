@@ -1,11 +1,31 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from pipeline.scripts.ingest_hook import ubist_mart_activation as activation
+from pipeline.etl.io.catalog.paths import publish_catalog_outputs
+
+
+@dataclass(frozen=True)
+class _CatalogResult:
+    name: str
+    output_path: Path
+    rows: int = 1
+
+
+def _provision_catalog(root: Path, *names: str) -> None:
+    build_root = root.parent / "catalog-build"
+    results = []
+    for name in names:
+        path = build_root / name / f"{name}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(name.encode("utf-8"))
+        results.append(_CatalogResult(name=name, output_path=path))
+    publish_catalog_outputs(results, build_root=build_root, catalog_root=root)
 
 
 def test_activation_is_fail_closed_without_explicit_pl_gate(monkeypatch) -> None:
@@ -147,6 +167,24 @@ def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monke
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(internal))
     with pytest.raises(RuntimeError, match="strategic_brand.parquet"):
         activation.shadow_catalog_root_from_env(shadow_root)
+
+
+def test_production_catalog_preflight_validates_before_s4(tmp_path, monkeypatch) -> None:
+    catalog_root = tmp_path / "catalog"
+    _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
+    monkeypatch.setenv(activation.CATALOG_ROOT_ENV, str(catalog_root))
+
+    assert activation.production_catalog_root_from_env() == catalog_root.resolve()
+
+
+def test_production_catalog_preflight_names_missing_artifact(tmp_path, monkeypatch) -> None:
+    catalog_root = tmp_path / "catalog"
+    _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
+    (catalog_root / "strategic_product" / "strategic_product.parquet").unlink()
+    monkeypatch.setenv(activation.CATALOG_ROOT_ENV, str(catalog_root))
+
+    with pytest.raises(RuntimeError, match="before s4 mart.*strategic_product"):
+        activation.production_catalog_root_from_env()
 
 
 def test_shadow_activation_isolated_without_production_approval(monkeypatch) -> None:
