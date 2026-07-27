@@ -139,3 +139,69 @@ def test_original_keys_and_types_are_unchanged(bind):
         assert key in body, key
     assert isinstance(body["status"], str)
     assert isinstance(body["epoch"], str)
+
+
+def _configure_reverted_binding(monkeypatch, *, shadow_ledger: Path | None) -> None:
+    monkeypatch.setenv("INGEST_LOAD_STAGING_ROOT", "/tmp/ingest-load-staging")
+    monkeypatch.delenv("INGEST_LOAD_SHADOW_ROOT", raising=False)
+    monkeypatch.delenv("INGEST_LOAD_TARGET_ROOT", raising=False)
+    monkeypatch.delenv("INGEST_LEDGER_SQLITE", raising=False)
+    if shadow_ledger is None:
+        monkeypatch.delenv("INGEST_SHADOW_LEDGER_SQLITE", raising=False)
+    else:
+        monkeypatch.setenv("INGEST_SHADOW_LEDGER_SQLITE", str(shadow_ledger))
+
+
+def test_revert_option_a_binds_d2_and_keeps_shadow_counterpart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    d2 = _seed(tmp_path / "d2.sqlite", "complete")
+    shadow_path = tmp_path / "shadow.sqlite"
+    _seed(shadow_path, "failed")
+    _configure_reverted_binding(monkeypatch, shadow_ledger=shadow_path)
+
+    client = TestClient(create_app(IngestService(d2, tmp_path / "input")))
+    code, body = _get(client)
+
+    assert config.configured_ledger_source() == "d2"
+    assert config.counterpart_ledger_source() == "shadow"
+    assert code == 200
+    assert body["ledger_source"] == "d2"
+    assert body["counterpart_source"] == "shadow"
+    assert body["counterpart_available"] is True
+    assert body["counterpart_status"] == "failed"
+
+
+def test_revert_option_b_reports_unconfigured_counterpart_without_404(
+    tmp_path: Path, monkeypatch
+) -> None:
+    d2 = _seed(tmp_path / "d2.sqlite", "complete")
+    _configure_reverted_binding(monkeypatch, shadow_ledger=None)
+
+    client = TestClient(create_app(IngestService(d2, tmp_path / "input")))
+    code, body = _get(client)
+
+    assert config.configured_ledger_source() == "d2"
+    assert config.counterpart_ledger_source() is None
+    assert code == 200
+    assert body["ledger_source"] == "d2"
+    assert body["counterpart_source"] is None
+    assert body["counterpart_available"] is False
+    assert body["counterpart_error"] == "counterpart ledger is not configured"
+    assert body["counterpart_status"] is None
+    assert body["ledgers_agree"] is None
+
+
+def test_shadow_root_without_shadow_ledger_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("INGEST_LOAD_SHADOW_ROOT", "/market-output/shadow")
+    monkeypatch.delenv("INGEST_LOAD_STAGING_ROOT", raising=False)
+    monkeypatch.delenv("INGEST_LOAD_TARGET_ROOT", raising=False)
+    monkeypatch.delenv("INGEST_SHADOW_LEDGER_SQLITE", raising=False)
+    monkeypatch.delenv("INGEST_LEDGER_SQLITE", raising=False)
+
+    assert config.configured_ledger_source() == "shadow"
+    with pytest.raises(
+        RuntimeError,
+        match="shadow mode requires INGEST_SHADOW_LEDGER_SQLITE",
+    ):
+        config.open_configured_ledger()

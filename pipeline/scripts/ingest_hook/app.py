@@ -454,7 +454,7 @@ def _read_counterpart(epoch: str, category: str, manifest_sha: str):
     except Exception as exc:  # noqa: BLE001
         return None, _Counterpart(error=f"{type(exc).__name__}: {exc}")
     if source is None:
-        return None, _Counterpart(available=True)
+        return None, _Counterpart(error="counterpart ledger is not configured")
     ledger = None
     try:
         ledger = config.open_ledger_by_source(source)
