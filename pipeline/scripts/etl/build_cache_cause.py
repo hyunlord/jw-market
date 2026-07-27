@@ -32,10 +32,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pipeline.etl.io.cache.cause_key import (
+    assert_no_key_collisions,
+    cache_cause_identity,
+    cache_view_source_id,
+    usable_optional_columns,
+)
 from cache_build_common import (
     MEASURES_BY_SOURCE,
     active_catalog_member_rows,
     api_source,
+    catalog_input_manifest,
+    current_build_sha,
     brand_cagr_exclusive,
     calculate_ei_with_fallback,
     decode_json,
@@ -147,6 +155,58 @@ def _quoted_table_name(name: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_]+", str(name or "")):
         raise SystemExit(f"unsafe --target-table: {name!r}")
     return f"`{name}`"
+
+
+def _table_column_names(cur: Any, table_name: str) -> tuple[str, ...]:
+    """Columns the target table actually has, so provenance stays optional."""
+
+    cur.execute(
+        """
+        SELECT COLUMN_NAME
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+        """,
+        (table_name,),
+    )
+    rows = cur.fetchall() or []
+    names: list[str] = []
+    for row in rows:
+        if isinstance(row, dict):
+            value = row.get("COLUMN_NAME") or row.get("column_name")
+        else:
+            value = row[0]
+        if value:
+            names.append(str(value))
+    return tuple(names)
+
+
+def cache_cause_run_id(build_sha: str, *, now: datetime | None = None) -> str:
+    """Identify one S6 execution. Overridable so an operator can correlate runs."""
+
+    configured = str(os.getenv("CACHE_CAUSE_RUN_ID") or "").strip()
+    if configured:
+        return configured
+    stamp = (now or datetime.now()).strftime("%Y%m%dT%H%M%S")
+    return f"{(build_sha or 'unknown')[:12]}-{stamp}"
+
+
+def _cache_cause_provenance(
+    optional_columns: Iterable[str],
+    strategic_brand: Any,
+) -> dict[str, Any]:
+    wanted = set(optional_columns)
+    if not wanted - {"view_source_id"}:
+        return {}
+    build_sha = current_build_sha()
+    values: dict[str, Any] = {
+        "run_id": cache_cause_run_id(build_sha),
+        "build_sha": build_sha,
+    }
+    if "input_manifest_json" in wanted:
+        values["input_manifest_json"] = catalog_input_manifest(
+            {"strategic_brand": strategic_brand}
+        )
+    return {name: value for name, value in values.items() if name in wanted}
 
 
 def prepare_full_target_table(cur: Any, requested_table: str) -> tuple[str, bool]:
@@ -4197,9 +4257,7 @@ def main() -> None:
     ml_siblings = make_sibling_map(ml_brand_rows, "ml_id")
     cd_siblings = make_sibling_map(cd_brand_rows, "cd_market_id")
 
-    columns = ["brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"]
-    placeholders = ", ".join(["%s"] * len(columns))
-    names = ", ".join(f"`{c}`" for c in columns)
+    base_columns = ["brand", "view_type", "source", "measure", "market_id", "response_json", "payload_size"]
     inserted = 0
     conn = mariadb_connect()
     cur = conn.cursor()
@@ -4235,6 +4293,60 @@ def main() -> None:
         if not partial_mode:
             target_table_name, should_switch_full = prepare_full_target_table(cur, args.target_table)
         target_table = _quoted_table_name(target_table_name)
+
+        # ---- market identity pre-flight -------------------------------------
+        # The PK derives market_id from the parent ML for BOTH views, so sibling
+        # CD markets under one ML collapse onto the same key and REPLACE INTO
+        # drops one of them without a word. Known splits: ml_008 -> cd_008/cd_009,
+        # ml_009 -> cd_010/cd_011, ml_010 -> cd_012/cd_013. Checked before the
+        # DELETE so a collision stops the build instead of losing a market.
+        def _parent_ml_id(row: dict[str, Any]) -> str | None:
+            cd_row = (
+                cd_market.loc[row["cd_market_id"]].to_dict()
+                if row["cd_market_id"] in cd_market.index
+                else {}
+            )
+            return cd_row.get("ml_id") or row.get("ml_id")
+
+        identities = [
+            cache_cause_identity(
+                brand=row["brand_name"],
+                view_type="market_landscape",
+                source=api_source(row["source"]),
+                measure=row["measure"],
+                ml_id=row["ml_id"],
+            )
+            for row in ml_output_rows
+        ] + [
+            cache_cause_identity(
+                brand=row["brand_name"],
+                view_type="competitive_dynamics",
+                source=api_source(row["source"]),
+                measure=row["measure"],
+                ml_id=_parent_ml_id(row),
+                cd_id=row["cd_market_id"],
+            )
+            for row in cd_output_rows
+        ]
+        assert_no_key_collisions(identities)
+
+        # ---- provenance / identity columns, only if the table has them ------
+        # cache_cause carries updated_at but no run identity, so a row cannot be
+        # traced to the S6 execution that produced it. cache_brands and
+        # cache_market_status already carry build_sha/input_manifest_json; this
+        # follows that convention and adds run_id. Additive and nullable, so the
+        # producer stays correct against an unmigrated table.
+        optional_columns = usable_optional_columns(_table_column_names(cur, target_table_name))
+        columns = base_columns + list(optional_columns)
+        placeholders = ", ".join(["%s"] * len(columns))
+        names = ", ".join(f"`{c}`" for c in columns)
+        provenance = _cache_cause_provenance(optional_columns, strategic_brand)
+        if args.verbose:
+            print(
+                f"[B3] cache_cause identity preflight rows={len(identities)} collisions=0 "
+                f"optional_columns={list(optional_columns) or 'none'}",
+                flush=True,
+            )
         sql = f"REPLACE INTO {target_table} ({names}) VALUES ({placeholders})"
 
         if selected_market_ids is not None:
@@ -4283,6 +4395,8 @@ def main() -> None:
                 "market_id": market_id,
                 "response_json": response_json,
                 "payload_size": len(response_json.encode("utf-8")),
+                "view_source_id": cache_view_source_id("market_landscape", row["ml_id"]),
+                **provenance,
             }
             batch.append(tuple(out[col] for col in columns))
             inserted += 1
@@ -4317,9 +4431,15 @@ def main() -> None:
                 "view_type": "competitive_dynamics",
                 "source": source,
                 "measure": row["measure"],
+                # market_id stays parent-ML derived for reader compatibility;
+                # view_source_id carries the actual cd_id that the PK omits.
                 "market_id": market_id,
                 "response_json": response_json,
                 "payload_size": len(response_json.encode("utf-8")),
+                "view_source_id": cache_view_source_id(
+                    "competitive_dynamics", ml_id, row["cd_market_id"]
+                ),
+                **provenance,
             }
             batch.append(tuple(out[col] for col in columns))
             inserted += 1

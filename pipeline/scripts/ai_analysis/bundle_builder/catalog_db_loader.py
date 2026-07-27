@@ -6,6 +6,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from .catalog_constants import ATC4_FALLBACK, MKT_TEAM_FALLBACK
+from .market_membership import (
+    ACTIVE_PREDICATE_SQL,
+    MEMBERSHIP_ORDER_SQL,
+    NoActiveMarketMembership,
+    active_memberships,
+    membership_market_ids,
+    primary_membership,
+)
 
 
 def _json_load(value):
@@ -131,13 +139,41 @@ def _parse_catalog_description(brand_name: str) -> dict:
     }
 
 
+def _fetch_rows(db_conn, sql: str, params: tuple) -> List[dict]:
+    with db_conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    return [dict(row) for row in (rows or [])]
+
+
+def load_cd_memberships(brand_name: str, db_conn) -> List[dict]:
+    """Every active competitive_dynamics membership, in the total order."""
+
+    if not _table_exists(db_conn, "catalog_cd_brand"):
+        return []
+    rows = _fetch_rows(
+        db_conn,
+        f"""
+        SELECT *
+        FROM catalog_cd_brand
+        WHERE name = %s AND {ACTIVE_PREDICATE_SQL}
+        ORDER BY {MEMBERSHIP_ORDER_SQL}
+        """,
+        (brand_name,),
+    )
+    return list(active_memberships(rows))
+
+
 def load_cd_id_for_brand(brand_name: str, db_conn) -> Optional[str]:
+    """Primary active cd_id. See ``load_cd_memberships`` for the full set."""
+
     if _table_exists(db_conn, "catalog_cd_brand"):
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT cd_id FROM catalog_cd_brand WHERE name = %s LIMIT 1", (brand_name,))
-            row = cur.fetchone()
-        if row:
-            return row.get("cd_id")
+        memberships = load_cd_memberships(brand_name, db_conn)
+        if memberships:
+            return memberships[0].get("cd_id")
+        # No active CD membership is not an error here: a brand can legitimately
+        # sit in an ML market with no CD market at all (all 264 dual-ML brands
+        # do). Fall through to mart, which carries no exclusion flags.
     with db_conn.cursor() as cur:
         cur.execute(
             """
@@ -214,28 +250,74 @@ def detect_available_sources(brand_name: str, db_conn) -> List[str]:
     )
 
 
+def load_brand_memberships(brand_name: str, db_conn) -> List[dict]:
+    """Every active market_landscape membership, in the total order.
+
+    Returns () when the catalog table is absent or holds no row for the name.
+    A brand whose rows all exist but are excluded raises instead — see
+    ``NoActiveMarketMembership``.
+    """
+
+    if not _table_exists(db_conn, "catalog_strategic_brand"):
+        return []
+    compact_brand_name = _compact_brand_name(brand_name)
+    exact = _fetch_rows(
+        db_conn,
+        f"""
+        SELECT *
+        FROM catalog_strategic_brand
+        WHERE name = %s AND {ACTIVE_PREDICATE_SQL}
+        ORDER BY {MEMBERSHIP_ORDER_SQL}
+        """,
+        (brand_name,),
+    )
+    if exact:
+        return list(active_memberships(exact))
+    compact = _fetch_rows(
+        db_conn,
+        f"""
+        SELECT *
+        FROM catalog_strategic_brand
+        WHERE REPLACE(LOWER(name), ' ', '') = %s AND {ACTIVE_PREDICATE_SQL}
+        ORDER BY {MEMBERSHIP_ORDER_SQL}
+        """,
+        (compact_brand_name,),
+    )
+    if compact:
+        return list(active_memberships(compact))
+
+    # Nothing active. Distinguish "brand absent" from "brand withdrawn": only the
+    # second is a fail-closed condition, and it is the one the old unfiltered
+    # LIMIT 1 silently papered over for 26 brand names.
+    withdrawn = _fetch_rows(
+        db_conn,
+        """
+        SELECT brand_id
+        FROM catalog_strategic_brand
+        WHERE name = %s OR REPLACE(LOWER(name), ' ', '') = %s
+        """,
+        (brand_name, compact_brand_name),
+    )
+    if withdrawn:
+        raise NoActiveMarketMembership(brand_name, excluded_rows=len(withdrawn))
+    return []
+
+
+def load_brand_market_ids(brand_name: str, db_conn) -> tuple:
+    """Distinct active ml_ids for the brand, in the total order.
+
+    264 brand names return two. Callers holding a market should use this and
+    match on it rather than assuming the primary is the market in question.
+    """
+
+    return membership_market_ids(load_brand_memberships(brand_name, db_conn), key="ml_id")
+
+
 def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
     compact_brand_name = _compact_brand_name(brand_name)
-    if _table_exists(db_conn, "catalog_strategic_brand"):
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT * FROM catalog_strategic_brand WHERE name = %s LIMIT 1", (brand_name,))
-            row = cur.fetchone()
-        if row:
-            return dict(row)
-        with db_conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM catalog_strategic_brand
-                WHERE REPLACE(LOWER(name), ' ', '') = %s
-                ORDER BY name ASC
-                LIMIT 1
-                """,
-                (compact_brand_name,),
-            )
-            row = cur.fetchone()
-        if row:
-            return dict(row)
+    memberships = load_brand_memberships(brand_name, db_conn)
+    if memberships:
+        return dict(primary_membership(memberships, brand_name))
 
     parsed = _parse_catalog_description(brand_name)
     with db_conn.cursor() as cur:
@@ -244,7 +326,7 @@ def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
             SELECT ml_id, brand_id, brand_key, brand_name, is_jw, overlay_data, computed_at
             FROM mart_strategic_ml_brand_metric
             WHERE brand_name = %s
-            ORDER BY ml_id ASC, computed_at DESC
+            ORDER BY ml_id ASC, computed_at DESC, brand_id ASC
             LIMIT 1
             """,
             (brand_name,),

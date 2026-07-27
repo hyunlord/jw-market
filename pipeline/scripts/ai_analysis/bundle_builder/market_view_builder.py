@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from .cache_cause_key import cache_market_id
 from .catalog_db_loader import load_market_from_catalog, source_public_to_db
 from .competitor_resolver import get_competitor_history_for_view
 from .market_kpi_calculator import calculate_ml_kpi_extras
@@ -85,24 +86,50 @@ def _market_tables(view: str) -> tuple[str, str, str]:
     return "mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "ml_id"
 
 
-def _cache_exists(brand_name: str, view: str, source: str, measure: str, db_conn) -> bool:
+def _cache_exists(
+    brand_name: str,
+    view: str,
+    source: str,
+    measure: str,
+    db_conn,
+    cache_market: str | None = None,
+) -> bool:
+    """Probe cache_cause on its full primary key.
+
+    ``cache_market`` is the ``market_id`` column value, i.e. the strategy id, not
+    the internal ml/cd id — see ``cache_cause_key``. Matching on four of five key
+    columns previously let a brand's other market answer the probe.
+    """
+
+    if cache_market is None:
+        raise ValueError("cache_market is required to probe cache_cause by primary key")
     with db_conn.cursor() as cur:
         cur.execute(
             """
             SELECT 1
             FROM cache_cause
             WHERE brand = %s AND view_type = %s AND source = %s AND measure = %s
+              AND market_id = %s
             LIMIT 1
             """,
-            (brand_name, view, source.upper(), measure),
+            (brand_name, view, source.upper(), measure, cache_market),
         )
         return cur.fetchone() is not None
 
 
-def _view_exists(brand_name: str, market_id: str, view: str, source: str, measure: str, config, db_conn) -> bool:
+def _view_exists(
+    brand_name: str,
+    market_id: str,
+    view: str,
+    source: str,
+    measure: str,
+    config,
+    db_conn,
+    cache_market: str | None = None,
+) -> bool:
     if view == "market_landscape" and use_cache_free_ml_kpi(config):
         return ml_view_exists(brand_name, market_id, source, measure, db_conn)
-    return _cache_exists(brand_name, view, source, measure, db_conn)
+    return _cache_exists(brand_name, view, source, measure, db_conn, cache_market)
 
 
 def _fetch_brand_metric(brand_name: str, market_id: str, view: str, source: str, measure: str, db_conn) -> dict | None:
@@ -197,7 +224,13 @@ def build_market_view(
     market_id = cd_id if view == "competitive_dynamics" else ml_id
     if not market_id:
         return None
-    if not _view_exists(brand_name, market_id, view, source, measure, config, db_conn):
+    # The exact market this view is about, expressed in the cache's own key
+    # space. mart reads below already use `market_id`; the cache reads now use
+    # the same identity instead of taking whatever row came first.
+    cache_market = cache_market_id(view, ml_id, cd_id)
+    if not _view_exists(
+        brand_name, market_id, view, source, measure, config, db_conn, cache_market
+    ):
         return None
 
     brand_row = _fetch_brand_metric(brand_name, market_id, view, source, measure, db_conn)
@@ -246,7 +279,9 @@ def build_market_view(
         )
 
     ranking_series = _json_load(market_row.get("brand_ranking_stacked"))
-    kpi_extras = get_kpi_extras_from_cache_cause(brand_name, view, source, measure, db_conn)
+    kpi_extras = get_kpi_extras_from_cache_cause(
+        brand_name, view, source, measure, db_conn, cache_market
+    )
     if view == "market_landscape" and use_cache_free_ml_kpi(config):
         ml_rows = fetch_ml_metric_rows(brand_name, ml_id, source, measure, db_conn)
         if ml_rows:

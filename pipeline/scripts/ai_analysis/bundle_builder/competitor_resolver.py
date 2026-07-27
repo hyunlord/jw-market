@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from .cache_cause_key import cache_market_id
 from .catalog_db_loader import source_public_to_db
 from .mat_computer import compute_mat_12m_absolute, find_latest_actual_period
 from .ms_recomputer import get_kpi_extras_from_cache_cause, get_ms_from_cache_cause, recompute_ms_pct
@@ -230,5 +231,17 @@ def get_competitor_history_for_view(
             "yoy_pct": point.get("yoy"),
             "rank": point.get("rank"),
         }
-    extras = get_kpi_extras_from_cache_cause(competitor_brand_name, view, source, measure, db_conn)
+    # The competitor's mart metrics above are scoped to `market_id`; its cache
+    # KPIs must be scoped to the same market. Competitors are exactly where
+    # multi-market brands appear — all 264 dual-membership names are non-JW,
+    # non-target — so a market-agnostic read here could return the other
+    # market's EI, CAGR and rank for the same competitor.
+    extras = get_kpi_extras_from_cache_cause(
+        competitor_brand_name,
+        view,
+        source,
+        measure,
+        db_conn,
+        cache_market_id(view, ml_id, cd_id),
+    )
     return {"history": history, "kpi_extras": extras, "is_jw": bool(row.get("is_jw"))}

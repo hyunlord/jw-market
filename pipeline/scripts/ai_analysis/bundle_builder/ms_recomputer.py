@@ -24,7 +24,25 @@ def recompute_ms_pct(
     return (float(brand_raw_value) / float(market_total_raw_value)) * 100.0
 
 
-def _cache_row(brand_name: str, view: str, source: str, measure: str, db_conn) -> dict | None:
+def _cache_row(
+    brand_name: str,
+    view: str,
+    source: str,
+    measure: str,
+    db_conn,
+    market_id: str | None = None,
+) -> dict | None:
+    """Read one cache_cause row by its full primary key.
+
+    ``market_id`` completes the PK. Without it the query matched on four of the
+    five key columns and ``LIMIT 1`` returned whichever market the storage engine
+    offered first, so a brand in two markets could be answered with the other
+    market's KPIs. A miss must stay a miss: never fall back to a different
+    market's row.
+    """
+
+    if market_id is None:
+        raise ValueError("market_id is required to read cache_cause by primary key")
     with db_conn.cursor() as cur:
         cur.execute(
             """
@@ -34,9 +52,10 @@ def _cache_row(brand_name: str, view: str, source: str, measure: str, db_conn) -
               AND view_type = %s
               AND source = %s
               AND measure = %s
+              AND market_id = %s
             LIMIT 1
             """,
-            (brand_name, view, source.upper(), measure),
+            (brand_name, view, source.upper(), measure, market_id),
         )
         row = cur.fetchone()
     if not row:
@@ -50,8 +69,9 @@ def get_ms_from_cache_cause(
     source: str,
     measure: str,
     db_conn,
+    market_id: str | None = None,
 ) -> Optional[float]:
-    obj = _cache_row(brand_name, view, source, measure, db_conn)
+    obj = _cache_row(brand_name, view, source, measure, db_conn, market_id)
     if not obj:
         return None
     kpi = ((obj.get("data") or {}).get("kpi") or {})
@@ -67,8 +87,9 @@ def get_kpi_extras_from_cache_cause(
     source: str,
     measure: str,
     db_conn,
+    market_id: str | None = None,
 ) -> dict:
-    obj = _cache_row(brand_name, view, source, measure, db_conn)
+    obj = _cache_row(brand_name, view, source, measure, db_conn, market_id)
     kpi = ((obj or {}).get("data") or {}).get("kpi") or {}
     return {
         "ei": kpi.get("ei") or kpi.get("target_ei"),

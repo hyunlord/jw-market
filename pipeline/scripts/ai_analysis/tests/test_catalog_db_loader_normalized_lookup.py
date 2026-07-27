@@ -6,7 +6,7 @@ from bundle_builder.catalog_db_loader import load_brand_from_catalog
 class FakeCursor:
     def __init__(self, conn):
         self.conn = conn
-        self.result = None
+        self.rows = []
 
     def __enter__(self):
         return self
@@ -18,27 +18,42 @@ class FakeCursor:
         self.conn.calls.append((sql, params))
         normalized_sql = " ".join(sql.split())
         if normalized_sql.startswith("SHOW TABLES LIKE"):
-            self.result = {"Tables_in_test": params[0]} if params[0] in self.conn.tables else None
+            self.rows = [{"Tables_in_test": params[0]}] if params[0] in self.conn.tables else []
             return
-        if "FROM catalog_strategic_brand" in normalized_sql and "WHERE name = %s" in normalized_sql:
-            self.result = self.conn.catalog_exact.get(params[0])
-            return
-        if "FROM catalog_strategic_brand" in normalized_sql and "REPLACE(LOWER(name)" in normalized_sql:
-            self.result = self.conn.catalog_compact.get(params[0])
-            return
+        if "FROM catalog_strategic_brand" in normalized_sql:
+            # The withdrawn probe is the only catalog query without the active
+            # predicate; it must be matched before the two lookup shapes.
+            if "OR REPLACE(LOWER(name)" in normalized_sql:
+                self.rows = list(self.conn.catalog_withdrawn.get(params[0], []))
+                return
+            if "WHERE name = %s" in normalized_sql:
+                self.rows = _as_rows(self.conn.catalog_exact.get(params[0]))
+                return
+            if "REPLACE(LOWER(name)" in normalized_sql:
+                self.rows = _as_rows(self.conn.catalog_compact.get(params[0]))
+                return
         if "FROM mart_strategic_ml_brand_metric" in normalized_sql and "WHERE brand_name = %s" in normalized_sql:
-            self.result = self.conn.mart_exact.get(params[0])
+            self.rows = _as_rows(self.conn.mart_exact.get(params[0]))
             return
         if "FROM mart_strategic_ml_brand_metric" in normalized_sql and "REPLACE(LOWER(brand_name)" in normalized_sql:
-            self.result = self.conn.mart_compact.get(params[0])
+            self.rows = _as_rows(self.conn.mart_compact.get(params[0]))
             return
         if "FROM mart_strategic_ml_market_metric" in normalized_sql:
-            self.result = {"ml_name": "시장", "computed_at": "2026-07-09"}
+            self.rows = [{"ml_name": "시장", "computed_at": "2026-07-09"}]
             return
         raise AssertionError(f"unexpected query: {normalized_sql}")
 
     def fetchone(self):
-        return self.result
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+def _as_rows(value):
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list) else [value]
 
 
 class FakeConn:
@@ -47,6 +62,7 @@ class FakeConn:
         self.calls = []
         self.catalog_exact = {}
         self.catalog_compact = {}
+        self.catalog_withdrawn = {}
         self.mart_exact = {}
         self.mart_compact = {}
 
