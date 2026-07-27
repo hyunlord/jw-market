@@ -71,6 +71,8 @@ def evidence_from_calls(calls: list[dict[str, Any]], data_md: str) -> tuple[Evid
 def project_hira_nedrug_binding_evidence(
     tool_calls: Sequence[Mapping[str, Any]],
     fact_md: str,
+    *,
+    canonical_hira_code: str | None = None,
 ) -> list[dict[str, Any]]:
     """Project exact HIRA counts and the MFDS result count for claim binding."""
 
@@ -88,7 +90,11 @@ def project_hira_nedrug_binding_evidence(
                     or _render_serialized_evidence_claim(fact) not in rendered_lines
                 ):
                     continue
-                projected_fact = _hira_patient_binding_fact(tool, fact)
+                projected_fact = _hira_patient_binding_fact(
+                    tool,
+                    fact,
+                    canonical_hira_code=canonical_hira_code,
+                )
                 if projected_fact is not None:
                     projected.append(projected_fact)
         elif tool == "mfds_permission_search":
@@ -134,6 +140,8 @@ def _render_serialized_evidence_claim(fact: Mapping[str, Any]) -> str:
 def _hira_patient_binding_fact(
     tool: str,
     fact: Mapping[str, Any],
+    *,
+    canonical_hira_code: str | None,
 ) -> dict[str, Any] | None:
     try:
         value = format(Decimal(str(fact["value"])), "f")
@@ -151,7 +159,7 @@ def _hira_patient_binding_fact(
         "period": period,
         "allowed_numbers": list(allowed_numbers(number_source)),
         "visible": True,
-        "entity": str(fact["subject"]),
+        "entity": canonical_hira_code or str(fact["subject"]),
         "metric": "환자수",
         "unit": "명",
         "source_grade": "AUTHORITATIVE",
