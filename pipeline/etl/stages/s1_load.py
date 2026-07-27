@@ -35,6 +35,9 @@ def _run_ubist(params: dict[str, Any]) -> int:
                 all_sources=not bool(file_arg),
                 dry=dry,
                 allow_overlap_dedup=bool(params.get("allow_overlap_dedup")),
+                # 증분 경로도 pinned 기간을 존중해야 한다. 기간 교체가 들어오면서
+                # '걷어냈는데 다시 안 쓰는' 조합이 생길 수 있기 때문이다.
+                exclude_periods=exclude_periods,
             )
             if dry:
                 print(f"[{STAGE}] UBIST incremental dry-run 완료 target={target}")
