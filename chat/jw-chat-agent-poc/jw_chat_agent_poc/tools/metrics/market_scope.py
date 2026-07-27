@@ -97,6 +97,27 @@ class MarketScopeResolver:
         except Exception:  # noqa: BLE001 - an unavailable catalog must not block unrelated routing
             return False
 
+    def runtime_observability(self) -> dict[str, dict[str, Any]]:
+        strategic = (
+            self._query_layer.observability()
+            if self._query_layer is not None
+            else {
+                "row_count": 0,
+                "derived_point_count": 0,
+                "market_point_count": 0,
+                "brand_point_count": 0,
+                "snapshot_age_seconds": None,
+                "refresh_successes": 0,
+                "refresh_failures": 0,
+                "refreshing": False,
+            }
+        )
+        return {
+            "strategic_mart": strategic,
+            "catalog": self._resolver.observability(),
+            "general_membership": self._general_view.observability(),
+        }
+
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)
 

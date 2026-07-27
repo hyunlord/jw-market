@@ -98,6 +98,9 @@ class StrategicQueryLayer:
             for brand, market_id in sorted(memberships)
         )
 
+    def observability(self) -> dict[str, int | float | bool | None]:
+        return self._store.observability()
+
     def supports_metric(self, metric: str) -> bool:
         try:
             definition = metric_definition(metric)

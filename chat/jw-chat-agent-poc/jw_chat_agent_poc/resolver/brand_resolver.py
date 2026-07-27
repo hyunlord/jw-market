@@ -249,6 +249,10 @@ class BrandResolver:
             previous is incoming for previous, incoming in zip(current, sources, strict=True)
         )
 
+    def observability(self) -> dict[str, int]:
+        with self._catalog_lock:
+            return {"row_count": len(self._catalog_items or ())}
+
     def _assemble_items(
         self,
         cache_brands: tuple[dict[str, Any], ...],

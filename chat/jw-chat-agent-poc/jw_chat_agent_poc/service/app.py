@@ -250,7 +250,7 @@ class SessionStore:
         self._max_sessions = max(1, max_sessions)
         self._items: OrderedDict[str, dict] = OrderedDict()
         self._lock = threading.Lock()
-        self.conversations = conversations or ConversationStore()
+        self.conversations = conversations or ConversationStore(max_states=self._max_sessions)
 
     def put(self, item: dict) -> str:
         session_id = uuid4().hex
@@ -368,6 +368,13 @@ def create_app(
     @app.get("/__version")
     def version() -> dict:
         return version_payload()
+
+    @app.get("/__runtime/observability")
+    def runtime_observability() -> dict[str, dict[str, Any]]:
+        return {
+            "conversation": store.conversations.observability(),
+            **resolver.runtime_observability(),
+        }
 
     @app.post(
         "/chat",
