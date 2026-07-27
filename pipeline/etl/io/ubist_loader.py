@@ -137,6 +137,11 @@ class SheetMapping:
     metric_cols: list[tuple[int, str, str, str]]
 
 
+@dataclass(frozen=True)
+class WorkbookPeriodSummary:
+    periods: tuple[str, ...]
+
+
 @dataclass
 class PartitionStats:
     row_count: int = 0
@@ -157,6 +162,26 @@ class DedupReport:
 
 def now_kst() -> str:
     return datetime.now(KST).isoformat(timespec="seconds")
+
+
+def summarize_source(path: Path) -> WorkbookPeriodSummary:
+    """Parse workbook headers for G3 validation without making load decisions."""
+    periods: set[str] = set()
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        for sheet_name in workbook.sheetnames:
+            worksheet = workbook[sheet_name]
+            rows_iter = worksheet.iter_rows(values_only=True)
+            try:
+                header1 = next(rows_iter)
+                header2 = next(rows_iter)
+            except StopIteration:
+                continue
+            mapping = classify_sheet(sheet_name, header1, header2)
+            periods.update(period for _, _, _, period in mapping.metric_cols)
+    finally:
+        workbook.close()
+    return WorkbookPeriodSummary(periods=tuple(sorted(periods)))
 
 
 def normalize_text(value: object) -> str | None:
