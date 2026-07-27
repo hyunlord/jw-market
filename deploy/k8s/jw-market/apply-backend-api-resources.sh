@@ -72,11 +72,18 @@ cur=$(kubectl -n "$namespace" get deploy "$deployment" \
 echo "[info] current resources: ${cur:-<none>}"
 echo "[info] ops: requests.cpu=$op_rc requests.memory=$op_rm limits.cpu=$op_lc limits.memory=$op_lm"
 
+# ★ 2026-07-27 추가 (deploy-script-index-safety 라운드)
+#   인덱스를 이름으로 조회하는 것만으로는 조회와 patch 사이의 간격이 남는다. istio 가
+#   그 사이에 사이드카를 재주입하면 같은 인덱스가 다른 컨테이너를 가리키고, patch 는
+#   그대로 성공한다. 그래서 patch 첫 op 으로 ★해당 인덱스가 여전히 그 이름인지 단언한다.
+#   JSON Patch 는 원자적이므로 test 가 실패하면 아무 op 도 적용되지 않는다.
+guard='{"op":"test","path":"/spec/template/spec/containers/'"$idx"'/name","value":"'"$container"'"},'
+
 # resources 자체가 없으면 빈 객체를 먼저 만든다
 pre=""
 [ -z "$cur" ] && pre='{"op":"add","path":"/spec/template/spec/containers/'"$idx"'/resources","value":{}},'
 
-patch='['"$pre"'
+patch='['"$guard$pre"'
   {"op":"'"$op_rc"'","path":"/spec/template/spec/containers/'"$idx"'/resources/requests/cpu","value":"'"$req_cpu"'"},
   {"op":"'"$op_rm"'","path":"/spec/template/spec/containers/'"$idx"'/resources/requests/memory","value":"'"$req_mem"'"},
   {"op":"'"$op_lc"'","path":"/spec/template/spec/containers/'"$idx"'/resources/limits/cpu","value":"'"$lim_cpu"'"},

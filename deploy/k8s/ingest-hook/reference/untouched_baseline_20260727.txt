@@ -1,0 +1,13 @@
+cronjob/brand-activity-topic-monthly	spec_sha256=b69220ab4936c16572313f2a3b7043911927477f61767ab4b208eb2961366310	suspend=False	schedule=0 19 4 * *
+cronjob/brand-activity-row-topic-monthly	spec_sha256=5c6e365a4d9a97ff1b5494a4b6363dbaacb321e21ca34cf750e2d0c3baf6ae14	suspend=False	schedule=0 22 4 * *
+cronjob/jw-news-crawl-tier1-daily	spec_sha256=10bf1cb25b48732305deeb80c515a145086baeff5e8d6030f9c65acb49f4b1d0	suspend=True	schedule=10 18 * * *
+cronjob/jw-news-crawl-tier1-daily-canonical	spec_sha256=0a18a7ea52d63bdea3bd16172760f057ddb47280be27f5c2f2baf2eb637e4bf4	suspend=True	schedule=10 18 * * *
+cronjob/jw-news-crawl-tier2-daily-slice	spec_sha256=016224cd945ad544bddfdac00cef9201790f6091b0ae0e102c16e965c1fabb75	suspend=True	schedule=40 18 * * *
+cronjob/jw-news-crawl-tier2-daily-slice-canonical	spec_sha256=db0510c62276484b3779773e87ece8ee92ad7eedb94b2815a30ddda76ffcc88e	suspend=True	schedule=40 18 * * *
+cronjob/jw-news-crawl-retention-daily	spec_sha256=d65021bca77e607832601d173c724972467a1d8633697ba8bfcb70a7c1951636	suspend=True	schedule=0 19 * * *
+cronjob/jw-pipeline-orchestrator-poll-daily	spec_sha256=cb2a6c5ff56ba7d68bffaf2f14b4aabe4e5590498b7023d43298fbc2e0f0a1e5	suspend=True	schedule=0 16 * * *
+cronjob/jw-ingest-sweep-daily	spec_sha256=7a49d3f9972d9d7b5a05e5fd8fa685f4ec366af95643192a65eb3308e3970492	suspend=True	schedule=30 19 * * *
+deploy/jw-hira-benefit-worker	spec_sha256=2e19f53386bbb08822b438e789baa93fdd10d4d7ac40be576e738f7bef1a4dd6
+deploy/jw-market-crawl-temporal-worker	spec_sha256=5ef6fc8ce865c2784f71b983d0df8d95636ee2a8153a882c2181d0011f816a8e
+deploy/jw-ingest-hook	spec_sha256=866bea84952a716d26869223c760cd9021bc51d9de7c7d72139891e0f1758aa6
+deploy/code-serving-238	spec_sha256=981f7a3e50cfe011dfb07df4cf8b1f281fa04a9ea5c4064758b7306fcb163058
