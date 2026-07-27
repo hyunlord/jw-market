@@ -453,6 +453,11 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "build_shadow",
         lambda *_args, **_kwargs: order.append("mart_build"),
     )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "production_catalog_root_from_env",
+        lambda: tmp_path / "provisioned-catalog",
+    )
     real_promote = ubist_mart_activation.promote_candidate_corpus
     monkeypatch.setattr(
         ubist_mart_activation,

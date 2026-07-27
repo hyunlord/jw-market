@@ -1,10 +1,41 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
+from pipeline.etl.io.catalog.paths import publish_catalog_outputs
 from pipeline.scripts.deploy import strategic_reload_publish as publish
 from pipeline.scripts.deploy.mart_load_ops import PublishAction
 from pipeline.scripts.deploy.mart_load_verify import CanonicalDigest
+
+
+@dataclass(frozen=True)
+class _CatalogResult:
+    name: str
+    output_path: Path
+    rows: int = 1
+
+
+@pytest.fixture
+def provisioned_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    project_root = tmp_path / "repo"
+    catalog_root = project_root / "output" / "catalog"
+    build_root = tmp_path / "catalog-build"
+    results = []
+    for name in sorted(publish.PUBLISH_REQUIRED_CATALOGS):
+        output_path = build_root / name / f"{name}.parquet"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_bytes(f"fixture:{name}".encode())
+        results.append(_CatalogResult(name=name, output_path=output_path))
+    publish_catalog_outputs(
+        results,
+        build_root=build_root,
+        catalog_root=catalog_root,
+    )
+    monkeypatch.setattr(publish, "PROJECT_ROOT", project_root)
+    return catalog_root
 
 
 def test_strategic_reload_tables_are_exact_eight_body_tables() -> None:
@@ -51,7 +82,18 @@ def test_resolve_catalog_root_requires_output_catalog(tmp_path, monkeypatch) -> 
     project_root = tmp_path / "repo"
     output_catalog = project_root / "output" / "catalog"
     parquet = project_root / "parquet"
-    output_catalog.mkdir(parents=True)
+    build_root = tmp_path / "catalog-build"
+    results = []
+    for name in sorted(publish.PUBLISH_REQUIRED_CATALOGS):
+        output_path = build_root / name / f"{name}.parquet"
+        output_path.parent.mkdir(parents=True)
+        output_path.write_bytes(name.encode())
+        results.append(_CatalogResult(name=name, output_path=output_path))
+    publish_catalog_outputs(
+        results,
+        build_root=build_root,
+        catalog_root=output_catalog,
+    )
     parquet.mkdir()
     monkeypatch.setattr(publish, "PROJECT_ROOT", project_root)
 
@@ -65,7 +107,9 @@ def test_resolve_catalog_root_requires_output_catalog(tmp_path, monkeypatch) -> 
         raise AssertionError("expected non-output catalog root to be rejected")
 
 
-def test_publish_calls_atomic_rename_for_each_reload_table(monkeypatch) -> None:
+def test_publish_calls_atomic_rename_for_each_reload_table(
+    monkeypatch, provisioned_catalog: Path
+) -> None:
     calls: list[tuple[str, str, str, str]] = []
 
     def fake_publish_one(conn: object, build_db: str, target_db: str, table_name: str, run_id: str) -> PublishAction:
@@ -86,7 +130,9 @@ def test_publish_calls_atomic_rename_for_each_reload_table(monkeypatch) -> None:
     assert len(summary.actions) == 8
 
 
-def test_dry_run_checks_rows_without_swapping(monkeypatch) -> None:
+def test_dry_run_checks_rows_without_swapping(
+    monkeypatch, provisioned_catalog: Path
+) -> None:
     published: list[str] = []
 
     def fake_publish_one(*args: object, **kwargs: object) -> PublishAction:
@@ -113,7 +159,9 @@ def test_dry_run_checks_rows_without_swapping(monkeypatch) -> None:
     assert summary.actions[0].row_count == len("mart_strategic_ml_brand_metric")
 
 
-def test_publish_restores_successful_backups_after_later_failure(monkeypatch) -> None:
+def test_publish_restores_successful_backups_after_later_failure(
+    monkeypatch, provisioned_catalog: Path
+) -> None:
     published: list[str] = []
     restored: list[str] = []
 

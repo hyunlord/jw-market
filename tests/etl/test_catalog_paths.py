@@ -6,10 +6,15 @@ from pathlib import Path
 import pytest
 
 from pipeline.etl.io.catalog.paths import (
+    CATALOG_MANIFEST_NAME,
     CATALOG_ROOT_ENV,
+    CatalogEnvironmentError,
+    CatalogIntegrityError,
     build_catalog_root,
+    materialize_catalog,
     publish_catalog_outputs,
     resolve_catalog_root,
+    validate_catalog_materialization,
 )
 
 
@@ -49,6 +54,104 @@ def test_publish_catalog_outputs_promotes_the_exact_build_artifacts(tmp_path: Pa
     for source, item in zip(results, published, strict=True):
         assert item.output_path == catalog_root / source.name / f"{source.name}.parquet"
         assert item.output_path.read_bytes() == source.output_path.read_bytes()
+    assert (catalog_root / CATALOG_MANIFEST_NAME).is_file()
+    validated = validate_catalog_materialization(
+        catalog_root,
+        required_names=frozenset(item.name for item in results),
+    )
+    assert [item.name for item in validated] == sorted(item.name for item in results)
+
+
+def test_materialize_catalog_copies_a_checksumming_storage_snapshot(tmp_path: Path) -> None:
+    build_root = tmp_path / "build"
+    storage_root = tmp_path / "storage"
+    destination = tmp_path / "runtime" / "catalog"
+    results = [
+        _result(build_root, "strategic_brand", b"brand"),
+        _result(build_root, "strategic_product", b"product"),
+    ]
+    publish_catalog_outputs(results, build_root=build_root, catalog_root=storage_root)
+
+    materialized = materialize_catalog(
+        source_root=storage_root,
+        destination_root=destination,
+        required_names=frozenset({"strategic_brand", "strategic_product"}),
+    )
+
+    assert {item.name for item in materialized} == {"strategic_brand", "strategic_product"}
+    assert (destination / "strategic_brand" / "strategic_brand.parquet").read_bytes() == b"brand"
+    assert validate_catalog_materialization(
+        destination,
+        required_names=frozenset({"strategic_brand", "strategic_product"}),
+    )
+
+
+def test_catalog_manifest_is_byte_deterministic_for_the_same_artifacts(tmp_path: Path) -> None:
+    manifests = []
+    for suffix in ("first", "second"):
+        build_root = tmp_path / f"build-{suffix}"
+        catalog_root = tmp_path / f"catalog-{suffix}"
+        publish_catalog_outputs(
+            [
+                _result(build_root, "strategic_brand", b"brand"),
+                _result(build_root, "strategic_product", b"product"),
+            ],
+            build_root=build_root,
+            catalog_root=catalog_root,
+        )
+        manifests.append((catalog_root / CATALOG_MANIFEST_NAME).read_bytes())
+
+    assert manifests[0] == manifests[1]
+
+
+def test_validate_catalog_distinguishes_missing_environment(tmp_path: Path) -> None:
+    missing = tmp_path / "catalog"
+
+    with pytest.raises(CatalogEnvironmentError, match="catalog root not found"):
+        validate_catalog_materialization(
+            missing,
+            required_names=frozenset({"strategic_brand"}),
+        )
+
+
+def test_validate_catalog_rejects_corrupted_artifact(tmp_path: Path) -> None:
+    build_root = tmp_path / "build"
+    catalog_root = tmp_path / "catalog"
+    publish_catalog_outputs(
+        [_result(build_root, "strategic_brand", b"original")],
+        build_root=build_root,
+        catalog_root=catalog_root,
+    )
+    (catalog_root / "strategic_brand" / "strategic_brand.parquet").write_bytes(b"corrupt!")
+
+    with pytest.raises(CatalogIntegrityError, match="SHA256 mismatch"):
+        validate_catalog_materialization(
+            catalog_root,
+            required_names=frozenset({"strategic_brand"}),
+        )
+
+
+def test_validate_catalog_names_each_partially_missing_artifact(tmp_path: Path) -> None:
+    build_root = tmp_path / "build"
+    catalog_root = tmp_path / "catalog"
+    publish_catalog_outputs(
+        [
+            _result(build_root, "strategic_brand", b"brand"),
+            _result(build_root, "strategic_product", b"product"),
+        ],
+        build_root=build_root,
+        catalog_root=catalog_root,
+    )
+    (catalog_root / "strategic_product" / "strategic_product.parquet").unlink()
+
+    with pytest.raises(
+        CatalogEnvironmentError,
+        match=r"missing catalog artifact: strategic_product/strategic_product\.parquet",
+    ):
+        validate_catalog_materialization(
+            catalog_root,
+            required_names=frozenset({"strategic_brand", "strategic_product"}),
+        )
 
 
 def test_publish_catalog_outputs_rejects_a_missing_artifact_before_copying(tmp_path: Path) -> None:
