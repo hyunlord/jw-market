@@ -25,6 +25,7 @@ WORKDIR /app
 COPY pipeline/scripts/api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+COPY pipeline/contracts /app/pipeline/contracts
 COPY pipeline/scripts/api /app/pipeline/scripts/api
 COPY pipeline/scripts/agent3 /app/pipeline/scripts/agent3
 COPY pipeline/scripts/ai_analysis/bundle_builder /app/pipeline/scripts/ai_analysis/bundle_builder
