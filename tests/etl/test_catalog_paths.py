@@ -66,6 +66,33 @@ def test_publish_catalog_outputs_promotes_the_exact_build_artifacts(tmp_path: Pa
     assert [item.name for item in validated] == sorted(item.name for item in results)
 
 
+def test_catalog_manifest_attests_rows_after_postfix_rewrites_parquet(
+    tmp_path: Path,
+) -> None:
+    build_root = tmp_path / "build"
+    catalog_root = tmp_path / "catalog"
+    result = _result(build_root, "cd_brand", b"pre-postfix")
+    pq.write_table(
+        pa.table({"payload": [b"postfix-1", b"postfix-2"]}),
+        result.output_path,
+    )
+
+    publish_catalog_outputs(
+        [result],
+        build_root=build_root,
+        catalog_root=catalog_root,
+    )
+
+    manifest = json.loads(
+        (catalog_root / CATALOG_MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    assert manifest["artifacts"][0]["rows"] == 2
+    assert validate_catalog_materialization(
+        catalog_root,
+        required_names=frozenset({"cd_brand"}),
+    )
+
+
 def test_materialize_catalog_copies_a_checksumming_storage_snapshot(tmp_path: Path) -> None:
     build_root = tmp_path / "build"
     storage_root = tmp_path / "storage"

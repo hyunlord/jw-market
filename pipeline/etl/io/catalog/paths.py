@@ -144,7 +144,6 @@ def publish_catalog_outputs(
     _write_catalog_manifest(
         catalog_root,
         tuple(published),
-        results_by_name={result.name: result for result, _, _ in sources},
         source_fingerprints=source_fingerprints or {},
     )
     return tuple(published)
@@ -305,14 +304,13 @@ def _write_catalog_manifest(
     catalog_root: Path,
     published: tuple[PublishedCatalog, ...],
     *,
-    results_by_name: dict[str, CatalogResult],
     source_fingerprints: Mapping[str, str],
 ) -> None:
     artifacts = [
         {
             "name": item.name,
             "path": item.output_path.relative_to(catalog_root).as_posix(),
-            "rows": int(results_by_name[item.name].rows),
+            "rows": pq.ParquetFile(item.output_path).metadata.num_rows,
             "sha256": item.sha256,
             "size": item.output_path.stat().st_size,
         }
