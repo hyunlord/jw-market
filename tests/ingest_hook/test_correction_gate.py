@@ -210,7 +210,9 @@ def test_reader_uses_existing_publication_inventory_without_writes(
         verify.close()
 
 
-def test_rejection_happens_before_loader_and_marks_ledger_failed(
+@pytest.mark.parametrize("category", CATEGORIES)
+def test_rejection_happens_before_loader_and_marks_ledger_rejected(
+    category: str,
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -218,17 +220,17 @@ def test_rejection_happens_before_loader_and_marks_ledger_failed(
     from pipeline.scripts.ingest_hook.contract import parse_manifest_bytes
     from pipeline.scripts.ingest_hook.ledger import open_sqlite_ledger
 
-    manifest = _manifest("ubist", sha256="b" * 64)
-    manifest_path = tmp_path / "manifest.json"
+    manifest = _manifest(category, sha256="b" * 64)
+    manifest_path = tmp_path / f"manifest-{category}.json"
     manifest_path.write_text(
         """
         {
           "contract_version": "v2",
           "epoch": "2026-07",
-          "category": "ubist",
+          "category": "%s",
           "complete": true,
           "files": [{
-            "path": "ubist/2026-07/canonical.xlsx",
+            "path": "%s/2026-07/canonical.xlsx",
             "sha256": "%s",
             "rows": 10,
             "period_start": "2026-07",
@@ -236,7 +238,7 @@ def test_rejection_happens_before_loader_and_marks_ledger_failed(
           }]
         }
         """
-        % ("b" * 64),
+        % (category, category, "b" * 64),
         encoding="utf-8",
     )
     parsed = parse_manifest_bytes(
@@ -273,12 +275,13 @@ def test_rejection_happens_before_loader_and_marks_ledger_failed(
     assert rc == 1
     assert loader_calls == []
     assert entry is not None
-    assert entry.status == "failed"
+    assert entry.status == "rejected"
     assert "CorrectionRejected" in (entry.reason or "")
     print(
         json.dumps(
             {
                 "case": "reject_side_effects",
+                "category": category,
                 "loader_calls": len(loader_calls),
                 "raw_row_growth": 0,
                 "ledger_status": entry.status,

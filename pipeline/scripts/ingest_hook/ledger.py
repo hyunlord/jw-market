@@ -1,9 +1,9 @@
 """ingest_ledger — idempotency lock + status source of truth.
 
 Identity is ``(epoch, category, manifest_sha)``. Repeated webhooks for the same
-identity are no-ops while the row is queued/running/complete; only ``failed``
-rows may be re-queued. One ``running`` row per category serialises loads inside
-a category; different categories run in parallel.
+identity are no-ops while the row is queued/running/complete/rejected; only
+retryable failure states may be re-queued. One ``running`` row per category
+serialises loads inside a category; different categories run in parallel.
 
 Two dialects on purpose:
   * ``mysql``  — production ledger in the mart DB (MARIADB_* env family).
@@ -68,7 +68,48 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 STATUS_GATE_FAILED = "gate_failed"
-_HELD_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_COMPLETE)
+STATUS_REJECTED = "rejected"
+
+KNOWN_STATUSES = frozenset(
+    {
+        STATUS_QUEUED,
+        STATUS_RUNNING,
+        STATUS_COMPLETE,
+        STATUS_FAILED,
+        STATUS_GATE_FAILED,
+        STATUS_REJECTED,
+    }
+)
+TERMINAL_STATUSES = frozenset(
+    {STATUS_COMPLETE, STATUS_FAILED, STATUS_GATE_FAILED, STATUS_REJECTED}
+)
+RETRYABLE_STATUSES = frozenset({STATUS_FAILED, STATUS_GATE_FAILED})
+_RECEIVE_NOOP_STATUSES = frozenset(
+    {STATUS_QUEUED, STATUS_RUNNING, STATUS_COMPLETE, STATUS_REJECTED}
+)
+
+
+class UnknownLedgerStatusError(RuntimeError):
+    """A consumer encountered a status outside the ledger contract."""
+
+    def __init__(self, status: str):
+        self.status = status
+        super().__init__(f"unknown ingest ledger status {status!r}; refusing implicit fallback")
+
+
+def require_known_status(status: object) -> str:
+    value = str(status)
+    if value not in KNOWN_STATUSES:
+        raise UnknownLedgerStatusError(value)
+    return value
+
+
+def is_terminal_status(status: object) -> bool:
+    return require_known_status(status) in TERMINAL_STATUSES
+
+
+def is_retryable_status(status: object) -> bool:
+    return require_known_status(status) in RETRYABLE_STATUSES
 
 _DDL_SQLITE = """
 CREATE TABLE IF NOT EXISTS ingest_ledger (
@@ -455,6 +496,9 @@ class Ledger:
         expected_job_name: str | None = None,
         expected_run_id: str | None = None,
     ) -> bool:
+        status = require_known_status(status)
+        if expected_status is not None:
+            expected_status = require_known_status(expected_status)
         event_id = str(uuid.uuid4())
         created_at = _now()
         evidence_json = json.dumps(
@@ -489,7 +533,7 @@ class Ledger:
                 return False
             values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
             previous_status, job_name, run_id = (
-                str(values_row[0]),
+                require_known_status(values_row[0]),
                 values_row[1],
                 values_row[2],
             )
@@ -659,7 +703,7 @@ class Ledger:
             if row is None:
                 raise RuntimeError("duplicate-safe ledger insert did not materialize a row")
             values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
-            status, job_name = str(values[0]), values[1]
+            status, job_name = require_known_status(values[0]), values[1]
 
             if inserted:
                 append_history(
@@ -672,10 +716,12 @@ class Ledger:
                 return ReceiveDecision(
                     "queued", STATUS_QUEUED, "new submission queued"
                 )
-            if status in _HELD_STATUSES:
+            if status in _RECEIVE_NOOP_STATUSES:
                 return ReceiveDecision(
                     "noop", status, f"identity already {status}; webhook ignored"
                 )
+            if status not in RETRYABLE_STATUSES:
+                raise UnknownLedgerStatusError(status)
 
             reason = "re-queued after failure"
             cursor.execute(
@@ -723,9 +769,10 @@ class Ledger:
     def _entry(row) -> LedgerEntry:
         values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
         row_counts = json.loads(values[9]) if values[9] else None
+        status = require_known_status(values[5])
         return LedgerEntry(
             epoch=values[0], category=values[1], manifest_sha=values[2], manifest_path=values[3],
-            uploaded_by=values[4], status=values[5], reason=values[6], job_name=values[7],
+            uploaded_by=values[4], status=status, reason=values[6], job_name=values[7],
             run_id=values[8],
             row_counts=row_counts,
             received_at=str(values[10]),
@@ -756,9 +803,11 @@ class Ledger:
         existing = self._fetch_row(epoch, category, manifest_sha)
         if existing is not None:
             status = self._entry(existing).status
-            if status in _HELD_STATUSES:
+            if status in _RECEIVE_NOOP_STATUSES:
                 return ReceiveDecision("noop", status, f"identity already {status}; webhook ignored")
-            # failed -> allow retry
+            if status not in RETRYABLE_STATUSES:
+                raise UnknownLedgerStatusError(status)
+            # failed/gate_failed -> allow retry
             reason = "re-queued after failure"
             self._transition(
                 epoch,
@@ -865,6 +914,19 @@ class Ledger:
             reason=reason,
         )
 
+    def mark_rejected(self, epoch: str, category: str, manifest_sha: str, *, reason: str) -> None:
+        self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_REJECTED,
+            assignments=f"status={self._mark}, reason={self._mark}, finished_at={self._mark}",
+            values=(STATUS_REJECTED, reason[:4000], _now()),
+            actor="job_runner",
+            source="correction_rejection",
+            reason=reason,
+        )
+
     def reconcile_terminal(
         self,
         epoch: str,
@@ -914,11 +976,14 @@ class Ledger:
         result = []
         for row in cursor.fetchall():
             values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            previous_status = (
+                require_known_status(values[1]) if values[1] else None
+            )
             result.append(
                 StatusTransition(
                     event_id=str(values[0]),
-                    previous_status=str(values[1]) if values[1] else None,
-                    status=str(values[2]),
+                    previous_status=previous_status,
+                    status=require_known_status(values[2]),
                     actor=str(values[3]),
                     source=str(values[4]),
                     reason=str(values[5]) if values[5] else None,

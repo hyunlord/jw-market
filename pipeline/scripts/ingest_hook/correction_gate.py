@@ -53,7 +53,11 @@ class CorrectionGateResult:
 
 
 class CorrectionRejected(RuntimeError):
-    """The same logical file/period was published with different bytes."""
+    """The same logical file/period was published with different bytes.
+
+    The runner records this policy outcome as the non-retryable ``rejected``
+    ledger status defined in ``docs/ingest-ledger-status-contract.md``.
+    """
 
     def __init__(self, conflicts: tuple[CorrectionConflict, ...]):
         self.conflicts = conflicts

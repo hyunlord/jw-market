@@ -19,7 +19,12 @@ from pathlib import Path
 from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.app import IngestService
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
-from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_RUNNING, Ledger
+from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_COMPLETE,
+    STATUS_REJECTED,
+    STATUS_RUNNING,
+    Ledger,
+)
 
 MANIFEST_GLOB = "**/manifest*.json"
 S3_MANIFEST_PREFIX = "_manifests/"
@@ -65,7 +70,11 @@ def sweep(
             continue
 
         entry = ledger.status(manifest.epoch, manifest.category, manifest.manifest_sha)
-        if entry is not None and entry.status in (STATUS_COMPLETE, STATUS_RUNNING):
+        if entry is not None and entry.status in (
+            STATUS_COMPLETE,
+            STATUS_RUNNING,
+            STATUS_REJECTED,
+        ):
             actions.append({"path": str(manifest_path), "action": "skip", "reason": entry.status})
             skipped += 1
             continue

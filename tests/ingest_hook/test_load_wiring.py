@@ -385,6 +385,15 @@ def test_run_real_silent_failure_marks_failed(staging_env, bucket, sqlite_ledger
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
     assert entry.status == "failed"
     assert "LoadVerifyError" in entry.reason
+    print(
+        json.dumps(
+            {
+                "case": "loader_error_injection",
+                "status": entry.status,
+                "reason": entry.reason,
+            }
+        )
+    )
 
 
 def test_production_ubist_orders_shadow_gate_publish_then_refresh(

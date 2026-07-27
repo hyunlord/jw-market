@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from pipeline.scripts.ingest_hook import ledger_fingerprint
 
 
@@ -91,6 +93,28 @@ def test_report_only_reads_mariadb_in_a_read_only_transaction(capsys) -> None:
     assert "must-not-appear" not in json.dumps(payload)
     assert captured_connect["autocommit"] is False
     assert connection.cursor_instance.executed[0] == "SET TRANSACTION READ ONLY"
+    assert connection.rollback_calls == 1
+    assert connection.close_calls == 1
+
+
+def test_fingerprint_fails_closed_on_unknown_status() -> None:
+    rows = [
+        {
+            "epoch": "2026-07",
+            "category": "ubist",
+            "manifest_sha": "a" * 64,
+            "status": "future_status",
+        }
+    ]
+    connection = _Connection(rows)
+    target = ledger_fingerprint.target_from_env(_environment())
+
+    with pytest.raises(RuntimeError, match="future_status"):
+        ledger_fingerprint.collect_fingerprint(
+            target,
+            connect=lambda **_kwargs: connection,
+        )
+
     assert connection.rollback_calls == 1
     assert connection.close_calls == 1
 

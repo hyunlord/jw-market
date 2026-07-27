@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import threading
 
-from pipeline.scripts.ingest_hook.ledger import Ledger
+import pytest
+
+from pipeline.scripts.ingest_hook.ledger import Ledger, UnknownLedgerStatusError
 
 IDENTITY = ("2026-03", "ubist", "d" * 64)
 
@@ -169,3 +171,29 @@ def test_mariadb_receive_uses_duplicate_safe_insert_lock_and_status_cas() -> Non
     assert decision.action == "queued"
     assert state.rows[IDENTITY][5] == "queued"
     assert [transition[5] for transition in state.history] == ["queued", "queued"]
+
+
+@pytest.mark.parametrize(
+    ("existing_status", "expected_action"),
+    [("rejected", "noop"), ("future_status", "error")],
+)
+def test_mariadb_receive_does_not_retry_rejected_or_unknown_status(
+    existing_status: str,
+    expected_action: str,
+) -> None:
+    state = _SharedMariaDBState()
+    state.initial_selects = threading.Barrier(1)
+    ledger = Ledger(_MariaDBConnection(state), dialect="mysql")
+    ledger.receive(*IDENTITY, manifest_path="/input/manifest.json")
+    row = list(state.rows[IDENTITY])
+    row[5] = existing_status
+    state.rows[IDENTITY] = tuple(row)
+
+    if expected_action == "error":
+        with pytest.raises(UnknownLedgerStatusError, match=existing_status):
+            ledger.receive(*IDENTITY, manifest_path="/input/retry.json")
+    else:
+        decision = ledger.receive(*IDENTITY, manifest_path="/input/retry.json")
+        assert decision.action == expected_action
+        assert decision.status == existing_status
+    assert state.rows[IDENTITY][5] == existing_status

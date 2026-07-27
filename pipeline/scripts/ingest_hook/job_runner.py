@@ -32,8 +32,14 @@ from pathlib import Path
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, Manifest, load_manifest
+from pipeline.scripts.ingest_hook.correction_gate import CorrectionRejected
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
-from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
+from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_COMPLETE,
+    STATUS_QUEUED,
+    STATUS_REJECTED,
+    Ledger,
+)
 from pipeline.scripts.ingest_hook.post_gate import (
     PostGateError,
     SigmaEvidence,
@@ -472,9 +478,12 @@ def run(
         # Standalone/sweep execution: register the identity before running.
         ledger.receive(*identity, manifest_path=str(manifest_path), uploaded_by=manifest.uploaded_by)
         entry = ledger.status(*identity)
-    if entry.status == STATUS_COMPLETE:
-        # Defence in depth: a re-delivered Job for a completed identity is a no-op.
-        print(f"result=noop reason=identity already complete epoch={manifest.epoch} category={manifest.category}")
+    if entry.status in (STATUS_COMPLETE, STATUS_REJECTED):
+        # Defence in depth: terminal non-retryable identities are no-ops.
+        print(
+            f"result=noop reason=identity already {entry.status} "
+            f"epoch={manifest.epoch} category={manifest.category}"
+        )
         return 0
     if entry.status == STATUS_QUEUED:
         ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
@@ -988,6 +997,18 @@ def run(
                 )
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
+    except CorrectionRejected as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        tracker.fail(reason)
+        ledger.mark_rejected(*identity, reason=reason)
+        _emit_completion_signal(
+            ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+            event="rejected", mode=mode, rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded,
+            periods=periods, started_at=started_at, failure_reason=reason,
+        )
+        print(f"result=rejected reason={exc}", file=sys.stderr)
+        return 1
     except PostGateError as exc:
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")

@@ -40,6 +40,9 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 | `row_count_verifier.py` | append/upsert와 전체교체를 구분해 before/after/loaded 증거 검증 |
 | `sweep.py` | 유실 감시 CronJob 본체 (정상 시 no-op) |
 
+Ledger status 의미, terminal 집합, 재시도 정책, 소비자 점검 목록은
+`docs/ingest-ledger-status-contract.md`를 따른다.
+
 ## Terminal reconciler ledger preflight
 
 Run the fingerprint command only in a container cloned from the live

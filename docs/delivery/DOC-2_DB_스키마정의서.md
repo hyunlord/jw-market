@@ -1067,7 +1067,7 @@ DDL 정본은 `pipeline/scripts/ingest_hook/ledger.py`의 `_DDL_MYSQL`(mysql/Mar
 
 **코드-실물 일치 판정**: 운영 DB 재실측 DDL은 코드 정본 `_DDL_MYSQL`(4절 상단 파일)과 컬럼명·타입·NULL 제약·유니크키·보조인덱스가 완전 일치(불일치 0).
 
-용도: (epoch, category, manifest_sha) 유니크로 동일 매니페스트 중복 처리를 차단하고, `status`(queued/started/…)로 증분 적재 작업의 단일 진실원을 유지한다. 코드는 `sqlite`/`mysql` 두 방언을 지원하며, 운영은 mysql 분기를 사용한다.
+용도: (epoch, category, manifest_sha) 유니크로 동일 매니페스트 중복 처리를 차단하고, `status`(`queued`/`running`/`complete`/`failed`/`gate_failed`/`rejected`)로 증분 적재 작업의 단일 진실원을 유지한다. `rejected`는 정정본 정책 거부를 나타내는 terminal·비재시도 상태이며, 상세 계약은 `docs/ingest-ledger-status-contract.md`에 있다. 코드는 `sqlite`/`mysql` 두 방언을 지원하며, 운영은 mysql 분기를 사용한다.
 
 ---
 

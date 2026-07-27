@@ -9,6 +9,8 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from pipeline.scripts.ingest_hook.ledger import require_known_status
+
 _REQUIRED_ENV = (
     "MARIADB_HOST",
     "MARIADB_PORT",
@@ -117,7 +119,7 @@ def collect_fingerprint(
                 "epoch": str(row["epoch"]),
                 "category": str(row["category"]),
                 "manifest_sha": str(row["manifest_sha"]),
-                "status": str(row["status"]),
+                "status": require_known_status(row["status"]),
             }
             for row in rows
         ]
