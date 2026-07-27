@@ -404,7 +404,7 @@ metadata:
     component: monthly-scheduler
 spec:
   schedule: "0 19 4 * *"
-  suspend: true
+  suspend: false
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
