@@ -22,6 +22,10 @@ from pipeline.scripts.deploy.mart_load_ops import (
     run_s4_general,
 )
 from pipeline.scripts.deploy.mart_load_verify import table_exists
+from pipeline.scripts.ingest_hook.publication_provenance import (
+    build_publication_provenance,
+    record_publication_provenance,
+)
 from pipeline.scripts.rollback.recording import (
     PromotionIdentity,
     record_mysql_component,
@@ -750,8 +754,13 @@ def publish_shadow(
     run_id: str,
     epoch: str,
     ingest_run_id: str,
+    activation_journal: Path,
     require_ledger_gate: bool = True,
 ) -> tuple[Any, ...]:
+    provenance = build_publication_provenance(
+        target_db=config.target_db,
+        tables=GENERAL_TABLES,
+    )
     if require_ledger_gate:
         require_completed_post_gate(conn, ingest_run_id=ingest_run_id)
     actions = publish_table_group_atomically(
@@ -778,6 +787,7 @@ def publish_shadow(
                 if action.backup_table is not None
             ),
         )
+        record_publication_provenance(activation_journal, provenance)
     except Exception:
         restore_table_group_atomically(
             conn,

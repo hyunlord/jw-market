@@ -481,8 +481,14 @@ def test_build_shadow_restores_s4_mutated_environment(monkeypatch) -> None:
     assert "S4_UBIST_DIR" not in activation.os.environ
 
 
-def test_publish_shadow_checks_post_gate_and_limits_general_tables(monkeypatch) -> None:
+def test_publish_shadow_checks_post_gate_and_limits_general_tables(
+    monkeypatch, tmp_path
+) -> None:
     calls: list[object] = []
+    monkeypatch.setenv("APP_VERSION", "a" * 40)
+    monkeypatch.setenv(
+        "INGEST_JOB_IMAGE", "registry.example/pipeline@sha256:" + ("b" * 64)
+    )
     target = activation.MartActivation("jw_mart", "jw_mart", "jw_mart_ingest_run1")
     monkeypatch.setattr(activation, "require_completed_post_gate", lambda *_args, **_kwargs: calls.append("gate"))
     monkeypatch.setattr(
@@ -491,14 +497,25 @@ def test_publish_shadow_checks_post_gate_and_limits_general_tables(monkeypatch) 
         lambda *_args, **kwargs: calls.append(kwargs) or (),
     )
     monkeypatch.setattr(activation, "record_mysql_component", lambda *_args, **_kwargs: calls.append("record"))
+    monkeypatch.setattr(
+        activation,
+        "record_publication_provenance",
+        lambda *_args, **_kwargs: calls.append("provenance"),
+    )
 
     activation.publish_shadow(
-        object(), target, run_id="run1", epoch="2026-07", ingest_run_id="ingest-run1"
+        object(),
+        target,
+        run_id="run1",
+        epoch="2026-07",
+        ingest_run_id="ingest-run1",
+        activation_journal=tmp_path / "activation.json",
     )
 
     assert calls[0] == "gate"
     assert calls[1]["tables"] == activation.GENERAL_TABLES
     assert calls[2] == "record"
+    assert calls[3] == "provenance"
 
 
 @pytest.mark.parametrize("row", [None, ("failed", "sigma mismatch"), ("running", None)])
@@ -559,6 +576,10 @@ def test_candidate_corpus_promotes_by_rename_and_can_rollback(tmp_path) -> None:
 
 
 def test_publish_shadow_rolls_back_when_ledger_record_fails(monkeypatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "a" * 40)
+    monkeypatch.setenv(
+        "INGEST_JOB_IMAGE", "registry.example/pipeline@sha256:" + ("b" * 64)
+    )
     action = type(
         "Action",
         (),
@@ -586,7 +607,12 @@ def test_publish_shadow_rolls_back_when_ledger_record_fails(monkeypatch) -> None
 
     with pytest.raises(RuntimeError, match="ledger failed"):
         activation.publish_shadow(
-            object(), target, run_id="run1", epoch="2026-07", ingest_run_id="ingest-run1"
+            object(),
+            target,
+            run_id="run1",
+            epoch="2026-07",
+            ingest_run_id="ingest-run1",
+            activation_journal=Path("/unused/activation.json"),
         )
 
     assert restored == [(action,)]

@@ -719,6 +719,7 @@ def run(
                         run_id=run_id,
                         epoch=manifest.epoch,
                         ingest_run_id=run_id,
+                        activation_journal=activation_journal,
                         require_ledger_gate=not is_shadow,
                     )
                     ubist_mart_activation.update_activation_journal(
