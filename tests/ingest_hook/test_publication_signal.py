@@ -215,6 +215,56 @@ def test_provenance_is_order_independent_and_queryable() -> None:
     )
 
 
+def test_provenance_rejects_builder_commit_that_differs_from_image_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_commit = "a" * 40
+    monkeypatch.setenv("APP_VERSION", image_commit)
+    monkeypatch.setenv("BUILD_GIT_SHA", "b" * 40)
+
+    with pytest.raises(ValueError, match="does not match image APP_VERSION"):
+        build_provenance(
+            [_ManifestFile("a.xlsx", "c" * 64, 1)],
+            file_rows={"a.xlsx": 1},
+            periods={"2026-01"},
+            image_digest="repo/image@sha256:" + ("d" * 64),
+        )
+
+
+def test_provenance_rejects_explicit_harness_commit_that_differs_from_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_VERSION", "a" * 40)
+    monkeypatch.delenv("BUILD_GIT_SHA", raising=False)
+
+    with pytest.raises(ValueError, match="builder_commit does not match"):
+        build_provenance(
+            [_ManifestFile("a.xlsx", "c" * 64, 1)],
+            file_rows={"a.xlsx": 1},
+            periods={"2026-01"},
+            builder_commit="b" * 40,
+            image_digest="repo/image@sha256:" + ("d" * 64),
+        )
+
+
+def test_provenance_uses_image_version_as_builder_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_commit = "a" * 40
+    monkeypatch.setenv("APP_VERSION", image_commit)
+    monkeypatch.delenv("BUILD_GIT_SHA", raising=False)
+    monkeypatch.delenv("R1_GIT_COMMIT", raising=False)
+
+    provenance = build_provenance(
+        [_ManifestFile("a.xlsx", "c" * 64, 1)],
+        file_rows={"a.xlsx": 1},
+        periods={"2026-01"},
+        image_digest="repo/image@sha256:" + ("d" * 64),
+    )
+
+    assert provenance.builder_commit == image_commit
+
+
 def test_same_provenance_retry_reuses_publication_epoch() -> None:
     provenance = build_provenance(
         [_ManifestFile("a.xlsx", "a" * 64, 1)],

@@ -243,7 +243,7 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     by_name = {e["name"]: e for e in env}
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
-    assert by_name["BUILD_GIT_SHA"]["value"] == "a" * 40
+    assert "BUILD_GIT_SHA" not in by_name
     assert by_name["INGEST_JOB_IMAGE"]["value"].endswith("b" * 64)
     assert by_name["MARIADB_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "jw-mart-d2-writer"
     assert by_name["INGEST_S3_BUCKET"]["valueFrom"]["secretKeyRef"]["key"] == "MINIO_MARKET_BUCKET"

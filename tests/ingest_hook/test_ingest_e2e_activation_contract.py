@@ -82,7 +82,7 @@ def test_rendered_production_job_inherits_activation_and_publication_contract(
         assert env["INGEST_MART_PROMOTION_APPROVED"] == "1"
         assert env["INGEST_PUBLICATION_EPOCH_TABLE"] == "mart_publication_epoch"
         assert env["INGEST_COMPLETION_WEBHOOK_URL"] == COMPLETION_URL
-        assert env["BUILD_GIT_SHA"] == "a" * 40
+        assert "BUILD_GIT_SHA" not in env
         assert env["INGEST_JOB_IMAGE"] == image
         for name, value in TARGET_ENVS.items():
             assert env[name] == value
@@ -143,9 +143,7 @@ def test_trigger_production_overlay_is_not_shadow_or_staging() -> None:
     assert env["INGEST_PUBLICATION_PROVENANCE_TABLE"]["value"] == (
         "mart_publication_provenance"
     )
-    assert env["BUILD_GIT_SHA"]["value"] == (
-        "78281911a174b3f0ef14999745fa18eb3c09d4b3"
-    )
+    assert "BUILD_GIT_SHA" not in env
     assert env["INGEST_JOB_IMAGE"]["value"] == config.DEFAULT_JOB_IMAGE
     assert "INGEST_LOAD_STAGING_ROOT" not in env
     assert "INGEST_LOAD_SHADOW_ROOT" not in env

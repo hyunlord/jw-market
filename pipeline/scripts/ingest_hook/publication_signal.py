@@ -24,6 +24,7 @@ ENV_PUBLICATION_PROVENANCE_TABLE: Final = "INGEST_PUBLICATION_PROVENANCE_TABLE"
 DEFAULT_PUBLICATION_PROVENANCE_TABLE: Final = "mart_publication_provenance"
 _SQL_IDENTIFIER: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _GIT_SHA: Final = re.compile(r"^[0-9a-f]{7,64}$")
+_FULL_GIT_SHA: Final = re.compile(r"^[0-9a-f]{40}$")
 _IMMUTABLE_IMAGE: Final = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 KST: Final = timezone(timedelta(hours=9))
 
@@ -93,6 +94,38 @@ class PublicationProvenance:
     published_at_kst: str
 
 
+def _resolve_builder_commit(builder_commit: str | None) -> str:
+    image_commit = os.environ.get("APP_VERSION", "").strip().lower()
+    legacy_candidates = (
+        ("builder_commit", builder_commit),
+        ("BUILD_GIT_SHA", os.environ.get("BUILD_GIT_SHA")),
+        ("R1_GIT_COMMIT", os.environ.get("R1_GIT_COMMIT")),
+    )
+
+    if image_commit:
+        if not _FULL_GIT_SHA.fullmatch(image_commit):
+            raise ValueError("image APP_VERSION must be a full git commit SHA")
+        for source, candidate in legacy_candidates:
+            resolved = (candidate or "").strip().lower()
+            if resolved and resolved != image_commit:
+                raise ValueError(
+                    f"{source} does not match image APP_VERSION"
+                )
+        return image_commit
+
+    commit = next(
+        (
+            str(candidate).strip().lower()
+            for _, candidate in legacy_candidates
+            if candidate
+        ),
+        "",
+    )
+    if not _GIT_SHA.fullmatch(commit):
+        raise ValueError("builder commit SHA is required for mart publication")
+    return commit
+
+
 def build_provenance(
     files: object,
     *,
@@ -119,15 +152,7 @@ def build_provenance(
         separators=(",", ":"),
         sort_keys=True,
     )
-    commit = (
-        builder_commit
-        or os.environ.get("BUILD_GIT_SHA")
-        or os.environ.get("APP_VERSION")
-        or os.environ.get("R1_GIT_COMMIT")
-        or ""
-    ).strip().lower()
-    if not _GIT_SHA.fullmatch(commit):
-        raise ValueError("builder commit SHA is required for mart publication")
+    commit = _resolve_builder_commit(builder_commit)
     ordered_periods = sorted(set(periods))
     if not ordered_periods:
         raise ValueError("publication window is empty")
