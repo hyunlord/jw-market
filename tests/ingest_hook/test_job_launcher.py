@@ -263,6 +263,31 @@ def test_rendered_job_passes_load_staging_root(monkeypatch):
     assert env["INGEST_COMPLETION_WEBHOOK_ATTEMPTS"]["value"] == "5"
 
 
+def test_rendered_job_passes_production_catalog_inputs(monkeypatch):
+    monkeypatch.setenv("JW_MARKET_CATALOG_ROOT", "/market-output/catalog")
+    monkeypatch.setenv(
+        "INGEST_CATALOG_IQVIA_NSA_DIR",
+        "/market-output/catalog-inputs/iqvia_nsa",
+    )
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/m.json",
+        namespace="llmops",
+    )
+
+    env = {
+        item["name"]: item
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["JW_MARKET_CATALOG_ROOT"]["value"] == "/market-output/catalog"
+    assert (
+        env["INGEST_CATALOG_IQVIA_NSA_DIR"]["value"]
+        == "/market-output/catalog-inputs/iqvia_nsa"
+    )
+
+
 def test_rendered_shadow_job_passes_isolated_catalog_root(monkeypatch):
     monkeypatch.setenv("INGEST_SHADOW_CATALOG_ROOT", "/market-output/shadow/catalog")
 
