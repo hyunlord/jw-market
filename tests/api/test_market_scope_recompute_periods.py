@@ -30,6 +30,36 @@ def test_recompute_requires_archive_endpoint_for_monthly_cagr() -> None:
     assert payload["data"]["brand_ranking"]["rankings_by_year"]["2026"][0]["brand_key"] == "Focus"
 
 
+def test_recompute_uses_61_months_for_cagr_and_exposes_latest_60() -> None:
+    # Given a UBIST strategy scope with one hidden calculation baseline month.
+    periods = tuple(
+        f"{year}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    )[5:66]
+    history = {
+        period: float(value)
+        for period, value in zip(periods, range(100, 161), strict=True)
+    }
+
+    # When the strategy union payload is recomputed.
+    payload = recompute_strategy_payload(
+        (_ubist_fact("Focus", "JW", history),),
+        focus_brand_key="Focus",
+        source="UBIST",
+        measure="sales",
+    )
+
+    # Then public series use 60 months while KPI uses the exact 60-month interval.
+    series = payload["data"]["market_size_series"]
+    assert len(series) == 60
+    assert series[0]["period"] == "2021-07"
+    assert series[-1]["period"] == "2026-06"
+    assert payload["data"]["sources_data"]["periods_count"] == 60
+    assert payload["data"]["kpi"]["market_cagr_5y_pct"] == pytest.approx(9.86)
+    assert payload["data"]["kpi"]["brand_cagr_5y_pct"] == pytest.approx(9.8561)
+
+
 def test_recompute_handles_iqvia_quarterly_cagr_when_periods_are_yyyy_qn() -> None:
     # Given: IQVIA-style quarterly strategy facts with a five-year span.
     facts = (

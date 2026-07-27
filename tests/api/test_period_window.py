@@ -5,6 +5,7 @@ import json
 from pipeline.scripts.api.dynamic_market import period_window as period_window_module
 from pipeline.scripts.api.dynamic_market.period_window import (
     _period_interval,
+    default_display_period_range,
     trim_period_payload,
     trim_period_rows,
 )
@@ -32,6 +33,21 @@ def test_trim_period_payload_filters_nested_month_quarter_and_year_series_withou
     assert result["nested"]["quarterly"] == {"2025-Q1": 2.0}
     assert result["nested"]["annual"] == {"2025": 200.0}
     assert result["identity"] == payload["identity"]
+
+
+def test_default_ubist_display_range_excludes_calculation_baseline_month() -> None:
+    # Given a 61-month calculation history ending in June 2026.
+    periods = tuple(
+        f"{year}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    )[5:66]
+
+    # When the default display range is derived from the observed periods.
+    period_range = default_display_period_range(periods, source="ubist")
+
+    # Then only the rolling latest 60 months are public.
+    assert period_range == PeriodRange("2021-07", "2026-06")
 
 
 def test_trim_period_rows_filters_known_json_series_and_preserves_missing_periods() -> None:

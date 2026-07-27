@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Iterable
 
 import pandas as pd
@@ -25,6 +25,7 @@ from .general_history import (
     period_value_map,
     value_at,
 )
+from .general_window import rolling_period_scope
 from .layer3_compute_extended import compute_ei, compute_growth_contribution, compute_hhi, compute_momentum
 from .layer3_compute_market_metric import compute_market_mart_payload_from_reduced_rows
 from .layer3_normalize import prev_month, prev_quarter_month, safe_div, same_month_prev_year
@@ -313,6 +314,8 @@ def build_brand_rows(
     for (brand_key, atc4_code), group in working.groupby(["brand_key", "atc4_code"], dropna=False):
         atc_key = str(atc4_code)
         periods = market_periods.get(atc_key, fill_periods(group["period_yyyymm"].unique()))
+        display_periods = list(rolling_period_scope(periods, source=source))
+        display_period_set = set(display_periods)
         history = period_value_map(group, periods)
         atc_history = market_history_by_atc.get(atc_key, {})
         metric_history: dict[str, dict[str, Any]] = {}
@@ -335,6 +338,8 @@ def build_brand_rows(
             market_cagr_5y = cagr_from_history(atc_history, period, 5)
             ei_5y, ei_warning = compute_ei(cagr_5y, market_cagr_5y)
             rank = rank_lookup.get((str(atc4_code), str(period), str(brand_key)))
+            if period not in display_period_set:
+                continue
             metric_history[period] = {
                 "raw_value": value,
                 "ms": ms_pct,
@@ -364,7 +369,7 @@ def build_brand_rows(
             "company": company,
             "manufacturer": first.get("manufacturer"),
             "raw_company": first.get("company"),
-            "products": build_products(group, periods),
+            "products": build_products(group, display_periods),
             "catalog_status": "matched" if catalog_row else "unmatched",
             "catalog_brand_id": catalog_row.get("brand_id") if catalog_row else None,
             "atc4_code": str(atc4_code),
@@ -381,12 +386,12 @@ def build_brand_rows(
                 "unit_label": UNIT_LABELS[(source, measure)],
                 "metric_history": metric_history,
                 "extended_metric_history": extended_history,
-                "channel_data": build_dimensional_history(group, "channel", periods),
-                "specialty_data": build_dimensional_history(group, "specialty", periods) if source == "ubist" else {},
-                "channel_specialty_matrix": build_channel_specialty_matrix(group, periods) if source == "ubist" else {},
-                "audit_code_matrix": build_audit_code_matrix(group, periods) if source == "iqvia_nsa" else {},
-                "dimension_data": build_sku_dimension_data(group, periods),
-                "dimension_channel_data": build_sku_dimension_channel_data(group, periods),
+                "channel_data": build_dimensional_history(group, "channel", display_periods),
+                "specialty_data": build_dimensional_history(group, "specialty", display_periods) if source == "ubist" else {},
+                "channel_specialty_matrix": build_channel_specialty_matrix(group, display_periods) if source == "ubist" else {},
+                "audit_code_matrix": build_audit_code_matrix(group, display_periods) if source == "iqvia_nsa" else {},
+                "dimension_data": build_sku_dimension_data(group, display_periods),
+                "dimension_channel_data": build_sku_dimension_channel_data(group, display_periods),
                 "by_dimension": by_dimension,
                 "raw_value_history": history,
                 "payload": {
@@ -394,7 +399,8 @@ def build_brand_rows(
                     "etl_version": "v3.1",
                     "computed_at": datetime.now().isoformat(timespec="seconds"),
                     "row_count": int(len(group)),
-                    "period_count": int(len(periods)),
+                    "period_count": int(len(display_periods)),
+                    "calculation_period_count": int(len(periods)),
                 },
             }
         )

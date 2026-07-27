@@ -309,6 +309,32 @@ def _metric_history(row: dict[str, Any]) -> dict[str, Any]:
     return history if isinstance(history, dict) else {}
 
 
+def _calculation_history(row: dict[str, Any]) -> dict[str, Any]:
+    history = decode_json(row.get("raw_value_history"))
+    return history if isinstance(history, dict) and history else _metric_history(row)
+
+
+def _calculation_market_history(rows: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for row in rows:
+        for period, item in _calculation_history(row).items():
+            if isinstance(item, dict):
+                value = next(
+                    (
+                        item[key]
+                        for key in ("raw_value", "value", "market_size", "sales")
+                        if key in item
+                    ),
+                    None,
+                )
+            else:
+                value = item
+            numeric = safe_float(value)
+            if numeric is not None:
+                totals[str(period)] = totals.get(str(period), 0.0) + numeric
+    return totals
+
+
 def _latest_history_item(row: dict[str, Any]) -> dict[str, Any]:
     cached = row.get("__latest_history_item")
     if cached is not None:
@@ -4045,8 +4071,13 @@ def build_response(
         display_market_cagr = series_cagr(market_series)
     # Exclusive 5y/3y market CAGR: report the horizon explicitly instead of the
     # legacy silent 5y→3y fallback so the consumer can tell which window applies.
-    market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series)
-    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(_metric_history(target))
+    calculation_market_series = _calculation_market_history(sibling_rows)
+    market_cagr_5y, market_cagr_3y = market_cagr_exclusive(
+        calculation_market_series or market_series
+    )
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(
+        _calculation_history(target)
+    )
 
     return {
         "brand": brand_row["brand_name"],

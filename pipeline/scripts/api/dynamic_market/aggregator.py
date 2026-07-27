@@ -26,6 +26,7 @@ from pipeline.scripts.api.dynamic_market.channel_axis import (
     slice_audit_code_matrix,
     slice_channel_specialty_matrix,
 )
+from pipeline.scripts.api.dynamic_market.period_window import default_display_period_range
 from pipeline.scripts.api.dynamic_market.types import (
     AggregatedMetrics,
     BrandMetric,
@@ -135,6 +136,15 @@ class MetricAggregator:
         else:
             rows = self._iter_metric_rows(brands=brands, source=source, measure=measure, channel_axis=channel_axis)
         aggregated = self._aggregate_rows_detail(rows, period_range=period_range, channel_axis=channel_axis)
+        calculation_monthly_series = tuple(
+            {"period": period, "market_size": value}
+            for period, value in sorted(aggregated.monthly_totals.items())
+        )
+        aggregated = _project_default_display_window(
+            aggregated,
+            source=source,
+            period_range=period_range,
+        )
         market_size = float(sum(aggregated.monthly_totals.values()))
         rank_candidates = (
             _rank_general_brand_metrics(
@@ -179,7 +189,7 @@ class MetricAggregator:
             unit_label=aggregated.unit_label,
             market_size=market_size,
             hhi=compute_hhi(ranked),
-            cagr=compute_cagr(monthly_series),
+            cagr=compute_cagr(calculation_monthly_series),
             monthly_series=monthly_series,
             brands=select_top_competitors(
                 tuple(CompetitorRankItem(item.brand_key, item.total_value, item) for item in ranked),
@@ -531,6 +541,38 @@ def _without_periods(metric: BrandMetric, excluded: set[str]) -> BrandMetric:
     )
 
 
+def _project_default_display_window(
+    aggregated: _AggregatedRows,
+    *,
+    source: str,
+    period_range: PeriodRange,
+) -> _AggregatedRows:
+    if period_range.start is not None or period_range.end is not None:
+        return aggregated
+    display_range = default_display_period_range(
+        tuple(aggregated.monthly_totals),
+        source=source,
+    )
+    if display_range.start is None and display_range.end is None:
+        return aggregated
+    display_totals = filter_periods(aggregated.monthly_totals, display_range)
+    excluded = set(aggregated.monthly_totals) - set(display_totals)
+    if not excluded:
+        return aggregated
+    return _AggregatedRows(
+        brand_metrics=[
+            _without_periods(metric, excluded)
+            for metric in aggregated.brand_metrics
+        ],
+        monthly_totals=display_totals,
+        ranking_histories={
+            brand_key: filter_periods(history, display_range)
+            for brand_key, history in aggregated.ranking_histories.items()
+        },
+        unit_label=aggregated.unit_label,
+    )
+
+
 def _rank_general_brand_metrics(
     brand_metrics: Iterable[BrandMetric],
     *,
@@ -582,6 +624,10 @@ def analysis_row_for_builder(row: Mapping[str, Any], *, history_by_period: Mappi
         "channel_specialty_matrix": row.get("channel_specialty_matrix"),
         "metric_history": {
             str(period): {"raw_value": float(value or 0.0)}
+            for period, value in history_by_period.items()
+        },
+        "calculation_metric_history": {
+            str(period): float(value or 0.0)
             for period, value in history_by_period.items()
         },
     }
