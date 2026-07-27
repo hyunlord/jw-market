@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROTECTED_BLOB_SHA256 = {
     # Repinned 2026-07-27: API modules import the shared dimension registry,
     # so the slim image must carry pipeline/contracts at runtime.
-    "api/Dockerfile": "1e104f810e2052a2dbe5798d8dd34b968cb34ba3ecd77d2a896d060044d276cc",
+    "api/Dockerfile": "34a8fa157ce611847b6810b3a781fd48498f674d00bc3cf5b5f03aaa830d0352",
     "pipeline/scripts/agent3/repository.py": "83af919e96eac24b372fa500c7fdb920b1e23e9abfb91352134bc98305fec858",
     "pipeline/scripts/agent3/run_source.py": "be4dcaf7cffb77cdcb0898970597a76d12349822ecdf3ff4aebd633aa794c376",
     "pipeline/scripts/agent3/strength_candidate_extractor.py": "67773b5947f4eb36b79c85edb421a9c1002d413450dbb001f842b91f2c8cb271",

@@ -9,6 +9,10 @@ def test_backend_image_includes_api_import_dependencies() -> None:
 
     assert "COPY pipeline/contracts /app/pipeline/contracts" in dockerfile
     assert "COPY pipeline/domain /app/pipeline/domain" in dockerfile
+    assert (
+        'COPY ["data/JW 주요 약품 수동 매핑", '
+        '"/app/data/JW 주요 약품 수동 매핑"]'
+    ) in dockerfile
     assert "COPY pipeline/scripts/api /app/pipeline/scripts/api" in dockerfile
     assert "COPY pipeline/scripts/analysis /app/pipeline/scripts/analysis" in dockerfile
     assert "COPY pipeline/scripts/deploy /app/pipeline/scripts/deploy" in dockerfile

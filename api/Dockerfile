@@ -36,6 +36,7 @@ COPY pipeline/scripts/etl /app/pipeline/scripts/etl
 COPY pipeline/scripts/forecast /app/pipeline/scripts/forecast
 COPY pipeline/scripts/utils /app/pipeline/scripts/utils
 COPY pipeline/etl /app/pipeline/etl
+COPY ["data/JW 주요 약품 수동 매핑", "/app/data/JW 주요 약품 수동 매핑"]
 COPY docs/reference /app/static
 
 RUN chown -R app:app /app
