@@ -281,9 +281,35 @@ def _qa_tool_calls(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
                 "latency_ms": trace_items.get("latency_ms"),
                 "source_epoch": trace_items.get("source_epoch"),
                 "built_at": trace_items.get("built_at"),
+                # General-view ATC4 selection provenance. These are written onto
+                # call["qa_trace"] by general_view_routing._attach_selection_trace and
+                # were previously dropped here, which made it impossible to tell whether
+                # a live answer used the catalog definition or fell back to brand
+                # membership. Emitted unconditionally so that "not observed" (key absent)
+                # and "not applicable" (key present, null) stay distinguishable.
+                "input_market": trace_items.get("input_market"),
+                "atc4_source": trace_items.get("atc4_source"),
+                "candidate_atc4_codes": _atc4_code_list(trace_items.get("candidate_atc4_codes")),
+                "member_brand_count": _optional_int(trace_items.get("member_brand_count")),
+                "reduction_reason": trace_items.get("reduction_reason"),
             }
         )
     return tuple(projected)
+
+
+def _atc4_code_list(value: Any) -> list[str] | None:
+    """Project ATC4 candidates as a bare code list, never free text."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [str(code) for code in value]
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _numeric_grounding_response(
