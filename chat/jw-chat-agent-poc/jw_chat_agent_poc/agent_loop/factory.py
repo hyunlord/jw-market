@@ -232,15 +232,19 @@ def field_not_exposed_result(
     }
 
 
+PRESCRIPTION_METRIC_UNAVAILABLE_FACT_MD = "현재 채팅 조회 계약에서 처방 지표 미지원"
+PRESCRIPTION_METRIC_UNAVAILABLE_REASON = (
+    "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
+    "값은 null로 반환하며 매출 지표로 대체하지 않습니다."
+)
+
+
 def prescription_metric_unavailable_result(
     question: str,
     requested_metric: str,
     diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
-    reason = (
-        "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
-        "값은 null로 반환하며 매출 지표로 대체하지 않습니다."
-    )
+    reason = PRESCRIPTION_METRIC_UNAVAILABLE_REASON
     markdown = MarkdownResponseBuilder().field_not_exposed(reason)
     markdown_payload = markdown.to_dict()
     markdown_payload["fact_md"] = "현재 채팅 조회 계약에서 처방 지표 미지원"

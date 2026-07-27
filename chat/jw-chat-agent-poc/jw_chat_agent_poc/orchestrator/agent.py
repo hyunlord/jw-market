@@ -15,6 +15,7 @@ from jw_chat_agent_poc.agent_loop.factory import (
     build_chat_agent_dependencies,
     build_tool_use_agent,
     field_not_exposed_result,
+    PRESCRIPTION_METRIC_UNAVAILABLE_REASON,
     prescription_metric_unavailable_result,
     unsupported_brand_result,
     unsupported_hira_interface_result,
@@ -22,6 +23,11 @@ from jw_chat_agent_poc.agent_loop.factory import (
 from jw_chat_agent_poc.agent_loop.bq_slots import (
     prescription_metric_requires_typed_stop,
     requested_prescription_metric,
+)
+from jw_chat_agent_poc.agent_loop.element_ledger import (
+    build_element_ledger,
+    prescription_element_is_deferrable,
+    supported_metrics_beside_prescription,
 )
 from jw_chat_agent_poc.agent_loop.bq_planner import preflight_bq_question
 from jw_chat_agent_poc.agent_loop.structured_planner import preflight_structured_market_question
@@ -189,7 +195,15 @@ class ChatAgent:
         agent_source_trap = requested_unavailable_source(question, identity_only=True)
         pre_resolved: BrandResolution | None = None
 
+        deferred_prescription_metric: str | None = None
+
         def finish(payload: dict[str, Any]) -> dict[str, Any]:
+            if deferred_prescription_metric is not None:
+                payload = _reattach_deferred_prescription_stop(
+                    payload,
+                    deferred_prescription_metric,
+                )
+            payload = _attach_element_ledger(question, payload)
             annotated = _annotate_external_tool_fallback(payload, external_fallback_code)
             return attach_routing_v4_legacy_observation(
                 question,
@@ -216,13 +230,20 @@ class ChatAgent:
                 )
                 and prescription_metric is not None
             ):
-                return finish(
-                    prescription_metric_unavailable_result(
-                        question,
-                        prescription_metric,
-                        router_diagnostics(self.router),
+                # A typed stop belongs to the element that raised it. When the same
+                # question also asks for something answerable, returning here would
+                # silence that element too, so the stop is deferred and re-attached
+                # to the assembled answer by finish().
+                if prescription_element_is_deferrable(question):
+                    deferred_prescription_metric = prescription_metric
+                else:
+                    return finish(
+                        prescription_metric_unavailable_result(
+                            question,
+                            prescription_metric,
+                            router_diagnostics(self.router),
+                        )
                     )
-                )
             classification = classify_question(question)
             capability = default_capability_matrix().resolve(
                 classification.source_domain,
@@ -887,6 +908,69 @@ class ChatAgent:
             except (LookupError, TypeError, ValueError) as exc:
                 return _query_failed_metric_call(brand, metric, filter_entries, exc)
         return self.metrics.get_brand_metric(brand, metric=metric, filter_entries=filter_entries)
+
+
+def _reattach_deferred_prescription_stop(
+    payload: dict[str, Any],
+    requested_metric: str,
+) -> dict[str, Any]:
+    """Append the prescription stop to an answer that served its other elements.
+
+    The wording is the same constant the standalone stop uses, so the notice a
+    caller sees does not depend on whether the request had one element or two.
+    """
+    updated = dict(payload)
+    answer = str(updated.get("answer") or "")
+    if PRESCRIPTION_METRIC_UNAVAILABLE_REASON not in answer:
+        separator = "\n\n" if answer.strip() else ""
+        updated["answer"] = f"{answer}{separator}- {PRESCRIPTION_METRIC_UNAVAILABLE_REASON}"
+    decomposition = list(updated.get("decomposition") or ())
+    decomposition.append(
+        {
+            "intent": "prescription_metric",
+            "metric": requested_metric,
+            "status": "unavailable",
+            "reason_code": "FIELD_NOT_EXPOSED",
+        }
+    )
+    updated["decomposition"] = decomposition
+    updated["prescription_metric_deferred"] = {
+        "metric": requested_metric,
+        "status": "unavailable",
+        "reason_code": "FIELD_NOT_EXPOSED",
+        "substituted": False,
+    }
+    return updated
+
+
+def _attach_element_ledger(question: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Record how each requested element ended, for the disposition aggregate."""
+    if payload.get("element_ledger"):
+        return payload
+    deferred = payload.get("prescription_metric_deferred")
+    served = bool(payload.get("tool_calls"))
+    unsupported: list[str] = []
+    satisfied: list[str] = []
+    if deferred is not None:
+        unsupported.append("prescription")
+        others = supported_metrics_beside_prescription(question)
+        (satisfied if served else unsupported).extend(others)
+    elif str(payload.get("reason_code") or "") == "FIELD_NOT_EXPOSED":
+        if requested_prescription_metric(question) is not None:
+            unsupported.append("prescription")
+        else:
+            unsupported.extend(supported_metrics_beside_prescription(question))
+    elif served:
+        satisfied.extend(supported_metrics_beside_prescription(question))
+    if not satisfied and not unsupported:
+        return payload
+    updated = dict(payload)
+    updated["element_ledger"] = build_element_ledger(
+        question,
+        satisfied=tuple(satisfied),
+        unsupported=tuple(unsupported),
+    )
+    return updated
 
 
 def _catalog_dimension_for_level(
