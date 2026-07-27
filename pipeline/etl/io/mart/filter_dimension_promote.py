@@ -4,7 +4,7 @@ from collections.abc import Sequence
 import hashlib
 import re
 import time
-from typing import Any
+from typing import Any, Final
 
 import pymysql
 
@@ -28,6 +28,12 @@ _PROMOTION_COLUMNS = (
     "raw_value_history",
 )
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_APPROVED_SHARED_SLICES: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        ("ubist", "molecule"),
+        ("iqvia_nsa", "dosage_form"),
+    }
+)
 
 
 def promote_filter_dimension_rows(
@@ -52,7 +58,7 @@ def promote_filter_dimension_rows(
         allow_shared_serving_target=allow_shared_serving_target,
     )
     if not rows:
-        raise RuntimeError("refusing to replace ubist/molecule with an empty computed slice")
+        raise RuntimeError("refusing to replace an approved sidecar slice with empty computed rows")
     if any(row.get("source") != source or row.get("dimension_type") != dimension_type for row in rows):
         raise ValueError("computed rows contain a mixed or out-of-scope sidecar slice")
 
@@ -70,7 +76,7 @@ def promote_filter_dimension_rows(
         for payload in payloads
     }
     if len(unique_keys) != len(payloads):
-        raise ValueError("computed ubist/molecule slice contains duplicate serving keys")
+        raise ValueError("computed sidecar slice contains duplicate serving keys")
 
     backup = create_filter_dimension_backup(conn, target_db, promotion_run_id)
     target_table = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
@@ -144,7 +150,7 @@ def promote_filter_dimension_slice(
         )
         expected = int(cur.fetchone()["n"])
     if expected < 1:
-        raise RuntimeError("refusing to replace ubist/molecule with an empty staged slice")
+        raise RuntimeError("refusing to replace an approved sidecar slice with an empty staged slice")
 
     backup = create_filter_dimension_backup(conn, target_db, promotion_run_id)
     promoted = _upsert_slice(
@@ -286,8 +292,8 @@ def _validate_promotion_target(
 ) -> None:
     if not allow_shared_serving_target:
         raise ValueError("shared serving target promotion requires explicit approval")
-    if source != "ubist" or dimension_type != "molecule":
-        raise ValueError("this promotion path is restricted to the ubist/molecule slice")
+    if (source, dimension_type) not in _APPROVED_SHARED_SLICES:
+        raise ValueError("this promotion path is restricted to an approved sidecar slice")
     if batch_size < 1 or batch_size > 200:
         raise ValueError("batch_size must be between 1 and 200")
     if "`" in target_db or not target_db.replace("_", "").isalnum():

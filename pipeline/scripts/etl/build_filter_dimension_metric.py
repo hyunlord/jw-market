@@ -90,11 +90,11 @@ def parse_args() -> argparse.Namespace:
         "--dimension-type",
         help="Build one enabled dimension only. F-046 uses molecule for the bounded UBIST rebuild.",
     )
-    parser.add_argument("--promote-to", help="Approved shared serving schema for the bounded ubist/molecule promotion.")
+    parser.add_argument("--promote-to", help="Approved shared serving schema for one explicitly allowed sidecar slice.")
     parser.add_argument(
         "--allow-shared-serving-target",
         action="store_true",
-        help="Explicit PL gate for promoting only the ubist/molecule slice into --promote-to.",
+        help="Explicit PL gate for promoting one approved sidecar slice into --promote-to.",
     )
     parser.add_argument(
         "--direct-shared-promotion",
@@ -117,10 +117,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--batch-size must be <= 200 for Galera writeset safety")
     if args.ubist_dir:
         os.environ["S4_UBIST_DIR"] = str(args.ubist_dir)
-    if args.dimension_type and args.source != "ubist":
-        raise ValueError("--dimension-type is currently restricted to --source ubist")
-    if args.promote_to and not (args.allow_shared_serving_target and args.dimension_type == "molecule"):
-        raise ValueError("shared promotion requires --dimension-type molecule and explicit approval")
+    approved_shared_slice = (args.source, args.dimension_type) in {
+        ("ubist", "molecule"),
+        ("iqvia_nsa", "dosage_form"),
+    }
+    if args.promote_to and not (args.allow_shared_serving_target and approved_shared_slice):
+        raise ValueError("shared promotion requires an approved source/dimension slice and explicit approval")
+    if args.direct_shared_promotion and (args.source, args.dimension_type) != ("ubist", "molecule"):
+        raise ValueError("direct shared promotion remains restricted to ubist/molecule")
     if args.promote_to and not args.build_sha:
         raise ValueError("--build-sha is required for shared promotion provenance")
     if args.promote_to and not args.promotion_run_id:
@@ -245,8 +249,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     conn,
                     computed_rows,
                     target_db=args.promote_to,
-                    source="ubist",
-                    dimension_type="molecule",
+                    source=args.source,
+                    dimension_type=str(args.dimension_type),
                     build_marker=build_marker,
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
@@ -257,8 +261,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     conn,
                     source_db=args.target_db,
                     target_db=args.promote_to,
-                    source="ubist",
-                    dimension_type="molecule",
+                    source=args.source,
+                    dimension_type=str(args.dimension_type),
                     build_marker=build_marker,
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,

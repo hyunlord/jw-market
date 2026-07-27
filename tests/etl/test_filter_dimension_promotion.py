@@ -150,6 +150,28 @@ def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:
     assert result["stale_rows_deleted"] == 0
 
 
+def test_promote_filter_dimension_slice_allows_iqvia_dosage_form() -> None:
+    conn = _Connection()
+
+    result = promote_filter_dimension_slice(
+        conn,
+        source_db="jw_mart_dim_stage_iqvia_dosage",
+        target_db="jw_mart_d2_stage_20260630_r2",
+        source="iqvia_nsa",
+        dimension_type="dosage_form",
+        build_marker="2026-07-27 12:00:00",
+        batch_size=10,
+        allow_shared_serving_target=True,
+        promotion_run_id="fdm_iqvia_dosage_1",
+    )
+
+    sql = "\n".join(call[0] for call in conn.cursor_instance.calls)
+    assert "ON DUPLICATE KEY UPDATE" in sql
+    assert result["source"] == "iqvia_nsa"
+    assert result["dimension_type"] == "dosage_form"
+    assert result["expected_rows"] == 1
+
+
 def test_promote_filter_dimension_slice_rejects_any_other_slice() -> None:
     conn = _Connection()
 
@@ -165,7 +187,7 @@ def test_promote_filter_dimension_slice_rejects_any_other_slice() -> None:
             promotion_run_id="fdm_run_slice_2",
         )
     except ValueError as exc:
-        assert "ubist/molecule" in str(exc)
+        assert "approved sidecar slice" in str(exc)
     else:
         raise AssertionError("non-molecule sidecar promotion must be rejected")
 
