@@ -45,6 +45,11 @@ The current accepted baseline is not a waiver that the tests are healthy. It
 is a measurement reference for detecting new regressions. Every baseline
 change requires a review that explains each added or removed node ID.
 
+The count baseline was remeasured at `f7832d94d3d058c792675a4ac606adb8b20b7ade`
+after the canonical runner and shadow-revert failure-injection tests entered
+this lineage: 2,275 collected, 2,262 passed, 8 failed, 0 errors, and 5 skipped.
+The complete eight-node failure set remained exactly unchanged.
+
 ## Audit evidence
 
 Every audit that reports a full regression must preserve:
