@@ -198,6 +198,14 @@ def test_market_membership_mismatch_bypasses_final_llm_and_keeps_names(
         "scope": "market_membership_mismatch",
         "gate": "brand_market_membership",
         "gate_reason": "explicit_market_outside_brand_memberships",
+        # This result is built without going through the request path, so no
+        # anaphora resolution was observed. Nulls, not a fabricated verdict.
+        "anaphora": {
+            "status": None,
+            "recogniser": None,
+            "candidate_shape": None,
+            "unresolved_reference": None,
+        },
     }
     assert streamed == []
 

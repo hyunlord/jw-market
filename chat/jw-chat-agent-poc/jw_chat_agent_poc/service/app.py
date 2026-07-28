@@ -105,6 +105,7 @@ from jw_chat_agent_poc.service.conversation import (
     PendingClarification,
 )
 from jw_chat_agent_poc.service.conversation_context import (
+    anaphora_observation,
     extract_conversation_slots,
     requires_previous_turn,
     resolve_anaphora,
@@ -898,6 +899,12 @@ def _answer_question(
             result = {**result, "router_diagnostics": diagnostics}
         result = _attach_file_context(result, delegated_file_context, file_source_items)
         result = _annotate_context_scope(result, context_scope)
+        # Record what the resolver did with this question before the router saw
+        # it. Attached on every branch, so a question that was handed to the
+        # router unrewritten is as visible as one that was resolved. Kept out of
+        # router_diagnostics, which carries the router's own decisions and is
+        # compared whole by its callers.
+        result = {**result, "_qa_anaphora": anaphora_observation(routing_resolution)}
         with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
             store.conversations.record_exchange(
                 state.conversation_id,
