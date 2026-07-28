@@ -87,6 +87,16 @@ _AXES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("channel", re.compile(r"채널|channel", re.IGNORECASE), "get_brand_channel_breakdown"),
     ("specialty", re.compile(r"진료과|specialty", re.IGNORECASE), "get_brand_specialty_breakdown"),
 )
+#: Every ``StructuredPlan.kind`` this module can produce. Published so a runtime
+#: trace can confirm a kind against a registry rather than forward whatever
+#: string reached it.
+STRUCTURED_PLAN_KINDS: Final[frozenset[str]] = frozenset(
+    (
+        "brand_comparison",
+        *(f"brand_{axis[0]}" for axis in _AXES),
+        *(metric.name for metric in _METRICS),
+    )
+)
 _ANSWER_MODES: Final[tuple[AnswerModeSpec, ...]] = (
     AnswerModeSpec("explanatory", re.compile(r"왜|원인|이유|영향", re.IGNORECASE)),
     AnswerModeSpec("forecast", re.compile(r"전망|예측|향후", re.IGNORECASE)),

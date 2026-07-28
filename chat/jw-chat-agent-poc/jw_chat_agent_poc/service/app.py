@@ -143,7 +143,11 @@ from jw_chat_agent_poc.service.file_llm_brief import (
     serialize_file_overviews,
 )
 from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_question
-from jw_chat_agent_poc.service.genos_client import GenosClient, append_blocked_metric_notices_from_markdown_response
+from jw_chat_agent_poc.service.genos_client import (
+    GenosClient,
+    append_blocked_metric_notices_from_markdown_response,
+    append_deferred_prescription_notice,
+)
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
     HistoryProjectionRuntime,
@@ -2808,6 +2812,10 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
     if not file_context_fact and market_contract_allowed:
         safe_answer = _apply_evidence_binding_gate(active_question, safe_answer, result)
+    # After the binding gate, so a refusal the orchestrator already decided on is
+    # never weighed as an unbacked claim, and after every contract enforcer, so
+    # none of them can drop it again.
+    safe_answer = append_deferred_prescription_notice(safe_answer, result)
     safe_answer = _strip_verified_evidence_progress(safe_answer)
     trace = trace_envelope(
         question=question,

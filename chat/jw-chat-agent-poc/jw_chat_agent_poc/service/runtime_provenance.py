@@ -8,7 +8,10 @@ from typing import Any
 from uuid import uuid4
 
 from jw_chat_agent_poc import genos_config
+from jw_chat_agent_poc.agent_loop.bq_contracts import BQ_CONTRACT_IDS
 from jw_chat_agent_poc.agent_loop.element_ledger import disposition_from_ledger
+from jw_chat_agent_poc.agent_loop.structured_planner import STRUCTURED_PLAN_KINDS
+from jw_chat_agent_poc.orchestrator.agent import QueryFailureReason
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
@@ -19,6 +22,17 @@ from jw_chat_agent_poc.service.routing_v4_trace import project_routing_v4_qa_tra
 
 
 _UNKNOWN = "unknown"
+_UNREGISTERED = "other"
+_BQ_KIND_PREFIX = "BQ:"
+_PLAN_FAMILY_NONE = "none"
+_PLAN_FAMILY_BQ = "bq"
+_PLAN_FAMILY_STRUCTURED = "structured"
+#: Sources a BQ contract can declare as expected, per bq_planner._SOURCE_VARIANTS.
+_PLAN_SOURCE_ALLOW = frozenset({"ubist", "iqvia_nsa"})
+#: Failure reasons a tool call may carry. Derived from the enum that writes them
+#: so a new reason cannot silently project as "other", plus the typed absence
+#: code the prescription contract emits.
+_REASON_CODE_ALLOW = frozenset({reason.value for reason in QueryFailureReason} | {"FIELD_NOT_EXPOSED"})
 _MODEL_FAMILY_DEFAULT = "gemini-3-flash-preview"
 _EMPTY_TOOL_STATUSES = frozenset({"no_data", "unsupported", "error"})
 _ASSEMBLY_GAP_RATIO_THRESHOLD = 0.30
@@ -235,6 +249,7 @@ def _qa_trace(
             "gate_reason": gate_reason,
         },
         "tools": _qa_tool_calls(result),
+        "plan": _qa_plan(result),
         "spans": _qa_spans(result),
         "claims": claim_trace,
         "final": final,
@@ -243,6 +258,49 @@ def _qa_trace(
     if routing_v4 is not None:
         qa_trace["routing_v4"] = routing_v4
     return qa_trace
+
+
+def _qa_plan(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Project which deterministic contract ran, and what it could not reach.
+
+    The loop already recorded all of this in ``agent_loop_metrics``; nothing here
+    read it, so a live answer could not be checked against the contract that was
+    supposed to produce it. Every key is emitted unconditionally, so "not
+    observed" (null) stays distinct from "no deterministic plan ran" (family
+    ``none``). Kinds and source names are confirmed against their registries, so
+    the projection can only ever carry enumerated values.
+    """
+    metrics = result.get("agent_loop_metrics")
+    items = metrics if isinstance(metrics, Mapping) else {}
+    raw_kind = items.get("deterministic_plan_kind")
+    kind = raw_kind if isinstance(raw_kind, str) and raw_kind else None
+    raw_hit = items.get("deterministic_plan_hit")
+    return {
+        "family": _plan_family(kind),
+        "kind": _plan_kind(kind),
+        "hit": bool(raw_hit) if isinstance(raw_hit, bool) else None,
+        "missing_sources": _plan_missing_sources(items.get("bq_missing_sources")),
+    }
+
+
+def _plan_family(kind: str | None) -> str:
+    if kind is None:
+        return _PLAN_FAMILY_NONE
+    return _PLAN_FAMILY_BQ if kind.startswith(_BQ_KIND_PREFIX) else _PLAN_FAMILY_STRUCTURED
+
+
+def _plan_kind(kind: str | None) -> str | None:
+    if kind is None:
+        return None
+    if kind.startswith(_BQ_KIND_PREFIX):
+        return kind if kind.removeprefix(_BQ_KIND_PREFIX) in set(BQ_CONTRACT_IDS) else _UNREGISTERED
+    return kind if kind in STRUCTURED_PLAN_KINDS else _UNREGISTERED
+
+
+def _plan_missing_sources(value: Any) -> list[str] | None:
+    if not isinstance(value, (list, tuple)):
+        return None
+    return [str(source) if str(source) in _PLAN_SOURCE_ALLOW else _UNREGISTERED for source in value]
 
 
 def _qa_spans(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -303,9 +361,22 @@ def _qa_tool_calls(result: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
                 "member_brand_count": _optional_int(trace_items.get("member_brand_count")),
                 "excluded_atc4_count": _optional_int(trace_items.get("excluded_atc4_count")),
                 "reduction_reason": trace_items.get("reduction_reason"),
+                # Why a metric query failed. agent._query_failed_metric_call has
+                # always written this onto render_data; this projection read
+                # render_data for "status" alone, so the reason never left the
+                # process. Emitted unconditionally, so an unobserved reason is a
+                # null rather than an absent key.
+                "reason_code": _reason_code(render_items.get("reason_code")),
             }
         )
     return tuple(projected)
+
+
+def _reason_code(value: Any) -> str | None:
+    """Project a failure reason only when it is one of the codes we define."""
+    if not isinstance(value, str) or not value:
+        return None
+    return value if value in _REASON_CODE_ALLOW else _UNREGISTERED
 
 
 def _atc4_code_list(value: Any) -> list[str] | None:

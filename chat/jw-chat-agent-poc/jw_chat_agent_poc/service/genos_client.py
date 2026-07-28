@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +18,7 @@ from jw_chat_agent_poc.genos_config import (
     resolve_final_genos_base_url,
     resolve_final_genos_token,
 )
+from jw_chat_agent_poc.agent_loop.factory import PRESCRIPTION_METRIC_UNAVAILABLE_REASON
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers as markdown_allowed_numbers
@@ -727,6 +728,25 @@ def append_blocked_metric_notices_from_markdown_response(answer: str, markdown_r
     if not isinstance(markdown_response, dict):
         return answer
     return _append_blocked_metric_notices(answer, _fact_lookup_markdown(markdown_response))
+
+
+def append_deferred_prescription_notice(answer: str, result: Mapping[str, Any] | None) -> str:
+    """Re-attach the prescription stop the orchestrator already decided on.
+
+    The stop is written onto ``result["answer"]``, but a delivered body is built
+    from the fact set — a deterministic market answer, or the generated
+    expression — and never from that field. A request that asked for sales and
+    prescription therefore served its sales and dropped the refusal on the way
+    out. Re-attaching from the typed ``prescription_metric_deferred`` record
+    rather than from element counts keeps the wording identical to the wording a
+    prescription-only request gets.
+    """
+    if not isinstance(result, Mapping) or not isinstance(result.get("prescription_metric_deferred"), Mapping):
+        return answer
+    if PRESCRIPTION_METRIC_UNAVAILABLE_REASON in answer:
+        return answer
+    separator = "\n\n" if answer.strip() else ""
+    return f"{answer}{separator}- {PRESCRIPTION_METRIC_UNAVAILABLE_REASON}"
 
 
 def _blocked_metric_notice_lines(fact_md: str) -> tuple[str, ...]:
