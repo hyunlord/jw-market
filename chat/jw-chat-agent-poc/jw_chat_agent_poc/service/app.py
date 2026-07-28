@@ -2945,6 +2945,21 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         result["_qa_claim_gate"]["rejections"] = tuple(
             item.to_trace() for item in gate.rejections
         )
+    # Which return site produced the verdict, and how the token loop scored.
+    # Always set: a reader must be able to tell "no substitution happened"
+    # from "this key was never written". Counts stay None when the gate
+    # returned before the token loop ran.
+    result["_qa_claim_gate"]["binding_decision"] = {
+        "decision_site": gate.decision_site,
+        "substitution_triggered": bool(gate.substitution_triggered),
+        "bind_attempted_count": gate.bind_attempted_count,
+        "bind_succeeded_count": gate.bind_succeeded_count,
+        "blocked_reason_histogram": (
+            [[str(reason), int(count)] for reason, count in gate.blocked_reason_histogram]
+            if gate.blocked_reason_histogram is not None
+            else None
+        ),
+    }
     if observability:
         result["_qa_claim_gate"]["pipeline_observability"] = observability
     result["_qa_claim_gate"].update(context_observability)
