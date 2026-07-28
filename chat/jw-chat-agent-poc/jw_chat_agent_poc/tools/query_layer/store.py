@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 import json
 import logging
@@ -11,6 +11,7 @@ import time
 from typing import Any, Final, Protocol
 
 from jw_chat_agent_poc.agentic.sales_filter_aliases import normalise_channel_data
+from jw_chat_agent_poc.tools.query_layer.mart_json import compact_mart_json
 
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,11 @@ class MartRecord:
     brand_name: str
     source: str
     measure: str
-    metric_history: dict[str, dict[str, Any]]
-    channel_data: dict[str, Any]
-    specialty_data: dict[str, Any]
-    dimension_data: dict[str, Any]
-    by_dimension: dict[str, Any]
+    metric_history: Mapping[str, Any]
+    channel_data: Mapping[str, Any]
+    specialty_data: Mapping[str, Any]
+    dimension_data: Mapping[str, Any]
+    by_dimension: Mapping[str, Any]
     unit_label: str = ""
 
     @classmethod
@@ -43,11 +44,13 @@ class MartRecord:
             brand_name=str(row["brand_name"]),
             source=str(row["source"]),
             measure=str(row["measure"]),
-            metric_history=_loads(row.get("metric_history")),
-            channel_data=normalise_channel_data(_loads(row.get("channel_data"))),
-            specialty_data=_loads(row.get("specialty_data")),
-            dimension_data=_loads(row.get("dimension_data")),
-            by_dimension=_loads(row.get("by_dimension")),
+            metric_history=_loads(row.get("metric_history"), column="metric_history"),
+            channel_data=normalise_channel_data(
+                _loads(row.get("channel_data"), column="channel_data")
+            ),
+            specialty_data=_loads(row.get("specialty_data"), column="specialty_data"),
+            dimension_data=_loads(row.get("dimension_data"), column="dimension_data"),
+            by_dimension=_loads(row.get("by_dimension"), column="by_dimension"),
             unit_label=str(row.get("unit_label") or ""),
         )
 
@@ -165,7 +168,7 @@ class MartSnapshot:
                 return next(status for status in statuses if status in FAILED_VALUE_STATUSES)
             return "OK"
         row = record.metric_history.get(period)
-        if not isinstance(row, dict):
+        if not isinstance(row, Mapping):
             return "missing"
         raw_value = row.get("raw_value")
         if isinstance(raw_value, int | float) and not math.isfinite(float(raw_value)):
@@ -182,7 +185,7 @@ class MartSnapshot:
             values = tuple(self.value_or_none(record, month) for month in quarter_months)
             return sum(value for value in values if value is not None) if all(value is not None for value in values) else None
         row = record.metric_history.get(period)
-        if not isinstance(row, dict) or _row_status(row) in FAILED_VALUE_STATUSES:
+        if not isinstance(row, Mapping) or _row_status(row) in FAILED_VALUE_STATUSES:
             return None
         value = row.get("raw_value")
         if not isinstance(value, int | float):
@@ -208,7 +211,7 @@ class MartSnapshot:
         stored_share = None
         if not (len(period) == 4 and period.isdigit()):
             row = record.metric_history.get(period)
-            if isinstance(row, dict):
+            if isinstance(row, Mapping):
                 share = row.get("ms")
                 if isinstance(share, int | float):
                     numeric_share = float(share)
@@ -242,7 +245,7 @@ class MartSnapshot:
             if total is not None and total != 0:
                 if not (len(period) == 4 and period.isdigit()):
                     period_row = record.metric_history.get(period)
-                    if isinstance(period_row, dict) and isinstance(period_row.get("ms"), int | float):
+                    if isinstance(period_row, Mapping) and isinstance(period_row.get("ms"), int | float):
                         numeric_share = float(period_row["ms"])
                         share = numeric_share if math.isfinite(numeric_share) else None
                 if share is None:
@@ -659,12 +662,12 @@ def shared_strategic_mart_store() -> TtlStrategicMartStore:
         return _SHARED_MART_STORE
 
 
-def _loads(value: Any) -> dict[str, Any]:
+def _loads(value: Any, *, column: str) -> dict[str, Any]:
     parsed = json.loads(value) if isinstance(value, str) and value else value
-    return parsed if isinstance(parsed, dict) else {}
+    return compact_mart_json(parsed, column=column) if isinstance(parsed, dict) else {}
 
 
-def _row_status(row: dict[str, Any]) -> str:
+def _row_status(row: Mapping[str, Any]) -> str:
     raw = row.get("source_status", row.get("status"))
     status = str(raw or "OK")
     return status if status in FAILED_VALUE_STATUSES else "OK"

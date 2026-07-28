@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import math
 from typing import Any
@@ -190,7 +191,7 @@ def _period_census(
 
 def _value(record: MartRecord, period: str) -> float | None:
     row = record.metric_history.get(period)
-    if not isinstance(row, dict) or _status(record, period) in FAILED_VALUE_STATUSES:
+    if not isinstance(row, Mapping) or _status(record, period) in FAILED_VALUE_STATUSES:
         return None
     value = row.get("raw_value")
     if not isinstance(value, int | float):
@@ -201,7 +202,7 @@ def _value(record: MartRecord, period: str) -> float | None:
 
 def _status(record: MartRecord, period: str) -> str:
     row = record.metric_history.get(period)
-    if not isinstance(row, dict):
+    if not isinstance(row, Mapping):
         return "missing"
     raw_value = row.get("raw_value")
     if isinstance(raw_value, int | float) and not math.isfinite(float(raw_value)):
@@ -214,7 +215,7 @@ def _share(record: MartRecord, period: str, value: float, total: float | None) -
     if total in {None, 0}:
         return None
     row = record.metric_history.get(period)
-    stored = row.get("ms") if isinstance(row, dict) else None
+    stored = row.get("ms") if isinstance(row, Mapping) else None
     if isinstance(stored, int | float):
         numeric = float(stored)
         if math.isfinite(numeric):

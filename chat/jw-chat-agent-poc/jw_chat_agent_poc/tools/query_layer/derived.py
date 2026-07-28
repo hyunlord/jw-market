@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+import math
 from typing import TYPE_CHECKING
 
 from jw_chat_agent_poc.tools.query_layer.derived_models import (
@@ -111,7 +112,7 @@ def _stored_or_computed_share(record: MartRecord, period: str, value: float, tot
     if total is None or total == 0:
         return None
     row = record.metric_history.get(period)
-    stored = row.get("ms") if isinstance(row, dict) and not (len(period) == 4 and period.isdigit()) else None
+    stored = row.get("ms") if isinstance(row, Mapping) and not (len(period) == 4 and period.isdigit()) else None
     if isinstance(stored, int | float):
         numeric = float(stored)
         if math.isfinite(numeric):
