@@ -86,6 +86,16 @@ def _job_env() -> list[dict]:
 
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
+    # Agent3 intentionally has its own DB namespace. In ingest Jobs it uses the
+    # same writer endpoint as the mart stages, so render the aliases explicitly
+    # instead of allowing its localhost defaults.
+    agent3_host = os.environ.get("AGENT3_DB_HOST") or os.environ.get("MARIADB_HOST")
+    agent3_port = os.environ.get("AGENT3_DB_PORT") or os.environ.get("MARIADB_PORT", "3306")
+    if agent3_host:
+        env.append({"name": "AGENT3_DB_HOST", "value": agent3_host})
+    env.append({"name": "AGENT3_DB_PORT", "value": agent3_port})
+    secret_ref("AGENT3_DB_USER", _MART_SECRET, "username")
+    secret_ref("AGENT3_DB_PASSWORD", _MART_SECRET, "password")
     local_input = os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
     if not local_input and os.environ.get("INGEST_S3_BUCKET"):
         secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")

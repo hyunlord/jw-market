@@ -254,6 +254,16 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
     assert by_name["AGENT3_DB_NAME"]["value"] == "agent3-live"
+    assert by_name["AGENT3_DB_HOST"]["value"] == "db.example"
+    assert by_name["AGENT3_DB_PORT"]["value"] == "3306"
+    assert (
+        by_name["AGENT3_DB_USER"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "username"}
+    )
+    assert (
+        by_name["AGENT3_DB_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "password"}
+    )
     assert by_name["AGENT3_WORKFLOW_REV"]["value"] == "5692"
     assert by_name["AGENT3_EXPECTED_WORKFLOW_REV"]["value"] == "5692"
     assert by_name["APP_VERSION"]["value"] == "a" * 40
