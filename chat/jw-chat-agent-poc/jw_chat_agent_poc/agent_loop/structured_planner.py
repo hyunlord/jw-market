@@ -17,6 +17,7 @@ class QuerySlots:
     brands: tuple[str, ...]
     metric: str
     period: str
+    source: str | None
     axis: str | None
     limit: int
     history_points: int
@@ -115,6 +116,9 @@ _TOOL_ARGUMENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "get_brand_channel_breakdown": ("brand",),
     "get_brand_specialty_breakdown": ("brand",),
 }
+_SOURCE_CAPABLE_TOOLS: Final[frozenset[str]] = frozenset(
+    tool for tool in _TOOL_ARGUMENT_FIELDS if tool != "compare_brands_series"
+)
 
 
 def deterministic_market_planner_enabled() -> bool:
@@ -141,6 +145,7 @@ def plan_structured_market_question(
     resolver: BrandResolver,
     grounding: AgentPeriodGrounding,
     schemas: tuple[dict[str, object], ...],
+    requested_source: str | None = None,
 ) -> StructuredPlan | None:
     if not deterministic_market_planner_enabled():
         return None
@@ -189,6 +194,7 @@ def plan_structured_market_question(
         brands=brands,
         metric=kind,
         period=period,
+        source=requested_source,
         axis=axis[0] if axis else None,
         limit=limit,
         history_points=history_points or 10,
@@ -281,6 +287,9 @@ def _call(tool: str, slots: QuerySlots) -> ToolCallPlan:
         "period": slots.period,
         "limit": str(slots.limit),
         "history_points": str(slots.history_points),
+        "source": slots.source or "",
     }
     arguments = {field: values[field] for field in _TOOL_ARGUMENT_FIELDS[tool]}
+    if slots.source and tool in _SOURCE_CAPABLE_TOOLS:
+        arguments["source"] = slots.source
     return ToolCallPlan(name=tool, arguments=arguments, reason=f"deterministic slots: {slots.metric}")
