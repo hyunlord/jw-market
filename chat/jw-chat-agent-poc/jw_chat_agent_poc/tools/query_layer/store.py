@@ -333,6 +333,31 @@ class StrategicMartReader(Protocol):
     def load(self) -> MartSnapshot: ...
 
 
+MART_TTL_ENV: Final = "CHAT_QUERY_MART_TTL_SECONDS"
+DEFAULT_MART_TTL_SECONDS: Final = 300
+
+
+def mart_ttl_seconds() -> int:
+    """Resolve the process-wide mart snapshot TTL.
+
+    Every caller has to agree on this number. The shared store used to be keyed by
+    whatever TTL the first caller passed, and the three call sites read three
+    different things (``CHAT_QUERY_MART_TTL_SECONDS``,
+    ``CHAT_MARKET_SCOPE_TTL_SECONDS``, and a hardcoded default). They all resolve to
+    300 today, so one store exists -- but raising only the mart TTL would have minted
+    a second store, and a second store means a second multi-GiB snapshot resident for
+    the life of the process. Reading the TTL in one place makes that unreachable.
+    """
+    raw = os.environ.get(MART_TTL_ENV)
+    if raw is None:
+        return DEFAULT_MART_TTL_SECONDS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return DEFAULT_MART_TTL_SECONDS
+    return parsed if parsed > 0 else DEFAULT_MART_TTL_SECONDS
+
+
 @dataclass(frozen=True, slots=True)
 class StaticStrategicMartReader:
     records: tuple[MartRecord, ...]
@@ -351,6 +376,46 @@ class MariaDbStrategicMartReader:
     table: str = os.environ.get("CHAT_QUERY_MART_TABLE", "mart_strategic_ml_brand_metric")
     connect_timeout_s: int = int(os.environ.get("CHAT_QUERY_DB_CONNECT_TIMEOUT_S", "3"))
     read_timeout_s: int = int(os.environ.get("CHAT_QUERY_DB_READ_TIMEOUT_S", "15"))
+
+    def fingerprint(self) -> str | None:
+        """Cheap probe describing the serving rows, or None when it cannot be taken.
+
+        Rebuilding the snapshot costs 32-38s and holds a second full copy while it
+        runs. This answers "did the rows change at all?" in ~40ms, so the expensive
+        rebuild only has to happen when the answer is yes. None means "unknown", and
+        the caller must then fall back to a full rebuild.
+        """
+        import pymysql
+
+        sql = f"""
+            SELECT COUNT(*) AS row_count, MAX(computed_at) AS max_computed_at
+            FROM {self.table}
+            WHERE (measure='sales' AND source IN ('ubist', 'iqvia_nsa'))
+               OR (measure='volume' AND source='ubist')
+        """
+        try:
+            with pymysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database,
+                connect_timeout=self.connect_timeout_s,
+                read_timeout=self.read_timeout_s,
+                write_timeout=self.read_timeout_s,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(sql)
+                    row = cursor.fetchone()
+        except Exception:  # noqa: BLE001 - an unavailable probe must not block refresh
+            logger.exception("strategic mart fingerprint probe failed")
+            return None
+        if not row:
+            return None
+        return f"{row.get('row_count')}|{row.get('max_computed_at')}"
 
     def load(self) -> MartSnapshot:
         import pymysql
@@ -411,6 +476,13 @@ class TtlStrategicMartStore:
         self._refreshing = False
         self._refresh_successes = 0
         self._refresh_failures = 0
+        self._refresh_skips = 0
+        # Freshness lives here rather than on MartSnapshot: the snapshot is frozen and
+        # its __post_init__ rebuilds DerivedSnapshotIndex, so replacing it just to carry
+        # a new timestamp would re-spend the build this change exists to avoid. The TTL
+        # comparison below was the only reader of snapshot.loaded_at.
+        self._loaded_at = 0.0
+        self._fingerprint: str | None = None
         if prewarm:
             self.prewarm()
 
@@ -442,7 +514,7 @@ class TtlStrategicMartStore:
             current = self._snapshot
             now = time.monotonic()
             if current is not None:
-                if now - current.loaded_at > self._ttl_seconds:
+                if now - self._loaded_at > self._ttl_seconds:
                     self._start_refresh_locked()
                 return current
         return self._load_cold_snapshot()
@@ -453,6 +525,7 @@ class TtlStrategicMartStore:
                 current = self._snapshot
                 if current is not None:
                     return current
+            probe = self._probe_fingerprint()
             try:
                 current = self._reader.load()
             except Exception:
@@ -461,6 +534,8 @@ class TtlStrategicMartStore:
                 raise
             with self._snapshot_lock:
                 self._snapshot = current
+                self._loaded_at = time.monotonic()
+                self._fingerprint = probe
                 self._refresh_successes += 1
             return current
 
@@ -475,9 +550,47 @@ class TtlStrategicMartStore:
         )
         thread.start()
 
+    def _probe_fingerprint(self) -> str | None:
+        """Ask the reader for a cheap change signal, if it offers one.
+
+        Test doubles only implement load(), so this stays optional: no fingerprint
+        means every refresh rebuilds, which is exactly the previous behaviour.
+        """
+        probe = getattr(self._reader, "fingerprint", None)
+        if not callable(probe):
+            return None
+        try:
+            return probe()
+        except Exception:  # noqa: BLE001 - a failed probe must not block the refresh
+            logger.exception("strategic mart fingerprint probe raised")
+            return None
+
     def _refresh_snapshot(self) -> None:
         started_at = time.monotonic()
         startup_timing_logger.info("strategic mart TTL refresh started")
+
+        # Rebuilding holds the new snapshot alongside the one still being served, so for
+        # the 32-38s the load takes the process carries two full copies -- ~9.2GiB against
+        # a 10Gi limit. Ask first whether the rows actually changed; when they have not,
+        # extending freshness is equivalent to rebuilding and costs no memory. A None
+        # probe means "unknown" and falls through to the rebuild, preserving the original
+        # behaviour. Skips are counted separately so refresh_successes keeps meaning
+        # "a rebuild completed" instead of quietly flattening to zero.
+        probe = self._probe_fingerprint()
+        if probe is not None:
+            with self._snapshot_lock:
+                unchanged = self._snapshot is not None and probe == self._fingerprint
+                if unchanged:
+                    self._loaded_at = time.monotonic()
+                    self._refresh_skips += 1
+                    self._refreshing = False
+            if unchanged:
+                startup_timing_logger.info(
+                    "strategic mart TTL refresh skipped unchanged elapsed_s=%.3f",
+                    time.monotonic() - started_at,
+                )
+                return
+
         try:
             snapshot = self._reader.load()
         except Exception:  # noqa: BLE001 - refresh failure must preserve the serving snapshot
@@ -488,6 +601,8 @@ class TtlStrategicMartStore:
             return
         with self._snapshot_lock:
             self._snapshot = snapshot
+            self._loaded_at = time.monotonic()
+            self._fingerprint = probe
             self._refreshing = False
             self._refresh_successes += 1
         startup_timing_logger.info(
@@ -517,25 +632,31 @@ class TtlStrategicMartStore:
                 "snapshot_age_seconds": snapshot_age_seconds,
                 "refresh_successes": self._refresh_successes,
                 "refresh_failures": self._refresh_failures,
+                "refresh_skips": self._refresh_skips,
                 "refreshing": self._refreshing,
             }
 
 
 _SHARED_STORE_LOCK = threading.Lock()
-_SHARED_MART_STORES: dict[int, TtlStrategicMartStore] = {}
+_SHARED_MART_STORE: TtlStrategicMartStore | None = None
 
 
-def shared_strategic_mart_store(ttl_seconds: int = 300) -> TtlStrategicMartStore:
-    """Return the process-wide mart snapshot store for the requested TTL."""
+def shared_strategic_mart_store() -> TtlStrategicMartStore:
+    """Return the one process-wide mart snapshot store.
+
+    A single slot, not a per-TTL mapping. The snapshot is several GiB, so holding two
+    of them is not a caching trade-off -- it is the difference between running and
+    being OOM-killed. The TTL comes from mart_ttl_seconds() so no caller can mint a
+    second store by passing a different number.
+    """
+    global _SHARED_MART_STORE
     with _SHARED_STORE_LOCK:
-        store = _SHARED_MART_STORES.get(ttl_seconds)
-        if store is None:
-            store = TtlStrategicMartStore(
+        if _SHARED_MART_STORE is None:
+            _SHARED_MART_STORE = TtlStrategicMartStore(
                 MariaDbStrategicMartReader(),
-                ttl_seconds=ttl_seconds,
+                ttl_seconds=mart_ttl_seconds(),
             )
-            _SHARED_MART_STORES[ttl_seconds] = store
-        return store
+        return _SHARED_MART_STORE
 
 
 def _loads(value: Any) -> dict[str, Any]:

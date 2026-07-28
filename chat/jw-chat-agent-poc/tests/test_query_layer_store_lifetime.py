@@ -60,7 +60,7 @@ def test_default_layers_share_store_but_isolate_query_results(monkeypatch) -> No
     shared_store = TtlStrategicMartStore(CountingReader(), prewarm=False)
     monkeypatch.setattr(
         "jw_chat_agent_poc.tools.query_layer.layer.shared_strategic_mart_store",
-        lambda ttl_seconds: shared_store,
+        lambda: shared_store,
     )
 
     first = StrategicQueryLayer()

@@ -75,7 +75,10 @@ class StrategicQueryLayer:
         elif reader is not None:
             self._store = TtlStrategicMartStore(reader, ttl_seconds=ttl_seconds)
         else:
-            self._store = shared_strategic_mart_store(ttl_seconds)
+            # The shared store owns its own TTL (mart_ttl_seconds); ttl_seconds here only
+            # applies to the explicit-reader store above. Passing it through would let a
+            # caller mint a second multi-GiB snapshot.
+            self._store = shared_strategic_mart_store()
         self._results = result_store or QueryResultStore()
 
     def catalog_for_brand(self, brand: str | None, market: str | None = None) -> QueryCatalog:
