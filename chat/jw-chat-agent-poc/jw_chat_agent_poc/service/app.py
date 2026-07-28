@@ -89,6 +89,10 @@ from jw_chat_agent_poc.service.answer_safety import (
     finalized_fallback_fact_answer,
     replace_internal_fact_dump,
 )
+from jw_chat_agent_poc.service.answer_delivery import (
+    record_answer_delivery,
+    record_source_notice_attachment,
+)
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
@@ -147,6 +151,7 @@ from jw_chat_agent_poc.service.genos_client import (
     GenosClient,
     append_blocked_metric_notices_from_markdown_response,
     append_deferred_prescription_notice,
+    append_source_basis_notice,
 )
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
@@ -2558,6 +2563,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         result = {**result, "markdown_response": enriched_markdown_response}
     timing = ensure_timing(result)
     if result.get("conversation_fallback_ready"):
+        record_answer_delivery(
+            result,
+            answer_branch="conversation_fallback",
+            source_notice_attached=False,
+        )
         timing_payload = finish(timing)
         answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
         trace = trace_envelope(
@@ -2578,6 +2588,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         )
     client = GenosClient.for_deep_research() if deep_mode else GenosClient()
     if result.get("general_view_ready") and not deep_mode:
+        record_answer_delivery(
+            result,
+            answer_branch="general_view_ready",
+            source_notice_attached=False,
+        )
         timing_payload = finish(timing)
         markdown_response = result.get("markdown_response")
         answer = replace_internal_fact_dump(
@@ -2608,6 +2623,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             result,
         )
         answer = _apply_evidence_binding_gate(active_question, answer, result)
+        answer, source_notice_attached = append_source_basis_notice(answer, markdown_response)
+        record_source_notice_attachment(
+            result,
+            attached=source_notice_attached,
+        )
         trace = trace_envelope(
             question=question,
             result=result,
@@ -2625,6 +2645,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             conversation_id=conversation_id,
         )
     if result.get("file_only_ready"):
+        record_answer_delivery(
+            result,
+            answer_branch="file_only",
+            source_notice_attached=False,
+        )
         answer = cleanup_markdown_answer(str(result.get("answer") or ""))
         overviews = deserialize_file_overviews(result.get("file_brief_observed"))
         if overviews:
@@ -2657,6 +2682,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         or _is_market_membership_mismatch_result(result)
         or _is_terminal_typed_result(result)
     ):
+        record_answer_delivery(
+            result,
+            answer_branch="typed_terminal",
+            source_notice_attached=False,
+        )
         timing_payload = finish(timing)
         answer = scrub_internal_terminology(cleanup_markdown_answer(str(result.get("answer") or "")))
         trace = trace_envelope(
@@ -2684,8 +2714,18 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         else ""
     )
     if deterministic_market_answer:
+        record_answer_delivery(
+            result,
+            answer_branch="app_deterministic_market",
+            source_notice_attached=False,
+        )
         generated_answer = deterministic_market_answer
     elif deterministic_file_answer and not _requires_cross_file_synthesis(active_question, result):
+        record_answer_delivery(
+            result,
+            answer_branch="app_deterministic_file",
+            source_notice_attached=False,
+        )
         generated_answer = deterministic_file_answer
     else:
         try:
@@ -2693,7 +2733,18 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             generation_detail = "gemini-3.1-pro 근거 종합" if deep_mode else "GenOS expression plus safety"
             with stage(timing, generation_stage, generation_detail):
                 generated_answer = "".join(client.stream_answer(active_question, result))
+            if getattr(client, "answer_branch_events", ()):
+                record_answer_delivery(
+                    result,
+                    answer_branch=client.answer_branch_events[-1],
+                    source_notice_attached=False,
+                )
         except requests.RequestException:
+            record_answer_delivery(
+                result,
+                answer_branch="app_generation_request_fallback",
+                source_notice_attached=False,
+            )
             generated_answer = finalized_fallback_fact_answer(active_question, result.get("markdown_response"))
     for call in client.token_usage_calls:
         record_token_usage(timing, call)
@@ -2772,6 +2823,14 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
         source_scope=str(result.get("context_scope") or "MARKET"),
         connected_source_mode=external_tool_agent_result or deep_mode,
+    )
+    safe_answer, source_notice_attached = append_source_basis_notice(
+        safe_answer,
+        markdown_response,
+    )
+    record_source_notice_attachment(
+        result,
+        attached=source_notice_attached,
     )
     safe_answer = replace_internal_fact_dump(active_question, safe_answer, markdown_response)
     if not file_context_fact and market_contract_allowed:
@@ -2985,6 +3044,11 @@ def _compute_mixed_final_answer(
     result: dict,
     conversation_id: str | None,
 ) -> FinalAnswer:
+    record_answer_delivery(
+        result,
+        answer_branch="mixed",
+        source_notice_attached=False,
+    )
     market_result = dict(result.get("mixed_market_result") or {})
     file_result = dict(result.get("mixed_file_result") or {})
     market_result["context_scope"] = ContextScope.MARKET.value
