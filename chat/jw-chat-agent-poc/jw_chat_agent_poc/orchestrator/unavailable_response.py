@@ -259,8 +259,11 @@ def _four_stage_unavailable_gate(
     if tool_calls is None:
         return None
     calls = tuple(tool_calls)
+    successful_fact_call = _has_positive_fact(fact_md) and _has_successful_fact_call(calls)
+    if successful_fact_call and _has_five_step_block(answer):
+        answer = _without_five_step_block(answer)
     if connected_source_mode:
-        if _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
+        if successful_fact_call:
             return _cleanup(answer)
         failed = tuple(
             _public_tool_name(call)
@@ -268,13 +271,13 @@ def _four_stage_unavailable_gate(
             if _tool_status(call) in _ERROR_STATUSES
         )
         if failed:
-            return _unverified_answer(f"도구 조회({', '.join(dict.fromkeys(failed))})가 실패했습니다")
+            return _failed_tool_answer(answer, failed)
         if tool_use_evidence_complete(question, calls):
             return _cleanup(answer)
         missing = missing_tool_use_requirements(question, calls)
         if missing:
             return _unverified_answer(f"필요 근거({', '.join(missing)})가 이번 턴에 완성되지 않았습니다")
-    if not question_has_unavailable_signal and _has_positive_fact(fact_md) and _has_successful_fact_call(calls):
+    if not question_has_unavailable_signal and successful_fact_call:
         if _completed_answer_contract(question, answer, fact_md):
             return _cleanup(answer)
         from jw_chat_agent_poc.service.answer_safety import (
@@ -306,7 +309,7 @@ def _four_stage_unavailable_gate(
         if _tool_status(call) in _ERROR_STATUSES
     )
     if failed:
-        return _unverified_answer(f"도구 조회({', '.join(dict.fromkeys(failed))})가 실패했습니다")
+        return _failed_tool_answer(answer, failed)
 
     absent = tuple(call for call in calls if _tool_status(call) in _ABSENT_STATUSES)
     if absent or question_has_unavailable_signal:
@@ -347,7 +350,7 @@ def _tool_status(call: Mapping[str, Any]) -> str:
 
 def _has_successful_fact_call(calls: Sequence[Mapping[str, Any]]) -> bool:
     for call in calls:
-        if _tool_status(call) != "ok":
+        if _tool_status(call) in _ERROR_STATUSES | _ABSENT_STATUSES:
             continue
         data = call.get("render_data")
         if isinstance(data, Mapping) and any(value not in (None, "", [], ()) for value in data.values()):
@@ -366,6 +369,33 @@ def _has_positive_fact(fact_md: str) -> bool:
 
 def _unverified_answer(reason: str) -> str:
     return f"현재 확인 불가: {reason}. 이는 원천 데이터가 없다는 뜻은 아닙니다. 조회 경로가 정상화된 뒤 다시 확인해 주세요."
+
+
+def _failed_tool_answer(answer: str, failed: Sequence[str]) -> str:
+    reason = f"도구 조회({', '.join(dict.fromkeys(failed))})가 실패했습니다"
+    unavailable = _unverified_answer(reason)
+    if _has_five_step_block(answer):
+        return _cleanup("\n\n".join((unavailable, answer)))
+    return unavailable
+
+
+def _without_five_step_block(answer: str) -> str:
+    lines = answer.splitlines()
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "### 미보유 데이터 처리":
+            kept.append(lines[index])
+            index += 1
+            continue
+        index += 1
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+        while index < len(lines) and lines[index].lstrip().startswith("|"):
+            index += 1
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+    return _cleanup("\n".join(kept))
 
 
 def sanitize_internal_diagnostics(text: str) -> str:
