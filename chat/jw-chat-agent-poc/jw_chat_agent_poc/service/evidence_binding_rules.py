@@ -41,7 +41,26 @@ _BASE_METRICS_BY_UNIT: Final[dict[str, tuple[str, ...]]] = {
     "억원": ("매출", "시장규모"),
     "원": ("매출", "시장규모"),
 }
-_ORDERED_LIST_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^\s*\d+[.)]\s+")
+#: An ordinal that numbers an item rather than measuring anything: "1." or "2)"
+#: followed by space and then the item's text. Anchored at the start of a line,
+#: of a table cell, or of a bulleted item — the same marker in all three places.
+#: It used to be anchored to the start of a LINE only, which meant a numbered
+#: cell inside a table ("| 1. 미보유 데이터 |") kept its ordinal and every one of
+#: those ordinals became a claim no fact could attest. A digit followed
+#: immediately by a decimal point and more digits is a value, not a marker, so
+#: the required whitespace after the separator keeps "1.5" out.
+_ORDERED_LIST_MARKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?m)(?:^|(?<=\|))[ \t]*(?:[-*•][ \t]*)?\d+[.)]\s+"
+)
+#: A band or code range used as a row label: "0-9세", "30-39", "E10-E14". The
+#: boundaries name the bucket; the count beside them is the measurement. Written
+#: as a shape rather than a list of buckets so a range nobody has seen still
+#: matches, and applied only after periods have been claimed so that a period
+#: written with a dash is never mistaken for one of these.
+_RANGE_LABEL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![\d.])\d{1,3}\s*[-~]\s*\d{1,3}\s*(?:세|대|개월|년)?(?![\d.])"
+    r"|(?<![A-Za-z0-9])[A-Z]\d{2}\s*[-~]\s*[A-Z]\d{2}(?![A-Za-z0-9])"
+)
 _NUMBER_OCCURRENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?P<value>[+-]?\d[\d,]*(?:\.\d+)?)"
@@ -199,7 +218,25 @@ def claim_number_tokens(text: str) -> tuple[str, ...]:
             without_periods,
             flags=re.IGNORECASE,
         )
-    return tuple(dict.fromkeys((*number_tokens(without_periods), *periods)))
+    # Range labels name the row, they do not measure it. Removed only after the
+    # period pass above, so a period that looks like a range ("2020-2024",
+    # "2026-01 ~ 2026-05") has already been claimed as a period and is not
+    # touched here. The measurement beside the label is untouched: "0-9세" stops
+    # contributing 0 and -9 while "1,379명" in the same row stays a claim.
+    without_labels = _RANGE_LABEL_RE.sub(" ", without_periods)
+    return tuple(dict.fromkeys((*number_tokens(without_labels), *periods)))
+
+
+def excluded_label_token_count(text: str) -> int:
+    """How many numeric tokens this text lost to ordinal and range-label stripping.
+
+    A count, never the tokens: the values would carry answer text across the
+    trace boundary. Reported so that "nothing was blocked" and "everything that
+    could have been blocked was excluded" stay distinguishable — an answer whose
+    every number turned out to be a row label should say so rather than look
+    clean.
+    """
+    return max(0, len(number_tokens(text)) - len(claim_number_tokens(text)))
 
 
 def binding_claim_number_tokens(text: str) -> tuple[str, ...]:
