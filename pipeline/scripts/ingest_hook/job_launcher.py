@@ -25,6 +25,8 @@ _SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 
 # Env the Job inherits from the trigger pod, by reference where secret-backed.
 _PASSTHROUGH_VALUES = (
+    "APP_VERSION",
+    "INGEST_JOB_IMAGE",
     "MARIADB_HOST", "MARIADB_PORT", "MARIADB_DATABASE", "AGENT3_DB_NAME",
     "MINIO_ENDPOINT", "MINIO_REGION",
     "AGENT3_WORKFLOW_REV", "AGENT3_EXPECTED_WORKFLOW_REV",
