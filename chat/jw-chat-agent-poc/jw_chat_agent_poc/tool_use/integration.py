@@ -30,6 +30,7 @@ from jw_chat_agent_poc.tool_use.provider import (
 )
 from jw_chat_agent_poc.tool_use.reimbursement_evidence import (
     project_reimbursement_evidence,
+    reimbursement_identity_notices,
 )
 from jw_chat_agent_poc.tool_use.clinical_disease import (
     clinical_disease_for_query,
@@ -593,6 +594,7 @@ def _agent_result_payload(
 ) -> dict[str, Any]:
     verified_statuses = {"ok", "partial"}
     fact_md = result.answer if result.status in verified_statuses else ""
+    identity_notices = reimbursement_identity_notices(result.tool_calls)
     payload = {
         "question": question,
         "resolution": None,
@@ -604,6 +606,7 @@ def _agent_result_payload(
             "markdown": result.answer,
             "fact_md": fact_md,
             "data_md": "",
+            "notice_md": "\n".join(identity_notices),
             "evidence": [
                 *project_authoritative_external_evidence(result.tool_calls, fact_md),
                 *project_reimbursement_evidence(result.tool_calls, fact_md),

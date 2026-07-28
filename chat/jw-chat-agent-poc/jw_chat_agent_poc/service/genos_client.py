@@ -38,6 +38,9 @@ from jw_chat_agent_poc.orchestrator.source_grading import is_web_search_call
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.service.answer_delivery import ANSWER_BRANCHES
+from jw_chat_agent_poc.tool_use.reimbursement_evidence import (
+    is_reimbursement_identity_notice,
+)
 from jw_chat_agent_poc.service.answer_safety import (
     FAIL_CLOSED_TEXT,
     answer_has_only_fact_numbers,
@@ -688,7 +691,9 @@ def _source_notice_markdown(notice_md: str) -> str:
     return "\n".join(
         line
         for line in notice_md.splitlines()
-        if "UBIST" in line or "IQVIA" in line
+        if "UBIST" in line
+        or "IQVIA" in line
+        or is_reimbursement_identity_notice(line)
     ).strip()
 
 
