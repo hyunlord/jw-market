@@ -404,8 +404,14 @@ def scope_matches(
 ) -> bool:
     """Scope binding: view and internal market identity must match the request.
 
-    View matching keeps F24's permissive legacy behavior. When resolution pins
-    a market identity, however, missing or foreign market metadata fails closed.
+    View matching keeps F24's permissive legacy behavior, and already skips
+    facts that carry no scope at all. When resolution pins a market identity a
+    foreign one still fails closed, and so does a missing one -- but only for
+    facts whose builder could have supplied it. A fact projected from a tool
+    envelope has no market_id in its schema at all, so demanding one asks the
+    source for something it cannot express. Such a fact is exempt from this
+    axis, the way 기간 and 질병코드 facts are exempt from the metric, period
+    and unit axes above.
     """
     scope = fact_scope(fact)
     if expected_scopes and scope:
@@ -414,9 +420,23 @@ def scope_matches(
     if expected_market_ids:
         market_id = _fact_market_id(fact)
         if not market_id:
-            return False
+            return not fact.market_scope_capable
         return market_id in expected_market_ids
     return True
+
+
+def scope_axis_exempt(
+    fact: EvidenceFact,
+    expected_market_ids: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether the market axis was waived for a fact rather than satisfied.
+
+    Exposed so a waiver is visible in binding diagnostics instead of being
+    indistinguishable from a match.
+    """
+    if not expected_market_ids:
+        return False
+    return not _fact_market_id(fact) and not fact.market_scope_capable
 
 
 def mismatch_reason(
