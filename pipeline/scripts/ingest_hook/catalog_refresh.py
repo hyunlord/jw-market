@@ -9,16 +9,28 @@ import re
 import shutil
 from typing import Callable
 
+import pyarrow.parquet as pq
+
+from pipeline.etl.io.catalog.brand.brand_product_catalog import (
+    run_cd_product,
+    run_strategic_product,
+)
 from pipeline.etl.io.catalog.db_sync import (
     CatalogParityResult,
     compare_catalog_to_serving,
+    export_serving_catalog_tables,
 )
 from pipeline.etl.io.catalog.paths import (
     S2_REQUIRED_CATALOGS,
     CatalogProvisioningError,
+    build_catalog_root,
+    catalog_file,
+    publish_catalog_outputs,
     sha256_file,
     validate_catalog_materialization,
 )
+from pipeline.etl.io.catalog.postfix.molecule import apply_molecule_worklist
+from pipeline.etl.io.catalog.postfix.rebuild_cd import rebuild_cd_brand
 from pipeline.etl.stages import s2_catalog
 
 
@@ -33,6 +45,13 @@ class CatalogPreparation:
     parity: tuple[CatalogParityResult, ...]
 
 
+@dataclass(frozen=True)
+class _CatalogResult:
+    name: str
+    output_path: Path
+    rows: int
+
+
 def ensure_nfs_catalog(
     *,
     catalog_root: Path,
@@ -44,10 +63,12 @@ def ensure_nfs_catalog(
     run_id: str,
     output_parent: Path,
     build: Callable[[Path, Path], int] | None = None,
+    anchor: Callable[[Path, Path], None] | None = None,
 ) -> CatalogPreparation:
     """Reuse a matching snapshot or rebuild and atomically publish after DB parity."""
 
     root = Path(catalog_root).resolve()
+    root_was_missing = not root.exists()
     master = Path(mi_master).resolve()
     master_sha = sha256_file(master)
     try:
@@ -95,6 +116,35 @@ def ensure_nfs_catalog(
             catalog_root=candidate_root,
         )
         mismatches = tuple(result for result in parity if not result.matches)
+        action = "rebuilt"
+        if mismatches and root_was_missing:
+            anchor_runner = anchor or (
+                lambda output_root, destination: _anchor_candidate_to_serving(
+                    output_root,
+                    destination,
+                    mi_master=master,
+                    ubist_dir=Path(ubist_dir).resolve(),
+                    iqvia_nsa_dir=Path(iqvia_nsa_dir).resolve(),
+                    target_db=target_db,
+                    conn=conn,
+                )
+            )
+            try:
+                anchor_runner(candidate_output, candidate_root)
+            except Exception as exc:
+                raise RuntimeError(f"catalog serving anchor rejected: {exc}") from exc
+            validate_catalog_materialization(
+                candidate_root,
+                required_names=S2_REQUIRED_CATALOGS,
+                expected_source_fingerprints={MI_MASTER_FINGERPRINT: master_sha},
+            )
+            parity = compare_catalog_to_serving(
+                conn,
+                target_db=target_db,
+                catalog_root=candidate_root,
+            )
+            mismatches = tuple(result for result in parity if not result.matches)
+            action = "serving-anchored"
         if mismatches:
             detail = "; ".join(
                 f"{item.table_name}:candidate={item.candidate_rows},serving={item.serving_rows},"
@@ -115,7 +165,7 @@ def ensure_nfs_catalog(
             raise
         if backup_root.exists():
             shutil.rmtree(backup_root)
-        return CatalogPreparation(root, "rebuilt", master_sha, parity)
+        return CatalogPreparation(root, action, master_sha, parity)
     finally:
         if candidate_output.exists():
             shutil.rmtree(candidate_output)
@@ -141,4 +191,67 @@ def _run_s2_catalog(
             "ubist_dir": ubist_dir,
             "iqvia_nsa_dir": iqvia_nsa_dir,
         }
+    )
+
+
+def _anchor_candidate_to_serving(
+    output_root: Path,
+    catalog_root: Path,
+    *,
+    mi_master: Path,
+    ubist_dir: Path,
+    iqvia_nsa_dir: Path,
+    target_db: str,
+    conn,
+) -> None:
+    from pipeline.etl.lib.storage import PROJECT_ROOT
+
+    build_root = build_catalog_root(output_root)
+    exports = export_serving_catalog_tables(
+        conn,
+        target_db=target_db,
+        catalog_root=build_root,
+    )
+    expected_version = mi_master.name
+    for item in exports:
+        versions = tuple(Path(value).name for value in item.source_file_versions)
+        if versions != (expected_version,):
+            raise RuntimeError(
+                f"{item.table_name} source version does not match MI Master: "
+                f"expected={expected_version!r} actual={versions!r}"
+            )
+
+    run_strategic_product(
+        output_root=output_root,
+        input_file=mi_master,
+        ubist_dir=ubist_dir,
+        iqvia_nsa_dir=iqvia_nsa_dir,
+    )
+    rebuild_cd_brand(build_root)
+    run_cd_product(output_root=output_root)
+    apply_molecule_worklist(
+        build_root,
+        PROJECT_ROOT / "inputs" / "molecule_v4_worklist.csv",
+    )
+
+    results = tuple(
+        _CatalogResult(
+            name=name,
+            output_path=catalog_file(build_root, name),
+            rows=pq.ParquetFile(catalog_file(build_root, name)).metadata.num_rows,
+        )
+        for name in sorted(S2_REQUIRED_CATALOGS)
+    )
+    publish_catalog_outputs(
+        results,
+        build_root=build_root,
+        catalog_root=catalog_root,
+        required_names=S2_REQUIRED_CATALOGS,
+        source_fingerprints={
+            MI_MASTER_FINGERPRINT: sha256_file(mi_master),
+            **{
+                f"serving_{item.parquet_name}_sha256": item.manifest_hash
+                for item in exports
+            },
+        },
     )

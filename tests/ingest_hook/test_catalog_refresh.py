@@ -153,6 +153,88 @@ def test_catalog_parity_mismatch_keeps_existing_nfs_snapshot(
     assert (root / "strategic_brand" / "strategic_brand.parquet").read_bytes() == before
 
 
+def test_missing_snapshot_can_anchor_to_unchanged_serving_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    master = tmp_path / "MI Master 260518.xlsx"
+    master.write_bytes(b"same")
+    root = tmp_path / "catalog"
+    mismatch = CatalogParityResult(
+        "strategic_brand",
+        "catalog_strategic_brand",
+        5100,
+        5100,
+        ("old-id",),
+        ("new-id",),
+        (),
+    )
+    parity_calls = iter(((mismatch,), _matching_parity()))
+    monkeypatch.setattr(
+        catalog_refresh,
+        "compare_catalog_to_serving",
+        lambda *_args, **_kwargs: next(parity_calls),
+    )
+
+    def build(_output: Path, candidate: Path) -> int:
+        _publish(candidate, master, b"generated")
+        return 0
+
+    def anchor(_output: Path, candidate: Path) -> None:
+        _publish(candidate, master, b"serving-anchored")
+
+    result = catalog_refresh.ensure_nfs_catalog(
+        **_ensure_args(tmp_path, root, master),
+        build=build,
+        anchor=anchor,
+    )
+
+    assert result.action == "serving-anchored"
+    assert result.parity == _matching_parity()
+    assert (
+        pq.read_table(root / "strategic_brand" / "strategic_brand.parquet")
+        .column("payload")
+        .to_pylist()[0]
+        .startswith(b"serving-anchored")
+    )
+
+
+def test_serving_anchor_failure_remains_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    master = tmp_path / "MI Master 260518.xlsx"
+    master.write_bytes(b"same")
+    root = tmp_path / "catalog"
+    mismatch = CatalogParityResult(
+        "strategic_brand",
+        "catalog_strategic_brand",
+        5100,
+        5100,
+        ("old-id",),
+        ("new-id",),
+        (),
+    )
+    monkeypatch.setattr(
+        catalog_refresh,
+        "compare_catalog_to_serving",
+        lambda *_args, **_kwargs: (mismatch,),
+    )
+
+    def build(_output: Path, candidate: Path) -> int:
+        _publish(candidate, master, b"generated")
+        return 0
+
+    with pytest.raises(RuntimeError, match="serving anchor rejected"):
+        catalog_refresh.ensure_nfs_catalog(
+            **_ensure_args(tmp_path, root, master),
+            build=build,
+            anchor=lambda *_args: (_ for _ in ()).throw(
+                RuntimeError("ambiguous serving fingerprint")
+            ),
+        )
+
+    assert not root.exists()
+
+
 def test_missing_mi_master_fails_before_catalog_generation(tmp_path: Path) -> None:
     missing = tmp_path / "missing.xlsx"
 

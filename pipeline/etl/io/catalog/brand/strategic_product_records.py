@@ -10,7 +10,7 @@ from pipeline.etl.io.catalog._lib.common import read_parquet_rows
 from pipeline.etl.io.catalog.brand.strategic_product_context import load_context_by_brand_id
 from pipeline.etl.io.catalog.brand.strategic_product_indexes import iqvia_candidates, load_iqvia_indexes, load_ubist_indexes, ubist_candidates, unique_candidates
 from pipeline.etl.io.catalog.brand.strategic_product_schema import EXPECTED_COLUMNS
-from pipeline.etl.io.catalog.brand.strategic_product_text import clean_text, is_sheet_product_grain, make_product_name, ml_index_from_brand_id, sheet_product_name, source_order_for_data_source, source_row_id_from_brand_id
+from pipeline.etl.io.catalog.brand.strategic_product_text import clean_text, is_sheet_product_grain, make_product_name, sheet_product_name, source_order_for_data_source, source_row_id_from_brand_id
 from pipeline.etl.io.catalog.brand.strategic_product_schema import validate_records
 
 
@@ -30,7 +30,11 @@ def _parse_allowed_atc4_codes(value: Any) -> list[str]:
     return [str(item).strip().upper() for item in parsed if str(item).strip()]
 
 
-def context_from_brand_row(brand_row: dict[str, Any]) -> dict[str, Any] | None:
+def context_from_brand_row(
+    brand_row: dict[str, Any],
+    *,
+    source_row_id: int | None = None,
+) -> dict[str, Any] | None:
     atc4_codes = _parse_allowed_atc4_codes(brand_row.get("allowed_atc4_codes_json"))
     if not atc4_codes:
         return None
@@ -41,7 +45,11 @@ def context_from_brand_row(brand_row: dict[str, Any]) -> dict[str, Any] | None:
         strategic_market_id = ml_id
     return {
         "strategic_market_id": strategic_market_id,
-        "source_row_id": source_row_id_from_brand_id(str(brand_row["brand_id"])),
+        "source_row_id": (
+            source_row_id
+            if source_row_id is not None
+            else source_row_id_from_brand_id(str(brand_row["brand_id"]))
+        ),
         "atc4_code": atc4_codes[0],
         "product_name": brand_row.get("name"),
         "manufacturer": brand_row.get("제조사"),
@@ -57,11 +65,35 @@ def context_from_brand_row(brand_row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _product_id_prefix(brand_id: str) -> str:
-    ml_index = ml_index_from_brand_id(brand_id)
+def build_brand_identity_maps(
+    brand_rows: list[dict[str, Any]],
+) -> tuple[dict[str, int], dict[str, int]]:
+    brand_ids = [str(row["brand_id"]) for row in brand_rows]
+    if len(brand_ids) != len(set(brand_ids)):
+        raise ValueError("strategic_brand.brand_id must be unique")
+
+    source_rows: dict[str, int] = {}
+    legacy_ids: list[str] = []
+    for brand_id in brand_ids:
+        try:
+            source_rows[brand_id] = source_row_id_from_brand_id(brand_id)
+        except ValueError:
+            legacy_ids.append(brand_id)
+    next_source_row = max(source_rows.values(), default=0) + 1
+    for offset, brand_id in enumerate(sorted(legacy_ids)):
+        source_rows[brand_id] = next_source_row + offset
+
+    market_indexes = {
+        str(row["brand_id"]): int(str(row["ml_id"]).split("_", 1)[1])
+        for row in brand_rows
+    }
+    return source_rows, market_indexes
+
+
+def _product_id_prefix(brand_id: str, ml_index: int, source_row_id: int) -> str:
     if "_atc4_" in brand_id:
-        return f"sp_{ml_index:03d}_atc4_{source_row_id_from_brand_id(brand_id):05d}"
-    return f"sp_{ml_index:03d}_{source_row_id_from_brand_id(brand_id):05d}"
+        return f"sp_{ml_index:03d}_atc4_{source_row_id:05d}"
+    return f"sp_{ml_index:03d}_{source_row_id:05d}"
 
 def product_record_from_candidate(
     brand_row: dict[str, Any],
@@ -172,22 +204,32 @@ def load_strategic_product_records(
     ubist_indexes = load_ubist_indexes(ubist_path)
     iqvia_indexes = load_iqvia_indexes(iqvia_path)
     timestamp = ingested_at or utc_now_datetime()
+    source_rows, market_indexes = build_brand_identity_maps(brand_rows)
 
     records: list[dict[str, Any]] = []
     coverage_rows: list[dict[str, Any]] = []
 
     for brand_row in brand_rows:
         brand_id = str(brand_row["brand_id"])
-        context = contexts.get(brand_id) or context_from_brand_row(brand_row)
+        context = contexts.get(brand_id) or context_from_brand_row(
+            brand_row,
+            source_row_id=source_rows[brand_id],
+        )
         if context is None:
             raise ValueError(f"missing source context for brand_id={brand_id}")
+        context["source_row_id"] = source_rows[brand_id]
+        product_id_prefix = _product_id_prefix(
+            brand_id,
+            market_indexes[brand_id],
+            source_rows[brand_id],
+        )
         data_source = str(ml_by_id[str(brand_row["ml_id"])]["data_source"])
         matched_candidates: list[dict[str, Any]] = []
         join_keys: list[str] = []
         source_views: list[str] = []
 
         if is_sheet_product_grain(brand_row, context):
-            product_id = f"{_product_id_prefix(brand_id)}_001"
+            product_id = f"{product_id_prefix}_001"
             records.append(product_record_from_sheet_product(brand_row, product_id, timestamp))
             match_status = "sheet_product"
             matched_count = 1
@@ -213,7 +255,7 @@ def load_strategic_product_records(
             )
 
             if not matched_candidates:
-                product_id = f"{_product_id_prefix(brand_id)}_001"
+                product_id = f"{product_id_prefix}_001"
                 records.append(
                     product_record_from_candidate(brand_row, context, None, product_id, timestamp)
                 )
@@ -223,7 +265,7 @@ def load_strategic_product_records(
             else:
                 for seq, candidate in enumerate(matched_candidates, start=1):
                     product_id = (
-                        f"{_product_id_prefix(brand_id)}_{seq:03d}"
+                        f"{product_id_prefix}_{seq:03d}"
                     )
                     records.append(
                         product_record_from_candidate(brand_row, context, candidate, product_id, timestamp)
