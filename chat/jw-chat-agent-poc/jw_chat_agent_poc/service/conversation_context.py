@@ -63,6 +63,8 @@ _BARE_BRAND_SWITCH_RE = re.compile(
     r"^\s*(?P<brand>[0-9A-Za-z가-힣+_.-]{2,40}?)(?:은|는|이|가)[?!.]?\s*$",
     re.IGNORECASE,
 )
+# The mart's own market keys. They identify a market for routing but must never be shown.
+_INTERNAL_MARKET_ID_RE = re.compile(r"(?:ml|cd)_[0-9A-Za-z_]+", re.IGNORECASE)
 _YEAR_PERIOD_RE = re.compile(r"^\s*(?P<year>20\d{2})(?:년)?\s*$")
 _QUARTER_PERIOD_RE = re.compile(
     r"^\s*(?P<year>20\d{2})(?:-Q(?P<canonical>[1-4])|(?:년)?\s*(?P<label>[1-4])\s*분기)\s*$",
@@ -279,9 +281,7 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         anchor = anchor or _text(data.get("anchor_brand") or data.get("brand"))
         view = view or _text(data.get("view_source_id") or data.get("view"))
         market = market or _text(data.get("market_id") or data.get("market_name") or data.get("view_source_id"))
-        market_definition = market_definition or _text(
-            data.get("market_definition_full") or data.get("market_definition_label") or data.get("market_name")
-        )
+        market_definition = market_definition or _public_market_label(data)
         denominator = denominator or _denominator(data)
         if not ranked:
             ranked = _ranked_slots(data.get("level_top5_trend_series"))
@@ -414,6 +414,11 @@ def resolve_anaphora(
         if previous_turn is None or not previous_turn.slots.market:
             return _unresolved(question, recogniser)
         market = previous_turn.slots.market_definition or previous_turn.slots.market
+        # The resolved question is what the router reads, so it keeps the identifier when
+        # that is all the previous turn left. The notice is what the user reads, and an
+        # identifier there is scrubbed to '—' by the public layer, which hides the cause.
+        # No label is invented: the notice is simply withheld.
+        showable_market = not is_internal_market_identifier(market)
         intent = bare_market_followup.group("intent")
         normalized_intent = re.sub(r"\s+", "", intent)
         if normalized_intent == "일반뷰로":
@@ -427,7 +432,11 @@ def resolve_anaphora(
             f"{market} {resolved_intent}",
             recogniser,
             question,
-            interpretation_notice=f"{market}의 {resolved_intent[:-1]} 요청으로 이해했어요.",
+            interpretation_notice=(
+                f"{market}의 {resolved_intent[:-1]} 요청으로 이해했어요."
+                if showable_market
+                else None
+            ),
         )
     bare_brand_switch = _bare_brand_switch(question, known_brand)
     if bare_brand_switch is not None:
@@ -765,6 +774,28 @@ def _pct(value: float | None) -> str:
 
 def _text(value: Any) -> str:
     return str(value).strip() if value not in (None, "") else ""
+
+
+def is_internal_market_identifier(value: Any) -> bool:
+    """True for the mart's own market keys (ml_006, cd_...), which are not user-facing."""
+    return bool(_INTERNAL_MARKET_ID_RE.fullmatch(_text(value)))
+
+
+def _public_market_label(data: dict[str, Any]) -> str:
+    """The first market label that can be shown to a user, or '' when there is none.
+
+    market_definition is a display string. When the strategic result has no public name
+    it used to fall through to market_name, which the query layer fills with the market
+    identifier — so 'ml_006' reached the follow-up notice, where the public-layer scrubber
+    replaced it with '—'. Leaving the slot empty keeps the identifier out of the label
+    without hiding the cause behind a dash. The identifier itself still lives in the
+    market slot, which is what the router routes on.
+    """
+    for key in ("market_definition_full", "market_definition_label", "market_name"):
+        candidate = _text(data.get(key))
+        if candidate and not is_internal_market_identifier(candidate):
+            return candidate
+    return ""
 
 
 def _number(value: Any) -> float | None:
