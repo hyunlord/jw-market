@@ -7,12 +7,14 @@ import threading
 import time
 from typing import Final, Protocol, final
 
-from jw_chat_agent_poc.tools.query_layer.store import MartSnapshot, shared_strategic_mart_store
+from jw_chat_agent_poc.tools.query_layer.store import MART_TTL_ENV, MartSnapshot, shared_strategic_mart_store
 
 
 LOGGER = logging.getLogger("uvicorn.error")
 WARMUP_ENABLED_ENV: Final = "CHAT_STARTUP_WARMUP_ENABLED"
-WARMUP_TTL_ENV: Final = "CHAT_QUERY_MART_TTL_SECONDS"
+# The store owns the TTL now, so this only stays as the historical alias for the env
+# name; duplicating the literal here is how the two call sites drifted apart before.
+WARMUP_TTL_ENV: Final = MART_TTL_ENV
 
 
 class StartupWarmup(Protocol):
@@ -81,7 +83,6 @@ def startup_warmup_from_env() -> StartupWarmup:
     enabled = os.environ.get(WARMUP_ENABLED_ENV, "true").strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
         return DisabledStartupWarmup()
-    ttl_seconds = int(os.environ.get(WARMUP_TTL_ENV, "300"))
     return StrategicMartStartupWarmup(
-        lambda: shared_strategic_mart_store(ttl_seconds).snapshot()
+        lambda: shared_strategic_mart_store().snapshot()
     )
