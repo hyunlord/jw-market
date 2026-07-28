@@ -284,7 +284,11 @@ def test_brand_related_hira_disease_question_uses_confirmed_kcd_mapping():
 
     tools = [call.get("tool") for call in result["tool_calls"]]
     assert tools[:2] == ["hira_disease_mapping", "hira_disease_name_code"]
-    assert "hira_disease_area_stats" in tools
+    # The statistic this question asks for, and only that one. This line used to
+    # assert hira_disease_area_stats, from the era when the executor called all
+    # four statistics regardless of the question; the verification contract has
+    # always required just the one for a question carrying no breakdown word.
+    assert "hira_disease_hospitalization_outpatient_stats" in tools
     assert result["tool_calls"][0]["render_data"]["sickCd"] == "E78"
     assert result["sources"] == ["hira_disease"]
 
