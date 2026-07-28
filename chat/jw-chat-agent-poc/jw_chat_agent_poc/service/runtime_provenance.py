@@ -45,6 +45,74 @@ _EMPTY_TOOL_STATUSES = frozenset({"no_data", "unsupported", "error"})
 _ASSEMBLY_GAP_RATIO_THRESHOLD = 0.30
 _ASSEMBLY_GAP_MIN_FACT_CHARS = 500
 _FIELD_MISSING_STATUSES = frozenset({"missing_fact_set", "missing_required_fact", "insufficient_rows"})
+_SLOT_NAMES = (
+    "entity",
+    "source",
+    "metric",
+    "view",
+    "period",
+    "granularity",
+    "relation",
+    "scope",
+)
+_SLOT_PRESENCE_ALLOW = frozenset({"explicit", "inherited", "unset"})
+_SLOT_EXTRACTOR_ALLOW = frozenset(
+    {
+        "resolution",
+        "requested_source",
+        "explicit_metric",
+        "explicit_view",
+        "requested_period",
+        "anaphora",
+        "bq_slots",
+        "market_scope_intent",
+    }
+)
+_SLOT_STATUS_ALLOW = frozenset(
+    {
+        "extracted",
+        "not_present",
+        "default_suppressed",
+        "requested_slot_absent",
+        "domain_unknown",
+    }
+)
+_SLOT_COMPARISON_ALLOW = frozenset(
+    {"match", "mismatch", "unverifiable", "not_applicable"}
+)
+_SLOT_VALUE_ALLOW = frozenset(
+    {
+        "ubist",
+        "iqvia_nsa",
+        "cortellis",
+        "datamonitor",
+        "kol",
+        "nccn",
+        "activity",
+        "competition",
+        "concentration",
+        "cr5",
+        "growth",
+        "hhi",
+        "market_share",
+        "market_size",
+        "momentum",
+        "news",
+        "patient_count",
+        "prescription",
+        "prescription_count",
+        "prescription_dispensing_amount",
+        "prescription_volume",
+        "rank",
+        "sales",
+        "series",
+        "share",
+        "threat",
+        "general_view",
+        "market_landscape",
+        "competitive_dynamics",
+    }
+)
 
 _BROKEN_RENDER_SENTINELS = (
     "|| ---",
@@ -258,6 +326,7 @@ def _qa_trace(
             "gate": gate,
             "gate_reason": gate_reason,
             "anaphora": _qa_anaphora(result),
+            "slots": _qa_slots(result),
         },
         "tools": _qa_tool_calls(result),
         "plan": _qa_plan(result),
@@ -302,6 +371,61 @@ def _qa_anaphora(result: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_shape": shape if isinstance(shape, bool) else None,
         "unresolved_reference": unresolved if isinstance(unresolved, bool) else None,
     }
+
+
+def _qa_slots(result: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    items = result.get("_slot_observability")
+    observations = items if isinstance(items, Mapping) else {}
+    projected: dict[str, dict[str, Any]] = {}
+    for slot in _SLOT_NAMES:
+        raw = observations.get(slot)
+        item = raw if isinstance(raw, Mapping) else {}
+        presence = item.get("presence")
+        extractor = item.get("extractor")
+        status = item.get("status")
+        comparison = item.get("comparison")
+        requested_value = item.get("requested_value")
+        origin_turn = item.get("origin_turn")
+        projected[slot] = {
+            "presence": (
+                presence if presence in _SLOT_PRESENCE_ALLOW else "unset"
+            ),
+            "origin_turn": (
+                origin_turn
+                if isinstance(origin_turn, int) and not isinstance(origin_turn, bool)
+                else None
+            ),
+            "extractor": (
+                extractor if extractor in _SLOT_EXTRACTOR_ALLOW else None
+            ),
+            "status": (
+                status if status in _SLOT_STATUS_ALLOW else "domain_unknown"
+            ),
+            "requested_present": (
+                item.get("requested_present")
+                if isinstance(item.get("requested_present"), bool)
+                else None
+            ),
+            "served_present": (
+                item.get("served_present")
+                if isinstance(item.get("served_present"), bool)
+                else None
+            ),
+            "requested_value": (
+                requested_value if requested_value in _SLOT_VALUE_ALLOW else None
+            ),
+            "comparison": (
+                comparison
+                if comparison in _SLOT_COMPARISON_ALLOW
+                else "unverifiable"
+            ),
+            "present_in_answer": (
+                item.get("present_in_answer")
+                if isinstance(item.get("present_in_answer"), bool)
+                else None
+            ),
+        }
+    return projected
 
 
 def _qa_plan(result: Mapping[str, Any]) -> dict[str, Any]:

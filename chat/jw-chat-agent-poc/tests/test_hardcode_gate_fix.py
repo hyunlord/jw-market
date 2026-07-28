@@ -193,7 +193,8 @@ def test_market_membership_mismatch_bypasses_final_llm_and_keeps_names(
         "마운자로는 요청한 고지혈증 치료제 시장에 포함되지 않습니다. "
         "확인된 소속 시장: 당뇨병 시장. 브랜드 또는 시장을 확인해 주세요."
     )
-    assert final.trace["qa_trace"]["routing"] == {
+    routing = final.trace["qa_trace"]["routing"]
+    assert {key: value for key, value in routing.items() if key != "slots"} == {
         "route": {"mode": "deterministic", "deterministic_execution": None},
         "scope": "market_membership_mismatch",
         "gate": "brand_market_membership",
@@ -207,6 +208,7 @@ def test_market_membership_mismatch_bypasses_final_llm_and_keeps_names(
             "unresolved_reference": None,
         },
     }
+    assert routing["slots"]["entity"]["presence"] == "explicit"
     assert streamed == []
 
 
