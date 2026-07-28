@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import logging
 import re
 from typing import Any, Final
 
@@ -34,6 +35,11 @@ _IDENTITY_NOTICE_PREFIX: Final[str] = "주의: 조회된 근거는 "
 _IDENTITY_BLOCK_MARKER: Final[str] = "급여기준은 제공할 수 없습니다"
 _IDENTITY_BLOCK_CODE: Final[str] = "IDENTITY_MISMATCH"
 _IDENTITY_STATUSES: Final[frozenset[str]] = frozenset({"match", "mismatch", "unverifiable"})
+_BLOCKED_REASONS: Final[frozenset[str]] = frozenset({"identity_mismatch"})
+_IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[0-9A-Za-z가-힣_.:+-]{1,255}$"
+)
+LOGGER = logging.getLogger(__name__)
 _PRODUCT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"품명\s*[:：]\s*(?P<products>[^)\n|]+)",
     re.IGNORECASE,
@@ -50,6 +56,9 @@ class _IdentityDecision:
     status: str
     match: bool | None
     notice: str = ""
+    requested_brand: str | None = None
+    source_variance: bool = False
+    resolved_via_alias: bool = False
 
 
 def reimbursement_envelope(
@@ -96,6 +105,21 @@ def reimbursement_envelope(
         if resolver is not None
         else _IdentityDecision("unverifiable", None)
     )
+    identity_record = _identity_record(
+        identity,
+        served_notice_id=data.source_notice_id,
+    )
+    LOGGER.info(
+        "reimbursement_identity requested_brand=%s served_notice_id=%s "
+        "identity_status=%s blocked_reason=%s source_variance=%s "
+        "resolved_via_alias=%s",
+        identity_record["requested_brand"],
+        identity_record["served_notice_id"],
+        identity_record["identity_status"],
+        identity_record["blocked_reason"],
+        identity_record["source_variance"],
+        identity_record["resolved_via_alias"],
+    )
     if identity.status == "mismatch":
         # Withhold before the fact exists. The notice body reaches the answer,
         # the projected evidence and the planner's message history through this
@@ -116,6 +140,7 @@ def reimbursement_envelope(
                 "identity_notice_required": bool(identity.notice),
                 "identity_notice": identity.notice,
                 "body_suppressed": True,
+                **identity_record,
             },
             error_code=_IDENTITY_BLOCK_CODE,
             error_message=identity.notice,
@@ -148,6 +173,7 @@ def reimbursement_envelope(
             "identity_notice_required": bool(identity.notice),
             "identity_notice": identity.notice,
             "body_suppressed": False,
+            **identity_record,
         },
         error_code=None,
         error_message=None,
@@ -162,6 +188,11 @@ def public_reimbursement_identity_fields(raw: object) -> dict[str, object]:
     notice_required = raw.get("identity_notice_required")
     notice = raw.get("identity_notice")
     suppressed = raw.get("body_suppressed")
+    requested_brand = _bounded_identifier(raw.get("requested_brand"))
+    served_notice_id = _bounded_identifier(raw.get("served_notice_id"))
+    blocked_reason = raw.get("blocked_reason")
+    source_variance = raw.get("source_variance")
+    resolved_via_alias = raw.get("resolved_via_alias")
     if status not in _IDENTITY_STATUSES or not isinstance(notice_required, bool):
         return {}
     if match is not None and not isinstance(match, bool):
@@ -174,6 +205,17 @@ def public_reimbursement_identity_fields(raw: object) -> dict[str, object]:
         # whether a disclosure was decided. "Decided" and "reached the user"
         # are different claims, and only the second one protects anybody.
         "body_suppressed": suppressed if isinstance(suppressed, bool) else False,
+        "requested_brand": requested_brand,
+        "served_notice_id": served_notice_id,
+        "blocked_reason": (
+            blocked_reason if blocked_reason in _BLOCKED_REASONS else None
+        ),
+        "source_variance": (
+            source_variance if isinstance(source_variance, bool) else False
+        ),
+        "resolved_via_alias": (
+            resolved_via_alias if isinstance(resolved_via_alias, bool) else False
+        ),
     }
     if (
         notice_required
@@ -239,7 +281,7 @@ def _reimbursement_identity(
             seen.add(resolution.canonical_brand)
             mentioned.append(resolution)
     if not mentioned:
-        return _IdentityDecision("unverifiable", None)
+        return _decision_for_requested("unverifiable", None, requested)
 
     requested_molecules = _molecule_set(requested.molecule_en)
     if any(
@@ -247,7 +289,7 @@ def _reimbursement_identity(
         and _molecule_set(item.molecule_en) == requested_molecules
         for item in mentioned
     ):
-        return _IdentityDecision("match", True)
+        return _decision_for_requested("match", True, requested)
 
     related = [
         item
@@ -255,12 +297,58 @@ def _reimbursement_identity(
         if requested_molecules & _molecule_set(item.molecule_en)
     ]
     if not related:
-        return _IdentityDecision("unverifiable", None)
+        return _decision_for_requested("unverifiable", None, requested)
     closest = max(
         related,
         key=lambda item: len(requested_molecules & _molecule_set(item.molecule_en)),
     )
-    return _IdentityDecision("mismatch", False, _block_notice(requested, closest))
+    return _decision_for_requested(
+        "mismatch",
+        False,
+        requested,
+        notice=_block_notice(requested, closest),
+    )
+
+
+def _decision_for_requested(
+    status: str,
+    match: bool | None,
+    requested: BrandResolution,
+    *,
+    notice: str = "",
+) -> _IdentityDecision:
+    return _IdentityDecision(
+        status=status,
+        match=match,
+        notice=notice,
+        requested_brand=requested.canonical_brand,
+        source_variance=requested.source_variance,
+        resolved_via_alias=requested.resolved_via_alias,
+    )
+
+
+def _identity_record(
+    identity: _IdentityDecision,
+    *,
+    served_notice_id: object,
+) -> dict[str, object]:
+    return {
+        "identity_status": identity.status,
+        "requested_brand": _bounded_identifier(identity.requested_brand),
+        "served_notice_id": _bounded_identifier(served_notice_id),
+        "blocked_reason": (
+            "identity_mismatch" if identity.status == "mismatch" else None
+        ),
+        "source_variance": identity.source_variance,
+        "resolved_via_alias": identity.resolved_via_alias,
+    }
+
+
+def _bounded_identifier(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _IDENTIFIER_RE.fullmatch(candidate) else None
 
 
 def _block_notice(requested: BrandResolution, closest: BrandResolution) -> str:

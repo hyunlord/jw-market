@@ -80,6 +80,7 @@ class ReimbursementCriterion:
     collected_at: datetime
     notice_number: str | None
     source_url: str
+    source_notice_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +201,8 @@ class MariaDbReimbursementStore:
                       n.notice_date,
                       n.collected_at,
                       n.notice_no,
-                      n.source_url
+                      n.source_url,
+                      n.source_notice_id
                     FROM hira_benefit_notice_brand AS b
                     INNER JOIN hira_benefit_notice AS n
                       ON n.source_notice_id = b.source_notice_id
@@ -535,6 +537,11 @@ def _criterion_from_cache_row(row: dict[str, Any]) -> ReimbursementCriterion:
         collected_at=collected_at,
         notice_number=None if row.get("notice_no") is None else str(row["notice_no"]),
         source_url=str(row.get("source_url") or ""),
+        source_notice_id=(
+            None
+            if row.get("source_notice_id") is None
+            else str(row["source_notice_id"])
+        ),
     )
 
 
