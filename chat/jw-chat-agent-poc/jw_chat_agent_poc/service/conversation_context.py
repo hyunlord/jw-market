@@ -47,8 +47,16 @@ _BRAND_PRONOUN_FOLLOWUP_RE = re.compile(
     r"^\s*(?P<pronoun>걔|얘|쟤)(?=(?:은|는|이|가|도)?(?:\s|[?!.]|$))",
     re.IGNORECASE,
 )
+# A whole-question market reference. The alternation is ordered longest-first so
+# '시장 규모는?' keeps matching the metric-bearing branch. Bare '시장은?' is the
+# same reference with the metric left out: without this branch the bare noun
+# shape was only ever looked up in the *brand* namespace by
+# _BARE_BRAND_SWITCH_RE below, rejected there for not being a brand, and then
+# dropped by every branch after it — the market slot was never consulted.
+# requires_previous_turn reads this same pattern, so cross-pod history
+# hydration follows automatically.
 _BARE_MARKET_FOLLOWUP_RE = re.compile(
-    r"^\s*(?P<intent>시장\s*규모|일반뷰로)(?:은|는|이|가)?[?!.]?\s*$",
+    r"^\s*(?P<intent>시장\s*규모|일반뷰로|시장)(?:은|는|이|가)?[?!.]?\s*$",
     re.IGNORECASE,
 )
 _BARE_BRAND_SWITCH_RE = re.compile(
@@ -408,9 +416,13 @@ def resolve_anaphora(
         market = previous_turn.slots.market_definition or previous_turn.slots.market
         intent = bare_market_followup.group("intent")
         normalized_intent = re.sub(r"\s+", "", intent)
-        resolved_intent = "규모는?" if normalized_intent.startswith("시장규모") and market.endswith("시장") else (
-            "시장 규모는?" if normalized_intent.startswith("시장규모") else "일반뷰로는?"
-        )
+        if normalized_intent == "일반뷰로":
+            resolved_intent = "일반뷰로는?"
+        else:
+            # '시장 규모는?' and its bare form '시장은?' ask the same thing of the
+            # market the previous turn established, so they resolve to one
+            # question and reach the same route.
+            resolved_intent = "규모는?" if market.endswith("시장") else "시장 규모는?"
         return _resolved(
             f"{market} {resolved_intent}",
             recogniser,

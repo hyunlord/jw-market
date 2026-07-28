@@ -46,7 +46,7 @@ def _previous_turn(brand: str = "아일리아") -> ConversationTurn:
     )
 
 
-@pytest.mark.parametrize("question", ["시장은?", "경쟁 브랜드는?", "상위 브랜드는?"])
+@pytest.mark.parametrize("question", ["경쟁 브랜드는?", "상위 브랜드는?", "매출 추이는?"])
 def test_unclaimed_bare_followup_reports_pattern_miss_not_absence_of_reference(question: str) -> None:
     resolution = resolve_anaphora(question, _previous_turn(), known_brand=_known_brand)
 
@@ -60,14 +60,14 @@ def test_unclaimed_bare_followup_reports_pattern_miss_not_absence_of_reference(q
 
 def test_pattern_miss_is_brand_independent() -> None:
     for brand in ("아일리아", "리바로"):
-        resolution = resolve_anaphora("시장은?", _previous_turn(brand), known_brand=_known_brand)
+        resolution = resolve_anaphora("경쟁 브랜드는?", _previous_turn(brand), known_brand=_known_brand)
         assert resolution.reference_status == ReferenceStatus.PATTERN_MISS
 
 
-def test_first_turn_bare_market_has_no_anchor_and_is_never_resolved() -> None:
-    resolution = resolve_anaphora("시장은?", None, known_brand=_known_brand)
+def test_first_turn_bare_followup_has_no_anchor_and_is_never_resolved() -> None:
+    resolution = resolve_anaphora("경쟁 브랜드는?", None, known_brand=_known_brand)
 
-    assert resolution.resolved_question == "시장은?"
+    assert resolution.resolved_question == "경쟁 브랜드는?"
     assert resolution.reference_status == ReferenceStatus.NO_ANCHOR
     assert resolution.brand is None
 
@@ -114,7 +114,7 @@ def test_missing_previous_intent_is_distinct_from_a_missing_anchor() -> None:
 
 def test_observation_carries_only_enumerated_values_and_bools() -> None:
     observation = anaphora_observation(
-        resolve_anaphora("시장은?", _previous_turn(), known_brand=_known_brand)
+        resolve_anaphora("경쟁 브랜드는?", _previous_turn(), known_brand=_known_brand)
     )
 
     assert observation == {
@@ -123,7 +123,7 @@ def test_observation_carries_only_enumerated_values_and_bools() -> None:
         "candidate_shape": True,
         "unresolved_reference": False,
     }
-    assert "시장" not in repr(observation)
+    assert "브랜드" not in repr(observation)
 
 
 def _delivered_anaphora(question: str, conversation_id: str, *, seeded: bool) -> dict:
@@ -147,7 +147,7 @@ def _delivered_anaphora(question: str, conversation_id: str, *, seeded: bool) ->
 
 
 def test_pattern_miss_reaches_the_delivered_response_not_only_the_resolver() -> None:
-    assert _delivered_anaphora("시장은?", "ana-public-miss", seeded=True) == {
+    assert _delivered_anaphora("경쟁 브랜드는?", "ana-public-miss", seeded=True) == {
         "status": "pattern_miss",
         "recogniser": None,
         "candidate_shape": True,
@@ -160,7 +160,7 @@ def test_delivered_response_separates_resolved_from_unanchored_and_standalone() 
     assert resolved["status"] == "resolved"
     assert resolved["recogniser"] == "bare_metric"
 
-    first_turn = _delivered_anaphora("시장은?", "ana-public-first", seeded=False)
+    first_turn = _delivered_anaphora("경쟁 브랜드는?", "ana-public-first", seeded=False)
     assert first_turn["status"] == "no_anchor"
 
     standalone = _delivered_anaphora("리바로 매출 알려줘", "ana-public-plain", seeded=False)
