@@ -289,6 +289,65 @@ def test_load_sources_derives_window_from_the_raw_table_when_unspecified(
     assert observed["window"] == ("2023-06", "2026-05")
 
 
+def test_csd_publication_replaces_submitted_month_and_uses_48_36_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _FakeConnection()
+    observed: dict[str, object] = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "pymysql",
+        SimpleNamespace(MySQLError=RuntimeError, connect=lambda **_kwargs: connection),
+    )
+    monkeypatch.setattr(raw_db, "_execute_ddl", lambda *_args: None)
+    monkeypatch.setattr(raw_db, "_raw_counts", lambda *_args, **_kwargs: {"raw_csd_channel_dynamics": 10})
+    monkeypatch.setattr(raw_db, "_stage_counts", lambda *_args, **_kwargs: {"csd_channel_dynamics_stage": 9})
+    monkeypatch.setattr(raw_db, "_insert_csd", lambda *_args: 1)
+    monkeypatch.setattr(raw_db, "_max_raw_period", lambda *_args, **_kwargs: "2026-05")
+    monkeypatch.setattr(
+        raw_db,
+        "_replace_raw_periods",
+        lambda _cursor, _schema, datasets, periods: observed.update(
+            replaced=(datasets, periods)
+        ),
+    )
+    monkeypatch.setattr(
+        raw_db,
+        "_trim_raw_retention",
+        lambda _cursor, _schema, datasets, months: observed.update(
+            retention=(datasets, months)
+        ),
+    )
+    monkeypatch.setattr(
+        raw_db,
+        "refresh_stage",
+        lambda _cursor, _raw, _stage, window, **_kwargs: observed.update(window=window)
+        or {"csd_channel_dynamics_stage": 8},
+    )
+    config = raw_db.DbConfig(
+        host="localhost",
+        port=3306,
+        user="root",
+        password="",
+        raw_schema="jw_brand_activity_candidate_raw",
+        stage_schema="jw_brand_activity_candidate_stage",
+    )
+
+    raw_db.load_sources(
+        config,
+        SourceRows(csd=[_csd_source_row()], keyword=[]),
+        None,
+        stage_scope="csd",
+        replace_periods=("2026-05",),
+        retention_months=48,
+        display_months=36,
+    )
+
+    assert observed["replaced"] == (("csd",), ("2026-05",))
+    assert observed["retention"] == (("csd",), 48)
+    assert observed["window"] == ("2023-06", "2026-05")
+
+
 def test_isolated_ingest_stage_schemas_are_accepted() -> None:
     from pipeline.scripts.etl.brand_activity.ingest_csd import stage_ddl as csd_stage_ddl
     from pipeline.scripts.etl.brand_activity.ingest_keyword_stage import stage_ddl as keyword_stage_ddl

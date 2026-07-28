@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pipeline.scripts.ingest_hook import config, job_runner
+from pipeline.scripts.ingest_hook import category_table_load
 from pipeline.scripts.ingest_hook.app import IngestService, create_app
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -168,11 +169,13 @@ def test_v1_new_categories_use_the_table_loader_contract(
     assert "pipeline.scripts.ingest_hook.category_table_load" in spec.load_argv
     assert spec.load_verify == "table_manifest"
     assert spec.load_batch_files is True
-    assert spec.production_load_supported is False
+    assert spec.production_load_supported is (
+        category in {"iqvia_csd_channel", "iqvia_csd_keyword"}
+    )
 
 
 @pytest.mark.parametrize(
-    "category", ["iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword", "mi_master"]
+    "category", ["iqvia_nsa", "mi_master"]
 )
 def test_staging_artifact_loader_fails_closed_in_production(
     tmp_path, monkeypatch, category
@@ -191,3 +194,62 @@ def test_staging_artifact_loader_fails_closed_in_production(
 
     with pytest.raises(RuntimeError, match="refusing production completion"):
         job_runner._real_load(manifest, resolve_category(category), tmp_path)
+
+
+@pytest.mark.parametrize("category", ["iqvia_csd_channel", "iqvia_csd_keyword"])
+def test_csd_production_loader_requires_explicit_promotion_approval(
+    tmp_path, monkeypatch, category
+):
+    workbook = tmp_path / f"{category}_2026-03.xlsx"
+    {
+        "iqvia_csd_channel": _csd,
+        "iqvia_csd_keyword": _keyword,
+    }[category](workbook)
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "production-root"))
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_DB, "jw_ingest_csd_gate")
+    monkeypatch.delenv("INGEST_CSD_PROMOTION_APPROVED", raising=False)
+
+    with pytest.raises(RuntimeError, match="INGEST_CSD_PROMOTION_APPROVED=1"):
+        category_table_load.load(
+            category,
+            (workbook,),
+            tmp_path / "production-root",
+            "2026-03",
+        )
+
+
+def test_csd_production_loader_does_not_require_isolated_staging_database(
+    tmp_path, monkeypatch
+):
+    evidence = category_table_load.RowCountEvidence(
+        schema="live_raw",
+        table="raw_csd_channel_dynamics",
+        kind=category_table_load.LoadKind.REPLACE,
+        rows_before=1,
+        rows_after=1,
+        rows_loaded=1,
+        source_rows=1,
+        difference_reasons=(),
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "production-root"))
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_DB, raising=False)
+    monkeypatch.setitem(
+        category_table_load._LOADERS,
+        "iqvia_csd_channel",
+        lambda request: category_table_load.LoadOutcome(
+            loader=f"production:{request.target_db}",
+            primary=evidence,
+            tables=(evidence,),
+        ),
+    )
+
+    result = category_table_load.load(
+        "iqvia_csd_channel",
+        (tmp_path / "source.xlsx",),
+        tmp_path / "production-root",
+        "2026-03",
+    )
+
+    assert result["rows_loaded"] == 1

@@ -204,7 +204,14 @@ def _epoch_rows(target_dir: Path, epoch: str) -> int:
     )
 
 
-def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | None = None) -> dict:
+def _real_load(
+    manifest,
+    spec,
+    input_root: Path,
+    *,
+    target_dir_override: Path | None = None,
+    run_id: str | None = None,
+) -> dict:
     """Wire the materialized upload into the loader, run it, and prove the epoch
     landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
 
@@ -262,7 +269,17 @@ def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | 
             f"phase=load files={len(sources)} target={target_dir} "
             f"staging_verify={staging_verify}"
         )
-        _run_commands("load", tuple(argv))
+        previous_run_id = os.environ.get("INGEST_RUN_ID")
+        if run_id is not None:
+            os.environ["INGEST_RUN_ID"] = run_id
+        try:
+            _run_commands("load", tuple(argv))
+        finally:
+            if run_id is not None:
+                if previous_run_id is None:
+                    os.environ.pop("INGEST_RUN_ID", None)
+                else:
+                    os.environ["INGEST_RUN_ID"] = previous_run_id
 
     # M-2: the uploaded epoch must be present in the loader's output.
     epoch_rows = None
@@ -547,6 +564,7 @@ def run(
                 spec,
                 input_root,
                 target_dir_override=(corpus_candidate.candidate_root if corpus_candidate else None),
+                run_id=run_id,
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)

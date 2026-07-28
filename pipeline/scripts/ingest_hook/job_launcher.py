@@ -44,11 +44,18 @@ _PASSTHROUGH_VALUES = (
     "INGEST_MART_SOURCE_DB",
     "INGEST_MART_TARGET_DB",
     "INGEST_MART_BUILD_PREFIX",
+    "INGEST_JOB_IMAGE",
+    "INGEST_CSD_PROMOTION_APPROVED",
+    "INGEST_CSD_RAW_SCHEMA",
+    "INGEST_CSD_STAGE_SCHEMA",
+    "INGEST_CSD_BUILD_PREFIX",
     "INGEST_INPUT_BACKEND",
     "INGEST_INPUT_ROOT",
     "INGEST_COMPLETION_WEBHOOK_URL",
     "INGEST_COMPLETION_WEBHOOK_ATTEMPTS",
 )
+# APP_VERSION is intentionally absent: the spawned image must expose its own
+# baked commit so provenance cannot inherit the trigger image's commit.
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials

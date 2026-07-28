@@ -399,6 +399,34 @@ def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
     assert env["INGEST_MART_BUILD_PREFIX"]["value"] == "jw_mart_ingest"
 
 
+def test_rendered_production_job_passes_csd_publication_contract(monkeypatch):
+    image = "registry.example/jw-market@sha256:" + "a" * 64
+    monkeypatch.setenv("INGEST_JOB_IMAGE", image)
+    monkeypatch.setenv("INGEST_CSD_PROMOTION_APPROVED", "1")
+    monkeypatch.setenv("INGEST_CSD_RAW_SCHEMA", "jw_brand_activity_raw_stage")
+    monkeypatch.setenv("INGEST_CSD_STAGE_SCHEMA", "jw_brand_activity_stage")
+    monkeypatch.setenv("INGEST_CSD_BUILD_PREFIX", "jw_brand_activity_ingest")
+    monkeypatch.setenv("APP_VERSION", "c" * 40)
+
+    body = render_job(
+        category="iqvia_csd_channel",
+        manifest_sha=SHA,
+        manifest_path="/m.json",
+        namespace="llmops",
+    )
+    env = {
+        item["name"]: item
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+
+    assert env["INGEST_JOB_IMAGE"]["value"] == image
+    assert env["INGEST_CSD_PROMOTION_APPROVED"]["value"] == "1"
+    assert env["INGEST_CSD_RAW_SCHEMA"]["value"] == "jw_brand_activity_raw_stage"
+    assert env["INGEST_CSD_STAGE_SCHEMA"]["value"] == "jw_brand_activity_stage"
+    assert env["INGEST_CSD_BUILD_PREFIX"]["value"] == "jw_brand_activity_ingest"
+    assert "APP_VERSION" not in env
+
+
 def test_rendered_job_rejects_staging_and_target_roots(monkeypatch):
     monkeypatch.setenv("INGEST_LOAD_STAGING_ROOT", "/tmp/staging")
     monkeypatch.setenv("INGEST_LOAD_TARGET_ROOT", "/market-output")

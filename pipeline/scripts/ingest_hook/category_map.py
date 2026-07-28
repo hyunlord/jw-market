@@ -118,7 +118,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_channel", load_batch_files=True,
-        production_load_supported=False,
+        production_load_supported=True,
     ),
     CategorySpec(
         key="iqvia_csd_keyword", description="IQVIA CSD keyword workbook",
@@ -127,7 +127,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_keyword", load_batch_files=True,
-        production_load_supported=False,
+        production_load_supported=True,
     ),
     CategorySpec(
         key="mi_master", description="MI Master workbook resubmission",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -118,6 +119,14 @@ def _load_brand_activity(request: LoadRequest, *, stage_scope: str) -> LoadOutco
     from pipeline.scripts.etl.brand_activity.raw_db import DbConfig, SourceRows, load_sources
     from pipeline.scripts.etl.brand_activity.raw_extract import read_csd_source_rows
 
+    production = ingest_config.load_mode(required=False) == "production"
+    if production:
+        from pipeline.scripts.ingest_hook.csd_publication_backend import (
+            require_promotion_approval,
+        )
+
+        require_promotion_approval()
+
     csd_rows = []
     keyword_rows = []
     if stage_scope == "csd":
@@ -130,6 +139,14 @@ def _load_brand_activity(request: LoadRequest, *, stage_scope: str) -> LoadOutco
         keyword_rows = [
             row for source in request.sources for row in read_keyword_events(source)
         ]
+    if production:
+        return _publish_brand_activity(
+            request,
+            stage_scope=stage_scope,
+            csd_rows=csd_rows,
+            keyword_rows=keyword_rows,
+        )
+
     raw_schema = f"{request.target_db}_raw"
     stage_schema = f"{request.target_db}_stage"
     config = DbConfig(
@@ -184,6 +201,97 @@ def _load_brand_activity(request: LoadRequest, *, stage_scope: str) -> LoadOutco
         loader=f"brand_activity_raw_db:{stage_scope}",
         primary=primary,
         tables=(primary, stage),
+    )
+
+
+def _publish_brand_activity(
+    request: LoadRequest,
+    *,
+    stage_scope: str,
+    csd_rows: list,
+    keyword_rows: list,
+) -> LoadOutcome:
+    from pipeline.scripts.etl.brand_activity.raw_db import SourceRows
+    from pipeline.scripts.ingest_hook.csd_publication import (
+        PublicationPlan,
+        activate,
+        agent_handoff,
+    )
+    from pipeline.scripts.ingest_hook.csd_publication_backend import MariaDbBackend
+
+    category = (
+        "iqvia_csd_channel" if stage_scope == "csd" else "iqvia_csd_keyword"
+    )
+    source_rows = len(csd_rows) if stage_scope == "csd" else len(keyword_rows)
+    inventory = hashlib.sha256()
+    for source in sorted(request.sources, key=lambda item: str(item)):
+        inventory.update(str(source).encode("utf-8"))
+        inventory.update(b"\0")
+        inventory.update(hashlib.sha256(source.read_bytes()).digest())
+        inventory.update(b"\n")
+    periods = tuple(
+        sorted(
+            {
+                row.period_ym
+                for row in (csd_rows if stage_scope == "csd" else keyword_rows)
+            }
+        )
+    )
+    image_ref = os.environ.get("INGEST_JOB_IMAGE", "").strip()
+    image_digest = os.environ.get("INGEST_IMAGE_DIGEST", "").strip().lower()
+    if not image_digest and "@sha256:" in image_ref:
+        image_digest = "sha256:" + image_ref.rsplit("@sha256:", 1)[1]
+    plan = PublicationPlan(
+        category=category,
+        run_id=os.environ.get("INGEST_RUN_ID", os.environ.get("HOSTNAME", "local")),
+        epoch=request.epoch,
+        incoming_periods=periods,
+        builder_commit=os.environ.get("APP_VERSION", "").strip().lower(),
+        image_digest=image_digest,
+        image_ref=image_ref,
+        inventory_sha256=inventory.hexdigest(),
+    )
+    backend = MariaDbBackend(plan, SourceRows(csd=csd_rows, keyword=keyword_rows))
+    try:
+        before = backend.live_count()
+        activate(plan, backend)
+        after = backend.live_count()
+    finally:
+        backend.close()
+    table = (
+        "raw_csd_channel_dynamics"
+        if stage_scope == "csd"
+        else "raw_keyword_events"
+    )
+    evidence = verify_row_counts(
+        RowCountEvidence(
+            schema=os.environ.get(
+                "INGEST_CSD_RAW_SCHEMA", "jw_brand_activity_raw_stage"
+            ),
+            table=table,
+            kind=LoadKind.REPLACE,
+            rows_before=before,
+            rows_after=after,
+            rows_loaded=after,
+            source_rows=source_rows,
+            difference_reasons=(
+                ()
+                if source_rows == after
+                else (
+                    "candidate_rebuilt_from_retained_raw "
+                    f"source_rows={source_rows} retained_rows={after}",
+                )
+            ),
+        )
+    )
+    handoff = agent_handoff(
+        category=category, run_id=plan.run_id, periods=periods
+    )
+    print(json.dumps({"agent_handoff": handoff}, sort_keys=True))
+    return LoadOutcome(
+        loader=f"brand_activity_atomic_publication:{stage_scope}",
+        primary=evidence,
+        tables=(evidence,),
     )
 
 
@@ -253,12 +361,21 @@ def load(
     if loader is None:
         raise TableLoaderUnavailableError(f"no table loader for category {category!r}")
     normalized_sources = (sources,) if isinstance(sources, Path) else tuple(sources)
+    production_csd = (
+        ingest_config.load_mode(required=False) == "production"
+        and category in {"iqvia_csd_channel", "iqvia_csd_keyword"}
+    )
+    target_db = (
+        os.environ.get("INGEST_CSD_RAW_SCHEMA", "jw_brand_activity_raw_stage")
+        if production_csd
+        else _isolated_target_db()
+    )
     request = LoadRequest(
         category=category,
         sources=normalized_sources,
         target_dir=target_dir,
         epoch=epoch,
-        target_db=_isolated_target_db(),
+        target_db=target_db,
     )
     outcome = loader(request)
     target_dir.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,7 @@ are tested deterministically with zero external deps.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -286,6 +287,26 @@ def test_real_load_iqvia_nsa_injects_file_target_and_epoch(staging_env, bucket, 
     assert result["epoch_rows"] == 12
     assert result["rows_before"] == 10
     assert result["rows_loaded"] == 2
+
+
+def test_real_load_exposes_run_id_only_while_loader_subprocess_runs(
+    staging_env, bucket, monkeypatch
+):
+    manifest = _manifest(bucket, epoch="2026-03")
+    observed: list[str | None] = []
+    monkeypatch.setenv("INGEST_RUN_ID", "outer-run")
+
+    def fake_run(_label, argv):
+        observed.append(os.environ.get("INGEST_RUN_ID"))
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_load_manifest(target, "2026-03", 7)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    job_runner._real_load(manifest, UBIST, bucket, run_id="job-run")
+
+    assert observed == ["job-run"]
+    assert os.environ["INGEST_RUN_ID"] == "outer-run"
 
 
 def test_real_load_skeleton_no_op(staging_env, bucket):

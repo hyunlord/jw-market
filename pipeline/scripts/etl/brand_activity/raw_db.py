@@ -74,6 +74,10 @@ def load_sources(
     rows: SourceRows,
     window: tuple[str, str] | None,
     stage_scope: StageScope = "all",
+    *,
+    replace_periods: tuple[str, ...] = (),
+    retention_months: int | None = None,
+    display_months: int = 36,
 ) -> LoadStats:
     """Insert raw rows idempotently and refresh derived stage tables."""
     import pymysql
@@ -99,18 +103,23 @@ def load_sources(
                 _execute_ddl(cursor, keyword_stage_ddl(stage_schema))
             before = _raw_counts(cursor, raw_schema, datasets)
             stage_before = _stage_counts(cursor, stage_schema, datasets)
+            if replace_periods:
+                _replace_raw_periods(cursor, raw_schema, datasets, replace_periods)
             inserted: dict[str, int] = {}
             if "csd" in datasets:
                 inserted["raw_csd_channel_dynamics"] = _insert_csd(cursor, raw_schema, rows.csd)
             if "keyword" in datasets:
                 inserted["raw_keyword_events"] = _insert_keyword(cursor, raw_schema, rows.keyword)
             after = _raw_counts(cursor, raw_schema, datasets)
+            if retention_months is not None:
+                _trim_raw_retention(cursor, raw_schema, datasets, retention_months)
+                after = _raw_counts(cursor, raw_schema, datasets)
             effective_window = window
             if effective_window is None:
                 max_period = _max_raw_period(cursor, raw_schema, datasets)
                 if max_period is None:
                     raise ValueError(f"no raw rows available for stage_scope={stage_scope}")
-                effective_window = recent_month_window(max_period)
+                effective_window = recent_month_window(max_period, months=display_months)
             stage_rows = refresh_stage(
                 cursor,
                 raw_schema,
@@ -131,6 +140,46 @@ def load_sources(
         raise
     finally:
         connection.close()
+
+
+def _replace_raw_periods(
+    cursor: object,
+    schema: str,
+    datasets: tuple[StageDataset, ...],
+    periods: tuple[str, ...],
+) -> None:
+    """Remove submitted logical months in the isolated candidate before reloading."""
+    ordered = tuple(sorted(set(periods)))
+    if not ordered:
+        return
+    marks = ", ".join(["%s"] * len(ordered))
+    for table in _raw_tables_for_datasets(datasets):
+        cursor.execute(
+            f"DELETE FROM `{schema}`.`{table}` WHERE period_ym IN ({marks})",
+            ordered,
+        )
+
+
+def _trim_raw_retention(
+    cursor: object,
+    schema: str,
+    datasets: tuple[StageDataset, ...],
+    months: int,
+) -> None:
+    if months < 1:
+        raise ValueError("raw retention months must be positive")
+    for table in _raw_tables_for_datasets(datasets):
+        cursor.execute(
+            f"SELECT DISTINCT period_ym FROM `{schema}`.`{table}` ORDER BY period_ym"
+        )
+        periods = tuple(str(row[0]) for row in cursor.fetchall())
+        expired = periods[:-months]
+        if expired:
+            marks = ", ".join(["%s"] * len(expired))
+            cursor.execute(
+                f"DELETE FROM `{schema}`.`{table}` WHERE period_ym IN ({marks})",
+                expired,
+            )
 
 
 def _execute_ddl(cursor: object, ddl: str) -> None:
