@@ -15,6 +15,9 @@ from jw_chat_agent_poc.tools.external.mcp_client import mcp_execution_budget
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolEnvelope, ToolTrace
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
 from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider, ToolProviderConfigurationError
+from jw_chat_agent_poc.tool_use.reimbursement_evidence import (
+    public_reimbursement_identity_fields,
+)
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 from jw_chat_agent_poc.tool_use.specs import ToolSpec
 
@@ -169,8 +172,7 @@ class AgentExecutor:
                         )
                     ledger.add(envelope)
                     public_preview = _public_preview(envelope)
-                    safe_envelope = envelope.model_dump(exclude={"raw"}, mode="json")
-                    safe_envelope["preview"] = public_preview
+                    safe_envelope = _safe_envelope(envelope, public_preview)
                     tool_calls.append(
                         {
                             "tool": spec.name,
@@ -287,8 +289,7 @@ class AgentExecutor:
                 return _terminal("tool response schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
             ledger.add(envelope)
             public_preview = _public_preview(envelope)
-            safe_envelope = envelope.model_dump(exclude={"raw"}, mode="json")
-            safe_envelope["preview"] = public_preview
+            safe_envelope = _safe_envelope(envelope, public_preview)
             tool_calls.append({"tool": spec.name, "source": spec.tags[0] if spec.tags else "tool_use", "status": "ok" if envelope.ok else "error", "summary_text": public_preview, "render_data": safe_envelope})
             traces.append(ToolTrace(step=step, tool=spec.name, status="ok" if envelope.ok else "no_evidence", fallback_code=None if envelope.ok else FallbackCode.VERIFICATION_FAIL, message=public_preview))
             if not envelope.ok or not ledger.is_complete():
@@ -371,6 +372,13 @@ def _verified_result(
         traces=tuple(traces),
         fallback_code=None,
     )
+
+
+def _safe_envelope(envelope: ToolEnvelope, public_preview: str) -> dict[str, object]:
+    safe = envelope.model_dump(exclude={"raw"}, mode="json")
+    safe["preview"] = public_preview
+    safe.update(public_reimbursement_identity_fields(envelope.raw))
+    return safe
 
 
 def _tool_exchange(

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+import re
 from typing import Any, Final
 
 from pydantic import ValidationError
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
+from jw_chat_agent_poc.resolver import (
+    AmbiguousBrandError,
+    BrandResolution,
+    BrandResolver,
+    UnsupportedBrandError,
+)
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_claim
 from jw_chat_agent_poc.tools.external.hira_reimbursement import (
@@ -14,12 +22,31 @@ from jw_chat_agent_poc.tools.external.hira_reimbursement import (
 )
 
 _REIMBURSEMENT_TOOL: Final[str] = "hira_reimbursement_criteria"
+_IDENTITY_NOTICE_PREFIX: Final[str] = "주의: 조회된 근거는 "
+_IDENTITY_STATUSES: Final[frozenset[str]] = frozenset({"match", "mismatch", "unverifiable"})
+_PRODUCT_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"품명\s*[:：]\s*(?P<products>[^)\n|]+)",
+    re.IGNORECASE,
+)
+_PRODUCT_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(r"\s*(?:,|/|·| 및 )\s*")
+_DOSAGE_RE: Final[re.Pattern[str]] = re.compile(r"\s+\d[\w./%-]*(?:\s.*)?$", re.IGNORECASE)
+_PRODUCT_FORM_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:피하주사|프리필드시린지|주사액|주사제|캡슐제|경구액|현탁액|정제|캡슐|시럽|과립|패치|정|주)$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _IdentityDecision:
+    status: str
+    match: bool | None
+    notice: str = ""
 
 
 def reimbursement_envelope(
     result: ReimbursementLookupResult,
     *,
     subject: str,
+    resolver: BrandResolver | None = None,
 ) -> ToolEnvelope:
     if not result.ok or result.data is None:
         error_code = result.error_code or "NO_EVIDENCE"
@@ -50,6 +77,20 @@ def reimbursement_envelope(
         )
 
     data = result.data
+    identity = (
+        _reimbursement_identity(
+            subject=subject,
+            raw_text=data.raw_text,
+            resolver=resolver,
+        )
+        if resolver is not None
+        else _IdentityDecision("unverifiable", None)
+    )
+    source_locator = (
+        f"{identity.notice}\n\n{data.raw_text}"
+        if identity.notice
+        else data.raw_text
+    )
     fact = EvidenceFact(
         fact_id=f"hira_reimbursement:{subject}:{data.source_date or 'undated'}",
         subject=subject,
@@ -58,7 +99,7 @@ def reimbursement_envelope(
         unit=None,
         period=data.source_date,
         source_name="심사평가원(HIRA) 보험인정기준",
-        source_locator=data.raw_text,
+        source_locator=source_locator,
         raw_ref=data.source_url,
     )
     return ToolEnvelope(
@@ -73,10 +114,136 @@ def reimbursement_envelope(
             "cache_write": result.cache_write,
             "notice_number": data.notice_number,
             "source_url": data.source_url,
+            "identity_status": identity.status,
+            "identity_match": identity.match,
+            "identity_notice_required": bool(identity.notice),
+            "identity_notice": identity.notice,
         },
         error_code=None,
         error_message=None,
     )
+
+
+def public_reimbursement_identity_fields(raw: object) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        return {}
+    status = raw.get("identity_status")
+    match = raw.get("identity_match")
+    notice_required = raw.get("identity_notice_required")
+    notice = raw.get("identity_notice")
+    if status not in _IDENTITY_STATUSES or not isinstance(notice_required, bool):
+        return {}
+    if match is not None and not isinstance(match, bool):
+        return {}
+    fields: dict[str, object] = {
+        "identity_status": status,
+        "identity_match": match,
+        "identity_notice_required": notice_required,
+    }
+    if (
+        notice_required
+        and isinstance(notice, str)
+        and is_reimbursement_identity_notice(notice)
+    ):
+        fields["identity_notice"] = notice
+    return fields
+
+
+def reimbursement_identity_notices(tool_calls: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    notices: list[str] = []
+    for call in tool_calls:
+        if call.get("tool") != _REIMBURSEMENT_TOOL:
+            continue
+        render_data = call.get("render_data")
+        if not isinstance(render_data, Mapping):
+            continue
+        notice = render_data.get("identity_notice")
+        if (
+            isinstance(notice, str)
+            and is_reimbursement_identity_notice(notice)
+            and notice not in notices
+        ):
+            notices.append(notice)
+    return tuple(notices)
+
+
+def is_reimbursement_identity_notice(notice: str) -> bool:
+    return (
+        notice.startswith(_IDENTITY_NOTICE_PREFIX)
+        and not any(character.isdigit() for character in notice)
+    )
+
+
+def _reimbursement_identity(
+    *,
+    subject: str,
+    raw_text: str,
+    resolver: BrandResolver,
+) -> _IdentityDecision:
+    try:
+        requested = resolver.resolve(subject, allow_default=False)
+    except (AmbiguousBrandError, UnsupportedBrandError):
+        return _IdentityDecision("unverifiable", None)
+
+    mentioned: list[BrandResolution] = []
+    seen: set[str] = set()
+    for product in _notice_product_names(raw_text):
+        try:
+            resolution = resolver.resolve(product, allow_default=False)
+        except (AmbiguousBrandError, UnsupportedBrandError):
+            continue
+        if resolution.canonical_brand not in seen:
+            seen.add(resolution.canonical_brand)
+            mentioned.append(resolution)
+    if not mentioned:
+        return _IdentityDecision("unverifiable", None)
+
+    requested_molecules = _molecule_set(requested.molecule_en)
+    if any(
+        item.canonical_brand == requested.canonical_brand
+        and _molecule_set(item.molecule_en) == requested_molecules
+        for item in mentioned
+    ):
+        return _IdentityDecision("match", True)
+
+    related = [
+        item
+        for item in mentioned
+        if requested_molecules & _molecule_set(item.molecule_en)
+    ]
+    if not related:
+        return _IdentityDecision("unverifiable", None)
+    closest = max(
+        related,
+        key=lambda item: len(requested_molecules & _molecule_set(item.molecule_en)),
+    )
+    notice = (
+        f"{_IDENTITY_NOTICE_PREFIX}{closest.canonical_brand} "
+        f"{_form_label(closest.molecule_en)} 기준이며, 요청하신 "
+        f"{requested.canonical_brand} {_form_label(requested.molecule_en)} 기준과 다릅니다. "
+        "아래 내용은 제품 identity 불일치 참고 근거입니다."
+    )
+    return _IdentityDecision("mismatch", False, notice)
+
+
+def _notice_product_names(raw_text: str) -> tuple[str, ...]:
+    products: list[str] = []
+    for match in _PRODUCT_NAME_RE.finditer(raw_text):
+        for raw_product in _PRODUCT_SEPARATOR_RE.split(match.group("products")):
+            product = re.sub(r"\s*등\s*$", "", raw_product).strip()
+            product = _DOSAGE_RE.sub("", product).strip()
+            product = _PRODUCT_FORM_RE.sub("", product).strip()
+            if product and product not in products:
+                products.append(product)
+    return tuple(products)
+
+
+def _molecule_set(molecules: Sequence[str]) -> frozenset[str]:
+    return frozenset(value.strip().casefold() for value in molecules if value.strip())
+
+
+def _form_label(molecules: Sequence[str]) -> str:
+    return "복합제" if len(_molecule_set(molecules)) > 1 else "단일제"
 
 
 def project_reimbursement_evidence(

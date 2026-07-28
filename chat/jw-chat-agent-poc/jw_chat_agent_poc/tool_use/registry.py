@@ -126,7 +126,11 @@ class ExternalToolRegistry:
         request = BrandInput.model_validate(payload.model_dump())
         canonical = self._canonical_brand(request.brand)
         result = self._reimbursement.lookup(canonical)
-        return reimbursement_envelope(result, subject=canonical)
+        return reimbursement_envelope(
+            result,
+            subject=canonical,
+            resolver=self._resolver,
+        )
 
     def _local_molecule(self, payload: BaseModel) -> ToolEnvelope:
         request = BrandInput.model_validate(payload.model_dump())
