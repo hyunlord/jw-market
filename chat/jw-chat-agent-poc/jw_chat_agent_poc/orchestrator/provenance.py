@@ -44,6 +44,18 @@ class EvidenceFact:
     view: str = ""
     market_id: str = ""
     operand_fact_ids: tuple[str, ...] = ()
+    # Whether this fact came from a builder that can express market identity.
+    #
+    # An empty market_id means two different things. A market builder that
+    # could have supplied one and did not has a real gap, and binding must go
+    # on rejecting it. A fact projected from a tool envelope never had the
+    # field at all -- tool_use.contracts.EvidenceFact forbids extras and
+    # declares no market_id -- so rejecting it demands something its source
+    # cannot ever provide.
+    #
+    # Default False, meaning "assumed unable to answer the market axis". Only
+    # the market builders flip it, at the same call sites that pass market_id.
+    market_scope_capable: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -274,6 +286,7 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
                     source_grade=grade_evidence_source(tool=tool, source=source).value,
                     view=view,
                     market_id=market_id,
+                    market_scope_capable=True,
                 )
             )
     facts.extend(
@@ -357,6 +370,7 @@ def _brand_sales_series_facts(
             source_grade=source_grade,
             view=view,
             market_id=market_id,
+            market_scope_capable=True,
         )
         for index, (period, value, path) in enumerate(rows)
     ]
@@ -401,6 +415,7 @@ def _level_segment_rank_facts(
                 source_grade=source_grade,
                 view=view,
                 market_id=market_id,
+                market_scope_capable=True,
             )
         )
     return facts
@@ -906,6 +921,7 @@ def _fact(
     view: str = "",
     market_id: str = "",
     operand_fact_ids: tuple[str, ...] = (),
+    market_scope_capable: bool = False,
 ) -> EvidenceFact:
     allowed = set(number_tokens(value))
     allowed.update(number_tokens(label))
@@ -943,6 +959,7 @@ def _fact(
         view=str(view).strip(),
         market_id=str(market_id).strip(),
         operand_fact_ids=operand_fact_ids,
+        market_scope_capable=market_scope_capable,
     )
 
 
