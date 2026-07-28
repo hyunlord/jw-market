@@ -286,7 +286,7 @@ class GeneralViewService:
     def _has_general_membership(self, question: str) -> bool:
         if self._general_membership is None:
             return False
-        brand = _brand_hint(question)
+        brand = _requested_brand_hint(question)
         if not brand:
             return False
         requested_source = _requested_source(question)
@@ -324,7 +324,7 @@ class GeneralViewService:
         requested_source = _requested_source(question)
         source = requested_source or "ubist"
         measure = "sales"
-        brand = _brand_hint(question)
+        brand = _requested_brand_hint(question)
         strategic_market = self._strategic_market(question)
         explicit_strategic_market = strategic_market is not None
         try:
@@ -639,6 +639,7 @@ def _contract(
     compact: bool,
     dual: bool,
     question: str,
+    anchor: bool = True,
 ) -> dict[str, Any]:
     window = _requested_market_window(question, market)
     member_fields = _member_contract_fields(market, question) if asks_market_members(question) else {}
@@ -665,6 +666,26 @@ def _contract(
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
     }
+    if anchor:
+        # A single-ATC4 metric answer knows which market it answered about, so it carries
+        # the same anchor the member answer already carries. Without this the follow-up
+        # '시장은?' has nothing to resolve against and re-asks, even though the turn
+        # succeeded. market/market_id are identifiers; market_name is the public label.
+        # anchor_brand is only set when a brand was actually requested and matched.
+        #
+        # The label is the canonical 'ATC4 <code> 시장' form, not the backend's free-text
+        # description. The follow-up question is rebuilt from this label and then has its
+        # brand scraped out again, so the label has to survive that round trip:
+        #   'ATC4 S01P0 시장 …'      -> ATC4 stripped, split at 시장 -> no brand  (wanted)
+        #   'ATC4 S01P0 …'           -> '일반뷰로는?' leaves the fragment '로' as the brand
+        #   '동적 시장: ATC4 S01P0 …' -> leaves '동적' as the brand
+        # The trailing 시장 is what the existing bare-market contract already expects
+        # (tests/test_ana_bare_market_followup.py pins 'ATC4 S01P0 시장 일반뷰로는?').
+        contract["market"] = market.atc4_code
+        contract["market_id"] = market.atc4_code
+        contract["market_name"] = f"ATC4 {market.atc4_code} 시장"
+        if market.brand:
+            contract["anchor_brand"] = market.brand
     if _asks_hhi(question):
         contract["hhi_recent"] = market.hhi_recent
     if market.fallback_reason is not None:
@@ -683,7 +704,17 @@ def _multi_contract(
 ) -> dict[str, Any]:
     sections: list[dict[str, Any]] = []
     for market in markets:
-        section = _contract(market, other_candidates=[], compact=compact, dual=dual, question=question)
+        # ③-3: a split answer covers several ATC4 markets. _multi_result emits one tool call
+        # per section, and the slot extractor walks every call, so an anchor here would
+        # collapse the split into whichever single market it happened to read last.
+        section = _contract(
+            market,
+            other_candidates=[],
+            compact=compact,
+            dual=dual,
+            question=question,
+            anchor=False,
+        )
         section["market_size"] = market.market_size
         section["market_size_recent_krw"] = market.market_size
         public_label = _public_atc4_market_label(market)
@@ -1168,6 +1199,24 @@ def _requested_source(question: str) -> str | None:
 def _atc4_code(question: str) -> str | None:
     match = _ATC4_PATTERN.search(question)
     return match.group(1).upper() if match else None
+
+
+def _requested_brand_hint(question: str) -> str:
+    """A brand hint that never promotes the question's own ATC4 token to a brand.
+
+    'ATC4 S01P0 시장 규모는?' has no brand in it, but the scope intent hands back the
+    code as a brand hint. Downstream that becomes requested_brand, the matrix is
+    filtered by a key no brand ever carries, and the market answer is thrown away as a
+    brand mismatch. The ATC4 verdict is not re-derived here: it is the existing
+    _atc4_code() extraction, and only an exact match is dropped.
+    """
+    hint = _brand_hint(question)
+    if not hint:
+        return hint
+    explicit_atc4 = _atc4_code(question)
+    if explicit_atc4 and hint.strip().upper() == explicit_atc4.upper():
+        return ""
+    return hint
 
 
 def _brand_hint(question: str) -> str:
