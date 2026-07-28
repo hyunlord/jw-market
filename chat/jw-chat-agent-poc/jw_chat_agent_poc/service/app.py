@@ -170,6 +170,7 @@ from jw_chat_agent_poc.service.models import (
     HealthResponse,
 )
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
+from jw_chat_agent_poc.service.slot_observability import slot_observability
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.service.startup_warmup import (
     DisabledStartupWarmup,
@@ -2540,6 +2541,12 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     trace_result = {
         **result,
         "_response_format_contract": format_result.report.to_dict(),
+        "_slot_observability": slot_observability(
+            question=question,
+            result=result,
+            conversation_slots=final_answer.conversation_slots,
+            answer=format_result.answer,
+        ),
     }
     trace = trace_envelope(
         question=question,
