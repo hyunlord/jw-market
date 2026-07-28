@@ -9,6 +9,7 @@ from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBui
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.rag import LocalDocumentRag
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.resolver.alias_reader import TtlBrandAliasReader, shared_brand_alias_reader
 from jw_chat_agent_poc.resolver.catalog_membership import TtlCatalogMembershipReader, shared_catalog_membership_reader
 from jw_chat_agent_poc.resolver.molecule_reader import TtlBrandMoleculeReader, shared_brand_molecule_reader
 from jw_chat_agent_poc.router import BQRouter, BQSubQuestion, LLMFirstBQRouter
@@ -71,6 +72,7 @@ def build_agent_loop_dependencies(external_mode: str = "fixture") -> AgentLoopDe
         resolver=BrandResolver(
             membership_reader=default_catalog_membership_reader(),
             molecule_reader=default_brand_molecule_reader(),
+            alias_reader=default_brand_alias_reader(),
         ),
         news=DeepAnalysisNewsTool(),
         external=default_external_client(external_mode),
@@ -90,6 +92,7 @@ def build_chat_agent_dependencies(
         resolver=values.resolver or BrandResolver(
             membership_reader=default_catalog_membership_reader(),
             molecule_reader=default_brand_molecule_reader(),
+            alias_reader=default_brand_alias_reader(),
         ),
         metrics=values.metrics or MetricsTool(query_layer=query_layer),
         external=values.external or default_external_client(external_mode),
@@ -143,6 +146,13 @@ def default_brand_molecule_reader() -> TtlBrandMoleculeReader | None:
         return None
     ttl_seconds = int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
     return shared_brand_molecule_reader(ttl_seconds)
+
+
+def default_brand_alias_reader() -> TtlBrandAliasReader | None:
+    if os.environ.get("CHAT_METRICS_MODE", "fixture") != "cache":
+        return None
+    ttl_seconds = int(os.environ.get("CHAT_RESOLVER_TTL_SECONDS", "300"))
+    return shared_brand_alias_reader(ttl_seconds)
 
 
 def unsupported_brand_result(
