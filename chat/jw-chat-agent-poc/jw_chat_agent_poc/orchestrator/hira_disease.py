@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Protocol, TypeAlias, TypedDict, assert_never
+from typing import Final, Protocol, TypeAlias, TypedDict, assert_never
 
+from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 
 
@@ -185,6 +186,66 @@ _HIRA_DISTRIBUTION_TOKENS: tuple[str, ...] = (
     "질환통계",
     "질환 통계",
 )
+#: A span written as a quantity and a unit — "5년간", "18개월간".
+_HIRA_SPAN_PATTERN: Final = re.compile(r"(\d{1,2})\s*(년|개월|달)\s*간")
+#: The normalized relative range common.periods already produces — "최근 5년".
+_HIRA_RELATIVE_PATTERN: Final = re.compile(r"최근\s*(\d{1,2})\s*(년|개월|달)")
+#: A time grain — "연도별", "년도별", "해마다".
+_HIRA_GRAIN_PATTERN: Final = re.compile(r"(?:연도|년도|해)\s*(?:별|마다)")
+_HIRA_YEAR_PATTERN: Final = re.compile(r"20\d{2}")
+#: Bare nouns that ask for a span without naming one. No pattern can reach these,
+#: so they are enumerated — and this axis is the one that keeps leaking. Anything
+#: carrying a quantity, a unit or a grain is handled by the patterns above and
+#: does not need to be listed.
+_HIRA_SPAN_WORDS: tuple[str, ...] = ("추이", "시계열")
+
+
+def hira_requested_years(question: str) -> tuple[str, ...] | None:
+    """The year span a question asks for, or None when it asks for one point.
+
+    Asking "does this demand more than one period" rather than "does this contain
+    a trend word": "최근 5년" names no trend and demands five. The quantity, span,
+    explicit-year and grain forms are shapes, so an expression nobody has seen
+    still resolves if it has the shape.
+    """
+    lowered = question.casefold()
+    named = tuple(dict.fromkeys(_HIRA_YEAR_PATTERN.findall(question)))
+    within_window = [year for year in named if year in HIRA_TREND_YEARS]
+    if len(within_window) >= 2:
+        first, last = min(within_window), max(within_window)
+        return tuple(year for year in HIRA_TREND_YEARS if first <= year <= last)
+    months = _hira_span_months(question)
+    if months is not None:
+        years = max(1, min(len(HIRA_TREND_YEARS), -(-months // 12)))
+        return HIRA_TREND_YEARS[-years:] if years >= 2 else None
+    if _HIRA_GRAIN_PATTERN.search(lowered):
+        return HIRA_TREND_YEARS
+    if any(word in lowered for word in _HIRA_SPAN_WORDS):
+        return HIRA_TREND_YEARS
+    return None
+
+
+def _hira_span_months(question: str) -> int | None:
+    """Months requested, read off the period parser the codebase already has.
+
+    common.periods.requested_period normalizes "최근 5년" for us. It tries its
+    year branch before its relative-range branch, though, so a two-digit count is
+    swallowed: "최근 20년" comes back as the year '2020', "최근 10년" as '2010'.
+    That is a defect in the shared parser and fixing it there would reach every
+    metric route, so the raw question is matched here as well rather than
+    changing behaviour outside HIRA.
+    """
+    requested = requested_period(question)
+    if requested:
+        match = _HIRA_RELATIVE_PATTERN.fullmatch(requested.strip())
+        if match is not None:
+            return _hira_months(match)
+    match = _HIRA_RELATIVE_PATTERN.search(question) or _HIRA_SPAN_PATTERN.search(question)
+    return _hira_months(match) if match is not None else None
+
+
+def _hira_months(match: re.Match[str]) -> int:
+    return int(match.group(1)) * (12 if match.group(2) == "년" else 1)
 
 
 def hira_stat_requests(question: str) -> tuple[HiraStatRequest, ...]:
@@ -200,9 +261,10 @@ def hira_stat_requests(question: str) -> tuple[HiraStatRequest, ...]:
     normalized = lowered.strip().rstrip(".?!。？！").strip()
     if normalized.endswith(("질환", "질병")):
         return ()
-    if "추이" in lowered:
+    years = hira_requested_years(question)
+    if years:
         return (
-            HiraStatRequest(_HIRA_STATISTICS, HIRA_TREND_YEARS, "HIRA 2020~2024 환자 추이"),
+            HiraStatRequest(_HIRA_STATISTICS, years, f"HIRA {years[0]}~{years[-1]} 환자 추이"),
         )
     if any(token in lowered for token in _HIRA_DISTRIBUTION_TOKENS):
         return (

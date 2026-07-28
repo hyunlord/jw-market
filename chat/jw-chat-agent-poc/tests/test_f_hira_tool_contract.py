@@ -70,7 +70,10 @@ def test_a_plain_patient_count_asks_for_one_statistic_not_four() -> None:
     """The case that was destroying itself: no banded table is requested."""
     executed = _executed(RECENT_FIVE)
 
-    assert executed == [NAME_CODE, HOSPITALIZATION]
+    # One statistic, not four. This used to assert exactly two calls, which also
+    # pinned the single-year behaviour the question should never have had:
+    # "최근 5년" asks for a span, so the one statistic is now called per year.
+    assert set(executed) == {NAME_CODE, HOSPITALIZATION}
     assert not BANDED.intersection(executed)
 
 
