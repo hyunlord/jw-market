@@ -176,6 +176,9 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert "INGEST_LOAD_TARGET_ROOT" not in trigger_env
     assert trigger_env["INGEST_INPUT_BACKEND"]["value"] == "local"
     assert trigger_env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
+    assert trigger_env["AGENT3_DB_NAME"]["value"] == "jw_mart_d2_stage_20260630_r2"
+    assert trigger_env["AGENT3_WORKFLOW_REV"]["value"] == "5692"
+    assert trigger_env["AGENT3_EXPECTED_WORKFLOW_REV"]["value"] == "5692"
     trigger_mounts = {item["name"]: item for item in trigger["volumeMounts"]}
     assert trigger_mounts["ingest-input"]["mountPath"] == "/nfs-root/autoIngestion"
     assert trigger_mounts["ingest-input"]["readOnly"] is True
@@ -238,6 +241,9 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     monkeypatch.setenv("MARIADB_HOST", "db.example")
     monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
     monkeypatch.setenv("INGEST_REHEARSAL_ROOT", "/tmp/ingest-rehearsal")
+    monkeypatch.setenv("AGENT3_DB_NAME", "agent3-live")
+    monkeypatch.setenv("AGENT3_WORKFLOW_REV", "5692")
+    monkeypatch.setenv("AGENT3_EXPECTED_WORKFLOW_REV", "5692")
     monkeypatch.setenv("APP_VERSION", "a" * 40)
     monkeypatch.setenv(
         "INGEST_JOB_IMAGE", "registry.example/pipeline@sha256:" + ("b" * 64)
@@ -247,6 +253,9 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     by_name = {e["name"]: e for e in env}
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
+    assert by_name["AGENT3_DB_NAME"]["value"] == "agent3-live"
+    assert by_name["AGENT3_WORKFLOW_REV"]["value"] == "5692"
+    assert by_name["AGENT3_EXPECTED_WORKFLOW_REV"]["value"] == "5692"
     assert by_name["APP_VERSION"]["value"] == "a" * 40
     assert by_name["INGEST_JOB_IMAGE"]["value"].endswith("@sha256:" + ("b" * 64))
     assert by_name["NPY_DISABLE_CPU_FEATURES"]["value"] == "X86_V3,X86_V4"
