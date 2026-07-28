@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
-from jw_chat_agent_poc.orchestrator.hira_disease import HIRA_TREND_YEARS, is_hira_disease_question
+from jw_chat_agent_poc.orchestrator.hira_disease import (
+    HIRA_TREND_YEARS,
+    hira_stat_requests,
+    is_hira_disease_question,
+)
 
 
 _FAILED_STATUSES: Final[frozenset[str]] = frozenset(
@@ -121,33 +125,25 @@ def tool_call_status(call: Mapping[str, Any]) -> str:
 
 
 def _hira_requirements(lowered: str) -> tuple[ToolUseRequirement, ...]:
-    statistics = "hira_disease_hospitalization_outpatient_stats"
-    normalized = lowered.strip().rstrip(".?!。？！").strip()
-    if normalized.endswith(("질환", "질병")):
+    """Publish, as requirements, the statistics the executor was told to call.
+
+    The vocabulary lives in hira_disease.hira_stat_requests so that the layer
+    doing the calling and the layer checking the calls cannot disagree. They used
+    to, on the default: this function asked for one statistic while the executor
+    called four, and the three extra were banded tables nothing had requested.
+    """
+    requests = hira_stat_requests(lowered)
+    if not requests:
         return (_one("HIRA 질병명", "hira_disease_name_code"),)
-    if "추이" in lowered:
-        return (
-            ToolUseRequirement(
-                label="HIRA 2020~2024 환자 추이",
-                alternatives=frozenset({statistics}),
-                minimum_calls=len(HIRA_TREND_YEARS),
-                required_periods=frozenset(HIRA_TREND_YEARS),
-            ),
+    return tuple(
+        ToolUseRequirement(
+            label=request.label,
+            alternatives=frozenset({request.tool}),
+            minimum_calls=len(request.periods) or 1,
+            required_periods=frozenset(request.periods),
         )
-    if any(token in lowered for token in ("환자분포", "환자 분포", "환자통계", "환자 통계", "질병통계", "질병 통계", "질환통계", "질환 통계")):
-        return (
-            _one("HIRA 입원/외래", statistics),
-            _one("HIRA 성별/연령", "hira_disease_gender_age_stats"),
-            _one("HIRA 기관종별", "hira_disease_institution_class_stats"),
-            _one("HIRA 지역", "hira_disease_area_stats"),
-        )
-    if any(token in lowered for token in ("성별", "연령", "나이")):
-        return (_one("HIRA 성별/연령", "hira_disease_gender_age_stats"),)
-    if any(token in lowered for token in ("기관", "종별")):
-        return (_one("HIRA 기관종별", "hira_disease_institution_class_stats"),)
-    if any(token in lowered for token in ("지역", "시도")):
-        return (_one("HIRA 지역", "hira_disease_area_stats"),)
-    return (_one("HIRA 입원/외래", statistics),)
+        for request in requests
+    )
 
 
 def _one(label: str, *tools: str) -> ToolUseRequirement:

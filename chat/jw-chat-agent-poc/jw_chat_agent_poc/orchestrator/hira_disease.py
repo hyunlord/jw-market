@@ -159,6 +159,67 @@ _HIRA_EXACT_DISEASE_ALIASES: dict[str, str] = {
 _HIRA_ALIAS_POSTPOSITION = "의|은|는|이|가|을|를|에서|에|으로|로|와|과|도|만"
 
 
+@dataclass(frozen=True, slots=True)
+class HiraStatRequest:
+    """One HIRA statistic a question asks for.
+
+    ``periods`` empty means a single call at the API's own default year; a
+    populated tuple means one call per period. ``label`` is the human name the
+    verification contract publishes for this requirement, carried here so the
+    reason a tool was invoked is answerable from the request itself.
+    """
+
+    tool: str
+    periods: tuple[str, ...] = ()
+    label: str = ""
+
+
+_HIRA_STATISTICS = "hira_disease_hospitalization_outpatient_stats"
+_HIRA_DISTRIBUTION_TOKENS: tuple[str, ...] = (
+    "환자분포",
+    "환자 분포",
+    "환자통계",
+    "환자 통계",
+    "질병통계",
+    "질병 통계",
+    "질환통계",
+    "질환 통계",
+)
+
+
+def hira_stat_requests(question: str) -> tuple[HiraStatRequest, ...]:
+    """Which HIRA statistics this question asks for.
+
+    The single source for both the executor and the verification contract. They
+    used to decide separately — the executor on one keyword, the contract on this
+    vocabulary — and disagreed on the default, so three banded tools were called
+    that nothing had asked for. Anything not recognised here falls to the stated
+    default below, never to "call everything".
+    """
+    lowered = question.casefold()
+    normalized = lowered.strip().rstrip(".?!。？！").strip()
+    if normalized.endswith(("질환", "질병")):
+        return ()
+    if "추이" in lowered:
+        return (
+            HiraStatRequest(_HIRA_STATISTICS, HIRA_TREND_YEARS, "HIRA 2020~2024 환자 추이"),
+        )
+    if any(token in lowered for token in _HIRA_DISTRIBUTION_TOKENS):
+        return (
+            HiraStatRequest(_HIRA_STATISTICS, (), "HIRA 입원/외래"),
+            HiraStatRequest("hira_disease_gender_age_stats", (), "HIRA 성별/연령"),
+            HiraStatRequest("hira_disease_institution_class_stats", (), "HIRA 기관종별"),
+            HiraStatRequest("hira_disease_area_stats", (), "HIRA 지역"),
+        )
+    if any(token in lowered for token in ("성별", "연령", "나이")):
+        return (HiraStatRequest("hira_disease_gender_age_stats", (), "HIRA 성별/연령"),)
+    if any(token in lowered for token in ("기관", "종별")):
+        return (HiraStatRequest("hira_disease_institution_class_stats", (), "HIRA 기관종별"),)
+    if any(token in lowered for token in ("지역", "시도")):
+        return (HiraStatRequest("hira_disease_area_stats", (), "HIRA 지역"),)
+    return (HiraStatRequest(_HIRA_STATISTICS, (), "HIRA 입원/외래"),)
+
+
 def hira_disease_anchor_brand(question: str) -> str | None:
     """Resolve a disease-only question through the explicit HIRA mapping."""
 
@@ -287,11 +348,6 @@ def resolve_hira_disease_code(disease_query: str, external: ExternalApiClient) -
 
 
 def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
-    if "추이" in question:
-        return (
-            external.hira_disease_name_code(sick_cd),
-            *(external.hira_disease_hospitalization_outpatient_stats(sick_cd, year) for year in HIRA_TREND_YEARS),
-        )
     return (
         external.hira_disease_name_code(sick_cd),
         *_hira_stat_external_calls(question, external, sick_cd),
@@ -299,14 +355,26 @@ def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: st
 
 
 def _hira_stat_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
-    if "추이" in question:
-        return tuple(external.hira_disease_hospitalization_outpatient_stats(sick_cd, year) for year in HIRA_TREND_YEARS)
-    return (
-        external.hira_disease_hospitalization_outpatient_stats(sick_cd),
-        external.hira_disease_gender_age_stats(sick_cd),
-        external.hira_disease_institution_class_stats(sick_cd),
-        external.hira_disease_area_stats(sick_cd),
+    """Call exactly the statistics hira_stat_requests says the question asks for.
+
+    This used to decide for itself on one keyword and otherwise call all four,
+    including three banded tables the verification contract never required.
+    """
+    return tuple(
+        _hira_stat_call(request, external, sick_cd, period)
+        for request in hira_stat_requests(question)
+        for period in (request.periods or (None,))
     )
+
+
+def _hira_stat_call(
+    request: HiraStatRequest,
+    external: ExternalApiClient,
+    sick_cd: str,
+    period: str | None,
+) -> ExternalCall:
+    caller = getattr(external, request.tool)
+    return caller(sick_cd) if period is None else caller(sick_cd, period)
 
 
 def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMapping, ...] | None:
