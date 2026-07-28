@@ -29,6 +29,14 @@ def _scheduled() -> HiraWorkflowInput:
     )
 
 
+def test_workflow_default_index_url_includes_the_live_page_identity() -> None:
+    config = _scheduled()
+
+    assert config.index_url.endswith(
+        "InsuAdtCrtrList.do?pgmid=HIRAA030069000400"
+    )
+
+
 def test_timeout_budget_is_hira_specific_and_has_three_x_margin() -> None:
     config = _scheduled()
 

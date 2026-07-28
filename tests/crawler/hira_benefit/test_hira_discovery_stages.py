@@ -49,10 +49,12 @@ class FakeClient:
         self.total = total
         self.fail_pages = fail_pages or set()
         self.requested: list[int] = []
+        self.request_urls: list[str] = []
 
-    def post_form_text(self, _url: str, form: dict[str, str]) -> str:
+    def post_form_text(self, url: str, form: dict[str, str]) -> str:
         page = int(form["pageIndex"])
         self.requested.append(page)
+        self.request_urls.append(url)
         if page in self.fail_pages:
             raise RuntimeError(f"injected transport failure on page {page}")
         return _page_html(total=self.total, page=page)
@@ -92,6 +94,10 @@ def test_probe_fetches_only_page_one_and_reports_the_batch_plan(
     assert receipt["total_count"] == TOTAL
     assert receipt["total_pages"] == 5
     assert read_page_receipt(root, 1) is not None
+    assert patched_client.request_urls == [
+        "https://www.hira.or.kr/rc/insu/insuadtcrtr/"
+        "InsuAdtCrtrList.do?pgmid=HIRAA030069000400"
+    ]
 
 
 def test_page_batch_fetches_only_its_slice(
@@ -105,6 +111,10 @@ def test_page_batch_fetches_only_its_slice(
     receipt = stage_cli._run_discover_page_batch(config, root, page_start=2, page_end=4)
 
     assert patched_client.requested == [2, 3, 4]
+    assert all(
+        url.endswith("InsuAdtCrtrList.do?pgmid=HIRAA030069000400")
+        for url in patched_client.request_urls
+    )
     assert receipt["pages_fetched"] == 3
     assert receipt["pages_cached"] == 0
     assert sorted(r.page for r in load_page_receipts(root)) == [2, 3, 4]

@@ -7,6 +7,12 @@ from datetime import date, timedelta
 from .http_client import LIST_SLOW_RESPONSE_SECONDS, HiraRequestPolicy
 
 
+HIRA_INDEX_URL = (
+    "https://www.hira.or.kr/rc/insu/insuadtcrtr/"
+    "InsuAdtCrtrList.do?pgmid=HIRAA030069000400"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ActivityPolicy:
     start_to_close: timedelta
@@ -108,10 +114,7 @@ class HiraWorkflowInput:
     run_id: str
     state_root: str
     repo_root: str = "/work"
-    index_url: str = (
-        "https://www.hira.or.kr/rc/insu/insuadtcrtr/"
-        "InsuAdtCrtrList.do"
-    )
+    index_url: str = HIRA_INDEX_URL
     base_url: str = "https://www.hira.or.kr"
     first_run_mode: str | None = None
     notice_date_boundary: str | None = None
