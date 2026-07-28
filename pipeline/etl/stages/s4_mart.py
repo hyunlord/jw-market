@@ -104,19 +104,61 @@ def _admin_connect(env: dict[str, str]) -> pymysql.connections.Connection:
 
 _validate_schema_pair = validate_mart_schema_pair
 
+_GENERAL_TABLES = (
+    "mart_general_brand_metric",
+    "mart_general_market_metric",
+)
+_BASELINE_COPY_BATCH_SIZE = 500
+
 
 def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
+    """Seed the isolated build with every source before replacing one source."""
     _validate_schema_pair(target_db, source_db)
     env = _env()
     conn = _admin_connect(env)
     try:
         with conn.cursor() as cur:
             cur.execute(f"CREATE DATABASE IF NOT EXISTS `{target_db}` DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
-            cur.execute(f"USE `{target_db}`")
-            cur.execute("DROP TABLE IF EXISTS mart_general_brand_metric")
-            cur.execute("DROP TABLE IF EXISTS mart_general_market_metric")
-            cur.execute(GENERAL_BRAND_DDL)
-            cur.execute(GENERAL_MARKET_DDL)
+            for table in _GENERAL_TABLES:
+                cur.execute(f"DROP TABLE IF EXISTS `{target_db}`.`{table}`")
+                cur.execute(
+                    f"CREATE TABLE `{target_db}`.`{table}` "
+                    f"LIKE `{source_db}`.`{table}`"
+                )
+                cur.execute(
+                    f"SELECT COALESCE(MAX(`id`), 0) AS max_id "
+                    f"FROM `{source_db}`.`{table}`"
+                )
+                source_max_id = int(cur.fetchone()["max_id"])
+                last_id = 0
+                while last_id < source_max_id:
+                    inserted = int(
+                        cur.execute(
+                            f"INSERT INTO `{target_db}`.`{table}` "
+                            f"SELECT * FROM `{source_db}`.`{table}` "
+                            f"WHERE `id` > %s AND `id` <= %s "
+                            f"ORDER BY `id` LIMIT {_BASELINE_COPY_BATCH_SIZE}",
+                            (last_id, source_max_id),
+                        )
+                        or 0
+                    )
+                    if inserted <= 0:
+                        raise RuntimeError(
+                            f"isolated baseline copy made no progress for "
+                            f"{source_db}.{table} after id {last_id}"
+                        )
+                    conn.commit()
+                    cur.execute(
+                        f"SELECT COALESCE(MAX(`id`), 0) AS max_id "
+                        f"FROM `{target_db}`.`{table}`"
+                    )
+                    new_last_id = int(cur.fetchone()["max_id"])
+                    if new_last_id <= last_id:
+                        raise RuntimeError(
+                            f"isolated baseline copy did not advance for {table}: "
+                            f"{new_last_id} <= {last_id}"
+                        )
+                    last_id = new_last_id
     finally:
         conn.close()
 

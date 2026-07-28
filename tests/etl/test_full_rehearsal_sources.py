@@ -129,3 +129,66 @@ def test_s4_mart_limits_compute_to_requested_sources(monkeypatch: pytest.MonkeyP
     assert rc == 0
     assert computed == ["ubist"]
     assert compute_kwargs[0]["commit_each_batch"] is True
+
+
+def test_s4_isolated_schema_seeds_untouched_sources_in_bounded_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[tuple[str, object]] = []
+    fetches = iter(
+        (
+            {"max_id": 2},
+            {"max_id": 2},
+            {"max_id": 0},
+        )
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params=None):  # type: ignore[no-untyped-def]
+            statements.append((sql, params))
+            if sql.startswith("INSERT INTO"):
+                return 2
+            return 0
+
+        def fetchone(self):
+            return next(fetches)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.commits = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def close(self) -> None:
+            return None
+
+    conn = Connection()
+    monkeypatch.setattr(s4_mart, "_env", lambda: {})
+    monkeypatch.setattr(s4_mart, "_admin_connect", lambda _env: conn)
+
+    s4_mart._ensure_isolated_schema("build_db", "source_db")
+
+    sql = "\n".join(statement for statement, _params in statements)
+    assert (
+        "CREATE TABLE `build_db`.`mart_general_brand_metric` "
+        "LIKE `source_db`.`mart_general_brand_metric`"
+    ) in sql
+    assert (
+        "INSERT INTO `build_db`.`mart_general_brand_metric` "
+        "SELECT * FROM `source_db`.`mart_general_brand_metric`"
+    ) in sql
+    assert (
+        "CREATE TABLE `build_db`.`mart_general_market_metric` "
+        "LIKE `source_db`.`mart_general_market_metric`"
+    ) in sql
+    assert conn.commits == 1
