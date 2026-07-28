@@ -264,7 +264,13 @@ class StrategicQueryLayer:
             "render_data": render_data,
         }
 
-    def market_scope_by_id(self, market: str, period: str = "latest") -> dict[str, Any]:
+    def market_scope_by_id(
+        self,
+        market: str,
+        period: str = "latest",
+        *,
+        market_display_name: str | None = None,
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
         if market not in {record.ml_id for record in snapshot.records}:
             raise LookupError(f"mart market not found: market={market}")
@@ -281,7 +287,10 @@ class StrategicQueryLayer:
         render_data: dict[str, Any] = {
             "market": market,
             "market_id": market,
-            "market_name": "해당 전략 시장",
+            # The caller supplies the catalog's public name. Without one the market is
+            # known only by its identifier, which is not user-facing, so the generic
+            # label stands in rather than putting 'ml_006' on screen.
+            "market_name": (market_display_name or "").strip() or "해당 전략 시장",
             "scope": "market",
             "scope_label": "시장 전체",
             "level": "Brand",

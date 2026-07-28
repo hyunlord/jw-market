@@ -63,6 +63,7 @@ class MarketScopeResolver:
         catalog_membership = membership_reader
         if catalog_membership is None and os.environ.get("CHAT_METRICS_MODE", "fixture") == "cache":
             catalog_membership = shared_catalog_membership_reader(ttl)
+        self._catalog_membership = catalog_membership
         self._resolver = BrandResolver(
             mode="cache",
             brand_reader=cache_reader,
@@ -245,17 +246,50 @@ class MarketScopeResolver:
             market_display_name=resolution.market_name,
         )
 
-    def answer_market_id(self, question: str, *, market_id: str, period: str = "latest") -> dict[str, Any]:
+    def _catalog_market_label(self, market_id: str) -> str | None:
+        """The catalog's public name for a market, or None when only the id is known.
+
+        catalog_membership COALESCEs a NULL catalog name to the ml_id, so a row whose
+        market_name is just the identifier carries no public label and must not be
+        shown. Callers fall back to the generic label in that case.
+        """
+        reader = self._catalog_membership
+        if reader is None:
+            return None
+        try:
+            rows = reader.load()
+        except (LookupError, OSError, TypeError, ValueError):
+            return None
+        target = market_id.strip().casefold()
+        for row in rows:
+            if str(row.get("market_id") or "").strip().casefold() != target:
+                continue
+            name = str(row.get("market_name") or "").strip()
+            if name and name.casefold() != target:
+                return name
+        return None
+
+    def answer_market_id(
+        self,
+        question: str,
+        *,
+        market_id: str,
+        period: str = "latest",
+        market_display_name: str | None = None,
+    ) -> dict[str, Any]:
         started_at = qa_trace_started_at()
         if self._query_layer is None:
             return self._unsupported("전략 시장 조회 계층을 사용할 수 없습니다.", question, "market_id", market_id)
+        display_name = (market_display_name or "").strip() or self._catalog_market_label(market_id)
         member_query = asks_market_members(question)
         member_limit = requested_market_member_limit(question)
         try:
             call = (
                 self._query_layer.market_members(market=market_id, period=period, limit=member_limit.applied)
                 if member_query
-                else self._query_layer.market_scope_by_id(market_id, period)
+                else self._query_layer.market_scope_by_id(
+                    market_id, period, market_display_name=display_name
+                )
             )
         except LookupError as exc:
             if member_query and self._is_market_members_unavailable(exc):
@@ -280,7 +314,7 @@ class MarketScopeResolver:
         source = str(data.get("source_label") or call.get("source") or "")
         attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
         markdown = MarkdownResponseBuilder().build(
-            brand="해당 전략 시장",
+            brand=display_name or "해당 전략 시장",
             calls=[call],
             sources=[source],
             notices=market_view_notices("market_landscape"),
