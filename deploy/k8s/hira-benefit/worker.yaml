@@ -12,6 +12,21 @@ spec:
     requests:
       storage: 1Gi
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jw-hira-benefit-state-rwx
+  namespace: llmops
+  labels:
+    app: jw-hira-benefit-worker
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,6 +48,8 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: knp-jw-agn-dev-genos-api-01
       containers:
       - name: worker
         image: ${IMAGE_DIGEST}
@@ -81,4 +98,4 @@ spec:
       volumes:
       - name: state
         persistentVolumeClaim:
-          claimName: jw-hira-benefit-state
+          claimName: jw-hira-benefit-state-rwx

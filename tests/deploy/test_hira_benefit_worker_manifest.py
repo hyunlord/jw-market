@@ -17,21 +17,34 @@ def _documents() -> list[dict[str, object]]:
     ]
 
 
-def test_hira_worker_is_separate_recreate_deployment_with_rwo_state() -> None:
+def test_hira_worker_keeps_rollback_claim_and_uses_dedicated_rwx_state() -> None:
     documents = _documents()
     deployment = next(
         document for document in documents if document["kind"] == "Deployment"
     )
-    claim = next(
-        document
+    claims = {
+        document["metadata"]["name"]: document
         for document in documents
         if document["kind"] == "PersistentVolumeClaim"
-    )
+    }
+    pod_spec = deployment["spec"]["template"]["spec"]
 
     assert deployment["metadata"]["name"] == "jw-hira-benefit-worker"
     assert deployment["spec"]["replicas"] == 1
     assert deployment["spec"]["strategy"]["type"] == "Recreate"
-    assert claim["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert claims["jw-hira-benefit-state"]["spec"]["accessModes"] == [
+        "ReadWriteOnce"
+    ]
+    rwx_claim = claims["jw-hira-benefit-state-rwx"]
+    assert rwx_claim["spec"]["accessModes"] == ["ReadWriteMany"]
+    assert rwx_claim["spec"]["storageClassName"] == "nfs-client"
+    assert rwx_claim["spec"]["resources"]["requests"]["storage"] == "1Gi"
+    assert pod_spec["nodeSelector"] == {
+        "cloud.google.com/gke-nodepool": "knp-jw-agn-dev-genos-api-01"
+    }
+    assert pod_spec["volumes"][0]["persistentVolumeClaim"]["claimName"] == (
+        "jw-hira-benefit-state-rwx"
+    )
 
 
 def test_hira_worker_runtime_contract_is_baked_into_manifest() -> None:
