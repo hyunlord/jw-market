@@ -16,6 +16,7 @@ from jw_chat_agent_poc.service.conversation import (
     conversation_slots_from_dict,
     conversation_slots_to_dict,
 )
+from jw_chat_agent_poc.tools.query_layer.mart_json import mart_json_default_or_str
 
 
 LOGGER = logging.getLogger(__name__)
@@ -235,7 +236,14 @@ def _db_config_from_env() -> _DbConfig | None:
 
 
 def _json_dumps(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    # default= keeps the str() fallback this table has always had, but a mart point now lands as
+    # the object the loader read instead of as a repr string that loses ms, rank and unknown keys.
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=mart_json_default_or_str,
+    )
 
 
 def _json_object(value: object) -> dict[str, Any]:

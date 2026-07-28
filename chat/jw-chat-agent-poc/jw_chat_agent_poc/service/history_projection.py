@@ -14,6 +14,8 @@ from uuid import uuid4
 
 import pymysql
 
+from jw_chat_agent_poc.tools.query_layer.mart_json import mart_json_default_or_str
+
 
 PROJECTION_ORIGIN = "jw-chat-agent-direct"
 PROJECTION_VERSION = 1
@@ -838,7 +840,14 @@ def _env_bool(name: str, *, default: bool) -> bool:
 
 
 def _json_dumps(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    # default= keeps the str() fallback the outbox has always had, but a mart point now lands as
+    # the object the loader read instead of as a repr string that loses ms, rank and unknown keys.
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=mart_json_default_or_str,
+    )
 
 
 def _json_loads(value: object) -> dict[str, Any]:
