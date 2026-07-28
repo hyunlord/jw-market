@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 import json
 import logging
 import math
-from typing import Any
+from typing import Any, Final
 
 from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
 from jw_chat_agent_poc.agent_loop.bq_slots import requested_prescription_metric
@@ -508,6 +508,12 @@ class ToolUseAgent:
                     bq_analysis_validation = "SOURCE_UNAVAILABLE"
                     labels = ", ".join(_bq_source_label(source) for source in bq_missing_sources)
                     notices.append(f"요청한 분석에 필요한 출처({labels})를 현재 조회할 수 없습니다.")
+                    # The line above is left exactly as it was: it is the existing
+                    # verdict wording. The basis explanation is appended as its own
+                    # notice so nothing that reads the first string is disturbed.
+                    domain_note = _source_domain_note(tuple(bq_missing_sources))
+                    if domain_note is not None:
+                        notices.append(domain_note)
                 else:
                     analysis_call = build_bq_analysis_call(deterministic_plan_kind.removeprefix("BQ:"), calls)
                 if not bq_missing_sources and analysis_call is None:
@@ -571,6 +577,45 @@ class ToolUseAgent:
 
 def _bq_source_label(source: str) -> str:
     return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
+
+
+#: What each source actually measures. A market carries only the sources its own
+#: definition is built on, so a source being unavailable here is a statement about
+#: measurement basis, not about the brand being absent from that vendor's data.
+_SOURCE_BASIS_LABEL: Final[dict[str, str]] = {
+    "ubist": "원외 처방(UBIST)",
+    "iqvia_nsa": "제조사 출하(IQVIA NSA)",
+}
+#: Both labels are followed by the noun "기준", so the sentence stays grammatical
+#: whichever way round the pair is substituted. Carries no digits on purpose:
+#: verify_markdown_numbers scans the whole rendered answer and any number token that
+#: is not backed by evidence flips the response into its verification-failed path.
+_SOURCE_DOMAIN_NOTE: Final[str] = (
+    "이 시장은 {available} 기준으로 정의돼 있습니다. "
+    "측정 대상이 다른 {missing} 기준과는 값이 서로 다르며, "
+    "두 기준 사이에는 유통 재고, 병원 직거래, 반품, 원내 처방이 있습니다."
+)
+
+
+def _source_domain_note(missing_sources: tuple[str, ...]) -> str | None:
+    """Explain a missing source as a measurement-basis difference.
+
+    Only emitted when exactly one side of a known pair is missing: that is the case
+    where the reader can otherwise conclude the brand is absent from the missing
+    vendor's data. Anything else - an unknown source label, or both sides missing -
+    gets no note, because the basis sentence would then be guessing.
+    """
+
+    known = [source for source in missing_sources if source in _SOURCE_BASIS_LABEL]
+    if len(known) != 1 or len(missing_sources) != 1:
+        return None
+    available = next(
+        source for source in _SOURCE_BASIS_LABEL if source != known[0]
+    )
+    return _SOURCE_DOMAIN_NOTE.format(
+        available=_SOURCE_BASIS_LABEL[available],
+        missing=_SOURCE_BASIS_LABEL[known[0]],
+    )
 
 
 def _deep_tool_progress_summary(execution: ToolExecution) -> str:
