@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import re
 from typing import Any, Callable
 
@@ -46,8 +47,16 @@ _BRAND_PRONOUN_FOLLOWUP_RE = re.compile(
     r"^\s*(?P<pronoun>걔|얘|쟤)(?=(?:은|는|이|가|도)?(?:\s|[?!.]|$))",
     re.IGNORECASE,
 )
+# A whole-question market reference. The alternation is ordered longest-first so
+# '시장 규모는?' keeps matching the metric-bearing branch. Bare '시장은?' is the
+# same reference with the metric left out: without this branch the bare noun
+# shape was only ever looked up in the *brand* namespace by
+# _BARE_BRAND_SWITCH_RE below, rejected there for not being a brand, and then
+# dropped by every branch after it — the market slot was never consulted.
+# requires_previous_turn reads this same pattern, so cross-pod history
+# hydration follows automatically.
 _BARE_MARKET_FOLLOWUP_RE = re.compile(
-    r"^\s*(?P<intent>시장\s*규모|일반뷰로)(?:은|는|이|가)?[?!.]?\s*$",
+    r"^\s*(?P<intent>시장\s*규모|일반뷰로|시장)(?:은|는|이|가)?[?!.]?\s*$",
     re.IGNORECASE,
 )
 _BARE_BRAND_SWITCH_RE = re.compile(
@@ -85,6 +94,55 @@ _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+class ReferenceStatus(StrEnum):
+    """Why ``resolve_anaphora`` ended where it did.
+
+    ``unresolved_reference`` is a *control* signal: it tells the caller to stop
+    and ask the user which entity was meant. It answers "did a recogniser claim
+    this question and then run out of context", not "was this question
+    context-dependent". A bare follow-up that no recogniser claims at all skips
+    every ``unresolved_reference=True`` return and leaves the flag ``False``, so
+    the resolver reported "no reference here" for a question whose subject only
+    existed in the previous turn. This status is what distinguishes the two.
+    """
+
+    RESOLVED = "resolved"
+    NO_ANCHOR = "no_anchor"
+    NO_PRIOR_INTENT = "no_prior_intent"
+    PATTERN_MISS = "pattern_miss"
+    NOT_ANAPHORIC = "not_anaphoric"
+
+
+class ReferenceRecogniser(StrEnum):
+    """Which recogniser claimed the question, in dispatch order."""
+
+    BARE_METRIC = "bare_metric"
+    BARE_PERIOD = "bare_period"
+    RELATIVE_PERIOD = "relative_period"
+    BRAND_PRONOUN = "brand_pronoun"
+    BARE_MARKET = "bare_market"
+    BARE_BRAND_SWITCH = "bare_brand_switch"
+    CONTRAST = "contrast"
+    IMPLICIT_BRAND = "implicit_brand"
+    GENERIC = "generic"
+    FIRST_RANK = "first_rank"
+    ANCHOR_BRAND = "anchor_brand"
+    SAME_PERIOD = "same_period"
+    IN_SENTENCE_MARKET = "in_sentence_market"
+
+
+# A whole-question bare noun phrase closed by a topic/subject particle, with no
+# verb and no request word: '시장은?', '경쟁 브랜드는?'. Such a question carries no
+# predicate of its own, so whatever it asks about has to come from the previous
+# turn. Bounded to three words so that a self-anchored question
+# ('고지혈증 시장 상위 5개 브랜드는?') stays out. This is a statement about the
+# *shape* the resolver was handed, not a claim about what the user intended.
+_BARE_FOLLOWUP_SHAPE_RE = re.compile(
+    r"^\s*[0-9A-Za-z가-힣+_.-]{1,20}(?:\s+[0-9A-Za-z가-힣+_.-]{1,20}){0,2}"
+    r"(?:은|는|이|가)\s*[?!.]?\s*$"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class AnaphoraResolution:
     resolved_question: str
@@ -92,6 +150,79 @@ class AnaphoraResolution:
     reusable_ranked: RankedBrandSlot | None = None
     unresolved_reference: bool = False
     interpretation_notice: str | None = None
+    reference_status: str = ReferenceStatus.NOT_ANAPHORIC
+    recogniser: str | None = None
+    candidate_shape: bool = False
+
+
+def _bare_followup_shape(question: str) -> bool:
+    return bool(_BARE_FOLLOWUP_SHAPE_RE.match(question))
+
+
+def _resolved(
+    resolved_question: str,
+    recogniser: ReferenceRecogniser,
+    question: str,
+    *,
+    brand: str | None = None,
+    reusable_ranked: RankedBrandSlot | None = None,
+    interpretation_notice: str | None = None,
+) -> AnaphoraResolution:
+    return AnaphoraResolution(
+        resolved_question=resolved_question,
+        brand=brand,
+        reusable_ranked=reusable_ranked,
+        interpretation_notice=interpretation_notice,
+        reference_status=ReferenceStatus.RESOLVED,
+        recogniser=recogniser,
+        candidate_shape=_bare_followup_shape(question),
+    )
+
+
+def anaphora_observation(resolution: AnaphoraResolution) -> dict[str, Any]:
+    """The resolver's own account of what it did, for the request trace.
+
+    ``unresolved_reference`` travels alongside the status on purpose: when a bare
+    follow-up goes unclaimed the flag reads ``False`` while the status reads
+    ``pattern_miss``, and the pair is what shows the flag is not a report on
+    whether a reference was present. Every value is enumerated or a bool — no
+    question text, no rewritten text.
+    """
+    return {
+        "status": str(resolution.reference_status),
+        "recogniser": str(resolution.recogniser) if resolution.recogniser else None,
+        "candidate_shape": bool(resolution.candidate_shape),
+        "unresolved_reference": bool(resolution.unresolved_reference),
+    }
+
+
+def _unclaimed_status(question: str, previous_turn: ConversationTurn | None) -> ReferenceStatus:
+    """Classify a question that no recogniser claimed.
+
+    ``pattern_miss`` is reserved for the case that actually misleads: a bare
+    follow-up shape arriving with a previous turn behind it. Without a previous
+    turn there is nothing the resolver could have pointed at, so the same shape
+    is ``no_anchor`` — a first-turn '시장은?' must never look like a resolvable
+    reference. Anything not shaped like a bare follow-up is a standalone
+    question and stays ``not_anaphoric``.
+    """
+    if not _bare_followup_shape(question):
+        return ReferenceStatus.NOT_ANAPHORIC
+    return ReferenceStatus.PATTERN_MISS if previous_turn is not None else ReferenceStatus.NO_ANCHOR
+
+
+def _unresolved(
+    question: str,
+    recogniser: ReferenceRecogniser,
+    status: ReferenceStatus = ReferenceStatus.NO_ANCHOR,
+) -> AnaphoraResolution:
+    return AnaphoraResolution(
+        resolved_question=question,
+        unresolved_reference=True,
+        reference_status=status,
+        recogniser=recogniser,
+        candidate_shape=_bare_followup_shape(question),
+    )
 
 
 def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
@@ -207,119 +338,173 @@ def resolve_anaphora(
 ) -> AnaphoraResolution:
     metric_followup = _METRIC_ONLY_FOLLOWUP_RE.match(question)
     if metric_followup is not None:
+        recogniser = ReferenceRecogniser.BARE_METRIC
         if previous_turn is None or not previous_turn.slots.anchor_brand:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         brand = previous_turn.slots.anchor_brand
         intent = metric_followup.group("intent")
-        return AnaphoraResolution(
-            resolved_question=f"{brand} {intent}은?",
+        return _resolved(
+            f"{brand} {intent}은?",
+            recogniser,
+            question,
             brand=brand,
             interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
         )
     period_followup = _PERIOD_ONLY_FOLLOWUP_RE.match(question)
     if period_followup is not None:
+        recogniser = ReferenceRecogniser.BARE_PERIOD
         if previous_turn is None or not previous_turn.slots.anchor_brand:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         intent = _turn_intent(previous_turn)
         if not intent:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser, ReferenceStatus.NO_PRIOR_INTENT)
         brand = previous_turn.slots.anchor_brand
         period = period_followup.group("period")
-        return AnaphoraResolution(
-            resolved_question=f"{brand} {period} {intent}은?",
+        return _resolved(
+            f"{brand} {period} {intent}은?",
+            recogniser,
+            question,
             brand=brand,
             interpretation_notice=f"{brand}의 {period} {intent}로 이해했어요.",
         )
     relative_period_followup = _RELATIVE_PERIOD_FOLLOWUP_RE.match(question)
     if relative_period_followup is not None:
+        recogniser = ReferenceRecogniser.RELATIVE_PERIOD
         if (
             previous_turn is None
             or not previous_turn.slots.anchor_brand
             or not previous_turn.slots.period
         ):
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         intent = _turn_intent(previous_turn)
         period = _resolve_relative_period(
             relative_period_followup.group("expression"),
             previous_turn.slots.period,
         )
         if not intent or period is None:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(
+                question,
+                recogniser,
+                ReferenceStatus.NO_PRIOR_INTENT if not intent else ReferenceStatus.NO_ANCHOR,
+            )
         brand = previous_turn.slots.anchor_brand
-        return AnaphoraResolution(
-            resolved_question=f"{brand} {period} {intent}은?",
+        return _resolved(
+            f"{brand} {period} {intent}은?",
+            recogniser,
+            question,
             brand=brand,
             interpretation_notice=f"{brand}의 {period} {intent}로 이해했어요.",
         )
     brand_pronoun_followup = _BRAND_PRONOUN_FOLLOWUP_RE.match(question)
     if brand_pronoun_followup is not None:
+        recogniser = ReferenceRecogniser.BRAND_PRONOUN
         if previous_turn is None or not previous_turn.slots.anchor_brand:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         brand = previous_turn.slots.anchor_brand
-        return AnaphoraResolution(
-            resolved_question=_BRAND_PRONOUN_FOLLOWUP_RE.sub(brand, question, count=1),
+        return _resolved(
+            _BRAND_PRONOUN_FOLLOWUP_RE.sub(brand, question, count=1),
+            recogniser,
+            question,
             brand=brand,
             interpretation_notice=f"{brand}을 가리키는 것으로 이해했어요.",
         )
     bare_market_followup = _BARE_MARKET_FOLLOWUP_RE.match(question)
     if bare_market_followup is not None:
+        recogniser = ReferenceRecogniser.BARE_MARKET
         if previous_turn is None or not previous_turn.slots.market:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         market = previous_turn.slots.market_definition or previous_turn.slots.market
         intent = bare_market_followup.group("intent")
         normalized_intent = re.sub(r"\s+", "", intent)
-        resolved_intent = "규모는?" if normalized_intent.startswith("시장규모") and market.endswith("시장") else (
-            "시장 규모는?" if normalized_intent.startswith("시장규모") else "일반뷰로는?"
-        )
-        return AnaphoraResolution(
-            resolved_question=f"{market} {resolved_intent}",
+        if normalized_intent == "일반뷰로":
+            resolved_intent = "일반뷰로는?"
+        else:
+            # '시장 규모는?' and its bare form '시장은?' ask the same thing of the
+            # market the previous turn established, so they resolve to one
+            # question and reach the same route.
+            resolved_intent = "규모는?" if market.endswith("시장") else "시장 규모는?"
+        return _resolved(
+            f"{market} {resolved_intent}",
+            recogniser,
+            question,
             interpretation_notice=f"{market}의 {resolved_intent[:-1]} 요청으로 이해했어요.",
         )
     bare_brand_switch = _bare_brand_switch(question, known_brand)
     if bare_brand_switch is not None:
+        recogniser = ReferenceRecogniser.BARE_BRAND_SWITCH
         if previous_turn is None:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         intent = _turn_intent(previous_turn)
         if not intent:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-        return AnaphoraResolution(
-            resolved_question=f"{bare_brand_switch} {intent}은?",
+            return _unresolved(question, recogniser, ReferenceStatus.NO_PRIOR_INTENT)
+        return _resolved(
+            f"{bare_brand_switch} {intent}은?",
+            recogniser,
+            question,
             brand=bare_brand_switch,
             interpretation_notice=f"{bare_brand_switch}의 {intent}로 이해했어요.",
         )
     contrast = _CONTRAST_FOLLOWUP_RE.match(question)
     if contrast is not None:
+        recogniser = ReferenceRecogniser.CONTRAST
         brand = contrast.group("brand")
         if _NON_BRAND_CONTRAST_TARGET_RE.fullmatch(brand):
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         if previous_turn is None:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         intent = _turn_intent(previous_turn)
         if not intent:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-        return AnaphoraResolution(
-            resolved_question=f"{brand} {intent}는?",
+            return _unresolved(question, recogniser, ReferenceStatus.NO_PRIOR_INTENT)
+        return _resolved(
+            f"{brand} {intent}는?",
+            recogniser,
+            question,
             brand=brand,
             interpretation_notice=f"{brand}의 {intent}로 이해했어요.",
         )
     implicit_brand_followup = _implicit_brand_followup(question)
     if implicit_brand_followup is not None:
+        recogniser = ReferenceRecogniser.IMPLICIT_BRAND
         if previous_turn is None or not previous_turn.slots.anchor_brand:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, recogniser)
         prefix, intent = implicit_brand_followup
         brand = previous_turn.slots.anchor_brand
         resolved_prefix = "NeDrug: " if prefix else ""
-        return AnaphoraResolution(
-            resolved_question=f"{resolved_prefix}{brand} {intent}",
+        return _resolved(
+            f"{resolved_prefix}{brand} {intent}",
+            recogniser,
+            question,
             brand=brand,
             interpretation_notice=f"{brand}의 {intent} 요청으로 이해했어요.",
         )
     if _GENERIC_REFERENCE_RE.match(question):
-        return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
-    if not any(pattern.search(question) for pattern in _REFERENCE_RES):
-        return AnaphoraResolution(resolved_question=question)
+        return _unresolved(question, ReferenceRecogniser.GENERIC)
+    in_sentence = next(
+        (
+            name
+            for pattern, name in (
+                (_FIRST_RANK_RE, ReferenceRecogniser.FIRST_RANK),
+                (_ANCHOR_RE, ReferenceRecogniser.ANCHOR_BRAND),
+                (_PERIOD_RE, ReferenceRecogniser.SAME_PERIOD),
+                (_MARKET_RE, ReferenceRecogniser.IN_SENTENCE_MARKET),
+            )
+            if pattern.search(question)
+        ),
+        None,
+    )
+    if in_sentence is None:
+        # Nothing above claimed this question. When it arrived as a bare
+        # follow-up shape the resolver did have a reference on its hands and
+        # simply had no vocabulary for it, so say so instead of returning the
+        # default "no reference" and letting the router meet an unrewritten
+        # string. This is the only branch that reports pattern_miss.
+        return AnaphoraResolution(
+            resolved_question=question,
+            reference_status=_unclaimed_status(question, previous_turn),
+            candidate_shape=_bare_followup_shape(question),
+        )
     if previous_turn is None:
-        return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+        return _unresolved(question, in_sentence)
 
     slots = previous_turn.slots
     resolved = question
@@ -328,25 +513,25 @@ def resolve_anaphora(
 
     if _FIRST_RANK_RE.search(resolved):
         if not slots.ranked_brands:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, ReferenceRecogniser.FIRST_RANK)
         brand = slots.ranked_brands[0]
         reusable = next((item for item in slots.ranked if item.brand == brand and item.series), None)
         resolved = _FIRST_RANK_RE.sub(brand, resolved)
     if _ANCHOR_RE.search(resolved):
         brand = brand or slots.anchor_brand
         if not brand:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, ReferenceRecogniser.ANCHOR_BRAND)
         resolved = _ANCHOR_RE.sub(brand, resolved)
     if _PERIOD_RE.search(resolved):
         if not slots.period:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, ReferenceRecogniser.SAME_PERIOD)
         resolved = _PERIOD_RE.sub(slots.period, resolved)
     if _MARKET_RE.search(resolved):
         if not slots.market:
-            return AnaphoraResolution(resolved_question=question, unresolved_reference=True)
+            return _unresolved(question, ReferenceRecogniser.IN_SENTENCE_MARKET)
         market_hint = f"{slots.anchor_brand} 시장" if slots.anchor_brand else slots.market
         resolved = _MARKET_RE.sub(market_hint, resolved)
-    return AnaphoraResolution(resolved_question=resolved, brand=brand, reusable_ranked=reusable)
+    return _resolved(resolved, in_sentence, question, brand=brand, reusable_ranked=reusable)
 
 
 def requires_previous_turn(

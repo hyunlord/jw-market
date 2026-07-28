@@ -16,6 +16,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOO
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
+from jw_chat_agent_poc.service.conversation_context import ReferenceRecogniser, ReferenceStatus
 from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
 from jw_chat_agent_poc.service.answer_delivery import project_answer_delivery
 from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers as _ungrounded_numbers
@@ -34,6 +35,11 @@ _PLAN_SOURCE_ALLOW = frozenset({"ubist", "iqvia_nsa"})
 #: so a new reason cannot silently project as "other", plus the typed absence
 #: code the prescription contract emits.
 _REASON_CODE_ALLOW = frozenset({reason.value for reason in QueryFailureReason} | {"FIELD_NOT_EXPOSED"})
+#: How the anaphora resolver ended, and which recogniser claimed the question.
+#: Both are derived from the enums that write them, so a new value cannot
+#: silently project as "other".
+_REFERENCE_STATUS_ALLOW = frozenset({status.value for status in ReferenceStatus})
+_RECOGNISER_ALLOW = frozenset({recogniser.value for recogniser in ReferenceRecogniser})
 _MODEL_FAMILY_DEFAULT = "gemini-3-flash-preview"
 _EMPTY_TOOL_STATUSES = frozenset({"no_data", "unsupported", "error"})
 _ASSEMBLY_GAP_RATIO_THRESHOLD = 0.30
@@ -251,6 +257,7 @@ def _qa_trace(
             "route": _route(result),
             "gate": gate,
             "gate_reason": gate_reason,
+            "anaphora": _qa_anaphora(result),
         },
         "tools": _qa_tool_calls(result),
         "plan": _qa_plan(result),
@@ -263,6 +270,38 @@ def _qa_trace(
     if routing_v4 is not None:
         qa_trace["routing_v4"] = routing_v4
     return qa_trace
+
+
+def _qa_anaphora(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Project how the previous-turn resolver ended, before the router ran.
+
+    ``unresolved_reference`` alone could not answer this: it is ``False`` both
+    for a question that needed no resolving and for a bare follow-up the
+    resolver had no vocabulary for, and the second case reaches the router as an
+    unrewritten string whose subject only existed in the previous turn. Every
+    key is emitted unconditionally so "not observed" (null) stays distinct from
+    "no reference" (``not_anaphoric``).
+    """
+    items = result.get("_qa_anaphora")
+    observation = items if isinstance(items, Mapping) else {}
+    status = observation.get("status")
+    recogniser = observation.get("recogniser")
+    unresolved = observation.get("unresolved_reference")
+    shape = observation.get("candidate_shape")
+    return {
+        "status": (
+            (status if status in _REFERENCE_STATUS_ALLOW else _UNREGISTERED)
+            if isinstance(status, str) and status
+            else None
+        ),
+        "recogniser": (
+            (recogniser if recogniser in _RECOGNISER_ALLOW else _UNREGISTERED)
+            if isinstance(recogniser, str) and recogniser
+            else None
+        ),
+        "candidate_shape": shape if isinstance(shape, bool) else None,
+        "unresolved_reference": unresolved if isinstance(unresolved, bool) else None,
+    }
 
 
 def _qa_plan(result: Mapping[str, Any]) -> dict[str, Any]:
