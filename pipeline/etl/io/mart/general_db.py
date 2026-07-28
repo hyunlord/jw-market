@@ -93,6 +93,27 @@ def _iter_jsonl_batches(
         yield batch
 
 
+def _delete_source_rows_in_batches(
+    conn: Any,
+    cursor: Any,
+    table: str,
+    source: str,
+    *,
+    batch_size: int,
+) -> None:
+    while True:
+        deleted = int(
+            cursor.execute(
+                f"DELETE FROM {table} WHERE source=%s ORDER BY id LIMIT %s",
+                (source, batch_size),
+            )
+            or 0
+        )
+        if deleted <= 0:
+            return
+        conn.commit()
+
+
 def replace_source_rows_from_jsonl(
     *,
     source: str,
@@ -112,16 +133,27 @@ def replace_source_rows_from_jsonl(
     try:
         conn.autocommit(False)
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM mart_general_brand_metric WHERE source=%s",
-                (source,),
-            )
-            cur.execute(
-                "DELETE FROM mart_general_market_metric WHERE source=%s",
-                (source,),
-            )
             if commit_each_batch:
-                conn.commit()
+                for table in (
+                    "mart_general_brand_metric",
+                    "mart_general_market_metric",
+                ):
+                    _delete_source_rows_in_batches(
+                        conn,
+                        cur,
+                        table,
+                        source,
+                        batch_size=batch_size,
+                    )
+            else:
+                cur.execute(
+                    "DELETE FROM mart_general_brand_metric WHERE source=%s",
+                    (source,),
+                )
+                cur.execute(
+                    "DELETE FROM mart_general_market_metric WHERE source=%s",
+                    (source,),
+                )
             for rows in _iter_jsonl_batches(brand_path, batch_size=batch_size):
                 _insert_rows_with_cursor(
                     cur,

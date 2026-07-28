@@ -131,6 +131,44 @@ def test_jsonl_source_replace_commits_each_batch_for_isolated_build(
         commit_each_batch=True,
     )
 
-    assert connection.commit_calls == 3
+    assert connection.commit_calls == 2
     assert connection.rolled_back is False
     assert connection.closed is True
+
+
+def test_jsonl_source_replace_bounds_isolated_source_deletes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = _FakeConnection()
+    delete_results = iter((2, 1, 0, 1, 0))
+
+    def execute(sql: str, params: tuple[object, ...]) -> int:
+        connection.cursor_instance.execute_calls.append((sql, params))
+        if sql.startswith("DELETE FROM "):
+            return next(delete_results)
+        return 0
+
+    connection.cursor_instance.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(general_db, "mariadb_connect", lambda: connection)
+    brand_path, market_path = _paths(tmp_path)
+
+    general_db.replace_source_rows_from_jsonl(
+        source="ubist",
+        brand_path=brand_path,
+        market_path=market_path,
+        brand_columns=["brand_key", "source"],
+        market_columns=["atc4_code", "source"],
+        batch_size=2,
+        commit_each_batch=True,
+    )
+
+    delete_calls = [
+        (sql, params)
+        for sql, params in connection.cursor_instance.execute_calls
+        if sql.startswith("DELETE FROM ")
+    ]
+    assert len(delete_calls) == 5
+    assert all("ORDER BY id LIMIT %s" in sql for sql, _params in delete_calls)
+    assert all(params == ("ubist", 2) for _sql, params in delete_calls)
+    assert connection.commit_calls == 5
