@@ -140,6 +140,25 @@ def mart_json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def mart_json_default_or_str(value: Any) -> Any:
+    """Point-aware default= for call sites that already promised a str() fallback.
+
+    conversation_history and history_projection persist their payloads with default=str, so a
+    point there never raised: it silently became a repr string and its ms, rank, brand and
+    unknown keys stopped being readable at all. Handing those two mart_json_default instead would
+    fix the point and break everything else they carry -- datetime, date, Decimal, UUID, set and
+    any object with a __str__ all reach str() there today and have to keep reaching it.
+
+    So a point serialises as the object the loader read, and anything else keeps the old
+    behaviour. Point handling is delegated rather than restated, so a point type added to
+    mart_json_default is picked up here without a second edit.
+    """
+    try:
+        return mart_json_default(value)
+    except TypeError:
+        return str(value)
+
+
 def dumps_mart_json(value: Any, **kwargs: Any) -> str:
     """json.dumps with the point hook already wired, for new call sites."""
     kwargs.setdefault("default", mart_json_default)
