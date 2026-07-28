@@ -95,10 +95,10 @@ spec:
           resources:
             requests:
               cpu: "2"
-              memory: 8Gi
+              memory: 12Gi
             limits:
               cpu: "2"
-              memory: 8Gi
+              memory: 12Gi
           volumeMounts:
             - name: ingest-input
               mountPath: /nfs-root/autoIngestion

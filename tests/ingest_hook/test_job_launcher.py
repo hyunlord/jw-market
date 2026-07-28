@@ -68,8 +68,14 @@ def test_reference_job_requires_same_api_node_pool():
     )
 
     pod_spec = template["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
     assert "nodeSelector" not in pod_spec
     assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
+    assert template["spec"]["backoffLimit"] == 0
+    assert container["resources"] == {
+        "requests": {"cpu": "2", "memory": "12Gi"},
+        "limits": {"cpu": "2", "memory": "12Gi"},
+    }
 
 
 def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):
@@ -419,8 +425,8 @@ def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
     }
     assert env["INGEST_MART_PROMOTION_APPROVED"]["value"] == "1"
     assert body["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "2", "memory": "8Gi"},
-        "limits": {"cpu": "2", "memory": "8Gi"},
+        "requests": {"cpu": "2", "memory": "12Gi"},
+        "limits": {"cpu": "2", "memory": "12Gi"},
     }
     assert env["INGEST_MART_SOURCE_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_TARGET_DB"]["value"] == "jw_mart"

@@ -164,11 +164,11 @@ def render_job(
         }
         if config.load_mode(required=False) == "shadow"
         else {
-            # The partitioned full-corpus builder is verified in an 8 GiB
-            # cgroup. Keep production on that same contract; a 4 GiB limit
-            # kills S4 before its spill-bounded ATC4 pass can complete.
-            "requests": {"cpu": "2", "memory": "8Gi"},
-            "limits": {"cpu": "2", "memory": "8Gi"},
+            # The full 61-month mart calculation reached the 8 GiB cgroup
+            # ceiling. Keep request equal to limit so scheduling reserves the
+            # approved 12 GiB headroom before the Job starts.
+            "requests": {"cpu": "2", "memory": "12Gi"},
+            "limits": {"cpu": "2", "memory": "12Gi"},
         }
     )
     if not any(item["name"] == _MARKET_OUTPUT_VOLUME for item in volume_mounts):
