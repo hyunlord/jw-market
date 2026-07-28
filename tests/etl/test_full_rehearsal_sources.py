@@ -97,13 +97,25 @@ def test_mart_stage_rejects_same_nonrehearsal_schema(stage, database: str) -> No
 
 def test_s4_mart_limits_compute_to_requested_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     computed: list[str] = []
+    compute_kwargs: list[dict[str, object]] = []
+
+    def record_compute(
+        source: str, **kwargs: object
+    ) -> tuple[list[object], list[object], dict[str, object]]:
+        computed.append(source)
+        compute_kwargs.append(kwargs)
+        return [], [], {
+            "source": source,
+            "brand_rows": 1,
+            "market_rows": 1,
+            "measures": {},
+        }
 
     monkeypatch.setattr(s4_mart, "_ensure_isolated_schema", lambda *_args: None)
     monkeypatch.setattr(s4_mart, "_configure_mart_env", lambda *_args: None)
     monkeypatch.setattr(
         "pipeline.etl.io.mart.layer3_compute_general_v3.compute_general",
-        lambda source, **_kwargs: computed.append(source)
-        or ([], [], {"source": source, "brand_rows": 1, "market_rows": 1, "measures": {}}),
+        record_compute,
     )
 
     rc = s4_mart.run(
@@ -116,3 +128,4 @@ def test_s4_mart_limits_compute_to_requested_sources(monkeypatch: pytest.MonkeyP
 
     assert rc == 0
     assert computed == ["ubist"]
+    assert compute_kwargs[0]["commit_each_batch"] is True

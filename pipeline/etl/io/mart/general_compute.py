@@ -62,6 +62,7 @@ def compute_general(
     ml: str | None = None,
     spool_dir: Path | None = None,
     memory_budget_bytes: int | None = None,
+    commit_each_batch: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if source not in ALLOWED_SOURCES:
         raise ValueError(f"unsupported source: {source}")
@@ -214,6 +215,7 @@ def compute_general(
                     market_path=market_output_path,
                     brand_columns=GENERAL_BRAND_INSERT_COLUMNS,
                     market_columns=GENERAL_MARKET_INSERT_COLUMNS,
+                    commit_each_batch=commit_each_batch,
                 )
         else:
             for measure in MEASURES_BY_SOURCE[source]:

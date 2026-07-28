@@ -101,8 +101,13 @@ def replace_source_rows_from_jsonl(
     brand_columns: list[str],
     market_columns: list[str],
     batch_size: int = 500,
+    commit_each_batch: bool = False,
 ) -> None:
-    """Atomically replace one source after all partition outputs are durable."""
+    """Replace one source after all partition outputs are durable.
+
+    Isolated build schemas may commit bounded batches because they are never
+    published until the later atomic table-group rename succeeds.
+    """
     conn = mariadb_connect()
     try:
         conn.autocommit(False)
@@ -115,6 +120,8 @@ def replace_source_rows_from_jsonl(
                 "DELETE FROM mart_general_market_metric WHERE source=%s",
                 (source,),
             )
+            if commit_each_batch:
+                conn.commit()
             for rows in _iter_jsonl_batches(brand_path, batch_size=batch_size):
                 _insert_rows_with_cursor(
                     cur,
@@ -122,6 +129,8 @@ def replace_source_rows_from_jsonl(
                     brand_columns,
                     rows,
                 )
+                if commit_each_batch:
+                    conn.commit()
             for rows in _iter_jsonl_batches(market_path, batch_size=batch_size):
                 _insert_rows_with_cursor(
                     cur,
@@ -129,7 +138,10 @@ def replace_source_rows_from_jsonl(
                     market_columns,
                     rows,
                 )
-        conn.commit()
+                if commit_each_batch:
+                    conn.commit()
+        if not commit_each_batch:
+            conn.commit()
     except Exception:
         conn.rollback()
         raise

@@ -34,7 +34,7 @@ class _FakeConnection:
     def __init__(self, *, fail_insert: bool = False) -> None:
         self.cursor_instance = _FakeCursor(fail_insert=fail_insert)
         self.autocommit_values: list[bool] = []
-        self.committed = False
+        self.commit_calls = 0
         self.rolled_back = False
         self.closed = False
 
@@ -45,7 +45,7 @@ class _FakeConnection:
         return self.cursor_instance
 
     def commit(self) -> None:
-        self.committed = True
+        self.commit_calls += 1
 
     def rollback(self) -> None:
         self.rolled_back = True
@@ -87,7 +87,7 @@ def test_jsonl_source_replace_commits_both_tables_atomically(
     assert connection.autocommit_values == [False]
     assert len(connection.cursor_instance.execute_calls) == 2
     assert connection.cursor_instance.executemany_calls == 2
-    assert connection.committed is True
+    assert connection.commit_calls == 1
     assert connection.rolled_back is False
     assert connection.closed is True
 
@@ -109,6 +109,28 @@ def test_jsonl_source_replace_rolls_back_injected_insert_failure(
             market_columns=["atc4_code", "source"],
         )
 
-    assert connection.committed is False
+    assert connection.commit_calls == 0
     assert connection.rolled_back is True
+    assert connection.closed is True
+
+
+def test_jsonl_source_replace_commits_each_batch_for_isolated_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = _FakeConnection()
+    monkeypatch.setattr(general_db, "mariadb_connect", lambda: connection)
+    brand_path, market_path = _paths(tmp_path)
+
+    general_db.replace_source_rows_from_jsonl(
+        source="ubist",
+        brand_path=brand_path,
+        market_path=market_path,
+        brand_columns=["brand_key", "source"],
+        market_columns=["atc4_code", "source"],
+        commit_each_batch=True,
+    )
+
+    assert connection.commit_calls == 3
+    assert connection.rolled_back is False
     assert connection.closed is True

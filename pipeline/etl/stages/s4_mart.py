@@ -171,6 +171,7 @@ def run(params: dict[str, Any]) -> int:
                 max_rows=params.get("max_rows"),
                 spool_dir=Path(params["spool_dir"]) if params.get("spool_dir") else None,
                 memory_budget_bytes=params.get("memory_budget_bytes"),
+                commit_each_batch=True,
             )
             stats.append(source_stats)
             print(
