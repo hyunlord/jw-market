@@ -17,6 +17,18 @@ from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope_intent import detect_market_scope_intent
 
 
+class BrandUnresolvedError(LookupError):
+    """The planner needs a brand and the question does not name one.
+
+    A subclass, not a new hierarchy: LookupError is raised in dozens of places in
+    this package and several callers already handle it, so widening any of them
+    to recognise this case would also catch mart, period and catalog failures and
+    report them as a brand question. Callers that want to ask the user which
+    brand was meant catch this type; everything else keeps its previous
+    behaviour, because this is still a LookupError.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class GenosToolPlanner:
     fallback: ToolPlanner | None = None
@@ -698,8 +710,8 @@ def _brand(question: str, allowed_brands: tuple[str, ...]) -> str:
     if len(allowed_brands) == 1:
         return next(iter(allowed_brands))
     if len(matches) > 1:
-        raise LookupError(f"brand is unresolved: multiple brands matched ({', '.join(matches)})")
-    raise LookupError("brand is unresolved: ask the user to specify a brand")
+        raise BrandUnresolvedError(f"brand is unresolved: multiple brands matched ({', '.join(matches)})")
+    raise BrandUnresolvedError("brand is unresolved: ask the user to specify a brand")
 
 
 def _brands(question: str, allowed_brands: tuple[str, ...]) -> tuple[str, ...]:
@@ -744,7 +756,7 @@ def _expanded_tool_calls(question: str, allowed_brands: tuple[str, ...], allowed
     if not brands and len(allowed_brands) == 1:
         brands = (next(iter(allowed_brands)),)
     if not brands:
-        raise LookupError("brand is unresolved: ask the user to specify a brand")
+        raise BrandUnresolvedError("brand is unresolved: ask the user to specify a brand")
     calls: list[ToolCallPlan] = []
     if any(token in question for token in ("뉴스", "이슈")):
         calls.extend(ToolCallPlan("search_news", {"brand": brand, "query": _news_query(question)}, "뉴스/이슈 확인") for brand in brands)

@@ -114,6 +114,13 @@ class MarkdownResponseBuilder:
         markdown = self._join(summary_md, interpretation_md, sources_md)
         return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
 
+    def brand_unresolved(self, message: str) -> MarkdownResponse:
+        summary_md = ""
+        interpretation_md = f"## 해석\n\n- {cell(message)}"
+        sources_md = provenance_source_block([], ["brand_unresolved"])
+        markdown = self._join(summary_md, interpretation_md, sources_md)
+        return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
+
     @staticmethod
     def _static_response(
         markdown: str,
