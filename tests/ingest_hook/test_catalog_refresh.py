@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -233,6 +234,33 @@ def test_serving_anchor_failure_remains_fail_closed(
         )
 
     assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    ("expected_name", "source_name", "matches"),
+    (
+        ("MI Master 260518.xlsx", "MI Master 260518.xlsx", True),
+        (
+            "MI Master 한글.xlsx",
+            unicodedata.normalize("NFD", "MI Master 한글.xlsx"),
+            True,
+        ),
+        ("MI Master 한글.xlsx", "MI Master 다른파일.xlsx", False),
+        ("MI-Master-260518.xlsx", "MI-Master-260518.xlsx", True),
+    ),
+)
+def test_mi_master_source_version_comparison_normalizes_unicode(
+    expected_name: str,
+    source_name: str,
+    matches: bool,
+) -> None:
+    assert (
+        catalog_refresh._mi_master_source_versions_match(
+            Path(expected_name),
+            (f"/serving/catalog/{source_name}",),
+        )
+        is matches
+    )
 
 
 def test_missing_mi_master_fails_before_catalog_generation(tmp_path: Path) -> None:

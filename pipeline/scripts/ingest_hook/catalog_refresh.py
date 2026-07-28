@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import os
 import re
 import shutil
-from typing import Callable
+import unicodedata
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 import pyarrow.parquet as pq
 
@@ -33,7 +34,6 @@ from pipeline.etl.io.catalog.postfix.molecule import apply_molecule_worklist
 from pipeline.etl.io.catalog.postfix.rebuild_cd import rebuild_cd_brand
 from pipeline.etl.stages import s2_catalog
 
-
 MI_MASTER_FINGERPRINT = "mi_master_sha256"
 
 
@@ -50,6 +50,18 @@ class _CatalogResult:
     name: str
     output_path: Path
     rows: int
+
+
+def _mi_master_source_versions_match(
+    mi_master: Path,
+    source_file_versions: tuple[str, ...],
+) -> bool:
+    expected = unicodedata.normalize("NFC", mi_master.name)
+    actual = tuple(
+        unicodedata.normalize("NFC", Path(value).name)
+        for value in source_file_versions
+    )
+    return actual == (expected,)
 
 
 def ensure_nfs_catalog(
@@ -215,7 +227,7 @@ def _anchor_candidate_to_serving(
     expected_version = mi_master.name
     for item in exports:
         versions = tuple(Path(value).name for value in item.source_file_versions)
-        if versions != (expected_version,):
+        if not _mi_master_source_versions_match(mi_master, item.source_file_versions):
             raise RuntimeError(
                 f"{item.table_name} source version does not match MI Master: "
                 f"expected={expected_version!r} actual={versions!r}"
