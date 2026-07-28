@@ -683,6 +683,14 @@ def _deterministic_tool_use_external_answer(
     return cleanup_markdown_answer(answer)
 
 
+def _source_notice_markdown(notice_md: str) -> str:
+    return "\n".join(
+        line
+        for line in notice_md.splitlines()
+        if "UBIST" in line or "IQVIA" in line
+    ).strip()
+
+
 def _uploaded_file_context(agent_result: dict[str, Any]) -> str:
     value = agent_result.get("file_context")
     return value.strip() if isinstance(value, str) else ""
@@ -1240,6 +1248,9 @@ class GenosClient:
         file_context: str = "",
     ) -> list[dict[str, str]]:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+        source_notice_md = _source_notice_markdown(
+            str(markdown_response.get("notice_md") or "")
+        )
         prompt_fact_md = _prompt_fact_markdown(fact_md)
         mandatory_md = mandatory_fact_block(fact_md)
         uploaded_md = file_context.strip() or "- 없음"
@@ -1303,6 +1314,7 @@ class GenosClient:
                     f"필수 답변 fact (각 행을 본문에 반영):\n{mandatory_md or '- 없음'}\n\n"
                     f"단일 브랜드 추이 산문용 trend fact:\n{trend_fact_md or '- 없음'}\n\n"
                     f"업로드 파일 컨텍스트 (현재 세션 첨부 파일 검색 결과, 내부 mart fact와 별도):\n{uploaded_md}\n\n"
+                    f"요청 source 및 측정 기준 안내:\n{source_notice_md or '- 없음'}\n\n"
                     "확정 fact set:\n"
                     f"{prompt_fact_md or '- 없음'}\n\n"
                     "작성 형식: 자연어 문단을 먼저 쓰고, 결론과 질문 의도별 핵심 근거·시사점·한계를 fact 범위 안에서 설명한다. 기존 표·차트·뉴스는 그대로 유지하고 자연어 본문 뒤에 보조 근거로 둔다. "

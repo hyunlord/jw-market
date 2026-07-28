@@ -17,6 +17,15 @@ from jw_chat_agent_poc.agent_loop.parallel_execution import (
 )
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner, HeuristicToolPlanner
+from jw_chat_agent_poc.agent_loop.requested_source import (
+    SOURCE_BASIS_LABEL as _SOURCE_BASIS_LABEL,
+    SOURCE_DOMAIN_NOTE as _SOURCE_DOMAIN_NOTE,
+    extract_requested_sources,
+    requested_source_for_query,
+    served_source_from_calls,
+    source_domain_note,
+    source_mismatch_notice,
+)
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
@@ -189,6 +198,9 @@ class ToolUseAgent:
         deterministic_plan_kind: str | None = None
         bq_analysis_validation = "not_applicable"
         bq_missing_sources: tuple[str, ...] = ()
+        requested_sources = extract_requested_sources(question)
+        requested_source = requested_sources[0] if len(requested_sources) == 1 else None
+        selected_requested_source: str | None = None
         llm_plan_calls = 0
         for step in range(1, self.max_steps + 1):
             allowed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
@@ -210,6 +222,10 @@ class ToolUseAgent:
             )
             with stage(timing, self._stage_name("market_snapshot", "deep_research_plan"), "tool catalog and market snapshot"):
                 tool_schemas = facade.schemas(planner_allowed_brands)
+            selected_requested_source = requested_source_for_query(
+                requested_sources,
+                facade.available_sources(),
+            )
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
             brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
             bq_plan = (
@@ -229,6 +245,7 @@ class ToolUseAgent:
                     self.resolver,
                     period_grounding,
                     tool_schemas,
+                    selected_requested_source,
                 )
                 if (
                     bq_plan is None
@@ -387,6 +404,8 @@ class ToolUseAgent:
                     "deterministic_plan_hit": deterministic_plan_hit,
                     "deterministic_plan_kind": deterministic_plan_kind,
                     "llm_plan_calls": llm_plan_calls,
+                    "requested_source": requested_source,
+                    "served_source": served_source_from_calls(calls),
                     "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
                 },
                 "tool_calls": calls,
@@ -543,6 +562,11 @@ class ToolUseAgent:
                         )
                         calls.append(analysis_call)
         sources = _sources(calls)
+        served_source = served_source_from_calls(calls)
+        if requested_source is not None and served_source is not None:
+            mismatch_notice = source_mismatch_notice(requested_source, served_source)
+            if mismatch_notice is not None and mismatch_notice not in notices:
+                notices.append(mismatch_notice)
         selection = _tool_selection(question, calls)
         with stage(timing, self._stage_name("fact_assembly", "deep_research_evidence"), "markdown fact set build"):
             markdown = MarkdownResponseBuilder().build(brand=brand, calls=calls, sources=sources or ["cache"], notices=notices)
@@ -561,6 +585,8 @@ class ToolUseAgent:
                 "llm_plan_calls": llm_plan_calls,
                 "bq_analysis_validation": bq_analysis_validation,
                 "bq_missing_sources": list(bq_missing_sources),
+                "requested_source": requested_source,
+                "served_source": served_source,
                 "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
                 **selection,
             },
@@ -579,24 +605,6 @@ def _bq_source_label(source: str) -> str:
     return {"iqvia_nsa": "IQVIA NSA", "ubist": "UBIST"}.get(source, source)
 
 
-#: What each source actually measures. A market carries only the sources its own
-#: definition is built on, so a source being unavailable here is a statement about
-#: measurement basis, not about the brand being absent from that vendor's data.
-_SOURCE_BASIS_LABEL: Final[dict[str, str]] = {
-    "ubist": "원외 처방(UBIST)",
-    "iqvia_nsa": "제조사 출하(IQVIA NSA)",
-}
-#: Both labels are followed by the noun "기준", so the sentence stays grammatical
-#: whichever way round the pair is substituted. Carries no digits on purpose:
-#: verify_markdown_numbers scans the whole rendered answer and any number token that
-#: is not backed by evidence flips the response into its verification-failed path.
-_SOURCE_DOMAIN_NOTE: Final[str] = (
-    "이 시장은 {available} 기준으로 정의돼 있습니다. "
-    "측정 대상이 다른 {missing} 기준과는 값이 서로 다르며, "
-    "두 기준 사이에는 유통 재고, 병원 직거래, 반품, 원내 처방이 있습니다."
-)
-
-
 def _source_domain_note(missing_sources: tuple[str, ...]) -> str | None:
     """Explain a missing source as a measurement-basis difference.
 
@@ -606,16 +614,7 @@ def _source_domain_note(missing_sources: tuple[str, ...]) -> str | None:
     gets no note, because the basis sentence would then be guessing.
     """
 
-    known = [source for source in missing_sources if source in _SOURCE_BASIS_LABEL]
-    if len(known) != 1 or len(missing_sources) != 1:
-        return None
-    available = next(
-        source for source in _SOURCE_BASIS_LABEL if source != known[0]
-    )
-    return _SOURCE_DOMAIN_NOTE.format(
-        available=_SOURCE_BASIS_LABEL[available],
-        missing=_SOURCE_BASIS_LABEL[known[0]],
-    )
+    return source_domain_note(missing_sources)
 
 
 def _deep_tool_progress_summary(execution: ToolExecution) -> str:
