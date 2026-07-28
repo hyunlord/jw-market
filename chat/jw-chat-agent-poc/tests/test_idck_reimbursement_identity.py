@@ -27,9 +27,10 @@ LIVALOZET_NOTICE = (
     "Ezetimibe + Rosuvastatin calcium 복합경구제(품명: 로수젯정 등)"
 )
 IDENTITY_NOTICE = (
-    "주의: 조회된 근거는 리바로젯 복합제 기준이며, "
-    "요청하신 리바로 단일제 기준과 다릅니다. "
-    "아래 내용은 제품 identity 불일치 참고 근거입니다."
+    "요청하신 리바로 단일제 급여기준은 제공할 수 없습니다. "
+    "연결된 고시가 성분 구성이 다른 복합제 기준으로 확인되어, "
+    "요청하신 제품의 기준으로 사용할 수 없습니다. "
+    "확인이 필요하시면 심사평가원 고시에서 해당 제품명으로 직접 확인해 주세요."
 )
 
 
@@ -58,11 +59,13 @@ def test_projector_detects_livalo_notice_identity_mismatch() -> None:
         resolver=BrandResolver(mode="fixture"),
     )
 
-    assert envelope.ok is True
+    assert envelope.ok is False
+    assert envelope.error_code == "IDENTITY_MISMATCH"
     assert envelope.raw["identity_status"] == "mismatch"
     assert envelope.raw["identity_match"] is False
     assert envelope.raw["identity_notice"] == IDENTITY_NOTICE
-    assert IDENTITY_NOTICE in envelope.evidence[0].source_locator
+    assert envelope.error_message == IDENTITY_NOTICE
+    assert envelope.evidence == ()
 
 
 def test_matching_livalozet_identity_does_not_add_notice() -> None:

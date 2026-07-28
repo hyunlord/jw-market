@@ -23,6 +23,16 @@ from jw_chat_agent_poc.tools.external.hira_reimbursement import (
 
 _REIMBURSEMENT_TOOL: Final[str] = "hira_reimbursement_criteria"
 _IDENTITY_NOTICE_PREFIX: Final[str] = "주의: 조회된 근거는 "
+# A mismatched notice is withheld, not annotated. Reimbursement criteria are
+# quoted into downstream reports, so a warning that precedes the notice body
+# does not survive the copy: whoever pastes the criteria pastes them without
+# the warning and then bills against another product's rules. The marker is
+# what identifies our own withholding sentence to the notice surface, and it
+# doubles as the reason the body is absent so the answer never degrades into
+# "lookup failed" for a cause that is actually "the linked notice is a
+# different product".
+_IDENTITY_BLOCK_MARKER: Final[str] = "급여기준은 제공할 수 없습니다"
+_IDENTITY_BLOCK_CODE: Final[str] = "IDENTITY_MISMATCH"
 _IDENTITY_STATUSES: Final[frozenset[str]] = frozenset({"match", "mismatch", "unverifiable"})
 _PRODUCT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"품명\s*[:：]\s*(?P<products>[^)\n|]+)",
@@ -86,11 +96,30 @@ def reimbursement_envelope(
         if resolver is not None
         else _IdentityDecision("unverifiable", None)
     )
-    source_locator = (
-        f"{identity.notice}\n\n{data.raw_text}"
-        if identity.notice
-        else data.raw_text
-    )
+    if identity.status == "mismatch":
+        # Withhold before the fact exists. The notice body reaches the answer,
+        # the projected evidence and the planner's message history through this
+        # one fact, so declining to build it closes all three at once and keeps
+        # the other product's criteria out of the model's context entirely.
+        return ToolEnvelope(
+            ok=False,
+            preview=identity.notice,
+            evidence=(),
+            raw={
+                "retrieval": result.retrieval,
+                "cache_status": result.cache_status.value,
+                "cache_lookup_status": result.cache_lookup_status.value,
+                "cache_schema": result.cache_schema,
+                "cache_write": result.cache_write,
+                "identity_status": identity.status,
+                "identity_match": identity.match,
+                "identity_notice_required": bool(identity.notice),
+                "identity_notice": identity.notice,
+                "body_suppressed": True,
+            },
+            error_code=_IDENTITY_BLOCK_CODE,
+            error_message=identity.notice,
+        )
     fact = EvidenceFact(
         fact_id=f"hira_reimbursement:{subject}:{data.source_date or 'undated'}",
         subject=subject,
@@ -99,7 +128,7 @@ def reimbursement_envelope(
         unit=None,
         period=data.source_date,
         source_name="심사평가원(HIRA) 보험인정기준",
-        source_locator=source_locator,
+        source_locator=data.raw_text,
         raw_ref=data.source_url,
     )
     return ToolEnvelope(
@@ -118,6 +147,7 @@ def reimbursement_envelope(
             "identity_match": identity.match,
             "identity_notice_required": bool(identity.notice),
             "identity_notice": identity.notice,
+            "body_suppressed": False,
         },
         error_code=None,
         error_message=None,
@@ -131,6 +161,7 @@ def public_reimbursement_identity_fields(raw: object) -> dict[str, object]:
     match = raw.get("identity_match")
     notice_required = raw.get("identity_notice_required")
     notice = raw.get("identity_notice")
+    suppressed = raw.get("body_suppressed")
     if status not in _IDENTITY_STATUSES or not isinstance(notice_required, bool):
         return {}
     if match is not None and not isinstance(match, bool):
@@ -139,6 +170,10 @@ def public_reimbursement_identity_fields(raw: object) -> dict[str, object]:
         "identity_status": status,
         "identity_match": match,
         "identity_notice_required": notice_required,
+        # Whether the notice body was actually withheld, kept separate from
+        # whether a disclosure was decided. "Decided" and "reached the user"
+        # are different claims, and only the second one protects anybody.
+        "body_suppressed": suppressed if isinstance(suppressed, bool) else False,
     }
     if (
         notice_required
@@ -168,10 +203,18 @@ def reimbursement_identity_notices(tool_calls: Sequence[Mapping[str, Any]]) -> t
 
 
 def is_reimbursement_identity_notice(notice: str) -> bool:
+    """Recognise our own identity sentence on the notice surface.
+
+    Both shapes are ours: the annotation that accompanies a retained body and
+    the withholding sentence that replaces one. Digits stay disqualifying for
+    both, because the notice appender drops any notice containing one and a
+    silently dropped disclosure is worse than none.
+    """
+
     return (
         notice.startswith(_IDENTITY_NOTICE_PREFIX)
-        and not any(character.isdigit() for character in notice)
-    )
+        or _IDENTITY_BLOCK_MARKER in notice
+    ) and not any(character.isdigit() for character in notice)
 
 
 def _reimbursement_identity(
@@ -217,13 +260,36 @@ def _reimbursement_identity(
         related,
         key=lambda item: len(requested_molecules & _molecule_set(item.molecule_en)),
     )
-    notice = (
-        f"{_IDENTITY_NOTICE_PREFIX}{closest.canonical_brand} "
-        f"{_form_label(closest.molecule_en)} 기준이며, 요청하신 "
-        f"{requested.canonical_brand} {_form_label(requested.molecule_en)} 기준과 다릅니다. "
-        "아래 내용은 제품 identity 불일치 참고 근거입니다."
+    return _IdentityDecision("mismatch", False, _block_notice(requested, closest))
+
+
+def _block_notice(requested: BrandResolution, closest: BrandResolution) -> str:
+    """State the cause without reproducing any of the other product's record.
+
+    The mismatched product is described by dosage form, never by name. Naming it
+    would put the very token the withholding exists to suppress back into an
+    answer that gets pasted into reports, and the form alone already tells the
+    reader why their request could not be served. Nothing here is invented: the
+    form is computed from the molecule set the catalog already resolved.
+
+    No digits, because the notice surface drops any notice containing one and a
+    silently dropped disclosure is worse than no disclosure at all.
+    """
+
+    specific = (
+        f"요청하신 {requested.canonical_brand} {_form_label(requested.molecule_en)} "
+        f"{_IDENTITY_BLOCK_MARKER}. 연결된 고시가 성분 구성이 다른 "
+        f"{_form_label(closest.molecule_en)} 기준으로 확인되어, 요청하신 제품의 "
+        "기준으로 사용할 수 없습니다. 확인이 필요하시면 심사평가원 고시에서 "
+        "해당 제품명으로 직접 확인해 주세요."
     )
-    return _IdentityDecision("mismatch", False, notice)
+    if not any(character.isdigit() for character in specific):
+        return specific
+    return (
+        f"요청하신 제품의 {_IDENTITY_BLOCK_MARKER}. 연결된 고시가 성분 구성이 "
+        "다른 제품 기준으로 확인되어, 요청하신 제품의 기준으로 사용할 수 없습니다. "
+        "확인이 필요하시면 심사평가원 고시를 직접 확인해 주세요."
+    )
 
 
 def _notice_product_names(raw_text: str) -> tuple[str, ...]:
