@@ -57,9 +57,20 @@ _ORDERED_LIST_MARKER_RE: Final[re.Pattern[str]] = re.compile(
 #: as a shape rather than a list of buckets so a range nobody has seen still
 #: matches, and applied only after periods have been claimed so that a period
 #: written with a dash is never mistaken for one of these.
+#:
+#: The third alternative is the same label written with an underscore, which is
+#: how HIRA actually sends age bands: "0_9세" … "40_49세", sometimes prefixed by
+#: sex ("남 0_9세"). The first two alternatives accept only a dash or a tilde, so
+#: for five live answers every one of those ten boundaries stayed a claim that no
+#: fact could attest. Here the unit is required rather than optional, which is
+#: what separates a band from a number written with a digit separator: "2020_2024"
+#: is a period, "200_000" and "1_5" are values, and none of them carry 세/대/개월/년
+#: after the second bound. The 1-3 digit bound is deliberate for the same reason —
+#: it is what keeps the live period "2020~2024" out of this pass.
 _RANGE_LABEL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![\d.])\d{1,3}\s*[-~]\s*\d{1,3}\s*(?:세|대|개월|년)?(?![\d.])"
     r"|(?<![A-Za-z0-9])[A-Z]\d{2}\s*[-~]\s*[A-Z]\d{2}(?![A-Za-z0-9])"
+    r"|(?<![\dA-Za-z._])\d{1,3}\s*_\s*\d{1,3}\s*(?:세|대|개월|년)(?![\dA-Za-z.])"
 )
 _NUMBER_OCCURRENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9])"
