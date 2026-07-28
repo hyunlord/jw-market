@@ -69,6 +69,20 @@ spec:
               value: ""
             - name: INGEST_COMPLETION_WEBHOOK_ATTEMPTS
               value: "4"
+            # Forecast refresh is fail-closed unless its numerical runtime is
+            # identical across the trigger-created Jobs.
+            - name: NPY_DISABLE_CPU_FEATURES
+              value: X86_V3,X86_V4
+            - name: OPENBLAS_CORETYPE
+              value: Nehalem
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: OPENBLAS_NUM_THREADS
+              value: "1"
+            - name: MKL_NUM_THREADS
+              value: "1"
+            - name: NUMEXPR_NUM_THREADS
+              value: "1"
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT

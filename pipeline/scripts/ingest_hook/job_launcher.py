@@ -53,6 +53,14 @@ _PASSTHROUGH_VALUES = (
     "INGEST_COMPLETION_WEBHOOK_URL",
     "INGEST_COMPLETION_WEBHOOK_ATTEMPTS",
 )
+_FORECAST_RUNTIME_PINS = {
+    "NPY_DISABLE_CPU_FEATURES": "X86_V3,X86_V4",
+    "OPENBLAS_CORETYPE": "Nehalem",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+}
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
@@ -68,6 +76,10 @@ def _job_env() -> list[dict]:
         for name in _PASSTHROUGH_VALUES
         if os.environ.get(name)
     ]
+    env.extend(
+        {"name": name, "value": value}
+        for name, value in _FORECAST_RUNTIME_PINS.items()
+    )
 
     def secret_ref(name, secret, key):
         env.append({"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}})

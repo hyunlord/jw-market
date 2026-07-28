@@ -249,6 +249,12 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
     assert by_name["APP_VERSION"]["value"] == "a" * 40
     assert by_name["INGEST_JOB_IMAGE"]["value"].endswith("@sha256:" + ("b" * 64))
+    assert by_name["NPY_DISABLE_CPU_FEATURES"]["value"] == "X86_V3,X86_V4"
+    assert by_name["OPENBLAS_CORETYPE"]["value"] == "Nehalem"
+    assert by_name["OMP_NUM_THREADS"]["value"] == "1"
+    assert by_name["OPENBLAS_NUM_THREADS"]["value"] == "1"
+    assert by_name["MKL_NUM_THREADS"]["value"] == "1"
+    assert by_name["NUMEXPR_NUM_THREADS"]["value"] == "1"
     assert by_name["MARIADB_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "jw-mart-d2-writer"
     assert by_name["INGEST_S3_BUCKET"]["valueFrom"]["secretKeyRef"]["key"] == "MINIO_MARKET_BUCKET"
     assert by_name["MINIO_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-ingest-hook-minio"
