@@ -68,6 +68,30 @@ class BindingVerification:
     blocked_numbers: tuple[str, ...]
     failure_kind: str | None = None
     rejections: tuple[ClaimRejectionDiagnostic, ...] = ()
+    # --- observation only -------------------------------------------------
+    # Which return site produced this verdict, and how the token loop scored.
+    # Nothing in this module reads these back: they never reach a branch, a
+    # comparison, or a returned answer. Measurement does not vote.
+    #
+    # Counts are None -- not 0 -- when the return happened before the token
+    # loop ran. "not observed" and "observed, and it was zero" are different
+    # facts and a reader must be able to tell them apart.
+    decision_site: str | None = None
+    substitution_triggered: bool = False
+    bind_attempted_count: int | None = None
+    bind_succeeded_count: int | None = None
+    blocked_reason_histogram: tuple[tuple[str, int], ...] | None = None
+
+
+def _reason_histogram(reasons: Sequence[str]) -> tuple[tuple[str, int], ...] | None:
+    """Count blocked reasons, preserving first-seen order. None when empty."""
+
+    if not reasons:
+        return None
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    return tuple(counts.items())
 
 
 def verify_claim_bindings(
@@ -93,6 +117,7 @@ def verify_claim_bindings(
             blocked_reasons=(f"FAILURE_KIND_{detected_failure_kind.upper()}",),
             blocked_numbers=(),
             failure_kind=detected_failure_kind,
+            decision_site="failure_kind_passthrough",
         )
     if "환자수" in metrics and not expected:
         blocked_numbers = claim_number_tokens(answer)
@@ -127,6 +152,11 @@ def verify_claim_bindings(
             blocked_reasons=("MISSING_EXPECTED_ENTITY_BINDING",),
             blocked_numbers=blocked_numbers,
             rejections=rejections,
+            decision_site="missing_expected_entity_binding",
+            substitution_triggered=True,
+            blocked_reason_histogram=_reason_histogram(
+                ("MISSING_EXPECTED_ENTITY_BINDING",) * len(blocked_numbers)
+            ),
         )
     if not expected and not metrics:
         return BindingVerification(
@@ -136,6 +166,7 @@ def verify_claim_bindings(
             blocked_claim_count=0,
             blocked_reasons=(),
             blocked_numbers=(),
+            decision_site="no_expected_no_metrics_pass",
         )
     facts_by_id = {fact.fact_id: fact for fact in facts}
     claim_text = without_bound_identifiers(answer, expected)
@@ -144,7 +175,10 @@ def verify_claim_bindings(
     blocked_numbers: list[str] = []
     partial_reasons: list[str] = []
     rejections: list[ClaimRejectionDiagnostic] = []
+    attempted_count = 0
+    succeeded_count = 0
     for token in binding_claim_number_tokens(claim_text):
+        attempted_count += 1
         candidates = tuple(
             fact
             for fact in facts
@@ -290,6 +324,7 @@ def verify_claim_bindings(
                 )
             )
             continue
+        succeeded_count += 1
         if all(
             not present(fact.period)
             or not present(fact.unit)
@@ -331,6 +366,10 @@ def verify_claim_bindings(
                         ),
                         blocked_numbers=unique_blocked_numbers,
                         rejections=tuple((*rejections, *remainder.rejections)),
+                        decision_site="partial_exclusion_rescue",
+                        bind_attempted_count=attempted_count,
+                        bind_succeeded_count=succeeded_count,
+                        blocked_reason_histogram=_reason_histogram(blocked),
                     )
         return BindingVerification(
             answer=_BINDING_FAILURE_ANSWER,
@@ -340,6 +379,11 @@ def verify_claim_bindings(
             blocked_reasons=blocked_reasons,
             blocked_numbers=unique_blocked_numbers,
             rejections=tuple(rejections),
+            decision_site="blocked_substitution",
+            substitution_triggered=True,
+            bind_attempted_count=attempted_count,
+            bind_succeeded_count=succeeded_count,
+            blocked_reason_histogram=_reason_histogram(blocked),
         )
 
     unique_partial = tuple(dict.fromkeys(partial_reasons))
@@ -360,6 +404,10 @@ def verify_claim_bindings(
             blocked_claim_count=0,
             blocked_reasons=unique_partial,
             blocked_numbers=(),
+            decision_site="partial_metadata_notice",
+            bind_attempted_count=attempted_count,
+            bind_succeeded_count=succeeded_count,
+            blocked_reason_histogram=_reason_histogram(blocked),
         )
 
     return BindingVerification(
@@ -369,6 +417,10 @@ def verify_claim_bindings(
         blocked_claim_count=0,
         blocked_reasons=(),
         blocked_numbers=(),
+        decision_site="clean_pass",
+        bind_attempted_count=attempted_count,
+        bind_succeeded_count=succeeded_count,
+        blocked_reason_histogram=_reason_histogram(blocked),
     )
 
 

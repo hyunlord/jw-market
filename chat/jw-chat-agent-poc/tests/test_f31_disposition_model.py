@@ -124,13 +124,30 @@ def test_app_merges_failure_kind_without_adding_a_new_disposition_value() -> Non
     )
     answer = _apply_evidence_binding_gate("설명해줘", answer, result)
 
-    assert result["_qa_claim_gate"] == {
+    gate_state = dict(result["_qa_claim_gate"])
+    # binding_decision is observation, not verdict. Popping it keeps the
+    # comparison below an exact, closed check on the verdict -- a genuinely
+    # new verdict key would still fail here.
+    observation = gate_state.pop("binding_decision", None)
+
+    assert gate_state == {
         "blocked_claim_count": 0,
         "blocked_reasons": ("FAILURE_KIND_NO_TOOL_PLANNED",),
         "disposition": "unavailable",
         "failure_kind": "no_tool_planned",
         "binding_status": "fail",
         "blocked_numbers": (),
+    }
+
+    # The observation records WHICH return site produced that verdict without
+    # contributing to it. This early failure-kind return never entered the
+    # token loop, so its counts are null rather than zero.
+    assert observation == {
+        "decision_site": "failure_kind_passthrough",
+        "substitution_triggered": False,
+        "bind_attempted_count": None,
+        "bind_succeeded_count": None,
+        "blocked_reason_histogram": None,
     }
 
 

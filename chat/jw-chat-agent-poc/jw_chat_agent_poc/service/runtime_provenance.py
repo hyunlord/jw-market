@@ -224,6 +224,9 @@ def _qa_trace(
     )
     if rejection_trace:
         claim_trace["rejections"] = rejection_trace
+    binding_decision = claim_items.get("binding_decision")
+    if isinstance(binding_decision, Mapping):
+        claim_trace["binding_decision"] = dict(binding_decision)
     pipeline_observability = claim_items.get("pipeline_observability")
     if isinstance(pipeline_observability, Mapping):
         claim_trace["pipeline_observability"] = dict(pipeline_observability)
