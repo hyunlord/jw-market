@@ -165,6 +165,38 @@ def unsupported_brand_result(
     }
 
 
+def brand_unresolved_result(
+    question: str,
+    routes: list[BQSubQuestion] | tuple[BQSubQuestion, ...],
+    diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    """Ask which brand was meant, instead of letting the planner's exception out.
+
+    Distinct from ``unsupported_brand_result``: that one tells the user the name
+    they gave is not a known brand, which would be wrong here — the question may
+    name a disease or a market and never claim to name a brand at all. The
+    wording carries no digits so the notice surface cannot drop it, and
+    ``gate_reason`` is set so the recovery is visible in qa_trace rather than
+    only in pod logs.
+    """
+
+    markdown = MarkdownResponseBuilder().brand_unresolved(
+        "어느 브랜드 기준인지 확인되지 않아 답변을 드릴 수 없습니다. "
+        "브랜드명을 함께 알려주시거나, 시장 단위로 보시려면 시장을 지정해 주세요."
+    )
+    return {
+        "question": question,
+        "resolution": None,
+        "decomposition": [route.__dict__ for route in routes],
+        "router_diagnostics": {**diagnostics, "gate_reason": "brand_unresolved"},
+        "tool_calls": [],
+        "answer": markdown.markdown,
+        "markdown_response": markdown.to_dict(),
+        "sources": ["brand_unresolved"],
+        "brand_unresolved": True,
+    }
+
+
 def ambiguous_brand_result(
     question: str,
     routes: list[BQSubQuestion] | tuple[BQSubQuestion, ...],

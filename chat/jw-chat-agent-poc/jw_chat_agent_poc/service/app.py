@@ -29,12 +29,14 @@ from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, sho
 from jw_chat_agent_poc.agent_loop.element_ledger import market_scope_defers_to_contract
 from jw_chat_agent_poc.agent_loop.factory import (
     ambiguous_brand_result,
+    brand_unresolved_result,
     build_chat_agent_dependencies,
     build_tool_use_agent,
     unsupported_brand_result,
     unsupported_hira_interface_result,
 )
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
+from jw_chat_agent_poc.agent_loop.planner import BrandUnresolvedError
 from jw_chat_agent_poc.agent_loop.structured_planner import (
     preflight_structured_market_question,
     structured_metric_owner,
@@ -1988,7 +1990,19 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
     with trace_span("agent_loop_construction", "tool-use agent construction"):
         agent = build_tool_use_agent(dependencies.agent_loop_dependencies())
     with trace_span("agent_loop_execution", "tool-use agent execution"):
-        result = agent.answer(question)
+        try:
+            result = agent.answer(question)
+        except BrandUnresolvedError:
+            # The planner's own message is "ask the user to specify a brand", so
+            # asking is what it already wanted; until now the request died as an
+            # ASGI 500 instead, which also skipped compute_final_answer and left
+            # no qa_trace to diagnose from. Returning a result keeps the normal
+            # answer path, so the reason reaches the user and the trace exists.
+            result = brand_unresolved_result(
+                question,
+                routes,
+                router_diagnostics(dependencies.router),
+            )
     return attach_routing_v4_legacy_observation(
         question,
         result,
