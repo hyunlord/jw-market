@@ -17,6 +17,7 @@ from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
 from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
+from jw_chat_agent_poc.service.answer_delivery import project_answer_delivery
 from jw_chat_agent_poc.service.runtime_numeric_grounding import ungrounded_numbers as _ungrounded_numbers
 from jw_chat_agent_poc.service.routing_v4_trace import project_routing_v4_qa_trace
 
@@ -255,6 +256,7 @@ def _qa_trace(
         "plan": _qa_plan(result),
         "spans": _qa_spans(result),
         "claims": claim_trace,
+        "answer_delivery": project_answer_delivery(result),
         "final": final,
     }
     routing_v4 = project_routing_v4_qa_trace(diagnostic_items)

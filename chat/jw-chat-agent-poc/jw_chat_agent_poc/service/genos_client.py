@@ -37,6 +37,7 @@ from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_tr
 from jw_chat_agent_poc.orchestrator.source_grading import is_web_search_call
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
+from jw_chat_agent_poc.service.answer_delivery import ANSWER_BRANCHES
 from jw_chat_agent_poc.service.answer_safety import (
     FAIL_CLOSED_TEXT,
     answer_has_only_fact_numbers,
@@ -691,6 +692,25 @@ def _source_notice_markdown(notice_md: str) -> str:
     ).strip()
 
 
+def append_source_basis_notice(
+    answer: str,
+    markdown_response: Mapping[str, Any] | None,
+) -> tuple[str, bool]:
+    if not isinstance(markdown_response, Mapping):
+        return answer, False
+    notice = _source_notice_markdown(str(markdown_response.get("notice_md") or ""))
+    if not notice or any(character.isdigit() for character in notice):
+        return answer, False
+    if notice in answer:
+        return answer, True
+    marker = re.search(r"\n##\s*(?:출처|처리\s*시간)\b", answer)
+    if marker:
+        before = answer[: marker.start()].rstrip()
+        after = answer[marker.start() :].lstrip()
+        return cleanup_markdown_answer(f"{before}\n\n{notice}\n\n{after}"), True
+    return cleanup_markdown_answer(f"{answer}\n\n{notice}"), True
+
+
 def _uploaded_file_context(agent_result: dict[str, Any]) -> str:
     value = agent_result.get("file_context")
     return value.strip() if isinstance(value, str) else ""
@@ -922,6 +942,7 @@ class GenosClient:
     research_mode: str = "standard"
     model: str | None = None
     token_usage_calls: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False, compare=False)
+    answer_branch_events: list[str] = field(default_factory=list, init=False, repr=False, compare=False)
 
     @classmethod
     def for_deep_research(cls) -> GenosClient:
@@ -963,6 +984,7 @@ class GenosClient:
                 verified_calls,
             )
             if single_period_sales_answer:
+                self._record_answer_branch("genos_single_period_sales")
                 with stage(
                     timing,
                     "final_deterministic_single_period_sales_path",
@@ -986,12 +1008,14 @@ class GenosClient:
         if _is_tool_use_agent_result(agent_result):
             verified_answer = _verified_tool_use_agent_answer(agent_result)
             if verified_answer == FAIL_CLOSED_TEXT:
+                self._record_answer_branch("genos_tool_fail_closed")
                 yield from chunk_text(verified_answer)
                 return
             if self.token and fallback_code is None and isinstance(markdown_response, dict):
                 fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
                 if fact_md.strip():
                     if _has_combined_clinical_registry_evidence(verified_calls, markdown_response):
+                        self._record_answer_branch("genos_tool_clinical_registry")
                         yield from chunk_text(
                             cleanup_markdown_answer(
                                 finalized_fallback_fact_answer(question, markdown_response)
@@ -1003,26 +1027,34 @@ class GenosClient:
                         markdown_response,
                     )
                     if deterministic_external_answer:
+                        self._record_answer_branch("genos_tool_external")
                         yield from chunk_text(deterministic_external_answer)
                         return
-                    yield from chunk_text(
-                        cleanup_markdown_answer(
-                            self._markdown_answer(
-                                question,
-                                markdown_response,
-                                timing,
-                                verified_calls,
-                                file_context,
-                            )
-                        )
+                    markdown_answer = self._markdown_answer(
+                        question,
+                        markdown_response,
+                        timing,
+                        verified_calls,
+                        file_context,
                     )
+                    if self.answer_branch_events:
+                        branch = self.answer_branch_events[-1]
+                        if branch.startswith("genos_markdown_"):
+                            self.answer_branch_events[-1] = branch.replace(
+                                "genos_markdown_",
+                                "genos_tool_markdown_",
+                                1,
+                            )
+                    yield from chunk_text(cleanup_markdown_answer(markdown_answer))
                     return
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             verified_answer = ensure_natural_fact_lead(question, verified_answer, fact_md)
+            self._record_answer_branch("genos_tool_verified_fallback")
             yield from chunk_text(verified_answer)
             return
         if self.token and isinstance(markdown_response, dict):
             if self.research_mode != "deep" and _requires_deterministic_external_relay(verified_calls):
+                self._record_answer_branch("genos_external_relay")
                 answer = _deterministic_external_relay_answer(markdown_response)
                 answer = replace_internal_fact_dump(question, answer, markdown_response)
                 yield from chunk_text(cleanup_markdown_answer(answer))
@@ -1034,6 +1066,7 @@ class GenosClient:
                 else ""
             )
             if concentration_answer:
+                self._record_answer_branch("genos_concentration")
                 with stage(
                     timing,
                     "final_deterministic_concentration_path",
@@ -1052,6 +1085,7 @@ class GenosClient:
                 else ""
             )
             if fast_answer:
+                self._record_answer_branch("genos_top_n")
                 with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
                     answer = _apply_final_claim_controls(question, fast_answer, fact_md)
                     answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
@@ -1081,12 +1115,14 @@ class GenosClient:
             )
             return
         if self._is_cache_only(agent_result) or not self.token:
+            self._record_answer_branch("genos_cache")
             answer = str(agent_result["answer"])
             if isinstance(markdown_response, dict):
                 answer = replace_internal_fact_dump(question, answer, markdown_response)
             yield from chunk_text(cleanup_markdown_answer(answer))
             return
         policy_notice = self._policy_notice_block(agent_result)
+        self._record_answer_branch("genos_legacy_llm")
         messages = [
             {
                 "role": "system",
@@ -1121,6 +1157,7 @@ class GenosClient:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
         fact_lookup_md = _fact_lookup_markdown(markdown_response)
         if _is_web_search_only(tool_calls) and _has_web_search_rows(tool_calls, question=question):
+            self._record_answer_branch("genos_markdown_web_search")
             return _append_web_search_section("", tool_calls, question=question)
         trend_fact_md = single_brand_trend_fact_markdown(fact_lookup_md, tool_calls) if _question_wants_trend_output(question) else ""
         fact_for_safety = "\n\n".join(part for part in (fact_md, trend_fact_md, file_context) if part)
@@ -1131,9 +1168,11 @@ class GenosClient:
         if trend_prose_candidate and not answer_has_only_fact_numbers(trend_prose_candidate, strict_numbers):
             trend_prose_candidate = ""
         if self.research_mode != "deep" and _uses_deterministic_market_narrative(tool_calls, trend_prose_candidate, file_context):
+            self._record_answer_branch("genos_markdown_deterministic_market")
             with stage(timing, "final_deterministic_market_narrative", "verified market narrative"):
                 raw_interpretation = str(markdown_response.get("data_md") or fact_md)
         else:
+            self._record_answer_branch("genos_markdown_llm")
             messages = (
                 self._deep_markdown_messages(question, markdown_response, trend_fact_md, file_context)
                 if self.research_mode == "deep"
@@ -1143,10 +1182,12 @@ class GenosClient:
                 with stage(timing, "final_llm_expression", "GenOS markdown generation"):
                     raw_interpretation = self._chat_text(messages)
             except requests.RequestException:
+                self._record_answer_branch("genos_markdown_request_fallback")
                 fallback = finalized_fallback_fact_answer(question, markdown_response)
                 fallback = _apply_final_claim_controls(question, fallback, fact_md)
                 return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
         if not raw_interpretation:
+            self._record_answer_branch("genos_markdown_empty_fallback")
             fallback = finalized_fallback_fact_answer(question, markdown_response)
             fallback = _apply_final_claim_controls(question, fallback, fact_md)
             return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
@@ -1239,6 +1280,11 @@ class GenosClient:
             if self.research_mode == "deep"
             else _append_web_search_section(answer, tool_calls, question=question)
         )
+
+    def _record_answer_branch(self, answer_branch: str) -> None:
+        if answer_branch not in ANSWER_BRANCHES:
+            raise ValueError(f"unregistered answer branch: {answer_branch}")
+        self.answer_branch_events.append(answer_branch)
 
     @staticmethod
     def _markdown_messages(
