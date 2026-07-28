@@ -158,12 +158,14 @@ def run_s4_general(
     *,
     build_db: str,
     source_db: str,
+    input_db: str | None = None,
     catalog_root: Path | None,
     ubist_dir: Path | None,
     input_mode: str,
     sources: tuple[str, ...] | None = None,
+    seed_general_from_source: bool = False,
 ) -> None:
-    params = {
+    params: dict[str, Any] = {
         "target_db": build_db,
         "source_db": source_db,
         "catalog_root": str(catalog_root) if catalog_root else None,
@@ -171,6 +173,10 @@ def run_s4_general(
         "input_mode": input_mode,
         "sources": sources,
     }
+    if input_db is not None:
+        params["input_db"] = input_db
+    if seed_general_from_source:
+        params["seed_general_from_source"] = True
     rc = s4_mart.run(params)
     if rc != 0:
         raise RuntimeError(f"s4_mart failed rc={rc}")

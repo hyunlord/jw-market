@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import urllib.error
 import urllib.request
@@ -64,6 +65,14 @@ def _job_env() -> list[dict]:
         for name in _PASSTHROUGH_VALUES
         if os.environ.get(name)
     ]
+    image = config.job_image()
+    digest_match = re.search(r"@(sha256:[0-9a-f]{64})$", image)
+    if digest_match is None:
+        raise RuntimeError(
+            "INGEST_JOB_IMAGE must be pinned by digest so publication provenance is reproducible"
+        )
+    env.append({"name": config.ENV_JOB_IMAGE, "value": image})
+    env.append({"name": "INGEST_IMAGE_DIGEST", "value": digest_match.group(1)})
 
     def secret_ref(name, secret, key):
         env.append({"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}})

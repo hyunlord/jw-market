@@ -71,7 +71,11 @@ def cagr_from_history(history: dict[str, float], period: str, years: int) -> flo
     target_ord = ord_now - periods_per_year * years
     start_period = next((p for p in history if period_sort_key(p) == target_ord), None)
     elapsed_years: float | int = years
-    if start_period is None and years == GENERAL_HISTORY_YEARS:
+    if (
+        start_period is None
+        and years == GENERAL_HISTORY_YEARS
+        and periods_per_year == 12
+    ):
         elapsed_periods = periods_per_year * years - 1
         start_period = next(
             (

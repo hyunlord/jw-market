@@ -16,7 +16,7 @@ from pipeline.scripts.ingest_hook.row_count_verifier import (
     verify_row_counts,
 )
 
-ISOLATED_DB_PATTERN: Final = re.compile(r"^jw_ingest_[A-Za-z0-9_]+$")
+ISOLATED_DB_PATTERN: Final = re.compile(r"^jw_(?:ingest|mart_ingest)_[A-Za-z0-9_]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +50,8 @@ def _isolated_target_db() -> str:
         )
     if ISOLATED_DB_PATTERN.fullmatch(target_db) is None:
         raise TableLoaderUnavailableError(
-            f"refusing non-isolated target database {target_db!r}; expected jw_ingest_*"
+            f"refusing non-isolated target database {target_db!r}; "
+            "expected jw_ingest_* or jw_mart_ingest_*"
         )
     return target_db
 

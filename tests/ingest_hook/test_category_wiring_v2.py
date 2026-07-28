@@ -168,11 +168,11 @@ def test_v1_new_categories_use_the_table_loader_contract(
     assert "pipeline.scripts.ingest_hook.category_table_load" in spec.load_argv
     assert spec.load_verify == "table_manifest"
     assert spec.load_batch_files is True
-    assert spec.production_load_supported is False
+    assert spec.production_load_supported is (category == "iqvia_nsa")
 
 
 @pytest.mark.parametrize(
-    "category", ["iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword", "mi_master"]
+    "category", ["iqvia_csd_channel", "iqvia_csd_keyword", "mi_master"]
 )
 def test_staging_artifact_loader_fails_closed_in_production(
     tmp_path, monkeypatch, category

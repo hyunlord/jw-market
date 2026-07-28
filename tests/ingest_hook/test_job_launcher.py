@@ -41,6 +41,20 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     assert body["metadata"]["name"] == f"jw-ingest-ubist-{SHA[:8]}"
     assert body["spec"]["backoffLimit"] == 0
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["INGEST_IMAGE_DIGEST"] == f"sha256:{config.DEFAULT_JOB_IMAGE.rsplit('sha256:', 1)[1]}"
+
+
+def test_rendered_job_rejects_unpinned_image(monkeypatch):
+    monkeypatch.setenv(config.ENV_JOB_IMAGE, "registry.example/jw-pipeline:latest")
+
+    with pytest.raises(RuntimeError, match="pinned by digest"):
+        render_job(
+            category="iqvia_nsa",
+            manifest_sha=SHA,
+            manifest_path="/data/nsa.manifest.json",
+            namespace="llmops",
+        )
 
 
 def test_rendered_job_prefers_api_node_pool_without_forcing_scheduling():

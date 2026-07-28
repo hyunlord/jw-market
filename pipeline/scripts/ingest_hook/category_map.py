@@ -109,7 +109,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         sigma_source="iqvia_nsa", load_input_flag="--file",
         load_target_flag="--target-dir", load_epoch_flag="--epoch",
         load_verify="table_manifest", workbook_reader="iqvia_nsa",
-        load_batch_files=True, production_load_supported=False,
+        load_batch_files=True, production_load_supported=True,
     ),
     CategorySpec(
         key="iqvia_csd_channel", description="IQVIA CSD channel dynamics workbook",

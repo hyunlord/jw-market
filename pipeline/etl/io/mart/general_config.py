@@ -18,7 +18,11 @@ DRY_RUN_DIR = Path("/tmp")
 ALLOWED_SOURCES = ("ubist", "iqvia_nsa")
 GENERAL_HISTORY_YEARS = 5
 UBIST_HISTORY_PERIODS = GENERAL_HISTORY_YEARS * 12
-IQVIA_HISTORY_PERIODS = GENERAL_HISTORY_YEARS * 4
+IQVIA_RETENTION_PERIODS = 24
+IQVIA_CALCULATION_PERIODS = GENERAL_HISTORY_YEARS * 4 + 1
+IQVIA_DISPLAY_PERIODS = GENERAL_HISTORY_YEARS * 4
+# Compatibility alias for callers whose contract is the serving/display window.
+IQVIA_HISTORY_PERIODS = IQVIA_DISPLAY_PERIODS
 MEASURES_BY_SOURCE = {
     "ubist": ("sales", "volume"),
     "iqvia_nsa": ("sales", "unit", "dosage_unit", "counting_unit"),

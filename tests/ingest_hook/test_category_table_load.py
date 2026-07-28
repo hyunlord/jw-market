@@ -96,6 +96,14 @@ def test_non_isolated_database_is_rejected(
         category_table_load.load("iqvia_nsa", source, tmp_path / "target", "2026-Q1")
 
 
+def test_activation_overlay_database_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_DB, "jw_mart_ingest_run1")
+
+    assert category_table_load._isolated_target_db() == "jw_mart_ingest_run1"
+
+
 def test_mi_master_requires_exactly_one_workbook(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

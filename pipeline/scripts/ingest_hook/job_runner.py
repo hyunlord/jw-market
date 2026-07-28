@@ -204,7 +204,14 @@ def _epoch_rows(target_dir: Path, epoch: str) -> int:
     )
 
 
-def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | None = None) -> dict:
+def _real_load(
+    manifest,
+    spec,
+    input_root: Path,
+    *,
+    target_dir_override: Path | None = None,
+    target_db_override: str | None = None,
+) -> dict:
     """Wire the materialized upload into the loader, run it, and prove the epoch
     landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
 
@@ -245,24 +252,34 @@ def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | 
 
     read_files = [str((input_root / entry.path).resolve()) for entry in manifest.files]
     source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
-    for sources in source_batches:
-        argv = list(spec.load_argv)
-        shadow_overlap_dedup = (
-            manifest.category == "ubist" and config.load_mode() == "shadow"
-        )
-        if shadow_overlap_dedup:
-            argv.append("--allow-overlap-dedup")
-        for source in sources:
-            argv.extend([spec.load_input_flag, source])
-        if spec.load_target_flag:
-            argv.extend([spec.load_target_flag, str(target_dir)])
-        if spec.load_epoch_flag:
-            argv.extend([spec.load_epoch_flag, manifest.epoch])
-        print(
-            f"phase=load files={len(sources)} target={target_dir} "
-            f"staging_verify={staging_verify}"
-        )
-        _run_commands("load", tuple(argv))
+    previous_target_db = os.environ.get(config.ENV_LOAD_STAGING_DB)
+    if target_db_override is not None:
+        os.environ[config.ENV_LOAD_STAGING_DB] = target_db_override
+    try:
+        for sources in source_batches:
+            argv = list(spec.load_argv)
+            shadow_overlap_dedup = (
+                manifest.category == "ubist" and config.load_mode() == "shadow"
+            )
+            if shadow_overlap_dedup:
+                argv.append("--allow-overlap-dedup")
+            for source in sources:
+                argv.extend([spec.load_input_flag, source])
+            if spec.load_target_flag:
+                argv.extend([spec.load_target_flag, str(target_dir)])
+            if spec.load_epoch_flag:
+                argv.extend([spec.load_epoch_flag, manifest.epoch])
+            print(
+                f"phase=load files={len(sources)} target={target_dir} "
+                f"staging_verify={staging_verify}"
+            )
+            _run_commands("load", tuple(argv))
+    finally:
+        if target_db_override is not None:
+            if previous_target_db is None:
+                os.environ.pop(config.ENV_LOAD_STAGING_DB, None)
+            else:
+                os.environ[config.ENV_LOAD_STAGING_DB] = previous_target_db
 
     # M-2: the uploaded epoch must be present in the loader's output.
     epoch_rows = None
@@ -380,6 +397,7 @@ def run(
     mart_conn = None
     corpus_candidate = None
     mart_activation = None
+    nsa_activation = None
     writer_lock_acquired = False
     writer_lock_name = None
     publish_actions: tuple[object, ...] = ()
@@ -388,6 +406,8 @@ def run(
     completion_signal_emitted = False
     baseline_live_snapshot = None
     baseline_manifest_sha = None
+    post_gate_verified = False
+    retained_quarters: tuple[str, ...] = ()
     activation_journal = None
     try:
         spec = resolve_category(manifest.category)
@@ -462,8 +482,20 @@ def run(
                         )
                 else:
                     mart_activation = ubist_mart_activation.from_env(run_id=run_id)
+            elif manifest.category == "iqvia_nsa" and not configured_staging_verify:
+                from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation
+
+                iqvia_nsa_mart_activation.require_production_mode(mode)
+                nsa_activation = iqvia_nsa_mart_activation.from_env(run_id=run_id)
+                iqvia_nsa_mart_activation.initialize_build_schema(nsa_activation)
             if spec.sigma_source and not configured_staging_verify:
-                source_db = mart_activation.source_db if mart_activation is not None else None
+                source_db = (
+                    mart_activation.source_db
+                    if mart_activation is not None
+                    else nsa_activation.source_db
+                    if nsa_activation is not None
+                    else None
+                )
                 baseline_conn = config.open_mart_connection(source_db)
                 baseline_lock_acquired = False
                 try:
@@ -547,6 +579,9 @@ def run(
                 spec,
                 input_root,
                 target_dir_override=(corpus_candidate.candidate_root if corpus_candidate else None),
+                target_db_override=(
+                    nsa_activation.build_db if nsa_activation is not None else None
+                ),
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)
@@ -588,6 +623,27 @@ def run(
                     )
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
+                    tracker.done()
+                elif nsa_activation is not None:
+                    from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation
+
+                    tracker.enter("mart_build")
+                    raw_conn = config.open_mart_connection(nsa_activation.build_db)
+                    try:
+                        retained_quarters = iqvia_nsa_mart_activation.trim_raw_retention(
+                            raw_conn, nsa_activation
+                        )
+                    finally:
+                        raw_conn.close()
+                    print(
+                        f"phase=mart_build status=start build_db={nsa_activation.build_db} "
+                        f"retained_quarters={retained_quarters}"
+                    )
+                    iqvia_nsa_mart_activation.build_mart(nsa_activation)
+                    mart_conn = config.open_mart_connection(nsa_activation.build_db)
+                    print(
+                        f"phase=mart_build status=complete build_db={nsa_activation.build_db}"
+                    )
                     tracker.done()
                 elif spec.sigma_source:
                     raise RuntimeError("live mart load has no isolated activation plan")
@@ -647,6 +703,7 @@ def run(
                         report_path=load_result["target_dir"] / "post_gate_report.json",
                     )
                     print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
+                    post_gate_verified = True
                     tracker.done()
                     tracker.complete("sigma")  # sigma_check ran inside run_post_gates and passed
                 else:
@@ -716,6 +773,52 @@ def run(
                             "after_mart_publish"
                         )
                     print(f"phase=mart_publish status=complete tables={len(publish_actions)}")
+                    tracker.done()
+                elif nsa_activation is not None:
+                    from pipeline.scripts.ingest_hook import (
+                        iqvia_nsa_mart_activation,
+                        ubist_mart_activation,
+                    )
+                    from pipeline.scripts.ingest_hook.iqvia_nsa_publication import (
+                        build_publication_evidence,
+                    )
+
+                    tracker.enter("mart_publish")
+                    writer_conn = config.open_mart_connection(nsa_activation.target_db)
+                    writer_lock_name = ubist_mart_activation.WRITER_LOCK_NAME
+                    ubist_mart_activation.acquire_writer_lock(
+                        writer_conn, timeout_seconds=0, lock_name=writer_lock_name
+                    )
+                    writer_lock_acquired = True
+                    ubist_mart_activation.require_writer_lock_owner(
+                        writer_conn, lock_name=writer_lock_name
+                    )
+                    snapshot_conn = config.open_mart_connection(nsa_activation.source_db)
+                    try:
+                        current_live_snapshot = fingerprint_untouched_sources(
+                            snapshot_conn, touched_source="__jw_ingest_no_source__"
+                        )
+                    finally:
+                        snapshot_conn.close()
+                    if current_live_snapshot != baseline_live_snapshot:
+                        raise RuntimeError(
+                            "serving general mart changed while NSA candidate was built"
+                        )
+                    publish_actions = iqvia_nsa_mart_activation.publish(
+                        writer_conn,
+                        nsa_activation,
+                        run_id=run_id,
+                        epoch=manifest.epoch,
+                        post_gate_verified=post_gate_verified,
+                        publication_evidence=build_publication_evidence(
+                            manifest.files,
+                            report.file_rows,
+                            retained_quarters,
+                        ),
+                    )
+                    print(
+                        f"phase=mart_publish status=complete tables={len(publish_actions)}"
+                    )
                     tracker.done()
                 else:
                     tracker.skip("mart_publish", "category has no mart activation")
@@ -865,6 +968,29 @@ def run(
                         ubist_mart_activation.complete_recovery(recovered)
             elif corpus_candidate is not None:
                 ubist_mart_activation.rollback_candidate_corpus(corpus_candidate)
+        if (
+            nsa_activation is not None
+            and publish_actions
+            and not ledger_completed
+            and writer_conn is not None
+        ):
+            from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation
+
+            try:
+                iqvia_nsa_mart_activation.rollback_publication(
+                    writer_conn,
+                    nsa_activation,
+                    actions=publish_actions,
+                    run_id=run_id,
+                    restore_run_id=f"failed_{run_id}",
+                )
+                _run_commands("refresh-restored-serving", resolve_category("iqvia_nsa").refresh_argv)
+            except Exception as recovery_exc:
+                print(
+                    "recovery=failed "
+                    f"reason={type(recovery_exc).__name__}: {recovery_exc}",
+                    file=sys.stderr,
+                )
         if writer_lock_acquired and writer_conn is not None:
             from pipeline.scripts.ingest_hook import ubist_mart_activation
 

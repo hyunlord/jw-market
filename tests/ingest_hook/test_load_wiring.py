@@ -8,6 +8,7 @@ are tested deterministically with zero external deps.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -285,6 +286,38 @@ def test_real_load_iqvia_nsa_injects_file_target_and_epoch(staging_env, bucket, 
     assert seen["argv"][seen["argv"].index("--file") + 1].endswith("data.csv")
     assert result["epoch_rows"] == 12
     assert result["rows_before"] == 10
+    assert result["rows_loaded"] == 2
+
+
+def test_real_load_iqvia_nsa_scopes_target_database_override(
+    tmp_path, bucket, monkeypatch
+):
+    manifest = _manifest(
+        bucket,
+        category="iqvia_nsa",
+        epoch="2026-Q1",
+        rows=[("2026-Q1", "Class", "x", 1.0), ("2026-Q1", "전체", "-", 1.0)],
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "production"))
+    observed: list[str | None] = []
+
+    def fake_run(_label, argv):
+        observed.append(os.environ.get(config.ENV_LOAD_STAGING_DB))
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_table_manifest(target, "2026-Q1", before=0, after=2, loaded=2)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    result = job_runner._real_load(
+        manifest,
+        resolve_category("iqvia_nsa"),
+        bucket,
+        target_db_override="jw_ingest_nsa_build_run1",
+    )
+
+    assert observed == ["jw_ingest_nsa_build_run1"]
+    assert config.ENV_LOAD_STAGING_DB not in os.environ
     assert result["rows_loaded"] == 2
 
 
