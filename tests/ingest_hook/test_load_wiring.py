@@ -458,10 +458,12 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "production_catalog_root_from_env",
         lambda: tmp_path / "provisioned-catalog",
     )
+    catalog_preflight_args = []
     monkeypatch.setattr(
         ubist_mart_activation,
         "prepare_catalog_for_mart",
-        lambda **_kwargs: order.append("catalog_preflight")
+        lambda **kwargs: catalog_preflight_args.append(kwargs)
+        or order.append("catalog_preflight")
         or type(
             "CatalogPreparation",
             (),
@@ -512,6 +514,7 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
     ) == 0
     assert order.index("load") < order.index("mart_build")
+    assert catalog_preflight_args[0]["ubist_dir"] == live_root
     assert order.index("mart_build") < order.index("post_gate")
     assert order.index("post_gate") < order.index("corpus_promote")
     assert order.index("corpus_promote") < order.index("mart_publish")

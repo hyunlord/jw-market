@@ -576,7 +576,7 @@ def run(
                     try:
                         catalog_preparation = ubist_mart_activation.prepare_catalog_for_mart(
                             catalog_root=catalog_root,
-                            ubist_dir=load_result["target_dir"],
+                            ubist_dir=target_root / "ubist",
                             source_db=mart_activation.source_db,
                             conn=catalog_conn,
                             run_id=run_id,
