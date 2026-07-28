@@ -120,6 +120,7 @@ def test_run_s4_general_passes_explicit_ubist_root(monkeypatch) -> None:
             "ubist_dir": "/market-output/ubist",
             "input_mode": "raw",
             "sources": ("ubist",),
+            "atc4_scope": None,
         }
     ]
 

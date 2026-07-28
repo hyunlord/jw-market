@@ -214,6 +214,7 @@ def run(params: dict[str, Any]) -> int:
                 spool_dir=Path(params["spool_dir"]) if params.get("spool_dir") else None,
                 memory_budget_bytes=params.get("memory_budget_bytes"),
                 commit_each_batch=True,
+                atc4_scope=tuple(params.get("atc4_scope") or ()) or None,
             )
             stats.append(source_stats)
             print(

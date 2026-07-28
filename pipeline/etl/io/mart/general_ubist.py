@@ -742,6 +742,7 @@ def iter_ubist_atc4_worksets(
     estimated_row_bytes: int = DEFAULT_UBIST_ESTIMATED_ROW_BYTES,
     target_fraction: float = DEFAULT_UBIST_PARTITION_FRACTION,
     duckdb_memory_limit: str = DEFAULT_UBIST_DUCKDB_MEMORY_LIMIT,
+    atc4_scope: tuple[str, ...] | None = None,
 ) -> Iterator[UbistAtc4Workset]:
     """Yield brand-stable bounded worksets from a one-scan raw UBIST spool."""
     owned_spool = spool_dir is None
@@ -757,6 +758,9 @@ def iter_ubist_atc4_worksets(
         duckdb_memory_limit=duckdb_memory_limit,
     )
     selected = [plan for plan in plans if plan.atc4_code != "UNKNOWN"]
+    if atc4_scope:
+        requested = {str(value).strip().upper() for value in atc4_scope}
+        selected = [plan for plan in selected if plan.atc4_code.upper() in requested]
     if limit_atc4:
         selected = selected[:limit_atc4]
     if not limit_atc4:

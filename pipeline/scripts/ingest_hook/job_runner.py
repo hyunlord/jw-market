@@ -594,10 +594,21 @@ def run(
                         f"phase=mart_build status=start build_db={mart_activation.build_db} "
                         f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"
                     )
+                    loaded_periods = (manifest.epoch,)
+                    atc4_scope = ubist_mart_activation.affected_atc4_codes(
+                        load_result["target_dir"],
+                        periods=loaded_periods,
+                    )
+                    print(
+                        "phase=mart_build mode=incremental "
+                        f"periods={loaded_periods} "
+                        f"atc4_count={len(atc4_scope)} atc4_scope={atc4_scope}"
+                    )
                     ubist_mart_activation.build_shadow(
                         mart_activation,
                         catalog_root=catalog_root,
                         ubist_dir=load_result["target_dir"],
+                        atc4_scope=atc4_scope,
                     )
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")

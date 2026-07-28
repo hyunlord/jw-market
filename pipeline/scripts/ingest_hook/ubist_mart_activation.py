@@ -10,6 +10,9 @@ import re
 import shutil
 from typing import Any, Callable
 
+import duckdb
+
+from pipeline.etl.io.mart.general_utils import extract_atc4
 from pipeline.etl.io.catalog.paths import (
     CATALOG_ROOT_ENV,
     resolve_catalog_root,
@@ -448,7 +451,11 @@ def maybe_inject_shadow_sigma_mismatch(
 
 
 def build_shadow(
-    config: MartActivation, *, catalog_root: Path | None, ubist_dir: Path
+    config: MartActivation,
+    *,
+    catalog_root: Path | None,
+    ubist_dir: Path,
+    atc4_scope: tuple[str, ...] | None = None,
 ) -> None:
     previous = {key: os.environ.get(key) for key in _S4_MUTATED_ENV}
     try:
@@ -459,6 +466,7 @@ def build_shadow(
             ubist_dir=ubist_dir,
             input_mode="raw",
             sources=("ubist",),
+            atc4_scope=atc4_scope,
         )
     finally:
         for key, value in previous.items():
@@ -466,6 +474,44 @@ def build_shadow(
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def affected_atc4_codes(
+    ubist_dir: Path,
+    *,
+    periods: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Resolve the exact ATC4 scope from newly loaded month partitions."""
+
+    paths: list[str] = []
+    for period in sorted(set(periods)):
+        match = re.fullmatch(r"(\d{4})-(\d{2})", period)
+        if match is None:
+            raise RuntimeError(f"incremental UBIST scope requires monthly period: {period!r}")
+        path = ubist_dir / f"year={match.group(1)}" / f"month={match.group(2)}" / "data.parquet"
+        if not path.is_file():
+            raise RuntimeError(f"incremental UBIST partition is missing: {path}")
+        paths.append(str(path))
+    if not paths:
+        raise RuntimeError("incremental UBIST scope requires at least one loaded period")
+    with duckdb.connect() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT CAST(\"ATC\" AS VARCHAR) "
+            "FROM read_parquet(?) WHERE \"ATC\" IS NOT NULL ORDER BY 1",
+            [paths],
+        ).fetchall()
+    scope = tuple(
+        sorted(
+            {
+                code
+                for row in rows
+                if (code := extract_atc4(row[0])[0]) and code != "UNKNOWN"
+            }
+        )
+    )
+    if not scope:
+        raise RuntimeError(f"incremental UBIST scope is empty for periods={periods}")
+    return scope
 
 
 def prepare_candidate_corpus(live_root: Path, *, run_id: str) -> CorpusCandidate:

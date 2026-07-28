@@ -114,6 +114,30 @@ def test_jsonl_source_replace_rolls_back_injected_insert_failure(
     assert connection.closed is True
 
 
+def test_jsonl_scoped_replace_deletes_only_requested_atc4(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = _FakeConnection()
+    monkeypatch.setattr(general_db, "mariadb_connect", lambda: connection)
+    brand_path, market_path = _paths(tmp_path)
+
+    general_db.replace_scoped_source_rows_from_jsonl(
+        source="ubist",
+        atc4_scope=("C10A1", "A10B2"),
+        brand_path=brand_path,
+        market_path=market_path,
+        brand_columns=["brand_key", "source"],
+        market_columns=["atc4_code", "source"],
+    )
+
+    delete_calls = connection.cursor_instance.execute_calls[:2]
+    assert all("source=%s AND atc4_code IN (%s,%s)" in sql for sql, _ in delete_calls)
+    assert all(params == ("ubist", "A10B2", "C10A1") for _, params in delete_calls)
+    assert connection.cursor_instance.executemany_calls == 2
+    assert connection.commit_calls == 1
+
+
 def test_jsonl_source_replace_commits_each_batch_for_isolated_build(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

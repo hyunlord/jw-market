@@ -115,6 +115,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         target,
         catalog_root=Path("/market-output/shadow/catalog"),
         ubist_dir=Path("/market-output/.ubist-candidate-run1"),
+        atc4_scope=("C10A1", "C10A2"),
     )
 
     assert calls == [{
@@ -124,6 +125,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         "ubist_dir": Path("/market-output/.ubist-candidate-run1"),
         "input_mode": "raw",
         "sources": ("ubist",),
+        "atc4_scope": ("C10A1", "C10A2"),
     }]
 
 
@@ -479,6 +481,28 @@ def test_build_shadow_restores_s4_mutated_environment(monkeypatch) -> None:
 
     assert activation.os.environ["MARIADB_DATABASE"] == "jw_mart"
     assert "S4_UBIST_DIR" not in activation.os.environ
+
+
+def test_affected_atc4_codes_reads_only_requested_months(tmp_path) -> None:
+    pandas = pytest.importorskip("pandas")
+    month_04 = tmp_path / "year=2026" / "month=04"
+    month_05 = tmp_path / "year=2026" / "month=05"
+    month_04.mkdir(parents=True)
+    month_05.mkdir(parents=True)
+    pandas.DataFrame({"ATC": ["A10B1 Old"]}).to_parquet(month_04 / "data.parquet")
+    pandas.DataFrame(
+        {"ATC": ["C10A1 New", "A10B2 New", "C10A1 Duplicate"]}
+    ).to_parquet(month_05 / "data.parquet")
+
+    assert activation.affected_atc4_codes(
+        tmp_path,
+        periods=("2026-05",),
+    ) == ("A10B2", "C10A1")
+
+
+def test_affected_atc4_codes_fails_closed_when_month_is_missing(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="partition is missing"):
+        activation.affected_atc4_codes(tmp_path, periods=("2026-05",))
 
 
 def test_publish_shadow_checks_post_gate_and_limits_general_tables(
