@@ -17,6 +17,11 @@ from jw_chat_agent_poc.service.general_view_routing import (
     _brand_hint,
     _source,
 )
+from jw_chat_agent_poc.service.conversation import ConversationTurn
+from jw_chat_agent_poc.service.conversation_context import (
+    extract_conversation_slots,
+    resolve_anaphora,
+)
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
     GeneralMarket,
@@ -289,11 +294,19 @@ class LiveLivaloStrategicMembership(StrategicMembershipWithMarketMembers):
 
 
 class StaticStrategicMarketDefinitionReader:
-    def __init__(self, definitions: dict[str, StrategicMarketDefinition | None]) -> None:
+    def __init__(
+        self,
+        definitions: dict[str, StrategicMarketDefinition | None],
+        exact_markets: dict[str, tuple[str, str] | None] | None = None,
+    ) -> None:
         self._definitions = definitions
+        self._exact_markets = exact_markets or {}
 
     def resolve(self, market_id: str) -> StrategicMarketDefinition | None:
         return self._definitions.get(market_id)
+
+    def resolve_exact_base(self, market_name: str) -> tuple[str, str] | None:
+        return self._exact_markets.get(market_name)
 
 
 def _live_livalo_general_view_service(
@@ -1738,3 +1751,72 @@ def test_dual_answer_forces_strategic_primary_and_preserves_original_question(mo
     assert result["sources"] == ["cache", "UBIST"]
     assert result["router_diagnostics"]["general_view_mode"] == "dual"
     assert resolver.general_calls == [("리바로 시장 점유율은?", True, True)]
+
+
+def _canonical_hyperlipidemia_service(
+    *,
+    exact_market: tuple[str, str] | None = ("ml_006", "고지혈증 치료제 시장"),
+) -> GeneralViewService:
+    backend = FakeBackend()
+    backend.market_map["C10A1"] = replace(_market("C10A1", 8_000_000_000), hhi_recent=250.0)
+    backend.market_map["C10C"] = replace(_market("C10C", 4_000_000_000), hhi_recent=300.0)
+    definition = StrategicMarketDefinition("ml_006", "ubist", ("C10A1", "C10C"))
+    reader = StaticStrategicMarketDefinitionReader(
+        {"ml_006": definition},
+        {"고지혈증": exact_market},
+    )
+    return GeneralViewService(
+        backend,
+        StrategicMembershipWithExplicitMarket(set()),
+        enabled=True,
+        market_definition_reader=reader,
+    )
+
+
+def test_bare_general_view_hhi_resolves_exact_canonical_market_and_persists_slot() -> None:
+    service = _canonical_hyperlipidemia_service()
+
+    result = service.answer("고지혈증 일반뷰 HHI", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["atc4_codes"] == ["C10A1", "C10C"]
+    assert contract["market_id"] == "ml_006"
+    assert contract["market_name"] == "고지혈증 치료제 시장"
+    assert all(section["market_id"] == "ml_006" for section in contract["atc4_sections"])
+    slots = extract_conversation_slots(result)
+    assert slots.market == "ml_006"
+    assert slots.market_definition == "고지혈증 치료제 시장"
+
+
+def test_bare_general_view_hhi_slot_resolves_followup_but_not_standalone_question() -> None:
+    service = _canonical_hyperlipidemia_service()
+    first = service.answer("고지혈증 일반뷰 HHI", compact=False, dual=False)
+    previous = ConversationTurn(
+        question="고지혈증 일반뷰 HHI",
+        answer=first["answer"],
+        slots=extract_conversation_slots(first),
+    )
+
+    chained = resolve_anaphora("이 시장 HHI", previous)
+    standalone = resolve_anaphora("이 시장 HHI", None)
+
+    assert chained.resolved_question == "ml_006 HHI"
+    assert chained.unresolved_reference is False
+    assert chained.reference_status.value == "resolved"
+    assert standalone.unresolved_reference is True
+
+
+def test_bare_general_view_hhi_fails_closed_when_canonical_market_is_ambiguous() -> None:
+    service = _canonical_hyperlipidemia_service(exact_market=None)
+
+    result = service.answer("고지혈증 일반뷰 HHI", compact=False, dual=False)
+
+    assert result["general_view_contract"]["unavailable"] is True
+    assert result["router_diagnostics"]["candidate_atc4_codes"] == []
+    assert extract_conversation_slots(result).market is None
+
+
+def test_general_view_exact_market_lookup_does_not_capture_hira_patient_question() -> None:
+    service = _canonical_hyperlipidemia_service()
+
+    assert service.route("고지혈증 환자수") is GeneralRoute.EXISTING

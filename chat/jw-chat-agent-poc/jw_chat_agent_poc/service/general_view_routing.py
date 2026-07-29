@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from enum import Enum
@@ -100,6 +101,7 @@ class CatalogDefinitionLoadError(RuntimeError):
 
 class _StrategicMarketDefinitionReader(Protocol):
     def resolve(self, market_id: str) -> StrategicMarketDefinition | None: ...
+    def resolve_exact_base(self, market_name: str) -> tuple[str, str] | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +189,55 @@ class MariaDbStrategicMarketDefinitionReader:
             atc4_codes=tuple(codes),
             excluded_atc4_count=excluded_count,
         )
+
+    def resolve_exact_base(self, market_name: str) -> tuple[str, str] | None:
+        import pymysql
+
+        requested_base = _canonical_market_base(market_name)
+        if not requested_base:
+            return None
+        try:
+            with pymysql.connect(
+                host=self.catalog.host,
+                port=self.catalog.port,
+                user=self.catalog.user,
+                password=self.catalog.password,
+                database=self.catalog.database,
+                connect_timeout=self.catalog.connect_timeout_s,
+                read_timeout=self.catalog.read_timeout_s,
+                write_timeout=self.catalog.read_timeout_s,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT ml_id, name
+                        FROM catalog_ml_market
+                        WHERE name IS NOT NULL AND name <> ''
+                        ORDER BY ml_id
+                        """
+                    )
+                    rows = tuple(cursor.fetchall())
+        except pymysql.MySQLError as exc:
+            error_code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+            reason_code = (
+                "catalog_db_unreachable"
+                if error_code in _CATALOG_CONNECTION_ERROR_CODES
+                else "catalog_parse_error"
+            )
+            raise CatalogDefinitionLoadError(
+                reason_code,
+                "catalog_ml_market exact-base query failed",
+            ) from exc
+        matches = {
+            (str(row.get("ml_id") or "").strip(), str(row.get("name") or "").strip())
+            for row in rows
+            if str(row.get("ml_id") or "").strip()
+            and _canonical_market_base(str(row.get("name") or "")) == requested_base
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
 
 
 class _GeneralMembership(Protocol):
@@ -327,13 +378,29 @@ class GeneralViewService:
         brand = _requested_brand_hint(question)
         strategic_market = self._strategic_market(question)
         explicit_strategic_market = strategic_market is not None
+        resolved_membership = False
         try:
             brand = str(self._strategic_membership.resolve(question, allow_default=False).canonical_brand)
+            resolved_membership = True
         except (AttributeError, LookupError, OSError, TypeError, ValueError):
             if explicit_strategic_market:
                 brand = ""
         resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
+        exact_catalog_market = False
+        if (
+            not resolved_membership
+            and strategic_market is None
+            and explicit_atc4 is None
+            and _has_explicit_general_signal(_normalize(question))
+            and (_asks_hhi(question) or _asks_market_metric(_normalize(question)))
+        ):
+            strategic_market = self._exact_catalog_market(brand)
+            explicit_strategic_market = strategic_market is not None
+            if explicit_strategic_market:
+                exact_catalog_market = True
+                brand = ""
+                resolved_brand = ""
         membership_source = "not_applicable"
         selection_trace = self._selection_trace(question, strategic_market)
         try:
@@ -419,11 +486,16 @@ class GeneralViewService:
             if hhi_requested and len(markets) > 1:
                 ordered_markets = tuple(sorted(markets, key=lambda item: item.atc4_code))
                 contract = _multi_contract(
-                    f"{resolved_brand or brand} 일반뷰",
+                    (
+                        strategic_market[1]
+                        if exact_catalog_market and strategic_market is not None
+                        else f"{resolved_brand or brand} 일반뷰"
+                    ),
                     ordered_markets,
                     compact=compact,
                     dual=dual,
                     question=question,
+                    strategic_market=strategic_market if exact_catalog_market else None,
                 )
                 contract["membership_source"] = membership_source
                 contract.update(selection_trace)
@@ -463,7 +535,28 @@ class GeneralViewService:
                 dual=dual,
                 started_at=started_at,
                 selection_trace=selection_trace,
+                market=strategic_market,
             )
+
+    def _exact_catalog_market(self, market_name: str) -> tuple[str, str] | None:
+        reader = self._market_definition_reader
+        if reader is None or not market_name:
+            return None
+        resolve_exact_base = getattr(reader, "resolve_exact_base", None)
+        if not callable(resolve_exact_base):
+            return None
+        try:
+            return resolve_exact_base(market_name)
+        except (CatalogDefinitionLoadError, LookupError, OSError, TypeError, ValueError) as exc:
+            reason_code = _catalog_definition_failure_reason(exc)
+            logged_error = exc.__cause__ if exc.__cause__ is not None else exc
+            LOGGER.warning(
+                "catalog exact-base load failed reason_code=%s error_type=%s error_message=%s",
+                reason_code,
+                type(logged_error).__name__,
+                _sanitize_catalog_exception(logged_error),
+            )
+            return None
 
     def _selection_trace(self, question: str, market: tuple[str, str] | None) -> dict[str, Any]:
         members: tuple[str, ...] = ()
@@ -701,6 +794,7 @@ def _multi_contract(
     compact: bool,
     dual: bool,
     question: str,
+    strategic_market: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     sections: list[dict[str, Any]] = []
     for market in markets:
@@ -717,6 +811,10 @@ def _multi_contract(
         )
         section["market_size"] = market.market_size
         section["market_size_recent_krw"] = market.market_size
+        if strategic_market is not None:
+            section["market"] = strategic_market[0]
+            section["market_id"] = strategic_market[0]
+            section["market_name"] = strategic_market[1]
         public_label = _public_atc4_market_label(market)
         section_heading = (
             f"### ATC4 {market.atc4_code}"
@@ -734,7 +832,7 @@ def _multi_contract(
     section_markdown = "\n\n".join(
         ["## 일반뷰 (ATC4별 분리)", explanation, *(str(section["section_markdown"]) for section in sections)]
     )
-    return {
+    contract = {
         "mode": "dual" if dual else "general_only",
         "view_type": "general_view",
         "market_basis": "ATC4",
@@ -745,6 +843,11 @@ def _multi_contract(
         "selected_data_path": next(iter(selected_paths)) if len(selected_paths) == 1 else "mixed",
         "section_markdown": section_markdown,
     }
+    if strategic_market is not None:
+        contract["market"] = strategic_market[0]
+        contract["market_id"] = strategic_market[0]
+        contract["market_name"] = strategic_market[1]
+    return contract
 
 
 def _result(
@@ -935,6 +1038,7 @@ def _unavailable_result(
     dual: bool,
     started_at: datetime,
     selection_trace: dict[str, Any] | None = None,
+    market: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     text = f"## 일반뷰 (ATC4)\n\n일반뷰 데이터를 현재 조회할 수 없습니다. ({reason})"
     contract = {
@@ -952,6 +1056,10 @@ def _unavailable_result(
         "section_markdown": text,
         "unavailable": True,
     }
+    if market is not None:
+        contract["market"] = market[0]
+        contract["market_id"] = market[0]
+        contract["market_name"] = market[1]
     contract.update(selection_trace or {})
     call = {"source": "jw-market-backend-api", "tool": "general_view_unavailable", "render_data": contract}
     attach_tool_qa_trace(
@@ -1123,6 +1231,14 @@ def _normalize(question: str) -> str:
     return re.sub(r"\s+", "", question).lower()
 
 
+def _canonical_market_base(value: str) -> str:
+    normalized = re.sub(r"\s+", "", unicodedata.normalize("NFKC", value)).lower()
+    for suffix in ("시장", "치료제"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+    return normalized
+
+
 def _has_explicit_general_signal(normalized: str) -> bool:
     return bool(_ATC4_PATTERN.search(normalized)) or any(
         token in normalized for token in ("일반뷰", "일반view", "atc4", "atc기준")
@@ -1226,7 +1342,7 @@ def _brand_hint(question: str) -> str:
     text = _SOURCE_PATTERN.sub(" ", question)
     text = _ATC4_PATTERN.sub(" ", text)
     text = re.split(
-        r"시장|점유율|매출|실적|최근|추이|순위|규모|top\s*\d*",
+        r"시장|점유율|매출|실적|최근|추이|순위|규모|hhi|top\s*\d*",
         text,
         maxsplit=1,
         flags=re.IGNORECASE,
