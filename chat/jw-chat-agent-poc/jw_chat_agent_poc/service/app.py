@@ -173,8 +173,11 @@ from jw_chat_agent_poc.service.models import (
 )
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.security_policy import (
+    SEC12_BLOCKED_ANSWER,
+    enforced_answer,
     evaluate_input_policy,
     evaluate_output_leakage,
+    policy_is_enforced,
 )
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.service.startup_warmup import (
@@ -648,6 +651,23 @@ def _answer_question(
     conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
     input_policy_decision = evaluate_input_policy(question)
+    if policy_is_enforced(input_policy_decision):
+        state = store.conversations.get_or_create(conversation_id)
+        result = {
+            "answer": SEC12_BLOCKED_ANSWER,
+            "conversation_fallback_ready": True,
+            "sources": [],
+            "tool_calls": [],
+            "_sec12_input_policy_decision": input_policy_decision,
+        }
+        store.conversations.record_exchange(
+            state.conversation_id,
+            question,
+            SEC12_BLOCKED_ANSWER,
+            {},
+            slots=extract_conversation_slots(result),
+        )
+        return {"question": question, "result": result, "conversation_id": state.conversation_id}
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         deep_request = parse_deep_research_request(question)
@@ -2589,22 +2609,24 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
         tool_calls=tool_calls,
         sources=final_answer.sources,
     )
+    output_policy_decision = evaluate_output_leakage(format_result.answer)
+    user_answer = enforced_answer(format_result.answer, output_policy_decision)
     trace_result = {
         **result,
         "_response_format_contract": format_result.report.to_dict(),
-        "_sec12_output_leakage_decision": evaluate_output_leakage(format_result.answer),
+        "_sec12_output_leakage_decision": output_policy_decision,
     }
     trace = trace_envelope(
         question=question,
         result=trace_result,
-        answer=format_result.answer,
+        answer=user_answer,
         charts=final_answer.charts,
         timing=final_answer.timing,
         conversation_id=conversation_id,
     )
     return replace(
         final_answer,
-        text=format_result.answer,
+        text=user_answer,
         trace=trace,
     )
 
