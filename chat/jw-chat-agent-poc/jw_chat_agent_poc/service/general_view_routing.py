@@ -545,6 +545,9 @@ class GeneralViewService:
             )
 
     def _exact_catalog_market(self, market_name: str) -> tuple[str, str] | None:
+        public_market = self._strategic_market(f"{market_name} 시장") if market_name else None
+        if public_market is not None:
+            return public_market
         reader = self._market_definition_reader
         if reader is None or not market_name:
             return None
