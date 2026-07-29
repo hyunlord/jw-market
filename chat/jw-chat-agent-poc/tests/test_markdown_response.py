@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ import requests
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop.planner import GenosToolPlanner
 from jw_chat_agent_poc.orchestrator import answer_facts as answer_facts_module
+from jw_chat_agent_poc.orchestrator.provenance import EvidenceFact as BindingEvidenceFact
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.markdown_renderers import _safe_table, drug_info_md
@@ -60,6 +62,7 @@ from jw_chat_agent_poc.service.genos_client import (
     _web_search_unverified_section,
 )
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
+from jw_chat_agent_poc.service.evidence_binding import verify_claim_bindings
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact
 from jw_chat_agent_poc.tool_use.renderer import render_evidence_answer
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
@@ -118,6 +121,62 @@ def _failed_relational_series_call(
     assert isinstance(render_data, dict)
     render_data["status"] = status
     return call
+
+
+def _compact_hira_patient_call(code: str) -> dict[str, object]:
+    return {
+        "tool": "hira_disease_hospitalization_outpatient_stats",
+        "source": "HIRA",
+        "status": "ok",
+        "render_data": {
+            "calls": [
+                {
+                    "render_data": {
+                        "items": [
+                            {
+                                "sickCd": code,
+                                "sickNm": "상병",
+                                "year": "2024",
+                                "ptntCnt": 12345,
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    }
+
+
+@pytest.mark.parametrize("raw_code", ("H360", "H36.0"))
+def test_hira_patient_code_is_canonicalized_for_binding(raw_code: str) -> None:
+    response = MarkdownResponseBuilder().build(
+        brand="H36.0",
+        calls=[_compact_hira_patient_call(raw_code)],
+        sources=["HIRA"],
+    )
+
+    patient_fact = next(fact for fact in response.evidence if fact["metric"] == "환자수")
+    verification = verify_claim_bindings(
+        question=f"질병코드 {raw_code} 환자수 통계 알려줘",
+        answer="H36.0의 2024년 환자수는 12345명입니다.",
+        facts=tuple(BindingEvidenceFact(**fact) for fact in response.evidence),
+    )
+
+    assert patient_fact["entity"] == "H36.0"
+    assert verification.status == "pass"
+    assert verification.blocked_reasons == ()
+
+
+def test_d693_patient_markdown_is_unchanged_by_binding_canonicalization() -> None:
+    compact = MarkdownResponseBuilder().build(
+        brand="D69.3",
+        calls=[_compact_hira_patient_call("D693")],
+        sources=["HIRA"],
+    )
+
+    assert hashlib.sha256(compact.markdown.encode()).hexdigest() == (
+        "c4600e22d0277e80d6e0adf0e1513a2fde0fdadc53d41c9b722c26809bbca1c6"
+    )
 
 
 @pytest.mark.parametrize(

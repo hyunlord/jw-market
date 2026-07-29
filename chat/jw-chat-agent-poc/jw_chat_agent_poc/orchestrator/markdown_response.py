@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
+from jw_chat_agent_poc.orchestrator.hira_disease import explicit_hira_disease_code
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     allowed_numbers,
     cell,
@@ -21,6 +22,7 @@ from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
 from jw_chat_agent_poc.orchestrator.market_insights import render_market_insights
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
 from jw_chat_agent_poc.orchestrator.provenance import (
+    EvidenceFact,
     evidence_from_calls,
     evidence_markdown,
     verification_notice,
@@ -47,6 +49,19 @@ class MarkdownResponse:
         return asdict(self)
 
 
+def _canonicalize_hira_disease_fact_entities(
+    facts: tuple[EvidenceFact, ...],
+) -> tuple[EvidenceFact, ...]:
+    canonicalized: list[EvidenceFact] = []
+    for fact in facts:
+        if fact.tool.startswith("hira_disease_") and fact.metric in {"환자수", "질병코드"}:
+            canonical_code = explicit_hira_disease_code(fact.entity)
+            if canonical_code is not None and canonical_code != fact.entity:
+                fact = replace(fact, entity=canonical_code)
+        canonicalized.append(fact)
+    return tuple(canonicalized)
+
+
 class MarkdownResponseBuilder:
     def build(
         self,
@@ -59,7 +74,7 @@ class MarkdownResponseBuilder:
         calls = dedupe_blocked_metric_messages(calls)
         summary_md = self._summary_md(brand, sources)
         data_md = self._data_md(calls)
-        facts = evidence_from_calls(calls, data_md)
+        facts = _canonicalize_hira_disease_fact_entities(evidence_from_calls(calls, data_md))
         fact_md = answer_fact_markdown(calls, sources)
         evidence_md = evidence_markdown(facts)
         interpretation_md = self._interpretation_md(calls)
