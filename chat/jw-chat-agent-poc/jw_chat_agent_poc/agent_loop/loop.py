@@ -43,6 +43,7 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     market_ambiguity_message,
     market_membership_mismatch_message,
 )
+from jw_chat_agent_poc.orchestrator.provenance_model import MISSING_LABEL, public_market
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.common.timing import add_stage, emit_completed_stage, new_timing, stage
 from jw_chat_agent_poc.common.token_usage import record_token_usage
@@ -521,6 +522,7 @@ class ToolUseAgent:
                         cache_hit=False,
                     )
                 calls.extend(calculation_calls)
+        _attach_market_display_names(calls, resolutions)
         _mark_answer_scope(question, calls, brand)
         with stage(timing, "context_retrieval", "background issue material"):
             calls.extend(_background_context_calls(question, calls, brand, self.news))
@@ -605,6 +607,33 @@ class ToolUseAgent:
 
     def _stage_name(self, standard: str, deep: str) -> str:
         return deep if self.progress_namespace == "deep" else standard
+
+
+def _attach_market_display_names(calls: list[dict[str, Any]], resolutions: Collection[Any]) -> None:
+    """Carry catalog market names into metric evidence without exposing internal IDs."""
+
+    market_by_brand = {
+        str(item.canonical_brand): (str(item.market_id), str(item.market_name))
+        for item in resolutions
+        if item.market_id and item.market_name
+    }
+    for call in calls:
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        query_spec = data.get("query_spec")
+        spec = query_spec if isinstance(query_spec, dict) else {}
+        brand = str(data.get("brand") or spec.get("brand") or "")
+        identity = market_by_brand.get(brand)
+        if identity is None:
+            continue
+        expected_market_id, market_name = identity
+        market_id = str(data.get("market_id") or spec.get("market") or "")
+        if market_id.casefold() != expected_market_id.casefold():
+            continue
+        public_name = public_market(market_name, market_id)
+        if public_name != MISSING_LABEL:
+            data["market_display_name"] = public_name
 
 
 def _bq_source_label(source: str) -> str:

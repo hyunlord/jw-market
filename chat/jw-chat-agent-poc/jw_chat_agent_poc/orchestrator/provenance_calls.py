@@ -42,7 +42,11 @@ def provenance_rows_from_calls(
                     _first_value(query_spec, render_data, keys=("market", "market_id", "atc4")),
                 ),
                 market=public_market(
-                    _first_value(query_spec, render_data, keys=("market_name", "market_definition")),
+                    _first_value(
+                        query_spec,
+                        render_data,
+                        keys=("market_display_name", "market_name", "market_definition"),
+                    ),
                     _first_value(query_spec, render_data, keys=("market", "market_id", "atc4")),
                 ),
                 denominator=_denominator_label(render_data, query_spec),
