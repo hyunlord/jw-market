@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pipeline.scripts.crawler.hira_benefit.models import ParseStatus
+import pytest
+
+from pipeline.scripts.crawler.hira_benefit import parser as hira_parser
+from pipeline.scripts.crawler.hira_benefit.models import FieldParseStatus, ParseStatus
 from pipeline.scripts.crawler.hira_benefit.parser import (
     parse_detail_html,
     parse_list_html,
@@ -65,7 +68,8 @@ def test_list_parser_extracts_current_hira_popup_identity() -> None:
 def test_detail_parser_marks_ok_only_when_all_structured_fields_exist() -> None:
     html = """
     <main>
-      <h1>[약제] 고시 제2025-189호 안내</h1>
+      <h1>보험인정기준 상세내용</h1>
+      <div class="title">[약제] 고시 제2025-189호 안내</div>
       <dl><dt>관련근거</dt><dd>고시 제2025-189호</dd>
           <dt>게시일</dt><dd>2025-11-28</dd></dl>
       <h2>투여대상</h2><p>성인 중 LDL-C 조절이 필요한 환자</p>
@@ -91,7 +95,8 @@ def test_detail_parser_marks_ok_only_when_all_structured_fields_exist() -> None:
 
 def test_detail_parser_preserves_raw_text_and_marks_optional_fields_applicable() -> None:
     html = """
-    <main><h1>고시 제2026-10호</h1><p>게시일 2026-01-03</p>
+    <main><h1>보험인정기준 상세내용</h1>
+    <div class="title">고시 제2026-10호</div><p>게시일 2026-01-03</p>
     <h2>투여대상</h2><p>특정 환자군</p></main>
     """
 
@@ -120,12 +125,94 @@ def test_detail_parser_marks_failed_without_synthesizing_values() -> None:
     assert parsed.target_condition is None
     assert parsed.exclusion_rule is None
     assert parsed.dosage_limit is None
-    assert parsed.failed_fields == (
-        "target_condition",
-        "exclusion_rule",
-        "dosage_limit",
-    )
+    assert parsed.failed_fields == ("ingress:missing_expected_structure",)
     assert parsed.raw_text == "첨부파일에서 세부 기준을 확인하십시오."
+
+
+@pytest.mark.parametrize("html", ("", " \n\t "))
+def test_detail_parser_rejects_empty_ingress(html: str) -> None:
+    parsed = parse_detail_html(
+        html,
+        source_notice_id="empty-ingress",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=empty-ingress",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:empty_raw_text",)
+
+
+def test_detail_parser_rejects_unclosed_structural_html() -> None:
+    parsed = parse_detail_html(
+        "<main><h1>보험인정기준 상세내용</h1><p>정상 본문",
+        source_notice_id="broken-html",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=broken-html",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:malformed_html",)
+
+
+def test_detail_parser_rejects_missing_expected_heading() -> None:
+    parsed = parse_detail_html(
+        "<html><body><main><h1>일반 게시물</h1><p>정상 본문</p></main></body></html>",
+        source_notice_id="missing-structure",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=missing-structure",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:missing_expected_structure",)
+
+
+def test_detail_parser_rejects_missing_content_container() -> None:
+    parsed = parse_detail_html(
+        "<html><h1>보험인정기준 상세내용</h1><p>정상처럼 보이는 본문</p></html>",
+        source_notice_id="missing-container",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=missing-container",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:missing_expected_structure",)
+
+
+def test_detail_parser_rejects_http_error_page_body() -> None:
+    parsed = parse_detail_html(
+        "<html><head><title>Internal Server Error</title></head>"
+        "<body><p>HTTP Status 500</p></body></html>",
+        source_notice_id="http-error",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=http-error",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+    assert parsed.failed_fields == ("ingress:http_error_page",)
+
+
+def test_detail_parser_does_not_extract_fields_after_ingress_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(**_kwargs: object) -> None:
+        pytest.fail("typed extraction must not run after ingress failure")
+
+    monkeypatch.setattr(hira_parser, "extract_structured", fail_if_called)
+
+    parsed = parse_detail_html(
+        "<html><body><p>HTTP Status 500</p></body></html>",
+        source_notice_id="no-extraction",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=no-extraction",
+    )
+
+    assert parsed.parse_status is ParseStatus.FAILED
+
+
+def test_detail_parser_keeps_normal_document_without_typed_clauses_not_applicable() -> None:
+    parsed = parse_detail_html(
+        "<main><h1>보험인정기준 상세내용</h1>"
+        "<p>요양급여의 적용기준 및 방법에 대한 세부사항을 개정한다.</p></main>",
+        source_notice_id="normal-no-clauses",
+        source_url="https://www.hira.or.kr/detail?brdBltNo=normal-no-clauses",
+    )
+
+    assert parsed.parse_status is ParseStatus.NOT_APPLICABLE
+    assert parsed.failed_fields == ()
 
 
 def test_stored_raw_text_ignores_common_attachment_download_boilerplate() -> None:
@@ -311,3 +398,75 @@ def test_stored_raw_text_parses_exclusion_label_with_qualifier() -> None:
         "1) 출혈경향이 있는 경우 2) 임신을 한 경우"
     )
     assert parsed.parse_status is ParseStatus.OK
+
+
+def test_stored_raw_text_extracts_only_structural_contraindication_labels() -> None:
+    contraindicated_patients = parse_stored_raw_text(
+        "2. 금기환자 가. 활동성 결핵 환자 나. 중증 심부전 환자 "
+        "3. 교체투여 다른 약제로 교체한다. 닫기"
+    )
+    contraindications = parse_stored_raw_text(
+        "다. 금기증은 아래와 같으며 요양급여를 인정하지 아니함. "
+        "1) 기대 여명 1년 이하 2) 활동성 심내막염 "
+        "라. 시설 기준 관련 기준을 충족해야 한다. 닫기"
+    )
+    contraindications_without_terminal = parse_stored_raw_text(
+        "나. 금기증은 아래와 같으며, 요양급여를 인정하지 아니함 "
+        "1) 심장내 혈전 2) 활동성 심내막염 "
+        "다. 시설 기준 관련 기준을 충족해야 한다. 닫기"
+    )
+
+    assert contraindicated_patients.exclusion_rule == (
+        "가. 활동성 결핵 환자 나. 중증 심부전 환자"
+    )
+    assert contraindications.exclusion_rule == (
+        "1) 기대 여명 1년 이하 2) 활동성 심내막염"
+    )
+    assert contraindications_without_terminal.exclusion_rule == (
+        "1) 심장내 혈전 2) 활동성 심내막염"
+    )
+
+
+def test_stored_raw_text_rejects_ambiguous_generic_contraindication_heading() -> None:
+    parsed = parse_stored_raw_text(
+        "나. 금기증 활동성 감염 환자 "
+        "2. 사전ㆍ사후관리 별도 관리 기준을 적용한다. 닫기"
+    )
+
+    assert parsed.exclusion_rule is None
+    assert parsed.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+
+
+def test_stored_raw_text_does_not_promote_free_prose_denials_to_exclusion() -> None:
+    material = parse_stored_raw_text(
+        "치료재료 비용 중 재료대를 제외한다. 닫기"
+    )
+    combination = parse_stored_raw_text(
+        "다른 약제와 병용투여는 급여로 인정하지 아니함. 닫기"
+    )
+
+    assert material.exclusion_rule is None
+    assert material.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+    assert combination.exclusion_rule is None
+    assert combination.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+
+
+def test_field_status_distinguishes_extracted_absent_and_failed() -> None:
+    parsed = parse_stored_raw_text(
+        "1. 투여대상: 성인 환자 2. 제외기준: 3. 투여용량: 1일 1회"
+    )
+
+    assert parsed.target_status is FieldParseStatus.EXTRACTED
+    assert parsed.exclusion_status is FieldParseStatus.FAILED
+    assert parsed.dosage_status is FieldParseStatus.EXTRACTED
+    assert parsed.parse_status is ParseStatus.PARTIAL
+    assert parsed.failed_fields == ("exclusion_rule",)
+
+
+def test_field_status_marks_absent_labels_not_applicable() -> None:
+    parsed = parse_stored_raw_text("보험인정기준 상세내용을 개정한다.")
+
+    assert parsed.target_status is FieldParseStatus.NOT_APPLICABLE
+    assert parsed.exclusion_status is FieldParseStatus.NOT_APPLICABLE
+    assert parsed.dosage_status is FieldParseStatus.NOT_APPLICABLE
+    assert parsed.parse_status is ParseStatus.NOT_APPLICABLE

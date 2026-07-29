@@ -27,6 +27,7 @@ def test_zero_row_index_fails_closed() -> None:
         state_root="/tmp/state",
         first_run_mode="date_boundary",
         notice_date_boundary="2026-07-01",
+        expected_detail_notices=120,
     )
 
     with pytest.raises(RuntimeError, match="zero notices"):
@@ -64,10 +65,14 @@ def test_full_population_plan_is_not_rejected_by_old_500_row_limit() -> None:
         )
         for index in range(501)
     )
+    # A manifest-free full-population run pays for enumeration *and* 500 detail
+    # fetches. The budget gate now models both, so this shape has to declare the
+    # execution window it actually needs; the production schedule is unchanged.
     config = HiraWorkflowInput(
         run_id="run",
         state_root="/tmp/state",
         first_run_mode="backfill_all",
+        workflow_timeout_seconds=10800,
     )
 
     plan = plan_discovered_items(items, config=config, stored=None)

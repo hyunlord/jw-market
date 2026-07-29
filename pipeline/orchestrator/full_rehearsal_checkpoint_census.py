@@ -1,4 +1,4 @@
-"""Nine-gate census for immutable R-1 s1 checkpoints."""
+"""Artifact and schema census for immutable R-1 s1 checkpoints."""
 
 from __future__ import annotations
 
@@ -6,12 +6,16 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Mapping
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
+from pipeline.etl.io.iqvia_numeric import IQVIA_ENRICH_METRICS
 from pipeline.orchestrator.full_rehearsal_checkpoint_contract import (
     CheckpointContractError,
     DatabaseCensus,
+    canonical_json,
     inventory_canonical_sha,
+    sha256_bytes,
     sha256_file,
 )
 
@@ -72,6 +76,50 @@ def artifact_records(s1_root: Path) -> list[dict[str, object]]:
     return sorted(records, key=lambda row: str(row["path"]))
 
 
+def iqvia_nsa_schema_fingerprint(s1_root: Path) -> str:
+    """Fingerprint supported physical types for every NSA metric parquet."""
+    schema_records: list[dict[str, object]] = []
+    for path in sorted((s1_root / "iqvia-nsa").rglob("*.parquet")):
+        schema = pq.ParquetFile(path).schema_arrow
+        fields = {field.name: field for field in schema}
+        metric_records: list[dict[str, object]] = []
+        for _, column in IQVIA_ENRICH_METRICS:
+            field = fields.get(column)
+            if field is None:
+                raise CheckpointContractError(
+                    f"missing IQVIA NSA metric schema: {path.name}:{column}"
+                )
+            data_type = field.type
+            supported = (
+                pa.types.is_integer(data_type)
+                or pa.types.is_floating(data_type)
+                or pa.types.is_decimal(data_type)
+                or pa.types.is_string(data_type)
+                or pa.types.is_large_string(data_type)
+            )
+            if not supported:
+                raise CheckpointContractError(
+                    "unsupported IQVIA NSA metric schema: "
+                    f"{path.name}:{column}={data_type}"
+                )
+            metric_records.append(
+                {
+                    "name": column,
+                    "nullable": field.nullable,
+                    "type": str(data_type),
+                }
+            )
+        schema_records.append(
+            {
+                "metrics": metric_records,
+                "path": path.relative_to(s1_root).as_posix(),
+            }
+        )
+    if not schema_records:
+        raise CheckpointContractError("IQVIA NSA schema population is empty")
+    return sha256_bytes(canonical_json(schema_records))
+
+
 def _sidecar_values(sidecar: object) -> tuple[Path, str]:
     relative = getattr(sidecar, "relative_path", None)
     sha256 = getattr(sidecar, "sha256", None)
@@ -91,6 +139,7 @@ def checkpoint_census(
     database: DatabaseCensus,
     expected_sidecars: Iterable[object],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    expected_sidecars = tuple(expected_sidecars)
     for name in ("ubist", "iqvia-records", "iqvia-nsa"):
         if not (work / name).is_dir():
             raise CheckpointContractError(f"missing s1 artifact directory: {name}")
@@ -119,15 +168,40 @@ def checkpoint_census(
         partitions = manifest["partitions"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise CheckpointContractError(f"invalid UBIST manifest: {exc}") from exc
-    expected = {str(row["path"]): int(row["row_count"]) for row in partitions}
+    manifest_expected = {str(row["path"]): int(row["row_count"]) for row in partitions}
+    sidecar_paths = {_sidecar_values(sidecar)[0].as_posix() for sidecar in expected_sidecars}
+    overlap = set(manifest_expected) & sidecar_paths
+    if overlap:
+        raise CheckpointContractError(
+            f"UBIST manifest overlaps declared sidecars: {sorted(overlap)}"
+        )
     actual_ubist = {
         path.relative_to(work / "ubist").as_posix(): pq.ParquetFile(path).metadata.num_rows
         for path in sorted((work / "ubist").rglob("*.parquet"))
     }
-    if expected != actual_ubist:
-        raise CheckpointContractError("UBIST partition set or row counts mismatch")
+    expected_paths = set(manifest_expected) | sidecar_paths
+    actual_paths = set(actual_ubist)
+    row_mismatches = {
+        path: (rows, actual_ubist.get(path))
+        for path, rows in manifest_expected.items()
+        if actual_ubist.get(path) != rows
+    }
+    if expected_paths != actual_paths or row_mismatches:
+        raise CheckpointContractError(
+            "UBIST partition set or row counts mismatch: "
+            f"missing={sorted(expected_paths - actual_paths)} "
+            f"unexpected={sorted(actual_paths - expected_paths)} "
+            f"rows={row_mismatches}"
+        )
     census.append(
-        {"check": "2-ubist-partitions", "passed": True, "detail": f"partitions={len(expected)}"}
+        {
+            "check": "2-ubist-partitions",
+            "passed": True,
+            "detail": (
+                f"partitions={len(expected_paths)} manifest={len(manifest_expected)} "
+                f"sidecars={len(sidecar_paths)}"
+            ),
+        }
     )
 
     source_artifacts = artifact_records(work)
@@ -138,7 +212,10 @@ def checkpoint_census(
         {
             "check": "4-ubist-manifest",
             "passed": True,
-            "detail": f"sha256={sha256_file(manifest_path)} rows={sum(expected.values())}",
+            "detail": (
+                f"sha256={sha256_file(manifest_path)} "
+                f"rows={sum(manifest_expected.values())}"
+            ),
         }
     )
     temporary = [

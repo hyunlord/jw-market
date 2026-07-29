@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-from .models import ParseStatus
+from .models import FieldParseStatus, ParseStatus
 
 _FIELD_HEADINGS: Final = {
     "target_condition": (
@@ -24,6 +24,11 @@ _FIELD_HEADINGS: Final = {
         "급여 제외 대상",
         "제외대상",
         "제외 대상",
+        "금기환자",
+        "금기증은 아래와 같으며 요양급여를 인정하지 아니함.",
+        "금기증은 아래와 같으며, 요양급여를 인정하지 아니함.",
+        "금기증은 아래와 같으며 요양급여를 인정하지 아니함",
+        "금기증은 아래와 같으며, 요양급여를 인정하지 아니함",
     ),
     "dosage_limit": (
         "투여용량",
@@ -79,6 +84,9 @@ class StructuredParseResult:
     dosage_limit: str | None
     parse_status: ParseStatus
     failed_fields: tuple[str, ...]
+    target_status: FieldParseStatus
+    exclusion_status: FieldParseStatus
+    dosage_status: FieldParseStatus
 
 
 def _clean(value: str) -> str:
@@ -133,15 +141,18 @@ def _extract_inline_values(value: str) -> tuple[tuple[str, str], ...]:
         boundaries = [len(value)]
         if index + 1 < len(matches):
             boundaries.append(matches[index + 1].start())
-        for boundary_re in (_TERMINAL_BOUNDARY_RE, _KOREAN_DOT_BOUNDARY_RE):
-            boundary = boundary_re.search(value, match.end())
-            if boundary is not None:
-                boundaries.append(boundary.start())
         marker = match.group("marker")
-        if marker and marker[-1] == ")" and marker[:-1].isdigit():
-            numeric_sibling = re.search(r"\s(?=\d+\)\s+\S)", value[match.end() :])
-            if numeric_sibling is not None:
-                boundaries.append(match.end() + numeric_sibling.start())
+        terminal = _TERMINAL_BOUNDARY_RE.search(value, match.end())
+        if terminal is not None:
+            boundaries.append(terminal.start())
+        if marker and marker[:-1].isdigit():
+            sibling = re.search(r"\s(?=\d+[.)]\s+\S)", value[match.end() :])
+        elif marker:
+            sibling = re.search(r"\s(?=[가-하][.)]\s+\S)", value[match.end() :])
+        else:
+            sibling = _KOREAN_DOT_BOUNDARY_RE.search(value, match.end())
+        if sibling is not None:
+            boundaries.append(match.end() + sibling.start())
         end = min(boundaries)
         field_value = _clean(value[match.end() : end])
         if field_name is not None and field_value:
@@ -203,24 +214,38 @@ def extract_structured(
         if field_name in attempted_fields and values[field_name] is None
     )
     present_count = sum(value is not None for value in values.values())
+    attachment_only = _ATTACHMENT_ONLY_DOCUMENT_RE.fullmatch(raw_text) is not None
     if unresolved_fields:
         status = ParseStatus.PARTIAL if present_count else ParseStatus.FAILED
         failed_fields = unresolved_fields
     elif present_count:
         status = ParseStatus.OK
         failed_fields = ()
-    elif _ATTACHMENT_ONLY_DOCUMENT_RE.fullmatch(raw_text) is not None:
+    elif attachment_only:
         status = ParseStatus.FAILED
         failed_fields = _FIELD_ORDER
     else:
         status = ParseStatus.NOT_APPLICABLE
         failed_fields = ()
+    field_statuses = {
+        field_name: (
+            FieldParseStatus.EXTRACTED
+            if values[field_name] is not None
+            else FieldParseStatus.FAILED
+            if field_name in attempted_fields or attachment_only
+            else FieldParseStatus.NOT_APPLICABLE
+        )
+        for field_name in _FIELD_ORDER
+    }
     return StructuredParseResult(
         target_condition=values["target_condition"],
         exclusion_rule=values["exclusion_rule"],
         dosage_limit=values["dosage_limit"],
         parse_status=status,
         failed_fields=failed_fields,
+        target_status=field_statuses["target_condition"],
+        exclusion_status=field_statuses["exclusion_rule"],
+        dosage_status=field_statuses["dosage_limit"],
     )
 
 

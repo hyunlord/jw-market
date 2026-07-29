@@ -182,6 +182,7 @@ def test_tracked_manifests_preserve_isolated_load_arming():
 
     sweep = yaml.safe_load((base / "ingest-sweep-cronjob.yaml").read_text(encoding="utf-8"))
     assert sweep["spec"]["suspend"] is True
+    assert sweep["spec"]["schedule"] == "*/5 * * * *"
     sweep_container = sweep["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
     sweep_env = {item["name"]: item for item in sweep_container["env"]}
     assert sweep_env["INGEST_LOAD_STAGING_ROOT"]["value"] == "/tmp/ingest-load-staging"
@@ -195,7 +196,13 @@ def test_tracked_manifests_preserve_isolated_load_arming():
 
     rbac = list(yaml.safe_load_all((base / "ingest-hook-rbac.yaml").read_text(encoding="utf-8")))
     role = next(doc for doc in rbac if doc["kind"] == "Role")
-    assert role["rules"] == [{"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create", "get", "list"]}]
+    assert role["rules"] == [
+        {
+            "apiGroups": ["batch"],
+            "resources": ["jobs"],
+            "verbs": ["create", "get", "list", "delete"],
+        }
+    ]
 
 
 def test_reference_jobs_separate_staging_from_activation_contracts():

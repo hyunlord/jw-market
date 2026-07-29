@@ -108,6 +108,11 @@ def test_reparse_summary_reports_status_fields_and_target_ratio() -> None:
         "exclusion_rule": 0,
         "dosage_limit": 0,
     }
+    assert summary.field_status == {
+        "target_status": {"EXTRACTED": 1, "NOT_APPLICABLE": 1},
+        "exclusion_status": {"NOT_APPLICABLE": 2},
+        "dosage_status": {"NOT_APPLICABLE": 2},
+    }
     assert summary.target_suffix_count == 1
     assert summary.target_raw_ratio_median < 0.5
 
@@ -131,6 +136,9 @@ def test_execute_updates_only_typed_parse_fields_in_one_transaction() -> None:
     sql = "\n".join(statement for statement, _params in conn.fake_cursor.calls)
     assert "UPDATE hira_benefit_notice" in sql
     assert "target_condition=%s" in sql
+    assert "target_status=%s" in sql
+    assert "exclusion_status=%s" in sql
+    assert "dosage_status=%s" in sql
     assert "parse_failed_fields_json=%s" in sql
     assert "raw_text=" not in sql
     assert "source_url=" not in sql

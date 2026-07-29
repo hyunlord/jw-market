@@ -12,7 +12,9 @@ from pipeline.orchestrator.full_rehearsal_checkpoint import (
     S1CheckpointStore,
     build_checkpoint_identity,
 )
+from pipeline.orchestrator.full_rehearsal_checkpoint_census import artifact_records
 from pipeline.orchestrator.full_rehearsal import FullInputManifest
+from pipeline.orchestrator.full_rehearsal import UbistParquetSidecar
 
 
 def _write_parquet(path: Path, rows: list[dict[str, object]]) -> int:
@@ -48,7 +50,15 @@ def _work_tree(root: Path) -> tuple[Path, DatabaseCensus]:
     )
     _write_parquet(
         work / "iqvia-nsa" / "2026-Q1.parquet",
-        [{"period_label": "2026-Q1"}],
+        [
+            {
+                "period_label": "2026-Q1",
+                "values_lc": 100,
+                "units": 10,
+                "counting_units": 20,
+                "dosage_units": 10,
+            }
+        ],
     )
     return work, DatabaseCensus(record_rows, {"2026-Q1": record_rows})
 
@@ -155,7 +165,9 @@ def test_checkpoint_identity_rejects_non_hex_contract_values(
         )
 
 
-def test_checkpoint_publish_runs_nine_census_gates_and_restores(tmp_path: Path) -> None:
+def test_checkpoint_publish_adds_schema_fingerprint_after_nine_existing_gates(
+    tmp_path: Path,
+) -> None:
     checkpoint_id, inventory, input_manifest = _identity(tmp_path)
     work, database = _work_tree(tmp_path)
     store = S1CheckpointStore(tmp_path / "checkpoints")
@@ -170,13 +182,73 @@ def test_checkpoint_publish_runs_nine_census_gates_and_restores(tmp_path: Path) 
     )
 
     assert completion["status"] == "complete"
-    assert len(completion["census"]) == 9
+    assert len(completion["census"]) == 10
+    assert [item["check"] for item in completion["census"][:9]] == [
+        "1-input-inventory",
+        "2-ubist-partitions",
+        "3-parquet-identities",
+        "4-ubist-manifest",
+        "5-temporary-artifacts",
+        "6-iqvia-parquet",
+        "7-iqvia-database",
+        "8-sidecar-contract",
+        "9-completion-publish",
+    ]
+    assert completion["census"][9]["check"] == "10-iqvia-schema-fingerprint"
+    assert len(completion["iqvia_nsa_schema_fingerprint"]) == 64
     assert all(item["passed"] for item in completion["census"])
     restored = tmp_path / "restored"
     store.restore(checkpoint_id=checkpoint_id, work_dir=restored)
     assert (restored / "ubist" / "_manifest.json").is_file()
     assert (restored / "iqvia-records" / "nsa" / "2026-Q1.parquet").is_file()
     assert (restored / "iqvia-nsa" / "2026-Q1.parquet").is_file()
+
+
+def test_checkpoint_publish_includes_declared_sidecar_in_ubist_partition_census(
+    tmp_path: Path,
+) -> None:
+    checkpoint_id, inventory, input_manifest = _identity(tmp_path)
+    work, database = _work_tree(tmp_path)
+    sidecar_path = work / "ubist" / "year=2026" / "month=06" / "data.parquet"
+    _write_parquet(sidecar_path, [{"value": 3}])
+    sidecar = UbistParquetSidecar(
+        path=sidecar_path,
+        relative_path=Path("year=2026/month=06/data.parquet"),
+        sha256=hashlib.sha256(sidecar_path.read_bytes()).hexdigest(),
+    )
+
+    completion = S1CheckpointStore(tmp_path / "checkpoints").publish(
+        checkpoint_id=checkpoint_id,
+        work_dir=work,
+        inventory_path=inventory,
+        input_manifest=input_manifest,
+        database=database,
+        expected_sidecars=(sidecar,),
+    )
+
+    partition_census = next(
+        item for item in completion["census"] if item["check"] == "2-ubist-partitions"
+    )
+    assert partition_census["detail"] == "partitions=2 manifest=1 sidecars=1"
+
+
+def test_checkpoint_publish_rejects_undeclared_ubist_partition(tmp_path: Path) -> None:
+    checkpoint_id, inventory, input_manifest = _identity(tmp_path)
+    work, database = _work_tree(tmp_path)
+    _write_parquet(
+        work / "ubist" / "year=2026" / "month=06" / "data.parquet",
+        [{"value": 3}],
+    )
+
+    with pytest.raises(CheckpointContractError, match="unexpected=.*month=06"):
+        S1CheckpointStore(tmp_path / "checkpoints").publish(
+            checkpoint_id=checkpoint_id,
+            work_dir=work,
+            inventory_path=inventory,
+            input_manifest=input_manifest,
+            database=database,
+            expected_sidecars=(),
+        )
 
 
 def test_checkpoint_publish_fails_before_completion_on_db_count_mismatch(tmp_path: Path) -> None:
@@ -231,3 +303,67 @@ def test_restore_rejects_tampered_parquet(tmp_path: Path) -> None:
 
     with pytest.raises(CheckpointContractError, match="identity mismatch"):
         store.restore(checkpoint_id=checkpoint_id, work_dir=tmp_path / "restore")
+
+
+def test_restore_rejects_iqvia_schema_fingerprint_mismatch(tmp_path: Path) -> None:
+    checkpoint_id, inventory, input_manifest = _identity(tmp_path)
+    work, database = _work_tree(tmp_path)
+    store = S1CheckpointStore(tmp_path / "checkpoints")
+    store.publish(
+        checkpoint_id=checkpoint_id,
+        work_dir=work,
+        inventory_path=inventory,
+        input_manifest=input_manifest,
+        database=database,
+        expected_sidecars=(),
+    )
+    checkpoint = tmp_path / "checkpoints" / checkpoint_id
+    nsa = checkpoint / "s1" / "iqvia-nsa" / "2026-Q1.parquet"
+    _write_parquet(
+        nsa,
+        [
+            {
+                "period_label": "2026-Q1",
+                "values_lc": "100",
+                "units": "10",
+                "counting_units": "20",
+                "dosage_units": "10",
+            }
+        ],
+    )
+    completion_path = checkpoint / "completion.json"
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    completion["artifacts"] = artifact_records(checkpoint / "s1")
+    completion_path.write_text(json.dumps(completion), encoding="utf-8")
+
+    with pytest.raises(CheckpointContractError, match="schema fingerprint mismatch"):
+        store.restore(checkpoint_id=checkpoint_id, work_dir=tmp_path / "restore")
+
+
+def test_checkpoint_publish_rejects_unsupported_iqvia_metric_schema(
+    tmp_path: Path,
+) -> None:
+    checkpoint_id, inventory, input_manifest = _identity(tmp_path)
+    work, database = _work_tree(tmp_path)
+    _write_parquet(
+        work / "iqvia-nsa" / "2026-Q1.parquet",
+        [
+            {
+                "period_label": "2026-Q1",
+                "values_lc": True,
+                "units": 10,
+                "counting_units": 20,
+                "dosage_units": 10,
+            }
+        ],
+    )
+
+    with pytest.raises(CheckpointContractError, match="unsupported IQVIA NSA metric schema"):
+        S1CheckpointStore(tmp_path / "checkpoints").publish(
+            checkpoint_id=checkpoint_id,
+            work_dir=work,
+            inventory_path=inventory,
+            input_manifest=input_manifest,
+            database=database,
+            expected_sidecars=(),
+        )

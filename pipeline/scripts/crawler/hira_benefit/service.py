@@ -115,6 +115,9 @@ def notice_to_json(item: PersistableNotice) -> dict[str, object]:
     )
     payload["parse_status"] = item.parsed.parse_status.value
     payload["failed_fields"] = list(item.parsed.failed_fields)
+    payload["target_status"] = item.parsed.target_status.value
+    payload["exclusion_status"] = item.parsed.exclusion_status.value
+    payload["dosage_status"] = item.parsed.dosage_status.value
     return {
         "parsed": payload,
         "listing_fingerprint": item.listing_fingerprint,

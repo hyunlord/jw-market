@@ -125,11 +125,13 @@ def persist_batch(
                     """
                     INSERT INTO hira_benefit_notice (
                       source_notice_id, source_url, title, notice_no, notice_date,
-                      target_condition, exclusion_rule, dosage_limit, raw_text,
+                      target_condition, exclusion_rule, dosage_limit,
+                      target_status, exclusion_status, dosage_status, raw_text,
                       raw_html_sha256, listing_fingerprint, parse_status,
                       parse_failed_fields_json, collected_at, updated_at
                     ) VALUES (
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s, %s, %s
                     )
                     ON DUPLICATE KEY UPDATE
                       source_url=VALUES(source_url),
@@ -139,6 +141,9 @@ def persist_batch(
                       target_condition=VALUES(target_condition),
                       exclusion_rule=VALUES(exclusion_rule),
                       dosage_limit=VALUES(dosage_limit),
+                      target_status=VALUES(target_status),
+                      exclusion_status=VALUES(exclusion_status),
+                      dosage_status=VALUES(dosage_status),
                       raw_text=VALUES(raw_text),
                       raw_html_sha256=VALUES(raw_html_sha256),
                       listing_fingerprint=VALUES(listing_fingerprint),
@@ -156,6 +161,9 @@ def persist_batch(
                         parsed.target_condition,
                         parsed.exclusion_rule,
                         parsed.dosage_limit,
+                        parsed.target_status.value,
+                        parsed.exclusion_status.value,
+                        parsed.dosage_status.value,
                         parsed.raw_text,
                         parsed.raw_html_sha256,
                         item.listing_fingerprint,

@@ -1,7 +1,7 @@
 """Render and submit the incremental ingest Job (batch/v1).
 
 The trigger service is the only writer of Jobs and holds a Role limited to
-jobs create/get/list in its own namespace. The Job body mirrors
+jobs create/get/list/delete in its own namespace. The Job body mirrors
 deploy/k8s/ingest-hook/ingest-job-template.yaml; the manifest path and
 category labels are the only per-submission fields.
 
@@ -16,6 +16,7 @@ import ssl
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
@@ -80,6 +81,14 @@ def _job_env() -> list[dict]:
 
 Transport = Callable[[str, dict], dict]
 InspectTransport = Callable[[str, str], dict]
+DeleteTransport = Callable[[str, dict], dict]
+
+
+@dataclass(frozen=True)
+class JobObservation:
+    status: str  # Pending | Running | Complete | Failed | Absent
+    reason: str | None
+    evidence: dict
 
 
 class JobSubmissionConflict(RuntimeError):
@@ -272,6 +281,19 @@ def _in_cluster_inspect(namespace: str, name: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _in_cluster_delete(url_path: str, body: dict) -> dict:
+    token = (_SA_DIR / "token").read_text().strip()
+    context = ssl.create_default_context(cafile=str(_SA_DIR / "ca.crt"))
+    request = urllib.request.Request(
+        f"https://kubernetes.default.svc{url_path}",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="DELETE",
+    )
+    with urllib.request.urlopen(request, context=context, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _job_status(payload: dict) -> str:
     status = payload.get("status") or {}
     for condition in status.get("conditions") or []:
@@ -284,6 +306,99 @@ def _job_status(payload: dict) -> str:
     if status.get("succeeded"):
         return "Complete"
     return "Pending"
+
+
+def inspect_job(
+    name: str,
+    *,
+    namespace: str | None = None,
+    transport: InspectTransport | None = None,
+) -> JobObservation:
+    """Read one Job and retain a bounded condition summary for durable evidence."""
+    inspect = transport or _in_cluster_inspect
+    resolved_namespace = namespace or config.job_namespace()
+    try:
+        payload = inspect(resolved_namespace, name)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        return JobObservation(
+            status="Absent",
+            reason="NotFound",
+            evidence={"job_name": name, "job_status": "Absent", "conditions": []},
+        )
+
+    status = _job_status(payload)
+    raw_status = payload.get("status") or {}
+    conditions = []
+    for item in raw_status.get("conditions") or []:
+        conditions.append(
+            {
+                "type": str(item.get("type") or ""),
+                "status": str(item.get("status") or ""),
+                "reason": str(item.get("reason") or ""),
+                "message": str(item.get("message") or "")[:1000],
+                "last_transition_time": item.get("lastTransitionTime"),
+            }
+        )
+    terminal = next(
+        (
+            item
+            for item in conditions
+            if item["status"] == "True" and item["type"] in {"Complete", "Failed"}
+        ),
+        None,
+    )
+    metadata = payload.get("metadata") or {}
+    return JobObservation(
+        status=status,
+        reason=(terminal or {}).get("reason") or None,
+        evidence={
+            "job_name": name,
+            "job_status": status,
+            "job_uid": metadata.get("uid"),
+            "resource_version": metadata.get("resourceVersion"),
+            "created_at": metadata.get("creationTimestamp"),
+            "active": int(raw_status.get("active") or 0),
+            "failed": int(raw_status.get("failed") or 0),
+            "succeeded": int(raw_status.get("succeeded") or 0),
+            "conditions": conditions,
+        },
+    )
+
+
+def delete_job(
+    name: str,
+    *,
+    observation: JobObservation,
+    namespace: str | None = None,
+    transport: DeleteTransport | None = None,
+) -> None:
+    """Delete one exact observed Job with Kubernetes identity preconditions."""
+    if observation.evidence.get("job_name") != name:
+        raise ValueError("observed Job identity does not match the deletion target")
+    uid = observation.evidence.get("job_uid")
+    resource_version = observation.evidence.get("resource_version")
+    if not uid or not resource_version:
+        raise ValueError("Kubernetes Job UID/resourceVersion is required for force stop")
+    resolved_namespace = namespace or config.job_namespace()
+    path = f"/apis/batch/v1/namespaces/{resolved_namespace}/jobs/{name}"
+    body = {
+        "apiVersion": "v1",
+        "kind": "DeleteOptions",
+        "gracePeriodSeconds": 0,
+        "propagationPolicy": "Foreground",
+        "preconditions": {
+            "uid": uid,
+            "resourceVersion": resource_version,
+        },
+    }
+    send = transport or _in_cluster_delete
+    try:
+        send(path, body)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
 
 
 def submit_job(

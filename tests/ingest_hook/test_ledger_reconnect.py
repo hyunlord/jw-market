@@ -38,7 +38,9 @@ class _FakeCursor:
 
     def execute(self, sql: str, params: tuple = ()):  # noqa: D401
         self._conn._before_execute()  # may raise a genuine pymysql stale error
-        translated = sql.replace("%s", "?")  # mysql paramstyle -> sqlite for the backend
+        self._conn.executed_sql.append(sql)
+        translated = sql.replace("%s", "?").removesuffix(" FOR UPDATE")
+        translated = translated.split(" ON DUPLICATE KEY UPDATE", 1)[0]
         self._sqlite_cursor = self._conn._backend.execute(translated, params)
         return self._sqlite_cursor
 
@@ -75,6 +77,7 @@ class FakeGaleraConnection:
     ) -> None:
         self._backend = sqlite3.connect(":memory:")
         self._backend.executescript(ledger_mod._DDL_SQLITE)
+        self._backend.executescript(ledger_mod._DDL_TRANSITION_SQLITE)
         self._live = not start_dead
         self._reconnectable = reconnectable
         self._execute_deaths = execute_deaths
@@ -83,6 +86,7 @@ class FakeGaleraConnection:
         )
         self.ping_calls = 0
         self.execute_attempts = 0
+        self.executed_sql: list[str] = []
 
     # -- pymysql surface the ledger relies on ------------------------------
     def cursor(self) -> _FakeCursor:
@@ -101,6 +105,9 @@ class FakeGaleraConnection:
         if not self._live:
             raise pymysql.err.OperationalError(2006, "MySQL server has gone away (commit)")
         self._backend.commit()
+
+    def rollback(self) -> None:
+        self._backend.rollback()
 
     # -- death injection ----------------------------------------------------
     def _before_execute(self) -> None:
@@ -143,6 +150,24 @@ def test_status_revives_idle_closed_connection():
 
     assert ledger.status(*IDENTITY) is None  # unknown identity, but NO 500
     assert conn.ping_calls >= 1
+
+
+def test_mysql_transition_locks_identity_before_status_change():
+    conn = FakeGaleraConnection()
+    ledger = _mysql_ledger(conn)
+    ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+
+    ledger.mark_running(
+        *IDENTITY,
+        job_name="jw-ingest-ubist-lock-test",
+        run_id="run-lock-test",
+    )
+
+    assert any(
+        sql.endswith(" FOR UPDATE")
+        for sql in conn.executed_sql
+        if sql.startswith("SELECT status, job_name, run_id FROM ingest_ledger")
+    )
 
 
 # -- W-2: reconnect + retry-once on a mid-statement death (TOCTOU) -------------

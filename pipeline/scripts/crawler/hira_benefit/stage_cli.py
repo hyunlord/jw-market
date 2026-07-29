@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from dataclasses import asdict
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -12,15 +13,29 @@ from pathlib import Path
 from .alert_repository import load_recent_parse_counts, record_alert_status
 from .alerts import AlertEvent, evaluate_failed_ratio, publish_alert
 from .backfill import BackfillManifest
-from .contract import HiraRunMetrics, HiraWorkflowInput, validate_run_metrics
+from .contract import (
+    HiraRunMetrics,
+    HiraWorkflowInput,
+    stage_receipt_name,
+    validate_run_metrics,
+)
+from .discovery import (
+    DiscoveryReduceError,
+    PageReceipt,
+    build_page_receipt,
+    load_page_receipts,
+    read_page_receipt,
+    reduce_page_receipts,
+    write_page_receipt,
+)
 from .http_client import (
     LIST_SLOW_RESPONSE_SECONDS,
     CircuitOpenError,
     HiraHttpClient,
     HiraRequestPolicy,
 )
-from .models import ParsedNotice, ParseStatus
-from .pagination import fetch_notice_index
+from .models import FieldParseStatus, ParsedNotice, ParseStatus
+from .pagination import fetch_page
 from .receipts import read_json, run_dir, write_json, write_stage_receipt
 from .repository import (
     PersistableNotice,
@@ -75,6 +90,16 @@ def build_failure_receipt(stage: str, error: Exception) -> dict[str, object]:
             "error": str(error),
             "retry_after_seconds": error.retry_after_seconds,
         }
+    if isinstance(error, DiscoveryReduceError):
+        # An incomplete or inconsistent page set is structural, not transient:
+        # retrying the reducer cannot conjure the missing page back.
+        return {
+            "stage": stage,
+            "status": "failed",
+            "gate_failures": ["discovery_incomplete"],
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }
     return {
         "stage": stage,
         "status": "failed",
@@ -90,7 +115,161 @@ def _item_payload(item: object) -> dict[str, object]:
     return payload
 
 
-def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
+def _emit(payload: dict[str, object]) -> None:
+    """Structured child log line: heartbeat telemetry and durable evidence."""
+
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
+
+
+def _page_receipt(
+    config: HiraWorkflowInput,
+    root: Path,
+    *,
+    page: int,
+    client: HiraHttpClient,
+    pages_done: int,
+    pages_total: int | None,
+) -> tuple[PageReceipt, bool]:
+    """Return a page receipt, re-using a durable one instead of re-fetching.
+
+    Idempotence is what makes "retry only the failed batch" safe and keeps a
+    retry from re-hitting HIRA for pages that already landed.
+    """
+
+    cached = read_page_receipt(root, page)
+    started = time.monotonic()
+    if cached is not None:
+        _emit(
+            {
+                "event": "hira_page_cached",
+                "page": page,
+                "pages_done": pages_done + 1,
+                "pages_total": pages_total,
+                "items": cached.row_count,
+                "page_elapsed_seconds": 0.0,
+            }
+        )
+        return cached, True
+    fetched = fetch_page(
+        page,
+        index_url=config.index_url,
+        base_url=config.base_url,
+        fetch_form=client.post_form_text,
+    )
+    receipt = build_page_receipt(
+        page=page,
+        total_count=fetched.total_count,
+        items=fetched.items,
+    )
+    write_page_receipt(root, receipt)
+    _emit(
+        {
+            "event": "hira_page_fetched",
+            "page": page,
+            "pages_done": pages_done + 1,
+            "pages_total": pages_total if pages_total is not None else fetched.total_pages,
+            "items": receipt.row_count,
+            "total_count": fetched.total_count,
+            "page_sha256": receipt.page_sha256,
+            "page_elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    )
+    return receipt, False
+
+
+def _run_discover_probe(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
+    """Fetch page 1 only, so the workflow learns how many batches to schedule."""
+
+    if config.manifest_path is not None:
+        raise RuntimeError("discover_probe does not apply to a backfill chunk")
+    client = _client(config, slow_response_seconds=LIST_SLOW_RESPONSE_SECONDS)
+    receipt, cached = _page_receipt(
+        config,
+        root,
+        page=1,
+        client=client,
+        pages_done=0,
+        pages_total=None,
+    )
+    from .pagination import total_pages_for
+
+    total_pages = total_pages_for(receipt.total_count)
+    metrics = HiraRunMetrics(0, 0, 0, 0, 0, 0, 0)
+    return write_stage_receipt(
+        root / "discover_probe.receipt.json",
+        stage="discover_probe",
+        metrics=metrics,
+        gate=validate_run_metrics(metrics),
+        detail={
+            "total_count": receipt.total_count,
+            "total_pages": total_pages,
+            "pages_per_batch": config.pages_per_batch,
+            "page_cached": cached,
+        },
+    )
+
+
+def _run_discover_page_batch(
+    config: HiraWorkflowInput,
+    root: Path,
+    *,
+    page_start: int,
+    page_end: int,
+) -> dict[str, object]:
+    """Fetch one contiguous slice of list pages within a fixed activity budget."""
+
+    if config.manifest_path is not None:
+        raise RuntimeError("discover_page_batch does not apply to a backfill chunk")
+    if page_start < 1 or page_end < page_start:
+        raise RuntimeError(
+            f"invalid page batch range: {page_start}..{page_end}"
+        )
+    span = page_end - page_start + 1
+    if span > config.pages_per_batch:
+        raise RuntimeError(
+            f"page batch {page_start}..{page_end} exceeds the budgeted "
+            f"{config.pages_per_batch} pages"
+        )
+    client = _client(config, slow_response_seconds=LIST_SLOW_RESPONSE_SECONDS)
+    fetched_pages = 0
+    cached_pages = 0
+    total_count: int | None = None
+    for offset, page in enumerate(range(page_start, page_end + 1)):
+        receipt, cached = _page_receipt(
+            config,
+            root,
+            page=page,
+            client=client,
+            pages_done=offset,
+            pages_total=span,
+        )
+        total_count = receipt.total_count
+        if cached:
+            cached_pages += 1
+        else:
+            fetched_pages += 1
+    receipt_name = stage_receipt_name(
+        "discover_page_batch",
+        page_start=page_start,
+        page_end=page_end,
+    )
+    metrics = HiraRunMetrics(0, 0, 0, 0, 0, 0, 0)
+    return write_stage_receipt(
+        root / f"{receipt_name}.receipt.json",
+        stage="discover_page_batch",
+        metrics=metrics,
+        gate=validate_run_metrics(metrics),
+        detail={
+            "page_start": page_start,
+            "page_end": page_end,
+            "pages_fetched": fetched_pages,
+            "pages_cached": cached_pages,
+            "total_count": total_count,
+        },
+    )
+
+
+def _run_discover_reduce(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
     conn = connect_from_env()
     try:
         brands, revision = load_jw_brand_scope(conn)
@@ -118,21 +297,16 @@ def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
             "chunk_count": manifest.chunk_count,
         }
     else:
-        client = _client(
-            config,
-            slow_response_seconds=LIST_SLOW_RESPONSE_SECONDS,
-        )
-        index = fetch_notice_index(
-            index_url=config.index_url,
-            base_url=config.base_url,
-            fetch_form=client.post_form_text,
-        )
+        # Fail-closed: the reducer refuses to compare a partial page set, so a
+        # dropped page can never be laundered into "unchanged".
+        index = reduce_page_receipts(load_page_receipts(root))
         rows = index.items
         signature = index.manifest_sha256
         manifest_detail = {
             "manifest_sha256": index.manifest_sha256,
             "manifest_total_count": index.total_count,
             "page_count": index.total_pages,
+            "page_receipts_verified": index.page_count,
         }
     plan = plan_discovered_items(rows, config=config, stored=state)
     write_json(
@@ -151,11 +325,16 @@ def _run_discover(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
     )
     metrics = HiraRunMetrics(0, 0, 0, 0, 0, 0, 0)
     return write_stage_receipt(
-        root / "discover_changes.receipt.json",
-        stage="discover_changes",
+        root / "discover_reduce.receipt.json",
+        stage="discover_reduce",
         metrics=metrics,
         gate=validate_run_metrics(metrics),
-        detail={"planned_count": len(plan.to_fetch)},
+        detail={
+            "planned_count": len(plan.to_fetch),
+            "new_count": len(plan.new),
+            "changed_count": len(plan.changed),
+            "unchanged_count": len(plan.unchanged),
+        },
     )
 
 
@@ -193,6 +372,21 @@ def _run_collect(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
 def _persistable(payload: dict[str, object]) -> PersistableNotice:
     parsed = payload["parsed"]
     assert isinstance(parsed, dict)
+    failed_fields = tuple(str(value) for value in parsed["failed_fields"])
+
+    def field_status(
+        status_name: str,
+        value_name: str,
+    ) -> FieldParseStatus:
+        explicit = parsed.get(status_name)
+        if explicit is not None:
+            return FieldParseStatus(str(explicit))
+        if parsed.get(value_name) is not None:
+            return FieldParseStatus.EXTRACTED
+        if value_name in failed_fields:
+            return FieldParseStatus.FAILED
+        return FieldParseStatus.NOT_APPLICABLE
+
     return PersistableNotice(
         parsed=ParsedNotice(
             source_notice_id=str(parsed["source_notice_id"]),
@@ -210,7 +404,10 @@ def _persistable(payload: dict[str, object]) -> PersistableNotice:
             raw_text=str(parsed["raw_text"]),
             raw_html_sha256=str(parsed["raw_html_sha256"]),
             parse_status=ParseStatus(str(parsed["parse_status"])),
-            failed_fields=tuple(str(value) for value in parsed["failed_fields"]),
+            failed_fields=failed_fields,
+            target_status=field_status("target_status", "target_condition"),
+            exclusion_status=field_status("exclusion_status", "exclusion_rule"),
+            dosage_status=field_status("dosage_status", "dosage_limit"),
         ),
         listing_fingerprint=str(payload["listing_fingerprint"]),
         brand_names=tuple(str(value) for value in payload["brand_names"]),
@@ -351,7 +548,9 @@ def _run_verify(config: HiraWorkflowInput, root: Path) -> dict[str, object]:
 
 
 _RUNNERS = {
-    "discover_changes": _run_discover,
+    "discover_probe": _run_discover_probe,
+    "discover_page_batch": _run_discover_page_batch,
+    "discover_reduce": _run_discover_reduce,
     "collect_details": _run_collect,
     "persist_results": _run_persist,
     "verify_run": _run_verify,
@@ -362,15 +561,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", choices=tuple(_RUNNERS), required=True)
     parser.add_argument("--config-json", type=Path, required=True)
+    parser.add_argument("--page-start", type=int)
+    parser.add_argument("--page-end", type=int)
     args = parser.parse_args(argv)
     config = _input(args.config_json)
     root = run_dir(config.state_root, config.run_id)
+    receipt_name = stage_receipt_name(
+        args.stage,
+        page_start=args.page_start,
+        page_end=args.page_end,
+    )
     try:
-        receipt = _RUNNERS[args.stage](config, root)
+        if args.stage == "discover_page_batch":
+            if args.page_start is None or args.page_end is None:
+                raise RuntimeError("discover_page_batch requires --page-start/--page-end")
+            receipt = _run_discover_page_batch(
+                config,
+                root,
+                page_start=args.page_start,
+                page_end=args.page_end,
+            )
+        else:
+            receipt = _RUNNERS[args.stage](config, root)
     except Exception as exc:  # noqa: BLE001 - CLI boundary converts failures to nonzero rc.
-        if isinstance(exc, CircuitOpenError):
+        if isinstance(exc, CircuitOpenError | DiscoveryReduceError):
             write_json(
-                root / f"{args.stage}.receipt.json",
+                root / f"{receipt_name}.receipt.json",
                 build_failure_receipt(args.stage, exc),
             )
         print(f"stage={args.stage} status=failed error={type(exc).__name__}: {exc}")

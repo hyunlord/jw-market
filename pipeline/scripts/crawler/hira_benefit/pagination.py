@@ -23,6 +23,70 @@ class NoticeIndex:
     manifest_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class PageFetch:
+    """One list page, already row-count checked against the reported total."""
+
+    page: int
+    total_count: int
+    total_pages: int
+    items: tuple[NoticeListItem, ...]
+
+
+def total_pages_for(total_count: int) -> int:
+    return math.ceil(total_count / PAGE_SIZE)
+
+
+def expected_rows_for_page(page: int, *, total_count: int, total_pages: int) -> int:
+    """Rows a given page must carry for the enumeration to be gap-free."""
+
+    if page < 1 or page > total_pages:
+        raise ValueError(f"page {page} is outside 1..{total_pages}")
+    if page == total_pages:
+        return total_count - PAGE_SIZE * (total_pages - 1)
+    return PAGE_SIZE
+
+
+def fetch_page(
+    page: int,
+    *,
+    index_url: str,
+    base_url: str,
+    fetch_form: FormFetcher,
+) -> PageFetch:
+    """Fetch a single list page and fail closed on a row-count gap.
+
+    Splitting enumeration across activities means no single caller sees every
+    page, so each page must be self-validating at the point it is fetched.
+    """
+
+    if page < 1:
+        raise ValueError("page must be positive")
+    html = fetch_form(index_url, page_form(page))
+    total_count = parse_total_count(html)
+    total_pages = total_pages_for(total_count)
+    if page > total_pages:
+        raise RuntimeError(
+            f"HIRA page out of range: page={page} total_pages={total_pages}"
+        )
+    rows = parse_list_html(html, base_url=base_url)
+    expected = expected_rows_for_page(
+        page,
+        total_count=total_count,
+        total_pages=total_pages,
+    )
+    if len(rows) != expected:
+        raise RuntimeError(
+            f"HIRA page row gap: page={page} rows={len(rows)} expected={expected}"
+        )
+    return PageFetch(
+        page=page,
+        total_count=total_count,
+        total_pages=total_pages,
+        items=tuple(rows),
+    )
+
+
 def page_form(page: int) -> dict[str, str]:
     return {
         "pageIndex": str(page),
@@ -64,26 +128,21 @@ def fetch_notice_index(
     total_pages: int | None = None
     page = 1
     while total_pages is None or page <= total_pages:
-        html = fetch_form(index_url, page_form(page))
-        current_total = parse_total_count(html)
-        if total_count is None:
-            total_count = current_total
-            total_pages = math.ceil(total_count / PAGE_SIZE)
-        elif current_total != total_count:
-            raise RuntimeError(
-                f"HIRA index changed during pagination: {total_count}->{current_total}"
-            )
-        rows = parse_list_html(html, base_url=base_url)
-        expected = (
-            total_count - PAGE_SIZE * (total_pages - 1)
-            if page == total_pages
-            else PAGE_SIZE
+        fetched = fetch_page(
+            page,
+            index_url=index_url,
+            base_url=base_url,
+            fetch_form=fetch_form,
         )
-        if len(rows) != expected:
+        if total_count is None:
+            total_count = fetched.total_count
+            total_pages = fetched.total_pages
+        elif fetched.total_count != total_count:
             raise RuntimeError(
-                f"HIRA page row gap: page={page} rows={len(rows)} expected={expected}"
+                "HIRA index changed during pagination: "
+                f"{total_count}->{fetched.total_count}"
             )
-        pages.append(rows)
+        pages.append(fetched.items)
         page += 1
 
     if total_count is None or total_pages is None:

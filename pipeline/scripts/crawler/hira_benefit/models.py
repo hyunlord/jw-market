@@ -13,6 +13,12 @@ class ParseStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class FieldParseStatus(str, Enum):
+    EXTRACTED = "EXTRACTED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    FAILED = "FAILED"
+
+
 @dataclass(frozen=True, slots=True)
 class NoticeListItem:
     source_notice_id: str
@@ -61,3 +67,6 @@ class ParsedNotice:
     raw_html_sha256: str
     parse_status: ParseStatus
     failed_fields: tuple[str, ...]
+    target_status: FieldParseStatus
+    exclusion_status: FieldParseStatus
+    dosage_status: FieldParseStatus

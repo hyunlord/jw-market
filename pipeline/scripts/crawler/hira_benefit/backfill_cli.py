@@ -15,7 +15,7 @@ from .backfill import (
     compare_manifest_state,
 )
 from .backfill_runner import run_backfill_sequentially
-from .contract import HiraWorkflowInput
+from .contract import HIRA_INDEX_URL, HiraWorkflowInput
 from .http_client import (
     LIST_SLOW_RESPONSE_SECONDS,
     HiraHttpClient,
@@ -228,10 +228,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--chunk-size", type=int, default=500)
     prepare.add_argument(
         "--index-url",
-        default=(
-            "https://www.hira.or.kr/rc/insu/insuadtcrtr/"
-            "InsuAdtCrtrList.do?pgmid=HIRAA030069000400"
-        ),
+        default=HIRA_INDEX_URL,
     )
     prepare.add_argument("--base-url", default="https://www.hira.or.kr")
     _add_policy_args(prepare)
