@@ -301,11 +301,23 @@ def test_post_topics_route_rejects_invalid_or_reversed_period() -> None:
     assert reversed_period.status_code == 422
 
 
-def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatch) -> None:
+def test_post_topics_route_preserves_brand_skeleton_for_period_without_data(monkeypatch) -> None:
+    skeleton = {
+        "brand_key": "brand:livalo",
+        "brand_name": "리바로",
+        "company_name": "JW중외제약",
+        "is_jw": True,
+        "is_selected": True,
+        "sales_rank": 1,
+        "event_count": 0,
+        "topic_shares": [],
+        "topics": [],
+        "brand_specific_topics": [],
+    }
     monkeypatch.setattr(
         brand_activity,
         "get_topic_brand_payload",
-        lambda _payload: {"scope": {"sliced": True}, "brands": [{"event_count": 0, "topic_shares": []}]},
+        lambda _payload: {"scope": {"sliced": True}, "brands": [skeleton]},
     )
     monkeypatch.setattr(
         brand_activity,
@@ -325,7 +337,13 @@ def test_post_topics_route_returns_empty_list_for_period_without_data(monkeypatc
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["brands"] == []
+    assert response.json()["data"]["brands"] == [skeleton]
+    for brand in response.json()["data"]["brands"]:
+        assert brand["event_count"] == 0
+        assert brand["topic_shares"] == []
+        assert brand["topics"] == []
+        assert brand["brand_specific_topics"] == []
+        assert brand["brand_name"]
     assert response.json()["meta"]["reason"] == "no_data_in_period"
 
 
