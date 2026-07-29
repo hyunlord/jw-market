@@ -3348,6 +3348,7 @@ def _is_terminal_typed_result(result: dict) -> bool:
             "strategic_market_not_member",
             "unsupported_hira_interface",
             "field_not_exposed",
+            "brand_unresolved",
         }:
             return True
 
