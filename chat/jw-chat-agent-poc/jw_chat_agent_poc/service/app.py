@@ -697,6 +697,10 @@ def _answer_question(
             routing_question,
             grounded_market_question,
         )
+        # Every golden rewrite above binds the question to a synthetic anchor brand, not
+        # just the two monthly contracts. Captured before routing_question is reassigned
+        # below, because after that the two names are equal and the rewrite is invisible.
+        uses_synthetic_market_anchor = grounded_market_question != routing_question
         execution_question = (
             grounded_market_question
             if grounded_market_question != routing_question
@@ -907,6 +911,10 @@ def _answer_question(
         # router_diagnostics, which carries the router's own decisions and is
         # compared whole by its callers.
         result = {**result, "_qa_anaphora": anaphora_observation(routing_resolution)}
+        if uses_synthetic_market_anchor:
+            # extract_conversation_slots reads this, so the stored turn records that its
+            # anchor brand came from the rewrite rather than from the user.
+            result = {**result, "anchor_brand_is_synthetic": True}
         with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
             store.conversations.record_exchange(
                 state.conversation_id,

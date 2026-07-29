@@ -10,6 +10,7 @@ from jw_chat_agent_poc.service.conversation import (
     conversation_slots_to_dict,
 )
 from jw_chat_agent_poc.service.conversation_context import (
+    ReferenceRecogniser,
     extract_conversation_slots,
     requires_previous_turn,
     resolve_anaphora,
@@ -1053,3 +1054,200 @@ def test_reused_context_result_contains_verified_series_without_backend_call() -
     assert "로수젯" in result["markdown_response"]["fact_md"]
     assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in result["answer"]
     assert "직전 턴에서 이미 조회한 검증 fact" not in result["answer"]
+
+
+def _standalone_market_golden_result() -> dict[str, object]:
+    """The shape app.py stores for a standalone market golden turn.
+
+    ``anchor_brand`` is the rewrite's device ('리바로 시장 ...'), while the listing the
+    user actually saw ranks 로수젯 first.
+    """
+
+    return {
+        "answer": "1위 로수젯, 6위 리바로",
+        "anchor_brand_is_synthetic": True,
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [
+            {
+                "tool": "get_market_scope",
+                "source": "UBIST",
+                "render_data": {
+                    "anchor_brand": "리바로",
+                    "market_id": "ml_006",
+                    "period": "2026-05",
+                    "metric": "market_share",
+                    "level_top5_trend_series": [
+                        {"brand": "로수젯", "rank": 1, "series": [{"period": "2026-05", "ms_pct": 9.13}]},
+                        {"brand": "리피토", "rank": 2, "series": [{"period": "2026-05", "ms_pct": 6.13}]},
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def test_synthetic_market_anchor_is_recorded_apart_from_a_user_chosen_one() -> None:
+    synthetic = extract_conversation_slots(_standalone_market_golden_result())
+    unmarked = dict(_standalone_market_golden_result())
+    unmarked.pop("anchor_brand_is_synthetic")
+
+    assert synthetic.anchor_brand == "리바로"
+    assert synthetic.anchor_brand_is_synthetic is True
+    assert synthetic.ranked_brands[0] == "로수젯"
+    # Same anchor value, different provenance: only the flag separates them.
+    assert extract_conversation_slots(unmarked).anchor_brand == "리바로"
+    assert extract_conversation_slots(unmarked).anchor_brand_is_synthetic is False
+
+
+def test_brand_pronoun_after_synthetic_market_anchor_asks_instead_of_inheriting() -> None:
+    previous = ConversationTurn(
+        question="고지혈증 시장 상위 5개 브랜드 알려줘",
+        answer="1위 로수젯, 6위 리바로",
+        slots=extract_conversation_slots(_standalone_market_golden_result()),
+    )
+
+    resolved = resolve_anaphora("걔 최근 추세는?", previous)
+
+    assert resolved.unresolved_reference is True
+    assert resolved.brand is None
+    # The question is handed back untouched, so no brand is asserted on the user's behalf.
+    assert resolved.resolved_question == "걔 최근 추세는?"
+    assert resolved.recogniser is ReferenceRecogniser.BRAND_PRONOUN
+
+
+def test_brand_pronoun_after_a_user_chosen_anchor_still_inherits_it() -> None:
+    previous = ConversationTurn(
+        question="리바로 매출 알려줘",
+        answer="리바로 매출은 80.39억원입니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출", period="2026-05"),
+    )
+
+    resolved = resolve_anaphora("걔 최근 추세는?", previous)
+
+    assert resolved.resolved_question == "리바로 최근 추세는?"
+    assert resolved.brand == "리바로"
+    assert resolved.unresolved_reference is False
+
+
+def test_first_rank_reference_after_synthetic_anchor_keeps_reading_the_listing() -> None:
+    """'그중 1위' names the listing outright, so it is unaffected by this guard."""
+
+    previous = ConversationTurn(
+        question="고지혈증 시장 상위 5개 브랜드 알려줘",
+        answer="1위 로수젯, 6위 리바로",
+        slots=extract_conversation_slots(_standalone_market_golden_result()),
+    )
+
+    resolved = resolve_anaphora("그중 1위는?", previous)
+
+    assert resolved.brand == "로수젯"
+    assert resolved.unresolved_reference is False
+
+
+def test_synthetic_anchor_flag_survives_slot_serialisation() -> None:
+    synthetic = extract_conversation_slots(_standalone_market_golden_result())
+
+    round_tripped = conversation_slots_from_dict(conversation_slots_to_dict(synthetic))
+
+    assert round_tripped.anchor_brand == "리바로"
+    assert round_tripped.anchor_brand_is_synthetic is True
+    # A turn stored before the field existed carries no key, and absence has to read as
+    # "user-chosen" so old sessions keep the behaviour they had.
+    assert conversation_slots_from_dict({"anchor_brand": "리바로"}).anchor_brand_is_synthetic is False
+
+
+def test_standalone_market_golden_turn_then_pronoun_asks_which_brand(monkeypatch) -> None:
+    """The whole path: the golden rewrite runs, then a pronoun follows it.
+
+    This is the case the guard exists for, so it goes through _answer_question rather
+    than a hand-built turn — the marker has to survive the real store round trip.
+    """
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+
+    def monthly_golden(_value: str, *, anchor_brand: str) -> dict:
+        assert anchor_brand == "리바로"
+        return {
+            "answer": "상위 5개 합계 시장점유율은 29.52%입니다.",
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_market_scope",
+                    "source": "UBIST",
+                    "render_data": {
+                        "anchor_brand": "리바로",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "metric": "market_share",
+                        "level_top5_trend_series": [
+                            {"brand": "로수젯", "rank": 1, "series": [{"period": "2026-05", "ms_pct": 9.13}]},
+                        ],
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(resolver, "answer_monthly_market_golden", monthly_golden)
+    session = "synthetic-anchor-pronoun-session"
+
+    golden = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "걔 최근 추세는?",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+
+    assert golden["result"]["anchor_brand_is_synthetic"] is True
+    assert "29.52%" in golden["result"]["answer"]
+    assert follow_up["result"].get("conversation_reference_unresolved") is True
+    # 리바로 was the rewrite's device, so it must not be answered for as if chosen.
+    assert "리바로" not in follow_up["result"]["answer"]
+
+
+def test_user_named_brand_turn_then_pronoun_still_answers_that_brand(monkeypatch) -> None:
+    """Same path with a user-chosen anchor: the pronoun must still inherit the brand.
+
+    The anchor is seeded through record_exchange rather than produced by the fake agent,
+    which answers with a bare fallback and so leaves no anchor slot at all — that shape
+    fails closed on the base commit too, and would prove nothing about this guard.
+    """
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+    session = "user-anchor-pronoun-session"
+    store.conversations.record_exchange(
+        session,
+        "리바로 매출 알려줘",
+        "리바로 매출은 80.39억원입니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006", metric="매출", period="2026-05"),
+    )
+
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "걔 최근 추세는?",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+
+    assert follow_up["result"].get("conversation_reference_unresolved") is not True
+    # The fake agent echoes the question it was handed, so the substituted brand shows
+    # there: the pronoun reached the router as 리바로, not as '걔'.
+    assert "리바로" in str(follow_up["result"].get("answer") or "")

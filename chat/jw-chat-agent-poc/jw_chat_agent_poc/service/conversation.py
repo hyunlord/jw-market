@@ -37,6 +37,10 @@ class ResultReference:
 @dataclass(frozen=True, slots=True)
 class ConversationSlots:
     anchor_brand: str | None = None
+    # True when anchor_brand came from the standalone market golden rewrite instead of
+    # from the user. That value is a question-rewriting device, so a later pronoun must
+    # not inherit it as though the user had named the brand.
+    anchor_brand_is_synthetic: bool = False
     market: str | None = None
     market_definition: str | None = None
     period: str | None = None
@@ -55,6 +59,7 @@ class ConversationSlots:
 def conversation_slots_to_dict(slots: ConversationSlots) -> dict[str, Any]:
     return {
         "anchor_brand": slots.anchor_brand,
+        "anchor_brand_is_synthetic": slots.anchor_brand_is_synthetic,
         "market": slots.market,
         "market_definition": slots.market_definition,
         "period": slots.period,
@@ -137,6 +142,9 @@ def conversation_slots_from_dict(value: object) -> ConversationSlots:
     )
     return ConversationSlots(
         anchor_brand=_optional_text(value.get("anchor_brand")),
+        # A turn stored before this field existed has no key, so absence means
+        # "user-chosen" — the same reading the old code gave every anchor.
+        anchor_brand_is_synthetic=bool(value.get("anchor_brand_is_synthetic")),
         market=_optional_text(value.get("market")),
         market_definition=_optional_text(value.get("market_definition")),
         period=_optional_text(value.get("period")),

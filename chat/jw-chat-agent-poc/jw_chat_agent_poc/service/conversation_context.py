@@ -316,6 +316,10 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         period = next((item.series[-1].period for item in ranked if item.series), "")
     return ConversationSlots(
         anchor_brand=anchor or None,
+        # The caller marks the result when the standalone market golden rewrite supplied
+        # the anchor. Carried on the turn so the next question can tell a rewriting
+        # device apart from a brand the user actually named.
+        anchor_brand_is_synthetic=bool(result.get("anchor_brand_is_synthetic")),
         market=market or None,
         market_definition=market_definition or None,
         period=period or None,
@@ -402,6 +406,13 @@ def resolve_anaphora(
         recogniser = ReferenceRecogniser.BRAND_PRONOUN
         if previous_turn is None or not previous_turn.slots.anchor_brand:
             return _unresolved(question, recogniser)
+        if previous_turn.slots.anchor_brand_is_synthetic:
+            # The previous turn's anchor was a question-rewriting device, not a brand the
+            # user picked, and the listing it produced can rank a different brand first.
+            # A pronoun has no way to say which of those was meant, so this asks instead
+            # of substituting either one. Answering with the list's first row would make
+            # '걔' a silent synonym for '그중 1위', which fails closed here on purpose.
+            return _unresolved(question, recogniser, ReferenceStatus.NO_ANCHOR)
         brand = previous_turn.slots.anchor_brand
         return _resolved(
             _BRAND_PRONOUN_FOLLOWUP_RE.sub(brand, question, count=1),
