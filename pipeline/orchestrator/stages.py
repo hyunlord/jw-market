@@ -101,6 +101,10 @@ def _shortlong_commands(mode: str, brands: tuple[str, ...], force: bool, run_id:
         argv = list(
             _module_cmd(
                 "pipeline.scripts.ai_analysis.agent2_regen_orchestrator",
+                "--brand-source",
+                "general-density",
+                "--bundle-kind",
+                "general",
                 "--dry-run",
                 "--analysis-variant",
                 variant,

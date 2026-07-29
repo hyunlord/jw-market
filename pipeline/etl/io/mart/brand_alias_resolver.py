@@ -11,7 +11,10 @@ from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
 
 
 MANUAL_BRAND_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
-    {"위너프A+": "위너프에이플러스"}
+    {
+        "위너프A+": "위너프에이플러스",
+        "리조덱": "리조덱플렉스터치",
+    }
 )
 
 

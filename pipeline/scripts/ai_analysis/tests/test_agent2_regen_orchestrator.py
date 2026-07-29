@@ -496,6 +496,14 @@ def test_parse_args_accepts_general_density_source() -> None:
 
 def test_routed_run_uses_zero_template_without_llm(tmp_path) -> None:
     calls = {"bundle": 0, "llm": 0, "compose": 0}
+    zero_evidence_brands = (
+        "10%글리세린5%과당 HK이노엔",
+        "5-에이치티피",
+        "5-에프유 중외",
+        "5-엠씨",
+        "5%포도당가0.45%염화나트륨 중외",
+        "96%에탄올 스테롭",
+    )
 
     def build_bundle(brand: str):
         calls["bundle"] += 1
@@ -521,17 +529,33 @@ def test_routed_run_uses_zero_template_without_llm(tmp_path) -> None:
     )
     worklist = [
         RoutedAgent2Brand(
-            brand_key="zero-key",
-            canonical_brand_name="제로브랜드",
-            route=RouteDecision("zero-key", 0, "zero", ProcessingMode.TEMPLATE_ZERO, ()),
+            brand_key=f"zero-key-{index}",
+            canonical_brand_name=brand_name,
+            route=RouteDecision(
+                f"zero-key-{index}",
+                0,
+                "zero",
+                ProcessingMode.TEMPLATE_ZERO,
+                (),
+            ),
         )
+        for index, brand_name in enumerate(zero_evidence_brands)
     ]
 
     manifest = orchestrator.run_routed(worklist)
 
-    assert manifest["brands"]["zero-key"]["status"] == "template_zero"
-    assert manifest["brands"]["zero-key"]["canonical_brand_name"] == "제로브랜드"
-    assert manifest["brands"]["zero-key"]["template"]["phenomenon"]["evidence_none"] is True
+    assert [
+        manifest["brands"][f"zero-key-{index}"]["canonical_brand_name"]
+        for index in range(len(zero_evidence_brands))
+    ] == list(zero_evidence_brands)
+    assert all(
+        manifest["brands"][f"zero-key-{index}"]["status"] == "template_zero"
+        for index in range(len(zero_evidence_brands))
+    )
+    assert all(
+        manifest["brands"][f"zero-key-{index}"]["template"]["phenomenon"]["evidence_none"] is True
+        for index in range(len(zero_evidence_brands))
+    )
     assert calls == {"bundle": 0, "llm": 0, "compose": 0}
 
 

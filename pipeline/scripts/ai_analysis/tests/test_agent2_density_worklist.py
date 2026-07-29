@@ -23,7 +23,7 @@ def test_brand_identity_uses_agent3_canonical_name_rule() -> None:
     ]
 
 
-def test_evidence_counts_map_event_names_to_keys_and_exclude_unmatched_known_brands() -> None:
+def test_evidence_counts_map_event_names_to_keys_and_exclude_omega_as_unmatched_known() -> None:
     brand_rows = [
         {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},
         {"brand_key": "etc-key", "brand_name": "기타브랜드", "raw_value_history": {"2026-04": 5}},
@@ -44,7 +44,7 @@ def test_evidence_counts_map_event_names_to_keys_and_exclude_unmatched_known_bra
             "score": 99,
         },
         {
-            "brand_canonical": "리조덱",
+            "brand_canonical": "오메가",
             "source_processor": "tier2_llm_v1",
             "derivation": "llm_direct",
             "tag": "신약/R&D",
@@ -54,11 +54,40 @@ def test_evidence_counts_map_event_names_to_keys_and_exclude_unmatched_known_bra
 
     result = build_evidence_counts_from_rows(brand_rows, score_rows)
 
-    assert result.unmatched_known == ("리조덱",)
+    assert result.unmatched_known == ("오메가",)
     assert result.unmatched_unknown == ()
-    assert "리조덱" in KNOWN_UNMATCHED_EVENT_BRANDS
+    assert "오메가" in KNOWN_UNMATCHED_EVENT_BRANDS
     assert [(row.brand, row.count, row.tag, row.score_cutoff) for row in result.counts] == [
         ("capital-key", 1, "자본/경영", 43)
+    ]
+
+
+def test_evidence_counts_resolve_pl_confirmed_rizodec_alias() -> None:
+    brand_rows = [
+        {
+            "brand_key": "리조덱플렉스터치",
+            "brand_name": "리조덱플렉스터치",
+            "raw_value_history": {"2026-04": 10},
+        },
+    ]
+    score_rows = [
+        {
+            "brand_canonical": "리조덱",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        }
+        for _ in range(40)
+    ]
+
+    result = build_evidence_counts_from_rows(brand_rows, score_rows)
+
+    assert "리조덱" not in KNOWN_UNMATCHED_EVENT_BRANDS
+    assert result.unmatched_known == ()
+    assert result.unmatched_unknown == ()
+    assert [(row.brand, row.count, row.tag, row.score_cutoff) for row in result.counts] == [
+        ("리조덱플렉스터치", 40, "신약/R&D", 54)
     ]
 
 
