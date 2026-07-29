@@ -268,12 +268,46 @@ def _qa_trace(
         ),
         "claims": claim_trace,
         "answer_delivery": project_answer_delivery(result),
+        "input_policy_decision": _security_decision(
+            result,
+            "_sec12_input_policy_decision",
+        ),
+        "output_leakage_decision": _security_decision(
+            result,
+            "_sec12_output_leakage_decision",
+        ),
+        "user_surface_action": _user_surface_action(result),
         "final": final,
     }
     routing_v4 = project_routing_v4_qa_trace(diagnostic_items)
     if routing_v4 is not None:
         qa_trace["routing_v4"] = routing_v4
     return qa_trace
+
+
+def _security_decision(
+    result: Mapping[str, Any],
+    key: str,
+) -> dict[str, Any]:
+    raw = result.get(key)
+    decision = raw if isinstance(raw, Mapping) else {}
+    reasons = decision.get("reason_codes")
+    return {
+        "mode": str(decision.get("mode") or "shadow"),
+        "verdict": str(decision.get("verdict") or "not_evaluated"),
+        "reason_codes": tuple(
+            str(reason)
+            for reason in (reasons if isinstance(reasons, (list, tuple)) else ())
+            if str(reason)
+        ),
+    }
+
+
+def _user_surface_action(result: Mapping[str, Any]) -> str:
+    raw = result.get("_sec12_output_leakage_decision")
+    decision = raw if isinstance(raw, Mapping) else {}
+    action = str(decision.get("user_surface_action") or "none")
+    return action if action in {"none", "observe_only"} else "other"
 
 
 def _qa_anaphora(result: Mapping[str, Any]) -> dict[str, Any]:

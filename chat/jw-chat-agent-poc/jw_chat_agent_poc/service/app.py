@@ -172,6 +172,10 @@ from jw_chat_agent_poc.service.models import (
     HealthResponse,
 )
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
+from jw_chat_agent_poc.service.security_policy import (
+    evaluate_input_policy,
+    evaluate_output_leakage,
+)
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.service.startup_warmup import (
     DisabledStartupWarmup,
@@ -643,6 +647,7 @@ def _answer_question(
     timing_sink: StageEventSink | None = None,
     conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
+    input_policy_decision = evaluate_input_policy(question)
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         deep_request = parse_deep_research_request(question)
@@ -910,7 +915,11 @@ def _answer_question(
         # router unrewritten is as visible as one that was resolved. Kept out of
         # router_diagnostics, which carries the router's own decisions and is
         # compared whole by its callers.
-        result = {**result, "_qa_anaphora": anaphora_observation(routing_resolution)}
+        result = {
+            **result,
+            "_qa_anaphora": anaphora_observation(routing_resolution),
+            "_sec12_input_policy_decision": input_policy_decision,
+        }
         if uses_synthetic_market_anchor:
             # extract_conversation_slots reads this, so the stored turn records that its
             # anchor brand came from the rewrite rather than from the user.
@@ -2583,6 +2592,7 @@ def compute_final_answer(question: str, result: dict, conversation_id: str | Non
     trace_result = {
         **result,
         "_response_format_contract": format_result.report.to_dict(),
+        "_sec12_output_leakage_decision": evaluate_output_leakage(format_result.answer),
     }
     trace = trace_envelope(
         question=question,
