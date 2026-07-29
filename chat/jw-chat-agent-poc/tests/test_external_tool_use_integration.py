@@ -5,6 +5,7 @@ from typing import Any
 
 import jw_chat_agent_poc.orchestrator.agent as agent_module
 import pytest
+from jw_chat_agent_poc.common.source_display import public_source_label
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
 from jw_chat_agent_poc.orchestrator.agent import _is_external_tool_agent_candidate
 from jw_chat_agent_poc.resolver import BrandResolution
@@ -129,6 +130,7 @@ def test_field_not_exposed_nedrug_question_stops_before_legacy_provider(monkeypa
 
     assert result["tool_calls"] == []
     assert result["sources"] == ["field_not_exposed"]
+    assert public_source_label(result["sources"][0]) == "요청 상세 항목 미제공"
     assert "현재 연결에서 제공되지 않습니다" in result["answer"]
 
 
