@@ -3434,7 +3434,7 @@ def _level_trend_brand_payloads(
     option_rows: list[dict[str, Any]],
     periods: list[str],
     target_name: str | None,
-    total_series: list[float],
+    total_series: list[float | None],
     use_latest_valid_share: bool = False,
     rank_series_cache: _RankSeriesCache | None = None,
     brand_cohort: tuple[str, ...] | None = None,
@@ -3465,7 +3465,7 @@ def _level_trend_brand_payloads(
                 selected_total = _sum_optional_complete(selected_values)
                 series.append(
                     round(max(0.0, total - selected_total), 4)
-                    if selected_total is not None
+                    if total is not None and selected_total is not None
                     else None
                 )
         else:
