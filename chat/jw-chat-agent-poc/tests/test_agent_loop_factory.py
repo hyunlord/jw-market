@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.agent_loop.factory import (
+    ambiguous_brand_result,
     build_agent_loop_dependencies,
     unsupported_brand_result,
+    unsupported_hira_interface_result,
 )
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_description
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
@@ -75,3 +77,39 @@ def test_unsupported_brand_result_reports_absence_from_strategic_mart() -> None:
     assert "브랜드 식별 미확인" in result["markdown_response"]["sources_md"]
     assert "지원 범위 밖" not in result["markdown_response"]["sources_md"]
     assert source_description("unsupported_brand") == "요청 이름과 일치하는 브랜드 미확인"
+
+
+def test_unsupported_hira_interface_result_uses_interface_specific_source_label() -> None:
+    # Given: the exact unsupported HIRA query and its existing typed-result path.
+    router = BQRouter()
+    question = "없는브랜드ABC 환자수 알려줘"
+    routes = router.route(question, has_documents=False)
+
+    # When: the shared HIRA-interface helper builds the response.
+    result = unsupported_hira_interface_result(question, routes, router_diagnostics(router))
+
+    # Then: the trace stays typed while the public source explains the interface limitation.
+    assert result["sources"] == ["unsupported_hira_interface"]
+    assert "HIRA 상병코드·질환명 직접 조회 미지원" in result["markdown_response"]["sources_md"]
+    assert "브랜드 식별 미확인" not in result["markdown_response"]["sources_md"]
+    assert "상병코드 또는 질환명 직접 조회" in result["answer"]
+
+
+def test_ambiguous_brand_result_keeps_brand_specific_source_label() -> None:
+    # Given: a real brand ambiguity with multiple candidates.
+    router = BQRouter()
+    question = "카나브패밀리 실적 어때?"
+    routes = router.route(question, has_documents=False)
+
+    # When: the ambiguity helper builds its existing typed response.
+    result = ambiguous_brand_result(
+        question,
+        routes,
+        router_diagnostics(router),
+        ("카나브", "카나브젯", "카나브플러스"),
+    )
+
+    # Then: the genuine brand path retains its brand-candidate label.
+    assert result["sources"] == ["ambiguous_brand"]
+    assert "브랜드 식별 후보" in result["markdown_response"]["sources_md"]
+    assert "HIRA 상병코드·질환명 직접 조회 미지원" not in result["markdown_response"]["sources_md"]

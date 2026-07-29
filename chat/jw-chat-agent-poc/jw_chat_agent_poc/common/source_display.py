@@ -101,6 +101,7 @@ SOURCE_LABELS: Final[dict[str, str]] = {
     "ambiguous_brand": "브랜드 식별 후보",
     "strategic_market_not_member": "전략시장 정의 미포함",
     "brand_unresolved": "브랜드 식별 미지정",
+    "unsupported_hira_interface": "HIRA 상병코드·질환명 직접 조회 미지원",
 }
 
 LEGACY_SOURCE_LABELS: Final[dict[str, str]] = {
