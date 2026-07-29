@@ -49,6 +49,32 @@ def test_bq_plan_executes_both_market_sources_without_llm() -> None:
     assert "합산하지" in result["answer"]
 
 
+def test_multiple_brand_bq_preflight_asks_for_one_brand_instead_of_narrowing() -> None:
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture"),
+        resolver=BrandResolver(mode="fixture"),
+    )
+
+    result = agent.answer("리바로와 리바로젯 매출 알려줘")
+
+    assert result["decomposition"] == [
+        {
+            "intent": "brand_cardinality_clarification",
+            "status": "needs_clarification",
+            "max_steps": 0,
+        }
+    ]
+    assert result["router_diagnostics"]["gate"] == "bq_brand_cardinality"
+    assert result["router_diagnostics"]["gate_reason"] == (
+        "multiple_brands_require_cardinality_contract"
+    )
+    assert result["agent_loop_metrics"]["status"] == "needs_clarification"
+    assert result["agent_loop_metrics"]["tool_calls"] == 0
+    assert result["tool_calls"] == []
+    assert "리바로, 리바로젯" in result["answer"]
+    assert "한 브랜드를 지정" in result["answer"]
+
+
 def test_available_sources_is_unknown_without_query_catalog() -> None:
     facade = AgentToolFacade(
         metrics=MetricsTool(mode="fixture"),

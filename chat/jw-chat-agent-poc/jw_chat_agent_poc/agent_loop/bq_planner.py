@@ -25,6 +25,20 @@ class BqPlan:
     missing_sources: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class BqCardinalityStop:
+    slots: BqSlots
+    reason: str = "multiple_brands_require_cardinality_contract"
+
+    @property
+    def message(self) -> str:
+        labels = ", ".join(self.slots.brands)
+        return (
+            f"{labels} 중 한 브랜드를 지정해 다시 질문해 주세요. "
+            "현재 이 분석 계약은 여러 브랜드를 한 번에 처리하지 않습니다."
+        )
+
+
 _SOURCE_VARIANTS: Final[dict[tuple[str, str], tuple[str, ...]]] = {
     ("A1", "get_brand_series"): ("ubist", "iqvia_nsa"),
     ("A1", "get_brand_channel_breakdown"): ("ubist",),
@@ -49,6 +63,10 @@ _SOURCE_VARIANTS: Final[dict[tuple[str, str], tuple[str, ...]]] = {
 }
 
 _PERIOD_TOOLS = frozenset({"get_brand_sales", "get_brand_share", "get_brand_series"})
+_EXPLICIT_MULTI_BRAND_HANDOFF = re.compile(
+    r"비교|각각|대비|(?<![A-Za-z])vs\.?(?![A-Za-z])",
+    re.IGNORECASE,
+)
 
 
 def plan_bq_question(
@@ -59,16 +77,21 @@ def plan_bq_question(
     available_sources: tuple[str, ...] | None = None,
     *,
     issue_context: tuple[str, ...] = (),
-) -> BqPlan | None:
+) -> BqPlan | BqCardinalityStop | None:
     brands = _resolved_brands(question, resolver)
     if not brands:
+        return None
+    if len(brands) > 1 and _EXPLICIT_MULTI_BRAND_HANDOFF.search(question):
         return None
     slots = extract_bq_slots(
         question,
         brand=brands[0],
         period=_period(question, grounding),
         issue_context=issue_context,
+        brands=brands,
     )
+    if len(brands) > 1:
+        return BqCardinalityStop(slots=slots)
     contract_id = contract_id_for_slots(slots)
     contract = contract_for(contract_id or "")
     if contract is None or not set(contract.tools).issubset(_schema_names(schemas)):
@@ -99,7 +122,10 @@ def plan_bq_question(
     )
 
 
-def preflight_bq_question(question: str, resolver: BrandResolver) -> BqPlan | None:
+def preflight_bq_question(
+    question: str,
+    resolver: BrandResolver,
+) -> BqPlan | BqCardinalityStop | None:
     from jw_chat_agent_poc.agent_loop.schemas import tool_schemas
     from jw_chat_agent_poc.tools.query_layer.catalog import default_catalog
 

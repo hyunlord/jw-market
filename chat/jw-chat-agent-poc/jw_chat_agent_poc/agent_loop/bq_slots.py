@@ -18,6 +18,7 @@ class BqSlots:
     # when building tool arguments. The signatures below match on the pattern tuples
     # above, so carrying context here cannot change which contract a question selects.
     issue_context: tuple[str, ...] = ()
+    brands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +119,7 @@ def extract_bq_slots(
     brand: str,
     period: str,
     issue_context: tuple[str, ...] = (),
+    brands: tuple[str, ...] = (),
 ) -> BqSlots:
     return BqSlots(
         brand=brand,
@@ -131,6 +133,7 @@ def extract_bq_slots(
         # what the user asked for, and matching metric words inside them would move the
         # question to a contract it never selected.
         issue_context=issue_context,
+        brands=brands or ((brand,) if brand else ()),
     )
 
 
