@@ -83,7 +83,18 @@ def _rows_from_seven_field_fact(fact_md: str) -> list[ProvenanceRow]:
     for cells in _table_records(fact_md, "provenance fact"):
         if len(cells) < 7:
             continue
-        rows.append(normalized_row(*cells[:7]))
+        source, period, view, market, denominator, channel, unit = cells[:7]
+        rows.append(
+            normalized_row(
+                source=source,
+                period=period,
+                view=view,
+                market=market,
+                denominator=denominator,
+                channel=channel,
+                unit=unit,
+            )
+        )
     return rows
 
 

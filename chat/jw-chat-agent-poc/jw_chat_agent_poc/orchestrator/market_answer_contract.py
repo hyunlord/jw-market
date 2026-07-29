@@ -813,13 +813,13 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
         period = hira_years[0] if len(hira_years) == 1 else f"{hira_years[0]}~{hira_years[-1]}"
         return (
             ProvenanceRow(
-                "HIRA 질병정보서비스",
-                period,
-                MISSING_LABEL,
-                MISSING_LABEL,
-                MISSING_LABEL,
-                "전체",
-                "명",
+                source="HIRA 질병정보서비스",
+                period=period,
+                view=MISSING_LABEL,
+                market=MISSING_LABEL,
+                denominator=MISSING_LABEL,
+                channel="전체",
+                unit="명",
             ),
         )
     primary_calls = tuple(call for call in calls if call.get("tool") != "agent_calculation")
@@ -838,27 +838,45 @@ def _complete_row(
     answer: str,
     unit: str | None = None,
 ) -> ProvenanceRow:
-    values = tuple("해당 없음" if value == MISSING_LABEL else value for value in row.as_tuple())
-    if values[2].startswith("전략뷰"):
-        values = (*values[:2], "전략뷰", *values[3:])
-    elif values[2].startswith("일반뷰"):
-        values = (*values[:2], "일반뷰", *values[3:])
+    fields = {
+        name: "해당 없음" if value == MISSING_LABEL else value
+        for name, value in row.as_fields().items()
+    }
+    source = fields["source"]
+    period = fields["period"]
+    view = fields["view"]
+    market = fields["market"]
+    denominator = fields["denominator"]
+    channel = fields["channel"]
+    row_unit = fields["unit"]
+    if view.startswith("전략뷰"):
+        view = "전략뷰"
+    elif view.startswith("일반뷰"):
+        view = "일반뷰"
     market_match = re.search(r"(?m)^- 시장:\s*(.+?)\s*$", answer)
     denominator_match = re.search(r"(?m)^점유율 분모:\s*(.+?)\s*$", answer)
-    if values[3] == "해당 없음" and market_match is not None:
-        values = (*values[:3], market_match.group(1).strip(), *values[4:])
-    if values[4] == "해당 없음" and denominator_match is not None:
-        values = (*values[:4], denominator_match.group(1).strip(), *values[5:])
-    if values[3] == "해당 없음" and values[2] == "전략뷰":
-        values = (*values[:3], "요청 브랜드의 전략 시장", *values[4:])
+    if market == "해당 없음" and market_match is not None:
+        market = market_match.group(1).strip()
+    if denominator == "해당 없음" and denominator_match is not None:
+        denominator = denominator_match.group(1).strip()
+    if market == "해당 없음" and view == "전략뷰":
+        market = "요청 브랜드의 전략 시장"
     requested_channel = _requested_channel(question)
     if any(token in question for token in ("채널별", "채널 별")):
-        values = (*values[:5], "채널별", values[6])
+        channel = "채널별"
     elif requested_channel:
-        values = (*values[:5], requested_channel, values[6])
+        channel = requested_channel
     if unit:
-        values = (*values[:6], unit)
-    return ProvenanceRow(*values)
+        row_unit = unit
+    return ProvenanceRow(
+        source=source,
+        period=period,
+        view=view,
+        market=market,
+        denominator=denominator,
+        channel=channel,
+        unit=row_unit,
+    )
 
 
 def _requested_unit(question: str, answer: str) -> str | None:
