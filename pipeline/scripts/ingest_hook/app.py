@@ -8,6 +8,7 @@ pipeline-orchestrator image (fastapi/uvicorn/PyMySQL already included):
 
 Endpoints (the site's whole contract surface):
   POST /ingest/webhook   {"manifest_path": "<path under INGEST_INPUT_ROOT>"}
+  GET  /ingest/queue     ?category=
   GET  /ingest/status    ?epoch=&category=&manifest_sha=
   POST /ingest/force-stop (exact active run only)
   POST /ingest/reconcile  (promote queued submissions; sweep/ops helper)
@@ -30,8 +31,19 @@ from pipeline.scripts.ingest_hook.ledger import (
     STATUS_COMPLETE,
     STATUS_FAILED,
     STATUS_QUEUED,
+    STATUS_RUNNING,
     Ledger,
     LedgerConnectionError,
+)
+
+PORTAL_QUEUE_CATEGORIES = frozenset(
+    {
+        "ubist",
+        "iqvia_nsa",
+        "iqvia_csd_channel",
+        "iqvia_csd_keyword",
+        "mi_master",
+    }
 )
 
 
@@ -458,6 +470,46 @@ def create_app(service: IngestService) -> FastAPI:
     @app.post("/ingest/webhook")
     def webhook(payload: WebhookPayload) -> dict:
         return service.receive_webhook(payload.manifest_path)
+
+    @app.get("/ingest/queue")
+    def queue(category: str | None = None) -> dict:
+        if category is not None and category not in PORTAL_QUEUE_CATEGORIES:
+            return {"items": []}
+
+        entries = [
+            entry
+            for entry in service.ledger.active_entries(category)
+            if entry.category in PORTAL_QUEUE_CATEGORIES
+        ]
+        running_categories = {
+            entry.category for entry in entries if entry.status == STATUS_RUNNING
+        }
+        return {
+            "items": [
+                {
+                    "category": entry.category,
+                    "epoch": entry.epoch,
+                    "manifest_sha": entry.manifest_sha,
+                    "status": entry.status,
+                    "reason": entry.reason,
+                    "job_name": entry.job_name,
+                    "run_id": entry.run_id,
+                    "uploaded_by": entry.uploaded_by,
+                    "received_at": entry.received_at,
+                    "started_at": entry.started_at,
+                    "finished_at": entry.finished_at,
+                    "blocked_by_category": (
+                        entry.status == STATUS_QUEUED
+                        and entry.category in running_categories
+                    ),
+                    "requires_reconcile": (
+                        entry.status == STATUS_QUEUED
+                        and entry.category not in running_categories
+                    ),
+                }
+                for entry in entries
+            ]
+        }
 
     @app.get("/ingest/status")
     def status(epoch: str, category: str, manifest_sha: str) -> dict:

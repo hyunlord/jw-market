@@ -812,6 +812,24 @@ class Ledger:
         )
         return [self._entry(row) for row in cursor.fetchall()]
 
+    def active_entries(self, category: str | None = None) -> list[LedgerEntry]:
+        category_clause = ""
+        params: tuple[str, ...] = (STATUS_RUNNING, STATUS_QUEUED)
+        if category is not None:
+            category_clause = " AND category=?"
+            params += (category,)
+        cursor = self._execute(
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
+            " run_id, row_counts, received_at, started_at, finished_at"
+            " FROM ingest_ledger WHERE status IN (?,?)"
+            f"{category_clause}"
+            " ORDER BY category,"
+            " CASE status WHEN 'running' THEN 0 ELSE 1 END,"
+            " received_at, id",
+            params,
+        )
+        return [self._entry(row) for row in cursor.fetchall()]
+
     # -- state transitions ---------------------------------------------------
     def mark_running(self, epoch: str, category: str, manifest_sha: str, *, job_name: str, run_id: str) -> None:
         self._transition(
