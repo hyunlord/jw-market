@@ -80,7 +80,10 @@ def _clinical_detail_requested_fields(user_text: str) -> frozenset[str] | None:
     requested: set[str] = set()
     if any(token in lowered for token in ("inclusion", "exclusion", "선정기준", "제외기준")):
         requested.add("eligibility")
-    if any(token in lowered for token in ("임상 디자인", "대상", "평가변수", "기간")):
+    if any(
+        token in lowered
+        for token in ("임상 디자인", "시험 디자인", "대상", "평가변수", "기간")
+    ):
         requested.update(_CLINICAL_DETAIL_DESIGN_FIELDS)
     elif any(token in lowered for token in ("outcome", "결과지표", "평가 변수")):
         requested.add("outcomes")
@@ -431,13 +434,25 @@ class ExternalToolRegistry:
         )
         if not facts:
             return _error("NO_EVIDENCE", "ClinicalTrials 상세 응답에 검증 가능한 필드가 없습니다.")
+        missing_requested_facets = tuple(
+            key
+            for key in missing_reasons
+            if requested_fields is not None
+            and key in requested_fields
+            and not _clinical_detail_value_present(detail.get(key))
+        )
         return ToolEnvelope(
             ok=True,
             preview=call.summary_text,
             evidence=facts,
+            missing_requested_facets=missing_requested_facets,
             raw=asdict(call),
-            error_code=None,
-            error_message=None,
+            error_code="PARTIAL_RESULT" if missing_requested_facets else None,
+            error_message=(
+                "요청한 임상시험 상세 항목 일부를 확인할 수 없습니다."
+                if missing_requested_facets
+                else None
+            ),
         )
 
     def _web_search(self, payload: BaseModel) -> ToolEnvelope:

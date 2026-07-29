@@ -34,6 +34,7 @@ class ToolEnvelope(BaseModel):
     ok: bool
     preview: str
     evidence: tuple[EvidenceFact, ...]
+    missing_requested_facets: tuple[str, ...] = ()
     raw: dict | list | None
     error_code: str | None
     error_message: str | None

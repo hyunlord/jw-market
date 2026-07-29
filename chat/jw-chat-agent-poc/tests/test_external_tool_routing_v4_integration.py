@@ -396,6 +396,81 @@ def test_enforce_routes_nct_id_directly_to_detail_tool(monkeypatch) -> None:
     ]
 
 
+def test_enforce_supplements_partial_nct_design_with_official_web(monkeypatch) -> None:
+    external = ExternalApiClient(mode="fixture")
+    web_calls = 0
+
+    def partial_detail(nct_id: str) -> ExternalCall:
+        return ExternalCall(
+            tool="clinicaltrials_study_details",
+            source="clinicaltrials_mcp",
+            status="live",
+            summary_text=f"ClinicalTrials.gov에서 {nct_id} 일부 상세를 확인했습니다.",
+            render_data={
+                "detail": {
+                    "nct_id": nct_id,
+                    "enrollment": 300,
+                    "outcomes": ["Visual acuity"],
+                }
+            },
+            safe_url=f"https://clinicaltrials.gov/study/{nct_id}",
+        )
+
+    def web_search(
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: str = "general",
+    ) -> ExternalCall:
+        nonlocal web_calls
+        del query, max_results, topic
+        web_calls += 1
+        return ExternalCall(
+            tool="web_search",
+            source="web_search",
+            status="ok",
+            summary_text="official clinical supplement",
+            render_data={
+                "provider": "fixture",
+                "items": [
+                    {
+                        "title": "NCT05151731 Study Details",
+                        "url": "https://clinicaltrials.gov/study/NCT05151731",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(external, "clinicaltrials_study_details", partial_detail)
+    monkeypatch.setattr(external, "web_search", web_search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    payload = run_external_tool_agent(
+        "NCT05151731 시험 디자인 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    diagnostics = payload["router_diagnostics"]["routing_v4"]
+    signature = diagnostics["executed_call_signature"]
+    fallback = diagnostics["official_web_fallback"]
+    assert signature["runtime_status"] == "partial"
+    assert signature["reason_code"] == "PARTIAL_RESULT"
+    assert fallback["missing_requested_facets"] == [
+        "start_date",
+        "primary_completion_date",
+    ]
+    assert fallback["calls_executed"] == 1
+    assert fallback["accepted_urls"] == [
+        "https://clinicaltrials.gov/study/NCT05151731"
+    ]
+    assert web_calls == 1
+    assert "공식 웹 보완 자료" in payload["answer"]
+
+
 def test_enforce_executes_the_prs_and_emits_ordered_ccs(monkeypatch) -> None:
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
 

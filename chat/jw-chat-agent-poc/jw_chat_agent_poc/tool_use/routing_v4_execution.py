@@ -225,6 +225,20 @@ def normalize_execution_result(
     call_statuses = tuple(str(call.get("status") or "unknown") for call in result.tool_calls)
     successful_count = sum(status == "ok" for status in call_statuses)
 
+    if failed_call_scopes(plan, result) and any(
+        isinstance((render_data := call.get("render_data")), dict)
+        and str(render_data.get("error_code") or "").upper() == "PARTIAL_RESULT"
+        for call in result.tool_calls
+    ):
+        return AgentResult(
+            status="partial",
+            answer=_partial_answer(plan, result),
+            tool_calls=result.tool_calls,
+            sources=result.sources,
+            traces=result.traces,
+            fallback_code=None,
+        ), "PARTIAL_RESULT"
+
     if proposed_count and len(call_statuses) == proposed_count and successful_count == proposed_count:
         if result.status == "ok":
             return result, None
@@ -332,6 +346,15 @@ def _partial_answer(plan: RoutePlan, result: AgentResult) -> str:
 def failed_call_scopes(plan: RoutePlan, result: AgentResult) -> tuple[str, ...]:
     scopes: list[str] = []
     calls = tuple(result.tool_calls)
+    for call in calls:
+        render_data = call.get("render_data")
+        if not isinstance(render_data, dict):
+            continue
+        if str(render_data.get("error_code") or "").upper() != "PARTIAL_RESULT":
+            continue
+        missing = render_data.get("missing_requested_facets")
+        if isinstance(missing, list):
+            scopes.extend(str(item) for item in missing if str(item).strip())
     for index, proposed in enumerate(plan.proposal.proposed_calls):
         status = str(calls[index].get("status") or "unknown") if index < len(calls) else "missing"
         if status == "ok":

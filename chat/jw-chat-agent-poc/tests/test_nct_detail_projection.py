@@ -23,14 +23,18 @@ class _ClinicalDetailClient(ExternalApiClient):
         )
 
 
-def _execute_detail(detail: dict[str, Any]):
+def _execute_detail(
+    detail: dict[str, Any],
+    *,
+    question: str = "NCT05151731 임상 디자인",
+):
     registry = ExternalToolRegistry(
         resolver=BrandResolver(),
         external=_ClinicalDetailClient(detail),
     )
     spec = next(
         item
-        for item in registry.list_for_query("NCT05151731 임상 디자인")
+        for item in registry.list_for_query(question)
         if item.name == "clinicaltrials_study_details"
     )
     return spec.execute(spec.input_model.model_validate({"nct_id": "NCT05151731"}))
@@ -71,3 +75,21 @@ def test_nct_detail_missing_dates_and_empty_outcomes_return_null_reasons() -> No
         assert "확인할 수 없습니다" in fact.source_locator
         assert "0" not in fact.source_locator
         assert "[]" not in fact.source_locator
+
+
+def test_nct_trial_design_marks_requested_missing_fields_as_partial() -> None:
+    envelope = _execute_detail(
+        {
+            "nct_id": "NCT05151731",
+            "enrollment": 300,
+            "outcomes": ["Visual acuity"],
+        },
+        question="NCT05151731 시험 디자인 알려줘",
+    )
+
+    assert envelope.ok is True
+    assert envelope.error_code == "PARTIAL_RESULT"
+    assert envelope.missing_requested_facets == (
+        "start_date",
+        "primary_completion_date",
+    )
