@@ -1756,6 +1756,7 @@ def test_dual_answer_forces_strategic_primary_and_preserves_original_question(mo
 def _canonical_hyperlipidemia_service(
     *,
     exact_market: tuple[str, str] | None = ("ml_006", "고지혈증 치료제 시장"),
+    strategic_membership: StrategicMembership | None = None,
 ) -> GeneralViewService:
     backend = FakeBackend()
     backend.market_map["C10A1"] = replace(_market("C10A1", 8_000_000_000), hhi_recent=250.0)
@@ -1770,7 +1771,7 @@ def _canonical_hyperlipidemia_service(
     )
     return GeneralViewService(
         backend,
-        StrategicMembershipWithExplicitMarket(set()),
+        strategic_membership or StrategicMembershipWithExplicitMarket(set()),
         enabled=True,
         market_definition_reader=reader,
     )
@@ -1789,6 +1790,18 @@ def test_bare_general_view_hhi_resolves_exact_canonical_market_and_persists_slot
     slots = extract_conversation_slots(result)
     assert slots.market == "ml_006"
     assert slots.market_definition == "고지혈증 치료제 시장"
+
+
+def test_bare_general_view_hhi_reuses_unique_public_market_alias_when_catalog_name_is_brand_group() -> None:
+    service = _canonical_hyperlipidemia_service(exact_market=None)
+
+    result = service.answer("고지혈증 일반뷰 HHI", compact=False, dual=False)
+
+    contract = result["general_view_contract"]
+    assert contract["atc4_codes"] == ["C10A1", "C10C"]
+    assert contract["market_id"] == "ml_006"
+    assert contract["market_name"] == "고지혈증 치료제 시장"
+    assert contract.get("unavailable", False) is False
 
 
 def test_bare_general_view_hhi_slot_resolves_followup_but_not_standalone_question() -> None:
@@ -1816,7 +1829,10 @@ def test_bare_general_view_hhi_slot_resolves_followup_but_not_standalone_questio
 
 
 def test_bare_general_view_hhi_fails_closed_when_canonical_market_is_ambiguous() -> None:
-    service = _canonical_hyperlipidemia_service(exact_market=None)
+    service = _canonical_hyperlipidemia_service(
+        exact_market=None,
+        strategic_membership=StrategicMembership(set()),
+    )
     backend = service._backend
     assert isinstance(backend, FakeBackend)
     backend.candidate_map[("고지혈증", "ubist")] = (AtcCandidate("C10A1", "스타틴류"),)
