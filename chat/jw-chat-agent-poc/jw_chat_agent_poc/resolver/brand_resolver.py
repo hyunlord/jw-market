@@ -355,13 +355,26 @@ class BrandResolver:
                 values = by_brand_key.setdefault(brand_key, [])
                 if alias_name not in values:
                     values.append(alias_name)
+            # The load-time guard compares alias_name against stored brand_KEYs after
+            # NFKC+strip. This index folds harder: it also removes every space and
+            # casefolds, and it keys on the display name. So an alias can clear the
+            # guard and still land on another brand's key here, which makes a name
+            # that resolves today ambiguous instead. Skip those; keep the ones that
+            # fold onto this item's own key, which add spellings without adding a
+            # second owner.
+            canonical_keys = {
+                self._normalize(str(entry["canonical_brand"])) for entry in merged.values()
+            }
+            canonical_keys.discard("")
             for item in merged.values():
                 brand_key = self._normalize(str(item["canonical_brand"]))
                 runtime_alias_keys = item.setdefault("_runtime_alias_keys", [])
                 for alias_name in by_brand_key.get(brand_key, ()):
+                    alias_key = self._normalize(alias_name)
+                    if alias_key and alias_key != brand_key and alias_key in canonical_keys:
+                        continue
                     if alias_name not in item["aliases"]:
                         item["aliases"].append(alias_name)
-                    alias_key = self._normalize(alias_name)
                     if alias_key and alias_key not in runtime_alias_keys:
                         runtime_alias_keys.append(alias_key)
         if brand_molecules:
