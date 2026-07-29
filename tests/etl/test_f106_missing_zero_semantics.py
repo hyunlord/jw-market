@@ -300,6 +300,53 @@ def test_level_trend_brand_payload_preserves_missing_recent_value(monkeypatch) -
     assert result[0]["data_quality"] == {"available": False, "reason": "no_data"}
 
 
+def test_level_trend_others_propagates_missing_market_total(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cause,
+        "_display_brand_rows",
+        lambda *_args, **_kwargs: [
+            {
+                "brand": "selected",
+                "company": "A",
+                "value_recent": 20.0,
+                "raw_value": 20.0,
+                "share_pct": 20.0,
+                "rank": 1,
+                "is_others": False,
+            },
+            {
+                "brand": "others",
+                "company": None,
+                "value_recent": 80.0,
+                "raw_value": 80.0,
+                "share_pct": 80.0,
+                "rank": None,
+                "is_others": True,
+            },
+        ],
+    )
+
+    result = cause._level_trend_brand_payloads(
+        option_rows=[
+            {
+                "brand_name": "selected",
+                "metric_history": {
+                    "2026-04": {"raw_value": 10.0},
+                    "2026-05": {"raw_value": 20.0},
+                },
+            }
+        ],
+        periods=["2026-04", "2026-05"],
+        target_name=None,
+        total_series=[None, 100.0],
+    )
+
+    others = next(row for row in result if row["is_others"])
+    assert others["value_series_10pt"] == [None, 80.0]
+    assert others["volume_series_10pt"] == [None, 80.0]
+    assert others["ms_series_10pt"] == [None, 80.0]
+
+
 def test_annual_rank_rows_preserve_missing_catalog_identity() -> None:
     by_year, period_counts = cause._annual_rank_rows(
         {
