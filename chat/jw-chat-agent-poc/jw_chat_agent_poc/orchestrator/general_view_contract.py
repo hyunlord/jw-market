@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from jw_chat_agent_poc.orchestrator.provenance_model import sanitize_internal_provenance_labels
 
 
 DUAL_WARNING = "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다"
+STRATEGIC_HEADING = "## 전략뷰 (market_landscape)"
+# Recognises the canonical strategic heading and its spacing variants only.
+# Deliberately narrow: the line must be a level-2 heading whose whole text is
+# 전략뷰, optionally qualified by (market_landscape). A heading that merely
+# starts with 전략 ("## 전략적 판단") or carries extra words
+# ("## 전략뷰 상세 분석") is not a strategic heading and is left alone.
+_STRATEGIC_HEADING_LINE_RE = re.compile(
+    r"^##\s*전략뷰(?:\s*\(\s*market_landscape\s*\))?\s*$"
+)
 
 
 def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) -> str:
@@ -16,8 +26,8 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
         return answer
     labels = _scope_labels(contract)
     strategic_answer = answer.rstrip()
-    if contract.get("mode") == "dual" and not strategic_answer.startswith("## 전략뷰 (market_landscape)"):
-        strategic_answer = f"## 전략뷰 (market_landscape)\n\n{strategic_answer}"
+    if contract.get("mode") == "dual":
+        strategic_answer = _normalize_strategic_heading(strategic_answer)
     parts = [strategic_answer]
     if not _section_present(answer, section):
         parts.append(section)
@@ -28,6 +38,28 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     if contract.get("mode") == "dual" and DUAL_WARNING not in combined:
         combined = "\n\n".join((combined, f"> {DUAL_WARNING}"))
     return combined
+
+
+def strategic_heading_recognized(answer: str) -> bool:
+    """True when the answer already opens with a recognisable strategic heading."""
+
+    head, _separator, _rest = answer.partition("\n")
+    return bool(_STRATEGIC_HEADING_LINE_RE.match(head.strip()))
+
+
+def _normalize_strategic_heading(answer: str) -> str:
+    """Keep exactly one canonical strategic heading at the top of the answer.
+
+    An answer that already opens with a recognised heading variant has that line
+    replaced by the canonical form, so no second heading is prepended. Anything
+    else keeps its existing text and receives the canonical heading in front,
+    exactly as before.
+    """
+
+    head, separator, rest = answer.partition("\n")
+    if _STRATEGIC_HEADING_LINE_RE.match(head.strip()):
+        return f"{STRATEGIC_HEADING}{separator}{rest}"
+    return f"{STRATEGIC_HEADING}\n\n{answer}"
 
 
 def _section_present(answer: str, section: str) -> bool:
