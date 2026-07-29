@@ -519,6 +519,11 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
             order.append("refresh")
 
     monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+    monkeypatch.setattr(
+        job_runner,
+        "_run_commands_with_writer_lock",
+        lambda label, argv, **_kwargs: fake_run(label, argv),
+    )
 
     assert job_runner.run(
         manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None

@@ -203,6 +203,121 @@ def _run_commands(label: str, argv: tuple[str, ...]) -> None:
         raise RuntimeError(f"{label} command failed rc={result.returncode}: {' '.join(argv)}")
 
 
+def _run_commands_with_writer_lock(
+    label: str,
+    argv: tuple[str, ...],
+    *,
+    connection,
+    lock_name: str,
+    heartbeat_seconds: float = 30.0,
+) -> None:
+    """Run a long command while keeping its session-owned writer lock alive."""
+    if not argv:
+        return
+    from pipeline.scripts.ingest_hook import ubist_mart_activation
+
+    ubist_mart_activation.require_writer_lock_owner(
+        connection, lock_name=lock_name
+    )
+    process = subprocess.Popen(argv)
+    while True:
+        try:
+            returncode = process.wait(timeout=heartbeat_seconds)
+            break
+        except subprocess.TimeoutExpired:
+            try:
+                ubist_mart_activation.require_writer_lock_owner(
+                    connection, lock_name=lock_name
+                )
+            except Exception as lock_exc:  # fail closed at the subprocess boundary
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise RuntimeError(
+                    f"{label} aborted because writer lock ownership was lost: "
+                    f"{lock_exc}"
+                ) from lock_exc
+
+    command_error = (
+        RuntimeError(
+            f"{label} command failed rc={returncode}: {' '.join(argv)}"
+        )
+        if returncode != 0
+        else None
+    )
+    try:
+        ubist_mart_activation.require_writer_lock_owner(
+            connection, lock_name=lock_name
+        )
+    except Exception as lock_exc:  # preserve a command failure if both occurred
+        if command_error is not None:
+            raise RuntimeError(
+                f"{command_error}; writer lock verification also failed: {lock_exc}"
+            ) from command_error
+        raise
+    if command_error is not None:
+        raise command_error
+
+
+def _release_writer_lock_preserving_primary(
+    connection,
+    *,
+    lock_name: str,
+    primary_failure_reason: str | None,
+) -> None:
+    from pipeline.scripts.ingest_hook import ubist_mart_activation
+
+    try:
+        ubist_mart_activation.release_writer_lock(
+            connection, lock_name=lock_name
+        )
+    except Exception as cleanup_exc:
+        if primary_failure_reason is None:
+            raise
+        print(
+            "cleanup=writer_lock_release_failed "
+            f"primary_preserved={primary_failure_reason} "
+            f"cleanup_reason={type(cleanup_exc).__name__}: {cleanup_exc}",
+            file=sys.stderr,
+        )
+
+
+def _run_recovery_refresh(
+    *,
+    tracker: _StageTracker,
+    argv: tuple[str, ...],
+    connection,
+    lock_name: str,
+) -> None:
+    tracker.enter("refresh")
+    try:
+        _run_commands_with_writer_lock(
+            "refresh",
+            argv,
+            connection=connection,
+            lock_name=lock_name,
+        )
+    except Exception as exc:
+        tracker.fail(f"{type(exc).__name__}: {exc}")
+        raise
+    tracker.done()
+
+
+def _recovery_tracker(
+    ledger: Ledger,
+    identity: tuple[str, str, str],
+    *,
+    run_id: str,
+    phase: str,
+) -> _StageTracker:
+    suffix = f":{phase}-recovery"
+    recovery_run_id = f"{run_id[: 64 - len(suffix)]}{suffix}"
+    return _StageTracker(ledger, identity, recovery_run_id)
+
+
 _EMPTY_UBIST_MANIFEST = '{"schema_version": "1.0", "partitions": []}'
 
 
@@ -435,6 +550,7 @@ def run(
     baseline_live_snapshot = None
     baseline_manifest_sha = None
     activation_journal = None
+    primary_failure_reason = None
     try:
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
@@ -512,12 +628,14 @@ def run(
                 source_db = mart_activation.source_db if mart_activation is not None else None
                 baseline_conn = config.open_mart_connection(source_db)
                 baseline_lock_acquired = False
+                baseline_failure_reason = None
                 try:
                     if manifest.category == "ubist" and is_shadow:
                         recovery_lock_name = ubist_mart_activation.shadow_lock_name(
                             mart_activation.target_db
                         )
                         recovery_lock_acquired = False
+                        recovery_failure_reason = None
                         try:
                             ubist_mart_activation.acquire_writer_lock(
                                 baseline_conn,
@@ -546,10 +664,15 @@ def run(
                                     baseline_conn, mart_activation
                                 )
                                 ubist_mart_activation.complete_recovery(recovered)
+                        except Exception as exc:
+                            recovery_failure_reason = f"{type(exc).__name__}: {exc}"
+                            raise
                         finally:
                             if recovery_lock_acquired:
-                                ubist_mart_activation.release_writer_lock(
-                                    baseline_conn, lock_name=recovery_lock_name
+                                _release_writer_lock_preserving_primary(
+                                    baseline_conn,
+                                    lock_name=recovery_lock_name,
+                                    primary_failure_reason=recovery_failure_reason,
                                 )
                     elif manifest.category == "ubist":
                         from pipeline.scripts.ingest_hook import ubist_mart_activation
@@ -566,7 +689,17 @@ def run(
                             ),
                         )
                         if recovered:
-                            _run_commands("refresh", spec.refresh_argv)
+                            _run_recovery_refresh(
+                                tracker=_recovery_tracker(
+                                    ledger,
+                                    identity,
+                                    run_id=run_id,
+                                    phase="startup",
+                                ),
+                                argv=spec.refresh_argv,
+                                connection=baseline_conn,
+                                lock_name=ubist_mart_activation.WRITER_LOCK_NAME,
+                            )
                             ubist_mart_activation.complete_recovery(recovered)
                     before_snapshot = fingerprint_untouched_sources(
                         baseline_conn, touched_source=spec.sigma_source
@@ -578,9 +711,16 @@ def run(
                         baseline_manifest_sha = ubist_mart_activation.corpus_manifest_sha(
                             target_root / "ubist"
                         )
+                except Exception as exc:
+                    baseline_failure_reason = f"{type(exc).__name__}: {exc}"
+                    raise
                 finally:
                     if baseline_lock_acquired:
-                        ubist_mart_activation.release_writer_lock(baseline_conn)
+                        _release_writer_lock_preserving_primary(
+                            baseline_conn,
+                            lock_name=ubist_mart_activation.WRITER_LOCK_NAME,
+                            primary_failure_reason=baseline_failure_reason,
+                        )
                     baseline_conn.close()
             if manifest.category == "ubist" and not configured_staging_verify:
                 corpus_candidate = ubist_mart_activation.prepare_candidate_corpus(
@@ -817,7 +957,15 @@ def run(
                         f"target_db={mart_activation.target_db} counts={counts}"
                     )
                 else:
-                    _run_commands("refresh", spec.refresh_argv)
+                    if writer_lock_acquired and writer_conn is not None:
+                        _run_commands_with_writer_lock(
+                            "refresh",
+                            spec.refresh_argv,
+                            connection=writer_conn,
+                            lock_name=writer_lock_name,
+                        )
+                    else:
+                        _run_commands("refresh", spec.refresh_argv)
                 if activation_journal is not None:
                     ubist_mart_activation.update_activation_journal(
                         activation_journal, "refresh_succeeded"
@@ -864,6 +1012,7 @@ def run(
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0
     except PostGateError as exc:
+        primary_failure_reason = f"{type(exc).__name__}: {exc}"
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
         _emit_completion_signal(
@@ -876,6 +1025,7 @@ def run(
         print(f"result=gate_failed reason={exc}", file=sys.stderr)
         return 1
     except (G3Error, SigmaGateError) as exc:
+        primary_failure_reason = f"{type(exc).__name__}: {exc}"
         tracker.fail(f"{type(exc).__name__}: {exc}")
         ledger.mark_gate_failed(*identity, reason=f"{type(exc).__name__}: {exc}")
         _emit_completion_signal(
@@ -888,6 +1038,7 @@ def run(
         print(f"result=gate_failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     except (UnknownCategoryError, RuntimeError) as exc:
+        primary_failure_reason = f"{type(exc).__name__}: {exc}"
         if ledger_completed:
             print(
                 f"result=committed_with_postcommit_error reason={type(exc).__name__}: {exc}",
@@ -906,6 +1057,7 @@ def run(
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:  # fail loud while preserving ledger/signal evidence
+        primary_failure_reason = f"{type(exc).__name__}: {exc}"
         if ledger_completed:
             print(
                 f"result=committed_with_postcommit_error reason={type(exc).__name__}: {exc}",
@@ -939,7 +1091,17 @@ def run(
                                 writer_conn, mart_activation
                             )
                         else:
-                            _run_commands("refresh", resolve_category("ubist").refresh_argv)
+                            _run_recovery_refresh(
+                                tracker=_recovery_tracker(
+                                    ledger,
+                                    identity,
+                                    run_id=run_id,
+                                    phase="failure",
+                                ),
+                                argv=resolve_category("ubist").refresh_argv,
+                                connection=writer_conn,
+                                lock_name=writer_lock_name,
+                            )
                     except Exception as recovery_exc:
                         print(
                             f"recovery=deferred reason={type(recovery_exc).__name__}: {recovery_exc}",
@@ -950,10 +1112,10 @@ def run(
             elif corpus_candidate is not None:
                 ubist_mart_activation.rollback_candidate_corpus(corpus_candidate)
         if writer_lock_acquired and writer_conn is not None:
-            from pipeline.scripts.ingest_hook import ubist_mart_activation
-
-            ubist_mart_activation.release_writer_lock(
-                writer_conn, lock_name=writer_lock_name
+            _release_writer_lock_preserving_primary(
+                writer_conn,
+                lock_name=writer_lock_name,
+                primary_failure_reason=primary_failure_reason,
             )
         if mart_conn is not None and mart_conn is not writer_conn:
             mart_conn.close()
