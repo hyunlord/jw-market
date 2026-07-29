@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from pipeline.scripts.ingest_hook import config, job_launcher, stage_logs
+from pipeline.scripts.ingest_hook import config, job_launcher, job_runner, stage_logs
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import (
@@ -38,6 +38,16 @@ from pipeline.scripts.ingest_hook.ledger import (
     STATUS_RUNNING,
     Ledger,
     LedgerConnectionError,
+)
+
+PORTAL_QUEUE_CATEGORIES = frozenset(
+    {
+        "ubist",
+        "iqvia_nsa",
+        "iqvia_csd_channel",
+        "iqvia_csd_keyword",
+        "mi_master",
+    }
 )
 
 
@@ -527,7 +537,12 @@ def create_app(service: IngestService) -> FastAPI:
 
     @app.get("/ingest/queue")
     def queue(category: str | None = None) -> dict:
+        if category is not None and category not in PORTAL_QUEUE_CATEGORIES:
+            return {"items": []}
         entries = service.ledger.active_entries(category)
+        entries = [
+            entry for entry in entries if entry.category in PORTAL_QUEUE_CATEGORIES
+        ]
         running_categories = {
             entry.category for entry in entries if entry.status == STATUS_RUNNING
         }
@@ -575,6 +590,10 @@ def create_app(service: IngestService) -> FastAPI:
             signals = service.ledger.signal_events(epoch, category, manifest_sha)
         except Exception:  # observation remains additive and best-effort
             signals = []
+        try:
+            expected = job_runner.expected_stages(resolve_category(entry.category))
+        except UnknownCategoryError:
+            expected = []
         current_stage = next(
             (event.stage for event in reversed(events) if event.status == "running"), None
         )
@@ -598,6 +617,7 @@ def create_app(service: IngestService) -> FastAPI:
                 entry.status == STATUS_QUEUED and not blocked_by_category
             ),
             "current_stage": current_stage,
+            "expected_stages": expected,
             "stages": [
                 {
                     "run_id": event.run_id,

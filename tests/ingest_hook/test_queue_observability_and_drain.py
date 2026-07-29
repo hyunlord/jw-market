@@ -86,6 +86,31 @@ def test_queue_list_for_unknown_category_is_an_empty_additive_response(
     assert response.json() == {"items": []}
 
 
+def test_queue_omits_non_portal_category_rows(sqlite_ledger) -> None:
+    _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="unexpected",
+        manifest_sha="c" * 64,
+    )
+    allowed = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="iqvia_nsa",
+        manifest_sha="d" * 64,
+    )
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).get(
+        "/ingest/queue"
+    )
+
+    assert response.status_code == 200
+    assert [
+        (item["epoch"], item["category"], item["manifest_sha"])
+        for item in response.json()["items"]
+    ] == [allowed]
+
+
 def test_queued_status_distinguishes_category_blocker(sqlite_ledger) -> None:
     running = _seed(
         sqlite_ledger,
@@ -179,6 +204,7 @@ def test_status_preserves_existing_keys_and_adds_only_queue_flags(
         "log_ref",
         "blocked_by_category",
         "requires_reconcile",
+        "expected_stages",
     }
 
 
@@ -295,6 +321,32 @@ def test_terminal_callback_promotes_next_only_after_slot_release(
     assert drained.json()["accepted"] is True
     assert drained.json()["promoted_job_name"] == sqlite_ledger.status(*queued).job_name
     assert sqlite_ledger.running_in_category("ubist") == 1
+
+    queue_payload = client.get("/ingest/queue").json()
+    assert [
+        (
+            item["epoch"],
+            item["status"],
+            item["blocked_by_category"],
+            item["requires_reconcile"],
+        )
+        for item in queue_payload["items"]
+    ] == [("2026-06", "running", False, False)]
+    status_payload = client.get(
+        "/ingest/status",
+        params={
+            "epoch": queued[0],
+            "category": queued[1],
+            "manifest_sha": queued[2],
+        },
+    ).json()
+    assert status_payload["status"] == "running"
+    assert status_payload["blocked_by_category"] is False
+    assert status_payload["requires_reconcile"] is False
+    assert [item["stage"] for item in status_payload["expected_stages"]] == list(
+        job_runner._StageTracker.STAGES
+    )
+    assert len(status_payload["expected_stages"]) == 9
 
 
 def test_failed_terminal_callback_promotes_next_after_failed_slot_release(
