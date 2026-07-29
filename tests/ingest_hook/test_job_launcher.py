@@ -109,6 +109,32 @@ def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):
     assert mounts["market-output"]["readOnly"] is False
 
 
+def test_rendered_retries_share_manifest_scoped_durable_stage_checkpoint():
+    first = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id="retry-one",
+    )
+    second = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id="retry-two",
+    )
+
+    def state_path(body: dict) -> str:
+        container = body["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        return env["JW_PIPELINE_STATE_FILE"]
+
+    expected = f"/market-output/ingest-checkpoints/ubist/{SHA}/orchestrator-state.json"
+    assert state_path(first) == expected
+    assert state_path(second) == expected
+
+
 def test_submit_uses_injected_transport(fake_transport):
     name = submit_job(
         category="iqvia", manifest_sha=SHA, manifest_path="/data/m.json",

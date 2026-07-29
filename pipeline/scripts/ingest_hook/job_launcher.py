@@ -284,6 +284,13 @@ def render_job(
                             "env": [
                                 *_job_env(),
                                 {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
+                                {
+                                    "name": "JW_PIPELINE_STATE_FILE",
+                                    "value": (
+                                        f"{config.MARKET_OUTPUT_ROOT}/ingest-checkpoints/"
+                                        f"{category}/{manifest_sha}/orchestrator-state.json"
+                                    ),
+                                },
                             ],
                             **({"volumeMounts": volume_mounts} if volume_mounts else {}),
                             "resources": resources,
