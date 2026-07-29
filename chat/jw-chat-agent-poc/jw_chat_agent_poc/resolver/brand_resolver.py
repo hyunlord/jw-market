@@ -473,12 +473,16 @@ class BrandResolver:
     def _raise_family_ambiguity(self, text: str, items: list[dict[str, Any]]) -> None:
         index, _ = self._alias_lookup(items)
         normalized_text = unicodedata.normalize("NFKC", text)
+        # 계열 asks for a product family exactly like 패밀리 does, so both markers raise the
+        # same ambiguity instead of quietly narrowing to whichever single brand the alias
+        # matcher happened to find. The trailing boundary keeps 계열사·계열회사·계열화 out:
+        # those continue past the marker into another word and are not family requests.
         for match in re.finditer(
-            r"(?P<prefix>[0-9A-Za-z가-힣+_.-]{2,})\s*패밀리(?![0-9A-Za-z가-힣+_.-])",
+            r"(?P<prefix>[0-9A-Za-z가-힣+_.-]{2,})\s*(?P<marker>패밀리|계열)(?![0-9A-Za-z가-힣+_.-])",
             normalized_text,
         ):
             prefix = self._normalize(match.group("prefix"))
-            family_key = f"{prefix}패밀리"
+            family_key = f"{prefix}{match.group('marker')}"
             if family_key in index:
                 continue
             candidates = sorted(
