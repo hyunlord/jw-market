@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,10 @@ from pipeline.scripts.crawler.tier2_match_score import (
 CRAWLER_DIR = Path(__file__).resolve().parent
 EXCLUDED_TIER2_SITES = frozenset({"메디칼타임즈"})
 DEFAULT_TIER2_DAYS = 7
+
+
+class Tier2SiteCrawlError(RuntimeError):
+    """Raised after all independent site crawls finish when any site failed."""
 
 
 def _import_crawler() -> Any:
@@ -107,6 +112,9 @@ def tier2_sites(selected_sites: str | None) -> list[str]:
         raise ValueError(f"unknown tier2 site(s): {', '.join(unknown)}")
     if not requested:
         raise ValueError("explicit tier2 site set is empty")
+    duplicates = sorted({site for site in requested if requested.count(site) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate tier2 site(s): {', '.join(duplicates)}")
     return requested
 
 
@@ -114,6 +122,13 @@ def run_tier2_crawl(args: argparse.Namespace, brands: list[Tier2Brand]) -> int:
     crawl_news_v2 = _import_crawler()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    selected_sites = tier2_sites(args.sites)
+    history_file = str(output_dir / "scraped_urls.txt")
+    history_ledger = crawl_news_v2.ScrapedUrlLedger(history_file)
+    telemetry_file = getattr(args, "telemetry_file", None) or str(
+        output_dir / "tier2_crawl_telemetry_report.json"
+    )
+    telemetry = crawl_news_v2.CrawlTelemetry(telemetry_file)
     keywords = [brand.brand_name for brand in brands]
     contexts = {
         brand.brand_name: [
@@ -126,24 +141,81 @@ def run_tier2_crawl(args: argparse.Namespace, brands: list[Tier2Brand]) -> int:
         ]
         for brand in brands
     }
-    return int(
-        crawl_news_v2.crawl_once(
-            months=None,
-            days=args.days,
-            output_dir=str(output_dir),
-            max_pages_per_site=args.max_pages_per_site,
-            max_links_per_page=args.max_links_per_page,
-            delay_sec=args.delay_sec,
-            sites=tier2_sites(args.sites),
-            keywords=keywords,
-            history_file=str(output_dir / "scraped_urls.txt"),
-            continue_listing_after_old_page=False,
-            skip_similar_merge=args.no_similar_merge,
-            unique_json_per_url=args.unique_json_per_url,
-            keyword_contexts=contexts,
-            max_articles=args.max_articles or None,
+    if args.max_articles:
+        try:
+            return int(
+                crawl_news_v2.crawl_once(
+                    months=None,
+                    days=args.days,
+                    output_dir=str(output_dir),
+                    max_pages_per_site=args.max_pages_per_site,
+                    max_links_per_page=args.max_links_per_page,
+                    delay_sec=args.delay_sec,
+                    sites=selected_sites,
+                    keywords=keywords,
+                    history_file=history_file,
+                    continue_listing_after_old_page=False,
+                    skip_similar_merge=args.no_similar_merge,
+                    unique_json_per_url=args.unique_json_per_url,
+                    keyword_contexts=contexts,
+                    max_articles=args.max_articles,
+                    history_ledger=history_ledger,
+                    telemetry=telemetry,
+                )
+            )
+        finally:
+            telemetry.finalize()
+
+    concurrent_sites = max(1, int(args.concurrent_sites))
+
+    def crawl_site(site: str) -> int:
+        saved = int(
+            crawl_news_v2.crawl_once(
+                months=None,
+                days=args.days,
+                output_dir=str(output_dir),
+                max_pages_per_site=args.max_pages_per_site,
+                max_links_per_page=args.max_links_per_page,
+                delay_sec=args.delay_sec,
+                sites=[site],
+                keywords=keywords,
+                history_file=history_file,
+                continue_listing_after_old_page=False,
+                skip_similar_merge=args.no_similar_merge,
+                unique_json_per_url=args.unique_json_per_url,
+                keyword_contexts=contexts,
+                max_articles=args.max_articles or None,
+                history_ledger=history_ledger,
+                telemetry=telemetry,
+            )
         )
-    )
+        telemetry.record_site_completed(site)
+        return saved
+
+    failures: dict[str, Exception] = {}
+    total_saved = 0
+    try:
+        with ThreadPoolExecutor(
+            max_workers=min(concurrent_sites, len(selected_sites)),
+            thread_name_prefix="tier2-site",
+        ) as pool:
+            futures = {pool.submit(crawl_site, site): site for site in selected_sites}
+            for future in as_completed(futures):
+                site = futures[future]
+                try:
+                    total_saved += future.result()
+                except Exception as exc:
+                    failures[site] = exc
+                    telemetry.record_site_error(site, exc)
+    finally:
+        telemetry.finalize()
+
+    if failures:
+        failed_sites = ", ".join(sorted(failures))
+        raise Tier2SiteCrawlError(
+            f"tier2 site crawl failed after isolated completion: {failed_sites}"
+        )
+    return total_saved
 
 
 def _article_json_files(input_dir: Path) -> list[Path]:
@@ -229,6 +301,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-articles", type=int, default=0)
     parser.add_argument("--delay-sec", type=float, default=2.0)
     parser.add_argument("--concurrent-sites", type=int, default=4)
+    parser.add_argument(
+        "--telemetry-file",
+        help="Durable Tier2 telemetry summary path (events use .events.jsonl).",
+    )
     parser.add_argument("--no-similar-merge", action="store_true")
     parser.add_argument("--unique-json-per-url", action="store_true")
     parser.add_argument("--drug-profile-dir", default=str(CRAWLER_DIR / "drug_profiles"))

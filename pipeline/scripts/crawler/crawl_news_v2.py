@@ -8,13 +8,14 @@ import os
 import re
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 import hashlib
 import json
 import unicodedata
+from pathlib import Path
 import trafilatura
 from bs4 import BeautifulSoup, NavigableString
 
@@ -101,6 +102,7 @@ def listing_keywords_for_search(site_name: str, seed_kw_list: list[str], drug_pr
 
 DATASET_DIR = BASE_DIR
 HISTORY_FILE = os.path.join(DATASET_DIR, "scraped_urls.txt")
+_CRAWL_OUTPUT_LOCK = threading.RLock()
 
 
 def _split_ko_ingredient_terms(raw: str) -> list[str]:
@@ -204,12 +206,281 @@ def load_scraped_urls(history_file: str | None = None) -> set[str]:
         )
 
 
-def append_scraped_url(url: str, history_file: str | None = None) -> None:
+class ScrapedUrlLedger:
+    """Process-local, thread-safe ownership and persistence for crawl history."""
+
+    def __init__(self, history_file: str) -> None:
+        self.history_file = history_file
+        self._lock = threading.RLock()
+        self._urls = load_scraped_urls(history_file)
+        self._inflight: set[str] = set()
+
+    def snapshot(self) -> set[str]:
+        with self._lock:
+            return set(self._urls)
+
+    def contains(self, url: str) -> bool:
+        normalized = _normalize_yakup_news_url_for_dedupe(url)
+        with self._lock:
+            return normalized in self._urls or normalized in self._inflight
+
+    def claim(self, url: str) -> bool:
+        normalized = _normalize_yakup_news_url_for_dedupe(url)
+        with self._lock:
+            if normalized in self._urls or normalized in self._inflight:
+                return False
+            self._inflight.add(normalized)
+            return True
+
+    def release(self, url: str) -> None:
+        normalized = _normalize_yakup_news_url_for_dedupe(url)
+        with self._lock:
+            self._inflight.discard(normalized)
+
+    def append(self, url: str) -> bool:
+        normalized = _normalize_yakup_news_url_for_dedupe(url)
+        with self._lock:
+            self._inflight.discard(normalized)
+            if normalized in self._urls:
+                return False
+            parent = os.path.dirname(self.history_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(self.history_file, "a", encoding="utf-8") as f:
+                f.write(f"{normalized}\n")
+            self._urls.add(normalized)
+            return True
+
+
+class CrawlTelemetry:
+    """Durable per-request events plus an atomically refreshed summary."""
+
+    _STAGES = ("list", "detail")
+
+    def __init__(self, summary_file: str) -> None:
+        self.summary_file = Path(summary_file)
+        self.events_file = self.summary_file.with_suffix(".events.jsonl")
+        self._lock = threading.RLock()
+        self._sites: dict[str, dict[str, object]] = {}
+        self._event_count = 0
+        self.summary_file.parent.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _stage_payload() -> dict[str, object]:
+        return {
+            "requests": 0,
+            "network_sec": 0.0,
+            "sleep_sec": 0.0,
+            "latencies_sec": [],
+            "dedupe_skipped": 0,
+            "empty_results": 0,
+            "fetch_failed": 0,
+            "extract_failed": 0,
+            "saved": 0,
+            "retries": 0,
+        }
+
+    def _site(self, site: str) -> dict[str, object]:
+        if site not in self._sites:
+            self._sites[site] = {
+                "list": self._stage_payload(),
+                "detail": self._stage_payload(),
+                "errors": 0,
+                "completed": False,
+            }
+        return self._sites[site]
+
+    def _append_event(self, payload: dict[str, object]) -> None:
+        event = {
+            "ts_utc": datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+            **payload,
+        }
+        with open(self.events_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        self._event_count += 1
+        if self._event_count % 100 == 0:
+            self._write_summary_locked()
+
+    def record_request(self, site: str, stage: str, elapsed_sec: float) -> None:
+        if stage not in self._STAGES:
+            raise ValueError(f"unsupported telemetry stage: {stage}")
+        with self._lock:
+            stage_data = self._site(site)[stage]
+            assert isinstance(stage_data, dict)
+            stage_data["requests"] = int(stage_data["requests"]) + 1
+            stage_data["network_sec"] = round(
+                float(stage_data["network_sec"]) + elapsed_sec, 6
+            )
+            latencies = stage_data["latencies_sec"]
+            assert isinstance(latencies, list)
+            latencies.append(round(elapsed_sec, 6))
+            self._append_event(
+                {
+                    "event": "request",
+                    "site": site,
+                    "stage": stage,
+                    "elapsed_sec": round(elapsed_sec, 6),
+                }
+            )
+
+    def record_sleep(self, site: str, stage: str, seconds: float) -> None:
+        with self._lock:
+            stage_data = self._site(site)[stage]
+            assert isinstance(stage_data, dict)
+            stage_data["sleep_sec"] = round(
+                float(stage_data["sleep_sec"]) + seconds, 6
+            )
+            self._append_event(
+                {
+                    "event": "sleep",
+                    "site": site,
+                    "stage": stage,
+                    "seconds": seconds,
+                }
+            )
+
+    def record_count(
+        self,
+        site: str,
+        stage: str,
+        name: str,
+        count: int = 1,
+    ) -> None:
+        with self._lock:
+            stage_data = self._site(site)[stage]
+            assert isinstance(stage_data, dict)
+            if name not in stage_data:
+                raise ValueError(f"unsupported telemetry counter: {name}")
+            stage_data[name] = int(stage_data[name]) + count
+            self._append_event(
+                {
+                    "event": "count",
+                    "site": site,
+                    "stage": stage,
+                    "name": name,
+                    "count": count,
+                }
+            )
+
+    def record_site_error(self, site: str, exc: BaseException) -> None:
+        with self._lock:
+            site_data = self._site(site)
+            site_data["errors"] = int(site_data["errors"]) + 1
+            self._append_event(
+                {
+                    "event": "site_error",
+                    "site": site,
+                    "error_type": type(exc).__name__,
+                }
+            )
+
+    def record_site_completed(self, site: str) -> None:
+        with self._lock:
+            self._site(site)["completed"] = True
+            self._append_event({"event": "site_completed", "site": site})
+
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        index = max(
+            0,
+            min(
+                len(ordered) - 1,
+                int(len(ordered) * percentile + 0.999999) - 1,
+            ),
+        )
+        return ordered[index]
+
+    def _summary_locked(self) -> dict[str, object]:
+        sites: dict[str, object] = {}
+        total_requests = 0
+        total_network = 0.0
+        total_sleep = 0.0
+        total_errors = 0
+        for site, site_data in sorted(self._sites.items()):
+            rendered: dict[str, object] = {
+                "errors": site_data["errors"],
+                "completed": site_data["completed"],
+            }
+            total_errors += int(site_data["errors"])
+            for stage in self._STAGES:
+                raw = site_data[stage]
+                assert isinstance(raw, dict)
+                latencies = list(raw["latencies_sec"])
+                rendered[stage] = {
+                    key: value
+                    for key, value in raw.items()
+                    if key != "latencies_sec"
+                }
+                rendered_stage = rendered[stage]
+                assert isinstance(rendered_stage, dict)
+                rendered_stage["response_sec"] = {
+                    "p50": self._percentile(latencies, 0.50),
+                    "p90": self._percentile(latencies, 0.90),
+                    "max": max(latencies) if latencies else None,
+                }
+                total_requests += int(raw["requests"])
+                total_network += float(raw["network_sec"])
+                total_sleep += float(raw["sleep_sec"])
+            sites[site] = rendered
+        return {
+            "version": 1,
+            "updated_at_utc": datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+            "totals": {
+                "requests": total_requests,
+                "network_sec": round(total_network, 6),
+                "sleep_sec": round(total_sleep, 6),
+                "site_errors": total_errors,
+            },
+            "sites": sites,
+        }
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return self._summary_locked()
+
+    def _write_summary_locked(self) -> None:
+        temp = self.summary_file.with_suffix(self.summary_file.suffix + ".tmp")
+        temp.write_text(
+            json.dumps(self._summary_locked(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp.replace(self.summary_file)
+
+    def finalize(self) -> None:
+        with self._lock:
+            self._write_summary_locked()
+
+
+def append_scraped_url(
+    url: str,
+    history_file: str | None = None,
+    history_ledger: ScrapedUrlLedger | None = None,
+) -> bool:
     hf = history_file if history_file is not None else HISTORY_FILE
     url = _normalize_yakup_news_url_for_dedupe(url)
+    if history_ledger is not None:
+        return history_ledger.append(url)
     os.makedirs(os.path.dirname(hf), exist_ok=True)
     with open(hf, "a", encoding="utf-8") as f:
         f.write(f"{url}\n")
+    return True
+
+
+def _paced_sleep(
+    site_name: str,
+    delay_sec: float,
+    telemetry: CrawlTelemetry | None,
+) -> None:
+    if telemetry is not None:
+        telemetry.record_sleep(site_name, "detail", delay_sec)
+    time.sleep(delay_sec)
 
 
 def _url_hitnews(keyword: str, page_1based: int) -> str:
@@ -1103,7 +1374,12 @@ def _extract_fierce_search(html: str, cap: int) -> list[tuple[str, str, str]]:
     return out
 
 
-def get_article_links(site_name: str, config: dict, max_links: int | None = 30) -> list[tuple[str, ...]]:
+def get_article_links(
+    site_name: str,
+    config: dict,
+    max_links: int | None = 30,
+    telemetry: CrawlTelemetry | None = None,
+) -> list[tuple[str, ...]]:
     cap = 10**6 if max_links is None else max_links
     list_url = config.get("list_url")
     if not list_url:
@@ -1113,7 +1389,14 @@ def get_article_links(site_name: str, config: dict, max_links: int | None = 30) 
     link_extract = config.get("link_extract")
     base = config.get("base_url", "")
 
+    list_started = time.perf_counter()
     html = _load_list_html(list_url, list_fetch)
+    if telemetry is not None:
+        telemetry.record_request(
+            site_name,
+            "list",
+            time.perf_counter() - list_started,
+        )
     if not html:
         print(
             f"[{site_name}] 목록 페이지 로드 실패: {list_url[:120]}"
@@ -2232,6 +2515,8 @@ def crawl_once(
     unique_json_per_url: bool = False,
     keyword_contexts: dict[str, list[dict]] | None = None,
     max_articles: int | None = None,
+    history_ledger: ScrapedUrlLedger | None = None,
+    telemetry: CrawlTelemetry | None = None,
 ) -> int:
     kw_list = [k.strip() for k in (keywords or []) if k and str(k).strip()]
     if not kw_list:
@@ -2244,7 +2529,11 @@ def crawl_once(
     os.makedirs(output_dir, exist_ok=True)
 
     hf = history_file if history_file is not None else HISTORY_FILE
-    scraped_urls = load_scraped_urls(history_file=hf)
+    scraped_urls = (
+        history_ledger.snapshot()
+        if history_ledger is not None
+        else load_scraped_urls(history_file=hf)
+    )
     saved_urls: set[str] = set(scraped_urls)
     total_saved = 0
 
@@ -2286,8 +2575,19 @@ def crawl_once(
             ):
                 if max_articles is not None and total_saved >= max_articles:
                     break
-                links = get_article_links(site_name, config_page, max_links=max_links_per_page)
+                links = get_article_links(
+                    site_name,
+                    config_page,
+                    max_links=max_links_per_page,
+                    telemetry=telemetry,
+                )
                 if not links:
+                    if telemetry is not None:
+                        telemetry.record_count(
+                            site_name,
+                            "list",
+                            "empty_results",
+                        )
                     consecutive_no_new_list_pages = 0
                     consecutive_empty_pages += 1
                     print(
@@ -2302,6 +2602,13 @@ def crawl_once(
 
                 page_urls = frozenset(row[0] for row in links)
                 fresh_links = [row for row in links if row[0] not in saved_urls and row[0] not in seen_on_site]
+                if telemetry is not None:
+                    telemetry.record_count(
+                        site_name,
+                        "detail",
+                        "dedupe_skipped",
+                        len(links) - len(fresh_links),
+                    )
                 if not fresh_links:
                     same_list_as_prev = prev_page_urls is not None and page_urls == prev_page_urls
                     if same_list_as_prev:
@@ -2343,21 +2650,61 @@ def crawl_once(
                     ):
                         row_list_date = (link_row[2] or "").strip()
                     if url in saved_urls or url in seen_on_site:
-                        merge_keyword_context_for_existing_url(
-                            output_dir,
-                            _normalized_source_name(site_name),
-                            url,
-                            kw,
-                            keyword_contexts=keyword_contexts,
-                        )
+                        with _CRAWL_OUTPUT_LOCK:
+                            merge_keyword_context_for_existing_url(
+                                output_dir,
+                                _normalized_source_name(site_name),
+                                url,
+                                kw,
+                                keyword_contexts=keyword_contexts,
+                            )
+                        continue
+                    if history_ledger is not None and not history_ledger.claim(url):
+                        if telemetry is not None:
+                            telemetry.record_count(
+                                site_name,
+                                "detail",
+                                "dedupe_skipped",
+                            )
+                        with _CRAWL_OUTPUT_LOCK:
+                            merge_keyword_context_for_existing_url(
+                                output_dir,
+                                _normalized_source_name(site_name),
+                                url,
+                                kw,
+                                keyword_contexts=keyword_contexts,
+                            )
                         continue
                     seen_on_site.add(url)
 
+                    detail_started = time.perf_counter()
                     html = fetch_html_requests(url)
+                    if telemetry is not None:
+                        telemetry.record_request(
+                            site_name,
+                            "detail",
+                            time.perf_counter() - detail_started,
+                        )
                     if not html:
+                        if history_ledger is not None:
+                            history_ledger.release(url)
+                        if telemetry is not None:
+                            telemetry.record_count(
+                                site_name,
+                                "detail",
+                                "fetch_failed",
+                            )
                         continue
                     extracted = extract_news_content(url, html, site_name=site_name)
                     if not extracted:
+                        if history_ledger is not None:
+                            history_ledger.release(url)
+                        if telemetry is not None:
+                            telemetry.record_count(
+                                site_name,
+                                "detail",
+                                "extract_failed",
+                            )
                         continue
 
                     saved_urls.add(url)
@@ -2369,21 +2716,42 @@ def crawl_once(
                     if dt is not None:
                         parsed_dates.append(dt)
 
+                    if (
+                        cutoff is not None
+                        and dt is not None
+                        and dt.date() < cutoff.date()
+                    ):
+                        # A valid old article is fully processed for future dedupe even
+                        # though its body is outside the collection window.
+                        append_scraped_url(
+                            url,
+                            history_file=hf,
+                            history_ledger=history_ledger,
+                        )
+                        _paced_sleep(site_name, delay_sec, telemetry)
+                        continue
+
                     if cutoff is None or _is_within_cutoff(effective_date, cutoff):
                         source_name = _normalized_source_name(site_name)
-                        if try_merge_article_without_llm(
-                            output_dir,
-                            source_name,
-                            url,
-                            extracted,
-                            expanded_kw_list,
-                            kw,
-                            skip_similar_merge=skip_similar_merge,
-                            unique_json_per_url=unique_json_per_url,
-                            keyword_contexts=keyword_contexts,
-                        ):
-                            append_scraped_url(url, history_file=hf)
-                            time.sleep(delay_sec)
+                        with _CRAWL_OUTPUT_LOCK:
+                            merged = try_merge_article_without_llm(
+                                output_dir,
+                                source_name,
+                                url,
+                                extracted,
+                                expanded_kw_list,
+                                kw,
+                                skip_similar_merge=skip_similar_merge,
+                                unique_json_per_url=unique_json_per_url,
+                                keyword_contexts=keyword_contexts,
+                            )
+                        if merged:
+                            append_scraped_url(
+                                url,
+                                history_file=hf,
+                                history_ledger=history_ledger,
+                            )
+                            _paced_sleep(site_name, delay_sec, telemetry)
                             continue
                         payload = _apply_keyword_context(
                             _payload_for_keyword(
@@ -2395,19 +2763,32 @@ def crawl_once(
                             kw,
                             keyword_contexts,
                         )
-                        save_article_json(
-                            source_name,
+                        with _CRAWL_OUTPUT_LOCK:
+                            save_article_json(
+                                source_name,
+                                url,
+                                payload,
+                                output_dir=output_dir,
+                                skip_similar_merge=skip_similar_merge,
+                                unique_json_per_url=unique_json_per_url,
+                            )
+                        append_scraped_url(
                             url,
-                            payload,
-                            output_dir=output_dir,
-                            skip_similar_merge=skip_similar_merge,
-                            unique_json_per_url=unique_json_per_url,
+                            history_file=hf,
+                            history_ledger=history_ledger,
                         )
-                        append_scraped_url(url, history_file=hf)
                         per_site_saved += 1
                         total_saved += 1
+                        if telemetry is not None:
+                            telemetry.record_count(
+                                site_name,
+                                "detail",
+                                "saved",
+                            )
+                    elif history_ledger is not None:
+                        history_ledger.release(url)
 
-                    time.sleep(delay_sec)
+                    _paced_sleep(site_name, delay_sec, telemetry)
 
                 prev_page_urls = frozenset(row[0] for row in links)
 
