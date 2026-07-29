@@ -25,6 +25,9 @@ from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 
+AMBIGUOUS_BRAND_DISPLAY_LIMIT = 10
+
+
 @dataclass(frozen=True, slots=True)
 class AgentLoopDependencies:
     metrics: MetricsTool
@@ -213,9 +216,22 @@ def ambiguous_brand_result(
     diagnostics: dict[str, Any],
     candidates: tuple[str, ...],
 ) -> dict[str, Any]:
-    candidate_text = ", ".join(candidates)
+    displayed_candidates = candidates[:AMBIGUOUS_BRAND_DISPLAY_LIMIT]
+    candidate_text = ", ".join(displayed_candidates)
+    if len(candidates) > AMBIGUOUS_BRAND_DISPLAY_LIMIT:
+        message = (
+            f"요청한 이름만으로 하나의 브랜드를 정할 수 없습니다. "
+            f"후보 {len(candidates)}개 중 {len(displayed_candidates)}개: {candidate_text}. "
+            f"외 {len(candidates) - len(displayed_candidates)}개가 더 있습니다. "
+            "브랜드명을 지정해 주세요."
+        )
+    else:
+        message = (
+            f"요청한 이름만으로 하나의 브랜드를 정할 수 없습니다. "
+            f"후보: {candidate_text}. 하나를 지정해 주세요."
+        )
     markdown = MarkdownResponseBuilder().ambiguous_brand(
-        f"요청한 이름만으로 하나의 브랜드를 정할 수 없습니다. 후보: {candidate_text}. 하나를 지정해 주세요."
+        message
     )
     return {
         "question": question,
