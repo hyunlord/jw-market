@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pipeline.scripts.ingest_hook import config, stage_logs
+from pipeline.scripts.ingest_hook import config, db_credential_preflight, stage_logs
 
 _STAGE_MARKER = re.compile(
     r"^\[stage\]\s+([a-z0-9_]+)\s+(?:start|end|skipped)\b"
@@ -19,6 +19,26 @@ def run(*, manifest: Path, run_id: str, job_name: str) -> int:
     root = config.log_root()
     full_path = stage_logs.full_log_path(root, job_name=job_name)
     stage_logs.ensure_log_file(full_path)
+    try:
+        db_credential_preflight.run_preflight()
+    except db_credential_preflight.DBCredentialPreflightError as exc:
+        line = stage_logs.redact(
+            f"preflight=db_credentials status=fail reason={exc}\n"
+        )
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        with full_path.open("a", encoding="utf-8") as full:
+            full.write(line)
+            full.flush()
+        return 2
+    else:
+        line = "preflight=db_credentials status=pass query=SELECT_1\n"
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        with full_path.open("a", encoding="utf-8") as full:
+            full.write(line)
+            full.flush()
+
     command = [
         sys.executable,
         "-m",

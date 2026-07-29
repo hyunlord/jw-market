@@ -247,6 +247,11 @@ def test_stage_runner_tees_masked_full_and_stage_logs(
     tmp_path: Path, monkeypatch, capsys
 ):
     monkeypatch.setenv("MARIADB_PASSWORD", "db-password-value")
+    monkeypatch.setattr(
+        stage_log_runner.db_credential_preflight,
+        "run_preflight",
+        lambda: None,
+    )
     root = tmp_path / "logs"
     monkeypatch.setattr(stage_log_runner.config, "log_root", lambda: root)
 
