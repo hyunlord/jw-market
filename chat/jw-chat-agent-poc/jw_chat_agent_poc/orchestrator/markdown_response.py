@@ -100,6 +100,13 @@ class MarkdownResponseBuilder:
         markdown = self._join(summary_md, interpretation_md, sources_md)
         return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
 
+    def unsupported_hira_interface(self, message: str) -> MarkdownResponse:
+        summary_md = ""
+        interpretation_md = f"## 해석\n\n- {cell(message)}"
+        sources_md = provenance_source_block([], ["unsupported_hira_interface"])
+        markdown = self._join(summary_md, interpretation_md, sources_md)
+        return self._static_response(markdown, summary_md, interpretation_md, "", "", "", sources_md, "")
+
     def ambiguous_brand(self, message: str) -> MarkdownResponse:
         summary_md = ""
         interpretation_md = f"## 해석\n\n- {cell(message)}"

@@ -102,6 +102,7 @@ SOURCE_LABELS: Final[dict[str, str]] = {
     "strategic_market_not_member": "전략시장 정의 미포함",
     "brand_unresolved": "브랜드 식별 미지정",
     "field_not_exposed": "요청 상세 항목 미제공",
+    "unsupported_hira_interface": "HIRA 상병코드·질환명 직접 조회 미지원",
 }
 
 LEGACY_SOURCE_LABELS: Final[dict[str, str]] = {

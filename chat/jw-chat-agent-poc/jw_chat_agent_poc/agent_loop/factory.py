@@ -234,7 +234,7 @@ def unsupported_hira_interface_result(
     routes: list[BQSubQuestion],
     diagnostics: dict[str, Any],
 ) -> dict[str, Any]:
-    markdown = MarkdownResponseBuilder().unsupported_brand(
+    markdown = MarkdownResponseBuilder().unsupported_hira_interface(
         "현재 HIRA 조회는 브랜드 기준으로만 지원됩니다. "
         "상병코드 또는 질환명 직접 조회는 현재 인터페이스에서 처리할 수 없습니다. "
         "다른 대상의 통계를 대신 반환하지 않으며, 상병코드 기준 통계는 "
