@@ -8,6 +8,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import (
     enforce_answer_contract,
     evaluate_answer_contract,
 )
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 
 
@@ -22,6 +23,25 @@ PAIR_FACT = """### 리바로 매출 시계열 fact
 | --- | --- | --- |
 | 2025-11 | 108.09억원 | 4.79% |
 | 2026-04 | 120.09억원 | 5.32% |
+"""
+
+OPPOSING_DIRECTION_FACT = """### 리바로 매출 시계열 fact
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-08 | 79.63억원 | 3.93% |
+| 2026-05 | 80.39억원 | 3.76% |
+
+### 리피토 매출 시계열 fact
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-08 | 150.00억원 | 6.13% |
+| 2026-05 | 140.00억원 | 6.40% |
+
+### 보합브랜드 매출 시계열 fact
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2025-08 | 100.00억원 | 5.00% |
+| 2026-05 | 100.00억원 | 5.00% |
 """
 
 TOP_FACT = """### 상위 브랜드 점유율 추이 fact
@@ -93,6 +113,72 @@ def test_brand_compare_repairs_both_brand_series() -> None:
     revised = enforce_answer_contract("리바로와 리바로젯 6개월 매출 비교", "리바로젯은 증가했습니다.", {"fact_md": PAIR_FACT})
     assert "리바로 | 2025-11 | 80.00억원 | 2026-04 | 84.93억원 | +4.93억원 | +6.16%" in revised
     assert "리바로젯 | 2025-11 | 108.09억원 | 2026-04 | 120.09억원 | +12.00억원 | +11.10%" in revised
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_directions"),
+    (
+        ("리바로, 리피토 시장점유율을 각각 알려줘", ("리바로는 하락", "리피토는 상승")),
+        ("리바로랑 리피토랑 보합브랜드 점유율 각각 얼마야?", ("리바로는 하락", "리피토는 상승", "보합브랜드는 보합")),
+    ),
+)
+def test_brand_compare_without_compare_literal_uses_share_direction(
+    question: str,
+    expected_directions: tuple[str, ...],
+) -> None:
+    revised = enforce_answer_contract(question, "요약 답변", {"fact_md": OPPOSING_DIRECTION_FACT})
+
+    for expected in expected_directions:
+        assert expected in revised
+    assert "리바로는 상승" not in revised
+    assert "리피토는 하락" not in revised
+
+
+def test_brand_compare_reports_flat_share_as_flat() -> None:
+    revised = enforce_answer_contract(
+        "리바로, 리피토, 보합브랜드 점유율을 각각 알려줘",
+        "요약 답변",
+        {"fact_md": OPPOSING_DIRECTION_FACT},
+    )
+
+    assert "보합브랜드는 보합" in revised
+    assert "보합브랜드는 상승" not in revised
+
+
+def test_brand_compare_direction_matches_the_compare_literal_contract() -> None:
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "brand": brand,
+                "brand_value_series_10pt": [
+                    {"period": "2025-08", "value_krw": start_sales, "ms_pct": start_share},
+                    {"period": "2026-05", "value_krw": latest_sales, "ms_pct": latest_share},
+                ],
+            },
+        }
+        for brand, start_share, latest_share, start_sales, latest_sales in (
+            ("리바로", 3.93, 3.76, 7_963_000_000, 8_039_000_000),
+            ("리피토", 6.13, 6.40, 15_000_000_000, 14_000_000_000),
+        )
+    ]
+    without_literal = enforce_answer_contract(
+        "리바로, 리피토 시장점유율을 각각 알려줘",
+        "요약 답변",
+        {"fact_md": OPPOSING_DIRECTION_FACT},
+    )
+    with_literal = enforce_market_answer_contract(
+        question="리바로와 리피토 시장점유율을 비교해줘",
+        answer="요약 답변",
+        tool_calls=calls,
+    )
+
+    assert "리바로는 하락" in without_literal
+    assert "리피토는 상승" in without_literal
+    assert "| 리바로 | 2025-08 3.93% | 2026-05 3.76% | 하락 |" in with_literal
+    assert "| 리피토 | 2025-08 6.13% | 2026-05 6.40% | 상승 |" in with_literal
 
 
 def test_brand_compare_without_metric_requires_each_named_brand() -> None:

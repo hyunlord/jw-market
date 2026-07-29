@@ -447,9 +447,11 @@ def _brand_compare_block(series: tuple[BrandSeries, ...]) -> str:
     for item in series:
         first, last = item.points[0], item.points[-1]
         delta = last.sales - first.sales
+        share_delta = _number(last.share_text) - _number(first.share_text)
         rate = delta / first.sales * 100 if first.sales else 0.0
         lines.append(f"| {item.brand} | {first.period} | {first.sales_text} | {last.period} | {last.sales_text} | {_signed(delta)}억원 | {_signed(rate)}% |")
-        directions.append(f"{item.brand}는 {'상승' if delta >= 0 else '하락'}")
+        direction = "상승" if share_delta > 0 else "하락" if share_delta < 0 else "보합"
+        directions.append(f"{item.brand}는 {direction}")
     lines.extend(("", "## 브랜드 점유율 비교", "| 브랜드 | 시작 점유율 | 최신 점유율 |", "| --- | --- | --- |"))
     for item in series:
         first, last = item.points[0], item.points[-1]
