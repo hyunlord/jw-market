@@ -10,6 +10,7 @@ from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     MISSING_LABEL,
     ProvenanceRow,
+    public_value,
     render_provenance_table,
 )
 
@@ -20,6 +21,10 @@ _INTERNAL_LABEL_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 _SOURCE_HEADING_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^##\s+출처\s*$")
+_ANSWER_MARKET_RE: Final[re.Pattern[str]] = re.compile(r"(?m)^- 시장:\s*(?P<market>.+?)\s*$")
+_STRATEGIC_VIEW_MARKET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^전략뷰\s*\([^)]+\)\s*·\s*(?P<market>.+?)\s*$"
+)
 _YEAR_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 _CAUSAL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?P<claim>[^\n.!?]*(?:때문|이므로|따라서)[^\n.!?]*[.!?]?)"
@@ -768,14 +773,42 @@ def _replace_provenance(
         if status_only
         else _provenance_rows(calls)
     )
+    completion_answer = (
+        answer
+        if _answer_market_applies_to_rows(raw_rows)
+        else _ANSWER_MARKET_RE.sub("", answer)
+    )
     rows = tuple(
-        _complete_row(row, question=question, answer=answer, unit=_requested_unit(question, answer))
+        _complete_row(
+            row,
+            question=question,
+            answer=completion_answer,
+            unit=_requested_unit(question, answer),
+        )
         for row in raw_rows
     )
     block = render_provenance_table("## 출처", rows).replace("## 출처\n|", "## 출처\n\n|")
     match = _SOURCE_HEADING_RE.search(answer)
     head = answer[: match.start()].rstrip() if match else answer.rstrip()
     return f"{head}\n\n{block}" if head else block
+
+
+def _answer_market_applies_to_rows(rows: Sequence[ProvenanceRow]) -> bool:
+    if len(rows) == 1:
+        return True
+    markets = tuple(_verified_row_market(row) for row in rows)
+    return all(market is not None for market in markets) and len(set(markets)) == 1
+
+
+def _verified_row_market(row: ProvenanceRow) -> str | None:
+    if row.market not in (MISSING_LABEL, "해당 없음"):
+        market = public_value(row.market)
+        return market if market != MISSING_LABEL else None
+    match = _STRATEGIC_VIEW_MARKET_RE.fullmatch(row.view)
+    if match is None:
+        return None
+    market = public_value(match.group("market"))
+    return market if market != MISSING_LABEL else None
 
 
 def _status_provenance_row(
@@ -850,14 +883,19 @@ def _complete_row(
     channel = fields["channel"]
     row_unit = fields["unit"]
     brand = fields["brand"]
+    verified_market = _verified_row_market(row)
+    if market == "해당 없음" and verified_market is not None:
+        market = verified_market
     if view.startswith("전략뷰"):
         view = "전략뷰"
     elif view.startswith("일반뷰"):
         view = "일반뷰"
-    market_match = re.search(r"(?m)^- 시장:\s*(.+?)\s*$", answer)
+    market_match = _ANSWER_MARKET_RE.search(answer)
     denominator_match = re.search(r"(?m)^점유율 분모:\s*(.+?)\s*$", answer)
     if market == "해당 없음" and market_match is not None:
-        market = market_match.group(1).strip()
+        answer_market = public_value(market_match.group("market"))
+        if answer_market != MISSING_LABEL:
+            market = answer_market
     if denominator == "해당 없음" and denominator_match is not None:
         denominator = denominator_match.group(1).strip()
     if market == "해당 없음" and view == "전략뷰":
