@@ -278,11 +278,13 @@ class ReimbursementLookupService:
         store: ReimbursementCriteriaStore,
         realtime: ReimbursementRealtimeClient,
         refresh_trigger: ReimbursementRefreshTrigger | None = None,
+        realtime_allowed: Callable[[], bool] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
         self._realtime = realtime
         self._refresh_trigger = refresh_trigger or (lambda _brand: None)
+        self._realtime_allowed = realtime_allowed or (lambda: True)
         self._now = now or (lambda: datetime.now(UTC))
 
     def lookup(self, brand_name: str) -> ReimbursementLookupResult:
@@ -330,16 +332,26 @@ class ReimbursementLookupService:
                 cache_lookup_status=lookup_status,
                 cache_schema=cache_schema,
             )
-        if lookup_status in {
-            CacheLookupStatus.STORE_ABSENT,
-            CacheLookupStatus.BRAND_UNMATCHED,
-        }:
+        if lookup_status is CacheLookupStatus.STORE_ABSENT:
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,
                 "typed_unavailable",
                 None,
                 error_code="NO_EVIDENCE",
+                cache_lookup_status=lookup_status,
+                cache_schema=cache_schema,
+            )
+        if (
+            lookup_status is CacheLookupStatus.BRAND_UNMATCHED
+            and not self._realtime_allowed()
+        ):
+            return ReimbursementLookupResult(
+                False,
+                CacheStatus.NOT_FOUND,
+                "typed_unavailable",
+                None,
+                error_code="INDEX_MISS",
                 cache_lookup_status=lookup_status,
                 cache_schema=cache_schema,
             )
@@ -373,7 +385,11 @@ class ReimbursementLookupService:
                 CacheStatus.NOT_FOUND,
                 "typed_unavailable",
                 None,
-                error_code="NO_EVIDENCE",
+                error_code=(
+                    "REALTIME_NO_EVIDENCE"
+                    if lookup_status is CacheLookupStatus.BRAND_UNMATCHED
+                    else "NO_EVIDENCE"
+                ),
                 cache_lookup_status=lookup_status,
                 cache_schema=cache_schema,
             )
