@@ -9,6 +9,7 @@ from pipeline.scripts.ingest_hook import db_credential_preflight, stage_log_runn
 
 PASSWORD_ENV = {
     "DB_ROOT_PASSWORD": "same-secret",
+    "DB_PASSWORD": "same-secret",
     "MARIADB_PASSWORD": "same-secret",
     "AGENT3_DB_PASSWORD": "same-secret",
 }
@@ -42,7 +43,7 @@ class _Connection:
 
 
 def test_empty_password_blocks_before_database_probe():
-    env = {**PASSWORD_ENV, "AGENT3_DB_PASSWORD": ""}
+    env = {**PASSWORD_ENV, "DB_PASSWORD": ""}
     connected = False
 
     def connect():
@@ -51,16 +52,17 @@ def test_empty_password_blocks_before_database_probe():
         return _Connection()
 
     with pytest.raises(
-        db_credential_preflight.DBCredentialPreflightError,
-        match="missing_or_empty=AGENT3_DB_PASSWORD",
-    ):
+        db_credential_preflight.DBCredentialPreflightError
+    ) as caught:
         db_credential_preflight.run_preflight(environ=env, connect=connect)
 
+    assert "connector=shortlong_dynamic_market_api" in str(caught.value)
+    assert "missing_or_empty=DB_PASSWORD" in str(caught.value)
     assert connected is False
 
 
 def test_mismatched_passwords_are_rejected_without_exposing_values():
-    env = {**PASSWORD_ENV, "AGENT3_DB_PASSWORD": "different-secret"}
+    env = {**PASSWORD_ENV, "DB_PASSWORD": "different-secret"}
 
     with pytest.raises(
         db_credential_preflight.DBCredentialPreflightError
@@ -137,6 +139,7 @@ def test_all_database_connectors_are_probed_once():
         "mart": _Connection(),
         "shortlong_bundle": _Connection(),
         "shortlong_runner": _Connection(),
+        "shortlong_dynamic_market_api": _Connection(),
     }
 
     db_credential_preflight.run_preflight(
@@ -157,7 +160,11 @@ def test_all_database_connectors_are_probed_once():
 def test_default_shortlong_connector_inventory_matches_runtime_ports():
     connectors = db_credential_preflight._default_shortlong_connectors()
 
-    assert tuple(connectors) == ("shortlong_bundle", "shortlong_runner")
+    assert tuple(connectors) == (
+        "shortlong_bundle",
+        "shortlong_runner",
+        "shortlong_dynamic_market_api",
+    )
 
 
 def test_stage_runner_does_not_spawn_job_when_preflight_fails(
@@ -166,6 +173,7 @@ def test_stage_runner_does_not_spawn_job_when_preflight_fails(
     root = tmp_path / "logs"
     monkeypatch.setattr(stage_log_runner.config, "log_root", lambda: root)
     monkeypatch.setenv("DB_ROOT_PASSWORD", "same-secret")
+    monkeypatch.setenv("DB_PASSWORD", "same-secret")
     monkeypatch.setenv("MARIADB_PASSWORD", "same-secret")
     monkeypatch.delenv("AGENT3_DB_PASSWORD", raising=False)
 

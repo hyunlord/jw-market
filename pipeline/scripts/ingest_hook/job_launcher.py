@@ -103,6 +103,7 @@ def _job_env() -> list[dict]:
     )
     secret_ref("DB_USER", _MART_SECRET, "username")
     secret_ref("DB_ROOT_PASSWORD", _MART_SECRET, "password")
+    secret_ref("DB_PASSWORD", _MART_SECRET, "password")
     # Agent3 intentionally has its own DB namespace. In ingest Jobs it uses the
     # same writer endpoint as the mart stages, so render the aliases explicitly
     # instead of allowing its localhost defaults.

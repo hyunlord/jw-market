@@ -7,6 +7,7 @@ from typing import Any
 
 PASSWORD_ENV_NAMES = (
     "DB_ROOT_PASSWORD",
+    "DB_PASSWORD",
     "MARIADB_PASSWORD",
     "AGENT3_DB_PASSWORD",
 )
@@ -19,8 +20,14 @@ class DBCredentialPreflightError(RuntimeError):
 def _validate_password_environment(environ: Mapping[str, str]) -> None:
     missing = [name for name in PASSWORD_ENV_NAMES if not environ.get(name)]
     if missing:
+        connector = (
+            "shortlong_dynamic_market_api"
+            if "DB_PASSWORD" in missing
+            else "password_alias_contract"
+        )
         raise DBCredentialPreflightError(
             "DB credential preflight blocked before g3: "
+            f"connector={connector} "
             f"missing_or_empty={','.join(missing)}"
         )
 
@@ -28,7 +35,7 @@ def _validate_password_environment(environ: Mapping[str, str]) -> None:
     if len(values) != 1:
         raise DBCredentialPreflightError(
             "DB credential preflight blocked before g3: "
-            "password_values=mismatch"
+            "connector=password_alias_contract password_values=mismatch"
         )
 
 
@@ -39,6 +46,7 @@ def _default_connect() -> Any:
 
 
 def _default_shortlong_connectors() -> Mapping[str, Callable[[], Any]]:
+    from pipeline.scripts.api import db as api_db
     from pipeline.scripts.ai_analysis.agent2_regen_orchestrator import (
         PHASE_ZETA_ROOT,
         BundleConfig,
@@ -56,6 +64,7 @@ def _default_shortlong_connectors() -> Mapping[str, Callable[[], Any]]:
     return {
         "shortlong_bundle": lambda: _connect_bundle_db(bundle_config),
         "shortlong_runner": lambda: _connect_runner_db(runner_config),
+        "shortlong_dynamic_market_api": api_db.connect,
     }
 
 

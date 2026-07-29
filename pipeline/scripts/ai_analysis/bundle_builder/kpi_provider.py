@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
@@ -60,6 +60,7 @@ def connection_bound_dynamic_market_db(db_conn: Any):
 
     original_fetch_all = api_db.fetch_all
     original_fetch_one = api_db.fetch_one
+    original_iter_rows = api_db.iter_rows
 
     def fetch_all(sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         with db_conn.cursor() as cur:
@@ -70,14 +71,27 @@ def connection_bound_dynamic_market_db(db_conn: Any):
         rows = fetch_all(sql, params)
         return rows[0] if rows else None
 
+    def iter_rows(
+        sql: str,
+        params: Sequence[Any] | None = None,
+        *,
+        batch_size: int = 500,
+    ) -> Iterator[dict[str, Any]]:
+        with db_conn.cursor(api_db.pymysql.cursors.SSDictCursor) as cur:
+            cur.execute(sql, params or ())
+            while rows := cur.fetchmany(batch_size):
+                yield from rows
+
     with _DB_PATCH_LOCK:
         api_db.fetch_all = fetch_all
         api_db.fetch_one = fetch_one
+        api_db.iter_rows = iter_rows
         try:
             yield
         finally:
             api_db.fetch_all = original_fetch_all
             api_db.fetch_one = original_fetch_one
+            api_db.iter_rows = original_iter_rows
 
 
 @dataclass(frozen=True, slots=True)

@@ -311,6 +311,10 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
         by_name["DB_ROOT_PASSWORD"]["valueFrom"]["secretKeyRef"]
         == {"name": "jw-mart-d2-writer", "key": "password"}
     )
+    assert (
+        by_name["DB_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "password"}
+    )
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
     assert by_name["AGENT3_DB_NAME"]["value"] == "agent3-live"
     assert by_name["AGENT3_DB_HOST"]["value"] == "db.example"

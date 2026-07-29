@@ -9,11 +9,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from bundle_builder import kpi_provider
+from pipeline.scripts.api.dynamic_market.types import BrandRef
 
 
 class _Cursor:
     def __init__(self, rows):
         self._rows = rows
+        self._offset = 0
         self.executed = []
 
     def __enter__(self):
@@ -32,24 +34,77 @@ class _Cursor:
     def fetchone(self):
         return self._rows[0] if self._rows else None
 
+    def fetchmany(self, batch_size):
+        rows = self._rows[self._offset : self._offset + batch_size]
+        self._offset += len(rows)
+        return rows
+
 
 class _Conn:
     def __init__(self, rows):
         self.cursor_obj = _Cursor(rows)
+        self.cursor_args = []
 
-    def cursor(self):
+    def cursor(self, *args):
+        self.cursor_args.append(args)
         return self.cursor_obj
 
 
 def test_connection_bound_dynamic_market_db_restores_api_fetchers():
     original_fetch_all = kpi_provider.api_db.fetch_all
+    original_fetch_one = kpi_provider.api_db.fetch_one
     conn = _Conn([{"value": 1}])
 
     with kpi_provider.connection_bound_dynamic_market_db(conn):
         assert kpi_provider.api_db.fetch_all("SELECT 1", ["x"]) == [{"value": 1}]
+        assert kpi_provider.api_db.fetch_one("SELECT 2", ["y"]) == {"value": 1}
 
     assert kpi_provider.api_db.fetch_all is original_fetch_all
-    assert conn.cursor_obj.executed == [("SELECT 1", ("x",))]
+    assert kpi_provider.api_db.fetch_one is original_fetch_one
+    assert conn.cursor_obj.executed == [
+        ("SELECT 1", ("x",)),
+        ("SELECT 2", ("y",)),
+    ]
+
+
+def test_connection_bound_dynamic_market_db_binds_and_restores_iter_rows():
+    original_iter_rows = kpi_provider.api_db.iter_rows
+    conn = _Conn([{"value": 1}])
+
+    with kpi_provider.connection_bound_dynamic_market_db(conn):
+        assert list(
+            kpi_provider.api_db.iter_rows("SELECT 3", ["z"], batch_size=1)
+        ) == [{"value": 1}]
+
+    assert kpi_provider.api_db.iter_rows is original_iter_rows
+    assert conn.cursor_obj.executed == [("SELECT 3", ("z",))]
+    assert conn.cursor_args == [(kpi_provider.api_db.pymysql.cursors.SSDictCursor,)]
+
+
+def test_metric_aggregator_iter_rows_reuses_bound_connection_without_db_password(
+    monkeypatch,
+):
+    conn = _Conn([])
+    monkeypatch.delenv("DB_PASSWORD", raising=False)
+
+    def forbidden_connect():
+        raise AssertionError("dynamic-market must not open a hidden connection")
+
+    monkeypatch.setattr(kpi_provider.api_db, "connect", forbidden_connect)
+    aggregator = kpi_provider.MetricAggregator(mart_db="jw_mart")
+
+    with kpi_provider.connection_bound_dynamic_market_db(conn):
+        rows = tuple(
+            aggregator._iter_metric_rows(
+                brands=(BrandRef("target", "타겟", "C10A1"),),
+                source="ubist",
+                measure="sales",
+                channel_axis=None,
+            )
+        )
+
+    assert rows == ()
+    assert len(conn.cursor_obj.executed) == 1
 
 
 def test_strategic_ml_provider_wraps_existing_cache_free_calculator(monkeypatch):
