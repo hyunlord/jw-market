@@ -388,13 +388,17 @@ class GeneralViewService:
         resolved_brand = brand
         explicit_atc4 = _atc4_code(question)
         exact_catalog_market = False
+        exact_catalog_lookup_attempted = False
         if (
             not resolved_membership
             and strategic_market is None
             and explicit_atc4 is None
             and _has_explicit_general_signal(_normalize(question))
             and (_asks_hhi(question) or _asks_market_metric(_normalize(question)))
+            and not self._has_general_membership(question)
+            and callable(getattr(self._market_definition_reader, "resolve_exact_base", None))
         ):
+            exact_catalog_lookup_attempted = True
             strategic_market = self._exact_catalog_market(brand)
             explicit_strategic_market = strategic_market is not None
             if explicit_strategic_market:
@@ -404,6 +408,8 @@ class GeneralViewService:
         membership_source = "not_applicable"
         selection_trace = self._selection_trace(question, strategic_market)
         try:
+            if exact_catalog_lookup_attempted and strategic_market is None:
+                raise GeneralViewBackendError("일반뷰 시장명을 고유하게 확인하지 못했습니다")
             if explicit_atc4:
                 candidates = (AtcCandidate(explicit_atc4, f"ATC4 {explicit_atc4}"),)
                 membership_source = "explicit_atc4"
@@ -815,6 +821,7 @@ def _multi_contract(
             section["market"] = strategic_market[0]
             section["market_id"] = strategic_market[0]
             section["market_name"] = strategic_market[1]
+            section["view"] = "general_view"
         public_label = _public_atc4_market_label(market)
         section_heading = (
             f"### ATC4 {market.atc4_code}"

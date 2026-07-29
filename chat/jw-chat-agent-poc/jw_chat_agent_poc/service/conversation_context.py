@@ -654,6 +654,8 @@ def resolve_anaphora(
         if not slots.market:
             return _unresolved(question, ReferenceRecogniser.IN_SENTENCE_MARKET)
         market_hint = f"{slots.anchor_brand} 시장" if slots.anchor_brand else slots.market
+        if slots.view == "general_view" and slots.market_definition:
+            market_hint = f"{slots.market_definition} 일반뷰"
         resolved = _MARKET_RE.sub(market_hint, resolved)
     return _resolved(resolved, in_sentence, question, brand=brand, reusable_ranked=reusable)
 

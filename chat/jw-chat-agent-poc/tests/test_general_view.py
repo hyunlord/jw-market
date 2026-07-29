@@ -1763,7 +1763,10 @@ def _canonical_hyperlipidemia_service(
     definition = StrategicMarketDefinition("ml_006", "ubist", ("C10A1", "C10C"))
     reader = StaticStrategicMarketDefinitionReader(
         {"ml_006": definition},
-        {"고지혈증": exact_market},
+        {
+            "고지혈증": exact_market,
+            "고지혈증 치료제": exact_market,
+        },
     )
     return GeneralViewService(
         backend,
@@ -1799,21 +1802,56 @@ def test_bare_general_view_hhi_slot_resolves_followup_but_not_standalone_questio
 
     chained = resolve_anaphora("이 시장 HHI", previous)
     standalone = resolve_anaphora("이 시장 HHI", None)
+    chained_result = service.answer(chained.resolved_question, compact=False, dual=False)
 
-    assert chained.resolved_question == "ml_006 HHI"
+    assert chained.resolved_question == "고지혈증 치료제 시장 일반뷰 HHI"
     assert chained.unresolved_reference is False
     assert chained.reference_status.value == "resolved"
+    assert service.route(chained.resolved_question) is GeneralRoute.GENERAL_ONLY
+    assert chained_result["general_view_contract"]["atc4_codes"] == ["C10A1", "C10C"]
+    assert [
+        section["hhi_recent"] for section in chained_result["general_view_contract"]["atc4_sections"]
+    ] == [250.0, 300.0]
     assert standalone.unresolved_reference is True
 
 
 def test_bare_general_view_hhi_fails_closed_when_canonical_market_is_ambiguous() -> None:
     service = _canonical_hyperlipidemia_service(exact_market=None)
+    backend = service._backend
+    assert isinstance(backend, FakeBackend)
+    backend.candidate_map[("고지혈증", "ubist")] = (AtcCandidate("C10A1", "스타틴류"),)
 
     result = service.answer("고지혈증 일반뷰 HHI", compact=False, dual=False)
 
     assert result["general_view_contract"]["unavailable"] is True
     assert result["router_diagnostics"]["candidate_atc4_codes"] == []
+    assert backend.market_calls == []
     assert extract_conversation_slots(result).market is None
+
+
+def test_exact_market_lookup_does_not_capture_known_general_view_brand() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(StaticGeneralMembershipReader(memberships), ttl_seconds=300)
+    backend = FakeBackend()
+    backend.market_map["S01P0"] = replace(
+        _market("S01P0", 8_000_000_000.0),
+        brand="아일리아",
+        hhi_recent=1234.5678,
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+        market_definition_reader=StaticStrategicMarketDefinitionReader({}, {}),
+    )
+
+    result = service.answer("아일리아 일반뷰 HHI", compact=False, dual=False)
+
+    assert result["general_view_contract"]["hhi_recent"] == pytest.approx(1234.5678)
+    assert backend.market_calls == [("S01P0", "아일리아", "ubist", "sales")]
 
 
 def test_general_view_exact_market_lookup_does_not_capture_hira_patient_question() -> None:
