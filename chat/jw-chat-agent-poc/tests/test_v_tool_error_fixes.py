@@ -147,3 +147,43 @@ def test_query_failed_logs_masked_message_without_public_leak(
     assert "password=[REDACTED]" in caplog.text
     assert "[REDACTED_CONNECTION_STRING]" in caplog.text
     assert "mart brand not found" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 최근 3개년 실적",
+        "리바로 얼마나 팔렸어",
+        "리바로 최근 실적 알려줘",
+        "카나브패밀리 실적",
+    ),
+)
+def test_sales_wording_variants_route_to_internal_metrics(question: str) -> None:
+    # The BQ map recognised 매출/판매 but not 실적/팔렸, so these utterances fell to the
+    # UNKNOWN/none fallback and were picked up as external-tool candidates, which answered
+    # a false no-data from an ingredient lookup. They belong on the internal metric route.
+    routes = BQRouter().route(question)
+
+    assert [(route.bq, route.sources) for route in routes] == [
+        ("Q1", ("metrics",)),
+    ]
+    assert not _is_external_tool_agent_candidate(routes, [], question=question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 성분 알려줘",
+        "리바로 급여기준 알려줘",
+        "리바로 허가정보 알려줘",
+    ),
+)
+def test_external_wording_still_reaches_the_tool_pack(question: str) -> None:
+    # Guards the other direction: widening the sales vocabulary must not pull
+    # external-evidence questions onto the metric route.
+    routes = BQRouter().route(question)
+
+    assert [(route.bq, route.sources) for route in routes] == [
+        ("UNKNOWN", ("none",)),
+    ]
+    assert _is_external_tool_agent_candidate(routes, [], question=question)

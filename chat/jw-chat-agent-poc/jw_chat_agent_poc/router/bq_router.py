@@ -143,7 +143,7 @@ class BQRouter:
             )
 
         if (
-            any(k in question for k in ("시장 규모", "시장규모", "성장", "성장 추이", "전망", "매출", "판매", "시계열", "월별", "모멘텀"))
+            any(k in question for k in ("시장 규모", "시장규모", "성장", "성장 추이", "전망", "매출", "판매", "실적", "팔렸", "시계열", "월별", "모멘텀"))
             or any(k in lower for k in ("hhi", "momentum", "monthly", "ei"))
             or _is_source_comparison_question(question)
             or (not has_documents and wants_market_narrative(question))
