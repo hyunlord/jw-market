@@ -600,7 +600,11 @@ def create_app(service: IngestService) -> FastAPI:
                 (
                     event.stage
                     for event in reversed(events)
-                    if event.run_id == entry.run_id and event.status == "running"
+                    if (
+                        event.run_id == entry.run_id
+                        or event.run_id.startswith(f"{entry.run_id}:")
+                    )
+                    and event.status == "running"
                 ),
                 None,
             )

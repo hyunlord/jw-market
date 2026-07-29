@@ -187,6 +187,69 @@ def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
     assert len(status["expected_stages"]) == 9
 
 
+def test_running_run_reports_startup_recovery_stage(sqlite_ledger, bucket):
+    identity = ("2026-05", "ubist", "c" * 64)
+    base_run_id = "20260729214159969496"
+    sqlite_ledger.receive(*identity, manifest_path="_manifests/ubist/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity, job_name="jw-ingest-current", run_id=base_run_id
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id=base_run_id,
+        seq=1,
+        stage="g3",
+        status="complete",
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id=f"{base_run_id}:startup-recovery",
+        seq=8,
+        stage="refresh",
+        status="running",
+    )
+
+    status = TestClient(create_app(IngestService(sqlite_ledger, bucket))).get(
+        "/ingest/status",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+        },
+    ).json()
+
+    assert status["status"] == "running"
+    assert status["current_stage"] == "refresh"
+
+
+def test_running_run_does_not_match_unrelated_prefix(sqlite_ledger, bucket):
+    identity = ("2026-05", "ubist", "d" * 64)
+    base_run_id = "run-current"
+    sqlite_ledger.receive(*identity, manifest_path="_manifests/ubist/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity, job_name="jw-ingest-current", run_id=base_run_id
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id=f"{base_run_id}-other",
+        seq=8,
+        stage="refresh",
+        status="running",
+    )
+
+    status = TestClient(create_app(IngestService(sqlite_ledger, bucket))).get(
+        "/ingest/status",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+        },
+    ).json()
+
+    assert status["status"] == "running"
+    assert status["current_stage"] is None
+
+
 def test_expected_stage_applicability_comes_from_category_spec(client, bucket):
     manifest_path = write_submission(bucket, category="iqvia_csd_keyword")
     payload = client.post(
