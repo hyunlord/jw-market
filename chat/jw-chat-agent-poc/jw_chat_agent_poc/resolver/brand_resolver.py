@@ -33,6 +33,8 @@ class BrandResolution:
     requested_market_id: str | None = None
     requested_market_name: str | None = None
     support_source: str = "fixture"
+    source_variance: bool = False
+    resolved_via_alias: bool = False
 
     @property
     def requires_market_clarification(self) -> bool:
@@ -65,6 +67,10 @@ class BrandMoleculeReader(Protocol):
     def brand_molecules(self) -> tuple[dict[str, str], ...]: ...
 
 
+class BrandAliasReader(Protocol):
+    def brand_aliases(self) -> tuple[dict[str, str], ...]: ...
+
+
 class BrandResolver:
     def __init__(
         self,
@@ -73,6 +79,7 @@ class BrandResolver:
         brand_reader: MetricsCacheReader | None = None,
         membership_reader: BrandMembershipReader | None = None,
         molecule_reader: BrandMoleculeReader | None = None,
+        alias_reader: BrandAliasReader | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
         path = fixture_path or Path(__file__).resolve().parents[1] / "fixtures" / "brand_catalog.json"
@@ -82,6 +89,7 @@ class BrandResolver:
         self._mode = mode or os.environ.get("CHAT_RESOLVER_MODE") or os.environ.get("CHAT_METRICS_MODE", "fixture")
         self._membership_reader = membership_reader
         self._molecule_reader = molecule_reader
+        self._runtime_alias_reader = alias_reader
         self._catalog_lock = threading.Lock()
         self._catalog_sources: tuple[object, ...] | None = None
         self._catalog_items: tuple[dict[str, Any], ...] | None = None
@@ -105,6 +113,8 @@ class BrandResolver:
                     selected,
                     question_or_brand,
                     market_universe=market_universe,
+                    matched_key=key,
+                    matched_literal=question_or_brand[start:end],
                 )
         raise UnsupportedBrandError(f"Unsupported brand: {question_or_brand}")
 
@@ -115,17 +125,17 @@ class BrandResolver:
             market_universe = self._market_universe(items, self._fixture_items)
             spans = self._matching_spans(question_or_brands, items)
             self._raise_family_ambiguity(question_or_brands, items)
-            selected: list[tuple[int, dict[str, Any]]] = []
+            selected: list[tuple[int, str, str, dict[str, Any]]] = []
             occupied: list[tuple[int, int]] = []
             for start, end, key, candidates in spans:
                 if any(start < used_end and end > used_start for used_start, used_end in occupied):
                     continue
                 item = self._select_candidate(question_or_brands, start, end, key, candidates)
                 occupied.append((start, end))
-                selected.append((start, item))
+                selected.append((start, key, question_or_brands[start:end], item))
             seen: set[str] = set()
             out: list[BrandResolution] = []
-            for _, item in sorted(selected, key=lambda pair: pair[0]):
+            for _, key, literal, item in sorted(selected, key=lambda pair: pair[0]):
                 canonical = str(item["canonical_brand"])
                 if canonical in seen:
                     continue
@@ -135,6 +145,8 @@ class BrandResolver:
                         item,
                         question_or_brands,
                         market_universe=market_universe,
+                        matched_key=key,
+                        matched_literal=literal,
                     )
                 )
         if out:
@@ -218,8 +230,18 @@ class BrandResolver:
         if self._molecule_reader is not None:
             with trace_span("brand_molecule_load", "mart brand molecule load", category="resolver"):
                 brand_molecules = self._molecule_reader.brand_molecules()
-        sources = (snapshot, memberships, brand_molecules)
-        return self._assembled_items(sources, cache_brands, memberships, brand_molecules)
+        aliases: tuple[dict[str, str], ...] = ()
+        if self._runtime_alias_reader is not None:
+            with trace_span("brand_alias_load", "brand alias load", category="resolver"):
+                aliases = self._runtime_alias_reader.brand_aliases()
+        sources = (snapshot, memberships, brand_molecules, aliases)
+        return self._assembled_items(
+            sources,
+            cache_brands,
+            memberships,
+            brand_molecules,
+            aliases,
+        )
 
     def _assembled_items(
         self,
@@ -227,6 +249,7 @@ class BrandResolver:
         cache_brands: tuple[dict[str, Any], ...],
         memberships: tuple[dict[str, str], ...],
         brand_molecules: tuple[dict[str, str], ...],
+        aliases: tuple[dict[str, str], ...] = (),
     ) -> list[dict[str, Any]]:
         cached = self._catalog_items
         if cached is not None and self._same_catalog_sources(sources):
@@ -236,7 +259,12 @@ class BrandResolver:
             if cached is not None and self._same_catalog_sources(sources):
                 return list(cached)
             with trace_span("brand_catalog_assembly", f"mode={self._mode}", category="resolver"):
-                items = self._assemble_items(cache_brands, memberships, brand_molecules)
+                items = self._assemble_items(
+                    cache_brands,
+                    memberships,
+                    brand_molecules,
+                    aliases,
+                )
             self._catalog_items = tuple(items)
             self._catalog_sources = sources
             self._alias_index_source = None
@@ -258,6 +286,7 @@ class BrandResolver:
         cache_brands: tuple[dict[str, Any], ...],
         memberships: tuple[dict[str, str], ...],
         brand_molecules: tuple[dict[str, str], ...],
+        aliases: tuple[dict[str, str], ...] = (),
     ) -> list[dict[str, Any]]:
         if self._mode != "cache":
             return list(self._fixture_items)
@@ -316,10 +345,45 @@ class BrandResolver:
                 )
                 if pair[0] and pair not in item["market_memberships"]:
                     item["market_memberships"].append(pair)
+        if aliases:
+            by_brand_key: dict[str, list[str]] = {}
+            for row in aliases:
+                alias_name = str(row.get("alias_name") or "").strip()
+                brand_key = self._normalize(str(row.get("brand_key") or ""))
+                if not alias_name or not brand_key:
+                    continue
+                values = by_brand_key.setdefault(brand_key, [])
+                if alias_name not in values:
+                    values.append(alias_name)
+            # The load-time guard compares alias_name against stored brand_KEYs after
+            # NFKC+strip. This index folds harder: it also removes every space and
+            # casefolds, and it keys on the display name. So an alias can clear the
+            # guard and still land on another brand's key here, which makes a name
+            # that resolves today ambiguous instead. Skip those; keep the ones that
+            # fold onto this item's own key, which add spellings without adding a
+            # second owner.
+            canonical_keys = {
+                self._normalize(str(entry["canonical_brand"])) for entry in merged.values()
+            }
+            canonical_keys.discard("")
+            for item in merged.values():
+                brand_key = self._normalize(str(item["canonical_brand"]))
+                runtime_alias_keys = item.setdefault("_runtime_alias_keys", [])
+                for alias_name in by_brand_key.get(brand_key, ()):
+                    alias_key = self._normalize(alias_name)
+                    if alias_key and alias_key != brand_key and alias_key in canonical_keys:
+                        continue
+                    if alias_name not in item["aliases"]:
+                        item["aliases"].append(alias_name)
+                    if alias_key and alias_key not in runtime_alias_keys:
+                        runtime_alias_keys.append(alias_key)
         if brand_molecules:
             molecule_by_brand: dict[str, list[str]] = {}
+            source_sets_by_brand: dict[str, dict[str, set[str]]] = {}
             for row in brand_molecules:
                 molecule = str(row.get("molecule_display") or row.get("molecule_norm") or "").strip()
+                molecule_norm = str(row.get("molecule_norm") or molecule).strip().casefold()
+                mart_source = str(row.get("mart_source") or "unknown").strip() or "unknown"
                 if not molecule:
                     continue
                 for key in (row.get("brand_name"), row.get("brand_key"), row.get("brand")):
@@ -328,15 +392,29 @@ class BrandResolver:
                         molecules = molecule_by_brand.setdefault(normalized_key, [])
                         if molecule.casefold() not in {value.casefold() for value in molecules}:
                             molecules.append(molecule)
+                        source_sets_by_brand.setdefault(normalized_key, {}).setdefault(
+                            mart_source,
+                            set(),
+                        ).add(molecule_norm)
             for item in merged.values():
                 aliases = (item["canonical_brand"], *item.get("aliases", []))
                 additions: list[str] = []
+                source_sets: dict[str, set[str]] = {}
                 for alias in aliases:
-                    additions.extend(molecule_by_brand.get(self._normalize(str(alias)), []))
+                    normalized_alias = self._normalize(str(alias))
+                    additions.extend(molecule_by_brand.get(normalized_alias, []))
+                    for source, molecules in source_sets_by_brand.get(
+                        normalized_alias,
+                        {},
+                    ).items():
+                        source_sets.setdefault(source, set()).update(molecules)
                 existing = item.setdefault("molecule_en", [])
                 for molecule in additions:
                     if molecule.casefold() not in {value.casefold() for value in existing}:
                         existing.append(molecule)
+                item["source_variance"] = len(
+                    {tuple(sorted(values)) for values in source_sets.values()}
+                ) > 1
                 if additions and "mart_brand_molecule" not in item["support_source"]:
                     item["support_source"] = f"{item['support_source']}+mart_brand_molecule"
         return list(merged.values())
@@ -448,6 +526,8 @@ class BrandResolver:
         question: str = "",
         *,
         market_universe: tuple[tuple[str, str], ...] = (),
+        matched_key: str | None = None,
+        matched_literal: str = "",
     ) -> BrandResolution:
         molecule_en = tuple(str(value) for value in item.get("molecule_en", []))
         memberships = BrandResolver._item_memberships(item)
@@ -487,7 +567,34 @@ class BrandResolver:
             requested_market_id=requested_market_id,
             requested_market_name=requested_market_name,
             support_source=str(item.get("support_source") or "fixture"),
+            source_variance=bool(item.get("source_variance", False)),
+            resolved_via_alias=BrandResolver._resolved_via_runtime_alias(
+                item,
+                matched_key=matched_key,
+                matched_literal=matched_literal,
+            ),
         )
+
+    @staticmethod
+    def _resolved_via_runtime_alias(
+        item: dict[str, Any],
+        *,
+        matched_key: str | None,
+        matched_literal: str,
+    ) -> bool:
+        if not matched_key or matched_key not in item.get("_runtime_alias_keys", ()):
+            return False
+        literal = unicodedata.normalize("NFKC", matched_literal).strip().casefold()
+        literal_forms = {literal}
+        for particle in _BRAND_PARTICLES:
+            if literal.endswith(particle) and len(literal) > len(particle) + 1:
+                literal_forms.add(literal[: -len(particle)].rstrip())
+        canonical = (
+            unicodedata.normalize("NFKC", str(item["canonical_brand"]))
+            .strip()
+            .casefold()
+        )
+        return canonical not in literal_forms
 
     @staticmethod
     def _item_memberships(item: dict[str, Any]) -> tuple[tuple[str, str], ...]:

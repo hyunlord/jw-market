@@ -11,70 +11,94 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 
-class BrandMoleculeSource(Protocol):
+class BrandAliasSource(Protocol):
     def load(self) -> tuple[dict[str, str], ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
-class StaticBrandMoleculeReader:
+class StaticBrandAliasReader:
     rows: tuple[dict[str, str], ...]
 
-    def brand_molecules(self) -> tuple[dict[str, str], ...]:
+    def brand_aliases(self) -> tuple[dict[str, str], ...]:
         return self.rows
 
 
 @dataclass(frozen=True, slots=True)
-class MariaDbBrandMoleculeSource:
+class MariaDbBrandAliasSource:
     host: str = field(
         default_factory=lambda: os.environ.get(
-            "CHAT_MOLECULE_DB_HOST",
+            "CHAT_ALIAS_DB_HOST",
             os.environ.get(
                 "CHAT_QUERY_DB_HOST",
-                os.environ.get("CHAT_CATALOG_DB_HOST", "llmops-mariadb-service.llmops.svc.cluster.local"),
+                os.environ.get(
+                    "CHAT_CATALOG_DB_HOST",
+                    "llmops-mariadb-service.llmops.svc.cluster.local",
+                ),
             ),
         )
     )
     port: int = field(
         default_factory=lambda: int(
             os.environ.get(
-                "CHAT_MOLECULE_DB_PORT",
-                os.environ.get("CHAT_QUERY_DB_PORT", os.environ.get("CHAT_CATALOG_DB_PORT", "3306")),
+                "CHAT_ALIAS_DB_PORT",
+                os.environ.get(
+                    "CHAT_QUERY_DB_PORT",
+                    os.environ.get("CHAT_CATALOG_DB_PORT", "3306"),
+                ),
             )
         )
     )
     database: str = field(
         default_factory=lambda: os.environ.get(
-            "CHAT_MOLECULE_DB_NAME",
-            os.environ.get("CHAT_QUERY_DB_NAME", os.environ.get("CHAT_CATALOG_DB_NAME", "jw_mart")),
+            "CHAT_ALIAS_DB_NAME",
+            os.environ.get(
+                "CHAT_QUERY_DB_NAME",
+                os.environ.get("CHAT_CATALOG_DB_NAME", "jw_mart"),
+            ),
         )
     )
     user: str = field(
         default_factory=lambda: os.environ.get(
-            "CHAT_MOLECULE_DB_USER",
-            os.environ.get("CHAT_QUERY_DB_USER", os.environ.get("CHAT_CATALOG_DB_USER", "llmops")),
+            "CHAT_ALIAS_DB_USER",
+            os.environ.get(
+                "CHAT_QUERY_DB_USER",
+                os.environ.get("CHAT_CATALOG_DB_USER", "llmops"),
+            ),
         )
     )
     password: str = field(
         default_factory=lambda: os.environ.get(
-            "CHAT_MOLECULE_DB_PASSWORD",
+            "CHAT_ALIAS_DB_PASSWORD",
             os.environ.get(
                 "CHAT_QUERY_DB_PASSWORD",
-                os.environ.get("CHAT_CATALOG_DB_PASSWORD", os.environ.get("CHAT_CACHE_DB_PASSWORD", "")),
+                os.environ.get(
+                    "CHAT_CATALOG_DB_PASSWORD",
+                    os.environ.get("CHAT_CACHE_DB_PASSWORD", ""),
+                ),
             ),
         )
     )
-    connect_timeout_s: int = field(default_factory=lambda: int(os.environ.get("CHAT_MOLECULE_DB_CONNECT_TIMEOUT_S", "3")))
-    read_timeout_s: int = field(default_factory=lambda: int(os.environ.get("CHAT_MOLECULE_DB_READ_TIMEOUT_S", "15")))
+    connect_timeout_s: int = field(
+        default_factory=lambda: int(
+            os.environ.get("CHAT_ALIAS_DB_CONNECT_TIMEOUT_S", "3")
+        )
+    )
+    read_timeout_s: int = field(
+        default_factory=lambda: int(
+            os.environ.get("CHAT_ALIAS_DB_READ_TIMEOUT_S", "15")
+        )
+    )
 
     @staticmethod
-    def molecule_sql() -> str:
+    def alias_sql() -> str:
         return """
-            SELECT brand_key, brand_name, atc4_code, mart_source,
-                   molecule_norm, molecule_display
-            FROM mart_brand_molecule
-            WHERE molecule_norm IS NOT NULL
-              AND molecule_norm <> ''
-            ORDER BY brand_key, atc4_code, mart_source, molecule_norm
+            SELECT alias_name, brand_key
+            FROM brand_alias
+            WHERE alias_name IS NOT NULL
+              AND alias_name <> ''
+              AND brand_key IS NOT NULL
+              AND brand_key <> ''
+            ORDER BY alias_name
         """
 
     def load(self) -> tuple[dict[str, str], ...]:
@@ -94,24 +118,26 @@ class MariaDbBrandMoleculeSource:
             autocommit=True,
         ) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(self.molecule_sql())
+                cursor.execute(self.alias_sql())
                 rows = cursor.fetchall()
         return tuple(
             {
+                "alias_name": str(row.get("alias_name") or ""),
                 "brand_key": str(row.get("brand_key") or ""),
-                "brand_name": str(row.get("brand_name") or ""),
-                "atc4_code": str(row.get("atc4_code") or ""),
-                "mart_source": str(row.get("mart_source") or ""),
-                "molecule_norm": str(row.get("molecule_norm") or ""),
-                "molecule_display": str(row.get("molecule_display") or row.get("molecule_norm") or ""),
             }
             for row in rows
-            if row.get("molecule_norm")
+            if row.get("alias_name") and row.get("brand_key")
         )
 
 
-class TtlBrandMoleculeReader:
-    def __init__(self, source: BrandMoleculeSource, ttl_seconds: int = 300, *, prewarm: bool = False) -> None:
+class TtlBrandAliasReader:
+    def __init__(
+        self,
+        source: BrandAliasSource,
+        ttl_seconds: int = 300,
+        *,
+        prewarm: bool = False,
+    ) -> None:
         self._source = source
         self._ttl_seconds = ttl_seconds
         self._rows: tuple[dict[str, str], ...] | None = None
@@ -123,21 +149,32 @@ class TtlBrandMoleculeReader:
             self.prewarm()
 
     def prewarm(self) -> None:
-        threading.Thread(target=self._prewarm_snapshot, name="brand-molecule-prewarm", daemon=True).start()
+        threading.Thread(
+            target=self._prewarm_snapshot,
+            name="brand-alias-prewarm",
+            daemon=True,
+        ).start()
 
     def _prewarm_snapshot(self) -> None:
         try:
             self._load_cold()
-        except Exception:  # noqa: BLE001 - startup prewarm must not break request handling
-            logger.exception("brand molecule snapshot prewarm failed")
+        except Exception:  # noqa: BLE001 - startup prewarm must not break requests
+            logger.exception("brand alias snapshot prewarm failed")
 
-    def brand_molecules(self) -> tuple[dict[str, str], ...]:
+    def brand_aliases(self) -> tuple[dict[str, str], ...]:
         with self._lock:
             rows = self._rows
-            expired = rows is not None and time.monotonic() - self._loaded_at > self._ttl_seconds
+            expired = (
+                rows is not None
+                and time.monotonic() - self._loaded_at > self._ttl_seconds
+            )
             if expired and not self._refreshing:
                 self._refreshing = True
-                threading.Thread(target=self._refresh, name="brand-molecule-refresh", daemon=True).start()
+                threading.Thread(
+                    target=self._refresh,
+                    name="brand-alias-refresh",
+                    daemon=True,
+                ).start()
             if rows is not None:
                 return rows
         return self._load_cold()
@@ -157,7 +194,7 @@ class TtlBrandMoleculeReader:
         try:
             rows = self._source.load()
         except Exception:  # noqa: BLE001 - preserve the last valid snapshot
-            logger.exception("brand molecule TTL refresh failed")
+            logger.exception("brand alias TTL refresh failed")
             with self._lock:
                 self._refreshing = False
             return
@@ -168,13 +205,17 @@ class TtlBrandMoleculeReader:
 
 
 _SHARED_LOCK = threading.Lock()
-_SHARED_READERS: dict[int, TtlBrandMoleculeReader] = {}
+_SHARED_READERS: dict[int, TtlBrandAliasReader] = {}
 
 
-def shared_brand_molecule_reader(ttl_seconds: int = 300) -> TtlBrandMoleculeReader:
+def shared_brand_alias_reader(ttl_seconds: int = 300) -> TtlBrandAliasReader:
     with _SHARED_LOCK:
         reader = _SHARED_READERS.get(ttl_seconds)
         if reader is None:
-            reader = TtlBrandMoleculeReader(MariaDbBrandMoleculeSource(), ttl_seconds=ttl_seconds, prewarm=True)
+            reader = TtlBrandAliasReader(
+                MariaDbBrandAliasSource(),
+                ttl_seconds=ttl_seconds,
+                prewarm=True,
+            )
             _SHARED_READERS[ttl_seconds] = reader
         return reader
