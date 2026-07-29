@@ -462,6 +462,9 @@ def test_enforce_supplements_partial_nct_design_with_official_web(monkeypatch) -
     assert fallback["missing_requested_facets"] == [
         "start_date",
         "primary_completion_date",
+        "allocation",
+        "masking",
+        "intervention_model",
     ]
     assert fallback["calls_executed"] == 1
     assert fallback["accepted_urls"] == [

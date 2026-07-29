@@ -5,6 +5,10 @@ from typing import Any
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
+from jw_chat_agent_poc.tools.external.client import (
+    _clinicaltrials_detail_payload,
+    _clinicaltrials_mcp_payload,
+)
 
 
 class _ClinicalDetailClient(ExternalApiClient):
@@ -92,4 +96,68 @@ def test_nct_trial_design_marks_requested_missing_fields_as_partial() -> None:
     assert envelope.missing_requested_facets == (
         "start_date",
         "primary_completion_date",
+        "allocation",
+        "masking",
+        "intervention_model",
     )
+
+
+def test_nct_detail_parser_preserves_trial_design_fields() -> None:
+    detail = _clinicaltrials_detail_payload(
+        "\n".join(
+            (
+                "nctId: NCT05151731",
+                "officialTitle: A Study of Vamikibart",
+                "allocation: RANDOMIZED",
+                "masking: QUADRUPLE",
+                "interventionModel: PARALLEL",
+            )
+        )
+    )
+
+    assert detail["title"] == "A Study of Vamikibart"
+    assert detail["allocation"] == "RANDOMIZED"
+    assert detail["masking"] == "QUADRUPLE"
+    assert detail["intervention_model"] == "PARALLEL"
+
+
+def test_nct_search_parser_preserves_trial_design_fields() -> None:
+    payload = _clinicaltrials_mcp_payload(
+        "\n".join(
+            (
+                "- nctId: NCT05151731",
+                "officialTitle: A Study of Vamikibart",
+                "allocation: RANDOMIZED",
+                "masking: QUADRUPLE",
+                "interventionModel: PARALLEL",
+            )
+        )
+    )
+
+    study = payload["studies"][0]["protocolSection"]
+    assert study["identificationModule"]["officialTitle"] == "A Study of Vamikibart"
+    assert study["designModule"]["allocation"] == "RANDOMIZED"
+    assert study["designModule"]["masking"] == "QUADRUPLE"
+    assert study["designModule"]["interventionModel"] == "PARALLEL"
+
+
+def test_nct_trial_design_projects_design_fields_only_when_requested() -> None:
+    detail = {
+        "nct_id": "NCT05151731",
+        "title": "DME Study",
+        "allocation": "RANDOMIZED",
+        "masking": "QUADRUPLE",
+        "intervention_model": "PARALLEL",
+        "enrollment": 394,
+        "outcomes": ["Visual acuity"],
+        "start_date": "2021-12-31",
+        "primary_completion_date": "2024-11-06",
+    }
+
+    design = _execute_detail(detail, question="NCT05151731 시험 디자인 알려줘")
+    generic = _execute_detail(detail, question="NCT05151731 상태 알려줘")
+
+    design_metrics = {fact.metric for fact in design.evidence}
+    generic_metrics = {fact.metric for fact in generic.evidence}
+    assert {"배정 방식", "눈가림", "중재 모형"} <= design_metrics
+    assert {"배정 방식", "눈가림", "중재 모형"}.isdisjoint(generic_metrics)
