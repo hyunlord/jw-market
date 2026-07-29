@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -367,6 +367,88 @@ def add_stage(timing: Timing | None, name: str, elapsed_ms: float, detail: str =
         stages = []
         timing["stages"] = stages
     stages.append({"name": name, "elapsed_ms": round(float(elapsed_ms), 2), "detail": detail})
+
+
+@contextmanager
+def latency_observation(
+    timing: Timing | None,
+    phase: str,
+    *,
+    step: int | None = None,
+    operation: str = "",
+    attempt: int | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Record internal-only latency without adding a public progress stage."""
+
+    started = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
+    observation: dict[str, Any] = {
+        "phase": phase,
+        "step": step,
+        "operation": operation,
+        "attempt": attempt,
+        "status": "ok",
+    }
+    try:
+        yield observation
+    except BaseException:
+        observation["status"] = "error"
+        raise
+    finally:
+        observation["started_at"] = started_at.isoformat()
+        observation["ended_at"] = datetime.now(timezone.utc).isoformat()
+        observation["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        if timing is not None:
+            observations = timing.setdefault("_internal_latency_observations", [])
+            if not isinstance(observations, list):
+                observations = []
+                timing["_internal_latency_observations"] = observations
+            observations.append(observation)
+
+
+def internal_latency_payload(timing: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project bounded latency diagnostics for QA trace only."""
+
+    if not isinstance(timing, Mapping):
+        return {
+            "planner_steps": [],
+            "tool_calls": [],
+            "final_generation": {"attempt_count": 0, "attempts": [], "total_elapsed_ms": 0.0},
+        }
+    raw = timing.get("_internal_latency_observations")
+    observations = tuple(item for item in raw if isinstance(item, Mapping)) if isinstance(raw, list) else ()
+
+    def rows(phase: str) -> list[dict[str, Any]]:
+        return [
+            {
+                key: item.get(key)
+                for key in (
+                    "step",
+                    "operation",
+                    "attempt",
+                    "started_at",
+                    "ended_at",
+                    "elapsed_ms",
+                    "status",
+                )
+            }
+            for item in observations
+            if item.get("phase") == phase
+        ]
+
+    attempts = rows("final_generation")
+    return {
+        "planner_steps": rows("planner"),
+        "tool_calls": rows("tool_call"),
+        "final_generation": {
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+            "total_elapsed_ms": round(
+                sum(float(item.get("elapsed_ms") or 0.0) for item in attempts),
+                3,
+            ),
+        },
+    }
 
 
 def emit_completed_stage(

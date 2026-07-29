@@ -10,7 +10,7 @@ from typing import Protocol
 from pydantic import BaseModel, ValidationError
 import requests
 
-from jw_chat_agent_poc.common.timing import Timing, stage
+from jw_chat_agent_poc.common.timing import Timing, latency_observation, stage
 from jw_chat_agent_poc.tools.external.mcp_client import mcp_execution_budget
 from jw_chat_agent_poc.tool_use.contracts import AgentResult, FallbackCode, ToolEnvelope, ToolTrace
 from jw_chat_agent_poc.tool_use.ledger import EvidenceLedger
@@ -124,8 +124,9 @@ class AgentExecutor:
                         spec,
                         payload,
                         user_text,
+                        step,
                     )
-                    for _choice, spec, payload in prepared
+                    for step, (_choice, spec, payload) in enumerate(prepared, start=1)
                 ]
                 for step, ((choice, spec, _payload), future) in enumerate(
                     zip(prepared, futures, strict=True),
@@ -215,7 +216,17 @@ class AgentExecutor:
                 choice = forced_choices.pop(0)
             else:
                 try:
-                    choice = self.provider.choose(user_text=user_text, messages=messages, tools=[tool.openai_schema() for tool in tools])
+                    with latency_observation(
+                        self.timing,
+                        "planner",
+                        step=step,
+                        operation="choose",
+                    ):
+                        choice = self.provider.choose(
+                            user_text=user_text,
+                            messages=messages,
+                            tools=[tool.openai_schema() for tool in tools],
+                        )
                 except requests.Timeout:
                     return _terminal("tool timeout", FallbackCode.TOOL_TIMEOUT, traces, tool_calls)
                 except (ToolProviderConfigurationError, requests.RequestException, KeyError, TypeError, ValueError) as exc:
@@ -265,7 +276,15 @@ class AgentExecutor:
                 return _terminal("tool argument schema invalid", FallbackCode.SCHEMA_INVALID, traces, tool_calls)
             try:
                 with stage(self.timing, f"tool:{spec.name}", user_text) as progress:
-                    envelope = _execute_with_timeout(spec, payload)
+                    with latency_observation(
+                        self.timing,
+                        "tool_call",
+                        step=step,
+                        operation=spec.name,
+                    ) as observation:
+                        envelope = _execute_with_timeout(spec, payload)
+                        if not envelope.ok:
+                            observation["status"] = "no_evidence"
                     progress.summary = (
                         f"근거 {len(envelope.evidence)}건 확인"
                         if envelope.ok and envelope.evidence
@@ -437,9 +456,18 @@ def _execute_with_progress(
     spec: ToolSpec,
     payload: BaseModel,
     user_text: str,
+    step: int,
 ) -> ToolEnvelope:
     with stage(timing, f"tool:{spec.name}", user_text) as progress:
-        envelope = _execute_with_timeout(spec, payload)
+        with latency_observation(
+            timing,
+            "tool_call",
+            step=step,
+            operation=spec.name,
+        ) as observation:
+            envelope = _execute_with_timeout(spec, payload)
+            if not envelope.ok:
+                observation["status"] = "no_evidence"
         progress.summary = (
             f"근거 {len(envelope.evidence)}건 확인"
             if envelope.ok and envelope.evidence

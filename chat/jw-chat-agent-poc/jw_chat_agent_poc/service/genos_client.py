@@ -82,7 +82,7 @@ from jw_chat_agent_poc.service.answer_safety import (
     strip_generated_source_sections,
     uploaded_file_fact_tokens,
 )
-from jw_chat_agent_poc.common.timing import stage
+from jw_chat_agent_poc.common.timing import latency_observation, stage
 from jw_chat_agent_poc.service.portfolio_decline_render import ensure_portfolio_decline_summary
 from jw_chat_agent_poc.service.web_mi_summary import web_search_mi_section_from_calls
 
@@ -101,6 +101,10 @@ _DETERMINISTIC_MARKET_NARRATIVE_TOOLS = frozenset(
 )
 LOGGER = logging.getLogger(__name__)
 _FINAL_GENERATION_DEADLINE: ContextVar[float | None] = ContextVar("final_generation_deadline", default=None)
+_FINAL_GENERATION_TIMING: ContextVar[dict[str, Any] | None] = ContextVar(
+    "final_generation_timing",
+    default=None,
+)
 
 _FILE_QUOTE_INSTRUCTION = (
     "업로드 파일 컨텍스트가 있고 질문이 파일의 값·비율·식별코드·고유 토큰·문구를 요구하면, "
@@ -1146,7 +1150,13 @@ class GenosClient:
             },
             {"role": "user", "content": self._prompt(question, agent_result)},
         ]
-        yield from self._stream_chat(messages)
+        with latency_observation(
+            timing,
+            "final_generation",
+            operation="genos",
+            attempt=1,
+        ):
+            yield from self._stream_chat(messages)
         if policy_notice:
             yield policy_notice
 
@@ -1185,7 +1195,11 @@ class GenosClient:
             )
             try:
                 with stage(timing, "final_llm_expression", "GenOS markdown generation"):
-                    raw_interpretation = self._chat_text(messages)
+                    timing_token = _FINAL_GENERATION_TIMING.set(timing)
+                    try:
+                        raw_interpretation = self._chat_text(messages)
+                    finally:
+                        _FINAL_GENERATION_TIMING.reset(timing_token)
             except requests.RequestException:
                 self._record_answer_branch("genos_markdown_request_fallback")
                 fallback = finalized_fallback_fact_answer(question, markdown_response)
@@ -1412,16 +1426,30 @@ class GenosClient:
         )
         return [system, user]
 
-    def _chat_text(self, messages: list[dict[str, str]]) -> str:
+    def _chat_text(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        timing: dict[str, Any] | None = None,
+    ) -> str:
+        active_timing = timing if timing is not None else _FINAL_GENERATION_TIMING.get()
         last_error: requests.RequestException | None = None
         deadline = time.monotonic() + max(1, self.total_budget_s)
         token = _FINAL_GENERATION_DEADLINE.set(deadline)
         try:
-            for _attempt in range(generation_attempts()):
+            for attempt in range(1, generation_attempts() + 1):
                 if deadline - time.monotonic() <= 0:
                     break
                 try:
-                    text = "".join(self._stream_chat(messages)).strip()
+                    with latency_observation(
+                        active_timing,
+                        "final_generation",
+                        operation="genos",
+                        attempt=attempt,
+                    ) as observation:
+                        text = "".join(self._stream_chat(messages)).strip()
+                        if not text:
+                            observation["status"] = "empty"
                 except requests.RequestException as exc:
                     last_error = exc
                     continue
