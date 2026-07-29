@@ -261,11 +261,14 @@ def test_mfds_composition_only_emits_matching_product_evidence() -> None:
     )
     spec = next(item for item in registry.list_for_query("성분 조성") if item.name == "mfds_composition")
 
-    matching = spec.execute(spec.input_model.model_validate({"brand": "중외"}))
-    unrelated = spec.execute(spec.input_model.model_validate({"brand": "리바로"}))
+    expected_evidence_counts = {"리바로": 3, "아일리아": 4, "중외": 5}
+    for brand, expected_count in expected_evidence_counts.items():
+        matching = spec.execute(spec.input_model.model_validate({"brand": brand}))
+        assert matching.ok is True
+        assert len(matching.evidence) == expected_count
+        assert all(brand in str(fact.source_locator) for fact in matching.evidence)
 
-    assert matching.ok is True
-    assert "포도당" in str(matching.evidence[0].source_locator)
+    unrelated = spec.execute(spec.input_model.model_validate({"brand": "없는브랜드"}))
     assert unrelated.ok is False
     assert unrelated.error_code == "NO_EVIDENCE"
 
