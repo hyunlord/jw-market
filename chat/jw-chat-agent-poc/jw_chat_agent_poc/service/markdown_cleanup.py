@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from typing import Final
 
 from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
@@ -81,6 +82,36 @@ _INTERNAL_PHRASES: Final[tuple[tuple[str, str], ...]] = (
     ("agent loop", "분석"),
     ("agent_loop", "분석"),
 )
+_DANGEROUS_HTML_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<\s*(script|iframe|object)\b[^>]*>.*?<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DANGEROUS_HTML_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"<\s*/?\s*(?:script|iframe|object|embed)\b[^>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"""<(?:"[^"]*"|'[^']*'|[^'">])*>""",
+    re.DOTALL,
+)
+_EVENT_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"""\s+on[a-z0-9_:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
+    re.IGNORECASE | re.DOTALL,
+)
+_URL_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"""\s+(?:href|src|xlink:href|formaction)\s*=\s*(?P<value>"[^"]*"|'[^']*'|[^\s>]+)""",
+    re.IGNORECASE | re.DOTALL,
+)
+_MARKDOWN_LINK_DESTINATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?P<prefix>\]\(\s*)(?P<destination>[^()\s]*(?:\([^()\n]*\)[^()\s]*)?)",
+)
+_EXECUTABLE_DATA_MEDIA_TYPES: Final[tuple[str, ...]] = (
+    "data:text/html",
+    "data:text/xml",
+    "data:application/xml",
+    "data:application/xhtml+xml",
+    "data:image/svg+xml",
+)
 
 
 def scrub_internal_terminology(text: str) -> str:
@@ -103,6 +134,35 @@ def scrub_internal_terminology(text: str) -> str:
     # Tidy only spaces created by removals; never touch line-leading indentation.
     result = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", result)
     return re.sub(r"(?<=\S) +(?=[,.)}\]。」])", "", result)
+
+
+def _is_executable_url(value: str) -> bool:
+    unquoted = value.strip().strip("\"'")
+    normalized = re.sub(r"[\x00-\x20\x7f]+", "", unescape(unquoted)).casefold()
+    return normalized.startswith(("javascript:", "vbscript:", *_EXECUTABLE_DATA_MEDIA_TYPES))
+
+
+def _sanitize_html_tag(match: re.Match[str]) -> str:
+    tag = _EVENT_ATTRIBUTE_RE.sub("", match.group(0))
+
+    def remove_executable_url(attribute: re.Match[str]) -> str:
+        return "" if _is_executable_url(attribute.group("value")) else attribute.group(0)
+
+    return _URL_ATTRIBUTE_RE.sub(remove_executable_url, tag)
+
+
+def _sanitize_markdown_destination(match: re.Match[str]) -> str:
+    destination = match.group("destination")
+    if _is_executable_url(destination):
+        return f"{match.group('prefix')}#blocked-unsafe-url"
+    return match.group(0)
+
+
+def _sanitize_executable_markup(markdown: str) -> str:
+    text = _DANGEROUS_HTML_BLOCK_RE.sub("", markdown)
+    text = _DANGEROUS_HTML_TAG_RE.sub("", text)
+    text = _HTML_TAG_RE.sub(_sanitize_html_tag, text)
+    return _MARKDOWN_LINK_DESTINATION_RE.sub(_sanitize_markdown_destination, text)
 
 
 def cleanup_markdown_answer(markdown: str) -> str:
@@ -138,7 +198,7 @@ def cleanup_markdown_answer(markdown: str) -> str:
     text = "\n".join(lines).strip()
     text = _remove_adjacent_duplicate_sentences(text)
     text = _remove_duplicate_top_brand_rank_prose(text)
-    return scrub_internal_terminology(text)
+    return _sanitize_executable_markup(scrub_internal_terminology(text))
 
 
 def _normalize_korean_particles(text: str) -> str:
