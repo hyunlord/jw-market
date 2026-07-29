@@ -542,12 +542,12 @@ def test_brand_unmatched_returns_immediate_typed_notice_without_realtime() -> No
 
     envelope = reimbursement_envelope(result, subject="아일리아")
 
-    assert result.ok is False
-    assert result.retrieval == "typed_unavailable"
-    assert result.error_code == "NO_EVIDENCE"
+    assert result.ok is True
+    assert result.retrieval == "realtime"
+    assert result.error_code is None
     assert result.cache_lookup_status is CacheLookupStatus.BRAND_UNMATCHED
-    assert realtime.calls == []
-    assert envelope.preview == "해당 브랜드는 아직 급여기준 색인 대상이 아닙니다."
+    assert realtime.calls == ["아일리아"]
+    assert envelope.preview == "아일리아 HIRA 보험인정기준 원문 확인 (AI 요약·해석·재구성 없음)"
     assert envelope.raw["cache_lookup_status"] == "brand_unmatched"
 
 
@@ -562,7 +562,8 @@ def test_brand_unmatched_notice_remains_unavailable_in_runtime_trace() -> None:
                 schema_name="reimbursement_stage",
             )
         ),
-        realtime=_Realtime(error=AssertionError("unindexed brand must not call HIRA")),
+        realtime=_Realtime(error=AssertionError("policy-disabled lookup must not call HIRA")),
+        realtime_allowed=lambda: False,
         now=lambda: NOW,
     ).lookup("아일리아")
     envelope = reimbursement_envelope(result, subject="아일리아")

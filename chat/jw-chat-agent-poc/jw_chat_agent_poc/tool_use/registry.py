@@ -67,7 +67,18 @@ _INTERNAL_METRIC_WEB_EXCLUSION_TOKENS = (
     "hhi",
 )
 _CLINICAL_DETAIL_DESIGN_FIELDS = frozenset(
-    {"enrollment", "outcomes", "start_date", "primary_completion_date"}
+    {
+        "allocation",
+        "enrollment",
+        "intervention_model",
+        "masking",
+        "outcomes",
+        "start_date",
+        "primary_completion_date",
+    }
+)
+_CLINICAL_DETAIL_EXPLICIT_ONLY_FIELDS = frozenset(
+    {"allocation", "intervention_model", "masking"}
 )
 
 
@@ -80,7 +91,10 @@ def _clinical_detail_requested_fields(user_text: str) -> frozenset[str] | None:
     requested: set[str] = set()
     if any(token in lowered for token in ("inclusion", "exclusion", "선정기준", "제외기준")):
         requested.add("eligibility")
-    if any(token in lowered for token in ("임상 디자인", "대상", "평가변수", "기간")):
+    if any(
+        token in lowered
+        for token in ("임상 디자인", "시험 디자인", "대상", "평가변수", "기간")
+    ):
         requested.update(_CLINICAL_DETAIL_DESIGN_FIELDS)
     elif any(token in lowered for token in ("outcome", "결과지표", "평가 변수")):
         requested.add("outcomes")
@@ -368,6 +382,11 @@ class ExternalToolRegistry:
                 "ClinicalTrials 상세 응답에서 일차 완료일을 확인할 수 없습니다."
             ),
             "outcomes": "ClinicalTrials 상세 응답에서 결과지표를 확인할 수 없습니다.",
+            "allocation": "ClinicalTrials 상세 응답에서 배정 방식을 확인할 수 없습니다.",
+            "masking": "ClinicalTrials 상세 응답에서 눈가림 방식을 확인할 수 없습니다.",
+            "intervention_model": (
+                "ClinicalTrials 상세 응답에서 중재 모형을 확인할 수 없습니다."
+            ),
             "eligibility": "ClinicalTrials 상세 응답에서 선정·제외 기준을 확인할 수 없습니다.",
         }
         legacy_missing_fields = frozenset(
@@ -415,10 +434,21 @@ class ExternalToolRegistry:
                             else None
                         ),
                     ),
+                    ("allocation", "배정 방식", detail.get("allocation")),
+                    ("masking", "눈가림", detail.get("masking")),
+                    (
+                        "intervention_model",
+                        "중재 모형",
+                        detail.get("intervention_model"),
+                    ),
                 ),
                 start=1,
             )
             if (requested_fields is None or key in requested_fields)
+            and (
+                key not in _CLINICAL_DETAIL_EXPLICIT_ONLY_FIELDS
+                or requested_fields is not None
+            )
             and (
                 _clinical_detail_value_present(value)
                 or key

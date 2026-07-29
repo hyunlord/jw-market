@@ -74,6 +74,16 @@ def reimbursement_envelope(
                 "급여기준 조회 기능은 현재 준비 중입니다. "
                 "심사평가원(HIRA) 사이트에서 직접 확인해 주세요."
             )
+        elif error_code == "INDEX_MISS":
+            message = (
+                "해당 브랜드를 내부 급여기준 색인에서 확인하지 못했습니다. "
+                "이는 공식 원천에 없다는 뜻은 아닙니다."
+            )
+        elif error_code == "REALTIME_NO_EVIDENCE":
+            message = (
+                "해당 브랜드를 내부 급여기준 색인에서 확인하지 못했고, "
+                "실시간 공식 조회에서도 급여기준을 확인하지 못했습니다."
+            )
         elif result.cache_lookup_status is CacheLookupStatus.BRAND_UNMATCHED:
             message = "해당 브랜드는 아직 급여기준 색인 대상이 아닙니다."
         else:
