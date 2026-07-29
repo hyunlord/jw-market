@@ -86,6 +86,20 @@ def _job_env() -> list[dict]:
 
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
+    # Agent2 still consumes the DB_* family from its pinned YAML configs.
+    # Keep these aliases explicit; omitting them silently restores localhost.
+    agent2_aliases = {
+        "DB_HOST": os.environ.get("MARIADB_HOST", ""),
+        "DB_PORT": os.environ.get("MARIADB_PORT", "3306"),
+        "DB_NAME": os.environ.get("MARIADB_DATABASE", ""),
+    }
+    env.extend(
+        {"name": name, "value": value}
+        for name, value in agent2_aliases.items()
+        if value
+    )
+    secret_ref("DB_USER", _MART_SECRET, "username")
+    secret_ref("DB_ROOT_PASSWORD", _MART_SECRET, "password")
     # Agent3 intentionally has its own DB namespace. In ingest Jobs it uses the
     # same writer endpoint as the mart stages, so render the aliases explicitly
     # instead of allowing its localhost defaults.

@@ -239,6 +239,8 @@ def test_reference_jobs_separate_staging_from_activation_contracts():
 
 def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     monkeypatch.setenv("MARIADB_HOST", "db.example")
+    monkeypatch.setenv("MARIADB_PORT", "3307")
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_serving")
     monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
     monkeypatch.setenv("INGEST_REHEARSAL_ROOT", "/tmp/ingest-rehearsal")
     monkeypatch.setenv("AGENT3_DB_NAME", "agent3-live")
@@ -252,10 +254,21 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     env = body["spec"]["template"]["spec"]["containers"][0]["env"]
     by_name = {e["name"]: e for e in env}
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
+    assert by_name["DB_HOST"]["value"] == "db.example"
+    assert by_name["DB_PORT"]["value"] == "3307"
+    assert by_name["DB_NAME"]["value"] == "jw_mart_serving"
+    assert (
+        by_name["DB_USER"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "username"}
+    )
+    assert (
+        by_name["DB_ROOT_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "password"}
+    )
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
     assert by_name["AGENT3_DB_NAME"]["value"] == "agent3-live"
     assert by_name["AGENT3_DB_HOST"]["value"] == "db.example"
-    assert by_name["AGENT3_DB_PORT"]["value"] == "3306"
+    assert by_name["AGENT3_DB_PORT"]["value"] == "3307"
     assert (
         by_name["AGENT3_DB_USER"]["valueFrom"]["secretKeyRef"]
         == {"name": "jw-mart-d2-writer", "key": "username"}
