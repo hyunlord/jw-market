@@ -12,3 +12,11 @@ def test_backend_image_includes_api_import_dependencies() -> None:
     assert "COPY pipeline/scripts/deploy /app/pipeline/scripts/deploy" in dockerfile
     assert "COPY pipeline/contracts /app/pipeline/contracts" in dockerfile
     assert "COPY pipeline/domain /app/pipeline/domain" in dockerfile
+
+
+def test_backend_requirements_include_import_time_etl_dependencies() -> None:
+    requirements = Path("pipeline/scripts/api/requirements.txt").read_text()
+
+    assert "openpyxl>=3.1" in requirements
+    assert "pyarrow==24.0.0" in requirements
+    assert "duckdb==1.5.4" in requirements
