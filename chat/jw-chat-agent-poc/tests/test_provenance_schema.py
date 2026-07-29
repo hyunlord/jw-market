@@ -297,14 +297,52 @@ def test_brand_column_stays_in_lockstep_with_the_row_tuple() -> None:
 
 
 def test_brand_separates_source_rows_but_still_dedupes_within_a_brand() -> None:
-    from jw_chat_agent_poc.orchestrator.provenance_model import dedupe_rows, normalized_row
+    from jw_chat_agent_poc.orchestrator.provenance_model import merge_public_source_rows, normalized_row
 
     def row(brand: str):
         return normalized_row(source="ubist", period="2026-05", denominator="555", brand=brand)
 
-    assert len(dedupe_rows([row("리바로"), row("리바로")])) == 1
-    assert len(dedupe_rows([row("리바로"), row("로수젯")])) == 2
-    assert {item.brand for item in dedupe_rows([row("리바로"), row("로수젯")])} == {"리바로", "로수젯"}
+    same_brand = merge_public_source_rows([row("리바로"), row("리바로")])
+    different_brands = merge_public_source_rows([row("리바로"), row("아토젯")])
+
+    assert len(same_brand) == 1
+    assert len(different_brands) == 2
+    assert {item.brand for item in different_brands} == {"리바로", "아토젯"}
+
+
+def test_intermediate_and_final_renderers_keep_brands_in_separate_rows() -> None:
+    from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+    from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
+
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "brand": brand,
+                "metric": "share",
+                "period": "2026-05",
+                "market_name": "고지혈증 시장",
+                "view_type": "market_landscape",
+                "rank_denominator": 555,
+                "ms_recent_pct": share,
+            },
+        }
+        for brand, share in (("리바로", 3.76), ("아토젯", 4.12))
+    ]
+
+    intermediate = provenance_source_block(calls, ["UBIST"])
+    final = enforce_market_answer_contract(
+        "리바로와 아토젯의 점유율 변화 비교",
+        "비교 결과입니다.",
+        calls,
+    )
+
+    for rendered in (intermediate, final):
+        assert rendered.count("| 리바로 |") == 1
+        assert rendered.count("| 아토젯 |") == 1
+        assert "리바로, 아토젯" not in rendered
 
 
 def test_legacy_seven_column_provenance_fact_still_parses_field_for_field() -> None:

@@ -209,12 +209,12 @@ def dedupe_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
 
 
 def merge_public_source_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
-    """Merge public rows only within the same source, view, and public market."""
+    """Merge public rows only within the same source, view, public market, and brand."""
 
-    groups: dict[tuple[str, str, str], list[ProvenanceRow]] = {}
+    groups: dict[tuple[str, str, str, str], list[ProvenanceRow]] = {}
     for row in dedupe_rows(rows):
         clean = normalized_row(**row.as_fields())
-        groups.setdefault((clean.source, clean.view, clean.market), []).append(clean)
+        groups.setdefault((clean.source, clean.view, clean.market, clean.brand), []).append(clean)
 
     merged = tuple(_merge_source_group(group) for group in groups.values())
     return merged or (ProvenanceRow(),)
@@ -241,8 +241,7 @@ def _merge_source_group(rows: Sequence[ProvenanceRow]) -> ProvenanceRow:
         denominator=_merge_values(tuple(row.denominator for row in rows)),
         channel=_merge_values(tuple(row.channel for row in rows)),
         unit=_merge_values(tuple(row.unit for row in rows)),
-        # The grouping key is deliberately unchanged, so a group can span brands. Merge the
-        # brands into the cell rather than dropping them to MISSING.
+        # Brand is a group boundary, so this merge only collapses repeated calls for one brand.
         brand=_merge_values(tuple(row.brand for row in rows)),
     )
 
