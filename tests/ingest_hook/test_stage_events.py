@@ -113,6 +113,80 @@ def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
     ]
 
 
+def test_terminal_run_ignores_stale_running_stage_from_prior_run(
+    sqlite_ledger, bucket
+):
+    identity = ("2026-05", "ubist", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="_manifests/ubist/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity, job_name="jw-ingest-current", run_id="run-current"
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id="run-prior",
+        seq=5,
+        stage="mart_build",
+        status="running",
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id="run-current",
+        seq=9,
+        stage="refresh",
+        status="failed",
+        reason="refresh failed",
+    )
+    sqlite_ledger.mark_failed(*identity, reason="refresh failed")
+
+    status = TestClient(create_app(IngestService(sqlite_ledger, bucket))).get(
+        "/ingest/status",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+        },
+    ).json()
+
+    assert status["status"] == "failed"
+    assert status["current_stage"] is None
+    assert len(status["expected_stages"]) == 9
+
+
+def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
+    identity = ("2026-05", "ubist", "b" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="_manifests/ubist/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity, job_name="jw-ingest-current", run_id="run-current"
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id="zz-stale-prior",
+        seq=5,
+        stage="mart_build",
+        status="running",
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id="run-current",
+        seq=9,
+        stage="refresh",
+        status="running",
+    )
+
+    status = TestClient(create_app(IngestService(sqlite_ledger, bucket))).get(
+        "/ingest/status",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+        },
+    ).json()
+
+    assert status["status"] == "running"
+    assert status["current_stage"] == "refresh"
+    assert len(status["expected_stages"]) == 9
+
+
 def test_expected_stage_applicability_comes_from_category_spec(client, bucket):
     manifest_path = write_submission(bucket, category="iqvia_csd_keyword")
     payload = client.post(

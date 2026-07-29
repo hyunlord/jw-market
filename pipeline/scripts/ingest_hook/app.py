@@ -594,9 +594,16 @@ def create_app(service: IngestService) -> FastAPI:
             expected = job_runner.expected_stages(resolve_category(entry.category))
         except UnknownCategoryError:
             expected = []
-        current_stage = next(
-            (event.stage for event in reversed(events) if event.status == "running"), None
-        )
+        current_stage = None
+        if entry.status == STATUS_RUNNING and entry.run_id:
+            current_stage = next(
+                (
+                    event.stage
+                    for event in reversed(events)
+                    if event.run_id == entry.run_id and event.status == "running"
+                ),
+                None,
+            )
         blocked_by_category = (
             entry.status == STATUS_QUEUED
             and service.ledger.running_in_category(entry.category) > 0
