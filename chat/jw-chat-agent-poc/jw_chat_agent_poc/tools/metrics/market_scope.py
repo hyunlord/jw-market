@@ -9,7 +9,7 @@ from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
-from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
+from jw_chat_agent_poc.resolver import BrandResolution, BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.resolver.brand_resolver import BrandMembershipReader
 from jw_chat_agent_poc.resolver.catalog_membership import shared_catalog_membership_reader
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
@@ -84,6 +84,16 @@ class MarketScopeResolver:
 
     def has_explicit_brand_anchor(self, question: str) -> bool:
         return self._resolver.has_explicit_alias(question)
+
+    def resolve_many(
+        self,
+        question_or_brands: str,
+        allow_default: bool = False,
+    ) -> tuple[BrandResolution, ...]:
+        return self._resolver.resolve_many(
+            question_or_brands,
+            allow_default=allow_default,
+        )
 
     def is_general_only_brand(self, question: str) -> bool:
         try:

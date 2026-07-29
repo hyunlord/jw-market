@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
 from jw_chat_agent_poc.agent_loop.element_ledger import market_scope_defers_to_contract
+from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.factory import (
     ambiguous_brand_result,
     brand_unresolved_result,
@@ -69,6 +70,10 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
 )
 from jw_chat_agent_poc.orchestrator.hira_disease import explicit_hira_disease_code, is_hira_disease_question
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
+from jw_chat_agent_poc.orchestrator.query_spec import (
+    extract_query_spec,
+    query_spec_observation,
+)
 from jw_chat_agent_poc.orchestrator.response_format_contract import apply_response_format_contract
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
@@ -194,6 +199,7 @@ from jw_chat_agent_poc.common.timing import (
     request_span_scope,
     stage,
     stage_event_sink,
+    suspend_request_spans,
     trace_span,
 )
 from jw_chat_agent_poc.common.token_usage import record_token_usage
@@ -635,6 +641,26 @@ def _capture_request_spans(function):
     return wrapped
 
 
+def _observe_query_spec(
+    question: str,
+    market_scope_resolver: MarketScopeResolver,
+) -> None:
+    try:
+        with suspend_request_spans():
+            query_spec = extract_query_spec(
+                question,
+                market_scope_resolver,
+                build_period_grounding(question),
+            )
+    except Exception:  # noqa: BLE001 - stage-0 observation cannot alter request behavior
+        LOGGER.exception("request_query_spec_observation_failed")
+        return
+    LOGGER.info(
+        "request_query_spec_observed spec=%s",
+        query_spec_observation(query_spec),
+    )
+
+
 @_capture_request_spans
 def _answer_question(
     store: SessionStore,
@@ -668,6 +694,7 @@ def _answer_question(
             slots=extract_conversation_slots(result),
         )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
+    _observe_query_spec(question, market_scope_resolver)
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
         deep_request = parse_deep_research_request(question)

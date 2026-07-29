@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import pytest
 import requests
@@ -27,6 +28,7 @@ from jw_chat_agent_poc.service.conversation import ConversationSlots, PendingCla
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope
 from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
+from jw_chat_agent_poc.common.timing import trace_span
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 from jw_chat_agent_poc.tools.query_layer import MartRecord, StaticStrategicMartReader, StrategicQueryLayer
@@ -69,6 +71,71 @@ def _fake_agent_factory(*, external_mode: str = "live") -> FakeAgent:
 def _market_scope_resolver() -> MarketScopeResolver:
     cache_reader = StaticMetricsCacheReader(cache_brands=CACHE_BRANDS, market_status=BRAND_CARDS)
     return MarketScopeResolver(cache_reader=cache_reader)
+
+
+def test_answer_question_observes_query_spec_without_public_surface(caplog) -> None:
+    with caplog.at_level(logging.INFO, logger="jw_chat_agent_poc.service.app"):
+        response = service_app._answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            _fake_agent_factory,
+            "리바로 매출 알려줘",
+            "fixture",
+            None,
+        )
+
+    result = response["result"]
+    assert not any("query_spec" in key for key in result)
+    assert any(
+        "request_query_spec_observed" in record.message
+        and "'operation': 'current_value'" in record.message
+        for record in caplog.records
+    )
+
+
+def test_query_spec_observation_failure_does_not_change_answer(monkeypatch, caplog) -> None:
+    def _fail_observation(*_args, **_kwargs):
+        raise RuntimeError("synthetic observation failure")
+
+    monkeypatch.setattr(service_app, "extract_query_spec", _fail_observation)
+    with caplog.at_level(logging.ERROR, logger="jw_chat_agent_poc.service.app"):
+        response = service_app._answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            _fake_agent_factory,
+            "리바로 매출 알려줘",
+            "fixture",
+            None,
+        )
+
+    assert response["result"]["answer"] == "fallback:리바로 매출 알려줘"
+    assert any(
+        "request_query_spec_observation_failed" in record.message
+        for record in caplog.records
+    )
+
+
+def test_query_spec_observation_does_not_add_public_qa_spans(monkeypatch) -> None:
+    original_extract = service_app.extract_query_spec
+
+    def _instrumented_extract(*args, **kwargs):
+        with trace_span("query_spec_observer_probe", category="observer"):
+            return original_extract(*args, **kwargs)
+
+    monkeypatch.setattr(service_app, "extract_query_spec", _instrumented_extract)
+    response = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "리바로 매출 알려줘",
+        "fixture",
+        None,
+    )
+
+    span_names = tuple(
+        span["name"] for span in response["result"].get("_qa_spans", ())
+    )
+    assert "query_spec_observer_probe" not in span_names
 
 
 class _DiseaseCandidateExternal(ExternalApiClient):
