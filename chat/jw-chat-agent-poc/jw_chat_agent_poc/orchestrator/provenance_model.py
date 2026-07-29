@@ -58,6 +58,19 @@ class ProvenanceRow:
             self.unit,
         )
 
+    def as_fields(self) -> dict[str, str]:
+        """Field values by name, so callers never re-assemble the row positionally."""
+
+        return {
+            "source": self.source,
+            "period": self.period,
+            "view": self.view,
+            "market": self.market,
+            "denominator": self.denominator,
+            "channel": self.channel,
+            "unit": self.unit,
+        }
+
 
 def sanitize_internal_provenance_labels(text: str) -> str:
     """Block internal IDs globally and fallback labels only inside provenance."""
@@ -183,7 +196,7 @@ def _public_scoped_view(raw_view: Any, public_market_label: str) -> str:
 
 
 def dedupe_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceRow, ...]:
-    clean = tuple(dict.fromkeys(normalized_row(*row.as_tuple()) for row in rows))
+    clean = tuple(dict.fromkeys(normalized_row(**row.as_fields()) for row in rows))
     return clean or (ProvenanceRow(),)
 
 
@@ -192,7 +205,7 @@ def merge_public_source_rows(rows: Sequence[ProvenanceRow]) -> tuple[ProvenanceR
 
     groups: dict[tuple[str, str, str], list[ProvenanceRow]] = {}
     for row in dedupe_rows(rows):
-        clean = normalized_row(*row.as_tuple())
+        clean = normalized_row(**row.as_fields())
         groups.setdefault((clean.source, clean.view, clean.market), []).append(clean)
 
     merged = tuple(_merge_source_group(group) for group in groups.values())
