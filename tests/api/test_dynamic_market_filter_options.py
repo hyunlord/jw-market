@@ -452,6 +452,68 @@ def test_general_filter_options_scope_dimensions_to_selected_atc4(monkeypatch) -
     assert payload["applied_selections"]["atc4"] == ["C10A1", "C10C0"]
 
 
+def test_general_filter_options_selected_molecule_narrows_molecule_strength_options(monkeypatch) -> None:
+    filter_options.clear_filter_option_cache()
+    captured_dimension_sql = ""
+    captured_dimension_params: list[object] = []
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        nonlocal captured_dimension_sql, captured_dimension_params
+        if "mart_general_filter_dimension_metric" in sql:
+            captured_dimension_sql = sql
+            captured_dimension_params = params
+            assert "EXISTS (" in sql
+            assert "selected.source = base.source" in sql
+            assert "selected.measure = base.measure" in sql
+            assert (
+                "COALESCE(selected.product_code, selected.brand_key) = "
+                "COALESCE(base.product_code, base.brand_key)"
+            ) in sql
+            assert "selected.dimension_type = %s" in sql
+            assert "selected.dimension_value_norm IN (%s)" in sql
+            return [
+                {
+                    "dimension_type": "molecule",
+                    "dimension_value": "Pitavastatin",
+                    "dimension_value_norm": "pitavastatin",
+                    "row_count": 1,
+                },
+                {
+                    "dimension_type": "molecule_strength",
+                    "dimension_value": "2mg",
+                    "dimension_value_norm": "2mg",
+                    "row_count": 1,
+                },
+            ]
+        if "mart_general_brand_metric" in sql:
+            return [{"atc4_code": "C10A1"}]
+        raise AssertionError(sql)
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    payload = filter_options.build_filter_options(
+        mart_db="jw_mart",
+        general_dimension_db="jw_mart",
+        strategic_dimension_db="jw_mart",
+        view="general",
+        source="ubist",
+        market_id="C10A1",
+        selections={"molecule": ["pitavastatin"]},
+    )
+
+    assert captured_dimension_params == ["ubist", "sales", "C10A1", "molecule", "pitavastatin"]
+    assert captured_dimension_sql
+    dimensions = {
+        dimension["dimension_type"]: dimension["values"]
+        for dimension in payload["dimensions"]
+    }
+    assert dimensions["molecule_strength"] == [
+        {"key": "2mg", "value": "2mg", "row_count": 1, "default": False, "selected": False, "flag": False}
+    ]
+    assert "4mg" not in str(payload)
+    assert payload["applied_selections"]["molecule"] == ["pitavastatin"]
+
+
 def test_general_filter_options_keeps_explicit_atc4_scope_with_brand_selection(monkeypatch) -> None:
     filter_options.clear_filter_option_cache()
     captured_dimension_params: list[object] = []
