@@ -55,6 +55,10 @@ spec:
             args:
             - |
               set -euo pipefail
+              if [ "${CACHE_WRITE_MODE:-isolated}" = "disabled" ]; then
+                echo "CACHE_WRITE_MODE=disabled; skipping cache writer"
+                exit 0
+              fi
               test "${MARIADB_DATABASE}" = "jw_mart_d2_stage_20260630_r2"
               test "${AGENT3_DB_NAME}" = "jw_mart_d2_stage_20260630_r2"
               APPDIR=/app
@@ -82,6 +86,8 @@ spec:
                 --agent3-schema "${AGENT3_DB_NAME}"
               echo "BRAND_ELEMENTS_REFRESH_DONE $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             env:
+            - name: CACHE_WRITE_MODE
+              value: isolated
             - name: MARIADB_HOST
               value: llmops-mariadb-service.llmops.svc.cluster.local
             - name: MARIADB_PORT

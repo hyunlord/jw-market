@@ -23,6 +23,7 @@ import zlib
 from pymysql import MySQLError
 
 from pipeline.scripts.api import db
+from pipeline.scripts.api.config import CacheWriteMode
 
 
 logger = logging.getLogger(__name__)
@@ -232,12 +233,14 @@ class DynamicResponseCache:
         poll_interval_seconds: float = 0.1,
         wait_timeout_seconds: float = 60.0,
         max_entry_bytes: int = DEFAULT_MAX_ENTRY_BYTES,
+        cache_write_mode: CacheWriteMode = CacheWriteMode.ISOLATED,
     ) -> None:
         self._store = store
         self._build_semaphore = build_semaphore
         self._poll_interval_seconds = poll_interval_seconds
         self._wait_timeout_seconds = wait_timeout_seconds
         self._max_entry_bytes = max_entry_bytes
+        self._cache_write_mode = cache_write_mode
 
     def get_or_build(
         self,
@@ -262,6 +265,15 @@ class DynamicResponseCache:
         started = time.perf_counter() if _stage_timing_enabled() else None
         request_json = canonical_request_json(request)
         request_ms = (time.perf_counter() - started) * 1000 if started is not None else None
+        if self._cache_write_mode == CacheWriteMode.DISABLED:
+            payload = self._build_without_cache(request_json=request_json, builder=builder)
+            if started is not None:
+                logger.info(
+                    "market_latency_cache action=disabled request_ms=%.3f total_ms=%.3f",
+                    request_ms or 0.0,
+                    (time.perf_counter() - started) * 1000,
+                )
+            return CachedResponse(payload=payload)
         source_started = time.perf_counter() if started is not None else None
         source_epoch = self._store.source_epoch()
         source_epoch_ms = (time.perf_counter() - source_started) * 1000 if source_started is not None else None
@@ -306,6 +318,35 @@ class DynamicResponseCache:
                 raise DynamicMarketOverloadedError("timed out waiting for an identical dynamic-market request")
             time.sleep(self._poll_interval_seconds)
 
+    def _build_without_cache(
+        self,
+        *,
+        request_json: str,
+        builder: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not self._build_semaphore.acquire(blocking=False):
+            raise DynamicMarketOverloadedError("dynamic-market miss capacity is full")
+        try:
+            return self._run_builder(request_json=request_json, builder=builder)
+        finally:
+            self._build_semaphore.release()
+
+    @staticmethod
+    def _run_builder(
+        *,
+        request_json: str,
+        builder: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        non_finite_paths: list[str] = []
+        payload = normalize_json_value(builder(), on_non_finite=non_finite_paths.append)
+        if non_finite_paths:
+            logger.warning(
+                "dynamic_response_non_finite_normalized request=%s paths=%s",
+                request_json,
+                non_finite_paths,
+            )
+        return payload
+
     def _build(
         self,
         *,
@@ -325,14 +366,7 @@ class DynamicResponseCache:
             )
             raise DynamicMarketOverloadedError("dynamic-market miss capacity is full")
         try:
-            non_finite_paths: list[str] = []
-            payload = normalize_json_value(builder(), on_non_finite=non_finite_paths.append)
-            if non_finite_paths:
-                logger.warning(
-                    "dynamic_response_non_finite_normalized request=%s paths=%s",
-                    request_json,
-                    non_finite_paths,
-                )
+            payload = self._run_builder(request_json=request_json, builder=builder)
             response_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             stored_response = _encode_cached_response(response_json)
             if len(stored_response.encode("utf-8")) > self._max_entry_bytes:

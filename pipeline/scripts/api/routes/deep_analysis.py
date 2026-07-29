@@ -37,7 +37,7 @@ from pipeline.scripts.api.deep_analysis_serving import (
 from pipeline.scripts.api.deep_analysis_runtime import build_strategic_row, load_events
 from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, normalize_json_value
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
-from pipeline.scripts.api.config import get_settings
+from pipeline.scripts.api.config import CacheWriteMode, get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
 from pipeline.scripts.utils.atc4 import normalize_atc4
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
@@ -348,6 +348,8 @@ def _refresh_cached_brand_elements(brand_keys: list[str]) -> None:
 
 
 def _load_cached_brand_elements(brand_keys: list[str]) -> dict[str, dict]:
+    if get_settings().cache_write_mode == CacheWriteMode.DISABLED:
+        return _load_cached_brand_elements_read_only(brand_keys)
     keys = [key for key in dict.fromkeys(str(value) for value in brand_keys if str(value).strip())]
     if not keys:
         return {}

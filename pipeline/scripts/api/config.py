@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from enum import Enum
 
 import pymysql
+
+
+class CacheWriteMode(str, Enum):
+    ISOLATED = "isolated"
+    DISABLED = "disabled"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -28,6 +34,7 @@ class APIConfig:
     app_version: str
     external_path_prefix: str
     log_level: str
+    cache_write_mode: CacheWriteMode
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     cache_ttl_seconds: int = 86400
@@ -53,6 +60,7 @@ def load_config() -> APIConfig:
         app_version=os.getenv("APP_VERSION", "v0.1.0"),
         external_path_prefix=os.getenv("EXTERNAL_PATH_PREFIX", ""),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        cache_write_mode=CacheWriteMode(os.getenv("CACHE_WRITE_MODE", "isolated").strip().lower()),
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=_env_int("API_PORT", 8000),
         dynamic_max_brand_rows=_env_int("DYNAMIC_MAX_BRAND_ROWS", 3000),
