@@ -44,6 +44,7 @@ from pipeline.scripts.ingest_hook.post_gate import (
     sample_existing_periods,
     staging_row_count,
 )
+from pipeline.scripts.ingest_hook import publish_approval
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 
 
@@ -681,6 +682,14 @@ def run(
                 if mart_activation is not None:
                     from pipeline.scripts.ingest_hook import ubist_mart_activation
 
+                    publish_approval.wait_for_exact_publish_approval(
+                        publish_approval.PublishApprovalIdentity(
+                            epoch=manifest.epoch,
+                            category=manifest.category,
+                            manifest_sha=manifest.manifest_sha,
+                            run_id=run_id,
+                        )
+                    )
                     tracker.enter("mart_publish")
                     writer_db = mart_activation.target_db if is_shadow else None
                     writer_conn = config.open_mart_connection(writer_db)

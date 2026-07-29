@@ -43,6 +43,7 @@ _PASSTHROUGH_VALUES = (
     "INGEST_SHADOW_CRASH_AT",
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
     "INGEST_MART_PROMOTION_APPROVED",
+    "INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL",
     "INGEST_MART_SOURCE_DB",
     "INGEST_MART_TARGET_DB",
     "INGEST_MART_BUILD_PREFIX",
@@ -172,6 +173,29 @@ def render_job(
     run_id: str | None = None,
 ) -> dict:
     name = job_name(category, manifest_sha, run_id)
+    job_env = [
+        *_job_env(),
+        {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
+        {
+            "name": "JW_PIPELINE_STATE_FILE",
+            "value": (
+                f"{config.MARKET_OUTPUT_ROOT}/ingest-checkpoints/"
+                f"{category}/{manifest_sha}/orchestrator-state.json"
+            ),
+        },
+    ]
+    if os.environ.get("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "").strip() == "1":
+        if run_id is None:
+            raise ValueError("exact publish approval requires a run_id")
+        job_env.append(
+            {
+                "name": "INGEST_PUBLISH_APPROVAL_FILE",
+                "value": (
+                    f"{config.MARKET_OUTPUT_ROOT}/ingest-approvals/"
+                    f"{category}/{manifest_sha}/{run_id}.json"
+                ),
+            }
+        )
     local_root = (
         config.input_root()
         if os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
@@ -281,17 +305,7 @@ def render_job(
                                 "--job-name",
                                 name,
                             ],
-                            "env": [
-                                *_job_env(),
-                                {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
-                                {
-                                    "name": "JW_PIPELINE_STATE_FILE",
-                                    "value": (
-                                        f"{config.MARKET_OUTPUT_ROOT}/ingest-checkpoints/"
-                                        f"{category}/{manifest_sha}/orchestrator-state.json"
-                                    ),
-                                },
-                            ],
+                            "env": job_env,
                             **({"volumeMounts": volume_mounts} if volume_mounts else {}),
                             "resources": resources,
                         }

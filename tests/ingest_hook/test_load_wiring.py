@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import pymysql
 
-from pipeline.scripts.ingest_hook import config, job_runner
+from pipeline.scripts.ingest_hook import config, job_runner, publish_approval
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -486,6 +486,11 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "publish_shadow",
         lambda *_args, **_kwargs: order.append("mart_publish") or (),
     )
+    monkeypatch.setattr(
+        publish_approval,
+        "wait_for_exact_publish_approval",
+        lambda *_args, **_kwargs: order.append("publish_approval"),
+    )
     original_update_journal = ubist_mart_activation.update_activation_journal
 
     def update_journal(path, phase):
@@ -521,6 +526,8 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
     assert order.index("load") < order.index("mart_build")
     assert catalog_preflight_args[0]["ubist_dir"] == live_root
     assert order.index("mart_build") < order.index("post_gate")
+    assert order.index("post_gate") < order.index("publish_approval")
+    assert order.index("publish_approval") < order.index("corpus_promote")
     assert order.index("post_gate") < order.index("corpus_promote")
     assert order.index("corpus_promote") < order.index("mart_publish")
     assert order.index("mart_publish") < order.index("refresh")

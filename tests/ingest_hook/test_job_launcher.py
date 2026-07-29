@@ -135,6 +135,26 @@ def test_rendered_retries_share_manifest_scoped_durable_stage_checkpoint():
     assert state_path(second) == expected
 
 
+def test_rendered_job_scopes_publish_approval_to_exact_run(monkeypatch):
+    monkeypatch.setenv("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "1")
+    run_id = "run-a4"
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id=run_id,
+    )
+
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL"] == "1"
+    assert env["INGEST_PUBLISH_APPROVAL_FILE"] == (
+        f"/market-output/ingest-approvals/ubist/{SHA}/{run_id}.json"
+    )
+
+
 def test_submit_uses_injected_transport(fake_transport):
     name = submit_job(
         category="iqvia", manifest_sha=SHA, manifest_path="/data/m.json",
