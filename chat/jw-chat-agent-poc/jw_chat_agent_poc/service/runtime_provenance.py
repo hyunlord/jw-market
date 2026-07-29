@@ -11,6 +11,7 @@ from jw_chat_agent_poc import genos_config
 from jw_chat_agent_poc.agent_loop.bq_contracts import BQ_CONTRACT_IDS
 from jw_chat_agent_poc.agent_loop.element_ledger import disposition_from_ledger
 from jw_chat_agent_poc.agent_loop.structured_planner import STRUCTURED_PLAN_KINDS
+from jw_chat_agent_poc.common.timing import internal_latency_payload
 from jw_chat_agent_poc.orchestrator.agent import QueryFailureReason
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
@@ -262,6 +263,9 @@ def _qa_trace(
         "tools": _qa_tool_calls(result),
         "plan": _qa_plan(result),
         "spans": _qa_spans(result),
+        "latency": internal_latency_payload(
+            result.get("timing") if isinstance(result.get("timing"), Mapping) else None
+        ),
         "claims": claim_trace,
         "answer_delivery": project_answer_delivery(result),
         "final": final,
