@@ -1448,3 +1448,94 @@ def test_cause_question_after_a_non_news_turn_hands_the_agent_nothing(monkeypatc
 
     assert FakeAgent.issue_contexts == [()]
     assert follow_up["result"]["_qa_anaphora"]["inherited_issue_observation"] is False
+
+
+def _live_shape_news_result() -> dict:
+    """A news turn in the shape the live pod actually returns.
+
+    Transcribed from an in-process capture on the serving image: the call is named
+    ``deep_analysis_related_news`` and says it is the news search only through
+    ``render_data['facade_tool']``. The earlier fixture used ``tool='search_news'``,
+    which no live call ever sets, so the extractor passed its tests while matching
+    nothing in production. The empty ``web_search`` call is kept because it is the
+    one entry the old tool-name test did match — and it carries no items, which is
+    why the observation came out empty.
+    """
+    return {
+        "resolution": {"canonical_brand": "리바로"},
+        "answer": "리바로 관련 최근 이슈를 정리했습니다.",
+        "tool_calls": [
+            {
+                "tool": "deep_analysis_related_news",
+                "source": "deep_analysis_events",
+                "status": "ok",
+                "render_data": {
+                    "brand": "리바로",
+                    "facade_tool": "search_news",
+                    "status": "ok",
+                    "items": [
+                        {
+                            "category": "정책/규제",
+                            "date": "2026-07-02",
+                            "source": "히트뉴스",
+                            "title": "신약 심사에 밀린 일반품목들... 식약처, 선검토 병목 풀까",
+                            "url": "https://example.test/1",
+                        },
+                        {
+                            "category": "약가",
+                            "date": "2026-06-20",
+                            "source": "데일리팜",
+                            "title": "고지혈증 치료제 약가 인하 고시",
+                            "url": "https://example.test/2",
+                        },
+                    ],
+                },
+            },
+            {
+                "tool": "web_search",
+                "source": "web_search",
+                "status": "no_data",
+                "render_data": {"brand": "리바로", "facade_tool": "web_search", "status": "no_data"},
+            },
+            {"tool": "get_brand_metric", "source": "UBIST", "render_data": {"brand": "리바로"}},
+        ],
+    }
+
+
+def test_news_call_named_by_facade_tool_is_still_recorded() -> None:
+    slots = extract_conversation_slots(_live_shape_news_result())
+
+    assert slots.issue_observation == (
+        "신약 심사에 밀린 일반품목들... 식약처, 선검토 병목 풀까",
+        "고지혈증 치료제 약가 인하 고시",
+    )
+
+
+def test_cause_followup_after_a_live_shaped_news_turn_inherits_it() -> None:
+    turn = ConversationTurn(
+        question="리바로 관련 최근 이슈 뭐 있어?",
+        answer="리바로 관련 최근 이슈를 정리했습니다.",
+        slots=extract_conversation_slots(_live_shape_news_result()),
+    )
+
+    resolution = resolve_anaphora("리바로 왜 이렇게 됐어?", turn)
+
+    assert resolution.recogniser == ReferenceRecogniser.ISSUE_CAUSE
+    assert resolution.inherited_issue_observation[0].startswith("신약 심사에 밀린")
+
+
+def test_news_call_with_no_items_records_nothing_even_though_it_is_named_news() -> None:
+    # The empty web_search leg on its own must not make the turn look like it showed
+    # something: it is named news and succeeded, but put no headline on screen.
+    result = {
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [
+            {
+                "tool": "web_search",
+                "status": "no_data",
+                "render_data": {"facade_tool": "web_search", "status": "no_data"},
+            }
+        ],
+    }
+
+    assert extract_conversation_slots(result).issue_observation == ()

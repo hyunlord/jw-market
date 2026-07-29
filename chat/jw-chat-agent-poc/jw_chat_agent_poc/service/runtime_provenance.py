@@ -292,6 +292,7 @@ def _qa_anaphora(result: Mapping[str, Any]) -> dict[str, Any]:
     recogniser = observation.get("recogniser")
     unresolved = observation.get("unresolved_reference")
     shape = observation.get("candidate_shape")
+    inherited = observation.get("inherited_issue_observation")
     return {
         "status": (
             (status if status in _REFERENCE_STATUS_ALLOW else _UNREGISTERED)
@@ -305,6 +306,12 @@ def _qa_anaphora(result: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "candidate_shape": shape if isinstance(shape, bool) else None,
         "unresolved_reference": unresolved if isinstance(unresolved, bool) else None,
+        # Whether a cause question took over the previous turn's news observation.
+        # The resolver has emitted this since GPT5-FIX-P3, but this projection dropped
+        # it, so the one field that separates an inherited cause question from an
+        # identical standalone one was invisible in the live trace. A bool, like the
+        # two above it — the headlines themselves are content and stay out of here.
+        "inherited_issue_observation": inherited if isinstance(inherited, bool) else None,
     }
 
 

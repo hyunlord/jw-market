@@ -382,22 +382,37 @@ def _inherited_issue_observation(
     return previous_turn.slots.issue_observation
 
 
+def _is_news_observation_call(call: dict[str, Any], data: dict[str, Any]) -> bool:
+    """Whether this call is the news search, by either name it goes under.
+
+    A live news call arrives as ``tool='deep_analysis_related_news'`` and says it is
+    the news search only in ``render_data['facade_tool']``. Reading ``tool`` alone
+    matched nothing but an empty ``web_search``, so the headlines were never seen.
+    ``facade_tool`` is the name the rest of the loop already dispatches on for this
+    exact purpose, so it is the reliable one; ``tool`` is kept as well because the
+    deterministic planners do emit ``search_news`` there directly.
+    """
+    if _text(call.get("tool")) in _NEWS_OBSERVATION_TOOLS:
+        return True
+    return _text(data.get("facade_tool")) in _NEWS_OBSERVATION_TOOLS
+
+
 def _issue_observation(result: dict[str, Any]) -> tuple[str, ...]:
     """Headlines the news tools actually returned for this turn.
 
-    Only successful news calls count: an errored ``search_news`` put nothing in front
-    of the user, so inheriting from it would invent an observation. Bounded to the
-    leading few titles because this is stored on every turn and read as context, not
-    replayed as content.
+    Only successful news calls count: an errored or empty news search put nothing in
+    front of the user, so inheriting from it would invent an observation. Bounded to
+    the leading few titles because this is stored on every turn and read as context,
+    not replayed as content.
     """
     titles: list[str] = []
     for call in result.get("tool_calls", []):
         if not isinstance(call, dict):
             continue
-        if _text(call.get("tool")) not in _NEWS_OBSERVATION_TOOLS:
-            continue
         data = call.get("render_data")
         if not isinstance(data, dict) or _text(data.get("status")) == "error":
+            continue
+        if not _is_news_observation_call(call, data):
             continue
         for item in data.get("items", []):
             if not isinstance(item, dict):

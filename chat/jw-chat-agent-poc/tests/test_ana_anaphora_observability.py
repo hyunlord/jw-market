@@ -155,6 +155,10 @@ def test_pattern_miss_reaches_the_delivered_response_not_only_the_resolver() -> 
         "recogniser": None,
         "candidate_shape": True,
         "unresolved_reference": False,
+        # A bare follow-up inherits no news observation; the flag says so with a bool.
+        # This assertion compares the whole dict, so the key is listed rather than
+        # letting a newly projected field slip past unasserted.
+        "inherited_issue_observation": False,
     }
 
 
@@ -169,3 +173,39 @@ def test_delivered_response_separates_resolved_from_unanchored_and_standalone() 
     standalone = _delivered_anaphora("리바로 매출 알려줘", "ana-public-plain", seeded=False)
     assert standalone["status"] == "not_anaphoric"
     assert standalone["candidate_shape"] is False
+
+
+def test_projection_carries_whether_a_cause_question_inherited_an_observation() -> None:
+    """The field GPT5-FIX-P3 added to the resolver has to survive the projection.
+
+    Without this the live trace could not tell an inherited cause question from an
+    identical standalone one: both plan the same contract, so the contract id says
+    nothing, and the projection is what the request trace actually carries.
+    """
+    from jw_chat_agent_poc.service.conversation import ConversationSlots, ConversationTurn
+    from jw_chat_agent_poc.service.runtime_provenance import _qa_anaphora
+
+    turn = ConversationTurn(
+        question="리바로 관련 최근 이슈 뭐 있어?",
+        answer="정리했습니다.",
+        slots=ConversationSlots(issue_observation=("고지혈증 치료제 약가 인하 고시",)),
+    )
+    inherited = _qa_anaphora(
+        {"_qa_anaphora": anaphora_observation(resolve_anaphora("리바로 왜 이렇게 됐어?", turn))}
+    )
+    standalone = _qa_anaphora(
+        {"_qa_anaphora": anaphora_observation(resolve_anaphora("리바로 왜 이렇게 됐어?", None))}
+    )
+
+    assert inherited["inherited_issue_observation"] is True
+    assert inherited["status"] == "inherited_observation"
+    assert inherited["recogniser"] == "issue_cause"
+    assert standalone["inherited_issue_observation"] is False
+    # Headlines are content and must not ride along in the trace.
+    assert "약가" not in repr(inherited)
+
+
+def test_projection_reports_not_observed_as_null_not_false() -> None:
+    from jw_chat_agent_poc.service.runtime_provenance import _qa_anaphora
+
+    assert _qa_anaphora({})["inherited_issue_observation"] is None

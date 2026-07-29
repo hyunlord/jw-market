@@ -205,6 +205,10 @@ def test_market_membership_mismatch_bypasses_final_llm_and_keeps_names(
             "recogniser": None,
             "candidate_shape": None,
             "unresolved_reference": None,
+            # Same reading as the keys above: nothing was observed, so null rather
+            # than False, which would claim a cause question was seen and found not
+            # to inherit anything.
+            "inherited_issue_observation": None,
         },
     }
     assert streamed == []
