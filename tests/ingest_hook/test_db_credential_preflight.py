@@ -105,6 +105,61 @@ def test_select_one_failure_blocks_before_expensive_stages():
     assert "database account is locked" not in message
 
 
+def test_shortlong_runner_failure_is_named_after_mart_probe_succeeds():
+    mart = _Connection()
+    bundle = _Connection()
+
+    def runner_connect():
+        raise RuntimeError("access denied for runner account")
+
+    with pytest.raises(
+        db_credential_preflight.DBCredentialPreflightError
+    ) as caught:
+        db_credential_preflight.run_preflight(
+            environ=PASSWORD_ENV,
+            connect=lambda: mart,
+            additional_connectors={
+                "shortlong_bundle": lambda: bundle,
+                "shortlong_runner": runner_connect,
+            },
+        )
+
+    message = str(caught.value)
+    assert "connector=shortlong_runner" in message
+    assert "database_probe=failed" in message
+    assert "access denied for runner account" not in message
+    assert mart.closed is True
+    assert bundle.closed is True
+
+
+def test_all_database_connectors_are_probed_once():
+    connections = {
+        "mart": _Connection(),
+        "shortlong_bundle": _Connection(),
+        "shortlong_runner": _Connection(),
+    }
+
+    db_credential_preflight.run_preflight(
+        environ=PASSWORD_ENV,
+        connect=lambda: connections["mart"],
+        additional_connectors={
+            name: (lambda connector=connection: connector)
+            for name, connection in connections.items()
+            if name != "mart"
+        },
+    )
+
+    for connection in connections.values():
+        assert connection.cursor_value.queries == ["SELECT 1"]
+        assert connection.closed is True
+
+
+def test_default_shortlong_connector_inventory_matches_runtime_ports():
+    connectors = db_credential_preflight._default_shortlong_connectors()
+
+    assert tuple(connectors) == ("shortlong_bundle", "shortlong_runner")
+
+
 def test_stage_runner_does_not_spawn_job_when_preflight_fails(
     tmp_path: Path, monkeypatch, capsys
 ):

@@ -38,14 +38,28 @@ def _default_connect() -> Any:
     return config.open_mart_connection()
 
 
-def run_preflight(
-    *,
-    environ: Mapping[str, str] | None = None,
-    connect: Callable[[], Any] | None = None,
-) -> None:
-    """Validate password aliases and prove the configured DB accepts a query."""
-    _validate_password_environment(environ if environ is not None else os.environ)
-    connector = connect or _default_connect
+def _default_shortlong_connectors() -> Mapping[str, Callable[[], Any]]:
+    from pipeline.scripts.ai_analysis.agent2_regen_orchestrator import (
+        PHASE_ZETA_ROOT,
+        BundleConfig,
+        RunnerConfig,
+        _connect_bundle_db,
+        _connect_runner_db,
+    )
+
+    bundle_config = BundleConfig.from_yaml(
+        PHASE_ZETA_ROOT / "configs" / "phase_zeta_v1_1.yaml"
+    )
+    runner_config = RunnerConfig.from_yaml(
+        PHASE_ZETA_ROOT / "configs" / "genos_runner_v1.yaml"
+    )
+    return {
+        "shortlong_bundle": lambda: _connect_bundle_db(bundle_config),
+        "shortlong_runner": lambda: _connect_runner_db(runner_config),
+    }
+
+
+def _probe_connector(name: str, connector: Callable[[], Any]) -> None:
     connection = None
     cursor = None
     try:
@@ -54,15 +68,34 @@ def run_preflight(
         cursor.execute("SELECT 1")
         if cursor.fetchone() is None:
             raise RuntimeError("SELECT 1 returned no row")
-    except DBCredentialPreflightError:
-        raise
     except Exception as exc:
         raise DBCredentialPreflightError(
             "DB credential preflight blocked before g3: "
-            f"database_probe=failed error_type={type(exc).__name__}"
+            f"connector={name} database_probe=failed "
+            f"error_type={type(exc).__name__}"
         ) from None
     finally:
         if cursor is not None:
             cursor.close()
         if connection is not None:
             connection.close()
+
+
+def run_preflight(
+    *,
+    environ: Mapping[str, str] | None = None,
+    connect: Callable[[], Any] | None = None,
+    additional_connectors: Mapping[str, Callable[[], Any]] | None = None,
+) -> None:
+    """Validate aliases and prove every ingest-reachable DB accepts a query."""
+    _validate_password_environment(environ if environ is not None else os.environ)
+    connectors: dict[str, Callable[[], Any]] = {
+        "mart": connect or _default_connect,
+    }
+    if additional_connectors is not None:
+        connectors.update(additional_connectors)
+    elif connect is None:
+        connectors.update(_default_shortlong_connectors())
+
+    for name, connector in connectors.items():
+        _probe_connector(name, connector)
