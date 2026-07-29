@@ -367,13 +367,36 @@ def test_resolve_anaphora_never_treats_period_or_metric_as_contrast_brand() -> N
         slots=ConversationSlots(anchor_brand="리피토"),
     )
 
-    for question in ("그럼 3분기는?", "그럼 점유율은?", "그럼 시장은?", "그럼 그건?"):
+    for question in ("그럼 3분기는?", "그럼 점유율은?", "그럼 그건?"):
         resolved = resolve_anaphora(question, previous)
 
         assert resolved.resolved_question == question
         assert resolved.brand is None
         assert resolved.interpretation_notice is None
         assert resolved.unresolved_reference is True
+
+
+def test_resolve_anaphora_treats_prefixed_bare_market_as_market_reference() -> None:
+    previous = ConversationTurn(
+        question="아일리아 시장 브랜드 알려줘",
+        answer="아일리아 시장 브랜드를 확인했습니다.",
+        slots=ConversationSlots(
+            anchor_brand="아일리아",
+            market="ml_001",
+            market_definition="ATC4 S01P0 시장",
+        ),
+    )
+
+    for question in ("그럼 시장은?", "그러면 시장은?", "그렇다면 시장은?"):
+        assert requires_previous_turn(question) is True
+
+        resolved = resolve_anaphora(question, previous)
+
+        assert resolved.resolved_question == "ATC4 S01P0 시장 규모는?"
+        assert resolved.reference_status.value == "resolved"
+        assert resolved.recogniser.value == "bare_market"
+        assert resolved.brand is None
+        assert resolved.unresolved_reference is False
 
 
 def test_resolve_anaphora_inherits_grounded_brand_for_metric_only_followup() -> None:

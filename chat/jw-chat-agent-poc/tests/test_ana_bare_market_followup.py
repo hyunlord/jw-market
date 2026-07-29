@@ -164,6 +164,14 @@ def test_router_receives_the_resolved_market_question_not_the_bare_one() -> None
     assert anaphora["recogniser"] == "bare_market"
 
 
+def test_router_receives_prefixed_bare_market_as_the_resolved_market_question() -> None:
+    answer, anaphora = _delivered("그럼 시장은?", "ana-market-prefixed-e2e", seeded=True)
+
+    assert "ATC4 S01P0 시장 규모는?" in answer
+    assert anaphora["status"] == "resolved"
+    assert anaphora["recogniser"] == "bare_market"
+
+
 def test_first_turn_bare_market_asks_which_market_instead_of_guessing() -> None:
     answer, anaphora = _delivered("시장은?", "ana-market-first", seeded=False)
 
