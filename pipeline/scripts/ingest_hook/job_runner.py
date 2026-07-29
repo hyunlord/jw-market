@@ -30,7 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
-from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
+from pipeline.scripts.ingest_hook.category_map import (
+    CategorySpec,
+    UnknownCategoryError,
+    resolve_category,
+)
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
 from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
@@ -133,6 +137,30 @@ class _StageTracker:
 
     def _elapsed_ms(self) -> int | None:
         return int((time.monotonic() - self._t0) * 1000) if self._t0 is not None else None
+
+
+def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
+    """Return the deterministic stage skeleton for one category."""
+    supports_mart = spec.key == "ubist" and spec.production_load_supported
+    applicability = {
+        "g3": True,
+        "load": bool(spec.load_argv),
+        "load_verify": bool(spec.load_verify),
+        "mart_build": supports_mart,
+        "sigma": supports_mart and bool(spec.sigma_source),
+        "post_gate": supports_mart and bool(spec.sigma_source),
+        "mart_publish": supports_mart,
+        "refresh": bool(spec.refresh_argv) and spec.production_load_supported,
+        "signal": True,
+    }
+    return [
+        {
+            "stage": stage,
+            "seq": seq,
+            "applicable": applicability[stage],
+        }
+        for seq, stage in enumerate(_StageTracker.STAGES, start=1)
+    ]
 
 
 def _rehearsal_load(manifest, input_root: Path, rehearsal_root: Path) -> str:

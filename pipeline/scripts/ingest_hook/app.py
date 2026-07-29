@@ -24,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from pipeline.scripts.ingest_hook import config, job_launcher, stage_logs
+from pipeline.scripts.ingest_hook import config, job_launcher, job_runner, stage_logs
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import (
@@ -528,6 +528,10 @@ def create_app(service: IngestService) -> FastAPI:
             signals = service.ledger.signal_events(epoch, category, manifest_sha)
         except Exception:  # observation remains additive and best-effort
             signals = []
+        try:
+            expected = job_runner.expected_stages(resolve_category(entry.category))
+        except UnknownCategoryError:
+            expected = []
         current_stage = next(
             (event.stage for event in reversed(events) if event.status == "running"), None
         )
@@ -543,6 +547,7 @@ def create_app(service: IngestService) -> FastAPI:
             "finished_at": entry.finished_at,
             # -- new (additive) --
             "current_stage": current_stage,
+            "expected_stages": expected,
             "stages": [
                 {
                     "run_id": event.run_id,

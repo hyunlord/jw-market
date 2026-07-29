@@ -92,6 +92,72 @@ def test_v1_stages_exposed_on_status_api(service, client, bucket, tmp_path):
     assert status["signals"][0]["mode"] == "staging"
 
 
+def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
+    manifest_path = write_submission(bucket)
+    payload = client.post(
+        "/ingest/webhook", json={"manifest_path": str(manifest_path.relative_to(bucket))}
+    ).json()
+
+    status = client.get(
+        "/ingest/status",
+        params={
+            "epoch": payload["epoch"],
+            "category": "ubist",
+            "manifest_sha": payload["manifest_sha"],
+        },
+    ).json()
+
+    assert status["expected_stages"] == [
+        {"stage": stage, "seq": seq, "applicable": True}
+        for seq, stage in enumerate(job_runner._StageTracker.STAGES, start=1)
+    ]
+
+
+def test_expected_stage_applicability_comes_from_category_spec(client, bucket):
+    manifest_path = write_submission(bucket, category="iqvia_csd_keyword")
+    payload = client.post(
+        "/ingest/webhook", json={"manifest_path": str(manifest_path.relative_to(bucket))}
+    ).json()
+
+    status = client.get(
+        "/ingest/status",
+        params={
+            "epoch": payload["epoch"],
+            "category": "iqvia_csd_keyword",
+            "manifest_sha": payload["manifest_sha"],
+        },
+    ).json()
+    applicability = {
+        item["stage"]: item["applicable"] for item in status["expected_stages"]
+    }
+
+    assert list(applicability) == list(job_runner._StageTracker.STAGES)
+    assert applicability["load"] is True
+    assert applicability["load_verify"] is True
+    assert applicability["mart_build"] is False
+    assert applicability["sigma"] is False
+    assert applicability["post_gate"] is False
+    assert applicability["mart_publish"] is False
+    assert applicability["refresh"] is False
+
+
+def test_unknown_legacy_category_keeps_status_available(service, client):
+    identity = ("2026-07", "legacy_category", "f" * 64)
+    service.ledger.receive(*identity, manifest_path="_manifests/legacy/manifest.json")
+
+    response = client.get(
+        "/ingest/status",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["expected_stages"] == []
+
+
 def test_v2_g3_failure_records_g3_failed_with_reason(sqlite_ledger, bucket, tmp_path):
     # broken schema -> G3 fails; the g3 stage must be recorded failed with the reason.
     manifest_path = write_submission(bucket, header=("period", "level", "name", "amount"))
@@ -166,6 +232,7 @@ def test_v7_status_api_is_backward_compatible(client, bucket):
         assert key in status, key
     # additive keys
     assert "stages" in status and isinstance(status["stages"], list)
+    assert "expected_stages" in status and isinstance(status["expected_stages"], list)
     assert "current_stage" in status
     assert "log_ref" in status and "durable_log_hint" in status["log_ref"]
 
