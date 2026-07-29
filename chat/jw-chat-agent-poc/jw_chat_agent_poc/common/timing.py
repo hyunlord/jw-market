@@ -196,6 +196,17 @@ def request_span_scope() -> Iterator[list[dict[str, Any]]]:
 
 
 @contextmanager
+def suspend_request_spans() -> Iterator[None]:
+    """Exclude private sidecar work from the request's public QA span list."""
+
+    token = _ACTIVE_REQUEST_SPANS.set(None)
+    try:
+        yield
+    finally:
+        _ACTIVE_REQUEST_SPANS.reset(token)
+
+
+@contextmanager
 def trace_span(
     name: str,
     detail: str = "",
