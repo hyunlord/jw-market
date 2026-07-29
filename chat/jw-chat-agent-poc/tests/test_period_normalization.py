@@ -111,3 +111,44 @@ def test_explicit_market_route_preserves_requested_period(
 
     assert result["period"] == expected_period
     assert resolver.periods == [expected_period]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_months"),
+    (
+        # 개년 is the form that used to match nothing and fall back to the latest point.
+        ("최근 3개년", 36),
+        ("최근 1개년", 12),
+        ("최근 5개년", 60),
+        # the units that already worked must be untouched
+        ("최근 3년", 36),
+        ("최근 1년", 12),
+        ("최근 5년", 60),
+        ("최근 6개월", 6),
+        ("최근 12개월", 12),
+        ("최근 3달", 3),
+        # the 2..60 clamp applies to the new unit exactly as it does to 년
+        ("최근 6개년", None),
+        ("최근 6년", None),
+        ("최근 61개월", None),
+        ("최근 1개월", None),
+        # 최근 and the digits are both still required
+        ("최근 개년", None),
+        ("3개년", None),
+        ("최근 3분기", None),
+    ),
+)
+def test_relative_history_points_reads_every_year_and_month_wording(
+    question: str,
+    expected_months: int | None,
+) -> None:
+    from jw_chat_agent_poc.agent_loop.bq_planner import (
+        _relative_history_points as bq_planner_points,
+    )
+    from jw_chat_agent_poc.agent_loop.structured_planner import (
+        _relative_history_points as structured_points,
+    )
+
+    # The two planners carry the same parser; they must never disagree.
+    assert structured_points(question) == expected_months
+    assert bq_planner_points(question) == expected_months

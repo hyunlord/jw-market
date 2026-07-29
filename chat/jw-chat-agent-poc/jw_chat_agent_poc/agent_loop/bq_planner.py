@@ -210,9 +210,12 @@ def _period(question: str, grounding: AgentPeriodGrounding) -> str:
 
 
 def _relative_history_points(question: str) -> int | None:
-    match = re.search(r"최근\s*(\d{1,2})\s*(년|개월|달)", question)
+    # Kept identical to the structured planner's copy. 개년 precedes 년 so "3개년"
+    # consumes the whole unit, and it counts as a year rather than a month; without
+    # both halves get_brand_series would fall back to its 60-point default.
+    match = re.search(r"최근\s*(\d{1,2})\s*(개년|년|개월|달)", question)
     if match is None:
         return None
     count = int(match.group(1))
-    months = count * 12 if match.group(2) == "년" else count
+    months = count * 12 if match.group(2) in {"년", "개년"} else count
     return months if 2 <= months <= 60 else None

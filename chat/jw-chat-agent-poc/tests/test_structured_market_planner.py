@@ -235,3 +235,53 @@ def test_query_tool_descriptions_require_context_companions() -> None:
     assert "매출" in descriptions["get_brand_share"]
     assert "시장규모" in descriptions["get_brand_share"]
     assert "순위" in descriptions["get_brand_share"]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_history_points"),
+    (
+        ("리바로 최근 3개년 매출 추이", "36"),
+        ("리바로 최근 3년 매출 추이", "36"),
+        ("리바로 최근 1개년 매출 추이", "12"),
+        ("리바로 최근 5개년 매출 추이", "60"),
+        ("리바로 최근 6개월 매출 추이", "6"),
+    ),
+)
+def test_relative_year_wording_plans_the_same_series_length(
+    question: str,
+    expected_history_points: str,
+) -> None:
+    # "N개년" used to match neither 년 nor 개월, so the period silently fell back to the
+    # latest point and a three-year request was answered with recent months. It has to
+    # count as a year, not a month: 3개년 is 36 points, not 3.
+    resolver = BrandResolver(mode="fixture")
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
+
+    plan = plan_structured_market_question(question, resolver, grounding, schemas)
+
+    assert plan is not None
+    assert [call.name for call in plan.decision.tool_calls] == ["get_brand_series"]
+    assert plan.decision.tool_calls[0].arguments == {
+        "brand": "리바로",
+        "period": "latest",
+        "history_points": expected_history_points,
+    }
+
+
+def test_year_wording_variants_plan_identically() -> None:
+    resolver = BrandResolver(mode="fixture")
+
+    def plan_for(question: str):
+        grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+        schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
+        return plan_structured_market_question(question, resolver, grounding, schemas)
+
+    gaenyeon = plan_for("리바로 최근 3개년 매출 추이")
+    nyeon = plan_for("리바로 최근 3년 매출 추이")
+
+    assert gaenyeon is not None and nyeon is not None
+    assert gaenyeon.slots.history_points == nyeon.slots.history_points
+    assert [call.arguments for call in gaenyeon.decision.tool_calls] == [
+        call.arguments for call in nyeon.decision.tool_calls
+    ]
