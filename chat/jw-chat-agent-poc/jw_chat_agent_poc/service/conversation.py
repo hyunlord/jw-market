@@ -54,6 +54,11 @@ class ConversationSlots:
     file_measure: str | None = None
     file_manufacturer: str | None = None
     file_sheet: str | None = None
+    # Headlines of the news/issue items this turn actually put in front of the user. A
+    # following '왜 이렇게 됐어?' names no subject of its own: what it asks about is
+    # whatever was just shown. Nothing about the observation was recorded before, so the
+    # cause question could only ever be read as a standalone one.
+    issue_observation: tuple[str, ...] = ()
 
 
 def conversation_slots_to_dict(slots: ConversationSlots) -> dict[str, Any]:
@@ -94,6 +99,7 @@ def conversation_slots_to_dict(slots: ConversationSlots) -> dict[str, Any]:
             }
             for item in slots.ranked
         ],
+        "issue_observation": list(slots.issue_observation),
         "file_name": slots.file_name,
         "file_measure": slots.file_measure,
         "file_manufacturer": slots.file_manufacturer,
@@ -128,6 +134,7 @@ def conversation_slots_from_dict(value: object) -> ConversationSlots:
             )
         )
     ranked_brands = value.get("ranked_brands")
+    issue_observation = value.get("issue_observation")
     result_ref_value = value.get("result_ref")
     result_ref = (
         ResultReference(
@@ -158,6 +165,13 @@ def conversation_slots_from_dict(value: object) -> ConversationSlots:
             else ()
         ),
         ranked=tuple(ranked),
+        # A turn stored before this field existed has no key, so absence means "no
+        # observation was shown" — which is what every stored turn meant until now.
+        issue_observation=(
+            tuple(text for item in issue_observation if (text := _optional_text(item)))
+            if isinstance(issue_observation, list)
+            else ()
+        ),
         file_name=_optional_text(value.get("file_name")),
         file_measure=_optional_text(value.get("file_measure")),
         file_manufacturer=_optional_text(value.get("file_manufacturer")),

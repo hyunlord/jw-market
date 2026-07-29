@@ -105,7 +105,12 @@ class ToolUseAgent:
     query_layer: StrategicQueryLayer | None = None
     progress_namespace: str = "standard"
 
-    def answer(self, question: str) -> dict[str, Any]:
+    def answer(
+        self,
+        question: str,
+        *,
+        issue_context: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         timing = new_timing()
         planner = self.planner or GenosToolPlanner(fallback=HeuristicToolPlanner())
         with stage(timing, self._stage_name("agent_pre_resolve", "deep_research_prepare"), "brand and period grounding"):
@@ -235,6 +240,7 @@ class ToolUseAgent:
                     period_grounding,
                     tool_schemas,
                     facade.available_sources(),
+                    issue_context=issue_context,
                 )
                 if self.planner is None and not observations
                 else None

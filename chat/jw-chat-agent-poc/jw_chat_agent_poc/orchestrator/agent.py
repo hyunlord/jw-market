@@ -183,9 +183,18 @@ class ChatAgent:
         self.query_layer = dependencies.query_layer
         self._agent_loop_dependencies = dependencies.agent_loop_dependencies()
 
-    def answer(self, question: str, documents: list[Path] | None = None) -> dict[str, Any]:
+    def answer(
+        self,
+        question: str,
+        documents: list[Path] | None = None,
+        *,
+        issue_context: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         timing = new_timing()
         docs = documents or []
+        # Forwarded only when there is something to forward, so an agent loop that
+        # predates the parameter keeps being called exactly as before.
+        loop_kwargs: dict[str, Any] = {"issue_context": issue_context} if issue_context else {}
         conversation_fallback = _conversation_fallback(question) if not docs else None
         if conversation_fallback is not None:
             conversation_fallback["timing"] = timing
@@ -315,7 +324,7 @@ class ChatAgent:
                 )
         if preflight_plan_available:
             loop = build_tool_use_agent(self._agent_loop_dependencies)
-            result = loop.answer(question)
+            result = loop.answer(question, **loop_kwargs)
             diagnostics = result.setdefault("router_diagnostics", {})
             if isinstance(diagnostics, dict):
                 diagnostics["question_decomposition_bypassed"] = True
@@ -339,11 +348,11 @@ class ChatAgent:
                 return finish(tool_result)
         if not docs and _is_known_ingredient_patent_question(question):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return finish(loop.answer(question))
+            return finish(loop.answer(question, **loop_kwargs))
         portfolio_scope = not docs and is_portfolio_decline_question(question, routes) and should_use_agent_loop(question)
         if portfolio_scope:
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return finish(loop.answer(question))
+            return finish(loop.answer(question, **loop_kwargs))
         try:
             with stage(timing, "agent_pre_resolve", "brand resolver"):
                 resolution = (
@@ -385,7 +394,7 @@ class ChatAgent:
 
         if not docs and should_use_agent_loop(question, has_brand_anchor=True):
             loop = self.agent_loop or build_tool_use_agent(self._agent_loop_dependencies)
-            return finish(loop.answer(question))
+            return finish(loop.answer(question, **loop_kwargs))
 
         if any("none" in route.sources for route in routes):
             return finish(self._no_data(question, resolution, routes))

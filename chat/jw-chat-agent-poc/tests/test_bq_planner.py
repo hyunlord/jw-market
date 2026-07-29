@@ -27,11 +27,17 @@ BQ_QUESTIONS = (
 )
 
 
-def _plan(question: str):
+def _plan(question: str, *, issue_context: tuple[str, ...] = ()):
     resolver = BrandResolver(mode="fixture")
     grounding = build_period_grounding(question, current_month=lambda: "2026-06")
     schemas = tool_schemas(("리바로",), grounding.schema_periods, default_catalog())
-    return plan_bq_question(question, resolver, grounding, schemas)
+    return plan_bq_question(
+        question,
+        resolver,
+        grounding,
+        schemas,
+        issue_context=issue_context,
+    )
 
 
 @pytest.mark.parametrize(("contract_id", "question"), BQ_QUESTIONS)
@@ -124,3 +130,54 @@ def test_recent_three_year_bq_plan_uses_latest_endpoint_and_36_month_window() ->
     assert {call.arguments["period"] for call in period_calls} == {"latest"}
     assert series_calls
     assert {call.arguments["history_points"] for call in series_calls} == {"36"}
+
+
+_PRIOR_ISSUE = ("피타바스타틴 제네릭 대량 진입", "고지혈증 치료제 약가 인하 고시")
+
+
+def _news_query(plan) -> str:
+    call = next(call for call in plan.decision.tool_calls if call.name == "search_news")
+    return call.arguments["query"]
+
+
+def test_cause_question_after_a_news_turn_searches_for_that_issue() -> None:
+    plan = _plan("리바로 왜 이렇게 됐어?", issue_context=_PRIOR_ISSUE)
+
+    assert plan is not None
+    query = _news_query(plan)
+    assert "피타바스타틴 제네릭 대량 진입" in query
+    assert "고지혈증 치료제 약가 인하 고시" in query
+
+
+def test_inherited_issue_context_does_not_move_the_question_off_e2() -> None:
+    # The headlines name a metric ('약가'). Feeding them to the slot patterns would let
+    # an article's wording pick the contract, so the plan is compared against the same
+    # question planned with nothing inherited.
+    standalone = _plan("리바로 왜 이렇게 됐어?")
+    inherited = _plan("리바로 왜 이렇게 됐어?", issue_context=_PRIOR_ISSUE)
+
+    assert standalone is not None and inherited is not None
+    assert inherited.contract.contract_id == standalone.contract.contract_id == "E2"
+    assert inherited.slots.metrics == standalone.slots.metrics
+    assert inherited.slots.modifiers == standalone.slots.modifiers
+    assert [call.name for call in inherited.decision.tool_calls] == [
+        call.name for call in standalone.decision.tool_calls
+    ]
+
+
+def test_a_cause_question_with_nothing_inherited_keeps_its_plain_news_query() -> None:
+    plan = _plan("리바로 왜 이렇게 됐어?")
+
+    assert plan is not None
+    assert _news_query(plan) == "리바로 왜 이렇게 됐어?"
+
+
+def test_inherited_issue_context_leaves_other_tools_arguments_alone() -> None:
+    standalone = _plan("리바로 왜 이렇게 됐어?")
+    inherited = _plan("리바로 왜 이렇게 됐어?", issue_context=_PRIOR_ISSUE)
+
+    assert standalone is not None and inherited is not None
+    for before, after in zip(standalone.decision.tool_calls, inherited.decision.tool_calls):
+        if before.name == "search_news":
+            continue
+        assert before.arguments == after.arguments

@@ -57,6 +57,8 @@ def plan_bq_question(
     grounding: AgentPeriodGrounding,
     schemas: tuple[dict[str, object], ...],
     available_sources: tuple[str, ...] | None = None,
+    *,
+    issue_context: tuple[str, ...] = (),
 ) -> BqPlan | None:
     brands = _resolved_brands(question, resolver)
     if not brands:
@@ -65,6 +67,7 @@ def plan_bq_question(
         question,
         brand=brands[0],
         period=_period(question, grounding),
+        issue_context=issue_context,
     )
     contract_id = contract_id_for_slots(slots)
     contract = contract_for(contract_id or "")
@@ -178,7 +181,15 @@ def _arguments(
     if tool == "get_brand_series":
         arguments["history_points"] = str(_relative_history_points(slots.question) or 60)
     if tool in {"search_news", "web_search"}:
-        arguments["query"] = slots.question
+        # '리바로 왜 이렇게 됐어?' as a news query asks for nothing in particular. When
+        # the previous turn showed the issue the question is about, search for that
+        # instead of re-deriving it, so the cause analysis is built on the articles the
+        # user was just looking at rather than a fresh generic sweep.
+        arguments["query"] = (
+            " ".join((slots.question, *slots.issue_context))
+            if slots.issue_context
+            else slots.question
+        )
     if source:
         arguments["source"] = source
     return arguments
