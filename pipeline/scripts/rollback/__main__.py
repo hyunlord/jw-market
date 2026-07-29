@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import json
 import os
+from dataclasses import asdict
 from typing import Any
 
-from pipeline.scripts.deploy.analysis_cache_db import connect_admin, validate_schema_name
+from pipeline.scripts.deploy.analysis_cache_db import (
+    connect_admin,
+    validate_schema_name,
+)
 from pipeline.scripts.deploy.mart_load_verify import quote_id
 from pipeline.scripts.rollback.ledger import PromotionLedger
 from pipeline.scripts.rollback.mysql_ops import MySQLMart
@@ -55,7 +58,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with conn.cursor() as cursor:
             cursor.execute(f"USE {quote_id(args.target_db)}")
-        ledger = PromotionLedger(conn, dialect="mysql")
+        ledger = PromotionLedger(
+            conn,
+            dialect="mysql",
+            schema_db=args.target_db,
+        )
         mart = MySQLMart(conn)
         if action == "rollback":
             payload = _run_rollback(ledger, mart, args)

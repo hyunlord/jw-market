@@ -114,7 +114,11 @@ def record_mysql_component(
 ) -> tuple[TableBackup, ...]:
     from pipeline.scripts.rollback.mysql_ops import MySQLMart
 
-    ledger = PromotionLedger(conn, dialect="mysql")
+    ledger = PromotionLedger(
+        conn,
+        dialect="mysql",
+        schema_db=identity.serving_db,
+    )
     ledger.ensure_tables()
     return record_component_backups(
         ledger,
