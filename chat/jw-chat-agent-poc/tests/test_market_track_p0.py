@@ -590,8 +590,11 @@ def test_brand_comparison_deduplicates_calls_and_computes_share_direction() -> N
         tool_calls=[livaro, livaro, rosuzet, rosuzet, rosuzet],
     )
 
-    assert answer.count("| 리바로 |") == 1
-    assert answer.count("| 로수젯 |") == 1
+    # Count inside the comparison table only. The source table now carries a brand column, so
+    # a bare answer-wide count would also match its cells.
+    comparison = answer.partition("## 브랜드 비교")[2].partition("## ")[0]
+    assert comparison.count("| 리바로 |") == 1
+    assert comparison.count("| 로수젯 |") == 1
     assert "| 리바로 | 2025-08 3.93% | 2026-05 3.76% | 하락 |" in answer
     assert "| 로수젯 | 2025-08 9.10% | 2026-05 9.13% | 상승 |" in answer
 
@@ -826,7 +829,9 @@ def test_derived_calculation_does_not_add_a_hollow_provenance_row() -> None:
     )
 
     provenance_rows = [line for line in answer.splitlines() if line.startswith("| UBIST |")]
-    assert provenance_rows == ["| UBIST | 2026-05 | 전략뷰 | 리바로 전략 시장 | 해당 없음 | 전체 | % |"]
+    assert provenance_rows == [
+        "| UBIST | 2026-05 | 전략뷰 | 리바로 전략 시장 | 해당 없음 | 전체 | % | 해당 없음 |"
+    ]
 
 
 def test_quarter_metric_does_not_render_query_plan_as_a_source_row() -> None:
@@ -864,7 +869,7 @@ def test_quarter_metric_does_not_render_query_plan_as_a_source_row() -> None:
 
     provenance_rows = [line for line in answer.splitlines() if line.startswith("| UBIST |")]
     assert provenance_rows == [
-        "| UBIST | 2025-Q2 | 전략뷰 | 요청 브랜드의 전략 시장 | 555 | 전체 | 억원 |"
+        "| UBIST | 2025-Q2 | 전략뷰 | 요청 브랜드의 전략 시장 | 555 | 전체 | 억원 | 리바로 |"
     ]
     assert answer.startswith("2025-Q2 리바로 매출은 242.72억원입니다.")
     assert "2026-05" not in answer

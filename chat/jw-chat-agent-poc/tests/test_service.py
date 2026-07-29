@@ -3022,7 +3022,7 @@ def test_markdown_timeout_fallback_keeps_causal_structure_and_deterministic_sour
     assert "시장 내 침투가 강화되는지 또는 방어 압력이 커지는지" in answer
     assert "출처: UBIST" not in answer
     assert answer.rfind("## 출처") > answer.rfind("시장 내 침투가 강화되는지")
-    assert answer.strip().endswith("| UBIST | 2026-04 | — | — | 516 | 전체 | 억원 |")
+    assert answer.strip().endswith("| UBIST | 2026-04 | — | — | 516 | 전체 | 억원 | 리바로 |")
 
 
 def test_stream_endpoint_does_not_emit_charts_for_single_metric(monkeypatch) -> None:

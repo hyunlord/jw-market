@@ -115,7 +115,8 @@ def test_source_unspecified_keeps_existing_ubist_default() -> None:
         if line.startswith("|")
     ]
     assert source_rows
-    assert all(len(row.split("|")) == 9 for row in source_rows)
+    # 8 columns + the leading and trailing empty split segments
+    assert all(len(row.split("|")) == 10 for row in source_rows)
 
 
 def test_notice_markdown_reaches_final_genos_prompt_without_digits() -> None:

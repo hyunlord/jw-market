@@ -48,6 +48,7 @@ def provenance_rows_from_calls(
                 denominator=_denominator_label(render_data, query_spec),
                 channel=_channel_label(call, render_data, query_spec),
                 unit=_unit_label(call, render_data),
+                brand=_brand_label(call, render_data, query_spec),
             )
         )
 
@@ -140,6 +141,22 @@ def _channel_label(
                 values.append(str(value).strip())
     clean = tuple(dict.fromkeys(public_value(value) for value in values if public_value(value) != MISSING_LABEL))
     return " / ".join(clean) if clean else ALL_CHANNELS_LABEL
+
+
+def _brand_label(
+    call: Mapping[str, Any],
+    data: Mapping[str, Any],
+    query_spec: Mapping[str, Any],
+) -> Any:
+    """The brand this row's evidence is about, so rows for different brands stay distinct."""
+
+    value = _first_value(data, query_spec, call, keys=("brand", "canonical_brand", "brand_name"))
+    if value in (None, "", [], ()):
+        return MISSING_LABEL
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        names = tuple(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        return " / ".join(names) if names else MISSING_LABEL
+    return value
 
 
 def _denominator_label(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -> Any:

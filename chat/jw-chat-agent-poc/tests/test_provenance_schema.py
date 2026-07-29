@@ -277,3 +277,50 @@ def test_external_tool_bullets_preserve_actual_source_identity() -> None:
     assert "| 심사평가원(HIRA) 질병통계 |" in block
     assert "| 뉴스/이슈 「국내진출 임박한 고지혈증 신약」 https://example.test/clinical |" in block
     assert "| external |" not in block
+
+
+def test_brand_column_stays_in_lockstep_with_the_row_tuple() -> None:
+    """A header added without extending as_tuple() (or the reverse) misaligns every cell."""
+
+    from jw_chat_agent_poc.orchestrator.provenance_model import (
+        LEGACY_PROVENANCE_HEADERS,
+        PROVENANCE_HEADERS,
+        ProvenanceRow,
+    )
+
+    row = ProvenanceRow()
+    assert len(PROVENANCE_HEADERS) == len(row.as_tuple()) == len(row.as_fields())
+    # The brand column is appended, so no pre-existing column may shift.
+    assert PROVENANCE_HEADERS[: len(LEGACY_PROVENANCE_HEADERS)] == LEGACY_PROVENANCE_HEADERS
+    assert PROVENANCE_HEADERS[-1] == "브랜드"
+    assert tuple(row.as_fields()) == tuple(ProvenanceRow.__dataclass_fields__)
+
+
+def test_brand_separates_source_rows_but_still_dedupes_within_a_brand() -> None:
+    from jw_chat_agent_poc.orchestrator.provenance_model import dedupe_rows, normalized_row
+
+    def row(brand: str):
+        return normalized_row(source="ubist", period="2026-05", denominator="555", brand=brand)
+
+    assert len(dedupe_rows([row("리바로"), row("리바로")])) == 1
+    assert len(dedupe_rows([row("리바로"), row("로수젯")])) == 2
+    assert {item.brand for item in dedupe_rows([row("리바로"), row("로수젯")])} == {"리바로", "로수젯"}
+
+
+def test_legacy_seven_column_provenance_fact_still_parses_field_for_field() -> None:
+    """Tables rendered before the brand column existed must not shift by one."""
+
+    from jw_chat_agent_poc.orchestrator.provenance_facts import provenance_rows_from_fact_markdown
+
+    legacy = (
+        "### provenance fact\n"
+        f"{PROVENANCE_HEADER}\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| UBIST | 2026-05 | 전략뷰 | 고지혈증 | 555 | 전체 | 억원 |\n"
+    )
+    (parsed,) = provenance_rows_from_fact_markdown(legacy)
+    assert parsed.source == "UBIST"
+    assert parsed.period == "2026-05"
+    assert parsed.denominator == "555"
+    assert parsed.unit == "억원"
+    assert parsed.brand == "—"
