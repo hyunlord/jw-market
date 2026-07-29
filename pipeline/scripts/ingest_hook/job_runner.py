@@ -331,9 +331,31 @@ def _emit_completion_signal(
         )
     except Exception as exc:  # signal observation cannot break a successful load
         print(f"[signal] ledger record failed (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
+    drain_result = PublishResult("disabled", 0, "queue drain endpoint is not configured")
+    try:
+        drain_endpoint, drain_attempts = config.queue_drain_webhook()
+        if drain_endpoint:
+            drain_result = publish(
+                signal,
+                endpoint=drain_endpoint,
+                attempts=drain_attempts,
+            )
+    except Exception as exc:  # queue drain callback is recoverable by reconciliation
+        drain_result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
     # Stage observation is also best-effort (record_stage swallows DB errors).
-    tracker.complete("signal", reason=f"delivery={result.status}; attempts={result.attempts}")
-    print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")
+    tracker.complete(
+        "signal",
+        reason=(
+            f"delivery={result.status}; attempts={result.attempts}; "
+            f"queue_drain={drain_result.status}; "
+            f"queue_drain_attempts={drain_result.attempts}"
+        ),
+    )
+    print(
+        f"signal event={event} mode={mode} delivery={result.status} "
+        f"attempts={result.attempts} queue_drain={drain_result.status} "
+        f"queue_drain_attempts={drain_result.attempts}"
+    )
 
 
 def run(

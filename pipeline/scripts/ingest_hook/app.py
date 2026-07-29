@@ -8,6 +8,8 @@ pipeline-orchestrator image (fastapi/uvicorn/PyMySQL already included):
 
 Endpoints (the site's whole contract surface):
   POST /ingest/webhook   {"manifest_path": "<path under INGEST_INPUT_ROOT>"}
+  POST /ingest/terminal  (terminal completion signal from an ingest Job)
+  GET  /ingest/queue     optional ?category=
   GET  /ingest/status    ?epoch=&category=&manifest_sha=
   POST /ingest/force-stop (exact active run only)
   POST /ingest/reconcile  (promote queued submissions; sweep/ops helper)
@@ -15,6 +17,8 @@ Endpoints (the site's whole contract surface):
 """
 from __future__ import annotations
 
+import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from time import sleep as _sleep
@@ -29,7 +33,9 @@ from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, 
 from pipeline.scripts.ingest_hook.ledger import (
     STATUS_COMPLETE,
     STATUS_FAILED,
+    STATUS_GATE_FAILED,
     STATUS_QUEUED,
+    STATUS_RUNNING,
     Ledger,
     LedgerConnectionError,
 )
@@ -45,6 +51,13 @@ class ForceStopPayload(BaseModel):
     manifest_sha: str
     run_id: str
     requested_by: str
+
+
+class TerminalPayload(BaseModel):
+    event: str
+    category: str
+    epoch: str
+    manifest_sha: str
 
 
 class IngestService:
@@ -71,32 +84,64 @@ class IngestService:
         self.timestamp = timestamp or (lambda: datetime.now(timezone.utc).isoformat())
         self.sleep = sleep or _sleep
         self.deletion_attempts = deletion_attempts
+        self._promotion_locks: dict[str, threading.Lock] = {}
+        self._promotion_locks_guard = threading.Lock()
+
+    def _category_promotion_lock(self, category: str) -> threading.Lock:
+        with self._promotion_locks_guard:
+            return self._promotion_locks.setdefault(category, threading.Lock())
+
+    def drain_idle_queues(self) -> dict[str, dict[str, str]]:
+        """Make one startup pass over queued categories missed by callbacks."""
+        launched: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        for category in sorted(set(self.ledger.queued_categories())):
+            try:
+                job_name = self.promote(category)
+            except Exception as exc:  # one category must not block service startup
+                errors[category] = f"{type(exc).__name__}: {exc}"
+                continue
+            if job_name is not None:
+                launched[category] = job_name
+        return {"launched": launched, "errors": errors}
 
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
-        if self.ledger.running_in_category(category) > 0:
-            return None
-        entry = self.ledger.next_queued(category)
-        if entry is None:
-            return None
-        return self._submit_entry(entry)
+        with self._category_promotion_lock(category):
+            entry = self.ledger.next_queued(category)
+            if entry is None:
+                return None
+            return self._claim_and_submit(entry)
 
     def promote_exact(self, epoch: str, category: str, manifest_sha: str) -> str | None:
         """Promote one exact queued identity while preserving category serialisation."""
-        if self.ledger.running_in_category(category) > 0:
-            return None
-        entry = self.ledger.status(epoch, category, manifest_sha)
-        if entry is None:
-            raise RuntimeError("exact promotion identity is absent from the ledger")
-        if entry.status != STATUS_QUEUED:
-            raise RuntimeError(
-                f"exact promotion requires queued status, got {entry.status!r}"
-            )
-        return self._submit_entry(entry)
+        with self._category_promotion_lock(category):
+            entry = self.ledger.status(epoch, category, manifest_sha)
+            if entry is None:
+                raise RuntimeError("exact promotion identity is absent from the ledger")
+            if entry.status != STATUS_QUEUED:
+                raise RuntimeError(
+                    f"exact promotion requires queued status, got {entry.status!r}"
+                )
+            return self._claim_and_submit(entry)
 
-    def _submit_entry(self, entry) -> str:
+    def _claim_and_submit(self, entry) -> str | None:
         category = entry.category
         run_id = self.now()
+        expected_name = job_launcher.job_name(
+            category,
+            entry.manifest_sha,
+            run_id,
+        )
+        claimed = self.ledger.claim_queued(
+            entry.epoch,
+            category,
+            entry.manifest_sha,
+            job_name=expected_name,
+            run_id=run_id,
+        )
+        if not claimed:
+            return None
         started_at = datetime.now(timezone.utc).isoformat()
         try:
             name = job_launcher.submit_job(
@@ -128,6 +173,18 @@ class IngestService:
                 reason=reason,
             )
             raise
+        if name != expected_name:
+            reason = (
+                "job submission returned an unexpected name: "
+                f"expected={expected_name} actual={name}"
+            )
+            self.ledger.mark_failed(
+                entry.epoch,
+                category,
+                entry.manifest_sha,
+                reason=reason,
+            )
+            raise RuntimeError(reason)
         self.ledger.record_stage(
             entry.epoch,
             category,
@@ -139,7 +196,6 @@ class IngestService:
             started_at=started_at,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-        self.ledger.mark_running(entry.epoch, category, entry.manifest_sha, job_name=name, run_id=run_id)
         return name
 
     def reconcile_terminal_jobs(self) -> dict:
@@ -438,7 +494,17 @@ class IngestService:
 
 
 def create_app(service: IngestService) -> FastAPI:
-    app = FastAPI(title="jw-ingest-hook", docs_url=None, redoc_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.startup_queue_drain = service.drain_idle_queues()
+        yield
+
+    app = FastAPI(
+        title="jw-ingest-hook",
+        docs_url=None,
+        redoc_url=None,
+        lifespan=lifespan,
+    )
 
     @app.exception_handler(LedgerConnectionError)
     def _ledger_connection_error(request: Request, exc: LedgerConnectionError) -> JSONResponse:
@@ -458,6 +524,39 @@ def create_app(service: IngestService) -> FastAPI:
     @app.post("/ingest/webhook")
     def webhook(payload: WebhookPayload) -> dict:
         return service.receive_webhook(payload.manifest_path)
+
+    @app.get("/ingest/queue")
+    def queue(category: str | None = None) -> dict:
+        entries = service.ledger.active_entries(category)
+        running_categories = {
+            entry.category for entry in entries if entry.status == STATUS_RUNNING
+        }
+        return {
+            "items": [
+                {
+                    "epoch": entry.epoch,
+                    "category": entry.category,
+                    "manifest_sha": entry.manifest_sha,
+                    "status": entry.status,
+                    "reason": entry.reason,
+                    "job_name": entry.job_name,
+                    "run_id": entry.run_id,
+                    "uploaded_by": entry.uploaded_by,
+                    "received_at": entry.received_at,
+                    "started_at": entry.started_at,
+                    "finished_at": entry.finished_at,
+                    "blocked_by_category": (
+                        entry.status == STATUS_QUEUED
+                        and entry.category in running_categories
+                    ),
+                    "requires_reconcile": (
+                        entry.status == STATUS_QUEUED
+                        and entry.category not in running_categories
+                    ),
+                }
+                for entry in entries
+            ]
+        }
 
     @app.get("/ingest/status")
     def status(epoch: str, category: str, manifest_sha: str) -> dict:
@@ -479,6 +578,10 @@ def create_app(service: IngestService) -> FastAPI:
         current_stage = next(
             (event.stage for event in reversed(events) if event.status == "running"), None
         )
+        blocked_by_category = (
+            entry.status == STATUS_QUEUED
+            and service.ledger.running_in_category(entry.category) > 0
+        )
         return {
             "epoch": entry.epoch,
             "category": entry.category,
@@ -490,6 +593,10 @@ def create_app(service: IngestService) -> FastAPI:
             "received_at": entry.received_at,
             "finished_at": entry.finished_at,
             # -- new (additive) --
+            "blocked_by_category": blocked_by_category,
+            "requires_reconcile": (
+                entry.status == STATUS_QUEUED and not blocked_by_category
+            ),
             "current_stage": current_stage,
             "stages": [
                 {
@@ -528,6 +635,42 @@ def create_app(service: IngestService) -> FastAPI:
                 ),
                 "endpoint": "/ingest/logs" if entry.job_name else None,
             },
+        }
+
+    @app.post("/ingest/terminal")
+    def terminal(payload: TerminalPayload) -> dict:
+        expected_status_by_event = {
+            "complete": STATUS_COMPLETE,
+            "failed": STATUS_FAILED,
+            "gate_failed": STATUS_GATE_FAILED,
+        }
+        expected_status = expected_status_by_event.get(payload.event)
+        if expected_status is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported terminal event {payload.event!r}",
+            )
+        entry = service.ledger.status(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="unknown submission identity")
+        if entry.status != expected_status:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "terminal callback requires the ledger slot to be released: "
+                    f"event={payload.event} ledger_status={entry.status}"
+                ),
+            )
+        promoted = service.promote(payload.category)
+        return {
+            "accepted": True,
+            "category": payload.category,
+            "terminal_status": entry.status,
+            "promoted_job_name": promoted,
         }
 
     @app.get("/ingest/logs")
