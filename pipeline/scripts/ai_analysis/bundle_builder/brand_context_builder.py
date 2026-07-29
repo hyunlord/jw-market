@@ -44,16 +44,24 @@ def build_brand_context(
     brand: str,
     db_conn=None,
     catalog_path: str = "docs/crawl/_catalog.json",
+    *,
+    requested_ml_id: str | None = None,
+    requested_strategy_id: str | None = None,
 ) -> Dict:
     if isinstance(db_conn, str):
         catalog_path = db_conn
         db_conn = None
 
     if db_conn is not None:
-        brand_row = load_brand_from_catalog(brand, db_conn)
+        brand_row = load_brand_from_catalog(
+            brand,
+            db_conn,
+            requested_ml_id=requested_ml_id,
+            requested_strategy_id=requested_strategy_id,
+        )
         ml_id = brand_row.get("ml_id")
         market = load_market_from_catalog(ml_id, db_conn) if ml_id else {}
-        cd_id = load_cd_id_for_brand(brand, db_conn)
+        cd_id = brand_row.get("cd_id") or load_cd_id_for_brand(brand, db_conn)
         return {
             "name": brand_row.get("name") or brand,
             "english_name": brand_row.get("english_name"),
@@ -64,6 +72,9 @@ def build_brand_context(
             "is_target": bool(brand_row.get("is_target")),
             "ml_id": ml_id,
             "cd_id": cd_id,
+            "strategy_id": brand_row.get("strategy_id"),
+            "requested_ml_id": requested_ml_id,
+            "requested_strategy_id": requested_strategy_id,
             "mkt_team": brand_row.get("mkt_team"),
             "atc4_code": brand_row.get("atc4_code") or market.get("atc4_code"),
             "ml_name": market.get("ml_name"),

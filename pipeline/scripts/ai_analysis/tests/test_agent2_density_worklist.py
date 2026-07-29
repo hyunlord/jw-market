@@ -5,11 +5,15 @@ from datetime import date
 import pytest
 
 from agent2_density_worklist import (
+    MissingBrandMarketMembershipError,
+    RoutedAgent2Brand,
     UnknownEventBrandError,
     build_brand_identities,
     build_central_evidence_from_rows,
+    expand_market_scoped_worklist,
     route_density_worklist,
 )
+from bundle_builder.agent2_density_router import ProcessingMode, RouteDecision
 
 
 def _brand_rows() -> list[dict]:
@@ -131,3 +135,64 @@ def test_route_density_worklist_uses_central_cutoff_and_keeps_zero_brand() -> No
     assert routed["ryzodeg-key"].evidence_count == 1
     assert routed["ryzodeg-key"].bucket == "sparse"
     assert routed["zero-key"].bucket == "zero"
+
+
+def test_market_scoped_worklist_expands_every_catalog_membership() -> None:
+    route = RouteDecision(
+        "multi-key",
+        2,
+        "mid",
+        ProcessingMode.LLM_COMPACT,
+        ("tier2_llm_v1",),
+    )
+    routed = (
+        RoutedAgent2Brand(
+            brand_key="multi-key",
+            canonical_brand_name="복수브랜드",
+            route=route,
+        ),
+    )
+
+    expanded = expand_market_scoped_worklist(
+        routed,
+        [
+            {
+                "general_brand_key": "multi-key",
+                "ml_id": "ml_006",
+                "strategy_id": "strategy_006",
+            },
+            {
+                "general_brand_key": "multi-key",
+                "ml_id": "ml_007",
+                "strategy_id": "strategy_007",
+            },
+        ],
+    )
+
+    assert [
+        (item.brand_key, item.requested_ml_id, item.requested_strategy_id, item.work_item_key)
+        for item in expanded
+    ] == [
+        ("multi-key", "ml_006", "strategy_006", "multi-key::strategy_006"),
+        ("multi-key", "ml_007", "strategy_007", "multi-key::strategy_007"),
+    ]
+
+
+def test_market_scoped_worklist_fails_when_catalog_membership_is_missing() -> None:
+    route = RouteDecision(
+        "unmatched-key",
+        1,
+        "sparse",
+        ProcessingMode.LLM_FULL,
+        ("tier2_llm_v1",),
+    )
+    routed = (
+        RoutedAgent2Brand(
+            brand_key="unmatched-key",
+            canonical_brand_name="미매핑브랜드",
+            route=route,
+        ),
+    )
+
+    with pytest.raises(MissingBrandMarketMembershipError, match="unmatched-key"):
+        expand_market_scoped_worklist(routed, [])

@@ -233,8 +233,16 @@ def _build_brand_bundle_v1_1(
     snapshot_at: datetime,
     config: BundleConfig,
     db_conn,
+    *,
+    requested_ml_id: str | None = None,
+    requested_strategy_id: str | None = None,
 ) -> dict:
-    brand_context = build_brand_context(brand, db_conn=db_conn)
+    brand_context = build_brand_context(
+        brand,
+        db_conn=db_conn,
+        requested_ml_id=requested_ml_id,
+        requested_strategy_id=requested_strategy_id,
+    )
     market_views = build_market_views(brand_context, snapshot_at.isoformat(), config, db_conn)
     event_bundle = build_event_bundle(brand_context, snapshot_at, config, db_conn)
 
@@ -258,6 +266,15 @@ def _build_brand_bundle_v1_1(
     bundle = {
         "bundle_meta": {
             "brand": brand,
+            "requested_market_identity": {
+                "ml_id": requested_ml_id,
+                "strategy_id": requested_strategy_id,
+            },
+            "resolved_market_identity": {
+                "ml_id": brand_context.get("ml_id"),
+                "strategy_id": brand_context.get("strategy_id"),
+                "cd_id": brand_context.get("cd_id"),
+            },
             "snapshot_at": snapshot_at.isoformat(),
             "config_version": config.config_version,
             "builder_version": config.builder_version,
@@ -291,9 +308,25 @@ def build_brand_bundle(
     config: BundleConfig,
     db_conn,
     catalog_path: str = "docs/crawl/_catalog.json",
+    *,
+    requested_ml_id: str | None = None,
+    requested_strategy_id: str | None = None,
 ) -> dict:
     if config.config_version == "phase_zeta_v1_1":
-        return _build_brand_bundle_v1_1(brand, snapshot_at, config, db_conn)
+        return _build_brand_bundle_v1_1(
+            brand,
+            snapshot_at,
+            config,
+            db_conn,
+            requested_ml_id=requested_ml_id,
+            requested_strategy_id=requested_strategy_id,
+        )
+
+    if requested_ml_id or requested_strategy_id:
+        raise ValueError(
+            "market-scoped Agent2 bundles require config_version=phase_zeta_v1_1; "
+            "legacy market_context_builder remains outside this change"
+        )
 
     brand_context = build_brand_context(brand, catalog_path)
     market_ids = find_market_ids_for_brand(brand, db_conn, snapshot_at)

@@ -51,6 +51,13 @@ class RoutedAgent2Brand:
     brand_key: str
     canonical_brand_name: str
     route: RouteDecision
+    requested_ml_id: str | None = None
+    requested_strategy_id: str | None = None
+
+    @property
+    def work_item_key(self) -> str:
+        market_id = self.requested_strategy_id or self.requested_ml_id
+        return f"{self.brand_key}::{market_id}" if market_id else self.brand_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +83,15 @@ class UnknownEventBrandError(RuntimeError):
             f"event_brand_scores contains unmapped brand names: {', '.join(names)}"
         )
         self.names = names
+
+
+class MissingBrandMarketMembershipError(RuntimeError):
+    def __init__(self, brand_keys: tuple[str, ...]) -> None:
+        super().__init__(
+            "strategic worklist brands have no active catalog membership: "
+            + ", ".join(brand_keys)
+        )
+        self.brand_keys = brand_keys
 
 
 def build_brand_identities(
@@ -198,7 +214,44 @@ def route_density_worklist(
     )
 
 
-def load_density_worklist(db_conn: Any) -> DensityWorklist:
+def expand_market_scoped_worklist(
+    routed: tuple[RoutedAgent2Brand, ...],
+    membership_rows: list[dict[str, Any]],
+) -> tuple[RoutedAgent2Brand, ...]:
+    """Expand routed brands by their authoritative strategic memberships."""
+
+    memberships: dict[str, set[tuple[str, str]]] = {}
+    for row in membership_rows:
+        brand_key = _text(row.get("general_brand_key"))
+        ml_id = _text(row.get("ml_id"))
+        strategy_id = _text(row.get("strategy_id"))
+        if not brand_key or not ml_id or not strategy_id:
+            continue
+        memberships.setdefault(brand_key, set()).add((ml_id, strategy_id))
+
+    expanded: list[RoutedAgent2Brand] = []
+    missing: list[str] = []
+    for item in routed:
+        scoped = sorted(memberships.get(item.brand_key, ()))
+        if not scoped:
+            missing.append(item.brand_key)
+            continue
+        expanded.extend(
+            RoutedAgent2Brand(
+                brand_key=item.brand_key,
+                canonical_brand_name=item.canonical_brand_name,
+                route=item.route,
+                requested_ml_id=ml_id,
+                requested_strategy_id=strategy_id,
+            )
+            for ml_id, strategy_id in scoped
+        )
+    if missing:
+        raise MissingBrandMarketMembershipError(tuple(sorted(set(missing))))
+    return tuple(expanded)
+
+
+def load_density_worklist(db_conn: Any, *, market_scoped: bool = False) -> DensityWorklist:
     """Load the mart universe and joined score rows required by central policy."""
 
     brand_rows = _fetch_all(
@@ -220,7 +273,26 @@ def load_density_worklist(db_conn: Any) -> DensityWorklist:
         LEFT JOIN news_raw n ON s.news_id = n.news_id
         """,
     )
-    return route_density_worklist(brand_rows, score_rows)
+    worklist = route_density_worklist(brand_rows, score_rows)
+    if not market_scoped:
+        return worklist
+
+    membership_rows = _fetch_all(
+        db_conn,
+        """
+        SELECT general_brand_key, ml_id, strategy_id
+        FROM catalog_strategic_brand
+        WHERE COALESCE(is_excluded, 0) = 0
+          AND general_brand_key IS NOT NULL AND general_brand_key <> ''
+          AND ml_id IS NOT NULL AND ml_id <> ''
+          AND strategy_id IS NOT NULL AND strategy_id <> ''
+        ORDER BY general_brand_key, ml_id, strategy_id
+        """,
+    )
+    return DensityWorklist(
+        routed=expand_market_scoped_worklist(worklist.routed, membership_rows),
+        evidence=worklist.evidence,
+    )
 
 
 def _fetch_all(db_conn: Any, sql: str) -> list[dict[str, Any]]:

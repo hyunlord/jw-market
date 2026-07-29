@@ -153,7 +153,7 @@ class JsonRunStore:
 
 @dataclass
 class DependencyPorts:
-    build_bundle: Callable[[str], dict[str, Any]]
+    build_bundle: Callable[..., dict[str, Any]]
     call_llm: Callable[..., LLMCallResult]
     validate: Callable[[dict[str, Any], dict[str, Any]], ValidationOutcome]
     compose: Callable[..., dict[str, Any]]
@@ -328,7 +328,11 @@ class Agent2RegenOrchestrator:
             "formatter_version": self.formatter_version,
             "analysis_variant": variant,
             "dry_run": self.dry_run,
-            "routing_identity": "brand_key",
+            "routing_identity": (
+                "brand_key+requested_market"
+                if any(item.requested_ml_id or item.requested_strategy_id for item in worklist)
+                else "brand_key"
+            ),
             "brands": {},
         }
         swap_candidates: list[str] = []
@@ -339,15 +343,22 @@ class Agent2RegenOrchestrator:
                 case ProcessingMode.TEMPLATE_ZERO:
                     record = self._run_zero_template(item)
                 case ProcessingMode.LLM_FULL | ProcessingMode.LLM_COMPACT | ProcessingMode.LLM_RECAP:
-                    record = self._run_brand(item.canonical_brand_name, item.route.mode, variant, brand_key=item.brand_key)
+                    record = self._run_brand(
+                        item.canonical_brand_name,
+                        item.route.mode,
+                        variant,
+                        brand_key=item.brand_key,
+                        requested_ml_id=item.requested_ml_id,
+                        requested_strategy_id=item.requested_strategy_id,
+                    )
                     record["brand_key"] = item.brand_key
                     record["canonical_brand_name"] = item.canonical_brand_name
                     record["density_route"] = _route_metadata(item)
                 case unreachable:
                     assert_never(unreachable)
-            manifest["brands"][item.brand_key] = record
+            manifest["brands"][item.work_item_key] = record
             if record["status"] in ("validated", "template_zero", "skipped"):
-                swap_candidates.append(item.brand_key)
+                swap_candidates.append(item.work_item_key)
             elif record["status"] == "failed":
                 failures += 1
             if failures > self.fail_threshold:
@@ -397,15 +408,35 @@ class Agent2RegenOrchestrator:
         mode: str | ProcessingMode = PROCESSING_MODE_FULL,
         analysis_variant: str = "legacy",
         brand_key: str | None = None,
+        requested_ml_id: str | None = None,
+        requested_strategy_id: str | None = None,
     ) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc).isoformat()
         mode_name = normalize_processing_mode(mode)
         variant = require_analysis_variant(analysis_variant)
         try:
-            if brand_key is not None and len(inspect.signature(self.ports.build_bundle).parameters) >= 2:
-                bundle = self.ports.build_bundle(brand, brand_key)
-            else:
-                bundle = self.ports.build_bundle(brand)
+            build_parameters = inspect.signature(self.ports.build_bundle).parameters
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in build_parameters.values()
+            )
+            build_args: list[str] = [brand]
+            build_kwargs: dict[str, str] = {}
+            if brand_key is not None:
+                if "brand_key" in build_parameters or accepts_kwargs:
+                    build_kwargs["brand_key"] = brand_key
+                elif len(build_parameters) >= 2 and not requested_ml_id and not requested_strategy_id:
+                    build_args.append(brand_key)
+            for name, value in (
+                ("requested_ml_id", requested_ml_id),
+                ("requested_strategy_id", requested_strategy_id),
+            ):
+                if value is None:
+                    continue
+                if name not in build_parameters and not accepts_kwargs:
+                    raise TypeError(f"build_bundle port does not accept required {name}")
+                build_kwargs[name] = value
+            bundle = self.ports.build_bundle(*build_args, **build_kwargs)
             bundle = trim_bundle_for_mode(bundle, mode_name)
             bundle_hash = bundle.get("bundle_meta", {}).get("bundle_hash") or compute_bundle_hash(bundle)
             idempotency_key = compute_idempotency_key(
@@ -645,6 +676,9 @@ def _route_metadata(item: RoutedAgent2Brand) -> dict[str, Any]:
     return {
         "brand_key": item.brand_key,
         "canonical_brand_name": item.canonical_brand_name,
+        "work_item_key": item.work_item_key,
+        "requested_ml_id": item.requested_ml_id,
+        "requested_strategy_id": item.requested_strategy_id,
         "bucket": item.route.bucket,
         "mode": item.route.mode.value,
         "evidence_count": item.route.evidence_count,
@@ -656,7 +690,11 @@ def _route_plan_manifest(worklist: list[RoutedAgent2Brand], diagnostics: dict[st
     return {
         "status": "route_plan_only",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "routing_identity": "brand_key",
+        "routing_identity": (
+            "brand_key+requested_market"
+            if any(item.requested_ml_id or item.requested_strategy_id for item in worklist)
+            else "brand_key"
+        ),
         "diagnostics": diagnostics,
         "brand_count": len(worklist),
         "routes": [_route_metadata(item) for item in worklist],
@@ -666,6 +704,16 @@ def _route_plan_manifest(worklist: list[RoutedAgent2Brand], diagnostics: dict[st
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json_dumps(payload) + "\n", encoding="utf-8")
+
+
+def _market_scoped_artifact_stem(
+    brand: str,
+    *,
+    requested_ml_id: str | None = None,
+    requested_strategy_id: str | None = None,
+) -> str:
+    market_suffix = requested_strategy_id or requested_ml_id
+    return f"{brand}__{market_suffix}" if market_suffix else brand
 
 
 def make_real_ports(
@@ -685,7 +733,12 @@ def make_real_ports(
         bundle_conn.close()
         runner_conn.close()
 
-    def build_bundle_port(brand: str, brand_key: str | None = None) -> dict[str, Any]:
+    def build_bundle_port(
+        brand: str,
+        brand_key: str | None = None,
+        requested_ml_id: str | None = None,
+        requested_strategy_id: str | None = None,
+    ) -> dict[str, Any]:
         if bundle_kind == "general":
             if not brand_key:
                 raise ValueError("general bundle generation requires an explicit brand_key")
@@ -698,10 +751,23 @@ def make_real_ports(
                 bridge_db=bundle_config.db.database,
             )
         else:
-            bundle = build_brand_bundle(brand, snapshot_at, bundle_config, bundle_conn, catalog_path)
+            bundle = build_brand_bundle(
+                brand,
+                snapshot_at,
+                bundle_config,
+                bundle_conn,
+                catalog_path,
+                requested_ml_id=requested_ml_id,
+                requested_strategy_id=requested_strategy_id,
+            )
         bundle.setdefault("bundle_meta", {})
         bundle["bundle_meta"]["bundle_hash"] = bundle["bundle_meta"].get("bundle_hash") or compute_bundle_hash(bundle)
-        bundle_path = work_dir / "bundles" / f"{brand}.json"
+        bundle_name = _market_scoped_artifact_stem(
+            brand,
+            requested_ml_id=requested_ml_id,
+            requested_strategy_id=requested_strategy_id,
+        )
+        bundle_path = work_dir / "bundles" / f"{bundle_name}.json"
         _write_json(bundle_path, bundle)
         return bundle
 
@@ -753,13 +819,23 @@ def make_real_ports(
         # Re-run full validation here to preserve stage_results dataclass shape
         # for output_composer. This is read-only before staging insert.
         full_validation: FullValidationResult = run_full_validation(real_llm.parsed_output, bundle, runner_conn, variant_config)
+        requested_identity = bundle.get("bundle_meta", {}).get("requested_market_identity") or {}
+        if any(requested_identity.values()) and variant_config.composer.update_cache_deep_analysis:
+            raise RuntimeError(
+                "market-scoped Agent2 output cannot update brand-only cache_deep_analysis"
+            )
         composition = compose_and_persist(brand, snapshot_at, bundle, real_llm, full_validation, variant_config, runner_conn)
         file_variant = "" if analysis_variant == "legacy" else f"_{analysis_variant}"
-        parsed_path = work_dir / "parsed_outputs" / f"{brand}{file_variant}_parsed.json"
+        artifact_stem = _market_scoped_artifact_stem(
+            brand,
+            requested_ml_id=requested_identity.get("ml_id"),
+            requested_strategy_id=requested_identity.get("strategy_id"),
+        )
+        parsed_path = work_dir / "parsed_outputs" / f"{artifact_stem}{file_variant}_parsed.json"
         _write_json(parsed_path, real_llm.parsed_output)
-        validation_path = work_dir / "validation" / f"{brand}{file_variant}_validation.json"
+        validation_path = work_dir / "validation" / f"{artifact_stem}{file_variant}_validation.json"
         _write_json(validation_path, full_validation.to_dict())
-        raw_path = work_dir / "raw_responses" / f"{brand}{file_variant}_raw.json"
+        raw_path = work_dir / "raw_responses" / f"{artifact_stem}{file_variant}_raw.json"
         _write_json(raw_path, {"raw_response": real_llm.raw_response})
         return composition.to_dict()
 
@@ -849,7 +925,10 @@ def main(argv: list[str] | None = None) -> int:
                     brands = _load_mart_brand_universe(brand_conn)
                     routed_worklist = None
                 elif args.brand_source == "general-density":
-                    density_worklist = load_density_worklist(brand_conn)
+                    density_worklist = load_density_worklist(
+                        brand_conn,
+                        market_scoped=args.bundle_kind == "strategic",
+                    )
                     routed_worklist = list(density_worklist.routed)
                     if args.brand_keys_file:
                         requested = json.loads(Path(args.brand_keys_file).read_text(encoding="utf-8"))

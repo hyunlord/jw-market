@@ -8,6 +8,14 @@ from typing import List, Optional
 from .catalog_constants import ATC4_FALLBACK, MKT_TEAM_FALLBACK
 
 
+class AmbiguousBrandMarketError(ValueError):
+    pass
+
+
+class RequestedBrandMarketNotFoundError(ValueError):
+    pass
+
+
 def _json_load(value):
     if value is None:
         return {}
@@ -214,56 +222,145 @@ def detect_available_sources(brand_name: str, db_conn) -> List[str]:
     )
 
 
-def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
-    compact_brand_name = _compact_brand_name(brand_name)
-    if _table_exists(db_conn, "catalog_strategic_brand"):
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT * FROM catalog_strategic_brand WHERE name = %s LIMIT 1", (brand_name,))
-            row = cur.fetchone()
-        if row:
-            return dict(row)
-        with db_conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM catalog_strategic_brand
-                WHERE REPLACE(LOWER(name), ' ', '') = %s
-                ORDER BY name ASC
-                LIMIT 1
-                """,
-                (compact_brand_name,),
-            )
-            row = cur.fetchone()
-        if row:
-            return dict(row)
+def _cursor_rows(cursor) -> list[dict]:
+    if hasattr(cursor, "fetchall"):
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+    row = cursor.fetchone()
+    return [dict(row)] if row else []
 
-    parsed = _parse_catalog_description(brand_name)
+
+def _catalog_brand_rows(
+    brand_name: str,
+    db_conn,
+    *,
+    compact: bool,
+    requested_ml_id: str | None,
+    requested_strategy_id: str | None,
+) -> list[dict]:
+    field = "REPLACE(LOWER(name), ' ', '')" if compact else "name"
+    conditions = [f"{field} = %s", "COALESCE(is_excluded, 0) = 0"]
+    params: list[str] = [_compact_brand_name(brand_name) if compact else brand_name]
+    if requested_ml_id:
+        conditions.append("ml_id = %s")
+        params.append(requested_ml_id)
+    if requested_strategy_id:
+        conditions.append("strategy_id = %s")
+        params.append(requested_strategy_id)
     with db_conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
+            SELECT *
+            FROM catalog_strategic_brand
+            WHERE {' AND '.join(conditions)}
+            ORDER BY brand_id ASC
+            """,
+            tuple(params),
+        )
+        return _cursor_rows(cur)
+
+
+def _require_single_catalog_brand(
+    brand_name: str,
+    rows: list[dict],
+) -> dict | None:
+    if len(rows) > 1:
+        markets = sorted(
+            {
+                f"{row.get('ml_id')}/{row.get('strategy_id')}"
+                for row in rows
+            }
+        )
+        raise AmbiguousBrandMarketError(
+            f"brand has multiple catalog memberships and requires requested market: "
+            f"{brand_name} ({', '.join(markets)})"
+        )
+    if rows:
+        return rows[0]
+    return None
+
+
+def load_brand_from_catalog(
+    brand_name: str,
+    db_conn,
+    *,
+    requested_ml_id: str | None = None,
+    requested_strategy_id: str | None = None,
+) -> dict:
+    compact_brand_name = _compact_brand_name(brand_name)
+    catalog_exists = _table_exists(db_conn, "catalog_strategic_brand")
+    if catalog_exists:
+        rows = _catalog_brand_rows(
+            brand_name,
+            db_conn,
+            compact=False,
+            requested_ml_id=requested_ml_id,
+            requested_strategy_id=requested_strategy_id,
+        )
+        row = _require_single_catalog_brand(
+            brand_name,
+            rows,
+        )
+        if row:
+            return row
+        rows = _catalog_brand_rows(
+            brand_name,
+            db_conn,
+            compact=True,
+            requested_ml_id=requested_ml_id,
+            requested_strategy_id=requested_strategy_id,
+        )
+        row = _require_single_catalog_brand(
+            brand_name,
+            rows,
+        )
+        if row:
+            return row
+        if requested_ml_id or requested_strategy_id:
+            raise RequestedBrandMarketNotFoundError(
+                f"requested market not found for brand {brand_name}: "
+                f"ml_id={requested_ml_id}, strategy_id={requested_strategy_id}"
+            )
+    elif requested_strategy_id:
+        raise RequestedBrandMarketNotFoundError(
+            f"strategy_id cannot be verified without catalog_strategic_brand: "
+            f"{brand_name}, strategy_id={requested_strategy_id}"
+        )
+
+    parsed = _parse_catalog_description(brand_name)
+    exact_market_sql = " AND ml_id = %s" if requested_ml_id else ""
+    exact_params = (brand_name, requested_ml_id) if requested_ml_id else (brand_name,)
+    with db_conn.cursor() as cur:
+        cur.execute(
+            f"""
             SELECT ml_id, brand_id, brand_key, brand_name, is_jw, overlay_data, computed_at
             FROM mart_strategic_ml_brand_metric
-            WHERE brand_name = %s
+            WHERE brand_name = %s{exact_market_sql}
             ORDER BY ml_id ASC, brand_id ASC, source ASC, measure ASC, computed_at DESC
             LIMIT 1
             """,
-            (brand_name,),
+            exact_params,
         )
         row = cur.fetchone()
     if not row:
         with db_conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT ml_id, brand_id, brand_key, brand_name, is_jw, overlay_data, computed_at
                 FROM mart_strategic_ml_brand_metric
-                WHERE REPLACE(LOWER(brand_name), ' ', '') = %s
+                WHERE REPLACE(LOWER(brand_name), ' ', '') = %s{exact_market_sql}
                 ORDER BY ml_id ASC, brand_id ASC, source ASC, measure ASC, computed_at DESC
                 LIMIT 1
                 """,
-                (compact_brand_name,),
+                (compact_brand_name, requested_ml_id) if requested_ml_id else (compact_brand_name,),
             )
             row = cur.fetchone()
     if not row:
+        if requested_ml_id or requested_strategy_id:
+            raise RequestedBrandMarketNotFoundError(
+                f"requested market not found for brand {brand_name}: "
+                f"ml_id={requested_ml_id}, strategy_id={requested_strategy_id}"
+            )
         raise ValueError(f"brand not found in mart/catalog: {brand_name}")
 
     overlay = _json_load(row.get("overlay_data"))
