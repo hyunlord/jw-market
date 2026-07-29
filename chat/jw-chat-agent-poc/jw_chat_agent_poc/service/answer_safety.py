@@ -51,7 +51,7 @@ _RELATIONAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
 _SERIES_RELATIONAL_METRICS: Final[frozenset[str]] = frozenset(
     {"sales", "share", "rank", "market"}
 )
-_TERMINAL_SUMMARY_METRICS: Final[frozenset[str]] = frozenset({"sales", "share"})
+_TERMINAL_SUMMARY_METRICS: Final[frozenset[str]] = frozenset({"sales", "share", "generic"})
 _QUERY_FAILURE_DECLARATION_RE = re.compile(
     r"(?:현재\s*확인\s*불가|조회(?:를|가)?\s*(?:완료하지|하지)?\s*못|조회\s*(?:오류|실패)|"
     r"도구\s*조회.{0,40}실패|조회할\s*수\s*없)",
@@ -2218,9 +2218,18 @@ def _requested_series_metrics(question: str) -> frozenset[str]:
 
 
 def _terminal_summary_metric_requested(question: str) -> bool:
-    """True when the request explicitly crosses the metric a terminal summary would state."""
+    """True when a terminal relation summary may state the metric it has evidence for.
 
-    return bool(_requested_relational_metrics(question) & _TERMINAL_SUMMARY_METRICS)
+    A request naming another subject - market concentration, market size, news,
+    sales activity - must not inherit a sales direction sentence. A request that
+    names no metric at all carries no such conflict, so it stays eligible just as
+    a bare trend request ("generic") does.
+    """
+
+    requested = _requested_relational_metrics(question)
+    if not requested:
+        return True
+    return bool(requested & _TERMINAL_SUMMARY_METRICS)
 
 
 def _remove_unsupported_relation_spans(
