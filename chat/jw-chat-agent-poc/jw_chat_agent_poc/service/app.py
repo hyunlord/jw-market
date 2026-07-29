@@ -697,6 +697,10 @@ def _answer_question(
             routing_question,
             grounded_market_question,
         )
+        # Every golden rewrite above binds the question to a synthetic anchor brand, not
+        # just the two monthly contracts. Captured before routing_question is reassigned
+        # below, because after that the two names are equal and the rewrite is invisible.
+        uses_synthetic_market_anchor = grounded_market_question != routing_question
         execution_question = (
             grounded_market_question
             if grounded_market_question != routing_question
@@ -907,6 +911,10 @@ def _answer_question(
         # router_diagnostics, which carries the router's own decisions and is
         # compared whole by its callers.
         result = {**result, "_qa_anaphora": anaphora_observation(routing_resolution)}
+        if uses_synthetic_market_anchor:
+            # extract_conversation_slots reads this, so the stored turn records that its
+            # anchor brand came from the rewrite rather than from the user.
+            result = {**result, "anchor_brand_is_synthetic": True}
         with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
             store.conversations.record_exchange(
                 state.conversation_id,
@@ -1648,6 +1656,10 @@ def _answer_with_conversation(
         documents,
         store,
         use_direct_agent_loop=use_direct_agent_loop,
+        # A cause question inherits the observation the previous turn showed. Passed
+        # beside the question rather than folded into it, so the planner still selects
+        # its contract from the words the user actually typed.
+        issue_context=resolution.inherited_issue_observation,
     )
     _store_hira_disease_candidates(store, conversation_id, resolution.resolved_question, result)
     if resolution.interpretation_notice:
@@ -1776,6 +1788,7 @@ def _answer_without_pending(
     store: SessionStore,
     *,
     use_direct_agent_loop: bool = False,
+    issue_context: tuple[str, ...] = (),
 ) -> dict:
     route_method = getattr(market_scope_resolver, "general_route", None)
     with stage(None, "question_classification", "view selection"):
@@ -1792,6 +1805,7 @@ def _answer_without_pending(
             documents,
             store,
             use_direct_agent_loop=use_direct_agent_loop,
+            issue_context=issue_context,
         )
     return _answer_existing_without_pending(
         market_scope_resolver,
@@ -1802,6 +1816,7 @@ def _answer_without_pending(
         documents,
         store,
         use_direct_agent_loop=use_direct_agent_loop,
+        issue_context=issue_context,
     )
 
 
@@ -1815,6 +1830,7 @@ def _answer_dual_view(
     store: SessionStore,
     *,
     use_direct_agent_loop: bool,
+    issue_context: tuple[str, ...] = (),
 ) -> dict:
     strategic_question = f"{question}\n\n전략뷰(market_landscape) 기준으로 주 답변을 작성하세요."
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="general-view") as executor:
@@ -1833,6 +1849,7 @@ def _answer_dual_view(
             documents,
             store,
             use_direct_agent_loop=use_direct_agent_loop,
+            issue_context=issue_context,
         )
         general = general_future.result()
     combined = dict(strategic)
@@ -1856,7 +1873,11 @@ def _answer_existing_without_pending(
     store: SessionStore,
     *,
     use_direct_agent_loop: bool = False,
+    issue_context: tuple[str, ...] = (),
 ) -> dict:
+    # Only forwarded when the previous turn actually left an observation, so every
+    # question without one reaches the agent through the call it always used.
+    agent_kwargs: dict[str, Any] = {"issue_context": issue_context} if issue_context else {}
     explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
     if explicit_market is not None and "시장" in question:
         period = requested_period(question) or "latest"
@@ -1868,7 +1889,7 @@ def _answer_existing_without_pending(
     if requested_unavailable_source(question) is not None and not documents:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
-        return agent.answer(question, documents)
+        return agent.answer(question, documents, **agent_kwargs)
     intent = detect_market_scope_intent(question)
     if asks_market_members(question) and not documents:
         if market_scope_resolver.has_explicit_brand_anchor(question):
@@ -1887,11 +1908,11 @@ def _answer_existing_without_pending(
         and not tool_use_requirements(question)
         and not _v4_enforces_external_question(question)
     ):
-        return _answer_direct_agent_loop(question, external_mode)
+        return _answer_direct_agent_loop(question, external_mode, **agent_kwargs)
     if agent_loop_required:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
-        return agent.answer(question, documents)
+        return agent.answer(question, documents, **agent_kwargs)
     if intent is not None and not has_brand_anchor:
         has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
     if intent is not None and market_scope_defers_to_contract(question):
@@ -1919,10 +1940,18 @@ def _answer_existing_without_pending(
             return market_scope_resolver.answer(question, view_type=intent.view_type)
     with stage(None, "question_classification", "agent setup"):
         agent = agent_factory(external_mode=external_mode)
-    return agent.answer(question, documents)
+    return agent.answer(question, documents, **agent_kwargs)
 
 
-def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
+def _answer_direct_agent_loop(
+    question: str,
+    external_mode: str,
+    *,
+    issue_context: tuple[str, ...] = (),
+) -> dict:
+    # Only forwarded when the previous turn actually left an observation, so an agent
+    # loop that predates the parameter keeps being called exactly as before.
+    agent_kwargs: dict[str, Any] = {"issue_context": issue_context} if issue_context else {}
     with stage(None, "question_classification", "agent setup"):
         dependencies = build_chat_agent_dependencies(external_mode=external_mode)
     routes = ()
@@ -1991,7 +2020,7 @@ def _answer_direct_agent_loop(question: str, external_mode: str) -> dict:
         agent = build_tool_use_agent(dependencies.agent_loop_dependencies())
     with trace_span("agent_loop_execution", "tool-use agent execution"):
         try:
-            result = agent.answer(question)
+            result = agent.answer(question, **agent_kwargs)
         except BrandUnresolvedError:
             # The planner's own message is "ask the user to specify a brand", so
             # asking is what it already wanted; until now the request died as an

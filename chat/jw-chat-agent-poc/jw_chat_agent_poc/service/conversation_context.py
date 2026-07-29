@@ -47,16 +47,18 @@ _BRAND_PRONOUN_FOLLOWUP_RE = re.compile(
     r"^\s*(?P<pronoun>걔|얘|쟤)(?=(?:은|는|이|가|도)?(?:\s|[?!.]|$))",
     re.IGNORECASE,
 )
-# A whole-question market reference. The alternation is ordered longest-first so
-# '시장 규모는?' keeps matching the metric-bearing branch. Bare '시장은?' is the
-# same reference with the metric left out: without this branch the bare noun
-# shape was only ever looked up in the *brand* namespace by
+# A whole-question market reference, optionally introduced by a follow-up
+# connector. The alternation is ordered longest-first so '시장 규모는?' keeps
+# matching the metric-bearing branch. Bare '시장은?' is the same reference with
+# the metric left out: without this branch the bare noun shape was only ever
+# looked up in the *brand* namespace by
 # _BARE_BRAND_SWITCH_RE below, rejected there for not being a brand, and then
 # dropped by every branch after it — the market slot was never consulted.
 # requires_previous_turn reads this same pattern, so cross-pod history
 # hydration follows automatically.
 _BARE_MARKET_FOLLOWUP_RE = re.compile(
-    r"^\s*(?P<intent>시장\s*규모|일반뷰로|시장)(?:은|는|이|가)?[?!.]?\s*$",
+    r"^\s*(?:(?:그럼|그러면|그렇다면)\s+)?"
+    r"(?P<intent>시장\s*규모|일반뷰로|시장)(?:은|는|이|가)?[?!.]?\s*$",
     re.IGNORECASE,
 )
 _BARE_BRAND_SWITCH_RE = re.compile(
@@ -81,6 +83,19 @@ _IMPLICIT_BRAND_FOLLOWUP_RE = re.compile(
 _IMPLICIT_BRAND_FOLLOWUP_BODY_RE = re.compile(
     r"^(?:(?:효능(?:효과)?|용법(?:용량)?|사용상주의사항))+(?:은|는)?$"
 )
+# Asks for the cause of something without saying what that something is: '왜 이렇게
+# 됐어?', '무슨 일 있었어?', '원인이 뭐야?'. The subject is deliberately absent from the
+# pattern — a question that states its own subject ('리바로 매출이 왜 줄었어?') names a
+# metric and reads as standalone, so it must not be pulled onto the previous
+# observation. Kept separate from the cause modifier the slot extractor matches, which
+# only asks whether '왜' appears at all.
+_ISSUE_CAUSE_FOLLOWUP_RE = re.compile(
+    r"(?:왜\s*(?:이렇게|그렇게|이래|그래)|이렇게\s*된\s*(?:이유|원인)"
+    r"|무슨\s*일\s*(?:있|생겼|이야|인가)|어째서\s*(?:이렇|그렇)"
+    r"|(?:원인|이유)(?:가|는|이|을|를)?\s*(?:뭐|무엇|무슨|어떻게|어디))"
+)
+_NEWS_OBSERVATION_TOOLS: frozenset[str] = frozenset({"search_news", "web_search"})
+_ISSUE_OBSERVATION_LIMIT = 5
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"매출\s*(?:경향성|추이|흐름|변화)"), "매출 추이"),
     (re.compile(r"점유율\s*(?:경향성|추이|흐름|변화)"), "점유율 추이"),
@@ -113,6 +128,10 @@ class ReferenceStatus(StrEnum):
     NO_PRIOR_INTENT = "no_prior_intent"
     PATTERN_MISS = "pattern_miss"
     NOT_ANAPHORIC = "not_anaphoric"
+    # A cause question that carries its own subject but asks about the previous turn's
+    # observation. Distinct from ``resolved``: nothing in the question text was
+    # rewritten, so the routing question is the one the user typed.
+    INHERITED_OBSERVATION = "inherited_observation"
 
 
 class ReferenceRecogniser(StrEnum):
@@ -131,6 +150,7 @@ class ReferenceRecogniser(StrEnum):
     ANCHOR_BRAND = "anchor_brand"
     SAME_PERIOD = "same_period"
     IN_SENTENCE_MARKET = "in_sentence_market"
+    ISSUE_CAUSE = "issue_cause"
 
 
 # A whole-question bare noun phrase closed by a topic/subject particle, with no
@@ -155,6 +175,11 @@ class AnaphoraResolution:
     reference_status: str = ReferenceStatus.NOT_ANAPHORIC
     recogniser: str | None = None
     candidate_shape: bool = False
+    # The previous turn's news/issue headlines, when this question asks the cause of
+    # them. Kept out of ``resolved_question`` on purpose: routing reads that string to
+    # pick a contract, and headline wording would move the question onto a different
+    # one. Callers pass this to the planner alongside the question instead.
+    inherited_issue_observation: tuple[str, ...] = ()
 
 
 def _bare_followup_shape(question: str) -> bool:
@@ -195,6 +220,11 @@ def anaphora_observation(resolution: AnaphoraResolution) -> dict[str, Any]:
         "recogniser": str(resolution.recogniser) if resolution.recogniser else None,
         "candidate_shape": bool(resolution.candidate_shape),
         "unresolved_reference": bool(resolution.unresolved_reference),
+        # Separates a cause question that inherited the previous turn's observation from
+        # the same words asked standalone. Both plan the same contract, so the contract
+        # id alone cannot tell them apart. A bool, not the headlines: the headlines are
+        # content and this dict carries none.
+        "inherited_issue_observation": bool(resolution.inherited_issue_observation),
     }
 
 
@@ -313,7 +343,12 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
     if not period and ranked:
         period = next((item.series[-1].period for item in ranked if item.series), "")
     return ConversationSlots(
+        issue_observation=_issue_observation(result),
         anchor_brand=anchor or None,
+        # The caller marks the result when the standalone market golden rewrite supplied
+        # the anchor. Carried on the turn so the next question can tell a rewriting
+        # device apart from a brand the user actually named.
+        anchor_brand_is_synthetic=bool(result.get("anchor_brand_is_synthetic")),
         market=market or None,
         market_definition=market_definition or None,
         period=period or None,
@@ -328,6 +363,49 @@ def extract_conversation_slots(result: dict[str, Any]) -> ConversationSlots:
         file_manufacturer=file_manufacturer or None,
         file_sheet=file_sheet or None,
     )
+
+
+def _inherited_issue_observation(
+    question: str,
+    previous_turn: ConversationTurn | None,
+) -> tuple[str, ...]:
+    """The previous turn's observation, when this question asks its cause.
+
+    Both halves are required. Without the previous observation there is nothing to
+    inherit and the question really is standalone, which is why a cause question
+    arriving first — or after a turn that showed no news — is left exactly as it was.
+    """
+    if previous_turn is None or not previous_turn.slots.issue_observation:
+        return ()
+    if _ISSUE_CAUSE_FOLLOWUP_RE.search(question) is None:
+        return ()
+    return previous_turn.slots.issue_observation
+
+
+def _issue_observation(result: dict[str, Any]) -> tuple[str, ...]:
+    """Headlines the news tools actually returned for this turn.
+
+    Only successful news calls count: an errored ``search_news`` put nothing in front
+    of the user, so inheriting from it would invent an observation. Bounded to the
+    leading few titles because this is stored on every turn and read as context, not
+    replayed as content.
+    """
+    titles: list[str] = []
+    for call in result.get("tool_calls", []):
+        if not isinstance(call, dict):
+            continue
+        if _text(call.get("tool")) not in _NEWS_OBSERVATION_TOOLS:
+            continue
+        data = call.get("render_data")
+        if not isinstance(data, dict) or _text(data.get("status")) == "error":
+            continue
+        for item in data.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            title = _text(item.get("title"))
+            if title and title not in titles:
+                titles.append(title)
+    return tuple(titles[:_ISSUE_OBSERVATION_LIMIT])
 
 
 def resolve_anaphora(
@@ -400,6 +478,13 @@ def resolve_anaphora(
         recogniser = ReferenceRecogniser.BRAND_PRONOUN
         if previous_turn is None or not previous_turn.slots.anchor_brand:
             return _unresolved(question, recogniser)
+        if previous_turn.slots.anchor_brand_is_synthetic:
+            # The previous turn's anchor was a question-rewriting device, not a brand the
+            # user picked, and the listing it produced can rank a different brand first.
+            # A pronoun has no way to say which of those was meant, so this asks instead
+            # of substituting either one. Answering with the list's first row would make
+            # '걔' a silent synonym for '그중 1위', which fails closed here on purpose.
+            return _unresolved(question, recogniser, ReferenceStatus.NO_ANCHOR)
         brand = previous_turn.slots.anchor_brand
         return _resolved(
             _BRAND_PRONOUN_FOLLOWUP_RE.sub(brand, question, count=1),
@@ -502,6 +587,21 @@ def resolve_anaphora(
         None,
     )
     if in_sentence is None:
+        issue_observation = _inherited_issue_observation(question, previous_turn)
+        if issue_observation:
+            # '리바로 왜 이렇게 됐어?' states a brand but no subject, so no recogniser
+            # above claims it and it used to leave here as a standalone question —
+            # planned identically to the same words typed with no history behind them.
+            # What it asks about is the observation the previous turn just showed, so
+            # carry that forward. The question text is returned untouched: routing
+            # picks the contract from it, and this must not move the question onto a
+            # different one.
+            return AnaphoraResolution(
+                resolved_question=question,
+                reference_status=ReferenceStatus.INHERITED_OBSERVATION,
+                recogniser=ReferenceRecogniser.ISSUE_CAUSE,
+                inherited_issue_observation=issue_observation,
+            )
         # Nothing above claimed this question. When it arrived as a bare
         # follow-up shape the resolver did have a reference on its hands and
         # simply had no vocabulary for it, so say so instead of returning the

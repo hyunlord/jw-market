@@ -122,6 +122,9 @@ def test_observation_carries_only_enumerated_values_and_bools() -> None:
         "recogniser": None,
         "candidate_shape": True,
         "unresolved_reference": False,
+        # A bare follow-up inherits no issue observation, and the flag says so with a
+        # bool — which is what this test is about, so it is listed like the others.
+        "inherited_issue_observation": False,
     }
     assert "브랜드" not in repr(observation)
 

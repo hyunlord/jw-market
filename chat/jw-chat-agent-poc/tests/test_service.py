@@ -39,12 +39,22 @@ from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS
 
 class FakeAgent:
     calls: list[tuple[str, str]] = []
+    issue_contexts: list[tuple[str, ...]] = []
 
     def __init__(self, *, external_mode: str = "live") -> None:
         self.external_mode = external_mode
 
-    def answer(self, question: str, _documents=None) -> dict:
+    def answer(
+        self,
+        question: str,
+        _documents=None,
+        *,
+        issue_context: tuple[str, ...] = (),
+    ) -> dict:
+        # Mirrors ChatAgent.answer so the double is called the same way the real facade
+        # is, including when a cause question inherits the previous turn's observation.
         self.calls.append((question, self.external_mode))
+        type(self).issue_contexts.append(issue_context)
         return {
             "answer": f"fallback:{question}",
             "sources": ["cache"],

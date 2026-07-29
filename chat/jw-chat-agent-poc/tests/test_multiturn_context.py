@@ -10,6 +10,8 @@ from jw_chat_agent_poc.service.conversation import (
     conversation_slots_to_dict,
 )
 from jw_chat_agent_poc.service.conversation_context import (
+    anaphora_observation,
+    ReferenceRecogniser,
     extract_conversation_slots,
     requires_previous_turn,
     resolve_anaphora,
@@ -17,7 +19,7 @@ from jw_chat_agent_poc.service.conversation_context import (
 )
 from jw_chat_agent_poc.service.app import SessionStore, _answer_question, compute_final_answer
 
-from test_service import _fake_agent_factory, _market_scope_resolver
+from test_service import FakeAgent, _fake_agent_factory, _market_scope_resolver
 
 
 def _ranked_slot() -> RankedBrandSlot:
@@ -367,13 +369,36 @@ def test_resolve_anaphora_never_treats_period_or_metric_as_contrast_brand() -> N
         slots=ConversationSlots(anchor_brand="리피토"),
     )
 
-    for question in ("그럼 3분기는?", "그럼 점유율은?", "그럼 시장은?", "그럼 그건?"):
+    for question in ("그럼 3분기는?", "그럼 점유율은?", "그럼 그건?"):
         resolved = resolve_anaphora(question, previous)
 
         assert resolved.resolved_question == question
         assert resolved.brand is None
         assert resolved.interpretation_notice is None
         assert resolved.unresolved_reference is True
+
+
+def test_resolve_anaphora_treats_prefixed_bare_market_as_market_reference() -> None:
+    previous = ConversationTurn(
+        question="아일리아 시장 브랜드 알려줘",
+        answer="아일리아 시장 브랜드를 확인했습니다.",
+        slots=ConversationSlots(
+            anchor_brand="아일리아",
+            market="ml_001",
+            market_definition="ATC4 S01P0 시장",
+        ),
+    )
+
+    for question in ("그럼 시장은?", "그러면 시장은?", "그렇다면 시장은?"):
+        assert requires_previous_turn(question) is True
+
+        resolved = resolve_anaphora(question, previous)
+
+        assert resolved.resolved_question == "ATC4 S01P0 시장 규모는?"
+        assert resolved.reference_status.value == "resolved"
+        assert resolved.recogniser.value == "bare_market"
+        assert resolved.brand is None
+        assert resolved.unresolved_reference is False
 
 
 def test_resolve_anaphora_inherits_grounded_brand_for_metric_only_followup() -> None:
@@ -1030,3 +1055,396 @@ def test_reused_context_result_contains_verified_series_without_backend_call() -
     assert "로수젯" in result["markdown_response"]["fact_md"]
     assert "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 |" in result["answer"]
     assert "직전 턴에서 이미 조회한 검증 fact" not in result["answer"]
+
+
+def _standalone_market_golden_result() -> dict[str, object]:
+    """The shape app.py stores for a standalone market golden turn.
+
+    ``anchor_brand`` is the rewrite's device ('리바로 시장 ...'), while the listing the
+    user actually saw ranks 로수젯 first.
+    """
+
+    return {
+        "answer": "1위 로수젯, 6위 리바로",
+        "anchor_brand_is_synthetic": True,
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [
+            {
+                "tool": "get_market_scope",
+                "source": "UBIST",
+                "render_data": {
+                    "anchor_brand": "리바로",
+                    "market_id": "ml_006",
+                    "period": "2026-05",
+                    "metric": "market_share",
+                    "level_top5_trend_series": [
+                        {"brand": "로수젯", "rank": 1, "series": [{"period": "2026-05", "ms_pct": 9.13}]},
+                        {"brand": "리피토", "rank": 2, "series": [{"period": "2026-05", "ms_pct": 6.13}]},
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def test_synthetic_market_anchor_is_recorded_apart_from_a_user_chosen_one() -> None:
+    synthetic = extract_conversation_slots(_standalone_market_golden_result())
+    unmarked = dict(_standalone_market_golden_result())
+    unmarked.pop("anchor_brand_is_synthetic")
+
+    assert synthetic.anchor_brand == "리바로"
+    assert synthetic.anchor_brand_is_synthetic is True
+    assert synthetic.ranked_brands[0] == "로수젯"
+    # Same anchor value, different provenance: only the flag separates them.
+    assert extract_conversation_slots(unmarked).anchor_brand == "리바로"
+    assert extract_conversation_slots(unmarked).anchor_brand_is_synthetic is False
+
+
+def test_brand_pronoun_after_synthetic_market_anchor_asks_instead_of_inheriting() -> None:
+    previous = ConversationTurn(
+        question="고지혈증 시장 상위 5개 브랜드 알려줘",
+        answer="1위 로수젯, 6위 리바로",
+        slots=extract_conversation_slots(_standalone_market_golden_result()),
+    )
+
+    resolved = resolve_anaphora("걔 최근 추세는?", previous)
+
+    assert resolved.unresolved_reference is True
+    assert resolved.brand is None
+    # The question is handed back untouched, so no brand is asserted on the user's behalf.
+    assert resolved.resolved_question == "걔 최근 추세는?"
+    assert resolved.recogniser is ReferenceRecogniser.BRAND_PRONOUN
+
+
+def test_brand_pronoun_after_a_user_chosen_anchor_still_inherits_it() -> None:
+    previous = ConversationTurn(
+        question="리바로 매출 알려줘",
+        answer="리바로 매출은 80.39억원입니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출", period="2026-05"),
+    )
+
+    resolved = resolve_anaphora("걔 최근 추세는?", previous)
+
+    assert resolved.resolved_question == "리바로 최근 추세는?"
+    assert resolved.brand == "리바로"
+    assert resolved.unresolved_reference is False
+
+
+def test_first_rank_reference_after_synthetic_anchor_keeps_reading_the_listing() -> None:
+    """'그중 1위' names the listing outright, so it is unaffected by this guard."""
+
+    previous = ConversationTurn(
+        question="고지혈증 시장 상위 5개 브랜드 알려줘",
+        answer="1위 로수젯, 6위 리바로",
+        slots=extract_conversation_slots(_standalone_market_golden_result()),
+    )
+
+    resolved = resolve_anaphora("그중 1위는?", previous)
+
+    assert resolved.brand == "로수젯"
+    assert resolved.unresolved_reference is False
+
+
+def test_synthetic_anchor_flag_survives_slot_serialisation() -> None:
+    synthetic = extract_conversation_slots(_standalone_market_golden_result())
+
+    round_tripped = conversation_slots_from_dict(conversation_slots_to_dict(synthetic))
+
+    assert round_tripped.anchor_brand == "리바로"
+    assert round_tripped.anchor_brand_is_synthetic is True
+    # A turn stored before the field existed carries no key, and absence has to read as
+    # "user-chosen" so old sessions keep the behaviour they had.
+    assert conversation_slots_from_dict({"anchor_brand": "리바로"}).anchor_brand_is_synthetic is False
+
+
+def test_standalone_market_golden_turn_then_pronoun_asks_which_brand(monkeypatch) -> None:
+    """The whole path: the golden rewrite runs, then a pronoun follows it.
+
+    This is the case the guard exists for, so it goes through _answer_question rather
+    than a hand-built turn — the marker has to survive the real store round trip.
+    """
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+
+    def monthly_golden(_value: str, *, anchor_brand: str) -> dict:
+        assert anchor_brand == "리바로"
+        return {
+            "answer": "상위 5개 합계 시장점유율은 29.52%입니다.",
+            "sources": ["UBIST"],
+            "tool_calls": [
+                {
+                    "tool": "get_market_scope",
+                    "source": "UBIST",
+                    "render_data": {
+                        "anchor_brand": "리바로",
+                        "market_id": "ml_006",
+                        "period": "2026-05",
+                        "metric": "market_share",
+                        "level_top5_trend_series": [
+                            {"brand": "로수젯", "rank": 1, "series": [{"period": "2026-05", "ms_pct": 9.13}]},
+                        ],
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(resolver, "answer_monthly_market_golden", monthly_golden)
+    session = "synthetic-anchor-pronoun-session"
+
+    golden = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "고지혈증 시장 상위 5개 브랜드 알려줘",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "걔 최근 추세는?",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+
+    assert golden["result"]["anchor_brand_is_synthetic"] is True
+    assert "29.52%" in golden["result"]["answer"]
+    assert follow_up["result"].get("conversation_reference_unresolved") is True
+    # 리바로 was the rewrite's device, so it must not be answered for as if chosen.
+    assert "리바로" not in follow_up["result"]["answer"]
+
+
+def test_user_named_brand_turn_then_pronoun_still_answers_that_brand(monkeypatch) -> None:
+    """Same path with a user-chosen anchor: the pronoun must still inherit the brand.
+
+    The anchor is seeded through record_exchange rather than produced by the fake agent,
+    which answers with a bare fallback and so leaves no anchor slot at all — that shape
+    fails closed on the base commit too, and would prove nothing about this guard.
+    """
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+    session = "user-anchor-pronoun-session"
+    store.conversations.record_exchange(
+        session,
+        "리바로 매출 알려줘",
+        "리바로 매출은 80.39억원입니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006", metric="매출", period="2026-05"),
+    )
+
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "걔 최근 추세는?",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+
+    assert follow_up["result"].get("conversation_reference_unresolved") is not True
+    # The fake agent echoes the question it was handed, so the substituted brand shows
+    # there: the pronoun reached the router as 리바로, not as '걔'.
+    assert "리바로" in str(follow_up["result"].get("answer") or "")
+
+
+def _news_turn_result() -> dict:
+    return {
+        "resolution": {"canonical_brand": "리바로"},
+        "answer": "리바로 관련 최근 이슈를 정리했습니다.",
+        "tool_calls": [
+            {
+                "tool": "search_news",
+                "render_data": {
+                    "status": "ok",
+                    "items": [
+                        {"title": "피타바스타틴 제네릭 대량 진입", "url": "https://example.test/1"},
+                        {"title": "고지혈증 치료제 약가 인하 고시", "url": "https://example.test/2"},
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def _news_turn() -> ConversationTurn:
+    return ConversationTurn(
+        question="리바로 관련 최근 이슈 뭐 있어?",
+        answer="리바로 관련 최근 이슈를 정리했습니다.",
+        slots=extract_conversation_slots(_news_turn_result()),
+    )
+
+
+def test_news_turn_records_the_headlines_it_showed() -> None:
+    slots = extract_conversation_slots(_news_turn_result())
+
+    assert slots.issue_observation == (
+        "피타바스타틴 제네릭 대량 진입",
+        "고지혈증 치료제 약가 인하 고시",
+    )
+
+
+def test_failed_news_call_records_no_observation_to_inherit() -> None:
+    slots = extract_conversation_slots(
+        {
+            "resolution": {"canonical_brand": "리바로"},
+            "tool_calls": [{"tool": "search_news", "render_data": {"status": "error"}}],
+        }
+    )
+
+    assert slots.issue_observation == ()
+
+
+def test_cause_followup_after_news_inherits_that_observation() -> None:
+    resolution = resolve_anaphora("리바로 왜 이렇게 됐어?", _news_turn())
+
+    assert resolution.recogniser == ReferenceRecogniser.ISSUE_CAUSE
+    assert resolution.inherited_issue_observation == (
+        "피타바스타틴 제네릭 대량 진입",
+        "고지혈증 치료제 약가 인하 고시",
+    )
+
+
+def test_cause_followup_leaves_the_question_text_alone() -> None:
+    # Routing picks the contract from this string. Folding the headlines into it would
+    # let their wording select a different contract than the one the question asked for.
+    question = "리바로 왜 이렇게 됐어?"
+
+    resolution = resolve_anaphora(question, _news_turn())
+
+    assert resolution.resolved_question == question
+    assert resolution.interpretation_notice is None
+
+
+def test_cause_question_without_a_previous_news_turn_is_still_standalone() -> None:
+    sales_turn = ConversationTurn(
+        question="리바로 매출 알려줘",
+        answer="...",
+        slots=ConversationSlots(anchor_brand="리바로", metric="sales"),
+    )
+
+    after_sales = resolve_anaphora("리바로 왜 이렇게 됐어?", sales_turn)
+    first_turn = resolve_anaphora("리바로 왜 이렇게 됐어?", None)
+
+    for resolution in (after_sales, first_turn):
+        assert resolution.recogniser is None
+        assert resolution.inherited_issue_observation == ()
+        assert resolution.resolved_question == "리바로 왜 이렇게 됐어?"
+
+
+def test_cause_question_that_names_its_own_subject_is_not_pulled_onto_the_news() -> None:
+    # '매출이 왜 줄었어' says what it is about, so it is a question about the metric and
+    # not about whatever the previous turn happened to show.
+    resolution = resolve_anaphora("리바로 매출이 왜 줄었어?", _news_turn())
+
+    assert resolution.recogniser is None
+    assert resolution.inherited_issue_observation == ()
+
+
+def test_trace_separates_an_inherited_cause_question_from_a_standalone_one() -> None:
+    inherited = anaphora_observation(resolve_anaphora("리바로 왜 이렇게 됐어?", _news_turn()))
+    standalone = anaphora_observation(resolve_anaphora("리바로 왜 이렇게 됐어?", None))
+
+    assert inherited["recogniser"] == "issue_cause"
+    assert inherited["inherited_issue_observation"] is True
+    assert standalone["recogniser"] is None
+    assert standalone["inherited_issue_observation"] is False
+
+
+def test_trace_carries_the_inheritance_as_a_flag_not_as_headlines() -> None:
+    observation = anaphora_observation(resolve_anaphora("리바로 왜 이렇게 됐어?", _news_turn()))
+
+    assert all(isinstance(value, (bool, str, type(None))) for value in observation.values())
+    assert not any(
+        "피타바스타틴" in str(value) or "약가" in str(value) for value in observation.values()
+    )
+
+
+def test_issue_observation_survives_slot_serialisation() -> None:
+    slots = extract_conversation_slots(_news_turn_result())
+
+    restored = conversation_slots_from_dict(conversation_slots_to_dict(slots))
+
+    assert restored.issue_observation == slots.issue_observation
+
+
+def test_turn_stored_before_the_observation_field_existed_inherits_nothing() -> None:
+    restored = conversation_slots_from_dict({"anchor_brand": "리바로"})
+
+    assert restored.issue_observation == ()
+
+
+def test_news_turn_then_cause_question_carries_the_observation_end_to_end(monkeypatch) -> None:
+    """The whole path: a news turn is stored, then a cause question follows it.
+
+    Goes through _answer_question rather than a hand-built turn so the observation has
+    to survive the real store round trip, and captures what the agent leg was handed.
+    """
+
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+    session = "issue-cause-followup-session"
+    store.conversations.record_exchange(
+        session,
+        "리바로 관련 최근 이슈 뭐 있어?",
+        "리바로 관련 최근 이슈를 정리했습니다.",
+        slots=extract_conversation_slots(_news_turn_result()),
+    )
+
+    FakeAgent.calls.clear()
+    FakeAgent.issue_contexts.clear()
+
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "리바로 왜 이렇게 됐어?",
+        "live",
+        session,
+        use_direct_agent_loop=False,
+    )
+
+    assert FakeAgent.issue_contexts == [
+        ("피타바스타틴 제네릭 대량 진입", "고지혈증 치료제 약가 인하 고시")
+    ]
+    # The agent still receives the words the user typed, not a question rebuilt from
+    # the headlines, so contract selection is unaffected by what the articles said.
+    assert [question for question, _mode in FakeAgent.calls] == ["리바로 왜 이렇게 됐어?"]
+    assert follow_up["result"]["_qa_anaphora"]["inherited_issue_observation"] is True
+    assert follow_up["result"]["_qa_anaphora"]["recogniser"] == "issue_cause"
+
+
+def test_cause_question_after_a_non_news_turn_hands_the_agent_nothing(monkeypatch) -> None:
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+    session = "issue-cause-no-observation-session"
+    store.conversations.record_exchange(
+        session,
+        "리바로 매출 알려줘",
+        "리바로 매출은 80.39억원입니다.",
+        slots=ConversationSlots(anchor_brand="리바로", metric="매출", period="2026-05"),
+    )
+
+    FakeAgent.calls.clear()
+    FakeAgent.issue_contexts.clear()
+
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "리바로 왜 이렇게 됐어?",
+        "live",
+        session,
+        use_direct_agent_loop=False,
+    )
+
+    assert FakeAgent.issue_contexts == [()]
+    assert follow_up["result"]["_qa_anaphora"]["inherited_issue_observation"] is False

@@ -14,6 +14,10 @@ class BqSlots:
     modifiers: tuple[str, ...]
     axes: tuple[str, ...]
     sources: tuple[str, ...]
+    # Headlines the previous turn showed, when this question asks their cause. Read only
+    # when building tool arguments. The signatures below match on the pattern tuples
+    # above, so carrying context here cannot change which contract a question selects.
+    issue_context: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +112,13 @@ _SIGNATURES: Final = (
 )
 
 
-def extract_bq_slots(question: str, *, brand: str, period: str) -> BqSlots:
+def extract_bq_slots(
+    question: str,
+    *,
+    brand: str,
+    period: str,
+    issue_context: tuple[str, ...] = (),
+) -> BqSlots:
     return BqSlots(
         brand=brand,
         period=period,
@@ -117,6 +127,10 @@ def extract_bq_slots(question: str, *, brand: str, period: str) -> BqSlots:
         modifiers=_matches(question, _MODIFIER_PATTERNS),
         axes=_matches(question, _AXIS_PATTERNS),
         sources=_matches(question, _SOURCE_PATTERNS),
+        # Deliberately not fed to _matches: the headlines describe what happened, not
+        # what the user asked for, and matching metric words inside them would move the
+        # question to a contract it never selected.
+        issue_context=issue_context,
     )
 
 
