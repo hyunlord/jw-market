@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import math
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 
 from pipeline.scripts.api.main import app
 from pipeline.scripts.api.routes import deep_analysis
@@ -65,6 +67,37 @@ def test_normalize_atc4_uses_one_canonical_zero_pad_rule() -> None:
     assert normalize_atc4("G4C2") == "G04C2"
     assert normalize_atc4("A10N1") == "A10N1"
     assert atc4_source_aliases("C01D0") == ("C01D0", "C1D0", "C01D", "C1D")
+
+
+def test_disabled_cache_mode_keeps_stale_brand_elements_read_only(monkeypatch) -> None:
+    stale = {
+        "리바로": {
+            "brand_name": "리바로",
+            "strength": {"status": "stale"},
+        }
+    }
+    monkeypatch.setattr(
+        deep_analysis,
+        "get_settings",
+        lambda: SimpleNamespace(cache_write_mode="disabled"),
+    )
+    monkeypatch.setattr(
+        deep_analysis,
+        "_load_cached_brand_elements_read_only",
+        lambda brand_keys: stale if brand_keys == ["리바로"] else {},
+    )
+    monkeypatch.setattr(
+        deep_analysis,
+        "_refresh_cached_brand_elements",
+        lambda _brand_keys: pytest.fail("disabled mode must not refresh brand elements"),
+    )
+    monkeypatch.setattr(
+        deep_analysis.db,
+        "fetch_all",
+        lambda *_args, **_kwargs: pytest.fail("disabled mode must use the read-only loader"),
+    )
+
+    assert deep_analysis._load_cached_brand_elements(["리바로"]) == stale
 
 
 def test_general_metric_lookup_uses_source_native_row_for_normalized_market(monkeypatch) -> None:

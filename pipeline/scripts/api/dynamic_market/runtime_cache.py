@@ -13,4 +13,7 @@ dynamic_response_cache_store = MySQLDynamicResponseCacheStore(
     ttl_seconds=config.cache_ttl_seconds,
 )
 
-dynamic_response_cache = DynamicResponseCache(store=dynamic_response_cache_store)
+dynamic_response_cache = DynamicResponseCache(
+    store=dynamic_response_cache_store,
+    cache_write_mode=config.cache_write_mode,
+)

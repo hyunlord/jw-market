@@ -23,13 +23,19 @@ spec:
                 - /bin/sh
                 - -ec
               args:
-                - >-
+                - |
+                  if [ "${CACHE_WRITE_MODE:-isolated}" = "disabled" ]; then
+                    echo "CACHE_WRITE_MODE=disabled; skipping cache writer"
+                    exit 0
+                  fi
                   python -m pipeline.scripts.api.dynamic_market.cache_maintenance
                   --batch-limit 100 --max-batches 10 --grace-seconds 300;
                   python -m pipeline.scripts.api.dynamic_market.warm_cache
                   --base-url http://jw-market-backend-api-service
                   --timeout-seconds 120 --workers 3
               env:
+                - name: CACHE_WRITE_MODE
+                  value: isolated
                 - name: DB_HOST
                   value: llmops-mariadb-service.llmops.svc.cluster.local
                 - name: DB_PORT

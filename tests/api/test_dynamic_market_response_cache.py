@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -25,6 +26,8 @@ from pipeline.scripts.api.dynamic_market.response_cache import (
     normalize_json_value,
     select_prune_keys,
 )
+from pipeline.scripts.api.main import app
+from pipeline.scripts.api.routes import dynamic_market as dynamic_market_route
 
 
 class MemoryStore:
@@ -83,6 +86,34 @@ class MemoryStore:
                 self.rows[cache_key]["state"] = "failed"
                 self.rows[cache_key]["failure_reason"] = failure_reason
                 self.rows[cache_key]["last_error"] = last_error
+
+
+class WriteRejectingStore:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def _reject(self, method: str) -> None:
+        self.calls.append(method)
+        raise AssertionError(f"cache store must not be called: {method}")
+
+    def source_epoch(self) -> str:
+        self._reject("source_epoch")
+
+    def claim(self, *, cache_key: str, request_json: str, source_epoch: str) -> CacheClaim:
+        self._reject("claim")
+
+    def complete(self, *, cache_key: str, lease_owner: str, source_epoch: str, response_json: str) -> None:
+        self._reject("complete")
+
+    def fail(
+        self,
+        *,
+        cache_key: str,
+        lease_owner: str,
+        failure_reason: str,
+        last_error: str | None = None,
+    ) -> None:
+        self._reject("fail")
 
 
 def test_canonical_request_json_normalizes_set_like_lists() -> None:
@@ -367,6 +398,100 @@ def test_response_cache_normalizes_non_finite_values_before_strict_serialization
     stored = next(iter(store.rows.values()))["payload"]
     assert "NaN" not in stored
     assert "Infinity" not in stored
+
+
+def test_disabled_cache_mode_builds_response_without_store_access() -> None:
+    store = WriteRejectingStore()
+    cache = DynamicResponseCache(store=store, cache_write_mode="disabled")
+
+    result = cache.get_or_build(
+        {"source": "ubist", "filters": {"atc4": ["C10A1"]}},
+        lambda: {"status": "SUCCESS", "result": {"value": 1}},
+    )
+
+    assert result == {"status": "SUCCESS", "result": {"value": 1}}
+    assert store.calls == []
+
+
+def test_disabled_cache_mode_general_route_returns_200_without_store_access(monkeypatch) -> None:
+    store = WriteRejectingStore()
+    cache = DynamicResponseCache(store=store, cache_write_mode="disabled")
+    monkeypatch.setattr(dynamic_market_route, "_dynamic_response_cache", cache)
+    monkeypatch.setattr(
+        dynamic_market_route,
+        "_build_general_dynamic_response",
+        lambda _payload: {"status": "SUCCESS", "result": {"value": 1}},
+    )
+
+    response = TestClient(app).post(
+        "/api/dynamic-market",
+        json={
+            "view": "general",
+            "source": "ubist",
+            "measure": "sales",
+            "filters": {"atc4": ["C10A1"]},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "SUCCESS", "result": {"value": 1}}
+    assert store.calls == []
+
+
+def test_disabled_cache_mode_preserves_response_wrapper_without_store_access() -> None:
+    store = WriteRejectingStore()
+    cache = DynamicResponseCache(store=store, cache_write_mode="disabled")
+
+    result = cache.get_or_build_response(
+        {"scope": "strategic", "source": "ubist"},
+        lambda: {"status": "SUCCESS", "result": {"value": 2}},
+    )
+
+    assert result == CachedResponse(payload={"status": "SUCCESS", "result": {"value": 2}})
+    assert store.calls == []
+
+
+def test_disabled_cache_mode_preserves_miss_capacity_without_store_access() -> None:
+    store = WriteRejectingStore()
+    semaphore = threading.BoundedSemaphore(1)
+    semaphore.acquire()
+    cache = DynamicResponseCache(
+        store=store,
+        cache_write_mode="disabled",
+        build_semaphore=semaphore,
+    )
+
+    with pytest.raises(DynamicMarketOverloadedError, match="miss capacity is full"):
+        cache.get_or_build({"source": "ubist"}, lambda: {"status": "SUCCESS"})
+
+    assert store.calls == []
+
+
+def test_disabled_cache_mode_general_route_keeps_429_contract(monkeypatch) -> None:
+    store = WriteRejectingStore()
+    semaphore = threading.BoundedSemaphore(1)
+    semaphore.acquire()
+    cache = DynamicResponseCache(
+        store=store,
+        cache_write_mode="disabled",
+        build_semaphore=semaphore,
+    )
+    monkeypatch.setattr(dynamic_market_route, "_dynamic_response_cache", cache)
+
+    response = TestClient(app).post(
+        "/api/dynamic-market",
+        json={
+            "view": "general",
+            "source": "ubist",
+            "measure": "sales",
+            "filters": {"atc4": ["C10A1"]},
+        },
+    )
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["error"] == "dynamic_market_overloaded"
+    assert response.headers["Retry-After"] == "2"
+    assert store.calls == []
 
 
 def test_select_prune_keys_removes_expired_then_reduces_capacity_to_low_water() -> None:

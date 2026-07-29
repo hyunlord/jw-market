@@ -15,5 +15,6 @@ deep_section_cache = DynamicResponseCache(
         max_rows=2_000,
         max_bytes=256 * 1024 * 1024,
         namespace="deep_expensive",
-    )
+    ),
+    cache_write_mode=config.cache_write_mode,
 )

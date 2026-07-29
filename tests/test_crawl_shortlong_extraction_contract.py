@@ -22,7 +22,9 @@ PROTECTED_BLOB_SHA256 = {
     # only edit; does not revert the crawl-shortlong extraction lineage the blob set guards.
     "pipeline/scripts/api/openapi_docs.py": "995e57a772e159339d52d68199c1e1f570d51abc1de872f36cfc425ba2cdc465",
     "pipeline/scripts/api/routes/cause.py": "d5d2ba035d49bc8ac9f5951becc2a38dfe7e7217d8c75e8d2c64945371a70edb",
-    "pipeline/scripts/api/routes/deep_analysis.py": "4dc23b1e6dcd6afea9a8937288f34b3ba230504c2bad7417edbe145bebbc82b7",
+    # Repinned 2026-07-29: disabled cache mode routes legacy brand-element
+    # reads through the existing read-only loader and skips refresh writes.
+    "pipeline/scripts/api/routes/deep_analysis.py": "b28cc29079e48a7a20ed67732d2cdfed6a5f0b5a3d50d0449edf6a00663b3521",
 }
 
 
