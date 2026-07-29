@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Tuple
@@ -174,11 +175,11 @@ class BundleConfig:
 
         db_raw = raw["db"]
         db = DbConfig(
-            host=str(db_raw["host"]),
-            port=int(db_raw["port"]),
+            host=os.environ.get("DB_HOST", str(db_raw["host"])),
+            port=int(os.environ.get("DB_PORT", db_raw["port"])),
             user_env=str(db_raw["user_env"]),
             password_env=str(db_raw["password_env"]),
-            database=str(db_raw["database"]),
+            database=os.environ.get("DB_NAME", str(db_raw["database"])),
         )
 
         pilot_path = config_path.parent / raw["pilot_brands_file"]
