@@ -1285,6 +1285,58 @@ def test_registry_exposes_a_spec_for_every_cataloged_tool() -> None:
     assert {spec.name for spec in specs} == {record.name for record in TOOL_DESCRIPTION_CATALOG}
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로랑 리피토 중 누가 더 많이 팔렸어?",
+        "리바로 최근 장사 잘돼?",
+        "리바로 매출 알려줘",
+        "리바로 시장점유율 알려줘",
+        "리바로 시장 순위 알려줘",
+        "리바로 시장 규모 알려줘",
+        "리바로 시장 HHI 알려줘",
+    ),
+)
+def test_internal_metric_only_questions_exclude_web_search(question: str) -> None:
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+
+    tool_names = {spec.name for spec in registry.list_for_query(question)}
+
+    assert "web_search" not in tool_names
+    assert "local_molecule_lookup" in tool_names
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 관련 최근 이슈 뭐 있어?",
+        "리바로 관련 최근 뉴스 알려줘",
+        "아일리아 관련 최근 이슈 알려줘",
+        "리바로 매출 웹검색해줘",
+        "최신 고지혈증 가이드라인 알려줘",
+        "리바로 시장에 신규 진입자나 위협 브랜드 있어?",
+        "리바로 영업활동 추이 어때?",
+        "아일리아 경쟁 약물 현황 알려줘",
+        "/deep 리바로 매출 분석해줘",
+        "내가 올린 엑셀 파일의 매출 합계를 알려줘",
+        "첨부한 PPT에서 시장 규모 수치만 찾아줘",
+        "내 파일에 있는 리바로 매출과 시스템 데이터를 비교해줘",
+    ),
+)
+def test_web_context_questions_keep_web_search(question: str) -> None:
+    registry = ExternalToolRegistry(
+        resolver=BrandResolver(),
+        external=ExternalApiClient(mode="fixture"),
+    )
+
+    tool_names = {spec.name for spec in registry.list_for_query(question)}
+
+    assert "web_search" in tool_names
+
+
 def test_mcp_specs_allow_the_client_timeout_to_finish() -> None:
     # Given: the MCP client owns its transport timeout and returns a structured failure at that boundary.
     external = ExternalApiClient(mode="fixture", timeout_s=12)
