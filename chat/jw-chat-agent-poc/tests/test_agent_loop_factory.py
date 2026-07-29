@@ -113,3 +113,54 @@ def test_ambiguous_brand_result_keeps_brand_specific_source_label() -> None:
     assert result["sources"] == ["ambiguous_brand"]
     assert "브랜드 식별 후보" in result["markdown_response"]["sources_md"]
     assert "HIRA 상병코드·질환명 직접 조회 미지원" not in result["markdown_response"]["sources_md"]
+
+
+def test_ambiguous_brand_result_caps_public_candidates_without_silent_narrowing() -> None:
+    router = BQRouter()
+    question = "아스피린 계열 매출 알려줘"
+    routes = router.route(question, has_documents=False)
+    candidates = (
+        "아스피린엔",
+        "아스피린 경동",
+        "아스피린 경보",
+        "아스피린 광동",
+        "아스피린 명문",
+        "아스피린 삼성",
+        "아스피린 삼익",
+        "아스피린 삼진",
+        "아스피린 서울",
+        "아스피린 영일",
+        "아스피린 영진",
+        "아스피린 유영",
+        "아스피린 유한",
+        "아스피린 초당",
+        "아스피린 하원",
+        "아스피린 한미",
+        "아스피린 마더스",
+        "아스피린 바이엘",
+        "아스피린 씨엠지",
+        "아스피린 유니온",
+        "아스피린 이텍스",
+        "아스피린 프라임",
+        "아스피린 휴텍스",
+        "아스피린리신 신풍",
+        "아스피린 지엘파마",
+        "아스피린 프로텍트",
+        "아스피린프로텍트",
+        "아스피린 휴비스트",
+        "아스피린 대웅바이오",
+        "아스피린 보령바이오",
+    )
+
+    result = ambiguous_brand_result(
+        question,
+        routes,
+        router_diagnostics(router),
+        candidates,
+    )
+
+    assert result["resolution"]["candidates"] == list(candidates)
+    assert "후보 30개 중 10개" in result["answer"]
+    assert "외 20개가 더 있습니다" in result["answer"]
+    assert candidates[9] in result["answer"]
+    assert candidates[10] not in result["answer"]
