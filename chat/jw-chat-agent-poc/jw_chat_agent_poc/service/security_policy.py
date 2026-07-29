@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 
 
-_INPUT_MODE = "shadow"
+SEC12_SECURITY_MODE_ENV = "CHAT_SEC12_SECURITY_MODE"
+SEC12_BLOCKED_ANSWER = "이 요청은 보안 정책에 따라 처리할 수 없습니다."
+_SHADOW_MODE = "shadow"
+_ENFORCE_MODE = "enforce"
 _INSTRUCTION_OVERRIDE_PATTERNS = (
     re.compile(
         r"(?:이전|앞선|기존|지금까지(?:의)?|위(?:의)?|모든)\s*"
@@ -57,7 +61,7 @@ _SYSTEM_ROLE_MARKUP_PATTERNS = (
 
 
 def evaluate_input_policy(question: str) -> dict[str, object]:
-    """Classify high-confidence instruction manipulation without blocking."""
+    """Classify high-confidence instruction manipulation."""
 
     normalized = _normalize(question)
     if _matches_any(normalized, _INSTRUCTION_OVERRIDE_PATTERNS):
@@ -70,7 +74,7 @@ def evaluate_input_policy(question: str) -> dict[str, object]:
 
 
 def evaluate_output_leakage(answer: str) -> dict[str, object]:
-    """Observe system-prompt fingerprints while preserving the answer bytes."""
+    """Classify system-prompt fingerprints at the final response boundary."""
 
     normalized = _normalize(answer)
     if any(fingerprint.casefold() in normalized.casefold() for fingerprint in _SYSTEM_PROMPT_FINGERPRINTS):
@@ -88,18 +92,42 @@ def _matches_any(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
     return any(pattern.search(value) is not None for pattern in patterns)
 
 
+def policy_is_enforced(decision: dict[str, object]) -> bool:
+    return decision.get("mode") == _ENFORCE_MODE and decision.get("verdict") == "flagged"
+
+
+def enforced_answer(answer: str, decision: dict[str, object]) -> str:
+    return SEC12_BLOCKED_ANSWER if policy_is_enforced(decision) else answer
+
+
+def _mode() -> str:
+    raw_mode = os.environ.get(SEC12_SECURITY_MODE_ENV, _SHADOW_MODE).strip().lower()
+    return _ENFORCE_MODE if raw_mode == _ENFORCE_MODE else _SHADOW_MODE
+
+
 def _input_decision(verdict: str, *reason_codes: str) -> dict[str, object]:
-    return {
-        "mode": _INPUT_MODE,
+    mode = _mode()
+    decision: dict[str, object] = {
+        "mode": mode,
         "verdict": verdict,
         "reason_codes": tuple(reason_codes),
     }
+    if mode == _ENFORCE_MODE and verdict == "flagged":
+        decision["user_surface_action"] = "blocked"
+    return decision
 
 
 def _output_decision(verdict: str, *reason_codes: str) -> dict[str, object]:
+    mode = _mode()
     return {
-        "mode": _INPUT_MODE,
+        "mode": mode,
         "verdict": verdict,
         "reason_codes": tuple(reason_codes),
-        "user_surface_action": "observe_only" if verdict == "flagged" else "none",
+        "user_surface_action": (
+            "blocked"
+            if mode == _ENFORCE_MODE and verdict == "flagged"
+            else "observe_only"
+            if verdict == "flagged"
+            else "none"
+        ),
     }

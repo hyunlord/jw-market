@@ -71,7 +71,34 @@ def project_routing_v4_qa_trace(
         projected["claim_evidence_bindings"] = _project_evidence_bindings(
             raw.get("claim_evidence_bindings")
         )
+    official_web_fallback = raw.get("official_web_fallback")
+    if isinstance(official_web_fallback, Mapping):
+        projected["official_web_fallback"] = _project_official_web_fallback(
+            official_web_fallback
+        )
     return projected
+
+
+def _project_official_web_fallback(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": raw.get("enabled") is True,
+        "eligible": raw.get("eligible") is True,
+        "call_cap": int(raw.get("call_cap") or 0),
+        "retry_cap": int(raw.get("retry_cap") or 0),
+        "timeout_s": float(raw.get("timeout_s") or 0.0),
+        "requested_source_explicit": raw.get("requested_source_explicit") is True,
+        "internal_only": raw.get("internal_only") is True,
+        "authoritative_nonexistence_proven": (
+            raw.get("authoritative_nonexistence_proven") is True
+        ),
+        "missing_requested_facets": tuple(
+            str(item) for item in raw.get("missing_requested_facets", ())
+        ),
+        "calls_executed": int(raw.get("calls_executed") or 0),
+        "accepted_urls": tuple(str(item) for item in raw.get("accepted_urls", ())),
+        "separate_section": raw.get("separate_section") is True,
+        "reason_code": raw.get("reason_code"),
+    }
 
 
 def _project_evidence_bindings(raw: Any) -> tuple[dict[str, Any], ...]:

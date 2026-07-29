@@ -867,7 +867,11 @@ def _clinicaltrials_detail_payload(text: str) -> dict[str, Any]:
         "nctId": "nct_id",
         "clinicaltrials_url": "url",
         "briefTitle": "title",
+        "officialTitle": "official_title",
         "overallStatus": "status",
+        "allocation": "allocation",
+        "masking": "masking",
+        "interventionModel": "intervention_model",
         "startDate": "start_date",
         "primaryCompletionDate": "primary_completion_date",
         "phases": "phase",
@@ -913,6 +917,8 @@ def _clinicaltrials_detail_payload(text: str) -> dict[str, Any]:
             detail[key] = [part.strip() for part in value.split(",") if part.strip()]
         else:
             detail[key] = value
+    if not detail.get("title") and detail.get("official_title"):
+        detail["title"] = detail["official_title"]
     return detail
 
 
@@ -1108,7 +1114,20 @@ def _apply_mcp_key_value(target: dict[str, Any], text: str) -> None:
         "overallStatus": "status",
     }.get(match.group("key"), match.group("key"))
     value = match.group("value").strip().strip('"')
-    if key in {"clinicaltrials_url", "nctId", "title", "status", "studyType", "sponsor", "startDate", "url"}:
+    if key in {
+        "clinicaltrials_url",
+        "nctId",
+        "title",
+        "officialTitle",
+        "status",
+        "studyType",
+        "allocation",
+        "masking",
+        "interventionModel",
+        "sponsor",
+        "startDate",
+        "url",
+    }:
         target[key] = value
     elif key in {"phase", "conditions"}:
         target[key] = [part.strip() for part in value.split(",") if part.strip()]
@@ -1116,7 +1135,8 @@ def _apply_mcp_key_value(target: dict[str, Any], text: str) -> None:
 
 def _clinical_study_from_flat(flat: dict[str, Any]) -> dict[str, Any]:
     nct_id = str(flat.get("nctId") or "")
-    title = str(flat.get("title") or "")
+    official_title = str(flat.get("officialTitle") or "")
+    title = str(flat.get("title") or official_title)
     status = str(flat.get("status") or "")
     phases = flat.get("phase") if isinstance(flat.get("phase"), list) else []
     interventions = flat.get("interventions") if isinstance(flat.get("interventions"), list) else []
@@ -1126,9 +1146,19 @@ def _clinical_study_from_flat(flat: dict[str, Any]) -> dict[str, Any]:
         "overallStatus": status,
         "url": flat.get("url") or flat.get("clinicaltrials_url"),
         "protocolSection": {
-            "identificationModule": {"nctId": nct_id, "briefTitle": title},
+            "identificationModule": {
+                "nctId": nct_id,
+                "briefTitle": title,
+                "officialTitle": official_title or None,
+            },
             "statusModule": {"overallStatus": status, "startDate": flat.get("startDate")},
-            "designModule": {"phases": phases, "studyType": flat.get("studyType")},
+            "designModule": {
+                "phases": phases,
+                "studyType": flat.get("studyType"),
+                "allocation": flat.get("allocation"),
+                "masking": flat.get("masking"),
+                "interventionModel": flat.get("interventionModel"),
+            },
             "sponsorCollaboratorsModule": {"leadSponsor": {"name": flat.get("sponsor")}},
             "armsInterventionsModule": {"interventions": interventions},
         },

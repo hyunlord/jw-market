@@ -304,10 +304,13 @@ def _security_decision(
 
 
 def _user_surface_action(result: Mapping[str, Any]) -> str:
-    raw = result.get("_sec12_output_leakage_decision")
-    decision = raw if isinstance(raw, Mapping) else {}
-    action = str(decision.get("user_surface_action") or "none")
-    return action if action in {"none", "observe_only"} else "other"
+    for key in ("_sec12_output_leakage_decision", "_sec12_input_policy_decision"):
+        raw = result.get(key)
+        decision = raw if isinstance(raw, Mapping) else {}
+        action = str(decision.get("user_surface_action") or "none")
+        if action != "none":
+            return action if action in {"observe_only", "blocked"} else "other"
+    return "none"
 
 
 def _qa_anaphora(result: Mapping[str, Any]) -> dict[str, Any]:

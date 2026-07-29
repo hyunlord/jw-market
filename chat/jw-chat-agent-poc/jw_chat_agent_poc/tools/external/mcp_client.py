@@ -17,6 +17,7 @@ _MCP_EXECUTION_DEADLINE: ContextVar[float | None] = ContextVar(
     "mcp_execution_deadline",
     default=None,
 )
+_MCP_MAX_ATTEMPTS: ContextVar[int] = ContextVar("mcp_max_attempts", default=2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,17 @@ def mcp_execution_budget(timeout_s: float) -> Iterator[None]:
         yield
     finally:
         _MCP_EXECUTION_DEADLINE.reset(token)
+
+
+@contextmanager
+def mcp_attempt_limit(max_attempts: int) -> Iterator[None]:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+    token = _MCP_MAX_ATTEMPTS.set(max_attempts)
+    try:
+        yield
+    finally:
+        _MCP_MAX_ATTEMPTS.reset(token)
 
 
 class McpJsonClient:
@@ -87,7 +99,8 @@ class McpJsonClient:
     def _post(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         last_error: Exception | None = None
-        for attempt in range(2):
+        max_attempts = _MCP_MAX_ATTEMPTS.get()
+        for attempt in range(max_attempts):
             requested_timeout_s = MCP_FIRST_ATTEMPT_TIMEOUT_S if attempt == 0 else self.timeout_s
             timeout_s = _remaining_timeout_s(requested_timeout_s)
             try:
@@ -108,7 +121,7 @@ class McpJsonClient:
                 return result
             except (requests.RequestException, McpClientError, json.JSONDecodeError) as exc:
                 last_error = exc
-                if attempt == 0:
+                if attempt + 1 < max_attempts:
                     time.sleep(_remaining_timeout_s(0.2))
         raise McpClientError(str(last_error) if last_error else "MCP request failed")
 

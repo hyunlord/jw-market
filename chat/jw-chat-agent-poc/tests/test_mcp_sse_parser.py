@@ -8,8 +8,10 @@ import pytest
 import requests
 
 from jw_chat_agent_poc.tools.external.mcp_client import (
+    McpClientError,
     McpJsonClient,
     _first_sse_event,
+    mcp_attempt_limit,
 )
 
 
@@ -93,3 +95,22 @@ def test_mcp_response_is_forced_to_utf8(monkeypatch: pytest.MonkeyPatch) -> None
 def test_corrupt_payload_still_raises_json_decode_error() -> None:
     with pytest.raises(json.JSONDecodeError):
         _first_sse_event("event: message\ndata: {not-json}\n\n")
+
+
+def test_mcp_attempt_limit_disables_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    response = _response(b"failure")
+    response.status_code = 503
+
+    def post(*_args: Any, **_kwargs: Any) -> requests.Response:
+        nonlocal calls
+        calls += 1
+        return response
+
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.requests.post", post)
+    monkeypatch.setattr("jw_chat_agent_poc.tools.external.mcp_client.time.sleep", lambda _s: None)
+
+    with pytest.raises(McpClientError), mcp_attempt_limit(1):
+        McpJsonClient("http://mcp.test/json")._post("tools/list", {})
+
+    assert calls == 1

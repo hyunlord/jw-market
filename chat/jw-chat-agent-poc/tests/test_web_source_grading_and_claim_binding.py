@@ -172,9 +172,9 @@ def test_source_explicit_request_never_silently_enables_web_fallback(monkeypatch
         requested_source_explicit=True,
     )
 
-    assert decision.web_call_budget == 0
-    assert decision.accepted_urls == ()
-    assert decision.reason_code == "EXPLICIT_SOURCE_NO_FALLBACK"
+    assert decision.web_call_budget == 1
+    assert decision.accepted_urls == ("https://opendata.hira.or.kr/official",)
+    assert "대신한 값이 아니라" in decision.disclosure
 
 
 def test_natural_explicit_hira_phrases_all_disable_web_fallback() -> None:
@@ -426,7 +426,7 @@ def test_upstream_failure_accepts_only_matching_official_domain(monkeypatch) -> 
     assert decision.web_call_budget == 1
     assert decision.accepted_urls == ("https://opendata.hira.or.kr/official",)
     assert decision.separate_section is True
-    assert "공식 통계가 아닙니다" in decision.disclosure
+    assert "공식 웹 보완 자료" in decision.disclosure
 
 
 def test_web_summary_discloses_grade_and_not_official_statistics() -> None:

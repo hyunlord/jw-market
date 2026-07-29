@@ -138,6 +138,21 @@ def test_trace_envelope_projects_v4_ccs_in_enforce() -> None:
                         "evidence_ids": ["hira:D69.3:2024"],
                     }
                 ],
+                "official_web_fallback": {
+                    "enabled": True,
+                    "eligible": True,
+                    "call_cap": 1,
+                    "retry_cap": 0,
+                    "timeout_s": 5.0,
+                    "requested_source_explicit": False,
+                    "internal_only": False,
+                    "authoritative_nonexistence_proven": False,
+                    "missing_requested_facets": [],
+                    "calls_executed": 1,
+                    "accepted_urls": ["https://opendata.hira.or.kr/official"],
+                    "separate_section": True,
+                    "reason_code": "NO_RECORD_FOUND",
+                },
             },
         },
         "tool_calls": [],
@@ -162,6 +177,21 @@ def test_trace_envelope_projects_v4_ccs_in_enforce() -> None:
             "evidence_ids": ("hira:D69.3:2024",),
         },
     )
+    assert routing_v4["official_web_fallback"] == {
+        "enabled": True,
+        "eligible": True,
+        "call_cap": 1,
+        "retry_cap": 0,
+        "timeout_s": 5.0,
+        "requested_source_explicit": False,
+        "internal_only": False,
+        "authoritative_nonexistence_proven": False,
+        "missing_requested_facets": (),
+        "calls_executed": 1,
+        "accepted_urls": ("https://opendata.hira.or.kr/official",),
+        "separate_section": True,
+        "reason_code": "NO_RECORD_FOUND",
+    }
 
 
 def test_trace_rejects_budget_cap_that_does_not_match_planned_call_count() -> None:
