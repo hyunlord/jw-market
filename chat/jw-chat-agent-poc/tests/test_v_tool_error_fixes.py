@@ -156,6 +156,7 @@ def test_query_failed_logs_masked_message_without_public_leak(
         "리바로 얼마나 팔렸어",
         "리바로 최근 실적 알려줘",
         "카나브패밀리 실적",
+        "리바로 최근 장사 잘돼?",
     ),
 )
 def test_sales_wording_variants_route_to_internal_metrics(question: str) -> None:

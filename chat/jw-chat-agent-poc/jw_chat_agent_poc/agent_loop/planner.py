@@ -616,6 +616,12 @@ def _needs_external_context(question: str) -> bool:
     return _asks_news(question) or _asks_hira(question) or _asks_hira_procedure(question) or _asks_clinical(question) or _asks_patent(question) or _asks_drug_info(question) or _asks_safety(question) or _asks_web_search(question)
 
 
+def needs_external_context(question: str) -> bool:
+    """Return whether an external evidence source is required by the question."""
+
+    return _needs_external_context(question)
+
+
 def _asks_web_search(question: str) -> bool:
     if _asks_patent(question) or _asks_drug_info(question) or _asks_hira(question) or _asks_hira_procedure(question):
         return False
