@@ -48,6 +48,10 @@ _RELATIONAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
         "query_failed",
     }
 )
+_SERIES_RELATIONAL_METRICS: Final[frozenset[str]] = frozenset(
+    {"sales", "share", "rank", "market"}
+)
+_TERMINAL_SUMMARY_METRICS: Final[frozenset[str]] = frozenset({"sales", "share", "generic"})
 _QUERY_FAILURE_DECLARATION_RE = re.compile(
     r"(?:현재\s*확인\s*불가|조회(?:를|가)?\s*(?:완료하지|하지)?\s*못|조회\s*(?:오류|실패)|"
     r"도구\s*조회.{0,40}실패|조회할\s*수\s*없)",
@@ -2015,7 +2019,7 @@ def enforce_relational_numeric_claims_with_trace(
         revised = _repair_endpoint_direction_claims(question, revised, fact)
         revised = _repair_rank_claims(revised, fact)
         revised = _repair_growth_relation_claims(revised, fact)
-        if not cached_as_of:
+        if not cached_as_of and _terminal_summary_metric_requested(question):
             revised = _ensure_terminal_relation_summary(question, revised, fact)
 
     failed_metrics = _failed_relational_metrics(question, call_items)
@@ -2061,7 +2065,7 @@ def _block_unsupported_relation_claims(
     kept: list[str] = []
     blocked_count = 0
     blocked_reasons: list[str] = []
-    requested_metrics = _requested_relational_metrics(question)
+    requested_metrics = _requested_series_metrics(question)
     for raw_line in answer.splitlines():
         if raw_line.lstrip().startswith("|") or raw_line.lstrip().startswith("#"):
             kept.append(raw_line)
@@ -2173,7 +2177,7 @@ def _relation_claim_metric(
         return "market"
     if re.search(r"매출|처방조제액|실적", sentence):
         return "sales"
-    requested = _requested_relational_metrics(question)
+    requested = _requested_series_metrics(question)
     concrete = tuple(metric for metric in requested if metric != "generic")
     return concrete[0] if len(concrete) == 1 else "sales"
 
@@ -2188,9 +2192,44 @@ def _requested_relational_metrics(question: str) -> frozenset[str]:
         metrics.add("rank")
     if re.search(r"시장\s*(?:대비|성장률)|시장보다", question):
         metrics.add("market")
+    if re.search(r"\bHHI\b|허핀달|허쉬만|집중도", question, re.IGNORECASE):
+        metrics.add("hhi")
+    if re.search(r"시장\s*규모|시장\s*크기|시장\s*사이즈", question):
+        metrics.add("market_size")
+    if re.search(r"뉴스|기사|보도|이슈", question):
+        metrics.add("news")
+    if re.search(r"영업\s*활동|활동량|활동\s*지표|디테일링", question):
+        metrics.add("activity")
     if not metrics and re.search(r"추이|변화|성장|흐름|어때", question):
         metrics.add("generic")
     return frozenset(metrics)
+
+
+def _requested_series_metrics(question: str) -> frozenset[str]:
+    """Legacy view of the request: only metrics a brand value series can carry.
+
+    ``_requested_relational_metrics`` also classifies HHI, market size, news and
+    sales-activity requests. Those categories are not carried by
+    ``brand_value_series_10pt``, so the relational-series gates keep consuming
+    this narrowed view and stay behaviourally identical to before the extension.
+    """
+
+    return _requested_relational_metrics(question) & (_SERIES_RELATIONAL_METRICS | {"generic"})
+
+
+def _terminal_summary_metric_requested(question: str) -> bool:
+    """True when a terminal relation summary may state the metric it has evidence for.
+
+    A request naming another subject - market concentration, market size, news,
+    sales activity - must not inherit a sales direction sentence. A request that
+    names no metric at all carries no such conflict, so it stays eligible just as
+    a bare trend request ("generic") does.
+    """
+
+    requested = _requested_relational_metrics(question)
+    if not requested:
+        return True
+    return bool(requested & _TERMINAL_SUMMARY_METRICS)
 
 
 def _remove_unsupported_relation_spans(
@@ -2263,7 +2302,7 @@ def _call_relational_metrics(call: dict[str, Any]) -> frozenset[str]:
 
 def _failed_relational_metrics(question: str, calls: tuple[dict[str, Any], ...]) -> frozenset[str]:
     failed: set[str] = set()
-    requested = _requested_relational_metrics(question)
+    requested = _requested_series_metrics(question)
     for call in calls:
         if not _relational_call_failed(call):
             continue
@@ -2341,7 +2380,7 @@ def _typed_relational_failure_fallback(question: str, calls: tuple[dict[str, Any
         "market": "시장 비교",
         "generic": "요청 지표",
     }
-    requested = _requested_relational_metrics(question)
+    requested = _requested_series_metrics(question)
     requested_label = "·".join(metric_labels.get(metric, metric) for metric in sorted(requested)) or "요청 지표"
     return cleanup_markdown_answer(
         "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.\n\n"
