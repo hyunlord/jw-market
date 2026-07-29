@@ -15,6 +15,14 @@ from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan
 
 
 OFFICIAL_WEB_FALLBACK_FLAG: Final = "CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED"
+_WEB_FALLBACK_RUNTIME_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "UPSTREAM_UNAVAILABLE",
+        "NO_EVIDENCE",
+        "NO_RECORD_FOUND",
+        "PARTIAL_RESULT",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,11 +40,21 @@ def official_web_fallback_eligible(
     runtime_reason: str,
     usable_authoritative_results: int,
     requested_source_explicit: bool,
+    missing_requested_facets: tuple[str, ...] = (),
+    internal_only: bool = False,
+    authoritative_nonexistence_proven: bool = False,
 ) -> bool:
+    del requested_source_explicit
     return (
-        usable_authoritative_results == 0
-        and not requested_source_explicit
-        and runtime_reason == "UPSTREAM_UNAVAILABLE"
+        not internal_only
+        and not authoritative_nonexistence_proven
+        and runtime_reason in _WEB_FALLBACK_RUNTIME_REASONS
+        and (
+            runtime_reason == "PARTIAL_RESULT"
+            and bool(missing_requested_facets)
+            or runtime_reason != "PARTIAL_RESULT"
+            and usable_authoritative_results == 0
+        )
         and bool(official_web_domains(source_domain))
         and _official_web_fallback_enabled()
     )
@@ -55,29 +73,33 @@ def official_web_fallback_policy(
     usable_authoritative_results: int,
     candidate_urls: tuple[str, ...],
     requested_source_explicit: bool = False,
+    missing_requested_facets: tuple[str, ...] = (),
+    internal_only: bool = False,
+    authoritative_nonexistence_proven: bool = False,
 ) -> OfficialWebFallbackDecision:
-    if usable_authoritative_results > 0:
+    eligible = official_web_fallback_eligible(
+        source_domain=source_domain,
+        runtime_reason=runtime_reason,
+        usable_authoritative_results=usable_authoritative_results,
+        requested_source_explicit=requested_source_explicit,
+        missing_requested_facets=missing_requested_facets,
+        internal_only=internal_only,
+        authoritative_nonexistence_proven=authoritative_nonexistence_proven,
+    )
+    if not eligible:
+        if internal_only:
+            reason_code = "INTERNAL_ONLY"
+        elif authoritative_nonexistence_proven:
+            reason_code = "PROVEN_NONEXISTENT"
+        elif usable_authoritative_results > 0:
+            reason_code = "PARTIAL_RESULT"
+        else:
+            reason_code = runtime_reason
         return OfficialWebFallbackDecision(
             web_call_budget=0,
             accepted_urls=(),
             separate_section=False,
-            reason_code="PARTIAL_RESULT",
-            disclosure="",
-        )
-    if requested_source_explicit:
-        return OfficialWebFallbackDecision(
-            web_call_budget=0,
-            accepted_urls=(),
-            separate_section=False,
-            reason_code="EXPLICIT_SOURCE_NO_FALLBACK",
-            disclosure="",
-        )
-    if runtime_reason != "UPSTREAM_UNAVAILABLE" or not _official_web_fallback_enabled():
-        return OfficialWebFallbackDecision(
-            web_call_budget=0,
-            accepted_urls=(),
-            separate_section=False,
-            reason_code=runtime_reason,
+            reason_code=reason_code,
             disclosure="",
         )
 
@@ -92,8 +114,16 @@ def official_web_fallback_policy(
         web_call_budget=1 if accepted_urls else 0,
         accepted_urls=accepted_urls,
         separate_section=bool(accepted_urls),
-        reason_code="UPSTREAM_UNAVAILABLE",
-        disclosure=_official_web_disclosure(source_domain) if accepted_urls else "",
+        reason_code=runtime_reason,
+        disclosure=(
+            _official_web_disclosure(
+                source_domain,
+                requested_source_explicit=requested_source_explicit,
+                runtime_reason=runtime_reason,
+            )
+            if accepted_urls
+            else ""
+        ),
     )
 
 
@@ -110,15 +140,26 @@ def official_web_fallback_call_cap() -> int:
     return 1 if _official_web_fallback_enabled() else 0
 
 
-def _official_web_disclosure(source_domain: str) -> str:
+def _official_web_disclosure(
+    source_domain: str,
+    *,
+    requested_source_explicit: bool,
+    runtime_reason: str,
+) -> str:
+    del runtime_reason
     source_name = {
         "hira": "HIRA 공식 통계",
         "regulatory": "식품의약품안전처 공식 정보",
         "clinical_trials": "공식 임상시험 정보",
     }.get(source_domain, "권위 원천")
+    if requested_source_explicit:
+        return (
+            f"요청한 {source_name} 자료에서는 요청 범위를 확인하지 못했습니다. "
+            f"아래 내용은 {source_name} 자료를 대신한 값이 아니라 공개 웹 보완 자료입니다."
+        )
     return (
-        f"{source_name} 조회에 실패했습니다(UPSTREAM_UNAVAILABLE). "
-        "아래는 웹 검색 결과이며 공식 통계가 아닙니다. "
+        f"{source_name}에서 요청 범위를 충분히 확인하지 못했습니다. "
+        "아래는 공식 웹 보완 자료이며 내부 확인 자료와 구분됩니다. "
         "정확한 수치는 해당 공식 시스템에서 확인하십시오."
     )
 
@@ -278,7 +319,7 @@ def claim_evidence_bindings(result: AgentResult) -> tuple[str, list[dict[str, An
 
 
 def _partial_answer(plan: RoutePlan, result: AgentResult) -> str:
-    missing = _failed_call_scopes(plan, result)
+    missing = failed_call_scopes(plan, result)
     scope_text = ", ".join(missing) if missing else "요청 범위 일부"
     disclosure = (
         "상태: 일부 결과만 확인했습니다.\n"
@@ -288,7 +329,7 @@ def _partial_answer(plan: RoutePlan, result: AgentResult) -> str:
     return "\n\n".join(part for part in (result.answer.strip(), disclosure) if part)
 
 
-def _failed_call_scopes(plan: RoutePlan, result: AgentResult) -> tuple[str, ...]:
+def failed_call_scopes(plan: RoutePlan, result: AgentResult) -> tuple[str, ...]:
     scopes: list[str] = []
     calls = tuple(result.tool_calls)
     for index, proposed in enumerate(plan.proposal.proposed_calls):

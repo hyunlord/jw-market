@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import replace
 from typing import Any
 
 from jw_chat_agent_poc.common.timing import Timing
@@ -24,6 +25,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_capabilities import (
 )
 from jw_chat_agent_poc.tool_use.routing_v4_execution import (
     claim_evidence_bindings,
+    failed_call_scopes,
     normalize_execution_result,
     official_web_fallback_call_cap,
     official_web_fallback_eligible,
@@ -38,6 +40,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_shadow import (
     collect_with_budget,
     start_with_budget,
 )
+from jw_chat_agent_poc.tools.external.mcp_client import mcp_attempt_limit
 from jw_chat_agent_poc.tool_use.routing_v4_types import (
     CapabilityStatus,
     DomainDecisionSource,
@@ -331,22 +334,33 @@ def _apply_official_web_fallback(
         question,
         source_domain=source_domain,
     )
+    missing_requested_facets = (
+        failed_call_scopes(plan, result) if reason == "PARTIAL_RESULT" else ()
+    )
+    internal_only = _explicit_internal_only(question)
+    authoritative_nonexistence_proven = False
     eligible = official_web_fallback_eligible(
         source_domain=source_domain,
         runtime_reason=reason,
         usable_authoritative_results=usable_authoritative_results,
         requested_source_explicit=requested_source_explicit,
+        missing_requested_facets=missing_requested_facets,
+        internal_only=internal_only,
+        authoritative_nonexistence_proven=authoritative_nonexistence_proven,
     )
     diagnostics = _web_fallback_diagnostics(
         runtime_reason=(
-            "PARTIAL_RESULT"
-            if usable_authoritative_results
-            else "EXPLICIT_SOURCE_NO_FALLBACK"
-            if requested_source_explicit
+            "INTERNAL_ONLY"
+            if internal_only
+            else "PROVEN_NONEXISTENT"
+            if authoritative_nonexistence_proven
             else reason
         ),
         eligible=eligible,
         requested_source_explicit=requested_source_explicit,
+        internal_only=internal_only,
+        authoritative_nonexistence_proven=authoritative_nonexistence_proven,
+        missing_requested_facets=missing_requested_facets,
     )
     if not eligible:
         return result, diagnostics, 0.0
@@ -357,6 +371,16 @@ def _apply_official_web_fallback(
         return result, diagnostics, 0.0
 
     started = time.perf_counter()
+
+    def execute_without_retry(payload: Any) -> Any:
+        with mcp_attempt_limit(1):
+            return web_tool.execute(payload)
+
+    fallback_web_tool = replace(
+        web_tool,
+        execute=execute_without_retry,
+        timeout_s=min(web_tool.timeout_s, 5.0),
+    )
     web_result = AgentExecutor(
         provider=_StopAfterPlanProvider(),
         completion_policy=None,
@@ -377,7 +401,7 @@ def _apply_official_web_fallback(
             ),
         ),
         timing=timing,
-    ).run(user_text=question, tools=(web_tool,))
+    ).run(user_text=question, tools=(fallback_web_tool,))
     latency_ms = _elapsed_ms(started)
     diagnostics["calls_executed"] = 1
 
@@ -387,6 +411,9 @@ def _apply_official_web_fallback(
         usable_authoritative_results=usable_authoritative_results,
         candidate_urls=_web_result_urls(web_result),
         requested_source_explicit=requested_source_explicit,
+        missing_requested_facets=missing_requested_facets,
+        internal_only=internal_only,
+        authoritative_nonexistence_proven=authoritative_nonexistence_proven,
     )
     diagnostics.update(
         {
@@ -415,16 +442,50 @@ def _web_fallback_diagnostics(
     runtime_reason: str | None,
     eligible: bool = False,
     requested_source_explicit: bool = False,
+    internal_only: bool = False,
+    authoritative_nonexistence_proven: bool = False,
+    missing_requested_facets: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return {
         "enabled": official_web_fallback_call_cap() == 1,
         "eligible": eligible,
+        "call_cap": official_web_fallback_call_cap(),
+        "retry_cap": 0,
+        "timeout_s": 5.0,
         "requested_source_explicit": requested_source_explicit,
+        "internal_only": internal_only,
+        "authoritative_nonexistence_proven": authoritative_nonexistence_proven,
+        "missing_requested_facets": list(missing_requested_facets),
         "calls_executed": 0,
         "accepted_urls": [],
         "separate_section": False,
         "reason_code": runtime_reason,
     }
+
+
+_INTERNAL_ONLY_PHRASES = (
+    "내부 데이터만",
+    "사내 자료만",
+    "보유 데이터로만",
+    "웹 검색 없이",
+    "외부 자료 제외",
+)
+
+
+def _explicit_internal_only(question: str) -> bool:
+    normalized = " ".join(question.casefold().split())
+    for phrase in _INTERNAL_ONLY_PHRASES:
+        start = normalized.find(phrase)
+        if start < 0:
+            continue
+        prefix = normalized[max(0, start - 12) : start]
+        suffix = normalized[start + len(phrase) : start + len(phrase) + 8]
+        if "아니라" in prefix or suffix.lstrip().startswith(
+            ("가 아니라", "말고가 아니라", "제외하지")
+        ):
+            continue
+        return True
+    return False
 
 
 def _web_result_urls(result: AgentResult) -> tuple[str, ...]:
@@ -455,7 +516,7 @@ def _combine_official_web_result(
             if not any(url in accepted for url in _HTTPS_URL_RE.findall(locator)):
                 continue
             fact = EvidenceFact.model_validate(raw_fact).model_copy(
-                update={"source_name": "[SUPPLEMENTARY] 웹 검색 결과"}
+                update={"source_name": "공식 웹 보완 자료 [SUPPLEMENTARY]"}
             )
             facts.append(fact)
             filtered_evidence.append(fact.model_dump(mode="json"))
@@ -471,8 +532,9 @@ def _combine_official_web_result(
     answer = "\n\n".join(
         part
         for part in (
+            authority_result.answer.strip(),
             disclosure,
-            f"### 공식 도메인 보조 자료\n{appendix}",
+            f"### 공식 웹 보완 자료\n{appendix}",
         )
         if part
     )
@@ -485,7 +547,11 @@ def _combine_official_web_result(
         status="partial",
         answer=answer,
         tool_calls=authority_result.tool_calls + tuple(filtered_calls),
-        sources=("[SUPPLEMENTARY] 웹 검색 결과",),
+        sources=tuple(
+            dict.fromkeys(
+                (*authority_result.sources, "공식 웹 보완 자료 [SUPPLEMENTARY]")
+            )
+        ),
         traces=authority_result.traces + web_traces,
         fallback_code=None,
     )
