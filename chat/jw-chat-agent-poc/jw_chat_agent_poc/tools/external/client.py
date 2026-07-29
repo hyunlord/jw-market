@@ -18,10 +18,12 @@ OPENFDA_MCP_RESOURCE_ENV = "OPENFDA_MCP_RESOURCE_ID"
 NEDRUG_MCP_RESOURCE_ENV = "NEDRUG_MCP_RESOURCE_ID"
 HIRA_MCP_RESOURCE_ENV = "HIRA_MCP_RESOURCE_ID"
 CLINICAL_TRIALS_MCP_RESOURCE_ENV = "CLINICAL_TRIALS_MCP_RESOURCE_ID"
+TAVILY_MCP_RESOURCE_ENV = "TAVILY_MCP_RESOURCE_ID"
 OPENFDA_MCP_URL_ENV = "OPENFDA_MCP_URL"
 NEDRUG_MCP_URL_ENV = "NEDRUG_MCP_URL"
 HIRA_MCP_URL_ENV = "HIRA_MCP_URL"
 CLINICAL_TRIALS_MCP_URL_ENV = "CLINICAL_TRIALS_MCP_URL"
+TAVILY_MCP_URL_ENV = "TAVILY_MCP_URL"
 WEB_SEARCH_PROVIDER_ENV = "WEB_SEARCH_PROVIDER"
 TAVILY_API_KEY_ENV = "TAVILY_API_KEY"
 SERPER_API_KEY_ENV = "SERPER_API_KEY"
@@ -46,15 +48,18 @@ OPENFDA_MCP_DEFAULT_RESOURCE = "184"
 NEDRUG_MCP_DEFAULT_RESOURCE = "250"
 HIRA_MCP_DEFAULT_RESOURCE = "253"
 CLINICAL_TRIALS_MCP_DEFAULT_RESOURCE = "169"
+TAVILY_MCP_DEFAULT_RESOURCE = "214"
 OPENFDA_MCP_SOURCE = "openfda_mcp"
 NEDRUG_MCP_SOURCE = "nedrug_mcp"
 HIRA_MCP_SOURCE = "hira_mcp"
 CLINICAL_TRIALS_MCP_SOURCE = "clinicaltrials_mcp"
+TAVILY_MCP_SOURCE = "tavily_mcp"
 MCP_DIRECT_URL_ENV_BY_SOURCE = {
     OPENFDA_MCP_SOURCE: OPENFDA_MCP_URL_ENV,
     NEDRUG_MCP_SOURCE: NEDRUG_MCP_URL_ENV,
     HIRA_MCP_SOURCE: HIRA_MCP_URL_ENV,
     CLINICAL_TRIALS_MCP_SOURCE: CLINICAL_TRIALS_MCP_URL_ENV,
+    TAVILY_MCP_SOURCE: TAVILY_MCP_URL_ENV,
 }
 MCP_SCHEMA_GUARDED_TOOLS = frozenset(
     {
@@ -308,6 +313,13 @@ class ExternalApiClient:
         except McpClientError as exc:
             elapsed = round((time.monotonic() - start) * 1000, 1)
             safe_reason = self.redact_url(exc.message)
+            if tool == "tavily_mcp_search":
+                return _web_error(
+                    TAVILY_MCP_SOURCE,
+                    params.get("query", ""),
+                    McpClientError(safe_reason),
+                    elapsed,
+                )
             if tool in {"clinicaltrials_v2_search", "clinicaltrials_study_details"}:
                 return _clinicaltrials_failed_call(params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
             return _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
@@ -332,6 +344,15 @@ class ExternalApiClient:
         provider = os.environ.get(WEB_SEARCH_PROVIDER_ENV, "tavily").strip().lower()
         if provider == "tavily":
             return self._live_tavily_search(query, max_results, topic=topic)
+        if provider == TAVILY_MCP_SOURCE:
+            return self._live_mcp_call(
+                "tavily_mcp_search",
+                {
+                    "query": query,
+                    "max_results": str(max_results),
+                    "topic": topic,
+                },
+            )
         if provider == "serper":
             return self._live_serper_search(query, max_results)
         if provider == "brave":
@@ -442,6 +463,26 @@ class ExternalApiClient:
 
 def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
     match tool:
+        case "tavily_mcp_search":
+            max_results = _int_or_none(params.get("max_results", ""))
+            return {
+                "resource_id": os.environ.get(
+                    TAVILY_MCP_RESOURCE_ENV,
+                    TAVILY_MCP_DEFAULT_RESOURCE,
+                ),
+                "source": TAVILY_MCP_SOURCE,
+                "mcp_tool": "tavily_search",
+                "arguments": {
+                    "query": params.get("query", ""),
+                    "max_results": _bounded_web_results(
+                        max_results
+                        if max_results is not None
+                        else WEB_SEARCH_MAX_RESULTS
+                    ),
+                    "search_depth": "advanced",
+                    "topic": params.get("topic", "general"),
+                },
+            }
         case "clinicaltrials_v2_search":
             condition = params.get("query.condition")
             return {
@@ -657,6 +698,8 @@ def _mcp_external_call(
     url: str,
     elapsed: float,
 ) -> ExternalCall:
+    if tool == "tavily_mcp_search":
+        return _tavily_mcp_web_call(params, result, elapsed)
     if result.raw_result.get("isError") is True:
         return _mcp_failed_call(tool, source, params, mcp_tool, result.content_text, url, elapsed, no_data="No results" in result.content_text)
     if tool == "clinicaltrials_study_details":
@@ -682,6 +725,40 @@ def _mcp_external_call(
         safe_url=url,
         elapsed_ms=elapsed,
     )
+
+
+def _tavily_mcp_web_call(
+    params: dict[str, str],
+    result: McpToolResult,
+    elapsed: float,
+) -> ExternalCall:
+    query = params.get("query", "")
+    if result.raw_result.get("isError") is True:
+        return _web_error(
+            TAVILY_MCP_SOURCE,
+            query,
+            McpClientError(result.content_text or "MCP tool error"),
+            elapsed,
+        )
+    payload = _mcp_payload(result)
+    raw_items = payload.get("results", []) if isinstance(payload, dict) else []
+    if not isinstance(raw_items, list):
+        raw_items = []
+    max_results = _int_or_none(params.get("max_results", ""))
+    limit = _bounded_web_results(
+        max_results if max_results is not None else WEB_SEARCH_MAX_RESULTS
+    )
+    items = [
+        {
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "snippet": item.get("content") or item.get("snippet"),
+            "published_date": item.get("published_date") or item.get("date"),
+        }
+        for item in raw_items[:limit]
+        if isinstance(item, dict)
+    ]
+    return _web_call(TAVILY_MCP_SOURCE, query, items, elapsed)
 
 
 def _clinicaltrials_failed_call(params: dict[str, str], mcp_tool: str, reason: str, url: str, elapsed: float) -> ExternalCall:
