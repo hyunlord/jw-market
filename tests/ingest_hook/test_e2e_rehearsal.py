@@ -190,6 +190,68 @@ def test_same_category_serialises_distinct_submissions(client, bucket, fake_tran
     assert len(fake_transport.submitted) == 1
 
 
+def test_webhook_exact_promotion_skips_older_queue_only_when_opted_in(
+    monkeypatch, service, bucket, fake_transport
+):
+    from pipeline.scripts.ingest_hook.contract import load_manifest
+
+    older_path = write_submission(bucket, epoch="2026-05", rows=GOOD_ROWS[:3])
+    newer_path = write_submission(bucket, epoch="2026-06")
+    older = load_manifest(older_path)
+    newer = load_manifest(newer_path)
+    service.ledger.receive(
+        older.epoch,
+        older.category,
+        older.manifest_sha,
+        manifest_path=str(older_path.relative_to(bucket)),
+        uploaded_by=older.uploaded_by,
+    )
+
+    monkeypatch.setenv("INGEST_WEBHOOK_PROMOTE_EXACT", "1")
+    result = service.receive_webhook(str(newer_path.relative_to(bucket)))
+
+    assert result["job_name"] is not None
+    assert newer.manifest_sha[:8] in result["job_name"]
+    assert service.ledger.status(
+        older.epoch, older.category, older.manifest_sha
+    ).status == "queued"
+    assert service.ledger.status(
+        newer.epoch, newer.category, newer.manifest_sha
+    ).status == "running"
+    assert len(fake_transport.submitted) == 1
+
+
+def test_webhook_exact_promotion_flag_defaults_to_fifo(
+    monkeypatch, service, bucket, fake_transport
+):
+    from pipeline.scripts.ingest_hook.contract import load_manifest
+
+    monkeypatch.delenv("INGEST_WEBHOOK_PROMOTE_EXACT", raising=False)
+    older_path = write_submission(bucket, epoch="2026-05", rows=GOOD_ROWS[:3])
+    newer_path = write_submission(bucket, epoch="2026-06")
+    older = load_manifest(older_path)
+    newer = load_manifest(newer_path)
+    service.ledger.receive(
+        older.epoch,
+        older.category,
+        older.manifest_sha,
+        manifest_path=str(older_path.relative_to(bucket)),
+        uploaded_by=older.uploaded_by,
+    )
+
+    result = service.receive_webhook(str(newer_path.relative_to(bucket)))
+
+    assert result["job_name"] is not None
+    assert older.manifest_sha[:8] in result["job_name"]
+    assert service.ledger.status(
+        older.epoch, older.category, older.manifest_sha
+    ).status == "running"
+    assert service.ledger.status(
+        newer.epoch, newer.category, newer.manifest_sha
+    ).status == "queued"
+    assert len(fake_transport.submitted) == 1
+
+
 # --------------------------------------------------------------------- G-4
 def test_g4_sweep_catches_lost_webhook(sqlite_ledger, bucket, tmp_path):
     manifest_path = write_submission(bucket)  # no webhook ever fired

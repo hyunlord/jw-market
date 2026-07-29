@@ -1,11 +1,33 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from pipeline.scripts.ingest_hook import ubist_mart_activation as activation
+from pipeline.etl.io.catalog.paths import publish_catalog_outputs
+
+
+@dataclass(frozen=True)
+class _CatalogResult:
+    name: str
+    output_path: Path
+    rows: int = 1
+
+
+def _provision_catalog(root: Path, *names: str) -> None:
+    build_root = root.parent / "catalog-build"
+    results = []
+    for name in names:
+        path = build_root / name / f"{name}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({"name": [name]}), path)
+        results.append(_CatalogResult(name=name, output_path=path))
+    publish_catalog_outputs(results, build_root=build_root, catalog_root=root)
 
 
 def test_activation_is_fail_closed_without_explicit_pl_gate(monkeypatch) -> None:
@@ -93,6 +115,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         target,
         catalog_root=Path("/market-output/shadow/catalog"),
         ubist_dir=Path("/market-output/.ubist-candidate-run1"),
+        atc4_scope=("C10A1", "C10A2"),
     )
 
     assert calls == [{
@@ -102,6 +125,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         "ubist_dir": Path("/market-output/.ubist-candidate-run1"),
         "input_mode": "raw",
         "sources": ("ubist",),
+        "atc4_scope": ("C10A1", "C10A2"),
     }]
 
 
@@ -135,7 +159,9 @@ def test_shadow_catalog_root_requires_isolated_canonical_catalog(tmp_path, monke
     assert activation.shadow_catalog_root_from_env(shadow_root) == catalog_root.resolve()
 
 
-def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monkeypatch) -> None:
+def test_shadow_catalog_root_rejects_external_catalog_but_allows_refresh_target(
+    tmp_path, monkeypatch
+) -> None:
     shadow_root = tmp_path / "shadow"
     external = tmp_path / "external"
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(external))
@@ -145,8 +171,24 @@ def test_shadow_catalog_root_rejects_missing_or_external_catalog(tmp_path, monke
 
     internal = shadow_root / "catalog"
     monkeypatch.setenv(activation.ENV_SHADOW_CATALOG_ROOT, str(internal))
-    with pytest.raises(RuntimeError, match="strategic_brand.parquet"):
-        activation.shadow_catalog_root_from_env(shadow_root)
+    assert activation.shadow_catalog_root_from_env(shadow_root) == internal.resolve()
+
+
+def test_production_catalog_preflight_validates_before_s4(tmp_path, monkeypatch) -> None:
+    catalog_root = tmp_path / "catalog"
+    _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
+    monkeypatch.setenv(activation.CATALOG_ROOT_ENV, str(catalog_root))
+
+    assert activation.production_catalog_root_from_env() == catalog_root.resolve()
+
+
+def test_production_catalog_resolver_leaves_validation_to_refresh(tmp_path, monkeypatch) -> None:
+    catalog_root = tmp_path / "catalog"
+    _provision_catalog(catalog_root, "strategic_brand", "strategic_product")
+    (catalog_root / "strategic_product" / "strategic_product.parquet").unlink()
+    monkeypatch.setenv(activation.CATALOG_ROOT_ENV, str(catalog_root))
+
+    assert activation.production_catalog_root_from_env() == catalog_root.resolve()
 
 
 def test_shadow_activation_isolated_without_production_approval(monkeypatch) -> None:
@@ -441,8 +483,36 @@ def test_build_shadow_restores_s4_mutated_environment(monkeypatch) -> None:
     assert "S4_UBIST_DIR" not in activation.os.environ
 
 
-def test_publish_shadow_checks_post_gate_and_limits_general_tables(monkeypatch) -> None:
+def test_affected_atc4_codes_reads_only_requested_months(tmp_path) -> None:
+    pandas = pytest.importorskip("pandas")
+    month_04 = tmp_path / "year=2026" / "month=04"
+    month_05 = tmp_path / "year=2026" / "month=05"
+    month_04.mkdir(parents=True)
+    month_05.mkdir(parents=True)
+    pandas.DataFrame({"ATC": ["A10B1 Old"]}).to_parquet(month_04 / "data.parquet")
+    pandas.DataFrame(
+        {"ATC": ["C10A1 New", "A10B2 New", "C10A1 Duplicate"]}
+    ).to_parquet(month_05 / "data.parquet")
+
+    assert activation.affected_atc4_codes(
+        tmp_path,
+        periods=("2026-05",),
+    ) == ("A10B2", "C10A1")
+
+
+def test_affected_atc4_codes_fails_closed_when_month_is_missing(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="partition is missing"):
+        activation.affected_atc4_codes(tmp_path, periods=("2026-05",))
+
+
+def test_publish_shadow_checks_post_gate_and_limits_general_tables(
+    monkeypatch, tmp_path
+) -> None:
     calls: list[object] = []
+    monkeypatch.setenv("APP_VERSION", "a" * 40)
+    monkeypatch.setenv(
+        "INGEST_JOB_IMAGE", "registry.example/pipeline@sha256:" + ("b" * 64)
+    )
     target = activation.MartActivation("jw_mart", "jw_mart", "jw_mart_ingest_run1")
     monkeypatch.setattr(activation, "require_completed_post_gate", lambda *_args, **_kwargs: calls.append("gate"))
     monkeypatch.setattr(
@@ -451,14 +521,25 @@ def test_publish_shadow_checks_post_gate_and_limits_general_tables(monkeypatch) 
         lambda *_args, **kwargs: calls.append(kwargs) or (),
     )
     monkeypatch.setattr(activation, "record_mysql_component", lambda *_args, **_kwargs: calls.append("record"))
+    monkeypatch.setattr(
+        activation,
+        "record_publication_provenance",
+        lambda *_args, **_kwargs: calls.append("provenance"),
+    )
 
     activation.publish_shadow(
-        object(), target, run_id="run1", epoch="2026-07", ingest_run_id="ingest-run1"
+        object(),
+        target,
+        run_id="run1",
+        epoch="2026-07",
+        ingest_run_id="ingest-run1",
+        activation_journal=tmp_path / "activation.json",
     )
 
     assert calls[0] == "gate"
     assert calls[1]["tables"] == activation.GENERAL_TABLES
     assert calls[2] == "record"
+    assert calls[3] == "provenance"
 
 
 @pytest.mark.parametrize("row", [None, ("failed", "sigma mismatch"), ("running", None)])
@@ -519,6 +600,10 @@ def test_candidate_corpus_promotes_by_rename_and_can_rollback(tmp_path) -> None:
 
 
 def test_publish_shadow_rolls_back_when_ledger_record_fails(monkeypatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "a" * 40)
+    monkeypatch.setenv(
+        "INGEST_JOB_IMAGE", "registry.example/pipeline@sha256:" + ("b" * 64)
+    )
     action = type(
         "Action",
         (),
@@ -546,7 +631,12 @@ def test_publish_shadow_rolls_back_when_ledger_record_fails(monkeypatch) -> None
 
     with pytest.raises(RuntimeError, match="ledger failed"):
         activation.publish_shadow(
-            object(), target, run_id="run1", epoch="2026-07", ingest_run_id="ingest-run1"
+            object(),
+            target,
+            run_id="run1",
+            epoch="2026-07",
+            ingest_run_id="ingest-run1",
+            activation_journal=Path("/unused/activation.json"),
         )
 
     assert restored == [(action,)]

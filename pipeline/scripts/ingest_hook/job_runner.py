@@ -44,6 +44,7 @@ from pipeline.scripts.ingest_hook.post_gate import (
     sample_existing_periods,
     staging_row_count,
 )
+from pipeline.scripts.ingest_hook import publish_approval
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 
 
@@ -247,11 +248,6 @@ def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | 
     source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
     for sources in source_batches:
         argv = list(spec.load_argv)
-        shadow_overlap_dedup = (
-            manifest.category == "ubist" and config.load_mode() == "shadow"
-        )
-        if shadow_overlap_dedup:
-            argv.append("--allow-overlap-dedup")
         for source in sources:
             argv.extend([spec.load_input_flag, source])
         if spec.load_target_flag:
@@ -336,9 +332,31 @@ def _emit_completion_signal(
         )
     except Exception as exc:  # signal observation cannot break a successful load
         print(f"[signal] ledger record failed (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
+    drain_result = PublishResult("disabled", 0, "queue drain endpoint is not configured")
+    try:
+        drain_endpoint, drain_attempts = config.queue_drain_webhook()
+        if drain_endpoint:
+            drain_result = publish(
+                signal,
+                endpoint=drain_endpoint,
+                attempts=drain_attempts,
+            )
+    except Exception as exc:  # queue drain callback is recoverable by reconciliation
+        drain_result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
     # Stage observation is also best-effort (record_stage swallows DB errors).
-    tracker.complete("signal", reason=f"delivery={result.status}; attempts={result.attempts}")
-    print(f"signal event={event} mode={mode} delivery={result.status} attempts={result.attempts}")
+    tracker.complete(
+        "signal",
+        reason=(
+            f"delivery={result.status}; attempts={result.attempts}; "
+            f"queue_drain={drain_result.status}; "
+            f"queue_drain_attempts={drain_result.attempts}"
+        ),
+    )
+    print(
+        f"signal event={event} mode={mode} delivery={result.status} "
+        f"attempts={result.attempts} queue_drain={drain_result.status} "
+        f"queue_drain_attempts={drain_result.attempts}"
+    )
 
 
 def run(
@@ -575,16 +593,45 @@ def run(
                     catalog_root = (
                         ubist_mart_activation.shadow_catalog_root_from_env(target_root)
                         if is_shadow
-                        else None
+                        else ubist_mart_activation.production_catalog_root_from_env()
+                    )
+                    catalog_conn = config.open_mart_connection(mart_activation.source_db)
+                    try:
+                        catalog_preparation = ubist_mart_activation.prepare_catalog_for_mart(
+                            catalog_root=catalog_root,
+                            ubist_dir=target_root / "ubist",
+                            source_db=mart_activation.source_db,
+                            conn=catalog_conn,
+                            run_id=run_id,
+                            output_parent=target_root,
+                        )
+                    finally:
+                        catalog_conn.close()
+                    print(
+                        "phase=catalog_preflight status=complete "
+                        f"action={catalog_preparation.action} "
+                        f"mi_master_sha256={catalog_preparation.mi_master_sha256} "
+                        f"parity_tables={len(catalog_preparation.parity)}"
                     )
                     print(
                         f"phase=mart_build status=start build_db={mart_activation.build_db} "
                         f"catalog_root={catalog_root} ubist_dir={load_result['target_dir']}"
                     )
+                    loaded_periods = (manifest.epoch,)
+                    atc4_scope = ubist_mart_activation.affected_atc4_codes(
+                        load_result["target_dir"],
+                        periods=loaded_periods,
+                    )
+                    print(
+                        "phase=mart_build mode=incremental "
+                        f"periods={loaded_periods} "
+                        f"atc4_count={len(atc4_scope)} atc4_scope={atc4_scope}"
+                    )
                     ubist_mart_activation.build_shadow(
                         mart_activation,
                         catalog_root=catalog_root,
                         ubist_dir=load_result["target_dir"],
+                        atc4_scope=atc4_scope,
                     )
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
@@ -657,6 +704,14 @@ def run(
                 if mart_activation is not None:
                     from pipeline.scripts.ingest_hook import ubist_mart_activation
 
+                    publish_approval.wait_for_exact_publish_approval(
+                        publish_approval.PublishApprovalIdentity(
+                            epoch=manifest.epoch,
+                            category=manifest.category,
+                            manifest_sha=manifest.manifest_sha,
+                            run_id=run_id,
+                        )
+                    )
                     tracker.enter("mart_publish")
                     writer_db = mart_activation.target_db if is_shadow else None
                     writer_conn = config.open_mart_connection(writer_db)
@@ -706,6 +761,7 @@ def run(
                         run_id=run_id,
                         epoch=manifest.epoch,
                         ingest_run_id=run_id,
+                        activation_journal=activation_journal,
                         require_ledger_gate=not is_shadow,
                     )
                     ubist_mart_activation.update_activation_journal(

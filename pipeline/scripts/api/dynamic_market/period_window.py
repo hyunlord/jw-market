@@ -42,6 +42,26 @@ _PREDECODED_ROW_SERIES_FIELDS: Final[frozenset[str]] = frozenset(
 _PeriodBounds = tuple[int | None, int | None]
 
 
+def default_display_period_range(periods: Sequence[str], *, source: str) -> PeriodRange:
+    """Return the default public window while preserving source-specific bounds."""
+
+    if source.strip().lower() != "ubist":
+        return PeriodRange()
+    scoped = tuple(
+        sorted(
+            {
+                str(period)
+                for period in periods
+                if _period_interval(str(period)) is not None
+            },
+            key=lambda period: _period_interval(period) or (-1, -1),
+        )
+    )[-60:]
+    if not scoped:
+        return PeriodRange()
+    return PeriodRange(scoped[0], scoped[-1])
+
+
 def trim_period_rows(
     rows: Sequence[Mapping[str, Any]],
     period_range: PeriodRange,

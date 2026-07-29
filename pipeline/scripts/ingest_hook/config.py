@@ -24,6 +24,9 @@ ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output roo
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
+ENV_QUEUE_DRAIN_WEBHOOK_URL = "INGEST_QUEUE_DRAIN_WEBHOOK_URL"
+ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS = "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS"
+ENV_WEBHOOK_PROMOTE_EXACT = "INGEST_WEBHOOK_PROMOTE_EXACT"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -34,6 +37,20 @@ DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
     "jw-pipeline-orchestrator@sha256:030f81837d05b8789b879fc04ddf0865a7953ddd2cb9d26fc8b707bf394e5e12"
 )
+
+
+def webhook_promote_exact() -> bool:
+    """Select the just-received manifest instead of the oldest queued row.
+
+    This is an explicit commissioning override for a queue containing known
+    submissions that must remain untouched. The default preserves category
+    FIFO. Invalid values fail closed instead of silently changing promotion
+    order.
+    """
+    value = os.environ.get(ENV_WEBHOOK_PROMOTE_EXACT, "0").strip()
+    if value not in {"0", "1"}:
+        raise RuntimeError(f"{ENV_WEBHOOK_PROMOTE_EXACT} must be 0 or 1")
+    return value == "1"
 
 
 def log_root_hint() -> str:
@@ -53,6 +70,12 @@ def log_root() -> Path:
 def completion_webhook() -> tuple[str, int]:
     endpoint = os.environ.get(ENV_COMPLETION_WEBHOOK_URL, "").strip()
     attempts = int(os.environ.get(ENV_COMPLETION_WEBHOOK_ATTEMPTS, "4"))
+    return endpoint, min(max(attempts, 3), 5)
+
+
+def queue_drain_webhook() -> tuple[str, int]:
+    endpoint = os.environ.get(ENV_QUEUE_DRAIN_WEBHOOK_URL, "").strip()
+    attempts = int(os.environ.get(ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS, "3"))
     return endpoint, min(max(attempts, 3), 5)
 
 

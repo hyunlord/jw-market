@@ -245,6 +245,31 @@ def _aggregate_rank_fixture(
     )
 
 
+def test_general_ubist_default_window_hides_cagr_baseline_month(monkeypatch) -> None:
+    # Given 61 monthly points whose oldest point is required for exact five-year CAGR.
+    periods = tuple(
+        f"{year}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    )[5:66]
+    history = {
+        period: float(value)
+        for period, value in zip(periods, range(100, 161), strict=True)
+    }
+
+    # When the unbounded UBIST market response is aggregated.
+    metrics = _aggregate_rank_fixture(
+        monkeypatch,
+        source="ubist",
+        histories={"focus": history},
+    )
+
+    # Then the calculation baseline stays hidden while CAGR uses the full 60-month interval.
+    assert [point["period"] for point in metrics.monthly_series] == list(periods[-60:])
+    assert [point["period"] for point in metrics.all_brands[0].monthly_series] == list(periods[-60:])
+    assert metrics.cagr == round(((160.0 / 100.0) ** (1 / 5) - 1) * 100, 6)
+
+
 def test_general_ubist_rank_uses_latest_value_with_total_value_tiebreak(monkeypatch) -> None:
     # Given cumulative leaders that tie or have no value in the market's common latest period.
     histories = {

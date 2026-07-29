@@ -167,14 +167,19 @@ def _validate_ubist_workbook(
 
     _check_declared_period(entry, epoch, failures)
 
-    # Row sanity is manifest-declared for workbooks (streaming every row would
-    # blow the header-only budget); record the declared count so the crash floor
-    # still has a total, and note that G3 did not stream-verify it.
+    # Portal manifests do not declare workbook rows. In that case count through
+    # the loader's iterator so the crash floor and post-gate use the same row
+    # contract as the load itself.
     if entry.rows is not None:
         report.file_rows[entry.path] = entry.rows
+        row_note = "rows manifest-declared, verified on load"
+    else:
+        rows_by_period = ubist_loader.count_source_rows_by_period(path)
+        report.file_rows[entry.path] = rows_by_period.get(epoch, 0)
+        row_note = "rows counted via loader iterator"
     report.notes.append(
         f"{entry.path}: UBIST workbook validated via loader parser "
-        f"(periods={sorted(periods)}; rows manifest-declared, verified on load)"
+        f"(periods={sorted(periods)}; {row_note})"
     )
 
 

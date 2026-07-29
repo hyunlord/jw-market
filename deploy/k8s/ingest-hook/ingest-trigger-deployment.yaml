@@ -59,6 +59,10 @@ spec:
               value: ""
             - name: INGEST_COMPLETION_WEBHOOK_ATTEMPTS
               value: "4"
+            - name: INGEST_QUEUE_DRAIN_WEBHOOK_URL
+              value: http://jw-ingest-hook.llmops.svc.cluster.local:8080/ingest/terminal
+            - name: INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS
+              value: "3"
             - name: INGEST_JOB_IMAGE
               value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:030f81837d05b8789b879fc04ddf0865a7953ddd2cb9d26fc8b707bf394e5e12
             - name: MARIADB_HOST
@@ -67,6 +71,15 @@ spec:
               value: "3306"
             - name: MARIADB_DATABASE
               value: jw_mart_d2_stage_20260630_r2
+            # The orchestrated strength refresh is fail-closed on the live
+            # wf316 revision. Keep the execution and expected pins identical;
+            # job_launcher propagates all three values to each ingest Job.
+            - name: AGENT3_DB_NAME
+              value: jw_mart_d2_stage_20260630_r2
+            - name: AGENT3_WORKFLOW_REV
+              value: "5692"
+            - name: AGENT3_EXPECTED_WORKFLOW_REV
+              value: "5692"
             - name: MARIADB_USER
               valueFrom:
                 secretKeyRef:

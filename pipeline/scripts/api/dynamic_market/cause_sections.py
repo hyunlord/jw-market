@@ -191,8 +191,14 @@ def kpi(
     # needs a period-keyed map.
     market_series_points = market_size_series(metrics)
     market_series_map = {str(point["period"]): point for point in market_series_points}
-    market_cagr_5y, market_cagr_3y = market_cagr_exclusive(market_series_map)
-    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(history(focus))
+    calculation_market_series = _calculation_market_history(metrics.all_brands)
+    calculation_brand_series = _calculation_history(focus)
+    market_cagr_5y, market_cagr_3y = market_cagr_exclusive(
+        calculation_market_series or market_series_map
+    )
+    brand_cagr_5y, brand_cagr_3y = brand_cagr_exclusive(
+        calculation_brand_series or history(focus)
+    )
     return {
         "market_size_recent": latest_market_value(market_series_points),
         "market_cagr_5y_pct": market_cagr_5y,
@@ -219,6 +225,24 @@ def kpi(
         "brand_share_pct": target.get("share_pct"),
         "momentum_score": target.get("momentum_score"),
     }
+
+
+def _calculation_history(brand: BrandMetric) -> dict[str, float]:
+    raw = brand.analysis_row.get("calculation_metric_history")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(period): float(value)
+        for period, value in raw.items()
+    }
+
+
+def _calculation_market_history(brands: tuple[BrandMetric, ...]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for brand in brands:
+        for period, value in _calculation_history(brand).items():
+            totals[period] = totals.get(period, 0.0) + value
+    return totals
 
 
 def _contributor(brand: BrandMetric, *, start: str, end: str, focus: BrandMetric | None, market_growth: float) -> dict[str, Any]:

@@ -10,6 +10,26 @@ from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.sigma_market import MarketSigmaError, check_market_sigma
 
 
+class _DictCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, *args, **kwargs):
+        return self._cursor.execute(*args, **kwargs)
+
+    def fetchall(self):
+        columns = tuple(column[0] for column in self._cursor.description)
+        return [dict(zip(columns, row, strict=True)) for row in self._cursor.fetchall()]
+
+
+class _DictConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _DictCursor(self._conn.cursor())
+
+
 @pytest.fixture
 def mart(tmp_path):
     conn = sqlite3.connect(str(tmp_path / "mart.db"))
@@ -48,6 +68,13 @@ def test_reconciled_load_passes(mart):
     assert report.worst_rel == 0.0
 
 
+def test_reconciled_load_accepts_dict_cursor_rows(mart):
+    report = _check(_DictConnection(mart), ("2026-06", "2026-07"))
+    assert report.markets_checked == 2
+    assert report.cells_checked == 3
+    assert report.worst_rel == 0.0
+
+
 def test_broken_total_fails(mart):
     mart.execute(
         "UPDATE mart_general_market_metric SET market_size_series=? WHERE atc4_code='C10C0'",
@@ -58,7 +85,7 @@ def test_broken_total_fails(mart):
 
 
 def test_period_never_loaded_fails_closed(mart):
-    with pytest.raises(MarketSigmaError, match="never received"):
+    with pytest.raises(MarketSigmaError, match="could not verify"):
         _check(mart, ("2030-01",))
 
 

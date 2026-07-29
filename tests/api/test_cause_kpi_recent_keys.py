@@ -50,6 +50,68 @@ def test_target_brand_sales_matches_selected_recent_value() -> None:
     assert kpi["target_brand_sales"] == kpi["brand_value_recent"] == 10.0
 
 
+def test_ubist_kpi_uses_hidden_baseline_without_widening_public_series() -> None:
+    # Given 61 calculation months and a public 60-month series.
+    periods = tuple(
+        f"{year}-{month:02d}"
+        for year in range(2021, 2027)
+        for month in range(1, 13)
+    )[5:66]
+    calculation_history = {
+        period: float(value)
+        for period, value in zip(periods, range(100, 161), strict=True)
+    }
+    public_periods = periods[-60:]
+    focus = BrandMetric(
+        "focus",
+        "Focus",
+        "C10A1",
+        0.0,
+        100.0,
+        1,
+        periods[-1],
+        160.0,
+        monthly_series=tuple(
+            {"period": period, "value": calculation_history[period]}
+            for period in public_periods
+        ),
+        analysis_row={"calculation_metric_history": calculation_history},
+    )
+    metrics = AggregatedMetrics(
+        source="ubist",
+        measure="sales",
+        unit_label="KRW",
+        market_size=sum(calculation_history[period] for period in public_periods),
+        hhi=10000.0,
+        cagr=round(((160.0 / 100.0) ** (1 / 5) - 1) * 100, 6),
+        monthly_series=tuple(
+            {"period": period, "market_size": calculation_history[period]}
+            for period in public_periods
+        ),
+        brands=(focus,),
+        all_brands=(focus,),
+    )
+
+    # When the API-facing cause data is built.
+    data = cause_payload.build_cause_data(
+        definition=MarketDefinition(
+            view="general",
+            filter_echo={},
+            source="ubist",
+            measure="sales",
+        ),
+        metrics=metrics,
+        focus=focus,
+    )
+
+    # Then the exact five-year baseline drives CAGR but remains absent from display.
+    expected = round(((160.0 / 100.0) ** (1 / 5) - 1) * 100, 4)
+    assert data["kpi"]["brand_cagr_5y_pct"] == expected
+    assert data["kpi"]["market_cagr_5y_pct"] == round(expected, 2)
+    assert len(data["market_size_series"]) == 60
+    assert data["market_size_series"][0]["period"] == "2021-07"
+
+
 def test_market_cagr_3y_key_present() -> None:
     kpi = _kpi("2025-05")
     assert "market_cagr_3y_pct" in kpi

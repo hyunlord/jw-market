@@ -16,7 +16,10 @@ import pandas as pd
 from .brand_key_normalize import best_name, extract_brand_base_name, normalize_brand_name
 from .general_catalog import _attach_catalog
 from .general_config import LOGGER, enriched_glob, ubist_glob
-from .general_window import filter_frame_to_rolling_window, rolling_period_scope
+from .general_window import (
+    calculation_period_scope,
+    filter_frame_to_rolling_window,
+)
 from .general_rows import build_ubist_additive_partial, reduce_ubist_additive_partials
 from .general_utils import deduplicate_ubist_internal_medicine_rows, extract_atc4, ubist_channel_to_raw, ubist_specialty_to_raw
 
@@ -300,7 +303,7 @@ def _available_ubist_periods(
                     """
                 ).fetchall()
             )
-        return rolling_period_scope(periods, source="ubist")
+        return calculation_period_scope(periods, source="ubist")
 
     source_periods: list[str] = []
     for path_text in glob.glob(ubist_glob()):
@@ -310,7 +313,7 @@ def _available_ubist_periods(
         if year.isdigit() and month.isdigit():
             source_periods.append(f"{year}-{month}")
     if source_periods:
-        return rolling_period_scope(source_periods, source="ubist")
+        return calculation_period_scope(source_periods, source="ubist")
     if not glob.glob(enriched_glob()):
         return ()
     with duckdb.connect() as connection:
@@ -325,7 +328,7 @@ def _available_ubist_periods(
                 """
             ).fetchall()
         )
-    return rolling_period_scope(periods, source="ubist")
+    return calculation_period_scope(periods, source="ubist")
 
 
 def _ubist_period_filter_sql(periods: tuple[str, ...]) -> str:
@@ -739,6 +742,7 @@ def iter_ubist_atc4_worksets(
     estimated_row_bytes: int = DEFAULT_UBIST_ESTIMATED_ROW_BYTES,
     target_fraction: float = DEFAULT_UBIST_PARTITION_FRACTION,
     duckdb_memory_limit: str = DEFAULT_UBIST_DUCKDB_MEMORY_LIMIT,
+    atc4_scope: tuple[str, ...] | None = None,
 ) -> Iterator[UbistAtc4Workset]:
     """Yield brand-stable bounded worksets from a one-scan raw UBIST spool."""
     owned_spool = spool_dir is None
@@ -754,6 +758,9 @@ def iter_ubist_atc4_worksets(
         duckdb_memory_limit=duckdb_memory_limit,
     )
     selected = [plan for plan in plans if plan.atc4_code != "UNKNOWN"]
+    if atc4_scope:
+        requested = {str(value).strip().upper() for value in atc4_scope}
+        selected = [plan for plan in selected if plan.atc4_code.upper() in requested]
     if limit_atc4:
         selected = selected[:limit_atc4]
     if not limit_atc4:
@@ -816,7 +823,7 @@ def _normalize_raw_ubist_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
     frame = deduplicate_ubist_internal_medicine_rows(frame)
     frame = frame.loc[frame["brand_key"] != ""].copy()
-    return filter_frame_to_rolling_window(frame, source="ubist")
+    return filter_frame_to_rolling_window(frame, source="ubist", calculation=True)
 
 
 def iter_ubist_base_frames(
@@ -986,7 +993,7 @@ def load_ubist_base_frame(max_rows: int | None = None, ml: str | None = None) ->
     frame["specialty"] = frame["specialty"].map(ubist_specialty_to_raw)
     frame = deduplicate_ubist_internal_medicine_rows(frame)
     frame = frame.loc[frame["brand_key"] != ""].copy()
-    return filter_frame_to_rolling_window(frame, source="ubist")
+    return filter_frame_to_rolling_window(frame, source="ubist", calculation=True)
 
 def ubist_measure_frame(base: pd.DataFrame, measure: str) -> pd.DataFrame:
     frame = base.copy()

@@ -138,9 +138,10 @@ def endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
     (for example 2026 Jan-Apr) created fake negative CAGR/EI while the portal
     also displayed a separate positive CAGR. Cache now uses one domain rule:
     latest period vs exactly 5 years ago, falling back to 3 years only when
-    the caller asks for that basis. A complete five-year rolling window has
-    one fewer elapsed interval than points (59 months or 19 quarters), so its
-    first point is accepted using the actual elapsed years.
+    the caller asks for that basis. IQVIA's 20-quarter display contract has
+    19 elapsed quarter intervals, so only that quarterly source shape accepts
+    the first point using its actual 4.75-year span. Monthly UBIST requires the
+    exact 60-month-prior point and never substitutes a 59-month span.
     """
     data = series or {}
     if len(data) < 2:
@@ -154,7 +155,7 @@ def endpoint_cagr(series: dict[str, Any] | None, years: int) -> dict[str, Any]:
     start_period = _period_at_ordinal(data, target_ordinal)
     start_value = period_value(data.get(start_period)) if start_period else None
     period_years: float | int = years
-    if start_value is None and years == 5:
+    if start_value is None and years == 5 and periods_per_year == 4:
         elapsed_periods = periods_per_year * years - 1
         start_period = _period_at_ordinal(data, ordinal - elapsed_periods)
         start_value = period_value(data.get(start_period)) if start_period else None

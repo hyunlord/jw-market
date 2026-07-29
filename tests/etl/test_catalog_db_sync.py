@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from pipeline.etl.io.catalog import db_sync
 
@@ -101,6 +102,58 @@ def test_sync_catalog_tables_requires_output_catalog_layout(tmp_path: Path) -> N
         raise AssertionError("expected missing output/catalog layout to fail")
 
 
+def test_catalog_parity_uses_full_pk_order_and_reports_changed_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate_by_name = {
+        "ml_market": [{"ml_id": "ml_1", "name": "candidate"}],
+        "cd_market": [{"cd_id": "cd_1", "name": "same"}],
+        "strategic_brand": [{"brand_id": "brand_1", "name": "same"}],
+    }
+
+    def fake_load(_root: Path, spec: db_sync.CatalogTableSpec):
+        return candidate_by_name[spec.parquet_name], tmp_path / "unused", "sha"
+
+    monkeypatch.setattr(db_sync, "_load_catalog_rows", fake_load)
+    queries: list[str] = []
+
+    class ParityCursor:
+        def __init__(self):
+            self.sql = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql: str) -> None:
+            self.sql = sql
+            queries.append(sql)
+
+        def fetchall(self):
+            if "catalog_ml_market" in self.sql:
+                return [{"ml_id": "ml_1", "name": "serving"}]
+            if "catalog_cd_market" in self.sql:
+                return [{"cd_id": "cd_1", "name": "same"}]
+            return [{"brand_id": "brand_1", "name": "same"}]
+
+    class ParityConnection:
+        def cursor(self):
+            return ParityCursor()
+
+    results = db_sync.compare_catalog_to_serving(
+        ParityConnection(),
+        target_db="serving",
+        catalog_root=tmp_path,
+    )
+
+    assert results[0].changed_primary_keys == ("ml_1",)
+    assert results[1].matches
+    assert results[2].matches
+    assert all("ORDER BY" in query for query in queries)
+
+
 def _write_parquet(root: Path, name: str, rows: list[dict[str, object]]) -> None:
     directory = root / name
     directory.mkdir(parents=True)
@@ -168,4 +221,3 @@ def _brand_row(index: int) -> dict[str, object]:
         "general_brand_key": "리바로" if index == 0 else None,
         "strategy_id": "strategy_006",
     }
-

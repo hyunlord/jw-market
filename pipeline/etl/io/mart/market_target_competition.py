@@ -11,6 +11,11 @@ FIXED_IQVIA_CHANNELS = ("KHPA", "KCPA", "KPA")
 def _periods(rows: list[dict[str, Any]]) -> list[str]:
     found: set[str] = set()
     for row in rows:
+        metric_history = row.get("metric_history") or {}
+        found.update(metric_history.keys())
+    if found:
+        return sorted(found)
+    for row in rows:
         found.update((row.get("raw_value_history") or {}).keys())
     return sorted(found)
 

@@ -9,6 +9,7 @@ from .layer3_compute_extended import compute_ei, compute_growth_contribution, co
 from .layer3_normalize import prev_month, prev_quarter_month, same_month_prev_year
 from .strategic_common import merge_numeric_json_values, sum_raw_histories
 from .strategic_common import row_atc4_code
+from .general_window import rolling_period_scope
 
 
 def row_raw_history(row: dict[str, Any], periods: list[str]) -> dict[str, float]:
@@ -32,6 +33,8 @@ def recompute_market_scoped_metric_history(rows: list[dict[str, Any]]) -> None:
         periods = fill_periods(period for row in rows for period in (row.get("metric_history") or {}).keys())
     if not periods:
         return
+    source = str(rows[0].get("source") or "")
+    display_periods = set(rolling_period_scope(periods, source=source))
     raw_by_brand = {
         str(row.get("brand_name") or row.get("brand_key") or idx): row_raw_history(row, periods)
         for idx, row in enumerate(rows)
@@ -47,8 +50,8 @@ def recompute_market_scoped_metric_history(rows: list[dict[str, Any]]) -> None:
     for idx, row in enumerate(rows):
         brand_name = str(row.get("brand_name") or row.get("brand_key") or idx)
         history = raw_by_brand[brand_name]
-        metric_history = dict(row.get("metric_history") or {})
-        extended_history = dict(row.get("extended_metric_history") or {})
+        metric_history: dict[str, Any] = {}
+        extended_history: dict[str, Any] = {}
         ms_values: list[float] = []
         for period in periods:
             value = history.get(period, 0.0)
@@ -65,7 +68,9 @@ def recompute_market_scoped_metric_history(rows: list[dict[str, Any]]) -> None:
             cagr_5y = cagr_from_history(history, period, 5)
             market_cagr_5y = cagr_from_history(market_history, period, 5)
             ei_5y, ei_warning = compute_ei(cagr_5y, market_cagr_5y)
-            metric_payload = dict(metric_history.get(period) or {})
+            if period not in display_periods:
+                continue
+            metric_payload: dict[str, Any] = {}
             metric_payload.update(
                 {
                     "raw_value": value,
@@ -79,7 +84,7 @@ def recompute_market_scoped_metric_history(rows: list[dict[str, Any]]) -> None:
                 }
             )
             metric_history[period] = metric_payload
-            extended_payload = dict(extended_history.get(period) or {})
+            extended_payload: dict[str, Any] = {}
             extended_payload.update(
                 {
                     "cagr_1y": cagr_from_history(history, period, 1),

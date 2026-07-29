@@ -102,6 +102,17 @@ def test_strength_missing_rev_env_is_surfaced(tmp_path, monkeypatch, capsys):
     assert any("AGENT3" in warning for warning in plan_line["warnings"])
 
 
+def test_shortlong_commands_use_general_density_general_bundle() -> None:
+    commands = STAGE_BY_KEY["shortlong"].commands("incremental", (), False, "route-test")
+
+    assert len(commands) == 2
+    for command in commands:
+        brand_source_index = command.argv.index("--brand-source")
+        bundle_kind_index = command.argv.index("--bundle-kind")
+        assert command.argv[brand_source_index + 1] == "general-density"
+        assert command.argv[bundle_kind_index + 1] == "general"
+
+
 @pytest.mark.parametrize("stage_key", list(STAGE_ORDER))
 def test_every_stage_declares_honest_incremental_contract(stage_key):
     spec = STAGE_BY_KEY[stage_key]

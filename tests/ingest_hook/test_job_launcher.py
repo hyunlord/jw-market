@@ -13,10 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA = "f" * 64
 EXPECTED_API_NODE_AFFINITY = {
     "nodeAffinity": {
-        "preferredDuringSchedulingIgnoredDuringExecution": [
-            {
-                "weight": 100,
-                "preference": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+            "nodeSelectorTerms": [
+                {
                     "matchExpressions": [
                         {
                             "key": "cloud.google.com/gke-nodepool",
@@ -24,9 +23,9 @@ EXPECTED_API_NODE_AFFINITY = {
                             "values": ["knp-jw-agn-dev-genos-api-01"],
                         }
                     ]
-                },
-            }
-        ]
+                }
+            ]
+        }
     }
 }
 
@@ -43,7 +42,7 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
 
 
-def test_rendered_job_prefers_api_node_pool_without_forcing_scheduling():
+def test_rendered_job_requires_api_node_pool_for_nfs_mounts():
     body = render_job(
         category="ubist",
         manifest_sha=SHA,
@@ -56,7 +55,7 @@ def test_rendered_job_prefers_api_node_pool_without_forcing_scheduling():
     assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
 
 
-def test_reference_job_prefers_same_api_node_pool():
+def test_reference_job_requires_same_api_node_pool():
     template = yaml.safe_load(
         (
             REPO_ROOT
@@ -69,8 +68,14 @@ def test_reference_job_prefers_same_api_node_pool():
     )
 
     pod_spec = template["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
     assert "nodeSelector" not in pod_spec
     assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
+    assert template["spec"]["backoffLimit"] == 0
+    assert container["resources"] == {
+        "requests": {"cpu": "2", "memory": "12Gi"},
+        "limits": {"cpu": "2", "memory": "12Gi"},
+    }
 
 
 def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):
@@ -102,6 +107,52 @@ def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):
     mounts = {item["name"]: item for item in container["volumeMounts"]}
     assert mounts["market-output"]["mountPath"] == "/market-output"
     assert mounts["market-output"]["readOnly"] is False
+
+
+def test_rendered_retries_share_manifest_scoped_durable_stage_checkpoint():
+    first = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id="retry-one",
+    )
+    second = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id="retry-two",
+    )
+
+    def state_path(body: dict) -> str:
+        container = body["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        return env["JW_PIPELINE_STATE_FILE"]
+
+    expected = f"/market-output/ingest-checkpoints/ubist/{SHA}/orchestrator-state.json"
+    assert state_path(first) == expected
+    assert state_path(second) == expected
+
+
+def test_rendered_job_scopes_publish_approval_to_exact_run(monkeypatch):
+    monkeypatch.setenv("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "1")
+    run_id = "run-a4"
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+        run_id=run_id,
+    )
+
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL"] == "1"
+    assert env["INGEST_PUBLISH_APPROVAL_FILE"] == (
+        f"/market-output/ingest-approvals/ubist/{SHA}/{run_id}.json"
+    )
 
 
 def test_submit_uses_injected_transport(fake_transport):
@@ -171,6 +222,9 @@ def test_tracked_manifests_preserve_isolated_load_arming():
     assert "INGEST_LOAD_TARGET_ROOT" not in trigger_env
     assert trigger_env["INGEST_INPUT_BACKEND"]["value"] == "local"
     assert trigger_env["INGEST_INPUT_ROOT"]["value"] == "/nfs-root/autoIngestion"
+    assert trigger_env["AGENT3_DB_NAME"]["value"] == "jw_mart_d2_stage_20260630_r2"
+    assert trigger_env["AGENT3_WORKFLOW_REV"]["value"] == "5692"
+    assert trigger_env["AGENT3_EXPECTED_WORKFLOW_REV"]["value"] == "5692"
     trigger_mounts = {item["name"]: item for item in trigger["volumeMounts"]}
     assert trigger_mounts["ingest-input"]["mountPath"] == "/nfs-root/autoIngestion"
     assert trigger_mounts["ingest-input"]["readOnly"] is True
@@ -231,13 +285,54 @@ def test_reference_jobs_separate_staging_from_activation_contracts():
 
 def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     monkeypatch.setenv("MARIADB_HOST", "db.example")
+    monkeypatch.setenv("MARIADB_PORT", "3307")
+    monkeypatch.setenv("MARIADB_DATABASE", "jw_mart_serving")
     monkeypatch.setenv("INGEST_S3_BUCKET", "jw-market-raw")
     monkeypatch.setenv("INGEST_REHEARSAL_ROOT", "/tmp/ingest-rehearsal")
+    monkeypatch.setenv("AGENT3_DB_NAME", "agent3-live")
+    monkeypatch.setenv("AGENT3_WORKFLOW_REV", "5692")
+    monkeypatch.setenv("AGENT3_EXPECTED_WORKFLOW_REV", "5692")
+    monkeypatch.setenv("APP_VERSION", "a" * 40)
+    monkeypatch.setenv(
+        "INGEST_JOB_IMAGE", "registry.example/pipeline@sha256:" + ("b" * 64)
+    )
     body = render_job(category="ubist", manifest_sha=SHA, manifest_path="_manifests/m.json", namespace="llmops")
     env = body["spec"]["template"]["spec"]["containers"][0]["env"]
     by_name = {e["name"]: e for e in env}
     assert by_name["MARIADB_HOST"]["value"] == "db.example"
+    assert by_name["DB_HOST"]["value"] == "db.example"
+    assert by_name["DB_PORT"]["value"] == "3307"
+    assert by_name["DB_NAME"]["value"] == "jw_mart_serving"
+    assert (
+        by_name["DB_USER"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "username"}
+    )
+    assert (
+        by_name["DB_ROOT_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "password"}
+    )
     assert by_name["INGEST_REHEARSAL_ROOT"]["value"] == "/tmp/ingest-rehearsal"
+    assert by_name["AGENT3_DB_NAME"]["value"] == "agent3-live"
+    assert by_name["AGENT3_DB_HOST"]["value"] == "db.example"
+    assert by_name["AGENT3_DB_PORT"]["value"] == "3307"
+    assert (
+        by_name["AGENT3_DB_USER"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "username"}
+    )
+    assert (
+        by_name["AGENT3_DB_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        == {"name": "jw-mart-d2-writer", "key": "password"}
+    )
+    assert by_name["AGENT3_WORKFLOW_REV"]["value"] == "5692"
+    assert by_name["AGENT3_EXPECTED_WORKFLOW_REV"]["value"] == "5692"
+    assert by_name["APP_VERSION"]["value"] == "a" * 40
+    assert by_name["INGEST_JOB_IMAGE"]["value"].endswith("@sha256:" + ("b" * 64))
+    assert by_name["NPY_DISABLE_CPU_FEATURES"]["value"] == "X86_V3,X86_V4"
+    assert by_name["OPENBLAS_CORETYPE"]["value"] == "Nehalem"
+    assert by_name["OMP_NUM_THREADS"]["value"] == "1"
+    assert by_name["OPENBLAS_NUM_THREADS"]["value"] == "1"
+    assert by_name["MKL_NUM_THREADS"]["value"] == "1"
+    assert by_name["NUMEXPR_NUM_THREADS"]["value"] == "1"
     assert by_name["MARIADB_PASSWORD"]["valueFrom"]["secretKeyRef"]["name"] == "jw-mart-d2-writer"
     assert by_name["INGEST_S3_BUCKET"]["valueFrom"]["secretKeyRef"]["key"] == "MINIO_MARKET_BUCKET"
     assert by_name["MINIO_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-ingest-hook-minio"
@@ -262,6 +357,31 @@ def test_rendered_job_passes_load_staging_root(monkeypatch):
     assert env["INGEST_LOAD_STAGING_DB"]["value"] == "jw_ingest_stage_hook"
     assert env["INGEST_COMPLETION_WEBHOOK_URL"]["value"] == "https://agent.invalid/ingest"
     assert env["INGEST_COMPLETION_WEBHOOK_ATTEMPTS"]["value"] == "5"
+
+
+def test_rendered_job_passes_production_catalog_inputs(monkeypatch):
+    monkeypatch.setenv("JW_MARKET_CATALOG_ROOT", "/market-output/catalog")
+    monkeypatch.setenv(
+        "INGEST_CATALOG_IQVIA_NSA_DIR",
+        "/market-output/catalog-inputs/iqvia_nsa",
+    )
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/m.json",
+        namespace="llmops",
+    )
+
+    env = {
+        item["name"]: item
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["JW_MARKET_CATALOG_ROOT"]["value"] == "/market-output/catalog"
+    assert (
+        env["INGEST_CATALOG_IQVIA_NSA_DIR"]["value"]
+        == "/market-output/catalog-inputs/iqvia_nsa"
+    )
 
 
 def test_rendered_shadow_job_passes_isolated_catalog_root(monkeypatch):
@@ -394,6 +514,10 @@ def test_rendered_production_job_passes_mart_activation_contract(monkeypatch):
         for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert env["INGEST_MART_PROMOTION_APPROVED"]["value"] == "1"
+    assert body["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "2", "memory": "12Gi"},
+        "limits": {"cpu": "2", "memory": "12Gi"},
+    }
     assert env["INGEST_MART_SOURCE_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_TARGET_DB"]["value"] == "jw_mart"
     assert env["INGEST_MART_BUILD_PREFIX"]["value"] == "jw_mart_ingest"

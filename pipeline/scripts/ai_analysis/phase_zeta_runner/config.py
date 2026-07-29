@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
@@ -132,10 +133,10 @@ class RunnerConfig:
             ),
             composer=ComposerConfig(
                 update_cache_deep_analysis=bool(composer_raw.get("update_cache_deep_analysis", False)),
-                db_host=str(composer_raw["db_host"]),
-                db_port=int(composer_raw["db_port"]),
+                db_host=os.environ.get("DB_HOST", str(composer_raw["db_host"])),
+                db_port=int(os.environ.get("DB_PORT", composer_raw["db_port"])),
                 db_user=str(composer_raw["db_user"]),
-                db_name=str(composer_raw["db_name"]),
+                db_name=os.environ.get("DB_NAME", str(composer_raw["db_name"])),
             ),
             retry=RetryConfig(
                 max_attempts=int(retry_raw["max_attempts"]),

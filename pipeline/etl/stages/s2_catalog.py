@@ -16,9 +16,11 @@ from pipeline.etl.io.catalog.paths import (
     build_catalog_root,
     publish_catalog_outputs,
     resolve_catalog_root,
+    sha256_file,
 )
 from pipeline.etl.io.catalog.target.target_priority import run_target_priority
 from pipeline.etl.io.iqvia_loader import connect
+from pipeline.etl.lib.storage import get_mi_master_path
 
 STAGE = "s2 catalog"
 
@@ -49,6 +51,7 @@ def _copy_if_needed(source_dir: Path | None, output_root: Path, relative: str) -
 def run(params: dict[str, Any]) -> int:
     output_root = _path_param(params, "target_dir") or Path.cwd()
     input_file = _path_param(params, "input_file")
+    effective_input_file = input_file or get_mi_master_path()
     catalog_path = _path_param(params, "catalog_path")
     cache_dir = _path_param(params, "cache_dir")
     inputs_dir = _path_param(params, "inputs_dir")
@@ -68,7 +71,7 @@ def run(params: dict[str, Any]) -> int:
         )
         master_results = run_master_extracts(
             output_root=output_root,
-            input_file=input_file,
+            input_file=effective_input_file,
             catalog_path=catalog_path,
             ingested_at=ingested_at,
         )
@@ -89,7 +92,7 @@ def run(params: dict[str, Any]) -> int:
         )
         brand_product_catalog_results = run_brand_product_catalog(
             output_root=output_root,
-            input_file=input_file,
+            input_file=effective_input_file,
             catalog_path=catalog_path,
             ubist_dir=ubist_dir,
             iqvia_nsa_dir=iqvia_nsa_dir,
@@ -107,6 +110,7 @@ def run(params: dict[str, Any]) -> int:
             build_root=build_catalog_root(output_root),
             catalog_root=catalog_root,
             required_names=S2_REQUIRED_CATALOGS,
+            source_fingerprints={"mi_master_sha256": sha256_file(effective_input_file)},
         )
         catalog_sync_results = []
         if sync_catalog_db:

@@ -93,6 +93,27 @@ def _iter_jsonl_batches(
         yield batch
 
 
+def _delete_source_rows_in_batches(
+    conn: Any,
+    cursor: Any,
+    table: str,
+    source: str,
+    *,
+    batch_size: int,
+) -> None:
+    while True:
+        deleted = int(
+            cursor.execute(
+                f"DELETE FROM {table} WHERE source=%s ORDER BY id LIMIT %s",
+                (source, batch_size),
+            )
+            or 0
+        )
+        if deleted <= 0:
+            return
+        conn.commit()
+
+
 def replace_source_rows_from_jsonl(
     *,
     source: str,
@@ -101,20 +122,38 @@ def replace_source_rows_from_jsonl(
     brand_columns: list[str],
     market_columns: list[str],
     batch_size: int = 500,
+    commit_each_batch: bool = False,
 ) -> None:
-    """Atomically replace one source after all partition outputs are durable."""
+    """Replace one source after all partition outputs are durable.
+
+    Isolated build schemas may commit bounded batches because they are never
+    published until the later atomic table-group rename succeeds.
+    """
     conn = mariadb_connect()
     try:
         conn.autocommit(False)
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM mart_general_brand_metric WHERE source=%s",
-                (source,),
-            )
-            cur.execute(
-                "DELETE FROM mart_general_market_metric WHERE source=%s",
-                (source,),
-            )
+            if commit_each_batch:
+                for table in (
+                    "mart_general_brand_metric",
+                    "mart_general_market_metric",
+                ):
+                    _delete_source_rows_in_batches(
+                        conn,
+                        cur,
+                        table,
+                        source,
+                        batch_size=batch_size,
+                    )
+            else:
+                cur.execute(
+                    "DELETE FROM mart_general_brand_metric WHERE source=%s",
+                    (source,),
+                )
+                cur.execute(
+                    "DELETE FROM mart_general_market_metric WHERE source=%s",
+                    (source,),
+                )
             for rows in _iter_jsonl_batches(brand_path, batch_size=batch_size):
                 _insert_rows_with_cursor(
                     cur,
@@ -122,6 +161,8 @@ def replace_source_rows_from_jsonl(
                     brand_columns,
                     rows,
                 )
+                if commit_each_batch:
+                    conn.commit()
             for rows in _iter_jsonl_batches(market_path, batch_size=batch_size):
                 _insert_rows_with_cursor(
                     cur,
@@ -129,7 +170,69 @@ def replace_source_rows_from_jsonl(
                     market_columns,
                     rows,
                 )
-        conn.commit()
+                if commit_each_batch:
+                    conn.commit()
+        if not commit_each_batch:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def replace_scoped_source_rows_from_jsonl(
+    *,
+    source: str,
+    atc4_scope: tuple[str, ...],
+    brand_path: Path,
+    market_path: Path,
+    brand_columns: list[str],
+    market_columns: list[str],
+    batch_size: int = 500,
+    commit_each_batch: bool = False,
+) -> None:
+    """Replace only affected ATC4 rows in an isolated clone."""
+
+    scope = tuple(sorted({str(value).strip() for value in atc4_scope if str(value).strip()}))
+    if not scope:
+        raise ValueError("scoped source replacement requires at least one ATC4 code")
+    placeholders = ",".join(["%s"] * len(scope))
+    conn = mariadb_connect()
+    try:
+        conn.autocommit(False)
+        with conn.cursor() as cur:
+            for table in (
+                "mart_general_brand_metric",
+                "mart_general_market_metric",
+            ):
+                cur.execute(
+                    f"DELETE FROM {table} WHERE source=%s "
+                    f"AND atc4_code IN ({placeholders})",
+                    (source, *scope),
+                )
+                if commit_each_batch:
+                    conn.commit()
+            for rows in _iter_jsonl_batches(brand_path, batch_size=batch_size):
+                _insert_rows_with_cursor(
+                    cur,
+                    "mart_general_brand_metric",
+                    brand_columns,
+                    rows,
+                )
+                if commit_each_batch:
+                    conn.commit()
+            for rows in _iter_jsonl_batches(market_path, batch_size=batch_size):
+                _insert_rows_with_cursor(
+                    cur,
+                    "mart_general_market_metric",
+                    market_columns,
+                    rows,
+                )
+                if commit_each_batch:
+                    conn.commit()
+        if not commit_each_batch:
+            conn.commit()
     except Exception:
         conn.rollback()
         raise

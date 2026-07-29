@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import pymysql
 
-from pipeline.scripts.ingest_hook import config, job_runner
+from pipeline.scripts.ingest_hook import config, job_runner, publish_approval
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -237,7 +237,7 @@ def test_real_load_flattens_production_ubist_to_reader_root(tmp_path, bucket, mo
     assert result["staging_verify"] is False
 
 
-def test_real_load_enables_overlap_dedup_only_for_shadow(tmp_path, bucket, monkeypatch):
+def test_real_load_uses_same_row_merge_contract_for_shadow(tmp_path, bucket, monkeypatch):
     manifest = _manifest(bucket, epoch="2026-03")
     monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
     monkeypatch.delenv(config.ENV_LOAD_TARGET_ROOT, raising=False)
@@ -258,7 +258,7 @@ def test_real_load_enables_overlap_dedup_only_for_shadow(tmp_path, bucket, monke
         target_dir_override=tmp_path / "shadow-candidate",
     )
 
-    assert "--allow-overlap-dedup" in seen["argv"]
+    assert "--allow-overlap-dedup" not in seen["argv"]
 
 
 def test_real_load_silent_failure_is_caught(staging_env, bucket, monkeypatch):
@@ -453,6 +453,28 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "build_shadow",
         lambda *_args, **_kwargs: order.append("mart_build"),
     )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "affected_atc4_codes",
+        lambda *_args, **_kwargs: ("C10A1",),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "production_catalog_root_from_env",
+        lambda: tmp_path / "provisioned-catalog",
+    )
+    catalog_preflight_args = []
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "prepare_catalog_for_mart",
+        lambda **kwargs: catalog_preflight_args.append(kwargs)
+        or order.append("catalog_preflight")
+        or type(
+            "CatalogPreparation",
+            (),
+            {"action": "reused", "mi_master_sha256": "a" * 64, "parity": ()},
+        )(),
+    )
     real_promote = ubist_mart_activation.promote_candidate_corpus
     monkeypatch.setattr(
         ubist_mart_activation,
@@ -463,6 +485,11 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         ubist_mart_activation,
         "publish_shadow",
         lambda *_args, **_kwargs: order.append("mart_publish") or (),
+    )
+    monkeypatch.setattr(
+        publish_approval,
+        "wait_for_exact_publish_approval",
+        lambda *_args, **_kwargs: order.append("publish_approval"),
     )
     original_update_journal = ubist_mart_activation.update_activation_journal
 
@@ -497,7 +524,10 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
     ) == 0
     assert order.index("load") < order.index("mart_build")
+    assert catalog_preflight_args[0]["ubist_dir"] == live_root
     assert order.index("mart_build") < order.index("post_gate")
+    assert order.index("post_gate") < order.index("publish_approval")
+    assert order.index("publish_approval") < order.index("corpus_promote")
     assert order.index("post_gate") < order.index("corpus_promote")
     assert order.index("corpus_promote") < order.index("mart_publish")
     assert order.index("mart_publish") < order.index("refresh")
@@ -589,6 +619,21 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     )
     monkeypatch.setattr(
         ubist_mart_activation, "build_shadow", lambda *_args, **_kwargs: order.append("mart_build")
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "affected_atc4_codes",
+        lambda *_args, **_kwargs: ("C10A1",),
+    )
+    monkeypatch.setattr(
+        ubist_mart_activation,
+        "prepare_catalog_for_mart",
+        lambda **_kwargs: order.append("catalog_preflight")
+        or type(
+            "CatalogPreparation",
+            (),
+            {"action": "reused", "mi_master_sha256": "a" * 64, "parity": ()},
+        )(),
     )
     monkeypatch.setattr(
         ubist_mart_activation,

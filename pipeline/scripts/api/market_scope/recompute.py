@@ -40,9 +40,12 @@ def recompute_strategy_payload(
 ) -> dict[str, Any]:
     """Recompute cause-compatible strategy metrics for a union scope."""
 
-    periods = _periods(facts)
-    brand_histories = _brand_histories(facts, periods)
-    company_histories = _company_histories(facts, periods)
+    calculation_periods = _periods(facts)
+    calculation_brand_histories = _brand_histories(facts, calculation_periods)
+    calculation_company_histories = _company_histories(facts, calculation_periods)
+    periods = _display_periods(calculation_periods, source=source)
+    brand_histories = _restrict_histories(calculation_brand_histories, periods)
+    company_histories = _restrict_histories(calculation_company_histories, periods)
     brand_names = _brand_names(facts)
     companies = _brand_companies(facts)
     market_size = {
@@ -63,11 +66,18 @@ def recompute_strategy_payload(
     )
     hhi = annual_hhi_series(brand_histories, source=source)
     hhi_recent = hhi[-1]["hhi"] if hhi else None
-    focus_history = brand_histories.get(focus_brand_key, {period: 0.0 for period in periods})
-    focus_ei = endpoint_ei_with_fallback(focus_history, market_size)
+    calculation_market_size = {
+        period: sum(history[period] for history in calculation_brand_histories.values())
+        for period in calculation_periods
+    }
+    focus_history = calculation_brand_histories.get(
+        focus_brand_key,
+        {period: 0.0 for period in calculation_periods},
+    )
+    focus_ei = endpoint_ei_with_fallback(focus_history, calculation_market_size)
     ei_matrix = ei_ms_matrix_payload(
-        brand_histories,
-        market_size,
+        calculation_brand_histories,
+        calculation_market_size,
         focus_brand_key=focus_brand_key,
         brand_names=brand_names,
         companies=companies,
@@ -77,8 +87,8 @@ def recompute_strategy_payload(
     market_size_points = market_size_series_payload(sorted_period_items(market_size), source=source)
     yoy_series = market_yoy_series(sorted_period_items(market_size))
     kpi = _kpi(
-        brand_histories=brand_histories,
-        market_size=market_size,
+        brand_histories=calculation_brand_histories,
+        market_size=calculation_market_size,
         focus_brand_key=focus_brand_key,
         focus_ei=focus_ei,
         hhi_recent=hhi_recent,
@@ -158,6 +168,25 @@ def _periods(facts: tuple[StrategyFact, ...]) -> tuple[str, ...]:
     """Return all periods present in the candidate facts."""
 
     return sort_periods({period for fact in facts for period in fact.raw_value_history})
+
+
+def _display_periods(periods: tuple[str, ...], *, source: str) -> tuple[str, ...]:
+    if source.strip().lower() != "ubist":
+        return periods
+    return periods[-60:]
+
+
+def _restrict_histories(
+    histories: dict[str, dict[str, float]],
+    periods: tuple[str, ...],
+) -> dict[str, dict[str, float]]:
+    return {
+        item_id: {
+            period: history.get(period, 0.0)
+            for period in periods
+        }
+        for item_id, history in histories.items()
+    }
 
 
 def _brand_histories(

@@ -25,6 +25,8 @@ _SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 
 # Env the Job inherits from the trigger pod, by reference where secret-backed.
 _PASSTHROUGH_VALUES = (
+    "APP_VERSION",
+    "INGEST_JOB_IMAGE",
     "MARIADB_HOST", "MARIADB_PORT", "MARIADB_DATABASE", "AGENT3_DB_NAME",
     "MINIO_ENDPOINT", "MINIO_REGION",
     "AGENT3_WORKFLOW_REV", "AGENT3_EXPECTED_WORKFLOW_REV",
@@ -41,14 +43,27 @@ _PASSTHROUGH_VALUES = (
     "INGEST_SHADOW_CRASH_AT",
     "INGEST_LOAD_TARGET_ROOT",   # J5 production load output root (D-3; refresh runs)
     "INGEST_MART_PROMOTION_APPROVED",
+    "INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL",
     "INGEST_MART_SOURCE_DB",
     "INGEST_MART_TARGET_DB",
     "INGEST_MART_BUILD_PREFIX",
+    "JW_MARKET_CATALOG_ROOT",
+    "INGEST_CATALOG_IQVIA_NSA_DIR",
     "INGEST_INPUT_BACKEND",
     "INGEST_INPUT_ROOT",
     "INGEST_COMPLETION_WEBHOOK_URL",
     "INGEST_COMPLETION_WEBHOOK_ATTEMPTS",
+    "INGEST_QUEUE_DRAIN_WEBHOOK_URL",
+    "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS",
 )
+_FORECAST_RUNTIME_PINS = {
+    "NPY_DISABLE_CPU_FEATURES": "X86_V3,X86_V4",
+    "OPENBLAS_CORETYPE": "Nehalem",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+}
 _MART_SECRET = "jw-mart-d2-writer"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
@@ -64,12 +79,40 @@ def _job_env() -> list[dict]:
         for name in _PASSTHROUGH_VALUES
         if os.environ.get(name)
     ]
+    env.extend(
+        {"name": name, "value": value}
+        for name, value in _FORECAST_RUNTIME_PINS.items()
+    )
 
     def secret_ref(name, secret, key):
         env.append({"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}})
 
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
+    # Agent2 still consumes the DB_* family from its pinned YAML configs.
+    # Keep these aliases explicit; omitting them silently restores localhost.
+    agent2_aliases = {
+        "DB_HOST": os.environ.get("MARIADB_HOST", ""),
+        "DB_PORT": os.environ.get("MARIADB_PORT", "3306"),
+        "DB_NAME": os.environ.get("MARIADB_DATABASE", ""),
+    }
+    env.extend(
+        {"name": name, "value": value}
+        for name, value in agent2_aliases.items()
+        if value
+    )
+    secret_ref("DB_USER", _MART_SECRET, "username")
+    secret_ref("DB_ROOT_PASSWORD", _MART_SECRET, "password")
+    # Agent3 intentionally has its own DB namespace. In ingest Jobs it uses the
+    # same writer endpoint as the mart stages, so render the aliases explicitly
+    # instead of allowing its localhost defaults.
+    agent3_host = os.environ.get("AGENT3_DB_HOST") or os.environ.get("MARIADB_HOST")
+    agent3_port = os.environ.get("AGENT3_DB_PORT") or os.environ.get("MARIADB_PORT", "3306")
+    if agent3_host:
+        env.append({"name": "AGENT3_DB_HOST", "value": agent3_host})
+    env.append({"name": "AGENT3_DB_PORT", "value": agent3_port})
+    secret_ref("AGENT3_DB_USER", _MART_SECRET, "username")
+    secret_ref("AGENT3_DB_PASSWORD", _MART_SECRET, "password")
     local_input = os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
     if not local_input and os.environ.get("INGEST_S3_BUCKET"):
         secret_ref("INGEST_S3_BUCKET", _PORTAL_SECRET, "MINIO_MARKET_BUCKET")
@@ -132,6 +175,29 @@ def render_job(
     run_id: str | None = None,
 ) -> dict:
     name = job_name(category, manifest_sha, run_id)
+    job_env = [
+        *_job_env(),
+        {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
+        {
+            "name": "JW_PIPELINE_STATE_FILE",
+            "value": (
+                f"{config.MARKET_OUTPUT_ROOT}/ingest-checkpoints/"
+                f"{category}/{manifest_sha}/orchestrator-state.json"
+            ),
+        },
+    ]
+    if os.environ.get("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "").strip() == "1":
+        if run_id is None:
+            raise ValueError("exact publish approval requires a run_id")
+        job_env.append(
+            {
+                "name": "INGEST_PUBLISH_APPROVAL_FILE",
+                "value": (
+                    f"{config.MARKET_OUTPUT_ROOT}/ingest-approvals/"
+                    f"{category}/{manifest_sha}/{run_id}.json"
+                ),
+            }
+        )
     local_root = (
         config.input_root()
         if os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
@@ -162,8 +228,11 @@ def render_job(
         }
         if config.load_mode(required=False) == "shadow"
         else {
-            "requests": {"cpu": "500m", "memory": "1Gi"},
-            "limits": {"cpu": "2", "memory": "4Gi"},
+            # The full 61-month mart calculation reached the 8 GiB cgroup
+            # ceiling. Keep request equal to limit so scheduling reserves the
+            # approved 12 GiB headroom before the Job starts.
+            "requests": {"cpu": "2", "memory": "12Gi"},
+            "limits": {"cpu": "2", "memory": "12Gi"},
         }
     )
     if not any(item["name"] == _MARKET_OUTPUT_VOLUME for item in volume_mounts):
@@ -199,17 +268,14 @@ def render_job(
             "template": {
                 "metadata": {"labels": {"app": "jw-ingest"}},
                 "spec": {
-                    # Temporary mitigation from
-                    # ubist_shadow_nfs_identity_audit_20260723T2239KST:
-                    # api-01 can mount the NFS volumes while db-02 times out.
-                    # Keep this preferred so capacity can still schedule Jobs;
-                    # route/firewall/NFSv3 policy remains an infrastructure fix.
+                    # api-01 can mount both NFS volumes while db-02 times out
+                    # before the ingest container starts. Keep Jobs pending
+                    # instead of scheduling them onto a node that cannot run.
                     "affinity": {
                         "nodeAffinity": {
-                            "preferredDuringSchedulingIgnoredDuringExecution": [
-                                {
-                                    "weight": 100,
-                                    "preference": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": {
+                                "nodeSelectorTerms": [
+                                    {
                                         "matchExpressions": [
                                             {
                                                 "key": "cloud.google.com/gke-nodepool",
@@ -219,9 +285,9 @@ def render_job(
                                                 ],
                                             }
                                         ]
-                                    },
-                                }
-                            ]
+                                    }
+                                ]
+                            }
                         }
                     },
                     "restartPolicy": "Never",
@@ -241,10 +307,7 @@ def render_job(
                                 "--job-name",
                                 name,
                             ],
-                            "env": [
-                                *_job_env(),
-                                {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
-                            ],
+                            "env": job_env,
                             **({"volumeMounts": volume_mounts} if volume_mounts else {}),
                             "resources": resources,
                         }

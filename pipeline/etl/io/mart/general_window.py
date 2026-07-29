@@ -4,12 +4,20 @@ from collections.abc import Iterable
 
 import pandas as pd
 
-from .general_config import IQVIA_HISTORY_PERIODS, UBIST_HISTORY_PERIODS
+from .general_config import (
+    IQVIA_HISTORY_PERIODS,
+    UBIST_CALCULATION_PERIODS,
+    UBIST_HISTORY_PERIODS,
+)
 from .layer3_normalize import parse_period, period_sort_key
 
 
 _WINDOW_PERIODS_BY_SOURCE = {
     "ubist": UBIST_HISTORY_PERIODS,
+    "iqvia_nsa": IQVIA_HISTORY_PERIODS,
+}
+_CALCULATION_PERIODS_BY_SOURCE = {
+    "ubist": UBIST_CALCULATION_PERIODS,
     "iqvia_nsa": IQVIA_HISTORY_PERIODS,
 }
 
@@ -44,14 +52,34 @@ def rolling_period_scope(
     return ordered[-window_periods:]
 
 
+def calculation_period_scope(
+    periods: Iterable[object],
+    *,
+    source: str,
+) -> tuple[str, ...]:
+    try:
+        calculation_periods = _CALCULATION_PERIODS_BY_SOURCE[source]
+    except KeyError as exc:
+        raise ValueError(f"unsupported calculation-window source: {source!r}") from exc
+    canonical = {
+        canonical_period_label(period)
+        for period in periods
+        if str(period or "").strip()
+    }
+    ordered = tuple(sorted(canonical, key=period_sort_key))
+    return ordered[-calculation_periods:]
+
+
 def filter_frame_to_rolling_window(
     frame: pd.DataFrame,
     *,
     source: str,
     period_column: str = "period_yyyymm",
+    calculation: bool = False,
 ) -> pd.DataFrame:
     if frame.empty or period_column not in frame.columns:
         return frame
-    scope = set(rolling_period_scope(frame[period_column].tolist(), source=source))
+    period_scope = calculation_period_scope if calculation else rolling_period_scope
+    scope = set(period_scope(frame[period_column].tolist(), source=source))
     canonical = frame[period_column].map(canonical_period_label)
     return frame.loc[canonical.isin(scope)].copy()

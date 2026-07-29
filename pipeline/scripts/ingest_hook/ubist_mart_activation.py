@@ -10,6 +10,13 @@ import re
 import shutil
 from typing import Any, Callable
 
+import duckdb
+
+from pipeline.etl.io.mart.general_utils import extract_atc4
+from pipeline.etl.io.catalog.paths import (
+    CATALOG_ROOT_ENV,
+    resolve_catalog_root,
+)
 from pipeline.scripts.deploy.mart_load_ops import (
     PublishAction,
     publish_table_group_atomically,
@@ -18,6 +25,10 @@ from pipeline.scripts.deploy.mart_load_ops import (
     run_s4_general,
 )
 from pipeline.scripts.deploy.mart_load_verify import table_exists
+from pipeline.scripts.ingest_hook.publication_provenance import (
+    build_publication_provenance,
+    record_publication_provenance,
+)
 from pipeline.scripts.rollback.recording import (
     PromotionIdentity,
     record_mysql_component,
@@ -31,6 +42,7 @@ ENV_BUILD_PREFIX = "INGEST_MART_BUILD_PREFIX"
 ENV_SHADOW_TARGET_DB = "INGEST_SHADOW_TARGET_DB"
 ENV_SHADOW_BUILD_PREFIX = "INGEST_SHADOW_BUILD_PREFIX"
 ENV_SHADOW_CATALOG_ROOT = "INGEST_SHADOW_CATALOG_ROOT"
+ENV_CATALOG_IQVIA_NSA_DIR = "INGEST_CATALOG_IQVIA_NSA_DIR"
 ENV_SHADOW_CRASH_AT = "INGEST_SHADOW_CRASH_AT"
 ENV_SHADOW_FAILURE_AT = "INGEST_SHADOW_FAILURE_AT"
 SHADOW_FAILURE_SIGMA_PARTS_WHOLE = "sigma_parts_whole"
@@ -43,6 +55,7 @@ GENERAL_TABLES = (
     "mart_general_market_metric",
 )
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _S4_MUTATED_ENV = (
     "MARIADB_DATABASE",
     "MARIADB_SOURCE_DATABASE",
@@ -140,10 +153,43 @@ def shadow_catalog_root_from_env(shadow_root: Path) -> Path:
     boundary = shadow_root.resolve()
     if not root.is_relative_to(boundary):
         raise RuntimeError("isolated shadow catalog must be inside the shadow root")
-    required = root / "strategic_brand" / "strategic_brand.parquet"
-    if not required.is_file():
-        raise RuntimeError(f"isolated shadow catalog is missing strategic_brand.parquet: {required}")
     return root
+
+
+def production_catalog_root_from_env() -> Path:
+    """Resolve the NFS production catalog; preparation validates or rebuilds it."""
+
+    return resolve_catalog_root(_PROJECT_ROOT).resolve()
+
+
+def prepare_catalog_for_mart(
+    *,
+    catalog_root: Path,
+    ubist_dir: Path,
+    source_db: str,
+    conn: Any,
+    run_id: str,
+    output_parent: Path,
+):
+    """Ensure the NFS catalog matches the current MI Master before S4 starts."""
+
+    from pipeline.etl.io.iqvia_loader import DEFAULT_NSA_PARQUET_DIR
+    from pipeline.etl.lib.storage import get_mi_master_path
+    from pipeline.scripts.ingest_hook.catalog_refresh import ensure_nfs_catalog
+
+    iqvia_nsa_dir = Path(
+        os.environ.get(ENV_CATALOG_IQVIA_NSA_DIR, str(DEFAULT_NSA_PARQUET_DIR))
+    )
+    return ensure_nfs_catalog(
+        catalog_root=catalog_root,
+        mi_master=get_mi_master_path(),
+        ubist_dir=ubist_dir,
+        iqvia_nsa_dir=iqvia_nsa_dir,
+        target_db=source_db,
+        conn=conn,
+        run_id=run_id,
+        output_parent=output_parent,
+    )
 
 
 def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
@@ -405,7 +451,11 @@ def maybe_inject_shadow_sigma_mismatch(
 
 
 def build_shadow(
-    config: MartActivation, *, catalog_root: Path | None, ubist_dir: Path
+    config: MartActivation,
+    *,
+    catalog_root: Path | None,
+    ubist_dir: Path,
+    atc4_scope: tuple[str, ...] | None = None,
 ) -> None:
     previous = {key: os.environ.get(key) for key in _S4_MUTATED_ENV}
     try:
@@ -416,6 +466,7 @@ def build_shadow(
             ubist_dir=ubist_dir,
             input_mode="raw",
             sources=("ubist",),
+            atc4_scope=atc4_scope,
         )
     finally:
         for key, value in previous.items():
@@ -423,6 +474,44 @@ def build_shadow(
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def affected_atc4_codes(
+    ubist_dir: Path,
+    *,
+    periods: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Resolve the exact ATC4 scope from newly loaded month partitions."""
+
+    paths: list[str] = []
+    for period in sorted(set(periods)):
+        match = re.fullmatch(r"(\d{4})-(\d{2})", period)
+        if match is None:
+            raise RuntimeError(f"incremental UBIST scope requires monthly period: {period!r}")
+        path = ubist_dir / f"year={match.group(1)}" / f"month={match.group(2)}" / "data.parquet"
+        if not path.is_file():
+            raise RuntimeError(f"incremental UBIST partition is missing: {path}")
+        paths.append(str(path))
+    if not paths:
+        raise RuntimeError("incremental UBIST scope requires at least one loaded period")
+    with duckdb.connect() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT CAST(\"ATC\" AS VARCHAR) "
+            "FROM read_parquet(?) WHERE \"ATC\" IS NOT NULL ORDER BY 1",
+            [paths],
+        ).fetchall()
+    scope = tuple(
+        sorted(
+            {
+                code
+                for row in rows
+                if (code := extract_atc4(row[0])[0]) and code != "UNKNOWN"
+            }
+        )
+    )
+    if not scope:
+        raise RuntimeError(f"incremental UBIST scope is empty for periods={periods}")
+    return scope
 
 
 def prepare_candidate_corpus(live_root: Path, *, run_id: str) -> CorpusCandidate:
@@ -711,8 +800,13 @@ def publish_shadow(
     run_id: str,
     epoch: str,
     ingest_run_id: str,
+    activation_journal: Path,
     require_ledger_gate: bool = True,
 ) -> tuple[Any, ...]:
+    provenance = build_publication_provenance(
+        target_db=config.target_db,
+        tables=GENERAL_TABLES,
+    )
     if require_ledger_gate:
         require_completed_post_gate(conn, ingest_run_id=ingest_run_id)
     actions = publish_table_group_atomically(
@@ -739,6 +833,7 @@ def publish_shadow(
                 if action.backup_table is not None
             ),
         )
+        record_publication_provenance(activation_journal, provenance)
     except Exception:
         restore_table_group_atomically(
             conn,

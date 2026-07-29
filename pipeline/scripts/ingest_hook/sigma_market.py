@@ -17,6 +17,7 @@ claims to have written it.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 ABS_TOL = 0.01
@@ -53,6 +54,12 @@ def _brand_value(entry) -> float | None:
     return float(entry) if isinstance(entry, (int, float)) else None
 
 
+def _row_pair(row, first: str, second: str):
+    if isinstance(row, Mapping):
+        return row[first], row[second]
+    return row
+
+
 def check_market_sigma(
     conn,
     *,
@@ -83,10 +90,12 @@ def check_market_sigma(
         (source,),
     )
     brands: dict[str, list] = {}
-    for atc4, history in cursor.fetchall():
+    for row in cursor.fetchall():
+        atc4, history = _row_pair(row, "atc4_code", "metric_history")
         brands.setdefault(atc4, []).append(_series(history))
 
-    for atc4, series_raw in markets:
+    for row in markets:
+        atc4, series_raw = _row_pair(row, "atc4_code", "market_size_series")
         market_series = _series(series_raw)
         market_touched = False
         for period in periods:
@@ -120,8 +129,8 @@ def check_market_sigma(
 
     if report.cells_checked == 0:
         raise MarketSigmaError(
-            f"{source}: no market carries any of the loaded periods {list(periods)} — "
-            "the load claims periods the mart never received"
+            f"{source}: could not verify any loaded period {list(periods)} "
+            "(cells_checked=0); market presence is unverified"
         )
     if report.failures:
         raise MarketSigmaError("; ".join(report.failures[:10]))

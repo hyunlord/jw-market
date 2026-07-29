@@ -28,7 +28,7 @@ from pipeline.etl.io.mart.brand_alias_resolver import (
 )
 
 KNOWN_UNMATCHED_EVENT_BRANDS: Final = frozenset(
-    {"리조덱", "염화칼륨", "오메가", "트레시바", "하트만"}
+    {"염화칼륨", "오메가", "트레시바", "하트만"}
 )
 @dataclass(frozen=True, slots=True)
 class Agent2BrandIdentity:

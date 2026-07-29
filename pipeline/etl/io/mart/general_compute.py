@@ -24,6 +24,7 @@ from .general_db import (
     delete_source_rows,
     ensure_json_columns,
     insert_rows,
+    replace_scoped_source_rows_from_jsonl,
     replace_source_rows_from_jsonl,
 )
 from .general_iqvia import iqvia_measure_frame, load_iqvia_base_frame
@@ -62,6 +63,8 @@ def compute_general(
     ml: str | None = None,
     spool_dir: Path | None = None,
     memory_budget_bytes: int | None = None,
+    commit_each_batch: bool = False,
+    atc4_scope: tuple[str, ...] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if source not in ALLOWED_SOURCES:
         raise ValueError(f"unsupported source: {source}")
@@ -76,6 +79,8 @@ def compute_general(
         and ml is None
         and os.environ.get("S4_INPUT_MODE", "raw") != "enriched"
     )
+    if atc4_scope and not raw_partitioned_ubist:
+        raise ValueError("ATC4-scoped mart recompute is supported for raw UBIST only")
     ubist_base = (
         load_ubist_base_frame(max_rows=max_rows, ml=ml)
         if source == "ubist" and not raw_partitioned_ubist
@@ -88,6 +93,7 @@ def compute_general(
             "max_rows": max_rows,
             "limit_atc4": limit_atc4,
             "spool_dir": spool_dir,
+            "atc4_scope": atc4_scope,
         }
         if memory_budget_bytes is not None:
             partition_kwargs["memory_budget_bytes"] = memory_budget_bytes
@@ -208,12 +214,22 @@ def compute_general(
                 assert brand_sink is not None and market_sink is not None
                 brand_sink.flush()
                 market_sink.flush()
-                replace_source_rows_from_jsonl(
+                replace_rows = (
+                    replace_scoped_source_rows_from_jsonl
+                    if atc4_scope
+                    else replace_source_rows_from_jsonl
+                )
+                replace_kwargs: dict[str, Any] = {}
+                if atc4_scope:
+                    replace_kwargs["atc4_scope"] = atc4_scope
+                replace_rows(
                     source=source,
                     brand_path=brand_output_path,
                     market_path=market_output_path,
                     brand_columns=GENERAL_BRAND_INSERT_COLUMNS,
                     market_columns=GENERAL_MARKET_INSERT_COLUMNS,
+                    commit_each_batch=commit_each_batch,
+                    **replace_kwargs,
                 )
         else:
             for measure in MEASURES_BY_SOURCE[source]:
@@ -269,6 +285,7 @@ def compute_general(
         "market_rows": sum(item["market_rows"] for item in measure_stats.values()),
         "measures": measure_stats,
         "return_mode": "streamed_preview" if dry_run else "complete",
+        "atc4_scope": list(atc4_scope or ()),
     }
     if dry_run:
         stats["output_paths"] = {

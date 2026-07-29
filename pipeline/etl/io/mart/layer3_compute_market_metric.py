@@ -10,6 +10,11 @@ from .market_target_competition import _metric, compute_target_competition_iqvia
 def _periods(rows: list[dict[str, Any]]) -> list[str]:
     found: set[str] = set()
     for row in rows:
+        metric_history = row.get("metric_history") or {}
+        found.update(metric_history.keys())
+    if found:
+        return sorted(found)
+    for row in rows:
         found.update((row.get("raw_value_history") or {}).keys())
     return sorted(found)
 
@@ -30,9 +35,11 @@ def _truthy(value: Any) -> bool:
 
 def compute_market_size_series(rows: list[dict[str, Any]]) -> dict[str, float]:
     series: dict[str, float] = defaultdict(float)
+    periods = set(_periods(rows))
     for row in sorted(rows, key=lambda item: str(item.get("brand_key") or "")):
         for period, value in (row.get("raw_value_history") or {}).items():
-            series[period] += float(value or 0)
+            if period in periods:
+                series[period] += float(value or 0)
     return dict(sorted(series.items()))
 
 def compute_hhi_series(rows: list[dict[str, Any]]) -> dict[str, float]:
@@ -172,6 +179,7 @@ def compute_analysis_levels(rows: list[dict[str, Any]], catalog_market_row: dict
     if not catalog_market_row:
         return None
     levels = {}
+    periods = set(_periods(rows))
     for key in ("class", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil"):
         flag = catalog_market_row.get(f"analyze_{key}")
         if not flag:
@@ -185,7 +193,8 @@ def compute_analysis_levels(rows: list[dict[str, Any]], catalog_market_row: dict
             if not label:
                 continue
             for period, value in (row.get("raw_value_history") or {}).items():
-                values[str(label)][period] += float(value or 0)
+                if period in periods:
+                    values[str(label)][period] += float(value or 0)
         levels[key] = {label: dict(sorted(series.items())) for label, series in values.items()}
     return levels
 

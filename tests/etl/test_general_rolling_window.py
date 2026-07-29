@@ -10,11 +10,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.etl.io.mart.general_history import cagr_from_history
 from pipeline.etl.io.mart import general_iqvia
+from pipeline.etl.io.ubist_loader import UBIST_LOAD_RETENTION_MONTHS
+from pipeline.etl.io.mart.general_rows import build_brand_rows, build_market_rows
+from pipeline.etl.io.mart.strategic_scope import (
+    recompute_market_scoped_metric_history,
+)
 from pipeline.etl.io.mart.general_ubist import (
     _available_ubist_periods,
     load_ubist_base_frame,
 )
-from pipeline.etl.io.mart.general_window import rolling_period_scope
+from pipeline.etl.io.mart.general_window import (
+    calculation_period_scope,
+    rolling_period_scope,
+)
 
 
 def _month_labels(start_year: int, start_month: int, count: int) -> tuple[str, ...]:
@@ -41,6 +49,20 @@ def test_ubist_rolling_scope_keeps_latest_60_of_65_months() -> None:
     assert selected == periods[-60:]
     assert selected[0] == "2021-06"
     assert selected[-1] == "2026-05"
+
+
+def test_ubist_calculation_scope_keeps_exact_five_year_baseline() -> None:
+    periods = _month_labels(2021, 6, 61)
+
+    calculation = calculation_period_scope(periods, source="ubist")
+    displayed = rolling_period_scope(periods, source="ubist")
+
+    assert calculation == periods
+    assert calculation[0] == "2021-06"
+    assert calculation[-1] == "2026-06"
+    assert displayed == periods[-60:]
+    assert displayed[0] == "2021-07"
+    assert displayed[-1] == "2026-06"
 
 
 def test_iqvia_rolling_scope_keeps_latest_20_quarters() -> None:
@@ -110,7 +132,7 @@ def test_rolling_scope_drops_oldest_period_when_new_period_arrives() -> None:
     assert rolling_period_scope(advanced, source="ubist")[-1] == "2026-01"
 
 
-def test_raw_ubist_loader_uses_only_latest_60_source_months(
+def test_raw_ubist_loader_keeps_latest_61_calculation_months(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -160,7 +182,7 @@ def test_raw_ubist_loader_uses_only_latest_60_source_months(
         )
     )
 
-    assert selected == periods[-60:]
+    assert selected == periods[-61:]
 
 
 def test_enriched_ubist_period_scope_uses_global_source_history(
@@ -192,7 +214,7 @@ def test_enriched_ubist_period_scope_uses_global_source_history(
     monkeypatch.setenv("S4_UBIST_DIR", str(tmp_path / "missing-raw"))
     monkeypatch.setenv("S4_ENRICHED_DIR", str(enriched_root))
 
-    assert _available_ubist_periods() == periods[-60:]
+    assert _available_ubist_periods() == periods[-61:]
 
 
 def test_enriched_ubist_scope_uses_its_own_latest_period_when_raw_is_newer(
@@ -214,16 +236,89 @@ def test_enriched_ubist_scope_uses_its_own_latest_period_when_raw_is_newer(
 
     selected = _available_ubist_periods(enriched_pattern=str(output))
 
-    assert selected == enriched_periods[-60:]
+    assert selected == enriched_periods[-61:]
     assert selected[-1] == "2026-04"
 
 
-def test_five_year_cagr_uses_actual_elapsed_span_inside_60_month_window() -> None:
-    periods = _month_labels(2021, 6, 60)
+def test_five_year_cagr_uses_exact_60_month_baseline() -> None:
+    periods = _month_labels(2021, 6, 61)
     history = {period: 100.0 + index for index, period in enumerate(periods)}
-    expected = (159.0 / 100.0) ** (1 / (59 / 12)) - 1
+    expected = (160.0 / 100.0) ** (1 / 5) - 1
 
     assert cagr_from_history(history, periods[-1], 5) == pytest.approx(expected)
+
+
+def test_five_year_cagr_is_not_calculable_without_exact_baseline() -> None:
+    periods = _month_labels(2021, 7, 60)
+    history = {period: 100.0 + index for index, period in enumerate(periods)}
+
+    assert cagr_from_history(history, periods[-1], 5) is None
+
+
+def test_public_market_series_does_not_leak_calculation_baseline() -> None:
+    periods = _month_labels(2021, 6, 61)
+    displayed = periods[-60:]
+    frame = pd.DataFrame(
+        [
+            {
+                "brand_key": "brandone",
+                "brand_name": "Brand One",
+                "product_name": "Product One",
+                "product_code": "p1",
+                "atc4_code": "C10A1",
+                "atc4_desc": "C10A1 Test",
+                "period_yyyymm": period,
+                "raw_value": 100.0 + index,
+                "audit_code": "p1",
+                "channel": "CLINIC",
+                "specialty": "CARDIO",
+                "manufacturer": "Maker",
+                "company": "Seller",
+            }
+            for index, period in enumerate(periods)
+        ]
+    )
+
+    brand_rows = build_brand_rows("ubist", "sales", frame, {})
+    market_rows = build_market_rows("ubist", "sales", brand_rows)
+
+    assert tuple(brand_rows[0]["raw_value_history"]) == periods
+    assert tuple(brand_rows[0]["metric_history"]) == displayed
+    assert tuple(brand_rows[0]["extended_metric_history"]) == displayed
+    assert tuple(market_rows[0]["market_size_series"]) == displayed
+    assert periods[0] not in market_rows[0]["hhi_series"]
+    assert brand_rows[0]["extended_metric_history"][periods[-1]][
+        "cagr_5y"
+    ] == pytest.approx((160.0 / 100.0) ** (1 / 5) - 1)
+
+
+def test_strategic_series_does_not_leak_calculation_baseline() -> None:
+    periods = _month_labels(2021, 6, 61)
+    displayed = periods[-60:]
+    rows = [
+        {
+            "brand_key": "brandone",
+            "brand_name": "Brand One",
+            "source": "ubist",
+            "measure": "sales",
+            "raw_value_history": {
+                period: 100.0 + index for index, period in enumerate(periods)
+            },
+        }
+    ]
+
+    recompute_market_scoped_metric_history(rows)
+
+    assert tuple(rows[0]["raw_value_history"]) == periods
+    assert tuple(rows[0]["metric_history"]) == displayed
+    assert tuple(rows[0]["extended_metric_history"]) == displayed
+    assert rows[0]["extended_metric_history"][periods[-1]]["cagr_5y"] == pytest.approx(
+        (160.0 / 100.0) ** (1 / 5) - 1
+    )
+
+
+def test_ubist_load_retention_remains_72_months() -> None:
+    assert UBIST_LOAD_RETENTION_MONTHS == 72
 
 
 def test_five_year_cqgr_uses_actual_elapsed_span_inside_20_quarter_window() -> None:

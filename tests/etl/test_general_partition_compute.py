@@ -201,6 +201,43 @@ def test_insert_replaces_rows_only_after_all_partitions_are_staged(
     assert events == ["spool:first", "spool:second", "replace"]
 
 
+def test_scoped_insert_recomputes_only_requested_atc4_and_preserves_other_rows(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def partitions(**kwargs):
+        calls.append(("partition_scope", kwargs.get("atc4_scope")))
+        yield "C10A1", _base_frame()
+
+    monkeypatch.setattr(general_compute, "load_catalog_key_map", lambda: {})
+    monkeypatch.setattr(general_compute, "iter_ubist_atc4_worksets", partitions)
+    monkeypatch.setattr(general_compute, "ensure_json_columns", lambda *_args: None)
+    monkeypatch.setattr(
+        general_compute,
+        "replace_source_rows_from_jsonl",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("full-source replacement used")
+        ),
+    )
+    monkeypatch.setattr(
+        general_compute,
+        "replace_scoped_source_rows_from_jsonl",
+        lambda **kwargs: calls.append(("replace_scope", kwargs["atc4_scope"])),
+    )
+
+    general_compute.compute_general(
+        "ubist",
+        insert=True,
+        atc4_scope=("C10A1",),
+    )
+
+    assert calls == [
+        ("partition_scope", ("C10A1",)),
+        ("replace_scope", ("C10A1",)),
+    ]
+
+
 def test_later_partition_failure_preserves_existing_rows(
     monkeypatch,
 ) -> None:
