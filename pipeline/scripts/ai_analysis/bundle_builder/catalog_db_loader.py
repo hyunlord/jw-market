@@ -244,7 +244,7 @@ def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
             SELECT ml_id, brand_id, brand_key, brand_name, is_jw, overlay_data, computed_at
             FROM mart_strategic_ml_brand_metric
             WHERE brand_name = %s
-            ORDER BY ml_id ASC, computed_at DESC
+            ORDER BY ml_id ASC, brand_id ASC, source ASC, measure ASC, computed_at DESC
             LIMIT 1
             """,
             (brand_name,),
@@ -257,7 +257,7 @@ def load_brand_from_catalog(brand_name: str, db_conn) -> dict:
                 SELECT ml_id, brand_id, brand_key, brand_name, is_jw, overlay_data, computed_at
                 FROM mart_strategic_ml_brand_metric
                 WHERE REPLACE(LOWER(brand_name), ' ', '') = %s
-                ORDER BY ml_id ASC, computed_at DESC
+                ORDER BY ml_id ASC, brand_id ASC, source ASC, measure ASC, computed_at DESC
                 LIMIT 1
                 """,
                 (compact_brand_name,),
