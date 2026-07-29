@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-market-backend-api-dev
+  namespace: llmops
+  labels:
+    app: jw-market-backend-api-dev
+    app.kubernetes.io/name: jw-market-backend-api-dev
+    app.kubernetes.io/component: backend-api
+    app.kubernetes.io/part-of: jw-portal-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jw-market-backend-api-dev
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: jw-market-backend-api-dev
+        app.kubernetes.io/name: jw-market-backend-api-dev
+        app.kubernetes.io/component: backend-api
+        app.kubernetes.io/part-of: jw-portal-dev
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: knp-jw-agn-dev-genos-api-01
+      containers:
+        - name: jw-market-backend-api
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api@sha256:5f39ef4e78bca708c213f9a946aa22a521b848759a0830e2804328234a60188a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: jw-portal-dev-db
+          env:
+            - name: APP_VERSION
+              value: 1a00c3548830bfea4f483b5125493f4b8807fb00
+            - name: CACHE_WRITE_MODE
+              value: disabled
+            - name: LOG_LEVEL
+              value: INFO
+            - name: API_HOST
+              value: 0.0.0.0
+            - name: API_PORT
+              value: "8000"
+            - name: PROJECT_ROOT
+              value: /app
+            - name: EXTERNAL_PATH_PREFIX
+              value: /jw-market-backend-api
+            - name: DYNAMIC_MAX_BRAND_ROWS
+              value: "3000"
+            - name: LATENCY_STAGE_TIMING
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jw-market-backend-api-dev-service
+  namespace: llmops
+  labels:
+    app: jw-market-backend-api-dev
+    app.kubernetes.io/name: jw-market-backend-api-dev
+    app.kubernetes.io/component: backend-api
+    app.kubernetes.io/part-of: jw-portal-dev
+spec:
+  type: ClusterIP
+  selector:
+    app: jw-market-backend-api-dev
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: http
