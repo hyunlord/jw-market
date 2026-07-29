@@ -29,7 +29,7 @@ jw-data-input 사이트의 "제출 확정" webhook 을 받아 구조검증(G3) �
 | `category_map.py` | 카테고리 → G3 기대 스키마 / 적재 argv / refresh argv (fail-closed) |
 | `g3.py` | 파일 존재·sha256 / 스키마 / 기간 정합 / 행수 sanity / dedup 위임 명기 |
 | `ledger.py` | ingest_ledger (mysql/sqlite 이중 dialect) — 멱등 락 + 상태 정본 |
-| `app.py` | 트리거 서비스 (POST /ingest/webhook, GET /ingest/status, POST /ingest/reconcile) |
+| `app.py` | 트리거 서비스 (webhook, queue/status 조회, terminal drain, reconcile) |
 | `job_launcher.py` | batch/v1 Job 렌더+제출 (SA 토큰, transport 주입 가능) |
 | `job_runner.py` | Job 내부 실행 순서 강제 (rehearsal 모드 = 격리 검증) |
 | `sigma_gate.py` | Σ부분=전체 게이트 (staging 대상) |
@@ -73,6 +73,19 @@ read-only command exits successfully.
 queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는 Job 1개
 직렬(FIFO), 타 category 병렬. 상태 회신은 `GET /ingest/status` (D-4).
 
+`GET /ingest/queue`는 portal local store와 무관하게 ledger의 running/queued
+항목만 결정적 순서로 반환한다. 응답은 `{"items": [...]}`이며 각 항목은
+`epoch`, `category`, `manifest_sha`, `status`, `reason`, `job_name`, `run_id`,
+`uploaded_by`, `received_at`, `started_at`, `finished_at`,
+`blocked_by_category`, `requires_reconcile`만 포함한다. 기존
+`GET /ingest/status` 응답에는 마지막 두 boolean만 additive로 추가된다.
+
+Job terminal signal은 `/ingest/terminal`로 돌아와 ledger에서 슬롯 해제를
+확인한 뒤 다음 queued 항목을 승격한다. callback 배포 전에 이미 놓친 terminal
+signal은 서비스 startup의 1회 idle-category drain으로 회복한다. 두 경로 모두
+ledger atomic reservation을 사용하므로 여러 hook replica가 경쟁해도 category별
+running은 최대 1개다.
+
 ## 환경 변수
 
 | 변수 | 의미 |
@@ -81,6 +94,8 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 | `INGEST_LEDGER_SQLITE` | 설정 시 sqlite ledger (리허설/테스트) — 미설정 시 mart DB(MARIADB_*) |
 | `INGEST_JOB_IMAGE` | Job 이미지 (기본 = 운영 orchestrator digest pin) |
 | `INGEST_JOB_NAMESPACE` | 기본 `llmops` |
+| `INGEST_QUEUE_DRAIN_WEBHOOK_URL` | Job terminal signal을 받을 hook 내부 `/ingest/terminal` URL |
+| `INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS` | terminal callback 시도 횟수 (3~5, 기본 3) |
 | `INGEST_REHEARSAL_ROOT` | 설정 시 job_runner 격리 모드 (sqlite staging, orchestrator 미호출) |
 | `INGEST_LOAD_STAGING_ROOT` | ★J5 실 로더 격리 출력 루트 (설정 시 mart refresh skip = staging-verify) |
 | `INGEST_LOAD_STAGING_DB` | table loader 격리 스키마(필수, `jw_ingest_*`만 허용). 배포 manifest에는 활성화 승인 전 미설정 |

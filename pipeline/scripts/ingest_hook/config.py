@@ -24,6 +24,8 @@ ENV_LOAD_TARGET_ROOT = "INGEST_LOAD_TARGET_ROOT"    # production load output roo
 ENV_LOG_ROOT = "INGEST_LOG_ROOT"                    # durable RWX PVC root for job logs + post_gate_report (survives pod GC)
 ENV_COMPLETION_WEBHOOK_URL = "INGEST_COMPLETION_WEBHOOK_URL"
 ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
+ENV_QUEUE_DRAIN_WEBHOOK_URL = "INGEST_QUEUE_DRAIN_WEBHOOK_URL"
+ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS = "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS"
 ENV_WEBHOOK_PROMOTE_EXACT = "INGEST_WEBHOOK_PROMOTE_EXACT"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
@@ -68,6 +70,12 @@ def log_root() -> Path:
 def completion_webhook() -> tuple[str, int]:
     endpoint = os.environ.get(ENV_COMPLETION_WEBHOOK_URL, "").strip()
     attempts = int(os.environ.get(ENV_COMPLETION_WEBHOOK_ATTEMPTS, "4"))
+    return endpoint, min(max(attempts, 3), 5)
+
+
+def queue_drain_webhook() -> tuple[str, int]:
+    endpoint = os.environ.get(ENV_QUEUE_DRAIN_WEBHOOK_URL, "").strip()
+    attempts = int(os.environ.get(ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS, "3"))
     return endpoint, min(max(attempts, 3), 5)
 
 

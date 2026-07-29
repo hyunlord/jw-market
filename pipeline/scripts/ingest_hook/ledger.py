@@ -812,6 +812,136 @@ class Ledger:
         )
         return [self._entry(row) for row in cursor.fetchall()]
 
+    def active_entries(self, category: str | None = None) -> list[LedgerEntry]:
+        params: tuple[str, ...] = (STATUS_RUNNING, STATUS_QUEUED)
+        category_clause = ""
+        if category is not None:
+            category_clause = " AND category=?"
+            params += (category,)
+        statement = (
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
+            " run_id, row_counts, received_at, started_at, finished_at"
+            " FROM ingest_ledger WHERE status IN (?,?)"
+            f"{category_clause}"
+            " ORDER BY category,"
+            " CASE status WHEN 'running' THEN 0 ELSE 1 END,"
+            " received_at, id"
+        )
+        if self._dialect == "mysql":
+            statement = statement.replace("?", self._mark)
+
+        def operation(cursor):
+            cursor.execute(statement, params)
+            return cursor.fetchall()
+
+        rows = self._transaction(operation)
+        return [self._entry(row) for row in rows]
+
+    def claim_queued(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        job_name: str,
+        run_id: str,
+    ) -> bool:
+        """Atomically reserve one queued identity when its category has no runner."""
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        mark = self._mark
+        active_sql = (
+            "SELECT epoch, category, manifest_sha, status FROM ingest_ledger"
+            f" WHERE category={mark} AND status IN ({mark},{mark})"
+            " ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, received_at, id"
+        )
+        if self._dialect == "mysql":
+            active_sql += " FOR UPDATE"
+        update_sql = (
+            "UPDATE ingest_ledger SET"
+            f" status={mark}, job_name={mark}, run_id={mark}, started_at={mark}"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND status={mark}"
+        )
+        history_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+        )
+        if self._dialect == "sqlite":
+            history_sql += " ON CONFLICT(event_id) DO NOTHING"
+        else:
+            history_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
+
+        def operation(cursor):
+            cursor.execute(
+                active_sql,
+                (category, STATUS_RUNNING, STATUS_QUEUED),
+            )
+            rows = cursor.fetchall()
+            statuses = [
+                str(row["status"] if isinstance(row, dict) else row[3])
+                for row in rows
+            ]
+            if STATUS_RUNNING in statuses:
+                return False
+            candidate_present = any(
+                (
+                    str(row["epoch"] if isinstance(row, dict) else row[0]),
+                    str(row["category"] if isinstance(row, dict) else row[1]),
+                    str(
+                        row["manifest_sha"]
+                        if isinstance(row, dict)
+                        else row[2]
+                    ),
+                )
+                == (epoch, category, manifest_sha)
+                for row in rows
+            )
+            if not candidate_present:
+                return False
+            cursor.execute(
+                update_sql,
+                (
+                    STATUS_RUNNING,
+                    job_name,
+                    run_id,
+                    created_at,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    STATUS_QUEUED,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            cursor.execute(
+                history_sql,
+                (
+                    event_id,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    STATUS_QUEUED,
+                    STATUS_RUNNING,
+                    "ingest_service",
+                    "job_reservation",
+                    "category slot reserved before Kubernetes Job submission",
+                    job_name,
+                    json.dumps(
+                        {"run_id": run_id, "job_name": job_name},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    created_at,
+                ),
+            )
+            return True
+
+        return bool(self._transaction(operation))
+
     # -- state transitions ---------------------------------------------------
     def mark_running(self, epoch: str, category: str, manifest_sha: str, *, job_name: str, run_id: str) -> None:
         self._transition(

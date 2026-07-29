@@ -69,6 +69,10 @@ spec:
               value: ""
             - name: INGEST_COMPLETION_WEBHOOK_ATTEMPTS
               value: "4"
+            - name: INGEST_QUEUE_DRAIN_WEBHOOK_URL
+              value: http://jw-ingest-hook.llmops.svc.cluster.local:8080/ingest/terminal
+            - name: INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS
+              value: "3"
             # Forecast refresh is fail-closed unless its numerical runtime is
             # identical across the trigger-created Jobs.
             - name: NPY_DISABLE_CPU_FEATURES
