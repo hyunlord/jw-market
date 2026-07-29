@@ -18,7 +18,10 @@ import requests
 from scripts.fact_scoreboard.sse import parse_sse_file
 from scripts.fact_scoreboard.text_numbers import extract_numeric_mentions
 
-from jw_chat_agent_poc.orchestrator.provenance_model import PROVENANCE_HEADERS
+from jw_chat_agent_poc.orchestrator.provenance_model import (
+    LEGACY_PROVENANCE_HEADERS,
+    PROVENANCE_HEADERS,
+)
 from jw_chat_agent_poc.service.app import SessionStore, _answer_question, _default_agent_factory, _sse_events
 from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
@@ -777,10 +780,14 @@ def _source_section_has_canonical_provenance_header(answer: str) -> bool:
     _body, marker, source_section = answer.rpartition("## 출처")
     if not marker:
         return False
-    expected_cells = tuple(header.casefold() for header in PROVENANCE_HEADERS)
+    # Accept the schema with or without the appended brand column, so a capture taken before
+    # that column shipped is still scored as canonical rather than as abbreviated.
+    accepted = tuple(
+        tuple(header.casefold() for header in headers)
+        for headers in (PROVENANCE_HEADERS, LEGACY_PROVENANCE_HEADERS)
+    )
     return any(
-        tuple(cell.strip().casefold() for cell in line.strip().strip("|").split("|"))
-        == expected_cells
+        tuple(cell.strip().casefold() for cell in line.strip().strip("|").split("|")) in accepted
         for line in source_section.splitlines()
         if line.lstrip().startswith("|")
     )
@@ -794,16 +801,20 @@ def _source_section_has_complete_provenance_row(
     _body, marker, source_section = answer.rpartition("## 출처")
     if not marker:
         return False
-    expected_width = len(PROVENANCE_HEADERS)
+    # Completeness is about the seven context cells. The appended brand column is legitimately
+    # empty for brand-less evidence (HIRA counts, support-status rows), so requiring it here
+    # would fail rows that are in fact complete.
+    context_width = len(LEGACY_PROVENANCE_HEADERS)
+    accepted_widths = {context_width, len(PROVENANCE_HEADERS)}
     for line in source_section.splitlines():
         if not line.lstrip().startswith("|"):
             continue
         cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
         if (
-            len(cells) == expected_width
+            len(cells) in accepted_widths
             and cells[0].casefold() == source.casefold()
             and cells[1].casefold() == period.casefold()
-            and all(cell and cell != "—" for cell in cells)
+            and all(cell and cell != "—" for cell in cells[:context_width])
         ):
             return True
     return False

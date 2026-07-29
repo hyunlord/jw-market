@@ -8,7 +8,11 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
-from jw_chat_agent_poc.orchestrator.provenance_model import MISSING_LABEL, PROVENANCE_HEADERS
+from jw_chat_agent_poc.orchestrator.provenance_model import (
+    LEGACY_PROVENANCE_HEADERS,
+    MISSING_LABEL,
+    PROVENANCE_HEADERS,
+)
 from jw_chat_agent_poc.orchestrator.source_fusion_policy import source_family
 
 
@@ -372,8 +376,12 @@ def _incomplete_provenance_violation(
         )
 
     threshold = _provenance_missing_ratio()
-    missing_counts = tuple(sum(cell in _MISSING_PROVENANCE_VALUES for cell in row) for row in rendered_rows)
-    violating_rows = tuple(count for count in missing_counts if count / len(PROVENANCE_HEADERS) > threshold)
+    # Divide by the row's own width, which may be the legacy width when the answer predates
+    # the brand column.
+    missing_counts = tuple(
+        (sum(cell in _MISSING_PROVENANCE_VALUES for cell in row), len(row)) for row in rendered_rows
+    )
+    violating_rows = tuple(count for count, width in missing_counts if width and count / width > threshold)
     if not violating_rows:
         return None
 
@@ -406,12 +414,16 @@ def _provenance_table_rows(answer: str) -> tuple[tuple[str, ...], ...]:
     lines = answer.splitlines()
     rows: list[tuple[str, ...]] = []
     header_index: int | None = None
+    width: int | None = None
     for index, line in enumerate(lines):
         cells = _markdown_cells(line)
-        if cells == PROVENANCE_HEADERS:
+        # Accept the table both with and without the appended brand column, so an answer
+        # rendered before that column existed is still recognised rather than ignored.
+        if cells in (PROVENANCE_HEADERS, LEGACY_PROVENANCE_HEADERS):
             header_index = index
+            width = len(cells)
             break
-    if header_index is None:
+    if header_index is None or width is None:
         return ()
     for line in lines[header_index + 1 :]:
         cells = _markdown_cells(line)
@@ -421,7 +433,7 @@ def _provenance_table_rows(answer: str) -> tuple[tuple[str, ...], ...]:
             continue
         if all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
             continue
-        if len(cells) != len(PROVENANCE_HEADERS):
+        if len(cells) != width:
             break
         rows.append(cells)
     return tuple(rows)

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from jw_chat_agent_poc.orchestrator.provenance_model import (
+    MISSING_LABEL,
     ProvenanceRow,
     dedupe_rows,
     normalized_row,
@@ -84,6 +85,9 @@ def _rows_from_seven_field_fact(fact_md: str) -> list[ProvenanceRow]:
         if len(cells) < 7:
             continue
         source, period, view, market, denominator, channel, unit = cells[:7]
+        # The brand column is appended, so a table written before it existed simply has no
+        # eighth cell. Read it when present instead of rejecting the row.
+        brand = cells[7] if len(cells) > 7 else MISSING_LABEL
         rows.append(
             normalized_row(
                 source=source,
@@ -93,6 +97,7 @@ def _rows_from_seven_field_fact(fact_md: str) -> list[ProvenanceRow]:
                 denominator=denominator,
                 channel=channel,
                 unit=unit,
+                brand=brand,
             )
         )
     return rows

@@ -11,7 +11,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import source_label, tab
 
 MISSING_LABEL: Final[str] = "—"
 ALL_CHANNELS_LABEL: Final[str] = "전체"
-PROVENANCE_HEADERS: Final[tuple[str, ...]] = (
+LEGACY_PROVENANCE_HEADERS: Final[tuple[str, ...]] = (
     "출처",
     "기준기간",
     "뷰",
@@ -20,6 +20,9 @@ PROVENANCE_HEADERS: Final[tuple[str, ...]] = (
     "채널",
     "단위",
 )
+# The brand column is appended, never inserted: every existing column keeps its index so
+# that a table rendered before the brand column existed still parses field-for-field.
+PROVENANCE_HEADERS: Final[tuple[str, ...]] = (*LEGACY_PROVENANCE_HEADERS, "브랜드")
 
 _INTERNAL_ID_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9_])(?:ml|strategy|cd|competitive)_\d+(?![A-Za-z0-9_])",
@@ -46,6 +49,7 @@ class ProvenanceRow:
     denominator: str = MISSING_LABEL
     channel: str = ALL_CHANNELS_LABEL
     unit: str = MISSING_LABEL
+    brand: str = MISSING_LABEL
 
     def as_tuple(self) -> tuple[str, ...]:
         return (
@@ -56,6 +60,7 @@ class ProvenanceRow:
             self.denominator,
             self.channel,
             self.unit,
+            self.brand,
         )
 
     def as_fields(self) -> dict[str, str]:
@@ -69,6 +74,7 @@ class ProvenanceRow:
             "denominator": self.denominator,
             "channel": self.channel,
             "unit": self.unit,
+            "brand": self.brand,
         }
 
 
@@ -174,6 +180,7 @@ def normalized_row(
     denominator: Any = MISSING_LABEL,
     channel: Any = ALL_CHANNELS_LABEL,
     unit: Any = MISSING_LABEL,
+    brand: Any = MISSING_LABEL,
 ) -> ProvenanceRow:
     public_market_label = public_value(market)
     return ProvenanceRow(
@@ -184,6 +191,7 @@ def normalized_row(
         denominator=public_value(denominator),
         channel=public_value(channel, missing=ALL_CHANNELS_LABEL),
         unit=public_value(unit),
+        brand=public_value(brand),
     )
 
 
@@ -233,6 +241,9 @@ def _merge_source_group(rows: Sequence[ProvenanceRow]) -> ProvenanceRow:
         denominator=_merge_values(tuple(row.denominator for row in rows)),
         channel=_merge_values(tuple(row.channel for row in rows)),
         unit=_merge_values(tuple(row.unit for row in rows)),
+        # The grouping key is deliberately unchanged, so a group can span brands. Merge the
+        # brands into the cell rather than dropping them to MISSING.
+        brand=_merge_values(tuple(row.brand for row in rows)),
     )
 
 

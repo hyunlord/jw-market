@@ -849,6 +849,7 @@ def _complete_row(
     denominator = fields["denominator"]
     channel = fields["channel"]
     row_unit = fields["unit"]
+    brand = fields["brand"]
     if view.startswith("전략뷰"):
         view = "전략뷰"
     elif view.startswith("일반뷰"):
@@ -876,6 +877,7 @@ def _complete_row(
         denominator=denominator,
         channel=channel,
         unit=row_unit,
+        brand=brand,
     )
 
 
