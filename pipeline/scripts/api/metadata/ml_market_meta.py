@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
+    TargetBrand,
+    default_mi_master_registry,
+)
+
 
 @dataclass(frozen=True)
 class BrandMetadata:
@@ -60,7 +66,7 @@ def build_brand_metadata_payload(
     ]
 
 
-BRAND_METADATA: tuple[BrandMetadata, ...] = (
+_BRAND_METADATA_ANNOTATIONS: tuple[BrandMetadata, ...] = (
     BrandMetadata(
         brand="라베칸",
         market_id="strategy_001",
@@ -412,3 +418,53 @@ BRAND_METADATA: tuple[BrandMetadata, ...] = (
         rank=1,
     ),
 )
+
+
+def _sources(source_type: str) -> list[str]:
+    if source_type == "UBIST":
+        return ["UBIST"]
+    if source_type == "IQVIA":
+        return ["IQVIA"]
+    if source_type == "BOTH":
+        return ["UBIST", "IQVIA"]
+    raise ValueError(f"unsupported MI Master source type: {source_type!r}")
+
+
+def _default_brand_metadata(
+    target: TargetBrand,
+    *,
+    market_name: str,
+) -> BrandMetadata:
+    sources = _sources(target.source_type)
+    return BrandMetadata(
+        brand=target.brand_name,
+        market_id=target.strategic_market_id,
+        market_name=market_name,
+        market_name_short=target.brand_name,
+        market_label_kor=market_name,
+        mkt_team=None,
+        sources=sources,
+        atc_desc="",
+        is_jw=True,
+        is_target=target.is_target,
+        is_dual_source=len(sources) == 2,
+        rank=1 if target.is_target else 2,
+    )
+
+
+def build_brand_metadata(
+    registry: MiMasterRegistry | None = None,
+) -> tuple[BrandMetadata, ...]:
+    registry = registry or default_mi_master_registry()
+    annotations = {item.brand: item for item in _BRAND_METADATA_ANNOTATIONS}
+    return tuple(
+        annotations.get(target.brand_name)
+        or _default_brand_metadata(
+            target,
+            market_name=registry.market_by_id[target.strategic_market_id]["sheet_name"],
+        )
+        for target in registry.target_brands
+    )
+
+
+BRAND_METADATA = build_brand_metadata()

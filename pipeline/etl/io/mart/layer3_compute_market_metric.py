@@ -30,7 +30,7 @@ def _truthy(value: Any) -> bool:
 
 def compute_market_size_series(rows: list[dict[str, Any]]) -> dict[str, float]:
     series: dict[str, float] = defaultdict(float)
-    for row in rows:
+    for row in sorted(rows, key=lambda item: str(item.get("brand_key") or "")):
         for period, value in (row.get("raw_value_history") or {}).items():
             series[period] += float(value or 0)
     return dict(sorted(series.items()))
@@ -38,7 +38,13 @@ def compute_market_size_series(rows: list[dict[str, Any]]) -> dict[str, float]:
 def compute_hhi_series(rows: list[dict[str, Any]]) -> dict[str, float]:
     result: dict[str, float] = {}
     for period in _periods(rows):
-        values = [float(_metric(row, period).get("raw_value") or 0) for row in rows]
+        values = [
+            float(_metric(row, period).get("raw_value") or 0)
+            for row in sorted(
+                rows,
+                key=lambda item: str(item.get("brand_key") or ""),
+            )
+        ]
         total = sum(values)
         if total <= 0:
             result[period] = 0.0
@@ -64,7 +70,12 @@ def compute_brand_ranking_stacked(rows: list[dict[str, Any]], top_n: int = 20) -
                     "ms": value / total * 100 if total else 0.0,
                 }
             )
-        items.sort(key=lambda item: item["raw_value"], reverse=True)
+        items.sort(
+            key=lambda item: (
+                -float(item["raw_value"]),
+                str(item.get("brand_key") or ""),
+            )
+        )
         for idx, item in enumerate(items, start=1):
             item["rank"] = idx
         result[period] = items[:top_n]
@@ -80,7 +91,10 @@ def compute_company_ranking_stacked(rows: list[dict[str, Any]], top_n: int = 20)
             company_values[str(company)] += float(_metric(row, period).get("raw_value") or 0)
         total = sum(company_values.values())
         ranked = []
-        for idx, (company, value) in enumerate(sorted(company_values.items(), key=lambda kv: kv[1], reverse=True), start=1):
+        for idx, (company, value) in enumerate(
+            sorted(company_values.items(), key=lambda item: (-item[1], item[0])),
+            start=1,
+        ):
             if value <= 0:
                 continue
             ranked.append({"company": company, "rank": idx, "raw_value": value, "ms": value / total * 100 if total else 0.0})
@@ -185,8 +199,7 @@ def compute_level_top5_trend(analysis_levels: dict[str, Any] | None) -> dict[str
         for period in periods:
             ranked = sorted(
                 ({"label": label, "raw_value": float(series.get(period) or 0)} for label, series in labels.items()),
-                key=lambda item: item["raw_value"],
-                reverse=True,
+                key=lambda item: (-item["raw_value"], item["label"]),
             )
             result[level][period] = ranked[:5]
     return result
@@ -229,3 +242,21 @@ def compute_market_mart_payload(
         "target_customer_competition": target,
         "payload": payload,
     }
+
+
+def compute_market_mart_payload_from_reduced_rows(
+    rows: list[dict[str, Any]],
+    *,
+    source: str,
+    measure: str,
+    view_type: str,
+    catalog_market_row: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compute ATC-global derivatives only after partition partials are reduced."""
+    return compute_market_mart_payload(
+        rows,
+        source=source,
+        measure=measure,
+        view_type=view_type,
+        catalog_market_row=catalog_market_row,
+    )

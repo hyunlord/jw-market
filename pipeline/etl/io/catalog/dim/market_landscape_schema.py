@@ -3,14 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 
 from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
+from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
+    default_mi_master_registry,
+)
 
 DEFAULT_MARKET_DEFINITION_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
 DEFAULT_MASTER_DRUG_FILE = Path("parquet/master_drug/master_drug.parquet")
 DEFAULT_OUTPUT_FILE = Path("parquet/dim_market_landscape/dim_market_landscape.parquet")
 
 EXPECTED_SOURCE_FILE_VERSION = "MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-EXPECTED_MARKET_IDS = tuple(f"strategy_{index:03d}" for index in range(1, 17))
-EXPECTED_ROW_COUNT = expected_int("dim_market_landscape.row_count")
+
+def market_landscape_contract(
+    registry: MiMasterRegistry | None = None,
+) -> tuple[tuple[str, ...], int]:
+    active_registry = registry or default_mi_master_registry()
+    market_ids = tuple(
+        market.strategic_market_id
+        for market in active_registry.market_sheets
+    )
+    return market_ids, len(market_ids)
+
+
+EXPECTED_MARKET_IDS, EXPECTED_ROW_COUNT = market_landscape_contract()
 EXPECTED_MARKET_COUNTS = expected_mapping("dim_market_landscape.market_counts")
 DEFAULT_SHEET_ALL_MARKETS = {"strategy_005", "strategy_011"}
 EXPECTED_TOTAL_MASTER_DRUG_ROWS = expected_int("dim_market_landscape.total_master_drug_rows")

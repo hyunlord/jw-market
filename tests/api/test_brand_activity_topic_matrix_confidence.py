@@ -53,7 +53,17 @@ def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch
         selected_brand="리바로",
         view=view,
         market_row={"atc4_desc": "STATIN"},
-        brand_rows=(),
+        brand_rows=(
+            {
+                "brand_key": "리바로",
+                "by_dimension": json.dumps({"manufacturer": "JW SHINYAK"}),
+            },
+            {
+                "brand_key": "리바로",
+                "by_dimension": json.dumps({"manufacturer": "JW PHARMACEUTICAL"}),
+            },
+            {"brand_key": "미매칭", "by_dimension": json.dumps({"manufacturer": ""})},
+        ),
         brand_meta={
             "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
             "미매칭": BrandMeta("미매칭", "미매칭", ("NOKW",), False),
@@ -66,39 +76,86 @@ def test_company_names_by_brand_joins_copromotion_and_nulls_unmapped(monkeypatch
         ranking_quarter="2026-Q1",
         applied_filter={"atc4": ["C10A1"]},
     )
-    monkeypatch.setattr(
-        topic_matrix,
-        "iqvia_product_codes_by_brand",
-        lambda _brands: {"리바로": ("LIVALO", "LIVALOZET"), "미매칭": ("NOKW",)},
-    )
-    # Manufacturer (제조사, MFR NAME KOR) map. Multi-manufacturer retained for CMO/repackaging:
-    # JW SHINYAK is hit by both codes (count 2) so it sorts before JW PHARMACEUTICAL (count 1);
-    # NOKW has no manufacturer -> null.
-    manufacturer_map = {
-        "LIVALO": frozenset({"JW SHINYAK"}),
-        "LIVALOZET": frozenset({"JW PHARMACEUTICAL", "JW SHINYAK"}),
-    }
-    monkeypatch.setattr(topic_matrix, "get_manufacturer_by_product", lambda: manufacturer_map)
-
     result = topic_matrix._company_names_by_brand(brand_set, {})
 
-    assert result == {"리바로": "JW SHINYAK, JW PHARMACEUTICAL", "미매칭": None}
+    assert result == {"리바로": "JW PHARMACEUTICAL, JW SHINYAK", "미매칭": None}
 
 
 def test_company_names_tie_breaks_on_name_ascending(monkeypatch) -> None:
     view = ViewConfig("mart_general_brand_metric", "mart_general_market_metric", "atc4_code", "atc4_desc", "brand_ranking", False)
     brand_set = BrandSetResolution(
         view_name="general", market_id="C10A1", selected_brand="리바로", view=view,
-        market_row={}, brand_rows=(),
+        market_row={},
+        brand_rows=(
+            {
+                "brand_key": "리바로",
+                "by_dimension": json.dumps({"manufacturer": "GAMMA"}),
+            },
+            {
+                "brand_key": "리바로",
+                "by_dimension": json.dumps({"manufacturer": "BETA"}),
+            },
+        ),
         brand_meta={"리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True)},
         choices=(BrandChoice("리바로", "리바로", 1, True),),
         candidates=(), ranking_quarter="2026-Q1", applied_filter={},
     )
-    monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _b: {"리바로": ("LIVALO",)})
-    # Equal counts (one code hits both once) -> deterministic name ascending (BETA before GAMMA).
-    manufacturer_map = {"LIVALO": frozenset({"GAMMA", "BETA"})}
-    monkeypatch.setattr(topic_matrix, "get_manufacturer_by_product", lambda: manufacturer_map)
     assert topic_matrix._company_names_by_brand(brand_set, {}) == {"리바로": "BETA, GAMMA"}
+
+
+def test_company_names_reuse_resolved_rows_without_scanning_iqvia_raw(monkeypatch) -> None:
+    view = ViewConfig(
+        "mart_general_brand_metric",
+        "mart_general_market_metric",
+        "atc4_code",
+        "atc4_desc",
+        "brand_ranking",
+        False,
+    )
+    brand_set = BrandSetResolution(
+        view_name="general",
+        market_id="C10A1",
+        selected_brand="리바로",
+        view=view,
+        market_row={},
+        brand_rows=(
+            {
+                "brand_key": "리바로",
+                "by_dimension": json.dumps({"manufacturer": "제이더블유중외제약"}),
+            },
+            {
+                "brand_key": "리바로",
+                "by_dimension": json.dumps({"manufacturer": "JW신약"}),
+            },
+            {"brand_key": "미매칭", "by_dimension": json.dumps({"manufacturer": ""})},
+        ),
+        brand_meta={
+            "리바로": BrandMeta("리바로", "리바로", ("LIVALO",), True),
+            "미매칭": BrandMeta("미매칭", "미매칭", ("NOKW",), False),
+        },
+        choices=(
+            BrandChoice("리바로", "리바로", 1, True),
+            BrandChoice("미매칭", "미매칭", 2, False),
+        ),
+        candidates=(),
+        ranking_quarter="2026-Q1",
+        applied_filter={},
+    )
+    monkeypatch.setattr(
+        topic_matrix,
+        "iqvia_product_codes_by_brand",
+        lambda _brands: pytest.fail("raw IQVIA lookup is forbidden"),
+    )
+    monkeypatch.setattr(
+        manufacturer_resolver,
+        "get_manufacturer_by_product",
+        lambda: pytest.fail("raw manufacturer scan is forbidden"),
+    )
+
+    assert topic_matrix._company_names_by_brand(brand_set, {}) == {
+        "리바로": "JW신약, 제이더블유중외제약",
+        "미매칭": None,
+    }
 
 
 def test_fetch_manufacturer_by_product_builds_kor_map_and_skips_null(monkeypatch) -> None:

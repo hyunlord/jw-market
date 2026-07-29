@@ -10,6 +10,7 @@ from pipeline.etl.io.catalog._lib.exclusion_policy import (
     contains_exclusion_marker,
 )
 from pipeline.etl.io.catalog.brand.strategic_brand_schema import SHEET_TOTAL_FILTER_IDS
+from pipeline.etl.mi_master_registry import apply_record_rules
 
 def clean_text(value: Any) -> str | None:
     if value is None:
@@ -223,13 +224,25 @@ def source_value_by_header(headers: list[Any] | tuple[Any, ...], values: list[An
 
 def make_name(
     standard_values: dict[str, Any],
-    strategic_market_id: str,
     source_row_id: int,
+    *,
+    sheet_name: str | None = None,
 ) -> str:
-    if strategic_market_id == "strategy_003":
-        name = first_present(standard_values.get("molecule"), standard_values.get("atc4_code"))
-    else:
-        name = first_present(standard_values.get("product_name"), standard_values.get("molecule"), standard_values.get("atc4_code"))
+    candidate = {
+        "name": first_present(
+            standard_values.get("product_name"),
+            standard_values.get("molecule"),
+            standard_values.get("atc4_code"),
+        ),
+        **standard_values,
+    }
+    if sheet_name is not None:
+        candidate = apply_record_rules(
+            candidate,
+            stage="strategic_brand_name",
+            context={"sheet_name": sheet_name},
+        )
+    name = first_present(candidate.get("name"))
     if name is None:
         name = f"unknown_row_{source_row_id}"
     return name
@@ -238,22 +251,18 @@ def make_name(
 def strategic_fields(
     standard_values: dict[str, Any],
     extras: dict[str, Any],
-    strategic_market_id: str | None = None,
+    *,
+    sheet_name: str | None = None,
 ) -> dict[str, str | None]:
     class_2_value = first_present(standard_values.get("class_2"), standard_values.get("class"), extras.get("class_raw"))
     class_1_value = first_present(standard_values.get("class_1"))
     if class_1_value is None and first_present(standard_values.get("class_2")) is not None:
         class_1_value = first_present(standard_values.get("class"))
-    molecule_value = first_present(standard_values.get("molecule"))
-    if strategic_market_id == "strategy_002":
-        class_value = first_present(standard_values.get("class"), standard_values.get("class_2"))
-        if molecule_value == class_value:
-            molecule_value = None
-    return {
+    fields = {
         "class": class_2_value,
         "class_1": class_1_value,
         "class_2": class_2_value if first_present(standard_values.get("class_2")) is not None else None,
-        "molecule": molecule_value,
+        "molecule": first_present(standard_values.get("molecule")),
         "dosage_form": first_present(standard_values.get("dosage_form"), extras.get("administration_route")),
         "strength_pack": first_present(standard_values.get("strength"), standard_values.get("pack_desc"), extras.get("product_pack")),
         "nhi_type": first_present(standard_values.get("nhi_type")),
@@ -263,3 +272,10 @@ def strategic_fields(
         "제조사": first_present(standard_values.get("manufacturer")),
         "atc4_code": first_present(standard_values.get("atc4_code")),
     }
+    if sheet_name is None:
+        return fields
+    return apply_record_rules(
+        fields,
+        stage="strategic_brand_fields",
+        context={"sheet_name": sheet_name},
+    )

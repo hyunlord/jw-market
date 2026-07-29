@@ -28,9 +28,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pymysql
 
+from pipeline.etl.io.iqvia_scope import (
+    iqvia_record_in_scope,
+    normalize_iqvia_atc4_codes,
+    normalize_iqvia_quarters,
+)
+from pipeline.etl.io.source_headers import normalize_source_header
 from pipeline.etl.lib.ops_utils import configure_logging, find_project_root, first_existing, retry
 from pipeline.etl.lib.storage import get_data_path
-from pipeline.etl.io.source_headers import normalize_source_header
 
 
 LOGGER = configure_logging(__name__)
@@ -732,7 +737,15 @@ def deduplicate_nsa_records(
     return result, report
 
 
-def iter_nsa_csv(path: Path, chunk_size: int = 2000) -> Iterator[dict[str, Any]]:
+def iter_nsa_csv(
+    path: Path,
+    chunk_size: int = 2000,
+    *,
+    quarters: Iterable[str] | None = None,
+    atc4_codes: Iterable[str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    quarter_scope = normalize_iqvia_quarters(quarters)
+    atc4_scope = normalize_iqvia_atc4_codes(atc4_codes)
     canonical_headers: list[str] | None = None
     for chunk in pd.read_csv(path, encoding="utf-8-sig", chunksize=chunk_size, dtype=object):
         if canonical_headers is None:
@@ -746,7 +759,11 @@ def iter_nsa_csv(path: Path, chunk_size: int = 2000) -> Iterator[dict[str, Any]]
             source_row_no = int(offset) + 2
             if not periods:
                 record = long_format_period_record(path, "CSV", source_row_no, raw, static_cols)
-                if record:
+                if record and iqvia_record_in_scope(
+                    record,
+                    quarters=quarter_scope,
+                    atc4_codes=atc4_scope,
+                ):
                     yield record
                 continue
             for period, metric_cols in periods.items():
@@ -757,7 +774,7 @@ def iter_nsa_csv(path: Path, chunk_size: int = 2000) -> Iterator[dict[str, Any]]
                 quarter = quarter_from_month(int(month))
                 if quarter is None:
                     continue
-                yield {
+                record = {
                     "source_file": path.name,
                     "sheet_name": "CSV",
                     "source_row_no": source_row_no,
@@ -779,9 +796,22 @@ def iter_nsa_csv(path: Path, chunk_size: int = 2000) -> Iterator[dict[str, Any]]
                     ),
                     "source_master_version": None,
                 }
+                if iqvia_record_in_scope(
+                    record,
+                    quarters=quarter_scope,
+                    atc4_codes=atc4_scope,
+                ):
+                    yield record
 
 
-def iter_nsa_xlsx(path: Path) -> Iterator[dict[str, Any]]:
+def iter_nsa_xlsx(
+    path: Path,
+    *,
+    quarters: Iterable[str] | None = None,
+    atc4_codes: Iterable[str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    quarter_scope = normalize_iqvia_quarters(quarters)
+    atc4_scope = normalize_iqvia_atc4_codes(atc4_codes)
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     for ws in wb.worksheets:
         rows = ws.iter_rows(values_only=True)
@@ -799,7 +829,11 @@ def iter_nsa_xlsx(path: Path) -> Iterator[dict[str, Any]]:
             static = {k: raw.get(k) for k in static_cols}
             if not periods:
                 record = long_format_period_record(path, ws.title, row_no, raw, static_cols)
-                if record:
+                if record and iqvia_record_in_scope(
+                    record,
+                    quarters=quarter_scope,
+                    atc4_codes=atc4_scope,
+                ):
                     yield record
                 continue
             for period, metric_cols in periods.items():
@@ -810,7 +844,7 @@ def iter_nsa_xlsx(path: Path) -> Iterator[dict[str, Any]]:
                 quarter = quarter_from_month(int(month))
                 if quarter is None:
                     continue
-                yield {
+                record = {
                     "source_file": path.name,
                     "sheet_name": ws.title,
                     "source_row_no": row_no,
@@ -832,6 +866,12 @@ def iter_nsa_xlsx(path: Path) -> Iterator[dict[str, Any]]:
                     ),
                     "source_master_version": None,
                 }
+                if iqvia_record_in_scope(
+                    record,
+                    quarters=quarter_scope,
+                    atc4_codes=atc4_scope,
+                ):
+                    yield record
 
 
 def source_sheets_for_resume(files: list[Path]) -> list[SourceSheet]:
@@ -881,11 +921,24 @@ def batch_insert(
     return total
 
 
-def iter_records(path: Path) -> Iterator[dict[str, Any]]:
+def iter_records(
+    path: Path,
+    *,
+    quarters: Iterable[str] | None = None,
+    atc4_codes: Iterable[str] | None = None,
+) -> Iterator[dict[str, Any]]:
     if path.suffix.lower() == ".csv":
-        yield from iter_nsa_csv(path)
+        yield from iter_nsa_csv(
+            path,
+            quarters=quarters,
+            atc4_codes=atc4_codes,
+        )
     else:
-        yield from iter_nsa_xlsx(path)
+        yield from iter_nsa_xlsx(
+            path,
+            quarters=quarters,
+            atc4_codes=atc4_codes,
+        )
 
 
 def canonical_nsa_files(files: Iterable[Path]) -> list[Path]:

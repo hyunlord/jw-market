@@ -14,7 +14,8 @@ import sys
 from threading import Lock
 from typing import Any
 
-from pipeline.etl.io.mart.brand_key_normalize import normalize_brand_name
+from pipeline.contracts.dimension_registry import dimension_candidates
+from pipeline.domain.brand_names import normalize_brand_name
 from pipeline.scripts.api import db
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.dynamic_market.resolvers import expand_atc4_for_source, normalize_source
@@ -295,7 +296,7 @@ _STRATEGIC_NARROWING_KEYS = frozenset({"atc3", "atc4"})
 
 
 def _row_matches_dimension(dimensions: Mapping[str, Any], key: str, selected_values: Sequence[str]) -> bool:
-    candidates = _dimension_candidates(dimensions, key)
+    candidates = dimension_candidates(dimensions, key)
     if not candidates:
         return False
     normalized_selected = {normalize_brand_name(value) or value.strip().lower() for value in selected_values}
@@ -304,34 +305,6 @@ def _row_matches_dimension(dimensions: Mapping[str, Any], key: str, selected_val
         if text in selected_values or (normalize_brand_name(text) or text.lower()) in normalized_selected:
             return True
     return False
-
-
-def _dimension_candidates(dimensions: Mapping[str, Any], key: str) -> tuple[Any, ...]:
-    aliases = {
-        "seller": ("seller", "mfr", "manufacturer", "company_name"),
-        "class": ("class", "class_name", "market_class"),
-        "mfr_name_kor": ("mfr_name_kor", "mfr", "manufacturer", "company_name"),
-        "mfr": ("mfr", "mfr_name_kor", "manufacturer", "company_name"),
-        "molecule": ("molecule", "molecule_desc"),
-        "molecule_strength": ("molecule_strength", "strength_pack", "성분용량"),
-        "strength_pack": ("strength_pack", "molecule_strength", "성분용량"),
-        "ox_gx": ("ox_gx", "oxgx"),
-        "form": ("form", "dosage_form", "제형"),
-        "route": ("route", "투여경로"),
-        "reimbursement": ("reimbursement", "nhi_type", "nhi", "급여구분"),
-        "nhi": ("nhi", "nhi_type", "급여구분"),
-        "nhi_type": ("nhi_type", "nhi", "급여구분"),
-        "atc3": ("atc3", "atc3_code"),
-        "atc4": ("atc4", "atc4_code"),
-    }
-    values: list[Any] = []
-    for alias in aliases.get(key, (key,)):
-        value = dimensions.get(alias)
-        if isinstance(value, list):
-            values.extend(value)
-        elif value not in (None, ""):
-            values.append(value)
-    return tuple(values)
 
 
 def _market_row_for_filtered_rows(market_row: JsonRow, rows: Sequence[JsonRow]) -> JsonRow:

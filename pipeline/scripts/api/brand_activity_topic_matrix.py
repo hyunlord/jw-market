@@ -26,10 +26,7 @@ from pipeline.scripts.api.brand_activity_topics import (
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.types import quote_identifier
 from pipeline.scripts.api.market_filter_atc_options import canonical_atc4_values
-from pipeline.scripts.api.manufacturer_resolver import (
-    get_manufacturer_by_product,
-    resolve_manufacturer_name,
-)
+from pipeline.scripts.api.manufacturer_resolver import resolve_manufacturer_labels
 
 
 ALIAS_MAPPING_PATH: Final = Path("docs/design/brand_activity/alias/ALIAS_01_MAPPING.json")
@@ -530,24 +527,27 @@ def _company_names_by_brand(
 ) -> dict[str, str | None]:
     """Return the ", "-joined MANUFACTURER (제조사, MFR NAME KOR) per brand, or None when unmapped.
 
-    Source = iqvia_nsa_quarterly_raw MFR NAME KOR (PL-confirmed). Brand-activity company
-    displays use this same manufacturer basis across topics and time-series endpoints.
-
-    Manufacturer is 1:1 per brand in the measured data, but the combine logic is retained for
-    CMO / import-repackaging multiplicity. Order is deterministic: product-hit count desc,
-    then manufacturer name asc. (aliases kept for signature stability; the manufacturer join
-    matches on normalize_iqvia_en both sides, like the CSD/keyword presence axes.)
+    The resolver has already loaded ``mart_general_brand_metric.by_dimension``
+    for these brands. Its manufacturer field is derived from IQVIA ``MFR NAME
+    KOR``, so reuse it rather than scanning all raw IQVIA rows on the first
+    request to each pod. Multiple values remain deterministic.
     """
 
-    del aliases  # manufacturer join uses normalize_iqvia_en directly (no alias layer)
-    iqvia = iqvia_product_codes_by_brand(
-        {choice.brand_key: brand_set.brand_meta[choice.brand_key].brand_name for choice in brand_set.choices}
-    )
-    manufacturer_map = get_manufacturer_by_product()
+    del aliases  # kept for signature stability
+    manufacturers: dict[str, list[str]] = {}
+    for row in brand_set.brand_rows:
+        brand_key = _text(row.get("brand_key"))
+        dimensions = _json_object(row.get("by_dimension"))
+        manufacturer = _text(
+            dimensions.get("manufacturer") or dimensions.get("raw_company")
+        ).strip()
+        if brand_key and manufacturer:
+            manufacturers.setdefault(brand_key, []).append(manufacturer)
+
     result: dict[str, str | None] = {}
     for choice in brand_set.choices:
-        result[choice.brand_key] = resolve_manufacturer_name(
-            iqvia.get(choice.brand_key, ()), manufacturer_map
+        result[choice.brand_key] = resolve_manufacturer_labels(
+            manufacturers.get(choice.brand_key, [])
         )
     return result
 

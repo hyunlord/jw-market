@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 import time
@@ -10,6 +10,14 @@ import pymysql
 
 from .data_source import SCHEMA
 from .models import JsonValue
+from .topic_assignment_handoff import (
+    TopicScopeSnapshot,
+)
+from .topic_assignment_handoff_db import (
+    HANDOFF_TABLE,
+    STAGING_HANDOFF_TABLE,
+    record_axis_handoff,
+)
 from .topic_store import (
     RunRecord,
     TopicArtifacts,
@@ -41,6 +49,8 @@ class StoreSummary:
     stored_topic_rows: int
     stored_run_rows: int
     count_retry_used: bool = False
+    axis_handoff_status: str = ""
+    assignment_handoff_status: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,11 +183,29 @@ def save_artifacts(
     artifact_sha256: str,
 ) -> StoreSummary:
     """Build records from artifacts and upsert them into the isolated stage schema."""
-    return upsert_topic_results(
+    run = build_run_record(artifacts, artifact_sha256=artifact_sha256)
+    records = build_topic_records(artifacts)
+    summary = upsert_topic_results(
         connection,
         schema=schema,
-        run=build_run_record(artifacts, artifact_sha256=artifact_sha256),
-        records=build_topic_records(artifacts),
+        run=run,
+        records=records,
+    )
+    tables = resolve_topic_tables()
+    receipt = record_axis_handoff(
+        connection,
+        schema=schema,
+        handoff_table=_handoff_table(tables),
+        topics_table=tables.topics,
+        run_id=run.run_id,
+        target_mode=_target_mode(artifacts),
+        input_fingerprint=run.input_fingerprint,
+        expected_scopes=tuple(_scope_snapshot(record) for record in records),
+    )
+    return replace(
+        summary,
+        axis_handoff_status=receipt.axis_status,
+        assignment_handoff_status=receipt.assignment_status,
     )
 
 
@@ -190,7 +218,37 @@ def store_summary_json(summary: StoreSummary) -> dict[str, JsonValue]:
         "stored_topic_rows": summary.stored_topic_rows,
         "stored_run_rows": summary.stored_run_rows,
         "count_retry_used": summary.count_retry_used,
+        "axis_handoff_status": summary.axis_handoff_status,
+        "assignment_handoff_status": summary.assignment_handoff_status,
     }
+
+
+def _handoff_table(tables: TopicTables) -> str:
+    return (
+        STAGING_HANDOFF_TABLE
+        if tables.topics == STAGING_TOPICS_TABLE
+        else HANDOFF_TABLE
+    )
+
+
+def _target_mode(artifacts: TopicArtifacts) -> str:
+    value = artifacts.run_summary.get("target_selection")
+    if isinstance(value, dict):
+        mode = value.get("mode")
+        if isinstance(mode, str) and mode:
+            return mode
+    return "existing"
+
+
+def _scope_snapshot(record: TopicRecord) -> TopicScopeSnapshot:
+    return TopicScopeSnapshot(
+        scope_id=record.scope_id,
+        display_name=record.display_name,
+        atc4_values=record.atc4_values,
+        quality_grade=record.quality_grade,
+        source_row_count=record.source_row_count,
+        payload=record.payload,
+    )
 
 
 def _topics_ddl(schema: str, table: str = TOPICS_TABLE) -> str:

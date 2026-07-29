@@ -1,0 +1,84 @@
+version: 1
+
+# Mechanical topology comes from the workbook. Only historical identity and
+# business decisions that cannot be inferred safely belong here.
+strategy_order:
+  - sheet_name: "위너프 위너프A+"
+    before: "엔커버"
+
+cd_collapses:
+  - sheet_name: "페린젝트 베노훼럼"
+
+cd_name_overrides:
+  "위너프 위너프A+": "위너프 위너프에이플러스"
+
+analysis_axis_overrides:
+  "리바로 리바로젯":
+    ox_gx: true
+  "리바로페노":
+    strength_pack: false
+  "리바로하이 리바로브이":
+    strength_pack: false
+  "악템라":
+    nhi_type: false
+
+# The workbook marks Gardlet as a mixed serving source, while Phase 12 master
+# extracts historically classify its detail sheet as IQVIA.
+catalog_source_type_overrides:
+  "가드렛 가드메트": "IQVIA"
+  "엔커버": "IQVIA"
+
+target_brand_name_overrides:
+  "위너프 위너프A+":
+    "A+": "위너프A+"
+
+target_brand_aliases:
+  "가드렛": ["ANAGLIPTIN"]
+  "가드메트": ["ANAGLIPTIN+METFORMIN"]
+  "위너프A+": ["위너프에이플러스"]
+
+jw_product_source_notes:
+  "가드렛 가드메트": "sheet split (molecule market)"
+
+jw_product_overrides:
+  "위너프A+":
+    name: "위너프에이플러스"
+    source_note: "sheet split (renamed from 위너프A+)"
+
+record_rules:
+  - id: jacle_molecule_uses_raw_description
+    stage: strategic_brand_source
+    match:
+      sheet_name: "제이클"
+    actions:
+      copy:
+        molecule: "raw.MOLECULE DESC"
+    reason: "Class Recode is a grouping; molecule display remains MOLECULE DESC."
+
+  - id: jacle_equal_class_molecule_is_not_a_second_axis
+    stage: strategic_brand_fields
+    match:
+      sheet_name: "제이클"
+    actions:
+      null_if_equal:
+        - [molecule, class]
+    reason: "Do not expose the same grouping as both class and molecule."
+
+  - id: gardlet_name_uses_molecule
+    stage: strategic_brand_name
+    match:
+      sheet_name: "가드렛 가드메트"
+    actions:
+      first_present:
+        name: [record.molecule, record.atc4_code]
+    reason: "Gardlet is a molecule-defined market."
+
+  - id: gardlet_tirzepatide_is_glp1ra
+    stage: ml_postfix
+    match:
+      sheet_name: "가드렛 가드메트"
+      molecule: "TIRZEPATIDE"
+    actions:
+      set:
+        class: "GLP-1RA"
+    reason: "MI Master integrates TIRZEPATIDE into the GLP-1RA market."

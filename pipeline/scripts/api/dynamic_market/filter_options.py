@@ -13,6 +13,16 @@ import re
 from threading import RLock
 from time import monotonic
 
+from pipeline.contracts.dimension_registry import (
+    api_dimension_name,
+    canonical_dimension_name,
+    dimension_label,
+    dimension_sort_key,
+)
+from pipeline.contracts.serving_tables import (
+    GENERAL_FILTER_DIMENSION_TABLE,
+    STRATEGIC_FILTER_DIMENSION_TABLE,
+)
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import parse_audit_code_matrix, parse_channel_specialty_matrix
@@ -22,59 +32,13 @@ from pipeline.scripts.api.dynamic_market.types import DynamicMarketInputError, q
 from pipeline.scripts.utils.ubist_channel_mapping import parse_channel_code
 
 
-GENERAL_DIMENSION_TABLE = "mart_general_filter_dimension_metric"
-STRATEGIC_DIMENSION_TABLE = "mart_strategic_filter_dimension_metric"
+GENERAL_DIMENSION_TABLE = GENERAL_FILTER_DIMENSION_TABLE
+STRATEGIC_DIMENSION_TABLE = STRATEGIC_FILTER_DIMENSION_TABLE
 SELECTABLE_ATC_LEVELS = ("atc3", "atc4")
 ATC_TOKEN_RE = re.compile(r"[A-Z]+|\d+")
 FILTER_OPTION_CACHE_ENV = "DYNAMIC_MARKET_FILTER_OPTIONS_CACHE"
 FILTER_OPTION_CACHE_TTL_ENV = "DYNAMIC_MARKET_FILTER_OPTIONS_CACHE_TTL_SECONDS"
 DEFAULT_FILTER_OPTION_CACHE_TTL_SECONDS = 6 * 60 * 60
-DIMENSION_LABELS: dict[str, str] = {
-    "seller": "판매사",
-    "molecule": "성분",
-    "molecule_strength": "성분용량",
-    "form": "제형",
-    "route": "투여경로",
-    "reimbursement": "급여구분",
-    "mfr": "MFR NAME KOR",
-    "molecule_type": "MOLECULE TYPE",
-    "molecule_desc": "성분",
-    "pack": "PACK DESC",
-    "strength": "STRENGTH",
-    "nhi": "NHI TYPE",
-    "mfr_name_kor": "MFR NAME KOR",
-    "pack_desc": "PACK DESC",
-    "nhi_type": "NHI TYPE",
-}
-DIMENSION_API_ALIASES: dict[str, dict[str, str]] = {
-    "iqvia_nsa": {
-        "mfr": "mfr_name_kor",
-        "nhi": "nhi_type",
-        "pack": "pack_desc",
-    },
-}
-DIMENSION_ORDER_HINTS: tuple[str, ...] = (
-    "class",
-    "molecule",
-    "molecule_strength",
-    "strength_pack",
-    "ox_gx",
-    "seller",
-    "form",
-    "route",
-    "reimbursement",
-    "mfr",
-    "mfr_name_kor",
-    "molecule_type",
-    "molecule_desc",
-    "pack_desc",
-    "strength",
-    "nhi",
-    "nhi_type",
-    "audit_code",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class DimensionOptionRow:
     dimension_type: str
@@ -425,7 +389,7 @@ def build_filter_option_payload(
         ordered_dimensions.append(
             {
                 "dimension_type": dimension_type,
-                "label": DIMENSION_LABELS.get(dimension_type, dimension_type),
+                "label": dimension_label(dimension_type),
                 "values": [
                     {"key": item.dimension_value_norm, "value": item.dimension_value, "row_count": item.row_count}
                     for item in rows
@@ -1239,22 +1203,15 @@ def _canonical_selection_key(key: str, *, source: str | None = None) -> str:
 
 
 def _api_dimension_type(source: str | None, dimension_type: str) -> str:
-    return DIMENSION_API_ALIASES.get(source or "", {}).get(dimension_type, dimension_type)
+    return api_dimension_name(source, dimension_type)
 
 
 def _canonical_dimension_type(source: str | None, dimension_type: str) -> str:
-    aliases = DIMENSION_API_ALIASES.get(source or "", {})
-    return next(
-        (canonical for canonical, public in aliases.items() if public == dimension_type),
-        dimension_type,
-    )
+    return canonical_dimension_name(source, dimension_type)
 
 
 def _dimension_sort_key(dimension_type: str) -> tuple[int, str]:
-    try:
-        return (DIMENSION_ORDER_HINTS.index(dimension_type), dimension_type)
-    except ValueError:
-        return (len(DIMENSION_ORDER_HINTS), dimension_type)
+    return dimension_sort_key(dimension_type)
 
 
 def _apply_option_state(

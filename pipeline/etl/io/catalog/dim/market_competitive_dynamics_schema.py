@@ -4,6 +4,10 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
+from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
+    default_mi_master_registry,
+)
 
 DEFAULT_DIM_MARKET_LANDSCAPE_FILE = Path("parquet/dim_market_landscape/dim_market_landscape.parquet")
 DEFAULT_MARKET_DEFINITION_FILE = Path("parquet/master_market_definition/master_market_definition.parquet")
@@ -33,7 +37,16 @@ DIM_MARKET_COMPETITIVE_DYNAMICS_COLUMNS = (
     "ingested_at",
 )
 
-EXPECTED_ROW_COUNT = expected_int("dim_market_competitive_dynamics.row_count")
+
+def competitive_dynamics_contract(
+    registry: MiMasterRegistry | None = None,
+) -> tuple[tuple[str, ...], int]:
+    active_registry = registry or default_mi_master_registry()
+    cd_ids = tuple(str(spec["cd_id"]) for spec in active_registry.cd_specs)
+    return cd_ids, len(cd_ids)
+
+
+EXPECTED_CD_IDS, EXPECTED_ROW_COUNT = competitive_dynamics_contract()
 EXPECTED_CD_COUNTS = expected_mapping("dim_market_competitive_dynamics.cd_counts")
 EXPECTED_TOTAL_CD_BRAND_COUNT = expected_int("dim_market_competitive_dynamics.total_cd_brand_count")
 EXPECTED_STRATEGY_008_CLASS2_NON_NULL_COUNT = expected_int(
@@ -43,4 +56,3 @@ EXPECTED_STRATEGY_008_NON_CD_CLASS2_COUNT = expected_int(
     "dim_market_competitive_dynamics.strategy_008_non_cd_class2_count"
 )
 EXPECTED_DEFINITION_TYPE_COUNTS = expected_mapping("dim_market_competitive_dynamics.definition_type_counts")
-

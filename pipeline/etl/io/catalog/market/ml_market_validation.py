@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Any
 
 from pipeline.etl.io.catalog._lib.catalog_text import clean_text, parse_json_text
-from pipeline.etl.io.catalog._lib.expected_counts import expected_int
 from pipeline.etl.io.catalog.market.ml_market_schema import (
     ANALYZE_COLUMNS,
     ANALYZE_MATRIX,
@@ -18,7 +17,7 @@ from pipeline.etl.io.catalog.market.ml_market_schema import (
     ML_MARKET_COLUMNS,
 )
 
-EXPECTED_ROW_COUNT = expected_int("ml_market.row_count")
+EXPECTED_ROW_COUNT = len(EXPECTED_ML_IDS)
 
 def analyze_values_for_ml(ml_id: str) -> dict[str, bool]:
     matrix = ANALYZE_MATRIX.get(ml_id)

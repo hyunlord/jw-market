@@ -497,3 +497,46 @@ def test_runner_can_plan_db_pending_rows_without_checkpoint_skip(tmp_path: Path)
         "atc4:G04C2:THRUPAS:row_topic_v1:000001",
         "atc4:G04C2:THRUPAS:row_topic_v1:000002",
     ]
+
+
+def test_prepare_receipted_run_requires_an_explicit_topic_version() -> None:
+    """Given an operational DB run, latest-run inference is not an allowed handoff."""
+    with pytest.raises(rta.AssignmentParseError, match="explicit topic-set-version"):
+        row_topic_execute.prepare_receipted_run(
+            _FakeConnection(_FakeCursor()),
+            schema="jw_brand_activity_stage",
+            topic_set_version="",
+        )
+
+
+def test_prepare_receipted_run_checks_exact_handoff_before_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given an explicit run, the durable handoff is checked before any call planning."""
+    prepared = row_topic_db.PreparedRun(
+        topic_set_version="topic-run",
+        rows=(_row(1),),
+        rubrics={},
+    )
+    checked: list[str] = []
+    monkeypatch.setattr(
+        row_topic_execute,
+        "prepare_run",
+        lambda *_args, **_kwargs: prepared,
+    )
+    monkeypatch.setattr(
+        row_topic_execute,
+        "require_axis_handoff",
+        lambda _connection, **kwargs: checked.append(
+            kwargs["prepared"].topic_set_version
+        ),
+    )
+
+    actual = row_topic_execute.prepare_receipted_run(
+        _FakeConnection(_FakeCursor()),
+        schema="jw_brand_activity_stage",
+        topic_set_version="topic-run",
+    )
+
+    assert actual is prepared
+    assert checked == ["topic-run"]

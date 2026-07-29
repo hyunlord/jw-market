@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pipeline.etl.io.mart.momentum import compute_market_share_momentum
+from pipeline.domain.momentum import compute_market_share_momentum
 from pipeline.scripts.api.competitor_ranking import CompetitorRankItem, select_top_competitors
 from pipeline.scripts.api.dynamic_market.cause_time import (
     brand_cagr,

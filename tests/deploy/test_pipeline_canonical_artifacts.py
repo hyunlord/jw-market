@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_SHA256 = {
     "pipeline/scripts/deploy/brand_activity_307/row_topic_monthly_wrapper.py": (
-        "c11afbca26041aea4fe03e7463c56a3f6c353b2b7e714ada1478d705f340c5bc"
+        "e2ad7cd64410b75f2d0c993ce64fb5fb4fa81d2c2ae7c373f59fb20daa5e308d"
     ),
     "pipeline/scripts/agent3/ops/run_agent3_strategic_chunks.py": (
         "7fc704cae11af5af331b0ad3312150e5f650c5ed63b204dc62ea7a339bca1d54"
@@ -47,4 +47,3 @@ def test_ingested_operational_artifacts_preserve_captured_bytes() -> None:
 def test_restore_target_list_preserves_the_1593_unit_gate() -> None:
     path = ROOT / "pipeline/scripts/agent3/ops/restore_revision_5692_units.tsv"
     assert len(path.read_text(encoding="utf-8").splitlines()) == 1593
-

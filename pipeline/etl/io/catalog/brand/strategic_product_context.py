@@ -9,6 +9,7 @@ from pipeline.etl.io.catalog._lib.common import is_empty_row
 from pipeline.etl.io.catalog.brand import strategic_brand
 from pipeline.etl.io.catalog.brand.strategic_product_text import clean_text, extract_atc_code
 from pipeline.etl.io.catalog.master import drug as master_drug
+from pipeline.etl.mi_master_registry import apply_record_rules
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
 DEFAULT_CATALOG_PATH = PROJECT_ROOT / "pipeline" / "etl" / "config" / "master_column_mapping_catalog.md"
@@ -42,9 +43,23 @@ def load_context_by_brand_id(
                 if master_drug.is_empty_row(values):
                     continue
                 standard_values, extras = master_drug.apply_column_mapping(headers, values, metadata)
+                raw = {
+                    str(header).strip(): value
+                    for header, value in zip(headers, values)
+                    if header is not None
+                }
+                standard_values = apply_record_rules(
+                    standard_values,
+                    stage="strategic_brand_source",
+                    context={"sheet_name": config.sheet_name, "raw": raw},
+                )
                 if source_row_id in explicit_overrides:
                     standard_values.update(explicit_overrides[source_row_id])
-                fields = strategic_brand.strategic_fields(standard_values, extras)
+                fields = strategic_brand.strategic_fields(
+                    standard_values,
+                    extras,
+                    sheet_name=config.sheet_name,
+                )
                 brand_id = f"sb_{ml_index:03d}_{source_row_id:05d}"
                 contexts[brand_id] = {
                     "strategic_market_id": config.strategic_market_id,
@@ -52,8 +67,8 @@ def load_context_by_brand_id(
                     "atc4_code": extract_atc_code(fields.get("atc4_code")),
                     "product_name": strategic_brand.make_name(
                         standard_values,
-                        config.strategic_market_id,
                         source_row_id,
+                        sheet_name=config.sheet_name,
                     ),
                     "manufacturer": fields.get("제조사"),
                     "seller": fields.get("판매사"),

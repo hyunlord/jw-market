@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -11,8 +13,26 @@ import pymysql
 
 
 SCHEMA = os.environ.get("ROW_TOPIC_SCHEMA", "jw_brand_activity_stage")
+HANDOFF_TABLE = "mart_brand_activity_assignment_handoff"
 DEFAULT_MAX_CALLS = int(os.environ.get("ROW_TOPIC_MAX_CALLS", "350"))
 GATE_MAX_CALLS = int(os.environ.get("ROW_TOPIC_GATE_MAX_CALLS", "5"))
+OBSERVATION_TARGET_MODE = "monthly_observation"
+PRODUCER_NOOP = "producer_noop"
+PRODUCER_STARTED = "producer_started"
+PRODUCER_FAILED = "producer_failed"
+PRODUCER_COMPLETE = "producer_complete"
+
+
+@dataclass(frozen=True, slots=True)
+class ProducerObservation:
+    status: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumerOutcome:
+    code: str
+    reason: str
 
 
 def _prepare_environment() -> Path:
@@ -44,21 +64,20 @@ def _connect() -> pymysql.connections.Connection:
     )
 
 
-def _latest_topic_set_version() -> str:
+def _pending_topic_set_versions() -> tuple[str, ...]:
+    """Return exact completed-axis receipts still requiring reconciliation."""
     sql = f"""
         SELECT run_id
-        FROM `{SCHEMA}`.`mart_brand_activity_topic_runs`
-        WHERE input_fingerprint IS NOT NULL AND input_fingerprint <> ''
-        ORDER BY created_at DESC, updated_at DESC
-        LIMIT 1
+        FROM `{SCHEMA}`.`{HANDOFF_TABLE}`
+        WHERE axis_status='complete'
+          AND assignment_status IN ('pending','running','gap')
+        ORDER BY created_at, run_id
     """
     with _connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql)
-            row = cursor.fetchone()
-    if not row:
-        raise RuntimeError("no topic run with input_fingerprint found")
-    return str(row["run_id"])
+            rows = cursor.fetchall()
+    return tuple(str(row["run_id"]) for row in rows)
 
 
 def _mode_from_job_name() -> str:
@@ -116,7 +135,95 @@ def main() -> int:
     mode = _mode_from_job_name()
     if mode not in {"dry-run", "execute", "auto"}:
         raise RuntimeError(f"unsupported GATE_MODE: {mode}")
-    version = os.environ.get("ROW_TOPIC_SET_VERSION") or _latest_topic_set_version()
+    explicit_version = os.environ.get("ROW_TOPIC_SET_VERSION", "").strip()
+    versions = (
+        (explicit_version,)
+        if explicit_version
+        else _pending_topic_set_versions()
+    )
+    if not versions:
+        outcome = classify_absent_receipt(_producer_observation())
+        print(
+            json.dumps(
+                {
+                    "event": "row_topic_noop",
+                    "producer_outcome": outcome.code,
+                    "reason": outcome.reason,
+                    "calls": 0,
+                    "inserts": 0,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return 0
+    for version in versions:
+        _process_version(mode, version)
+    return 0
+
+
+def _producer_observation() -> ProducerObservation | None:
+    try:
+        with _connect() as connection:
+            sql = f"""
+SELECT axis_status, last_error
+FROM `{SCHEMA}`.`{HANDOFF_TABLE}`
+WHERE run_id=%s AND target_mode=%s
+LIMIT 1
+""".strip()
+            with connection.cursor() as cursor:
+                cursor.execute(sql, (_observation_run_id(), OBSERVATION_TARGET_MODE))
+                row = cursor.fetchone()
+    except Exception as exc:  # noqa: BLE001 - observation failure must not block assignment.
+        print(
+            json.dumps(
+                {
+                    "event": "row_topic_observation_read_failed",
+                    "error_type": type(exc).__name__,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return ProducerObservation(
+            status="observation_read_failed",
+            reason=type(exc).__name__,
+        )
+    if not row:
+        return None
+    return ProducerObservation(
+        status=str(row["axis_status"]),
+        reason=str(row.get("last_error") or ""),
+    )
+
+
+def classify_absent_receipt(
+    observation: ProducerObservation | None,
+) -> ConsumerOutcome:
+    """Classify missing assignment work without changing the zero exit code."""
+    if observation is None:
+        return ConsumerOutcome("D_producer_not_run", "producer_observation_missing")
+    if observation.status == PRODUCER_NOOP:
+        return ConsumerOutcome("B_normal_noop", "producer_input_unchanged")
+    if observation.status == PRODUCER_STARTED:
+        return ConsumerOutcome("C_producer_failed", "producer_started_but_receipt_missing")
+    if observation.status == PRODUCER_FAILED:
+        return ConsumerOutcome("C_producer_failed", "producer_failed_before_receipt")
+    if observation.status == "observation_read_failed":
+        return ConsumerOutcome("C_producer_failed", "producer_observation_read_failed")
+    if observation.status == PRODUCER_COMPLETE:
+        return ConsumerOutcome("A_producer_complete", "producer_complete_no_pending_assignment")
+    return ConsumerOutcome("C_producer_failed", "producer_observation_unrecognized")
+
+
+def _observation_run_id(observed_at: datetime | None = None) -> str:
+    instant = observed_at or datetime.now(timezone.utc)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return f"monthly-axis-observation:{instant.astimezone(timezone.utc):%Y-%m}"
+
+
+def _process_version(mode: str, version: str) -> None:
     print(json.dumps({"event": "row_topic_gate_start", "mode": mode, "topic_set_version": version}, sort_keys=True), flush=True)
     dry = _run_row_topic("dry-run", version)
     pending_rows = int(dry.get("pending_rows") or 0)
@@ -135,16 +242,28 @@ def main() -> int:
         flush=True,
     )
     if mode == "dry-run":
-        return 0
+        return
     if pending_rows == 0:
-        print(json.dumps({"event": "row_topic_noop", "calls": 0, "inserts": 0}, sort_keys=True), flush=True)
-        return 0
+        reconciliation = _run_row_topic("reconcile", version)
+        print(
+            json.dumps(
+                {
+                    "event": "row_topic_reconciled_noop",
+                    "topic_set_version": version,
+                    "calls": 0,
+                    "inserts": 0,
+                    "reconciliation": reconciliation,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return
     if not os.environ.get("GENOS_BEARER_TOKEN"):
         raise RuntimeError("GENOS_BEARER_TOKEN is required before executing pending row-topic calls")
     cap = GATE_MAX_CALLS if mode == "execute" else DEFAULT_MAX_CALLS
     result = _run_row_topic("execute", version, max_calls=cap)
     print(json.dumps({"event": "row_topic_execute_complete", "result": result}, ensure_ascii=False, sort_keys=True), flush=True)
-    return 0
 
 
 if __name__ == "__main__":

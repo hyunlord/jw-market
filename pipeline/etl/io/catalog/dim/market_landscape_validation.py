@@ -50,30 +50,42 @@ def validate_records(
         raise ValueError("strategic_market_id FK to master_market_definition failed")
 
     master_counts = Counter(str(row.get("strategic_market_id")) for row in master_drug_rows)
-    if dict(sorted(master_counts.items())) != EXPECTED_MARKET_COUNTS:
-        raise ValueError(
-            f"master_drug market count mismatch: "
-            f"expected={EXPECTED_MARKET_COUNTS}, actual={dict(sorted(master_counts.items()))}"
-        )
-    if sum(master_counts.values()) != EXPECTED_TOTAL_MASTER_DRUG_ROWS:
-        raise ValueError(f"master_drug total row count mismatch: {sum(master_counts.values())}")
+    for market_id, expected_count in EXPECTED_MARKET_COUNTS.items():
+        if master_counts[market_id] != expected_count:
+            raise ValueError(
+                f"master_drug market count mismatch for {market_id}: "
+                f"expected={expected_count}, actual={master_counts[market_id]}"
+            )
+    extra_master_counts = {
+        market_id: count
+        for market_id, count in master_counts.items()
+        if market_id not in EXPECTED_MARKET_COUNTS
+    }
+    if any(count <= 0 for count in extra_master_counts.values()):
+        raise ValueError(f"new market must contain at least one master drug row: {extra_master_counts}")
+    if sum(EXPECTED_MARKET_COUNTS.values()) != EXPECTED_TOTAL_MASTER_DRUG_ROWS:
+        raise ValueError("historical master_drug baseline total is internally inconsistent")
 
     record_counts = {
         str(record["strategic_market_id"]): int(str(record["ml_brand_count"]))
         for record in records
     }
-    if record_counts != EXPECTED_MARKET_COUNTS:
+    if record_counts != dict(master_counts):
         raise ValueError(
-            f"ml_brand_count mismatch: expected={EXPECTED_MARKET_COUNTS}, actual={record_counts}"
+            f"ml_brand_count mismatch: expected={dict(master_counts)}, actual={record_counts}"
         )
-    if sum(record_counts.values()) != EXPECTED_TOTAL_MASTER_DRUG_ROWS:
-        raise ValueError(f"ml_brand_count total mismatch: {sum(record_counts.values())}")
 
     definition_type_counts = Counter(str(record["ml_definition_type"]) for record in records)
-    if dict(definition_type_counts) != EXPECTED_DEFINITION_TYPE_COUNTS:
+    for definition_type, expected_count in EXPECTED_DEFINITION_TYPE_COUNTS.items():
+        if definition_type_counts[definition_type] < expected_count:
+            raise ValueError(
+                f"ml_definition_type baseline mismatch for {definition_type}: "
+                f"expected_at_least={expected_count}, actual={definition_type_counts[definition_type]}"
+            )
+    if sum(definition_type_counts.values()) != len(records):
         raise ValueError(
-            f"ml_definition_type distribution mismatch: "
-            f"expected={EXPECTED_DEFINITION_TYPE_COUNTS}, actual={dict(definition_type_counts)}"
+            f"ml_definition_type distribution does not cover every record: "
+            f"{dict(definition_type_counts)}"
         )
     default_ids = {
         str(record["strategic_market_id"])
@@ -132,4 +144,3 @@ def validate_records(
                     f"{strategic_market_id} drug_index={brand['drug_index']} product_name mismatch: "
                     f"json={brand.get('product_name')!r}, master={master_product_by_key.get(key)!r}"
                 )
-

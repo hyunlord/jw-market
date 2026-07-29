@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Iterable
 
 from .general_config import JSON_INSERT_COLUMNS, mariadb_connect
 from .general_json import dumps
+
 
 def ensure_json_columns(table: str, columns: Iterable[str]) -> None:
     """Add JSON columns required by newer mart writers when an existing DB is reused."""
@@ -18,7 +21,12 @@ def ensure_json_columns(table: str, columns: Iterable[str]) -> None:
     finally:
         conn.close()
 
-def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]], batch_size: int = 500) -> None:
+def _insert_rows_with_cursor(
+    cursor: Any,
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+) -> None:
     if not rows:
         return
     placeholders = ",".join(["%s"] * len(columns))
@@ -34,11 +42,27 @@ def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]], batc
                 for col in columns
             )
         )
+    cursor.executemany(sql, payloads)
+
+
+def insert_rows(
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    batch_size: int = 500,
+) -> None:
+    if not rows:
+        return
     conn = mariadb_connect()
     try:
         with conn.cursor() as cur:
-            for start in range(0, len(payloads), batch_size):
-                cur.executemany(sql, payloads[start : start + batch_size])
+            for start in range(0, len(rows), batch_size):
+                _insert_rows_with_cursor(
+                    cur,
+                    table,
+                    columns,
+                    rows[start : start + batch_size],
+                )
     finally:
         conn.close()
 
@@ -47,5 +71,67 @@ def delete_source_rows(table: str, source: str) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM {table} WHERE source=%s", (source,))
+    finally:
+        conn.close()
+
+
+def _iter_jsonl_batches(
+    path: Path,
+    *,
+    batch_size: int,
+) -> Iterable[list[dict[str, Any]]]:
+    batch: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            batch.append(json.loads(line))
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+    if batch:
+        yield batch
+
+
+def replace_source_rows_from_jsonl(
+    *,
+    source: str,
+    brand_path: Path,
+    market_path: Path,
+    brand_columns: list[str],
+    market_columns: list[str],
+    batch_size: int = 500,
+) -> None:
+    """Atomically replace one source after all partition outputs are durable."""
+    conn = mariadb_connect()
+    try:
+        conn.autocommit(False)
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM mart_general_brand_metric WHERE source=%s",
+                (source,),
+            )
+            cur.execute(
+                "DELETE FROM mart_general_market_metric WHERE source=%s",
+                (source,),
+            )
+            for rows in _iter_jsonl_batches(brand_path, batch_size=batch_size):
+                _insert_rows_with_cursor(
+                    cur,
+                    "mart_general_brand_metric",
+                    brand_columns,
+                    rows,
+                )
+            for rows in _iter_jsonl_batches(market_path, batch_size=batch_size):
+                _insert_rows_with_cursor(
+                    cur,
+                    "mart_general_market_metric",
+                    market_columns,
+                    rows,
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

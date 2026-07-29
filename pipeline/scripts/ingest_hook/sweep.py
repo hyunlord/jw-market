@@ -45,7 +45,10 @@ def sweep(
 ) -> dict:
     """Reconcile terminal Jobs, then return manifest sweep action counts."""
     actions: list[dict] = []
+    found = 0
     kicked = 0
+    skipped = 0
+    failed = 0
     service = IngestService(ledger, input_root, transport=transport, s3=s3)
     terminal = service.reconcile_terminal_jobs()
 
@@ -54,37 +57,85 @@ def sweep(
             manifest = loader()
         except ContractError as exc:
             actions.append({"path": str(manifest_path), "action": "invalid", "reason": str(exc)})
+            skipped += 1
             continue
         if not manifest.complete:
             actions.append({"path": str(manifest_path), "action": "skip", "reason": "not complete"})
+            skipped += 1
             continue
 
         entry = ledger.status(manifest.epoch, manifest.category, manifest.manifest_sha)
         if entry is not None and entry.status in (STATUS_COMPLETE, STATUS_RUNNING):
             actions.append({"path": str(manifest_path), "action": "skip", "reason": entry.status})
+            skipped += 1
             continue
 
         # Unrecorded (lost webhook) or failed: same idempotent path as the webhook.
-        ledger.receive(
-            manifest.epoch,
-            manifest.category,
-            manifest.manifest_sha,
-            manifest_path=str(manifest_path),
-            uploaded_by=manifest.uploaded_by,
-        )
+        found += 1
+        try:
+            ledger.receive(
+                manifest.epoch,
+                manifest.category,
+                manifest.manifest_sha,
+                manifest_path=str(manifest_path),
+                uploaded_by=manifest.uploaded_by,
+            )
+        except Exception as exc:  # noqa: BLE001 - manifest boundary reports per-item failures.
+            failed += 1
+            actions.append(
+                {
+                    "path": str(manifest_path),
+                    "action": "failed",
+                    "reason": f"receive failed: {type(exc).__name__}: {exc}",
+                }
+            )
+            continue
         if rehearsal_root is not None and s3 is None:
             rc = job_runner.run(
                 manifest_path, input_root=input_root, ledger=ledger, rehearsal_root=rehearsal_root
             )
             actions.append({"path": str(manifest_path), "action": "ran-inline", "rc": rc})
+            if rc == 0:
+                kicked += 1
+            else:
+                failed += 1
         else:
-            name = service.promote(manifest.category)
-            actions.append({"path": str(manifest_path), "action": "kicked", "job_name": name})
-        kicked += 1
+            try:
+                name = service.promote(manifest.category)
+            except Exception as exc:  # noqa: BLE001 - Kubernetes boundary reports per-item failures.
+                failed += 1
+                actions.append(
+                    {
+                        "path": str(manifest_path),
+                        "action": "failed",
+                        "reason": f"promotion failed: {type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            if name is None:
+                skipped += 1
+                actions.append(
+                    {
+                        "path": str(manifest_path),
+                        "action": "deferred",
+                        "reason": "category already active or no queued row",
+                    }
+                )
+            else:
+                kicked += 1
+                actions.append(
+                    {
+                        "path": str(manifest_path),
+                        "action": "kicked",
+                        "job_name": name,
+                    }
+                )
 
     return {
-        "found": len(actions),
+        "found": found,
         "kicked": kicked,
+        "skipped": skipped,
+        "failed": failed,
         "actions": actions,
         "terminal": terminal,
     }
@@ -100,10 +151,13 @@ def main(argv: list[str] | None = None) -> int:
     input_root = None if s3 is not None else (args.input_root or config.input_root())
     ledger = config.open_configured_ledger()
     result = sweep(ledger, input_root, rehearsal_root=args.rehearsal_root, s3=s3)
-    print(f"sweep found={result['found']} kicked={result['kicked']}")
+    print(
+        f"sweep found={result['found']} kicked={result['kicked']} "
+        f"skipped={result['skipped']} failed={result['failed']}"
+    )
     for action in result["actions"]:
         print(f"  {action}")
-    return 0
+    return 1 if result["failed"] else 0
 
 
 if __name__ == "__main__":

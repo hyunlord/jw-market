@@ -61,6 +61,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input-mode", choices=["raw", "enriched"], default="raw", help="S4 general mart input surface.")
     parser.add_argument("--limit-atc4", type=int, help="Limit S4 processing to the first N ATC4 codes for smoke checks.")
     parser.add_argument("--max-rows", type=int, help="Limit raw input rows for supported smoke checks.")
+    parser.add_argument("--spool-dir", help="Durable working directory for bounded S4 UBIST partitions.")
+    parser.add_argument(
+        "--memory-budget-bytes",
+        type=int,
+        help="Memory budget used to size S4 UBIST partitions.",
+    )
     parser.add_argument("--ml-id", help="Run one market id when supported.")
     parser.add_argument(
         "--cache-cause-mode",
@@ -205,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
         "input_mode": args.input_mode,
         "limit_atc4": args.limit_atc4,
         "max_rows": args.max_rows,
+        "spool_dir": args.spool_dir,
+        "memory_budget_bytes": args.memory_budget_bytes,
         "ml_id": args.ml_id,
         "cache_cause_mode": args.cache_cause_mode,
         "truncate": args.truncate,

@@ -50,6 +50,10 @@ class _FakeCursor:
     def fetchall(self):
         return self._sqlite_cursor.fetchall()
 
+    @property
+    def rowcount(self) -> int:
+        return self._sqlite_cursor.rowcount
+
     def close(self) -> None:
         if self._sqlite_cursor is not None:
             self._sqlite_cursor.close()

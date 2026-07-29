@@ -5,6 +5,9 @@ from pathlib import Path
 
 from pipeline.etl.lib.storage import get_mi_master_path
 from pipeline.etl.io.catalog._lib.expected_counts import expected_int, expected_mapping
+from pipeline.etl.mi_master_registry import (
+    default_mi_master_registry,
+)
 
 DEFAULT_INPUT_FILE = get_mi_master_path()
 MASTER_ROOT = DEFAULT_INPUT_FILE.parent
@@ -39,23 +42,14 @@ class MarketSheetConfig:
     source_type: str
 
 
-MARKET_SHEETS: tuple[MarketSheetConfig, ...] = (
-    MarketSheetConfig("strategy_001", "라베칸 라베칸듀오", 5, "UBIST"),
-    MarketSheetConfig("strategy_002", "제이클", 5, "IQVIA"),
-    MarketSheetConfig("strategy_003", "가드렛 가드메트", 5, "IQVIA"),
-    MarketSheetConfig("strategy_004", "타발리스", 5, "IQVIA"),
-    MarketSheetConfig("strategy_005", "시그마트", 5, "UBIST"),
-    MarketSheetConfig("strategy_006", "리바로 리바로젯", 4, "UBIST"),
-    MarketSheetConfig("strategy_007", "리바로페노", 4, "UBIST"),
-    MarketSheetConfig("strategy_008", "리바로하이 리바로브이", 5, "UBIST"),
-    MarketSheetConfig("strategy_009", "트루패스 피나스타 제이다트", 5, "UBIST"),
-    MarketSheetConfig("strategy_010", "뉴트로진 모빌리아", 5, "IQVIA"),
-    MarketSheetConfig("strategy_011", "악템라", 5, "IQVIA"),
-    MarketSheetConfig("strategy_012", "페린젝트 베노훼럼", 5, "IQVIA"),
-    MarketSheetConfig("strategy_013", "헴리브라", 5, "IQVIA"),
-    MarketSheetConfig("strategy_014", "위너프 위너프A+", 5, "IQVIA"),
-    MarketSheetConfig("strategy_015", "엔커버", 7, "IQVIA"),
-    MarketSheetConfig("strategy_016", "플라주오피", 5, "IQVIA"),
+MARKET_SHEETS: tuple[MarketSheetConfig, ...] = tuple(
+    MarketSheetConfig(
+        market.strategic_market_id,
+        market.sheet_name,
+        market.header_row,
+        market.catalog_source_type,
+    )
+    for market in default_mi_master_registry().market_sheets
 )
 
 MARKET_SHEET_BY_ID = {config.strategic_market_id: config for config in MARKET_SHEETS}

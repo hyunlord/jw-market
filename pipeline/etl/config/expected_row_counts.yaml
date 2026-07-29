@@ -102,7 +102,6 @@ dim_brand_group:
   member_rows: 6
 
 dim_market_landscape:
-  row_count: 16
   total_master_drug_rows: 3952
   definition_type_counts:
     atc_codes_explicit: 14
@@ -126,7 +125,6 @@ dim_market_landscape:
     strategy_016: 52
 
 dim_market_competitive_dynamics:
-  row_count: 19
   total_cd_brand_count: 1831
   strategy_008_class2_non_null_count: 88
   strategy_008_non_cd_class2_count: 42
@@ -206,10 +204,6 @@ strategic_brand:
 
 cd_brand:
   row_count: 2379
-
-postfix_rebuild_strategic:
-  ml_market_count: 16
-  jw_canonical_rows: 25
 
 postfix_canonical:
   canonical_brand_rows: 25

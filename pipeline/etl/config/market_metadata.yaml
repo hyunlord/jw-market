@@ -1,38 +1,29 @@
 # catalog/market_metadata.yaml
-# JW Mart Pipeline · 시장 metadata (★ source-level 기반)
-# Version: v0.8 (★ ml 16 + cd 19 분리)
+# JW Mart Pipeline · 시장별 설명/필터 annotation
+# Version: v0.9 (시장 topology는 MI Master registry에서 자동 생성)
 #
 # Source of truth:
-#   - Phase 14 parquet/ml_market.parquet (16 rows × 19 columns)
-#   - Phase 14 parquet/cd_market.parquet (19 rows × 21 columns)
-#   - Phase 14 parquet/cd_brand.parquet (2,379 rows × 16 columns)
 #   - MI Master 260518 docs/reference/MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx
-#   - Codex audit: cd_market_19_audit_20260518_1437.zip
 #
 # 주의:
-#   - 본 catalog 의 analyze_* / target_* matrix 는 Phase 14 parquet 의 값 그대로
-#   - 새 MI Master 260518 시트 2 와 차이가 있는 시장은 reload 의뢰서로 별도 정정
-#   - 시장 정의 (market_landscape_def · competitive_dynamics_def) 는 MI Master 시트 2 derive
+#   - 시장/시트 목록, ml/cd id, analyze matrix는 MI Master registry가 생성한다.
+#   - 이 파일에는 자동 추론할 수 없는 시장별 설명과 필터만 둔다.
 
 # ============================================================================
 # 갯수 (★ Phase 14 source-level)
 # ============================================================================
 counts:
-  ml_market: 16          # ★ market_landscape 용 (★ MI Master detail 시트 단위)
-  cd_market: 19          # ★ competitive_dynamics 용 (★ brand 직접 경쟁시장 단위)
-  cd_filter: 19          # ★ cd 별 필터
   strategic_brand: 4495  # ★ MI Master detail 시트 entries (brand-level)
   strategic_product: 11865 # ★ MI Master detail 시트 entries (product-level)
   cd_brand: 2379         # ★ cd 별 brand list
-  detail_sheets: 16      # ★ MI Master 의 detail 시트
 
 # ============================================================================
-# ml_market 16 row (★ market_landscape 정의)
+# market_landscape annotation
 # ============================================================================
 # Source: Phase 14 parquet/ml_market.parquet
 # Columns: ml_id, name, data_source, analyze_*, target_*
 # ★ analyze_* matrix 는 Phase 14 그대로 보존
-markets:
+market_annotations:
 
   ml_001:
     name: "라베칸 라베칸듀오"
@@ -396,11 +387,11 @@ markets:
     note: "★ 1 품목 비급여 포함 (★ 시장정의 시트 row 49 참고)"
 
 # ============================================================================
-# cd_market 19 row (★ competitive_dynamics 정의)
+# competitive_dynamics annotation
 # ============================================================================
 # Source: Phase 14 parquet/cd_market.parquet (★ 21 column 보존)
 # ★ analyze_* / target_* matrix 는 Phase 14 그대로
-competitive_dynamics:
+competitive_dynamics_annotations:
 
   cd_001:
     name: "라베칸 라베칸듀오"
@@ -581,52 +572,6 @@ competitive_dynamics:
 # 1 ml → 1 cd 시장 (★ 13개): 나머지
 # cd_id 순서 swap: cd_017 (엔커버 ↔ ml_015), cd_018 (위너프 ↔ ml_014)
 
-ml_cd_mapping:
-  ml_001: [cd_001]
-  ml_002: [cd_002]
-  ml_003: [cd_003]
-  ml_004: [cd_004]
-  ml_005: [cd_005]
-  ml_006: [cd_006]
-  ml_007: [cd_007]
-  ml_008: [cd_008, cd_009]      # ★ 리바로하이 / 리바로브이 분리
-  ml_009: [cd_010, cd_011]      # ★ 트루패스 / 피나스타·제이다트 분리
-  ml_010: [cd_012, cd_013]      # ★ 뉴트로진 / 모빌리아 분리
-  ml_011: [cd_014]
-  ml_012: [cd_015]              # ★ 페린젝트 + 베노훼럼 collapse
-  ml_013: [cd_016]
-  ml_014: [cd_018]              # ★ swap
-  ml_015: [cd_017]              # ★ swap
-  ml_016: [cd_019]
-
-# ============================================================================
-# MI Master 16 detail 시트 이름 list
-# ============================================================================
-# Source: Codex audit 03_mi_master_sheet_names.md (★ source-level)
-# Note: 전체 19 sheet 중 시트 1+2+3 (★ JW 전체_JWP MKT 구분, 시장정의 & Target, 정의 상세 ▶) 제외
-detail_sheets:
-  sheet_04: { name: "라베칸 라베칸듀오",         row: 363,  col: 8,  ml_id: ml_001 }
-  sheet_05: { name: "제이클",                  row: 50,   col: 10, ml_id: ml_002 }
-  sheet_06: { name: "가드렛 가드메트",          row: 87,   col: 7,  ml_id: ml_003 }
-  sheet_07: { name: "타발리스",                row: 15,   col: 8,  ml_id: ml_004 }
-  sheet_08: { name: "시그마트",                row: 299,  col: 10, ml_id: ml_005 }
-  sheet_09: { name: "리바로 리바로젯",          row: 1099, col: 12, ml_id: ml_006 }
-  sheet_10: { name: "리바로페노",              row: 617,  col: 11, ml_id: ml_007 }
-  sheet_11: { name: "리바로하이 리바로브이",     row: 1086, col: 26, ml_id: ml_008 }  # ★ 한 시트 2 cd
-  sheet_12: { name: "트루패스 피나스타 제이다트", row: 411,  col: 10, ml_id: ml_009 }  # ★ 한 시트 2 cd
-  sheet_13: { name: "뉴트로진 모빌리아",        row: 15,   col: 12, ml_id: ml_010 }  # ★ 한 시트 2 cd
-  sheet_14: { name: "악템라",                  row: 31,   col: 10, ml_id: ml_011 }
-  sheet_15: { name: "페린젝트 베노훼럼",        row: 81,   col: 22, ml_id: ml_012 }
-  sheet_16: { name: "헴리브라",                row: 19,   col: 8,  ml_id: ml_013 }
-  sheet_17: { name: "엔커버",                  row: 11,   col: 8,  ml_id: ml_015 }  # ★ cd_017 (swap)
-  sheet_18: { name: "위너프 위너프A+",          row: 336,  col: 25, ml_id: ml_014 }  # ★ cd_018 (swap)
-  sheet_19: { name: "플라주오피",              row: 59,   col: 10, ml_id: ml_016 }
-
-# ============================================================================
-# Metric 정의 (★ 시트 2 에 명시된 사용 metric)
-# ============================================================================
-# 시트 2 row 13: "Market Share · MoM · QoQ · YoY · 전년 동월 대비 G/R · MAT"
-# EI / HHI 는 시트 2 에 명시 없음. 향후 결정.
 metric_definitions:
   market_share:
     formula: "brand_value / market_total_value"
@@ -669,8 +614,6 @@ source_files:
 
   mi_master_260518:
     path: "docs/reference/MI팀_시장분석 AI_시장 분석 Master Version (원본파일 점검용 재공유 2026.05.18).xlsx"
-    total_sheets: 19
-    detail_sheets: 16
     non_detail_sheets:
       - "JW 전체_JWP MKT 구분"
       - "시장정의 & Target"

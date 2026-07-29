@@ -7,7 +7,7 @@ import math
 import re
 from typing import Any
 
-from pipeline.etl.io.mart.momentum import compute_market_share_momentum
+from pipeline.domain.momentum import compute_market_share_momentum
 from pipeline.scripts.api.market_scope.periods import sort_periods
 from pipeline.scripts.etl.cache_build_common import endpoint_cagr
 

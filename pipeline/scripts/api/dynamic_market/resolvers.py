@@ -10,11 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from pipeline.etl.io.mart.filter_dimension_metric import DIMENSION_REGISTRY
-from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
-from pipeline.etl.io.mart.filter_dimension_metric import normalize_dimension_value
-from pipeline.etl.io.mart.strategic_filter_dimension_metric import STRATEGIC_DIMENSION_TABLE
-from pipeline.etl.io.mart.molecule_normalize import split_molecule_components
+from pipeline.contracts.dimension_registry import (
+    DIMENSION_REGISTRY,
+    api_dimension_names,
+    normalize_dimension_value,
+)
+from pipeline.contracts.serving_tables import (
+    GENERAL_FILTER_DIMENSION_TABLE as FILTER_DIMENSION_TABLE,
+    STRATEGIC_FILTER_DIMENSION_TABLE as STRATEGIC_DIMENSION_TABLE,
+)
+from pipeline.domain.molecules import split_molecule_components
 from pipeline.scripts.api import db
 from pipeline.scripts.api.catalog import get_display_brand
 from pipeline.scripts.api.dynamic_market.channel_axis import ChannelAxisFilter
@@ -260,7 +265,7 @@ class GeneralViewResolver:
         if _other_source_has_values(analysis_level, source):
             raise DynamicMarketInputError(f"analysis_level must match selected source: {source}")
         registry = DIMENSION_REGISTRY[source]
-        api_to_registry = _api_dimension_names(source)
+        api_to_registry = api_dimension_names(source, include_shared=True)
         filters: list[DimensionFilter] = []
         for api_name, values in sorted(source_payload.items()):
             if not values:
@@ -473,7 +478,7 @@ def build_dimension_filters(
     if _other_source_has_values(analysis_level, source):
         raise DynamicMarketInputError(f"analysis_level must match selected source: {source}")
     registry = DIMENSION_REGISTRY[source]
-    api_to_registry = _api_dimension_names(source)
+    api_to_registry = api_dimension_names(source, include_shared=True)
     filters: list[DimensionFilter] = []
     for api_name, values in sorted(source_payload.items()):
         if not values:
@@ -544,29 +549,6 @@ def _other_source_has_values(analysis_level: dict[str, dict[str, list[str]]], so
         if any(values for values in payload.values()):
             return True
     return False
-
-
-def _api_dimension_names(source: str) -> dict[str, str]:
-    if source == "ubist":
-        return {
-            "atc3": "atc3",
-            "atc4": "atc4",
-            "seller": "seller",
-            "molecule": "molecule",
-            "molecule_strength": "molecule_strength",
-            "form": "form",
-            "route": "route",
-            "reimbursement": "reimbursement",
-        }
-    return {
-        "atc4": "atc4",
-        "mfr_name_kor": "mfr",
-        "molecule_type": "molecule_type",
-        "molecule_desc": "molecule_desc",
-        "pack_desc": "pack",
-        "strength": "strength",
-        "nhi_type": "nhi",
-    }
 
 
 def _normalize_dimension_values(values: list[str]) -> tuple[str, ...]:

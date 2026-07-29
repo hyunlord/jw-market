@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
+    TargetBrand,
+    default_mi_master_registry,
+)
+
 
 Source = Literal["UBIST", "IQVIA"]
 View = Literal["market_landscape", "competitive_dynamics"]
@@ -45,33 +51,34 @@ class DisplayBrand:
         return sum(len(measures) for measures in self.available_measures.values()) * len(VIEWS)
 
 
-DISPLAY_BRANDS: list[DisplayBrand] = [
-    DisplayBrand("라베칸", "strategy_001", "ml_001", "ubist-only"),
-    DisplayBrand("라베칸듀오", "strategy_001", "ml_001", "ubist-only"),
-    DisplayBrand("제이클", "strategy_002", "ml_002", "iqvia-only"),
-    DisplayBrand("가드렛", "strategy_003", "ml_003", "dual", ("ANAGLIPTIN",)),
-    DisplayBrand("가드메트", "strategy_003", "ml_003", "dual", ("ANAGLIPTIN+METFORMIN",)),
-    DisplayBrand("타발리스", "strategy_004", "ml_004", "iqvia-only"),
-    DisplayBrand("시그마트", "strategy_005", "ml_005", "ubist-only"),
-    DisplayBrand("리바로", "strategy_006", "ml_006", "ubist-only"),
-    DisplayBrand("리바로젯", "strategy_006", "ml_006", "ubist-only"),
-    DisplayBrand("리바로페노", "strategy_007", "ml_007", "ubist-only"),
-    DisplayBrand("리바로하이", "strategy_008", "ml_008", "ubist-only"),
-    DisplayBrand("리바로브이", "strategy_008", "ml_008", "ubist-only"),
-    DisplayBrand("트루패스", "strategy_009", "ml_009", "ubist-only"),
-    DisplayBrand("피나스타", "strategy_009", "ml_009", "ubist-only"),
-    DisplayBrand("제이다트", "strategy_009", "ml_009", "ubist-only"),
-    DisplayBrand("뉴트로진", "strategy_010", "ml_010", "iqvia-only"),
-    DisplayBrand("모빌리아", "strategy_010", "ml_010", "iqvia-only"),
-    DisplayBrand("악템라", "strategy_011", "ml_011", "iqvia-only"),
-    DisplayBrand("페린젝트", "strategy_012", "ml_012", "iqvia-only"),
-    DisplayBrand("베노훼럼", "strategy_012", "ml_012", "iqvia-only"),
-    DisplayBrand("헴리브라", "strategy_013", "ml_013", "iqvia-only"),
-    DisplayBrand("위너프", "strategy_014", "ml_014", "iqvia-only"),
-    DisplayBrand("위너프A+", "strategy_014", "ml_014", "iqvia-only", ("위너프에이플러스",)),
-    DisplayBrand("엔커버", "strategy_015", "ml_015", "dual"),
-    DisplayBrand("플라주오피", "strategy_016", "ml_016", "iqvia-only"),
-]
+def _source_class(source_type: str) -> Literal["ubist-only", "iqvia-only", "dual"]:
+    if source_type == "UBIST":
+        return "ubist-only"
+    if source_type == "IQVIA":
+        return "iqvia-only"
+    if source_type == "BOTH":
+        return "dual"
+    raise ValueError(f"unsupported MI Master source type: {source_type!r}")
+
+
+def _display_brand(target: TargetBrand) -> DisplayBrand:
+    return DisplayBrand(
+        brand_name=target.brand_name,
+        market_id=target.strategic_market_id,
+        ml_id=target.ml_id,
+        source_class=_source_class(target.source_type),
+        layer3_aliases=target.layer3_aliases,
+    )
+
+
+def build_display_brands(
+    registry: MiMasterRegistry | None = None,
+) -> list[DisplayBrand]:
+    source = registry or default_mi_master_registry()
+    return [_display_brand(target) for target in source.target_brands]
+
+
+DISPLAY_BRANDS = build_display_brands()
 
 
 DISPLAY_BRAND_BY_NAME = {brand.brand_name: brand for brand in DISPLAY_BRANDS}

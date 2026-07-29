@@ -119,3 +119,16 @@ def resolve_manufacturer_name(
         return None
     ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return ", ".join(name for name, _count in ordered)
+
+
+def resolve_manufacturer_labels(manufacturers: Sequence[str]) -> str | None:
+    """Return a deterministic label from already-resolved manufacturer values.
+
+    Serving marts already carry manufacturer labels derived from IQVIA
+    ``MFR NAME KOR``. Consumers that have loaded those rows must use this path
+    instead of rebuilding the full product-to-manufacturer map from raw IQVIA
+    data. Empty values are ignored and repeated labels collapse.
+    """
+
+    names = sorted({name.strip() for name in manufacturers if name.strip()})
+    return ", ".join(names) if names else None

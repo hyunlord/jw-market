@@ -6,9 +6,11 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from pipeline.etl.io.catalog._lib.expected_counts import expected_int
-
-EXPECTED_CANONICAL_BRAND_ROWS = expected_int("postfix_canonical.canonical_brand_rows")
+from pipeline.etl.mi_master_registry import (
+    MiMasterRegistry,
+    TargetBrand,
+    default_mi_master_registry,
+)
 
 from pipeline.etl.io.catalog.postfix.text import normalize_brand_name
 
@@ -32,33 +34,41 @@ class CanonicalBrand:
         return self.source_key or self.name
 
 
-CANONICAL_BRANDS: tuple[CanonicalBrand, ...] = (
-    CanonicalBrand("라베칸", "ml_001", "cd_001", True),
-    CanonicalBrand("라베칸듀오", "ml_001", "cd_001", False, source_key="라베칸듀오", contains=("라베칸 듀오",)),
-    CanonicalBrand("제이클", "ml_002", "cd_002", True),
-    CanonicalBrand("가드렛", "ml_003", "cd_003", True, contains=("GUARDLET",)),
-    CanonicalBrand("가드메트", "ml_003", "cd_003", False, contains=("GUARDMET",)),
-    CanonicalBrand("타발리스", "ml_004", "cd_004", True),
-    CanonicalBrand("시그마트", "ml_005", "cd_005", True),
-    CanonicalBrand("리바로", "ml_006", "cd_006", True),
-    CanonicalBrand("리바로젯", "ml_006", "cd_006", False, contains=("리바로젯",)),
-    CanonicalBrand("리바로페노", "ml_007", "cd_007", True, contains=("리바로페노",)),
-    CanonicalBrand("리바로하이", "ml_008", "cd_008", True, contains=("리바로 하이",)),
-    CanonicalBrand("리바로브이", "ml_008", "cd_009", False, contains=("리바로 브이",)),
-    CanonicalBrand("트루패스", "ml_009", "cd_010", True),
-    CanonicalBrand("피나스타", "ml_009", "cd_011", False),
-    CanonicalBrand("제이다트", "ml_009", "cd_011", False),
-    CanonicalBrand("뉴트로진", "ml_010", "cd_012", True),
-    CanonicalBrand("모빌리아", "ml_010", "cd_013", False),
-    CanonicalBrand("악템라", "ml_011", "cd_014", True),
-    CanonicalBrand("페린젝트", "ml_012", "cd_015", True),
-    CanonicalBrand("베노훼럼", "ml_012", "cd_015", False),
-    CanonicalBrand("헴리브라", "ml_013", "cd_016", True),
-    CanonicalBrand("위너프", "ml_014", "cd_018", True),
-    CanonicalBrand("위너프A+", "ml_014", "cd_018", False, source_key="위너프에이플러스", contains=("위너프에이플러스",)),
-    CanonicalBrand("엔커버", "ml_015", "cd_017", True),
-    CanonicalBrand("플라주오피", "ml_016", "cd_019", True),
-)
+_CANONICAL_MATCH_ANNOTATIONS: dict[str, dict[str, Any]] = {
+    "라베칸듀오": {"contains": ("라베칸 듀오",)},
+    "가드렛": {"contains": ("GUARDLET",)},
+    "가드메트": {"contains": ("GUARDMET",)},
+    "리바로젯": {"contains": ("리바로젯",)},
+    "리바로페노": {"contains": ("리바로페노",)},
+    "리바로하이": {"contains": ("리바로 하이",)},
+    "리바로브이": {"contains": ("리바로 브이",)},
+    "위너프A+": {
+        "source_key": "위너프에이플러스",
+        "contains": ("위너프에이플러스",),
+    },
+}
+
+
+def _canonical_brand(target: TargetBrand) -> CanonicalBrand:
+    annotations = _CANONICAL_MATCH_ANNOTATIONS.get(target.brand_name, {})
+    return CanonicalBrand(
+        name=target.brand_name,
+        ml_id=target.ml_id,
+        cd_id=target.cd_id,
+        is_target=target.is_target,
+        source_key=annotations.get("source_key"),
+        contains=tuple(annotations.get("contains", ())),
+    )
+
+
+def build_canonical_brands(
+    registry: MiMasterRegistry | None = None,
+) -> tuple[CanonicalBrand, ...]:
+    source = registry or default_mi_master_registry()
+    return tuple(_canonical_brand(target) for target in source.target_brands)
+
+
+CANONICAL_BRANDS = build_canonical_brands()
 
 
 def _normalize(value: Any) -> str:
@@ -170,8 +180,9 @@ def verify_canonical(df: pd.DataFrame) -> None:
     extra = actual - expected
     if missing or extra:
         raise RuntimeError(f"Canonical mismatch. missing={sorted(missing)} extra={sorted(extra)}")
-    if int((df["is_jw"] == True).sum()) != EXPECTED_CANONICAL_BRAND_ROWS:
-        raise RuntimeError(f"Expected exactly {EXPECTED_CANONICAL_BRAND_ROWS} is_jw=1 canonical rows")
+    expected_count = len(CANONICAL_BRANDS)
+    if int((df["is_jw"] == True).sum()) != expected_count:
+        raise RuntimeError(f"Expected exactly {expected_count} is_jw=1 canonical rows")
 
 
 def apply_canonical(catalog_dir: Path) -> dict[str, int]:
