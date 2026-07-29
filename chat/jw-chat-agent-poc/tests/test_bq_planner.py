@@ -97,6 +97,28 @@ def test_unmatched_question_is_not_silently_substituted() -> None:
     assert _plan("리바로 사내 미지원 원천을 대신 찾아줘") is None
 
 
+def test_multiple_brands_stop_before_first_brand_can_be_planned() -> None:
+    plan = _plan("리바로와 리바로젯 매출 알려줘")
+
+    assert plan is not None
+    assert type(plan).__name__ == "BqCardinalityStop"
+    assert plan.slots.brand == "리바로"
+    assert plan.slots.brands == ("리바로", "리바로젯")
+    assert plan.reason == "multiple_brands_require_cardinality_contract"
+
+
+def test_explicit_multiple_brand_comparison_is_handed_to_structured_planner() -> None:
+    assert _plan("리바로와 가드렛 비교") is None
+
+
+def test_single_brand_slot_keeps_compatibility_brand_and_additive_brands() -> None:
+    plan = _plan("리바로 최근 매출 처방 추이 어때?")
+
+    assert plan is not None
+    assert plan.slots.brand == "리바로"
+    assert plan.slots.brands == ("리바로",)
+
+
 def test_required_market_source_gap_is_explicit_in_plan() -> None:
     resolver = BrandResolver(mode="fixture")
     question = "리바로 IQVIA랑 UBIST 수치가 다른데 왜?"

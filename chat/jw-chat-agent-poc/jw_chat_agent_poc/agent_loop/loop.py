@@ -7,7 +7,7 @@ import logging
 import math
 from typing import Any, Final
 
-from jw_chat_agent_poc.agent_loop.bq_planner import plan_bq_question
+from jw_chat_agent_poc.agent_loop.bq_planner import BqCardinalityStop, plan_bq_question
 from jw_chat_agent_poc.agent_loop.bq_slots import requested_prescription_metric
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.parallel_execution import (
@@ -234,7 +234,7 @@ class ToolUseAgent:
             )
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
             brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
-            bq_plan = (
+            bq_result = (
                 plan_bq_question(
                     question,
                     self.resolver,
@@ -246,6 +246,9 @@ class ToolUseAgent:
                 if self.planner is None and not observations
                 else None
             )
+            if isinstance(bq_result, BqCardinalityStop):
+                return _bq_cardinality_clarification(question, bq_result, timing)
+            bq_plan = bq_result
             structured_plan = (
                 plan_structured_market_question(
                     question,
@@ -607,6 +610,47 @@ class ToolUseAgent:
 
     def _stage_name(self, standard: str, deep: str) -> str:
         return deep if self.progress_namespace == "deep" else standard
+
+
+def _bq_cardinality_clarification(
+    question: str,
+    stop: BqCardinalityStop,
+    timing: dict[str, Any],
+) -> dict[str, Any]:
+    message = stop.message
+    return {
+        "question": question,
+        "resolution": {
+            "canonical_brand": stop.slots.brand,
+            "canonical_brands": list(stop.slots.brands),
+        },
+        "decomposition": [
+            {
+                "intent": "brand_cardinality_clarification",
+                "status": "needs_clarification",
+                "max_steps": 0,
+            }
+        ],
+        "router_diagnostics": {
+            "mode": "agent_loop",
+            "deterministic_execution": True,
+            "scope": "brand_cardinality",
+            "gate": "bq_brand_cardinality",
+            "gate_reason": stop.reason,
+        },
+        "agent_trace": [],
+        "agent_loop_metrics": {
+            "status": "needs_clarification",
+            "steps": 0,
+            "tool_calls": 0,
+            "selected_tools": [],
+        },
+        "tool_calls": [],
+        "answer": message,
+        "markdown_response": {"markdown": message, "fact_md": "", "data_md": ""},
+        "sources": [],
+        "timing": timing,
+    }
 
 
 def _attach_market_display_names(calls: list[dict[str, Any]], resolutions: Collection[Any]) -> None:
