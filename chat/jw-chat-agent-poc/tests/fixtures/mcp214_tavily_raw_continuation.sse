@@ -1,0 +1,3 @@
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"content":[],"structuredContent":{"result":{"results":[{"title":"리바로
+ 관련 기사","url":"https://www.bosa.co.kr/news/articleView.html?idxno=2261590","content":"리바로 관련 최근 이슈","published_date":"2026-07-29"}]}}}}

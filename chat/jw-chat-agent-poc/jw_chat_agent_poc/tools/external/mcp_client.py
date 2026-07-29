@@ -98,6 +98,7 @@ class McpJsonClient:
                     timeout=timeout_s,
                 )
                 response.raise_for_status()
+                response.encoding = "utf-8"
                 event = _first_sse_event(response.text)
                 if "error" in event:
                     raise McpClientError(_mcp_error_message(event["error"]))
@@ -153,15 +154,23 @@ def _remaining_timeout_s(requested_timeout_s: float) -> float:
 
 
 def _first_sse_event(text: str) -> dict[str, Any]:
-    for line in text.splitlines():
-        if not line.startswith("data:"):
+    data_fields: list[str] = []
+    for line in [*text.splitlines(), ""]:
+        if not line:
+            payload = "\n".join(data_fields).strip()
+            data_fields = []
+            if not payload or payload == "[DONE]":
+                continue
+            event = json.loads(payload)
+            if isinstance(event, dict):
+                return event
             continue
-        payload = line.split(":", 1)[1].strip()
-        if not payload or payload == "[DONE]":
+        if line.startswith("data:"):
+            data_fields.append(line.split(":", 1)[1].lstrip())
             continue
-        event = json.loads(payload)
-        if isinstance(event, dict):
-            return event
+        if data_fields and not line.startswith(("event:", "id:", "retry:", ":")):
+            # Some MCP bundles emit raw line continuations without an SSE field.
+            data_fields[-1] += line
     raise McpClientError("MCP response did not include an SSE data event")
 
 
