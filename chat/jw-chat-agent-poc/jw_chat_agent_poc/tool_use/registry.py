@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import asdict
 from decimal import Decimal
@@ -12,12 +13,14 @@ from jw_chat_agent_poc.agent_loop.external_tools import (
     _first_matching_mfds_item,
     _matching_mfds_items,
 )
+from jw_chat_agent_poc.agent_loop.planner import needs_external_context
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     HiraDiseaseCodeAbsent,
     HiraDiseaseCodeAmbiguous,
     HiraDiseaseCodeResolved,
     resolve_hira_disease_code,
 )
+from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
 from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tool_use.catalog import TOOL_DESCRIPTION_CATALOG
 from jw_chat_agent_poc.tool_use.contracts import EvidenceFact, ToolEnvelope
@@ -48,6 +51,21 @@ from jw_chat_agent_poc.tools.external.mcp_client import MCP_FIRST_ATTEMPT_TIMEOU
 
 _DESCRIPTIONS = {record.name: record.description for record in TOOL_DESCRIPTION_CATALOG}
 _FAILED_STATUSES = frozenset({"error", "unsupported", "inapplicable", "no_data"})
+LOGGER = logging.getLogger(__name__)
+_INTERNAL_METRIC_WEB_EXCLUSION_TOKENS = (
+    "매출",
+    "판매",
+    "실적",
+    "팔렸",
+    "장사",
+    "점유",
+    "순위",
+    "몇 등",
+    "몇등",
+    "시장 규모",
+    "시장규모",
+    "hhi",
+)
 _CLINICAL_DETAIL_DESIGN_FIELDS = frozenset(
     {"enrollment", "outcomes", "start_date", "primary_completion_date"}
 )
@@ -67,6 +85,15 @@ def _clinical_detail_requested_fields(user_text: str) -> frozenset[str] | None:
     elif any(token in lowered for token in ("outcome", "결과지표", "평가 변수")):
         requested.add("outcomes")
     return frozenset(requested) or None
+
+
+def _is_internal_metric_only_question(user_text: str) -> bool:
+    normalized = user_text.casefold()
+    if normalized.lstrip().startswith("/deep"):
+        return False
+    return any(
+        token.casefold() in normalized for token in _INTERNAL_METRIC_WEB_EXCLUSION_TOKENS
+    ) and wants_market_narrative(user_text) and not needs_external_context(user_text)
 
 
 class ExternalToolRegistry:
@@ -117,9 +144,13 @@ class ExternalToolRegistry:
             ("hira_procedure_institution_class_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_institution_class_stats", "진료행위 기관종별 통계"), mcp_timeout_s, ("external", "hira")),
             ("hira_procedure_area_stats", ProcedureCodeInput, partial(self._procedure_call, "hira_procedure_area_stats", "진료행위 지역 통계"), mcp_timeout_s, ("external", "hira")),
         )
+        exclude_web_search = _is_internal_metric_only_question(user_text)
+        if exclude_web_search:
+            LOGGER.info("external tool candidate excluded tool=web_search reason=internal_metric_only")
         return tuple(
             ToolSpec(name, _DESCRIPTIONS[name], input_model, execute, timeout_s, tags)
             for name, input_model, execute, timeout_s, tags in definitions
+            if not (exclude_web_search and name == "web_search")
         )
 
     def _hira_reimbursement(self, payload: BaseModel) -> ToolEnvelope:

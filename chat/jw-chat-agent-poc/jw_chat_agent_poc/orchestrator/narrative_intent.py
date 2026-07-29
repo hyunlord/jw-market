@@ -13,6 +13,8 @@ _MARKET_NARRATIVE_TOKENS: Final[tuple[str, ...]] = (
     "어때",
     "요즘 상황",
     "잘 나가",
+    "잘돼",
+    "잘 돼",
     "성장하나",
     "분석해줘",
     "분석해 줘",
@@ -23,6 +25,9 @@ _MARKET_NARRATIVE_TOKENS: Final[tuple[str, ...]] = (
 _MARKET_DATA_TOKENS: Final[tuple[str, ...]] = (
     "매출",
     "판매",
+    "실적",
+    "팔렸",
+    "장사",
     "점유",
     "시장",
     "순위",
