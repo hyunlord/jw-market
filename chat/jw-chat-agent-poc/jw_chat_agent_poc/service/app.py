@@ -69,7 +69,11 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     enforce_market_answer_contract,
     render_same_market_sales_answer,
 )
-from jw_chat_agent_poc.orchestrator.hira_disease import explicit_hira_disease_code, is_hira_disease_question
+from jw_chat_agent_poc.orchestrator.hira_disease import (
+    explicit_hira_disease_code,
+    hira_binding_question,
+    is_hira_disease_question,
+)
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.query_spec import (
     extract_query_spec,
@@ -3055,15 +3059,16 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
     facts = evidence_facts_from_result(result)
     expected_entities = expected_entities_from_result(question, result)
     expected_market_ids = expected_market_ids_from_result(result)
+    binding_question = hira_binding_question(question)
     gate = verify_claim_bindings(
-        question=question,
+        question=binding_question,
         answer=answer,
         facts=facts,
         expected_entities=expected_entities,
         expected_market_ids=expected_market_ids,
     )
     observability = binding_pipeline_observability(
-        question=question,
+        question=binding_question,
         answer=answer,
         facts=facts,
         expected_entities=expected_entities,
@@ -3072,7 +3077,7 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
         fact_input=evidence_fact_input_inventory(result, facts),
     )
     context_observability = binding_context_observability(
-        question=question,
+        question=binding_question,
         answer=answer,
         expected_entities=expected_entities,
         gate=gate,

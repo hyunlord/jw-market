@@ -226,6 +226,22 @@ def hira_requested_years(question: str) -> tuple[str, ...] | None:
     return None
 
 
+def hira_binding_question(question: str) -> str:
+    """Expose every year in an explicit HIRA range to the binding boundary."""
+    if not is_hira_disease_question(question):
+        return question
+    named = tuple(dict.fromkeys(_HIRA_YEAR_PATTERN.findall(question)))
+    if len(named) < 2:
+        return question
+    requested = hira_requested_years(question)
+    if not requested:
+        return question
+    missing = tuple(year for year in requested if year not in named)
+    if not missing:
+        return question
+    return f"{question} (요청 범위 포함 연도: {', '.join(missing)})"
+
+
 def _hira_span_months(question: str) -> int | None:
     """Months requested, read off the period parser the codebase already has.
 
