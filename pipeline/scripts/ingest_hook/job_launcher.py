@@ -267,7 +267,12 @@ def render_job(
             "activeDeadlineSeconds": 21600,
             "ttlSecondsAfterFinished": 259200,
             "template": {
-                "metadata": {"labels": {"app": "jw-ingest"}},
+                "metadata": {
+                    "labels": {"app": "jw-ingest"},
+                    "annotations": {
+                        "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+                    },
+                },
                 "spec": {
                     # api-01 can mount both NFS volumes while db-02 times out
                     # before the ingest container starts. Keep Jobs pending

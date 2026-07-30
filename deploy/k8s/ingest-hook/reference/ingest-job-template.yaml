@@ -21,6 +21,8 @@ spec:
     metadata:
       labels:
         app: jw-ingest
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
       # api-01 can mount both NFS volumes while db-02 times out before startup.
       # Keep Jobs pending rather than schedule them onto a node that cannot run.

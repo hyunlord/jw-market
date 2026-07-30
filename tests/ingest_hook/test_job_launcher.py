@@ -28,6 +28,9 @@ EXPECTED_API_NODE_AFFINITY = {
         }
     }
 }
+EXPECTED_SCALE_DOWN_ANNOTATIONS = {
+    "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+}
 
 
 def test_rendered_job_pins_orchestrator_image_and_runner():
@@ -55,6 +58,19 @@ def test_rendered_job_requires_api_node_pool_for_nfs_mounts():
     assert pod_spec["affinity"] == EXPECTED_API_NODE_AFFINITY
 
 
+def test_rendered_job_is_protected_from_cluster_scale_down():
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="/data/m.json",
+        namespace="llmops",
+    )
+
+    assert body["spec"]["template"]["metadata"]["annotations"] == (
+        EXPECTED_SCALE_DOWN_ANNOTATIONS
+    )
+
+
 def test_reference_job_requires_same_api_node_pool():
     template = yaml.safe_load(
         (
@@ -76,6 +92,23 @@ def test_reference_job_requires_same_api_node_pool():
         "requests": {"cpu": "2", "memory": "12Gi"},
         "limits": {"cpu": "2", "memory": "12Gi"},
     }
+
+
+def test_reference_job_is_protected_from_cluster_scale_down():
+    template = yaml.safe_load(
+        (
+            REPO_ROOT
+            / "deploy"
+            / "k8s"
+            / "ingest-hook"
+            / "reference"
+            / "ingest-job-template.yaml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert template["spec"]["template"]["metadata"]["annotations"] == (
+        EXPECTED_SCALE_DOWN_ANNOTATIONS
+    )
 
 
 def test_rendered_retry_passes_one_run_id_to_job_and_durable_log(monkeypatch):
