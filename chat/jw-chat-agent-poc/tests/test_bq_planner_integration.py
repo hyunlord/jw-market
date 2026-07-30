@@ -5,7 +5,9 @@ import time
 
 from jw_chat_agent_poc import ChatAgent
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
+from jw_chat_agent_poc.agent_loop.requested_source import source_domain_note
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.resolver.catalog_membership import (
     StaticCatalogMembershipReader,
@@ -223,6 +225,29 @@ def test_missing_required_bq_source_fails_closed() -> None:
     assert result["agent_loop_metrics"]["bq_analysis_validation"] == "SOURCE_UNAVAILABLE"
     assert result["agent_loop_metrics"]["bq_missing_sources"] == ["iqvia_nsa"]
     assert "IQVIA NSA" in result["answer"]
+
+
+def test_missing_bq_source_basis_notice_survives_market_contract() -> None:
+    layer = _layer(("ubist",))
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+    question = "리바로 IQVIA랑 UBIST 수치가 다른데 왜?"
+
+    result = agent.answer(question)
+    expected_notice = source_domain_note(("iqvia_nsa",))
+    assert expected_notice is not None
+    assert expected_notice in result["answer"]
+
+    contracted = enforce_market_answer_contract(
+        question,
+        result["answer"],
+        result["tool_calls"],
+    )
+
+    assert expected_notice in contracted
 
 
 def test_missing_bq_analysis_output_fails_closed(monkeypatch) -> None:
