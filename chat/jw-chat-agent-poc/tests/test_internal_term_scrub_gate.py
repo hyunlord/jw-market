@@ -73,6 +73,92 @@ def test_gate_scrubs_agent_loop_wording() -> None:
         assert "agent_loop" not in out
 
 
+@pytest.mark.parametrize(
+    ("internal", "public"),
+    (
+        ("null", "확인 불가"),
+        ("grain", "집계 단위"),
+        ("조회 계약", "조회 범위"),
+        ("proxy", "보조 지표"),
+    ),
+)
+def test_gate_scrubs_cq09_internal_terms(internal: str, public: str) -> None:
+    out = cleanup_markdown_answer(f"처방 지표의 {internal} 정보를 안내합니다.")
+
+    assert internal.casefold() not in out.casefold()
+    assert public in out
+
+
+def test_gate_scrubs_cq09_live_wording() -> None:
+    raw = (
+        "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
+        "값은 null로 반환하며 매출 지표로 대체하지 않습니다.\n\n"
+        "매출·점유율은 별도 요청에서 참고용 proxy로 조회할 수 있지만 처방 지표가 아닙니다.\n"
+        "진료과·유통채널 grain의 검증된 원천 필드가 필요합니다."
+    )
+    out = cleanup_markdown_answer(raw)
+
+    for internal in ("null", "grain", "조회 계약", "proxy"):
+        assert internal.casefold() not in out.casefold()
+    for public in ("확인 불가", "집계 단위", "조회 범위", "보조 지표"):
+        assert public in out
+
+
+def test_gate_scrubs_bq_c1_r6_fragment() -> None:
+    raw = (
+        "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
+        "값은 null로 반환하며 매출 지표로 대체하지 않습니다."
+    )
+
+    out = cleanup_markdown_answer(raw)
+
+    assert "조회 계약" not in out
+    assert "null" not in out.casefold()
+    assert "조회 범위" in out
+    assert "확인 불가" in out
+
+
+@pytest.mark.parametrize(
+    ("case_id", "raw"),
+    (
+        (
+            "BQ-D2",
+            "| 인과 검증 가능·불가능 | 매출·MS proxy는 확인되지만, "
+            "활동→처방·매출 인과는 이 데이터만으로 검증할 수 없습니다. |\n"
+            "| 매출 proxy 해석 | 리바로 매출은 2021-06 67.47억원에서 "
+            "2026-05 80.39억원으로 관찰됩니다. 중간 저점(2022-02 65.00억원) "
+            "이후 최신월은 반등했지만, MS는 4.69%에서 3.76%로 낮아졌습니다. |",
+        ),
+        (
+            "BQ-D3",
+            "| 인과 검증 가능·불가능 | 매출·MS proxy는 확인되지만, "
+            "활동→처방·매출 인과는 이 데이터만으로 검증할 수 없습니다. |\n"
+            "| 매출 proxy 해석 | 리바로 매출은 2025-08 79.63억원에서 "
+            "2026-05 80.39억원로 관찰됩니다. 중간 저점(2026-02 75.08억원) "
+            "이후 최신월은 반등했지만, MS는 3.93%에서 3.76%로 낮아졌습니다. |",
+        ),
+    ),
+    ids=("BQ-D2", "BQ-D3"),
+)
+def test_gate_scrubs_bq_sales_activity_r6_fragments(case_id: str, raw: str) -> None:
+    out = cleanup_markdown_answer(raw)
+
+    assert "proxy" not in out.casefold(), case_id
+    assert out.count("보조 지표") == 2, case_id
+
+
+def test_gate_cq09_terms_are_word_bounded() -> None:
+    raw = "nullable, nullification, ingrained, grainy, proxying, proxylike"
+
+    assert cleanup_markdown_answer(raw) == raw
+
+
+def test_gate_preserves_internal_grain_table_key_for_llm_contract() -> None:
+    raw = "| grain | quarter |"
+
+    assert cleanup_markdown_answer(raw) == raw
+
+
 def test_gate_scrubs_fact_family_headings() -> None:
     for heading in (
         "### 리바로 지표 fact",

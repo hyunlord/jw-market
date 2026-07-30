@@ -71,6 +71,8 @@ _INTERNAL_FACT_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*\bfact\b")
 # Exact internal phrases, longest/most-specific first.
 _INTERNAL_PHRASES: Final[tuple[tuple[str, str], ...]] = (
     ("확정 데이터 기준으로 정리하면 다음과 같습니다.", ""),
+    ("값은 null로 반환", "값은 확인 불가로 표시"),
+    ("조회 계약", "조회 범위"),
     ("반드시 반영할 내용", "내용"),
     ("확정 fact set", "확정 데이터"),
     ("필수 답변 fact", "핵심 데이터"),
@@ -81,6 +83,14 @@ _INTERNAL_PHRASES: Final[tuple[tuple[str, str], ...]] = (
     ("agent loop을", "분석을"),
     ("agent loop", "분석"),
     ("agent_loop", "분석"),
+)
+_INTERNAL_TERM_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"(?<![A-Za-z0-9_])null(?![A-Za-z0-9_])", re.IGNORECASE), "확인 불가"),
+    (
+        re.compile(r"(?<!\| )(?<!\|)(?<![A-Za-z0-9_])grain(?![A-Za-z0-9_])", re.IGNORECASE),
+        "집계 단위",
+    ),
+    (re.compile(r"(?<![A-Za-z0-9_])proxy(?![A-Za-z0-9_])", re.IGNORECASE), "보조 지표"),
 )
 _DANGEROUS_HTML_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     r"<\s*(script|iframe|object)\b[^>]*>.*?<\s*/\s*\1\s*>",
@@ -125,6 +135,8 @@ def scrub_internal_terminology(text: str) -> str:
     result = _VERIFIER_NOTICE_RE.sub("표에 있는 확정 수치를 기준으로 정리했습니다.", text)
     for needle, replacement in _INTERNAL_PHRASES:
         result = result.replace(needle, replacement)
+    for pattern, replacement in _INTERNAL_TERM_PATTERNS:
+        result = pattern.sub(replacement, result)
     for pattern, replacement in _INTERNAL_ID_PATTERNS:
         result = pattern.sub(replacement, result)
     result = _TOOL_TOKEN_RE.sub(lambda match: _INTERNAL_TOOL_LABELS[match.group(1)], result)
