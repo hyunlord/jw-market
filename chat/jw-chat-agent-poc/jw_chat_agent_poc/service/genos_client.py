@@ -29,6 +29,12 @@ from jw_chat_agent_poc.orchestrator.answer_completeness import (
     deterministic_single_period_sales_answer,
     deterministic_top_n_share_answer,
 )
+from jw_chat_agent_poc.orchestrator.answer_contract import (
+    NewsSelection,
+    build_news_selection,
+    enforce_news_claim_selection,
+    news_selection_prompt_fact_markdown,
+)
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.market_insights import render_market_narrative
 from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
@@ -143,6 +149,11 @@ def _prompt_fact_markdown(fact_md: str) -> str:
         seen.add(block)
         unique_blocks.append(block)
     return "\n\n".join(unique_blocks)
+
+
+def _news_selection(markdown_response: Mapping[str, Any]) -> NewsSelection | None:
+    selection = markdown_response.get("_news_selection")
+    return selection if isinstance(selection, NewsSelection) else None
 
 
 def _repair_answer_with_verified_facts(answer: str, strict_numbers: tuple[str, ...], mandatory_lines: tuple[str, ...]) -> str:
@@ -966,6 +977,7 @@ class GenosClient:
 
     def stream_answer(self, question: str, agent_result: dict[str, Any]) -> Iterator[str]:
         markdown_response = agent_result.get("markdown_response")
+        original_markdown_response = markdown_response
         timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
         file_context = _uploaded_file_context(agent_result)
         diagnostics = agent_result.get("router_diagnostics")
@@ -985,6 +997,17 @@ class GenosClient:
                 brand=str(agent_result.get("brand") or "시장"),
                 sources=source_names,
             )
+            fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            news_selection = build_news_selection(
+                fact_md,
+                canonical_brand=str(agent_result.get("brand") or ""),
+            )
+            markdown_response["_news_selection"] = news_selection
+            if (
+                isinstance(original_markdown_response, dict)
+                and original_markdown_response is not markdown_response
+            ):
+                original_markdown_response["_news_selection"] = news_selection
         if self.research_mode != "deep" and self.token and fallback_code is None and isinstance(markdown_response, dict):
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             single_period_sales_answer = deterministic_single_period_sales_answer(
@@ -1170,6 +1193,7 @@ class GenosClient:
     ) -> str:
         allowed_numbers = tuple(str(value) for value in markdown_response.get("allowed_numbers", ()) if value is not None)
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+        news_selection = _news_selection(markdown_response)
         fact_lookup_md = _fact_lookup_markdown(markdown_response)
         if _is_web_search_only(tool_calls) and _has_web_search_rows(tool_calls, question=question):
             self._record_answer_branch("genos_markdown_web_search")
@@ -1204,12 +1228,14 @@ class GenosClient:
                 self._record_answer_branch("genos_markdown_request_fallback")
                 fallback = finalized_fallback_fact_answer(question, markdown_response)
                 fallback = _apply_final_claim_controls(question, fallback, fact_md)
-                return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
+                fallback = _ensure_mfds_permit_date_answer(question, fallback, fact_md)
+                return enforce_news_claim_selection(fallback, news_selection)
         if not raw_interpretation:
             self._record_answer_branch("genos_markdown_empty_fallback")
             fallback = finalized_fallback_fact_answer(question, markdown_response)
             fallback = _apply_final_claim_controls(question, fallback, fact_md)
-            return _ensure_mfds_permit_date_answer(question, fallback, fact_md)
+            fallback = _ensure_mfds_permit_date_answer(question, fallback, fact_md)
+            return enforce_news_claim_selection(fallback, news_selection)
         mandatory_lines = mandatory_fact_lines(fact_md)
         raw_has_unverified_number = interpretation_has_unverified_numbers(raw_interpretation, strict_numbers)
         missing_mandatory = missing_mandatory_lines(raw_interpretation, mandatory_lines)
@@ -1294,11 +1320,12 @@ class GenosClient:
             answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
-        return (
+        final_answer = (
             answer
             if self.research_mode == "deep"
             else _append_web_search_section(answer, tool_calls, question=question)
         )
+        return enforce_news_claim_selection(final_answer, news_selection)
 
     def _record_answer_branch(self, answer_branch: str) -> None:
         if answer_branch not in ANSWER_BRANCHES:
@@ -1313,11 +1340,17 @@ class GenosClient:
         file_context: str = "",
     ) -> list[dict[str, str]]:
         fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+        news_selection = _news_selection(markdown_response)
         source_notice_md = _source_notice_markdown(
             str(markdown_response.get("notice_md") or "")
         )
-        prompt_fact_md = _prompt_fact_markdown(fact_md)
-        mandatory_md = mandatory_fact_block(fact_md)
+        selected_fact_md = (
+            news_selection_prompt_fact_markdown(fact_md, news_selection)
+            if news_selection is not None
+            else fact_md
+        )
+        prompt_fact_md = _prompt_fact_markdown(selected_fact_md)
+        mandatory_md = mandatory_fact_block(selected_fact_md)
         uploaded_md = file_context.strip() or "- 없음"
         file_instruction = f" {_FILE_QUOTE_INSTRUCTION}" if file_context.strip() else ""
         overview_instruction = (
