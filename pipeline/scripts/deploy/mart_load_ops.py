@@ -178,6 +178,24 @@ def run_s4_general(
         raise RuntimeError(f"s4_mart failed rc={rc}")
 
 
+def run_s5_strategic(
+    *,
+    build_db: str,
+    source_db: str,
+    general_source_db: str,
+    catalog_root: Path | None,
+) -> None:
+    params = {
+        "target_db": build_db,
+        "source_db": source_db,
+        "general_source_db": general_source_db,
+        "catalog_root": str(catalog_root) if catalog_root else None,
+    }
+    rc = s5_mart.run(params)
+    if rc != 0:
+        raise RuntimeError(f"s5_mart failed rc={rc}")
+
+
 def run_strategic_ml_market_from_source(*, build_db: str, source_db: str, catalog_root: Path | None) -> None:
     root = catalog_root or first_existing(PROJECT_ROOT / "output" / "catalog", PROJECT_ROOT / "parquet")
     catalog_rows = _load_ml_market_catalog(root)

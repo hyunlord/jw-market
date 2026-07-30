@@ -6,10 +6,9 @@ category list, update THIS table only; g3/job_runner/launcher read it.
 Command layers (see D_design.txt D-2):
   * ``load_argv``      — system A, file -> staging -> mart (``pipeline.etl.run``).
                          Empty tuple = no load phase for the category.
-  * ``refresh_argv``   — system B, downstream incremental refresh
-                         (``pipeline.orchestrator run --mode incremental``);
-                         the orchestrator itself no-ops fresh stages by epoch,
-                         so re-invocation is idempotent by design.
+  * ``refresh_argv``   — system B, downstream numeric refresh. Ingest calls use
+                         ``--force`` because manifest replacement can change
+                         data without changing the epoch.
 Unknown categories fail closed everywhere (STOP ③: no path around G3).
 """
 from __future__ import annotations
@@ -92,7 +91,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         # propagation (s2..s7 / mounted source tree) is a separate stage-orchestration
         # decision flagged to jw agent for D-3; M-2 here proves the staging landing.
         load_argv=_etl("--stage", "s1", "--source", "ubist", "--incremental"),
-        refresh_argv=_orchestrator(),
+        refresh_argv=_orchestrator("--profile", "numeric", "--force"),
         sigma_source="ubist",
         load_input_flag="--file",
         load_target_flag="--target-dir",
@@ -105,7 +104,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
     CategorySpec(
         key="iqvia_nsa", description="IQVIA NSA quarterly workbook",
         required_columns=(), period_column=None,
-        load_argv=_category_table_load("iqvia_nsa"), refresh_argv=_orchestrator(),
+        load_argv=_category_table_load("iqvia_nsa"),
+        refresh_argv=_orchestrator("--profile", "numeric", "--force"),
         sigma_source="iqvia_nsa", load_input_flag="--file",
         load_target_flag="--target-dir", load_epoch_flag="--epoch",
         load_verify="table_manifest", workbook_reader="iqvia_nsa",
@@ -132,7 +132,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
     CategorySpec(
         key="mi_master", description="MI Master workbook resubmission",
         required_columns=(), period_column=None,
-        load_argv=_category_table_load("mi_master"), refresh_argv=_orchestrator(),
+        load_argv=_category_table_load("mi_master"),
+        refresh_argv=_orchestrator("--profile", "numeric", "--force"),
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="mi_master",
@@ -144,7 +145,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         required_columns=(),
         period_column=None,
         load_argv=(),
-        refresh_argv=_orchestrator(),
+        refresh_argv=_orchestrator("--profile", "numeric", "--force"),
     ),
 )
 

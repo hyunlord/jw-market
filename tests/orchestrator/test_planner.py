@@ -167,3 +167,29 @@ def test_selection_validation():
         resolve_selection("nope", None)
     assert resolve_selection(None, "events") == ("events", "elements")
     assert resolve_selection("elements,cache", None) == ("cache", "elements")
+
+
+def test_profiles_are_disjoint_and_cover_the_full_chain(tmp_path):
+    numeric = build_plan(
+        mode="incremental",
+        run_id="numeric",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        profile="numeric",
+        force=True,
+    )
+    agent = build_plan(
+        mode="incremental",
+        run_id="agent",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        profile="agent",
+        force=True,
+    )
+
+    numeric_keys = {stage.key for stage in numeric.runnable}
+    agent_keys = {stage.key for stage in agent.runnable}
+    assert numeric_keys == {"market_status"}
+    assert agent_keys == {"cache", "forecast", "strength", "shortlong", "events", "elements"}
+    assert numeric_keys.isdisjoint(agent_keys)
+    assert numeric_keys | agent_keys == set(STAGE_ORDER)

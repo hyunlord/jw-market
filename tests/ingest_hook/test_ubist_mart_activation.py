@@ -103,12 +103,18 @@ def test_writer_lock_release_rejects_non_owner() -> None:
 
 
 def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
+    general_calls: list[dict[str, object]] = []
+    strategic_calls: list[dict[str, object]] = []
     target = activation.MartActivation("jw_mart", "jw_mart", "jw_mart_ingest_run1")
     monkeypatch.setattr(
         activation,
         "run_s4_general",
-        lambda **kwargs: calls.append(kwargs),
+        lambda **kwargs: general_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        activation,
+        "run_s5_strategic",
+        lambda **kwargs: strategic_calls.append(kwargs),
     )
 
     activation.build_shadow(
@@ -118,7 +124,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         atc4_scope=("C10A1", "C10A2"),
     )
 
-    assert calls == [{
+    assert general_calls == [{
         "build_db": "jw_mart_ingest_run1",
         "source_db": "jw_mart",
         "catalog_root": Path("/market-output/shadow/catalog"),
@@ -126,6 +132,12 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         "input_mode": "raw",
         "sources": ("ubist",),
         "atc4_scope": ("C10A1", "C10A2"),
+    }]
+    assert strategic_calls == [{
+        "build_db": "jw_mart_ingest_run1",
+        "source_db": "jw_mart",
+        "general_source_db": "jw_mart_ingest_run1",
+        "catalog_root": Path("/market-output/shadow/catalog"),
     }]
 
 
@@ -337,13 +349,12 @@ def test_shadow_crash_injection_is_explicit_and_shadow_only(monkeypatch) -> None
         activation.maybe_inject_shadow_crash("after_mart_publish")
 
 
-def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None:
+def test_shadow_target_bootstrap_copies_all_numeric_tables(monkeypatch) -> None:
     statements: list[str] = []
     source_rows = {
-        activation.GENERAL_TABLES[0]: 250,
-        activation.GENERAL_TABLES[1]: 20,
+        table: index + 1 for index, table in enumerate(activation.NUMERIC_TABLES)
     }
-    copied_rows = {table: 0 for table in activation.GENERAL_TABLES}
+    copied_rows = {table: 0 for table in activation.NUMERIC_TABLES}
     result = None
 
     class Cursor:
@@ -351,7 +362,7 @@ def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None
             nonlocal result
             statements.append(sql)
             table = next(
-                (name for name in activation.GENERAL_TABLES if name in sql), None
+                (name for name in activation.NUMERIC_TABLES if name in sql), None
             )
             if sql.startswith("SELECT COUNT(*), COALESCE(MAX(`id`), 0) FROM"):
                 result = (source_rows[table], source_rows[table])
@@ -401,7 +412,7 @@ def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None
 
     assert statements[0] == "CREATE DATABASE IF NOT EXISTS `jw_mart_ingest_shadow_demo`"
     assert statements[-1] == "COMMIT"
-    for table in activation.GENERAL_TABLES:
+    for table in activation.NUMERIC_TABLES:
         scratch = f"{table}__shadow_seed"
         assert any(
             f"CREATE TABLE `jw_mart_ingest_shadow_demo`.`{scratch}` LIKE "
@@ -416,7 +427,7 @@ def test_shadow_target_bootstrap_copies_only_general_tables(monkeypatch) -> None
         )
     assert not any(
         sql.endswith(f"SELECT * FROM `jw_mart_d2_stage_20260630_r2`.`{table}`")
-        for table in activation.GENERAL_TABLES
+        for table in activation.NUMERIC_TABLES
         for sql in statements
     )
     assert statements.count("COMMIT") >= 4
@@ -473,6 +484,7 @@ def test_build_shadow_restores_s4_mutated_environment(monkeypatch) -> None:
         monkeypatch.setenv("S4_UBIST_DIR", "/candidate")
 
     monkeypatch.setattr(activation, "run_s4_general", mutate)
+    monkeypatch.setattr(activation, "run_s5_strategic", mutate)
     activation.build_shadow(
         target,
         catalog_root=Path("/market-output/shadow/catalog"),
@@ -505,7 +517,7 @@ def test_affected_atc4_codes_fails_closed_when_month_is_missing(tmp_path) -> Non
         activation.affected_atc4_codes(tmp_path, periods=("2026-05",))
 
 
-def test_publish_shadow_checks_post_gate_and_limits_general_tables(
+def test_publish_shadow_checks_post_gate_and_publishes_numeric_tables(
     monkeypatch, tmp_path
 ) -> None:
     calls: list[object] = []
@@ -537,7 +549,7 @@ def test_publish_shadow_checks_post_gate_and_limits_general_tables(
     )
 
     assert calls[0] == "gate"
-    assert calls[1]["tables"] == activation.GENERAL_TABLES
+    assert calls[1]["tables"] == activation.NUMERIC_TABLES
     assert calls[2] == "record"
     assert calls[3] == "provenance"
 
@@ -673,14 +685,53 @@ def test_activation_journal_recovers_corpus_and_atomic_mart_group(tmp_path, monk
     assert recovered == (journal,)
     assert (live / "old.txt").read_text(encoding="utf-8") == "old"
     assert restored == [
-        (
-            "jw_mart",
-            "recovery_run1",
-            "mart_general_brand_metric",
-            "mart_general_market_metric",
-        )
+        ("jw_mart", "recovery_run1", *activation.NUMERIC_TABLES)
     ]
     assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "rollback_needs_refresh"
+
+
+def test_numeric_refresh_failure_restores_all_numeric_marts_and_corpus(
+    tmp_path, monkeypatch
+) -> None:
+    live = tmp_path / "ubist"
+    live.mkdir()
+    (live / "old.txt").write_text("old", encoding="utf-8")
+    corpus = activation.prepare_candidate_corpus(live, run_id="numeric-failure")
+    (corpus.candidate_root / "new.txt").write_text("new", encoding="utf-8")
+    target = activation.MartActivation(
+        "jw_mart", "jw_mart", "jw_mart_ingest_numeric_failure"
+    )
+    journal = activation.write_activation_journal(
+        corpus,
+        target,
+        run_id="numeric-failure",
+        phase="refresh_started",
+        identity=("2026-07", "ubist", "b" * 64),
+    )
+    activation.promote_candidate_corpus(corpus)
+    restored: list[tuple[str, ...]] = []
+    monkeypatch.setattr(activation, "table_exists", lambda *_args: True)
+    monkeypatch.setattr(
+        activation,
+        "restore_table_group_atomically",
+        lambda _conn, *, target_db, actions, run_id: restored.append(
+            (target_db, run_id, *(action.table for action in actions))
+        ),
+    )
+
+    recovered = activation.recover_incomplete_activations(
+        object(), output_root=tmp_path
+    )
+
+    assert recovered == (journal,)
+    assert restored == [
+        ("jw_mart", "recovery_numeric-failure", *activation.NUMERIC_TABLES)
+    ]
+    assert (live / "old.txt").read_text(encoding="utf-8") == "old"
+    assert not (live / "new.txt").exists()
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == (
+        "rollback_needs_refresh"
+    )
 
 
 def test_activation_journal_rejects_partial_mart_backup(tmp_path, monkeypatch) -> None:
@@ -696,7 +747,7 @@ def test_activation_journal_rejects_partial_mart_backup(tmp_path, monkeypatch) -
         phase="prepared",
         identity=("2026-07", "ubist", "a" * 64),
     )
-    exists = iter((True, False))
+    exists = iter((True, False, *(False for _ in activation.NUMERIC_TABLES[2:])))
     monkeypatch.setattr(activation, "table_exists", lambda *_args: next(exists))
 
     with pytest.raises(RuntimeError, match="ambiguous partial mart backup"):
@@ -792,8 +843,8 @@ def test_recovery_resumes_after_crash_following_atomic_mart_restore(
     )
     activation.promote_candidate_corpus(corpus)
     existing = {
-        *(f"{table}__old_run1" for table in activation.GENERAL_TABLES),
-        *activation.GENERAL_TABLES,
+        *(f"{table}__old_run1" for table in activation.NUMERIC_TABLES),
+        *activation.NUMERIC_TABLES,
     }
     restore_calls: list[str] = []
 

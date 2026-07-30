@@ -23,6 +23,7 @@ from pipeline.scripts.deploy.mart_load_ops import (
     quote_id,
     restore_table_group_atomically,
     run_s4_general,
+    run_s5_strategic,
 )
 from pipeline.scripts.deploy.mart_load_verify import table_exists
 from pipeline.scripts.ingest_hook.publication_provenance import (
@@ -54,6 +55,13 @@ GENERAL_TABLES = (
     "mart_general_brand_metric",
     "mart_general_market_metric",
 )
+STRATEGIC_TABLES = (
+    "mart_strategic_ml_brand_metric",
+    "mart_strategic_ml_market_metric",
+    "mart_strategic_cd_brand_metric",
+    "mart_strategic_cd_market_metric",
+)
+NUMERIC_TABLES = GENERAL_TABLES + STRATEGIC_TABLES
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _S4_MUTATED_ENV = (
@@ -69,6 +77,7 @@ _S4_MUTATED_ENV = (
     "S4_CATALOG_DIR",
     "S4_IQVIA_NSA_DIR",
     "S4_UBIST_DIR",
+    "S5_CATALOG_DIR",
 )
 
 
@@ -208,7 +217,7 @@ def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
     try:
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {quote_id(config.target_db)}")
         existing = tuple(
-            table_exists(conn, config.target_db, table) for table in GENERAL_TABLES
+            table_exists(conn, config.target_db, table) for table in NUMERIC_TABLES
         )
         if all(existing):
             return
@@ -217,7 +226,7 @@ def ensure_shadow_target_baseline(conn: Any, config: MartActivation) -> None:
                 f"shadow baseline is partially initialized: {config.target_db}"
             )
         moves: list[str] = []
-        for table in GENERAL_TABLES:
+        for table in NUMERIC_TABLES:
             if not table_exists(conn, config.source_db, table):
                 raise RuntimeError(
                     f"shadow baseline source is missing: {config.source_db}.{table}"
@@ -468,6 +477,12 @@ def build_shadow(
             sources=("ubist",),
             atc4_scope=atc4_scope,
         )
+        run_s5_strategic(
+            build_db=config.build_db,
+            source_db=config.source_db,
+            general_source_db=config.build_db,
+            catalog_root=catalog_root,
+        )
     finally:
         for key, value in previous.items():
             if value is None:
@@ -616,7 +631,7 @@ def write_activation_journal(
         "live_root": str(corpus.live_root),
         "candidate_root": str(corpus.candidate_root),
         "backup_root": str(corpus.backup_root),
-        "tables": list(GENERAL_TABLES),
+        "tables": list(NUMERIC_TABLES),
     }
     _atomic_write_json(path, payload)
     return path
@@ -646,7 +661,11 @@ def recover_incomplete_activations(
         run_id = str(payload.get("run_id") or "")
         target_db = str(payload.get("target_db") or "")
         tables = tuple(str(value) for value in payload.get("tables") or ())
-        if not run_id or not _SCHEMA_RE.fullmatch(target_db) or tables != GENERAL_TABLES:
+        if (
+            not run_id
+            or not _SCHEMA_RE.fullmatch(target_db)
+            or tables not in {GENERAL_TABLES, NUMERIC_TABLES}
+        ):
             raise RuntimeError(f"invalid activation recovery journal: {path}")
         if required_target_prefix and not target_db.startswith(required_target_prefix):
             raise RuntimeError(
@@ -805,7 +824,7 @@ def publish_shadow(
 ) -> tuple[Any, ...]:
     provenance = build_publication_provenance(
         target_db=config.target_db,
-        tables=GENERAL_TABLES,
+        tables=NUMERIC_TABLES,
     )
     if require_ledger_gate:
         require_completed_post_gate(conn, ingest_run_id=ingest_run_id)
@@ -814,7 +833,7 @@ def publish_shadow(
         build_db=config.build_db,
         target_db=config.target_db,
         run_id=run_id,
-        tables=GENERAL_TABLES,
+        tables=NUMERIC_TABLES,
     )
     try:
         record_mysql_component(
@@ -826,7 +845,7 @@ def publish_shadow(
                 serving_db=config.target_db,
                 generation_db=config.build_db,
             ),
-            component="general",
+            component="numeric_mart",
             table_pairs=tuple(
                 (action.table, action.backup_table)
                 for action in actions
@@ -853,7 +872,7 @@ def validate_shadow_publish(conn: Any, config: MartActivation) -> dict[str, int]
     counts: dict[str, int] = {}
     cursor = conn.cursor()
     try:
-        for table in GENERAL_TABLES:
+        for table in NUMERIC_TABLES:
             if not table_exists(conn, config.target_db, table):
                 raise RuntimeError(f"shadow refresh target is missing: {config.target_db}.{table}")
             cursor.execute(f"SELECT COUNT(*) FROM `{config.target_db}`.`{table}`")

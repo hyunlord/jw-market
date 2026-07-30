@@ -167,6 +167,16 @@ def job_name(category: str, manifest_sha: str, run_id: str | None = None) -> str
     return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
 
 
+def agent_refresh_job_name(category: str, manifest_sha: str, ingest_run_id: str) -> str:
+    suffix = "".join(
+        char.lower() for char in ingest_run_id if char.isalnum() or char == "-"
+    )
+    if not suffix:
+        raise ValueError("ingest_run_id must contain a Kubernetes name character")
+    base = f"jw-agent-refresh-{category.replace('_', '-')}-{manifest_sha[:8]}"
+    return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
+
+
 def render_job(
     *,
     category: str,
@@ -323,6 +333,57 @@ def render_job(
             },
         },
     }
+
+
+def render_agent_refresh_job(
+    *,
+    epoch: str,
+    category: str,
+    manifest_sha: str,
+    ingest_run_id: str,
+    namespace: str | None = None,
+) -> dict:
+    body = render_job(
+        category=category,
+        manifest_sha=manifest_sha,
+        manifest_path="/dev/null",
+        namespace=namespace,
+        run_id=ingest_run_id,
+    )
+    name = agent_refresh_job_name(category, manifest_sha, ingest_run_id)
+    body["metadata"]["name"] = name
+    body["metadata"]["labels"] = {
+        "app": "jw-agent-refresh",
+        "jw-ingest/category": category,
+        "jw-ingest/manifest-sha8": manifest_sha[:8],
+        "jw-ingest/parent-run-id": ingest_run_id,
+    }
+    template = body["spec"]["template"]
+    template["metadata"]["labels"] = {
+        "app": "jw-agent-refresh",
+        "jw-ingest/category": category,
+    }
+    container = template["spec"]["containers"][0]
+    container["name"] = "agent-refresh"
+    container["command"] = [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.agent_refresh_runner",
+        "--epoch",
+        epoch,
+        "--category",
+        category,
+        "--manifest-sha",
+        manifest_sha,
+        "--ingest-run-id",
+        ingest_run_id,
+    ]
+    container["env"] = [
+        item
+        for item in container["env"]
+        if item["name"] != "INGEST_PUBLISH_APPROVAL_FILE"
+    ]
+    return body
 
 
 def _in_cluster_transport(url_path: str, body: dict) -> dict:
@@ -515,6 +576,43 @@ def submit_job(
         existing_status = _job_status(existing)
         if existing_status in {"Pending", "Running"}:
             return body["metadata"]["name"]
+        raise JobSubmissionConflict(
+            job_name=body["metadata"]["name"],
+            existing_status=existing_status,
+            created_at=metadata.get("creationTimestamp"),
+        ) from exc
+    return body["metadata"]["name"]
+
+
+def submit_agent_refresh_job(
+    *,
+    epoch: str,
+    category: str,
+    manifest_sha: str,
+    ingest_run_id: str,
+    transport: Transport | None = None,
+    namespace: str | None = None,
+    inspect_transport: InspectTransport | None = None,
+) -> str:
+    body = render_agent_refresh_job(
+        epoch=epoch,
+        category=category,
+        manifest_sha=manifest_sha,
+        ingest_run_id=ingest_run_id,
+        namespace=namespace,
+    )
+    send = transport or _in_cluster_transport
+    try:
+        send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 409:
+            raise
+        inspect = inspect_transport or _in_cluster_inspect
+        existing = inspect(body["metadata"]["namespace"], body["metadata"]["name"])
+        existing_status = _job_status(existing)
+        if existing_status in {"Pending", "Running", "Complete"}:
+            return body["metadata"]["name"]
+        metadata = existing.get("metadata") or {}
         raise JobSubmissionConflict(
             job_name=body["metadata"]["name"],
             existing_status=existing_status,

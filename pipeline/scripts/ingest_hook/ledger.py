@@ -1150,6 +1150,58 @@ class Ledger:
             ))
         return events
 
+    def agent_refresh_status(self, category: str) -> dict[str, str | None]:
+        latest_ingest = self._execute(
+            "SELECT epoch, manifest_sha FROM ingest_ledger"
+            " WHERE category=? AND status='complete'"
+            " ORDER BY finished_at DESC, id DESC LIMIT 1",
+            (category,),
+        ).fetchone()
+        latest_agent = self._execute(
+            "SELECT epoch, manifest_sha, status, finished_at FROM ingest_stage_event"
+            " WHERE category=? AND stage='agent_refresh'"
+            " ORDER BY id DESC LIMIT 1",
+            (category,),
+        ).fetchone()
+        last_success = self._execute(
+            "SELECT finished_at FROM ingest_stage_event"
+            " WHERE category=? AND stage='agent_refresh' AND status='complete'"
+            " ORDER BY finished_at DESC, id DESC LIMIT 1",
+            (category,),
+        ).fetchone()
+
+        def values(row):
+            return tuple(row.values()) if isinstance(row, dict) else tuple(row)
+
+        ingest_identity = (
+            (str(values(latest_ingest)[0]), str(values(latest_ingest)[1]))
+            if latest_ingest
+            else None
+        )
+        success_at = str(values(last_success)[0]) if last_success else None
+        if latest_agent is None:
+            return {
+                "agent_epoch": None,
+                "agent_status": "stale" if ingest_identity else "unknown",
+                "last_success_at": success_at,
+            }
+        agent_epoch, agent_manifest_sha, status, _finished_at = values(latest_agent)
+        agent_epoch = str(agent_epoch)
+        if str(status) == "failed":
+            agent_status = "failed"
+        elif (
+            str(status) == "complete"
+            and (agent_epoch, str(agent_manifest_sha)) == ingest_identity
+        ):
+            agent_status = "fresh"
+        else:
+            agent_status = "stale"
+        return {
+            "agent_epoch": agent_epoch,
+            "agent_status": agent_status,
+            "last_success_at": success_at,
+        }
+
     # -- completion signal observation --------------------------------------
     def record_signal(
         self, epoch: str, category: str, manifest_sha: str, *, run_id: str,

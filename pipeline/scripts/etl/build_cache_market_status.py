@@ -8,7 +8,7 @@ from decimal import Decimal
 import sys
 from typing import Any
 
-from cache_build_common import (
+from pipeline.scripts.etl.cache_build_common import (
     API_TO_SOURCE,
     active_catalog_member_rows,
     brand_cagr_exclusive,

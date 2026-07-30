@@ -7,7 +7,11 @@ import yaml
 import pytest
 
 from pipeline.scripts.ingest_hook import config
-from pipeline.scripts.ingest_hook.job_launcher import render_job, submit_job
+from pipeline.scripts.ingest_hook.job_launcher import (
+    render_agent_refresh_job,
+    render_job,
+    submit_job,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA = "f" * 64
@@ -43,6 +47,34 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     assert body["metadata"]["name"] == f"jw-ingest-ubist-{SHA[:8]}"
     assert body["spec"]["backoffLimit"] == 0
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
+
+
+def test_agent_refresh_job_is_a_separate_profile_and_failure_domain():
+    body = render_agent_refresh_job(
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha=SHA,
+        ingest_run_id="run-1",
+        namespace="llmops",
+    )
+
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    assert body["metadata"]["labels"]["app"] == "jw-agent-refresh"
+    assert body["metadata"]["labels"]["jw-ingest/parent-run-id"] == "run-1"
+    assert container["command"] == [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.agent_refresh_runner",
+        "--epoch",
+        "2026-05",
+        "--category",
+        "ubist",
+        "--manifest-sha",
+        SHA,
+        "--ingest-run-id",
+        "run-1",
+    ]
+    assert container["image"] == config.DEFAULT_JOB_IMAGE
 
 
 def test_rendered_job_requires_api_node_pool_for_nfs_mounts():

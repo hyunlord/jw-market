@@ -17,7 +17,7 @@ def _journal(path: Path) -> Path:
         json.dumps(
             {
                 "target_db": "jw_mart_ingest_shadow_test",
-                "tables": list(activation.GENERAL_TABLES),
+                "tables": list(activation.NUMERIC_TABLES),
             }
         ),
         encoding="utf-8",
@@ -72,7 +72,7 @@ def test_publish_records_running_image_provenance(
     assert provenance["builder_commit"] == FULL_SHA
     assert provenance["image_digest"] == IMAGE
     assert provenance["target_db"] == target.target_db
-    assert provenance["tables"] == list(activation.GENERAL_TABLES)
+    assert provenance["tables"] == list(activation.NUMERIC_TABLES)
     assert provenance["published_at_utc"].endswith("+00:00")
 
 

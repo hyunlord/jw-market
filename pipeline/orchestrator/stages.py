@@ -62,6 +62,18 @@ def _brand_args(flag: str, brands: tuple[str, ...]) -> list[str]:
     return out
 
 
+def _market_status_commands(
+    mode: str, brands: tuple[str, ...], force: bool, run_id: str
+) -> list[Command]:
+    return [
+        Command(
+            _module_cmd("pipeline.scripts.etl.build_cache_market_status"),
+            "numeric market-status cache rebuild from published strategic mart",
+            True,
+        )
+    ]
+
+
 def _cache_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
     argv = list(_module_cmd("pipeline.scripts.etl.build_cache_deep_analysis_general"))
     argv.extend(_brand_args("--brand", brands))
@@ -161,6 +173,17 @@ def _elements_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: 
 
 STAGES: tuple[StageSpec, ...] = (
     StageSpec(
+        key="market_status",
+        description="numeric market-status cache rebuild from published mart",
+        deps=(),
+        incremental="market_epoch",
+        incremental_reason="rebuild once for each published numeric mart epoch",
+        supports_brands=False,
+        universe_sql=None,
+        covered_sql=None,
+        commands=_market_status_commands,
+    ),
+    StageSpec(
         key="cache",
         description="cache_deep_analysis_general rebuild from mart",
         deps=(),
@@ -241,3 +264,9 @@ STAGES: tuple[StageSpec, ...] = (
 
 STAGE_ORDER: tuple[str, ...] = tuple(spec.key for spec in STAGES)
 STAGE_BY_KEY: dict[str, StageSpec] = {spec.key: spec for spec in STAGES}
+
+PROFILE_STAGES: dict[str, tuple[str, ...]] = {
+    "numeric": ("market_status",),
+    "agent": ("cache", "forecast", "strength", "shortlong", "events", "elements"),
+    "all": STAGE_ORDER,
+}

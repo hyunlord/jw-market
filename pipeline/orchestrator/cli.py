@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pipeline.orchestrator.executor import EventLog, execute_plan
 from pipeline.orchestrator.planner import MODES, build_plan
-from pipeline.orchestrator.stages import STAGE_BY_KEY, STAGE_ORDER
+from pipeline.orchestrator.stages import PROFILE_STAGES, STAGE_BY_KEY, STAGE_ORDER
 from pipeline.orchestrator.state import StateStore, default_state_path
 
 
@@ -21,6 +21,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="plan and execute the pipeline chain")
     run.add_argument("--mode", choices=MODES, default="full")
+    run.add_argument(
+        "--profile",
+        choices=tuple(PROFILE_STAGES),
+        default="all",
+        help="execution profile: numeric mart cache only, agent builders only, or all",
+    )
     run.add_argument("--stages", help=f"comma-separated subset of {list(STAGE_ORDER)}")
     run.add_argument("--from-stage", help="start at this stage (upstream must be completed at the current epoch)")
     run.add_argument("--brands", help="comma-separated brand scope (incremental special form)")
@@ -282,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             brands=brands,
             force=args.force or (args.dry_run and args.force_plan),
             dry_run=args.dry_run,
+            profile=args.profile,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

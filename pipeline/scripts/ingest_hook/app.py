@@ -68,6 +68,7 @@ class TerminalPayload(BaseModel):
     category: str
     epoch: str
     manifest_sha: str
+    mode: str = "unknown"
 
 
 class IngestService:
@@ -735,12 +736,32 @@ def create_app(service: IngestService) -> FastAPI:
                     f"event={payload.event} ledger_status={entry.status}"
                 ),
             )
+        agent_job_name = None
+        agent_trigger_status = "not_applicable"
+        agent_trigger_reason = None
+        if payload.event == "complete" and payload.mode == "production":
+            try:
+                agent_job_name = job_launcher.submit_agent_refresh_job(
+                    epoch=payload.epoch,
+                    category=payload.category,
+                    manifest_sha=payload.manifest_sha,
+                    ingest_run_id=entry.run_id,
+                    transport=service.transport,
+                    inspect_transport=service.inspect_transport,
+                )
+                agent_trigger_status = "submitted"
+            except Exception as exc:  # agent work is a separate failure domain
+                agent_trigger_status = "failed"
+                agent_trigger_reason = type(exc).__name__
         promoted = service.promote(payload.category)
         return {
             "accepted": True,
             "category": payload.category,
             "terminal_status": entry.status,
             "promoted_job_name": promoted,
+            "agent_job_name": agent_job_name,
+            "agent_trigger_status": agent_trigger_status,
+            "agent_trigger_reason": agent_trigger_reason,
         }
 
     @app.get("/ingest/logs")

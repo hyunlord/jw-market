@@ -10,6 +10,93 @@ from pipeline.scripts.etl.cache_build_common import brand_cagr_exclusive, iqvia_
 
 
 router = APIRouter()
+_AGENT_REFRESH_SOURCES = ("ubist", "iqvia_nsa")
+
+
+def _unknown_agent_refresh() -> dict[str, str | None]:
+    return {
+        "agent_epoch": None,
+        "agent_status": "unknown",
+        "last_success_at": None,
+    }
+
+
+def _agent_refresh_status(category: str) -> dict[str, str | None]:
+    try:
+        latest_ingest = db.fetch_one(
+            """
+            SELECT epoch, manifest_sha
+            FROM ingest_ledger
+            WHERE category = %s AND status = 'complete'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+            """,
+            [category],
+        )
+        latest_agent = db.fetch_one(
+            """
+            SELECT epoch, manifest_sha, status, finished_at
+            FROM ingest_stage_event
+            WHERE category = %s AND stage = 'agent_refresh'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [category],
+        )
+        last_success = db.fetch_one(
+            """
+            SELECT finished_at
+            FROM ingest_stage_event
+            WHERE category = %s
+              AND stage = 'agent_refresh'
+              AND status = 'complete'
+            ORDER BY finished_at DESC, id DESC
+            LIMIT 1
+            """,
+            [category],
+        )
+    except Exception:
+        return _unknown_agent_refresh()
+
+    if latest_ingest is not None and not {"epoch", "manifest_sha"}.issubset(
+        latest_ingest
+    ):
+        return _unknown_agent_refresh()
+    if latest_agent is not None and not {
+        "epoch",
+        "manifest_sha",
+        "status",
+    }.issubset(latest_agent):
+        return _unknown_agent_refresh()
+    if last_success is not None and "finished_at" not in last_success:
+        return _unknown_agent_refresh()
+    ingest_identity = (
+        (str(latest_ingest["epoch"]), str(latest_ingest["manifest_sha"]))
+        if latest_ingest
+        else None
+    )
+    success_at = str(last_success["finished_at"]) if last_success else None
+    if latest_agent is None:
+        return {
+            "agent_epoch": None,
+            "agent_status": "stale" if ingest_identity else "unknown",
+            "last_success_at": success_at,
+        }
+    agent_epoch = str(latest_agent["epoch"])
+    if str(latest_agent["status"]) == "failed":
+        agent_status = "failed"
+    elif (
+        str(latest_agent["status"]) == "complete"
+        and (agent_epoch, str(latest_agent["manifest_sha"])) == ingest_identity
+    ):
+        agent_status = "fresh"
+    else:
+        agent_status = "stale"
+    return {
+        "agent_epoch": agent_epoch,
+        "agent_status": agent_status,
+        "last_success_at": success_at,
+    }
 
 
 def _brand_metric_rows() -> list[dict]:
@@ -122,4 +209,7 @@ def market_status() -> dict:
     rows = _brand_metric_rows()
     _overlay_brand_cagr(payload, rows)
     payload.update(_market_recent_periods(rows))
+    payload["agent_refresh"] = {
+        source: _agent_refresh_status(source) for source in _AGENT_REFRESH_SOURCES
+    }
     return payload
