@@ -8,17 +8,37 @@ import logging
 from typing import Any, Final, Literal, TypedDict
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
+from jw_chat_agent_poc.orchestrator.period_selection import (
+    PeriodGrain,
+    PeriodKey,
+    PeriodRequestKind,
+    PeriodResolution,
+    PeriodSelection,
+    canonical_observed_periods,
+    period_selection_for_spec,
+)
 from jw_chat_agent_poc.orchestrator.query_spec import (
     EntityKind,
     QueryOperation,
     RequestQuerySpec,
+    TimeGranularity,
 )
 
 
 class CoverageDecisionStatus(StrEnum):
     PASS = "pass"
     FAIL = "fail"
+    UNVERIFIABLE = "unverifiable"
+    INVALID = "invalid"
     NOT_APPLICABLE = "not_applicable"
+
+
+class PeriodCoverageStatus(StrEnum):
+    MATCH = "match"
+    MISSING = "missing"
+    EXTRA = "extra"
+    UNVERIFIABLE = "unverifiable"
+    INVALID = "invalid"
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -33,6 +53,15 @@ class OperationContract:
     required: tuple[CoverageAxis, ...]
     applicable: bool
     reason: str
+    period_selection: PeriodSelection | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PeriodCoverage:
+    status: PeriodCoverageStatus
+    selection: PeriodSelection
+    observed: tuple[PeriodKey, ...]
+    missing: tuple[PeriodKey, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +71,7 @@ class CoverageDecision:
     required: tuple[CoverageAxis, ...]
     observed: tuple[CoverageAxis, ...]
     missing: tuple[CoverageAxis, ...]
+    period_coverage: PeriodCoverage | None = None
 
 
 class CoverageAxisObservation(TypedDict):
@@ -56,6 +86,21 @@ class CoverageDecisionObservation(TypedDict):
     required: list[CoverageAxisObservation] | Literal["N/A"]
     observed: list[CoverageAxisObservation] | Literal["N/A"]
     missing: list[CoverageAxisObservation] | Literal["N/A"]
+    period_set: PeriodCoverageObservation | Literal["N/A"]
+
+
+class PeriodCoverageObservation(TypedDict):
+    status: str
+    kind: str
+    grain: str
+    resolution: str
+    expected_count: int
+    observed_count: int
+    missing_count: int
+    expected_periods: list[str]
+    observed_periods: list[str]
+    missing_periods: list[str]
+    anchor: str | None
 
 
 logger = logging.getLogger(__name__)
@@ -78,10 +123,13 @@ def evaluate_plan_coverage(
     spec: RequestQuerySpec,
     plan: tuple[ToolCallPlan, ...],
 ) -> CoverageDecision:
-    contract = operation_contract(spec)
+    observed = tuple(sorted({axis for call in plan for axis in _plan_axes(call)}))
+    contract = operation_contract(
+        spec,
+        observed_periods=tuple(axis.period for axis in observed),
+    )
     if not contract.applicable:
         return _not_applicable_decision(contract.reason)
-    observed = tuple(sorted({axis for call in plan for axis in _plan_axes(call)}))
     return _coverage_decision(contract, observed)
 
 
@@ -89,9 +137,6 @@ def evaluate_actual_coverage(
     spec: RequestQuerySpec,
     calls: Collection[Mapping[str, Any]],
 ) -> CoverageDecision:
-    contract = operation_contract(spec)
-    if not contract.applicable:
-        return _not_applicable_decision(contract.reason)
     observed = tuple(
         sorted(
             {
@@ -101,6 +146,12 @@ def evaluate_actual_coverage(
             }
         )
     )
+    contract = operation_contract(
+        spec,
+        observed_periods=tuple(axis.period for axis in observed),
+    )
+    if not contract.applicable:
+        return _not_applicable_decision(contract.reason)
     return _coverage_decision(contract, observed)
 
 
@@ -113,6 +164,7 @@ def coverage_decision_observation(
         "required": _axes_observation(decision.required),
         "observed": _axes_observation(decision.observed),
         "missing": _axes_observation(decision.missing),
+        "period_set": _period_coverage_observation(decision.period_coverage),
     }
 
 
@@ -161,13 +213,87 @@ def _coverage_decision(
     contract: OperationContract,
     observed: tuple[CoverageAxis, ...],
 ) -> CoverageDecision:
+    if contract.period_selection is not None:
+        match contract.period_selection.resolution:
+            case PeriodResolution.UNVERIFIABLE:
+                return _unresolved_period_decision(
+                    contract,
+                    observed,
+                    CoverageDecisionStatus.UNVERIFIABLE,
+                    PeriodCoverageStatus.UNVERIFIABLE,
+                )
+            case PeriodResolution.INVALID:
+                return _unresolved_period_decision(
+                    contract,
+                    observed,
+                    CoverageDecisionStatus.INVALID,
+                    PeriodCoverageStatus.INVALID,
+                )
+            case PeriodResolution.RESOLVED:
+                pass
     normalized = _normalize_latest_axes(contract.required, observed)
     missing = tuple(axis for axis in contract.required if axis not in normalized)
+    period_coverage = _period_coverage(contract.period_selection, normalized)
     return CoverageDecision(
         status=CoverageDecisionStatus.FAIL if missing else CoverageDecisionStatus.PASS,
         reason="missing_coverage" if missing else "complete_coverage",
         required=contract.required,
         observed=normalized,
+        missing=missing,
+        period_coverage=period_coverage,
+    )
+
+
+def _unresolved_period_decision(
+    contract: OperationContract,
+    observed: tuple[CoverageAxis, ...],
+    status: CoverageDecisionStatus,
+    period_status: PeriodCoverageStatus,
+) -> CoverageDecision:
+    selection = contract.period_selection
+    assert selection is not None
+    observed_periods = canonical_observed_periods(
+        tuple(axis.period for axis in observed),
+        selection.grain,
+    )
+    return CoverageDecision(
+        status=status,
+        reason=f"period_{selection.resolution.value}",
+        required=(),
+        observed=observed,
+        missing=(),
+        period_coverage=PeriodCoverage(
+            status=period_status,
+            selection=selection,
+            observed=observed_periods,
+            missing=(),
+        ),
+    )
+
+
+def _period_coverage(
+    selection: PeriodSelection | None,
+    observed_axes: tuple[CoverageAxis, ...],
+) -> PeriodCoverage | None:
+    if selection is None:
+        return None
+    observed = canonical_observed_periods(
+        tuple(axis.period for axis in observed_axes),
+        selection.grain,
+    )
+    missing = tuple(period for period in selection.members if period not in observed)
+    extra = tuple(period for period in observed if period not in selection.members)
+    period_status = (
+        PeriodCoverageStatus.MISSING
+        if missing
+        else PeriodCoverageStatus.EXTRA
+        if extra
+        else PeriodCoverageStatus.MATCH
+    )
+    return PeriodCoverage(
+        status=period_status,
+        selection=selection,
+        observed=observed,
         missing=missing,
     )
 
@@ -182,7 +308,11 @@ def _not_applicable_decision(reason: str) -> CoverageDecision:
     )
 
 
-def operation_contract(spec: RequestQuerySpec) -> OperationContract:
+def operation_contract(
+    spec: RequestQuerySpec,
+    *,
+    observed_periods: Collection[str] = (),
+) -> OperationContract:
     if not spec.entities or not spec.metrics:
         return _not_applicable("extractor_failure")
     if any(entity.kind is not EntityKind.BRAND for entity in spec.entities):
@@ -191,21 +321,36 @@ def operation_contract(spec: RequestQuerySpec) -> OperationContract:
         return _not_applicable("external_domain")
     if spec.requested_view is not None:
         return _not_applicable("general_view")
+    period_selection = (
+        period_selection_for_spec(spec, observed_periods)
+        if len(spec.entities) == 1 and spec.metrics == ("sales",)
+        else None
+    )
+    if period_selection is not None and not _stage1_supports_period_selection(
+        spec,
+        period_selection,
+    ):
+        period_selection = None
     match spec.operation:
         case QueryOperation.CURRENT_VALUE | QueryOperation.COMPARE_CURRENT:
+            pass
+        case QueryOperation.TIME_SERIES if period_selection is not None:
             pass
         case _:
             return _not_applicable("unsupported_operation")
     if not set(spec.metrics).issubset(_SUPPORTED_METRICS):
         return _not_applicable("unsupported_metric")
-    if spec.window_count is not None or spec.granularity is not None:
-        return _not_applicable("unsupported_operation")
-    if (
-        spec.start_period is not None
-        and spec.end_period is not None
-        and spec.start_period != spec.end_period
-    ):
-        return _not_applicable("period_range")
+    if period_selection is None:
+        if spec.window_count is not None or spec.granularity is not None:
+            return _not_applicable("unsupported_operation")
+        if (
+            spec.start_period is not None
+            and spec.end_period is not None
+            and spec.start_period != spec.end_period
+        ):
+            return _not_applicable("period_range")
+    if period_selection is not None:
+        return _period_set_contract(spec, period_selection)
     period = spec.start_period or spec.end_period or "latest"
     required = tuple(
         CoverageAxis(entity.canonical_id, metric, period)
@@ -215,6 +360,41 @@ def operation_contract(spec: RequestQuerySpec) -> OperationContract:
     if not required:
         return _not_applicable("extractor_failure")
     return OperationContract(required=required, applicable=True, reason="stage1_market_metric")
+
+
+def _period_set_contract(
+    spec: RequestQuerySpec,
+    selection: PeriodSelection,
+) -> OperationContract:
+    required = tuple(
+        CoverageAxis(spec.entities[0].canonical_id, "sales", period.value)
+        for period in selection.members
+    )
+    return OperationContract(
+        required=required,
+        applicable=True,
+        reason="stage1_period_set",
+        period_selection=selection,
+    )
+
+
+def _stage1_supports_period_selection(
+    spec: RequestQuerySpec,
+    selection: PeriodSelection,
+) -> bool:
+    match selection.kind:
+        case PeriodRequestKind.CLOSED_RANGE:
+            return (
+                selection.grain is PeriodGrain.MONTH
+                or selection.resolution is not PeriodResolution.RESOLVED
+            )
+        case PeriodRequestKind.TRAILING_WINDOW:
+            return (
+                spec.granularity is TimeGranularity.QUARTER
+                and spec.window_count == 4
+            )
+        case _:
+            return False
 
 
 def _not_applicable(reason: str) -> OperationContract:
@@ -384,3 +564,24 @@ def _axes_observation(
     if not axes:
         return "N/A"
     return [_axis_observation(axis) for axis in axes]
+
+
+def _period_coverage_observation(
+    coverage: PeriodCoverage | None,
+) -> PeriodCoverageObservation | Literal["N/A"]:
+    if coverage is None:
+        return "N/A"
+    selection = coverage.selection
+    return {
+        "status": coverage.status.value,
+        "kind": selection.kind.value,
+        "grain": selection.grain.value,
+        "resolution": selection.resolution.value,
+        "expected_count": selection.expected_count,
+        "observed_count": len(coverage.observed),
+        "missing_count": len(coverage.missing),
+        "expected_periods": [period.value for period in selection.members],
+        "observed_periods": [period.value for period in coverage.observed],
+        "missing_periods": [period.value for period in coverage.missing],
+        "anchor": selection.anchor.value if selection.anchor is not None else None,
+    }
