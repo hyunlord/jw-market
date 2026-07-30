@@ -205,7 +205,12 @@ def test_structured_comparison_plan_does_not_claim_unplanned_rank_coverage() -> 
             "unsupported_operation",
         ),
         (
-            _spec("리바로", start_period="2025-01", end_period="2025-12"),
+            _spec(
+                "리바로",
+                metrics=("share",),
+                start_period="2025-01",
+                end_period="2025-12",
+            ),
             "period_range",
         ),
     ),
