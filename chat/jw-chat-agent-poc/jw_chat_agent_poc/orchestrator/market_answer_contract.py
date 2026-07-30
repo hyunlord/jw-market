@@ -5,6 +5,10 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Final
 
+from jw_chat_agent_poc.agent_loop.requested_source import (
+    extract_requested_sources,
+    source_domain_note,
+)
 from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     eok_value,
     precise_eok_value,
@@ -66,6 +70,16 @@ def enforce_market_answer_contract(
     postcheck_answer = _strategy_market_size_postcheck(question, relevant_calls)
     if postcheck_answer:
         return _public_language(question, postcheck_answer)
+    requested_sources = frozenset(extract_requested_sources(question))
+    source_basis_notes = tuple(
+        note
+        for source in ("ubist", "iqvia_nsa")
+        if (note := source_domain_note((source,))) is not None
+    )
+    if requested_sources == {"ubist", "iqvia_nsa"} and any(
+        note in answer for note in source_basis_notes
+    ):
+        return _public_language(question, answer)
     preserves_identity_mismatch = any(
         str(_render_data(call).get("error_code") or "").upper() == "IDENTITY_MISMATCH"
         for call in relevant_calls or calls
