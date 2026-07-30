@@ -240,6 +240,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError("promotion identity is required before post-gate preflight")
             require_ingest_post_gate(conn, promotion_identity)
             build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+            def record_fdm_activation(backup: dict[str, Any]) -> None:
+                record_mysql_component(
+                    conn,
+                    identity=promotion_identity,
+                    component="fdm",
+                    table_pairs=(
+                        (FILTER_DIMENSION_TABLE, str(backup["table"])),
+                    ),
+                )
+
             if args.direct_shared_promotion:
                 manifest["promotion"] = promote_filter_dimension_rows(
                     conn,
@@ -251,6 +262,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
                     promotion_run_id=promotion_run_id,
+                    on_activated=record_fdm_activation,
                 )
             else:
                 manifest["promotion"] = promote_filter_dimension_slice(
@@ -263,14 +275,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
                     promotion_run_id=promotion_run_id,
+                    on_activated=record_fdm_activation,
                 )
-            backup = manifest["promotion"]["backup"]
-            record_mysql_component(
-                conn,
-                identity=promotion_identity,
-                component="fdm",
-                table_pairs=((FILTER_DIMENSION_TABLE, str(backup["table"])),),
-            )
         manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)

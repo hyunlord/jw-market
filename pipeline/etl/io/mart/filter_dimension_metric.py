@@ -77,7 +77,7 @@ def build_filter_dimension_rows(
         label_col = f"__{spec.dimension_type}_display"
         norm_col = f"__{spec.dimension_type}_norm"
         working[label_col] = _dimension_display_series(working, spec)
-        working[norm_col] = working[label_col].map(lambda value: normalize_spec_value(value, spec))
+        working[norm_col] = working[label_col].map(normalize_dimension_value)
         dim_frame = working.loc[working[norm_col].notna()].copy()
         if dim_frame.empty:
             continue

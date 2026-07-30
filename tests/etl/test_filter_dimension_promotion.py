@@ -37,6 +37,10 @@ class _Cursor:
             self.rows = [{"table_count": 0}]
         elif "SELECT COUNT(*) AS n" in sql:
             self.rows = [{"n": self._next_expected_rows()}]
+        elif "INSERT INTO" in sql and "__stage_" in sql and "SELECT *" in sql:
+            self.rowcount = 1 if params and params[-1] == 0 else 0
+        elif "SELECT MAX(id) AS max_id" in sql:
+            self.rows = [{"max_id": 1}]
         elif "SELECT id," in sql:
             self.rows = [
                 {
@@ -224,8 +228,9 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
     sql = "\n".join(call[0] for call in conn.cursor_instance.calls)
     assert "CREATE DATABASE" not in sql
     assert "ON DUPLICATE KEY UPDATE" in sql
-    assert "CREATE TABLE `jw_mart_d2_stage_20260630_r2`.`mart_general_filter_dimension_metric__old_fdm_run_1`" in sql
-    assert sql.index("CREATE TABLE") < sql.index("ON DUPLICATE KEY UPDATE")
+    assert "CREATE TABLE `jw_mart_d2_stage_20260630_r2`.`mart_general_filter_dimension_metric__stage_fdm_run_1`" in sql
+    assert "mart_general_filter_dimension_metric__old_fdm_run_1" in sql
+    assert sql.index("CREATE TABLE") < sql.index("ON DUPLICATE KEY UPDATE") < sql.index("RENAME TABLE")
     assert "source=%s AND dimension_type=%s" in sql
     assert result["expected_rows"] == 1
     assert result["promoted_rows"] == 1
@@ -318,6 +323,37 @@ def test_source_epoch_uses_configured_runtime_cache_store(monkeypatch) -> None:
     monkeypatch.setattr(runtime_cache.dynamic_response_cache, "_store", _Store())
 
     assert _source_epoch() == "epoch-from-runtime-store"
+
+
+def test_direct_promotion_uses_shared_dimension_hash_contract(monkeypatch) -> None:
+    from pipeline.etl.io.mart import filter_dimension_promote as promote_module
+
+    calls: list[str] = []
+
+    def fake_dimension_value_hash(value: str, *, casefold: bool = False) -> str:
+        assert casefold is False
+        calls.append(value)
+        return "shared-dimension-hash"
+
+    monkeypatch.setattr(promote_module, "dimension_value_hash", fake_dimension_value_hash)
+    payload = promote_module._promotion_payload(
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "atc4_code": "C10C0",
+            "brand_key": "brand-a",
+            "brand_name": "Brand A",
+            "product_code": "p1",
+            "dimension_type": "molecule",
+            "dimension_value": "A  /  B",
+            "dimension_value_norm": "A / B",
+            "raw_value_history": [],
+        },
+        "2026-07-29 00:00:00",
+    )
+
+    assert payload[9] == "shared-dimension-hash"
+    assert calls == ["A / B"]
 
 
 def test_direct_promotion_builds_from_bounded_ubist_partitions(monkeypatch) -> None:

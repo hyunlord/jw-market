@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-import hashlib
 import json
 import logging
 import math
-import re
 from typing import Any
 
+from pipeline.contracts.dimension_registry import dimension_value_hash
 from pipeline.contracts.serving_tables import (
     GENERAL_FILTER_DIMENSION_TABLE as FILTER_DIMENSION_TABLE,
     STRATEGIC_FILTER_DIMENSION_TABLE as STRATEGIC_DIMENSION_TABLE,
@@ -829,7 +828,7 @@ def dimension_filter_predicate(
     parts: list[str] = []
     params: list[str] = []
     for item in filters:
-        hashes = tuple(_dimension_value_hash(value, casefold=casefold_values) for value in item.values)
+        hashes = tuple(dimension_value_hash(value, casefold=casefold_values) for value in item.values)
         if not hashes:
             continue
         parts.append(f"(dimension_type = %s AND dimension_value_hash IN ({placeholders(hashes)}))")
@@ -972,13 +971,6 @@ def strategic_kind_for_view(view: str) -> str:
 
 def strategic_table_for_view(view: str) -> str:
     return "mart_strategic_ml_brand_metric" if strategic_kind_for_view(view) == "ml" else "mart_strategic_cd_brand_metric"
-
-
-def _dimension_value_hash(value: str, *, casefold: bool = False) -> str:
-    normalized = re.sub(r"\s+", " ", value.strip()).casefold()
-    if not casefold:
-        normalized = re.sub(r"\s+", " ", value.strip())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def compute_hhi(brands: tuple[BrandMetric, ...]) -> float | None:

@@ -14,6 +14,7 @@ class PromotionIdentity:
     ingest_run_id: str
     serving_db: str
     generation_db: str
+    ledger_db: str | None = None
 
 
 class BackupInspector(Protocol):
@@ -28,6 +29,7 @@ def add_promotion_identity_args(parser: Any) -> None:
     parser.add_argument("--promotion-epoch")
     parser.add_argument("--ingest-run-id")
     parser.add_argument("--generation-db")
+    parser.add_argument("--ledger-db")
 
 
 def identity_from_args(
@@ -41,18 +43,19 @@ def identity_from_args(
         getattr(args, "promotion_epoch", None),
         getattr(args, "ingest_run_id", None),
         getattr(args, "generation_db", None),
+        getattr(args, "ledger_db", None),
     )
     if not any(values) and required:
         raise ValueError(
             "promotion ledger identity is required: provide --promotion-epoch, "
-            "--ingest-run-id, and --generation-db"
+            "--ingest-run-id, --generation-db, and --ledger-db"
         )
     if not any(values):
         return None
     if not all(values):
         raise ValueError(
             "promotion ledger wiring requires --promotion-epoch, --ingest-run-id, "
-            "and --generation-db together"
+            "--generation-db, and --ledger-db together"
         )
     return PromotionIdentity(
         promotion_run_id=promotion_run_id,
@@ -60,6 +63,7 @@ def identity_from_args(
         ingest_run_id=str(values[1]),
         serving_db=serving_db,
         generation_db=str(values[2]),
+        ledger_db=str(values[3]),
     )
 
 
@@ -129,10 +133,14 @@ def require_ingest_post_gate(
     conn: Any, identity: PromotionIdentity, *, dialect: str = "mysql"
 ) -> None:
     """Refuse promotion unless its linked ingest run completed every post-gate."""
+    if not identity.ledger_db:
+        raise ValueError("promotion post-gate requires an explicit ledger_db")
+    ledger_db = _qualified_ledger_db(identity.ledger_db, dialect=dialect)
     mark = "?" if dialect == "sqlite" else "%s"
     cursor = conn.cursor()
     cursor.execute(
-        f"SELECT status, reason FROM ingest_ledger WHERE run_id={mark} ORDER BY id DESC LIMIT 1",
+        f"SELECT status, reason FROM {ledger_db}.ingest_ledger "
+        f"WHERE run_id={mark} ORDER BY id DESC LIMIT 1",
         (identity.ingest_run_id,),
     )
     row = cursor.fetchone()
@@ -148,3 +156,11 @@ def require_ingest_post_gate(
             f"reason={reason}; rollback=python -m pipeline.scripts.rollback "
             "--to latest-good --dry-run"
         )
+
+
+def _qualified_ledger_db(ledger_db: str, *, dialect: str) -> str:
+    if not ledger_db.replace("_", "").isalnum():
+        raise ValueError(f"unsafe ledger schema name: {ledger_db}")
+    if dialect == "sqlite":
+        return f'"{ledger_db}"'
+    return f"`{ledger_db}`"

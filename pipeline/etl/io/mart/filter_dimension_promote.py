@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-import hashlib
-import re
+from collections.abc import Callable, Sequence
 import time
 from typing import Any
 
 import pymysql
 
+from pipeline.contracts.dimension_registry import dimension_value_hash
 from pipeline.etl.io.mart.filter_dimension_load import quote_id
 from pipeline.etl.io.mart.general_json import dumps
 from pipeline.etl.io.mart.filter_dimension_metric import FILTER_DIMENSION_TABLE
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
+from pipeline.etl.io.mart.filter_dimension_copy import (
+    create_filter_dimension_backup_batched,
+)
+from pipeline.etl.io.mart.filter_dimension_swap import (
+    activate_filter_dimension_swap,
+    prepare_filter_dimension_swap,
+    rollback_filter_dimension_swap,
+)
 
 
 _PROMOTION_COLUMNS = (
@@ -27,7 +34,6 @@ _PROMOTION_COLUMNS = (
     "dimension_value_hash",
     "raw_value_history",
 )
-_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def promote_filter_dimension_rows(
@@ -41,8 +47,9 @@ def promote_filter_dimension_rows(
     batch_size: int = 200,
     allow_shared_serving_target: bool = False,
     promotion_run_id: str,
+    on_activated: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Promote a fully computed in-memory slice when staging DDL is unavailable."""
+    """Promote a fully computed slice through a hidden atomic-swap table."""
 
     _validate_promotion_target(
         target_db,
@@ -72,18 +79,22 @@ def promote_filter_dimension_rows(
     if len(unique_keys) != len(payloads):
         raise ValueError("computed ubist/molecule slice contains duplicate serving keys")
 
-    backup = create_filter_dimension_backup(conn, target_db, promotion_run_id)
-    target_table = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
+    swap = prepare_filter_dimension_swap(
+        conn,
+        target_db,
+        promotion_run_id,
+        batch_size=batch_size,
+    )
     promoted = _upsert_payloads(
         conn,
-        target_table=target_table,
+        target_table=swap.qualified_stage,
         payloads=payloads,
         batch_size=batch_size,
     )
     expected = len(payloads)
     _require_complete_promotion(
         conn,
-        target_table=target_table,
+        target_table=swap.qualified_stage,
         source=source,
         dimension_type=dimension_type,
         build_marker=build_marker,
@@ -92,11 +103,17 @@ def promote_filter_dimension_rows(
     )
     stale_deleted = _delete_stale_slice(
         conn,
-        target_table=target_table,
+        target_table=swap.qualified_stage,
         source=source,
         dimension_type=dimension_type,
         build_marker=build_marker,
         batch_size=batch_size,
+    )
+    backup = activate_filter_dimension_swap(
+        conn,
+        swap,
+        source=source,
+        on_activated=on_activated,
     )
     return {
         "source_db": None,
@@ -123,6 +140,7 @@ def promote_filter_dimension_slice(
     batch_size: int = 200,
     allow_shared_serving_target: bool = False,
     promotion_run_id: str,
+    on_activated: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Promote one verified sidecar slice without touching adjacent dimensions."""
 
@@ -136,7 +154,6 @@ def promote_filter_dimension_slice(
     )
 
     source_table = f"{quote_id(source_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
-    target_table = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT COUNT(*) AS n FROM {source_table} WHERE source=%s AND dimension_type=%s",
@@ -146,11 +163,16 @@ def promote_filter_dimension_slice(
     if expected < 1:
         raise RuntimeError("refusing to replace ubist/molecule with an empty staged slice")
 
-    backup = create_filter_dimension_backup(conn, target_db, promotion_run_id)
+    swap = prepare_filter_dimension_swap(
+        conn,
+        target_db,
+        promotion_run_id,
+        batch_size=batch_size,
+    )
     promoted = _upsert_slice(
         conn,
         source_table=source_table,
-        target_table=target_table,
+        target_table=swap.qualified_stage,
         source=source,
         dimension_type=dimension_type,
         build_marker=build_marker,
@@ -158,7 +180,7 @@ def promote_filter_dimension_slice(
     )
     _require_complete_promotion(
         conn,
-        target_table=target_table,
+        target_table=swap.qualified_stage,
         source=source,
         dimension_type=dimension_type,
         build_marker=build_marker,
@@ -167,11 +189,17 @@ def promote_filter_dimension_slice(
     )
     stale_deleted = _delete_stale_slice(
         conn,
-        target_table=target_table,
+        target_table=swap.qualified_stage,
         source=source,
         dimension_type=dimension_type,
         build_marker=build_marker,
         batch_size=batch_size,
+    )
+    backup = activate_filter_dimension_swap(
+        conn,
+        swap,
+        source=source,
+        on_activated=on_activated,
     )
     return {
         "source_db": source_db,
@@ -190,43 +218,31 @@ def create_filter_dimension_backup(
     conn: pymysql.connections.Connection,
     target_db: str,
     promotion_run_id: str,
+    *,
+    batch_size: int = 200,
 ) -> dict[str, Any]:
-    if not _RUN_ID_RE.fullmatch(promotion_run_id):
-        raise ValueError("promotion_run_id must contain only letters, numbers, and underscores")
-    backup_table = f"{FILTER_DIMENSION_TABLE}__old_{promotion_run_id}"
-    if len(backup_table) > 64:
-        raise ValueError(f"FDM backup identifier exceeds 64 characters: {backup_table}")
-    if _table_exists(conn, target_db, backup_table):
-        raise RuntimeError(f"FDM backup already exists: {target_db}.{backup_table}")
-    live = f"{quote_id(target_db)}.{quote_id(FILTER_DIMENSION_TABLE)}"
-    backup = f"{quote_id(target_db)}.{quote_id(backup_table)}"
-    live_rows = _table_count(conn, live)
-    if live_rows < 1:
-        raise RuntimeError(f"refusing to back up empty FDM table: {target_db}.{FILTER_DIMENSION_TABLE}")
-    with conn.cursor() as cur:
-        cur.execute(f"CREATE TABLE {backup} LIKE {live}")
-        cur.execute(f"INSERT INTO {backup} SELECT * FROM {live}")
-    conn.commit()
-    backup_rows = _table_count(conn, backup)
-    if backup_rows != live_rows:
-        raise RuntimeError(f"FDM backup row count mismatch: {backup_rows} != {live_rows}")
-    return {"table": backup_table, "row_count": backup_rows, "promotion_run_id": promotion_run_id}
+    _validate_batch_size(batch_size)
+    return create_filter_dimension_backup_batched(
+        conn,
+        target_db,
+        promotion_run_id,
+        batch_size=batch_size,
+    )
 
 
-def _table_exists(conn: pymysql.connections.Connection, db_name: str, table_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT COUNT(*) AS table_count FROM information_schema.tables "
-            "WHERE table_schema=%s AND table_name=%s",
-            (db_name, table_name),
-        )
-        return int(cur.fetchone()["table_count"]) > 0
-
-
-def _table_count(conn: pymysql.connections.Connection, qualified_table: str) -> int:
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS n FROM {qualified_table}")
-        return int(cur.fetchone()["n"])
+def rollback_filter_dimension_promotion(
+    conn: pymysql.connections.Connection,
+    *,
+    target_db: str,
+    promotion_run_id: str,
+    expected_backup_rows: int,
+) -> dict[str, Any]:
+    return rollback_filter_dimension_swap(
+        conn,
+        target_db=target_db,
+        promotion_run_id=promotion_run_id,
+        expected_backup_rows=expected_backup_rows,
+    )
 
 
 def _upsert_slice(
@@ -288,17 +304,21 @@ def _validate_promotion_target(
         raise ValueError("shared serving target promotion requires explicit approval")
     if source != "ubist" or dimension_type != "molecule":
         raise ValueError("this promotion path is restricted to the ubist/molecule slice")
-    if batch_size < 1 or batch_size > 200:
-        raise ValueError("batch_size must be between 1 and 200")
+    _validate_batch_size(batch_size)
     if "`" in target_db or not target_db.replace("_", "").isalnum():
         raise ValueError(f"unsafe target schema name: {target_db}")
+
+
+def _validate_batch_size(batch_size: int) -> None:
+    if batch_size < 1 or batch_size > 200:
+        raise ValueError("batch_size must be between 1 and 200")
 
 
 def _promotion_payload(row: dict[str, Any], build_marker: str) -> tuple[Any, ...]:
     normalized = str(row["dimension_value_norm"])
     values = {
         **row,
-        "dimension_value_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        "dimension_value_hash": dimension_value_hash(normalized),
         "raw_value_history": dumps(row["raw_value_history"]),
     }
     return tuple(values[column] for column in _PROMOTION_COLUMNS) + (build_marker,)

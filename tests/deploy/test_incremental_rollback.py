@@ -55,7 +55,14 @@ def test_gate_failed_ingest_blocks_promotion() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE ingest_ledger (id INTEGER, run_id TEXT, status TEXT, reason TEXT)")
     conn.execute("INSERT INTO ingest_ledger VALUES (1, 'ingest-1', 'gate_failed', 'PG-2 mismatch')")
-    identity = PromotionIdentity("promote-1", "2026-07", "ingest-1", "serving", "generation")
+    identity = PromotionIdentity(
+        "promote-1",
+        "2026-07",
+        "ingest-1",
+        "serving",
+        "generation",
+        ledger_db="main",
+    )
 
     with pytest.raises(RuntimeError, match="status=gate_failed"):
         require_ingest_post_gate(conn, identity, dialect="sqlite")
@@ -65,7 +72,39 @@ def test_complete_ingest_allows_promotion_preflight() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE ingest_ledger (id INTEGER, run_id TEXT, status TEXT, reason TEXT)")
     conn.execute("INSERT INTO ingest_ledger VALUES (1, 'ingest-1', 'complete', NULL)")
-    identity = PromotionIdentity("promote-1", "2026-07", "ingest-1", "serving", "generation")
+    identity = PromotionIdentity(
+        "promote-1",
+        "2026-07",
+        "ingest-1",
+        "serving",
+        "generation",
+        ledger_db="main",
+    )
+
+    require_ingest_post_gate(conn, identity, dialect="sqlite")
+
+
+def test_post_gate_qualifies_the_explicit_ledger_database() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "ATTACH DATABASE ':memory:' AS d2"
+    )
+    conn.execute(
+        "CREATE TABLE d2.ingest_ledger "
+        "(id INTEGER, run_id TEXT, status TEXT, reason TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO d2.ingest_ledger VALUES "
+        "(1, 'ingest-1', 'complete', NULL)"
+    )
+    identity = PromotionIdentity(
+        "promote-1",
+        "2026-07",
+        "ingest-1",
+        "serving",
+        "generation",
+        ledger_db="d2",
+    )
 
     require_ingest_post_gate(conn, identity, dialect="sqlite")
 
@@ -280,6 +319,7 @@ def test_mutating_promotion_requires_ledger_identity() -> None:
         promotion_epoch=None,
         ingest_run_id=None,
         generation_db=None,
+        ledger_db=None,
     )
 
     with pytest.raises(ValueError, match="promotion ledger identity is required"):
