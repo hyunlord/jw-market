@@ -67,6 +67,7 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     enforce_market_answer_contract,
+    is_actionable_upstream_guidance,
     render_same_market_sales_answer,
 )
 from jw_chat_agent_poc.orchestrator.hira_disease import (
@@ -3469,6 +3470,12 @@ def _is_terminal_typed_result(result: dict) -> bool:
             isinstance(official_web_fallback, dict)
             and official_web_fallback.get("reason_code") == "IDENTITY_MISMATCH"
             and official_web_fallback.get("calls_executed") == 0
+        ):
+            return True
+        if (
+            isinstance(official_web_fallback, dict)
+            and official_web_fallback.get("reason_code") == "UPSTREAM_UNAVAILABLE"
+            and is_actionable_upstream_guidance(str(result.get("answer") or ""))
         ):
             return True
     return diagnostics.get("fallback_code") in {

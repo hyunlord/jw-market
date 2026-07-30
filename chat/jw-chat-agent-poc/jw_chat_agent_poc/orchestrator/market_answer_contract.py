@@ -34,6 +34,14 @@ _STRATEGY_MARKET_SIZE_GOLDENS: Final[dict[tuple[str, str], tuple[Decimal, int | 
 }
 
 
+def is_actionable_upstream_guidance(answer: str) -> bool:
+    """Return whether an upstream failure includes a concrete official lookup path."""
+
+    return "검색어:" in answer and (
+        "직접 확인:" in answer or "공식 확인 경로" in answer
+    )
+
+
 def enforce_market_answer_contract(
     question: str,
     answer: str,
@@ -54,7 +62,16 @@ def enforce_market_answer_contract(
         str(_render_data(call).get("error_code") or "").upper() == "IDENTITY_MISMATCH"
         for call in relevant_calls or calls
     ) and "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in answer
-    status_answer = "" if preserves_identity_mismatch else _status_answer(question, relevant_calls or calls)
+    preserves_upstream_guidance = any(
+        str(_render_data(call).get("error_code") or "").upper()
+        == "UPSTREAM_UNAVAILABLE"
+        for call in relevant_calls or calls
+    ) and is_actionable_upstream_guidance(answer)
+    status_answer = (
+        ""
+        if preserves_identity_mismatch or preserves_upstream_guidance
+        else _status_answer(question, relevant_calls or calls)
+    )
     contracted = status_answer
     unresolved_answer = ""
     if not contracted:
