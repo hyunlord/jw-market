@@ -3,11 +3,11 @@ from __future__ import annotations
 """DDL and Galera-safe writes for the dynamic filter dimension sidecar."""
 
 from collections.abc import Sequence
-import hashlib
 from typing import Any
 
 import pymysql
 
+from pipeline.contracts.dimension_registry import dimension_value_hash
 from .filter_dimension_metric import FILTER_DIMENSION_TABLE
 from .filter_dimension_metric import guard_dimension_stage_target
 from .general_json import dumps
@@ -189,5 +189,5 @@ def _column_value(row: dict[str, Any], column: str) -> Any:
     if column == "raw_value_history":
         return dumps(row[column])
     if column == "dimension_value_hash":
-        return hashlib.sha256(str(row["dimension_value_norm"]).encode("utf-8")).hexdigest()
+        return dimension_value_hash(str(row["dimension_value_norm"]))
     return row[column]

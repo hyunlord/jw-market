@@ -44,6 +44,7 @@ from pipeline.etl.io.mart.general_ubist import load_ubist_base_frame
 from pipeline.etl.io.mart.general_ubist import iter_ubist_base_frames
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
 from pipeline.scripts.rollback.recording import (
+    PostGateError,
     add_promotion_identity_args,
     identity_from_args,
     record_mysql_component,
@@ -238,8 +239,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise ValueError("--promotion-run-id is required with --promote-to")
             if promotion_identity is None:
                 raise RuntimeError("promotion identity is required before post-gate preflight")
-            require_ingest_post_gate(conn, promotion_identity)
+            try:
+                require_ingest_post_gate(conn, promotion_identity)
+            except PostGateError as exc:
+                rollback_result = _rollback_failed_post_gate_candidate(conn, args)
+                raise RuntimeError(
+                    f"{exc}; automatic rollback completed: {rollback_result}"
+                ) from exc
             build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+            def record_fdm_activation(backup: dict[str, Any]) -> None:
+                record_mysql_component(
+                    conn,
+                    identity=promotion_identity,
+                    component="fdm",
+                    table_pairs=(
+                        (FILTER_DIMENSION_TABLE, str(backup["table"])),
+                    ),
+                )
+
             if args.direct_shared_promotion:
                 manifest["promotion"] = promote_filter_dimension_rows(
                     conn,
@@ -251,6 +269,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
                     promotion_run_id=promotion_run_id,
+                    on_activated=record_fdm_activation,
                 )
             else:
                 manifest["promotion"] = promote_filter_dimension_slice(
@@ -263,14 +282,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     batch_size=args.batch_size,
                     allow_shared_serving_target=args.allow_shared_serving_target,
                     promotion_run_id=promotion_run_id,
+                    on_activated=record_fdm_activation,
                 )
-            backup = manifest["promotion"]["backup"]
-            record_mysql_component(
-                conn,
-                identity=promotion_identity,
-                component="fdm",
-                table_pairs=((FILTER_DIMENSION_TABLE, str(backup["table"])),),
-            )
         manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)
@@ -486,8 +499,30 @@ def _connect_admin() -> pymysql.connections.Connection:
         password=password,
         charset="utf8mb4",
         autocommit=True,
+        connect_timeout=10,
+        read_timeout=30,
+        write_timeout=30,
         cursorclass=pymysql.cursors.DictCursor,
     )
+
+
+def _rollback_failed_post_gate_candidate(
+    conn: pymysql.connections.Connection,
+    args: argparse.Namespace,
+) -> str:
+    if args.direct_shared_promotion:
+        return "in-memory candidate discarded; live schema unchanged"
+    if args.allow_local_serving_target:
+        return "local serving target preserved; shared live schema unchanged"
+    target_db = str(args.target_db)
+    if not target_db.startswith("jw_mart_dim_stage_"):
+        raise RuntimeError(
+            "automatic post-gate rollback refuses a non-isolated target: "
+            f"{target_db}"
+        )
+    with conn.cursor() as cursor:
+        cursor.execute(f"DROP DATABASE {quote_id(target_db)}")
+    return f"isolated candidate dropped: {target_db}; live schema unchanged"
 
 
 def _guard_local_serving_target(conn: pymysql.connections.Connection, target_db: str) -> None:

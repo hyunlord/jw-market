@@ -3527,6 +3527,28 @@ def test_dimension_filter_predicate_uses_sidecar_product_rows(monkeypatch) -> No
     assert any("mart_general_filter_dimension_metric" in sql for sql in calls)
 
 
+def test_dimension_filter_predicate_uses_shared_dimension_hash_contract(monkeypatch) -> None:
+    # Given: a shared hash contract with an observable result
+    calls: list[tuple[str, bool]] = []
+
+    def fake_dimension_value_hash(value: str, *, casefold: bool = False) -> str:
+        calls.append((value, casefold))
+        return "shared-dimension-hash"
+
+    monkeypatch.setattr(aggregator_module, "dimension_value_hash", fake_dimension_value_hash)
+
+    # When: the general sidecar predicate is built for a raw molecule value
+    sql, params = aggregator_module.dimension_filter_predicate(
+        (DimensionFilter("molecule", ("A  /  B",)),),
+        casefold_values=False,
+    )
+
+    # Then: the reader delegates to the same shared hash contract used by sidecar producers
+    assert "dimension_value_hash" in sql
+    assert "shared-dimension-hash" in params
+    assert calls == [("A  /  B", False)]
+
+
 def test_iqvia_pack_desc_filter_uses_pack_sidecar_dimension(monkeypatch) -> None:
     calls: list[tuple[str, tuple[str, ...]]] = []
     expected_hash = hashlib.sha256("PFS 162MG/0.9ML".encode("utf-8")).hexdigest()

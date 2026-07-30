@@ -116,6 +116,38 @@ def test_build_filter_dimension_rows_can_rebuild_only_raw_ubist_molecule() -> No
     assert rows[0]["dimension_value"] == "vitamin B12 / folate"
 
 
+def test_ubist_molecule_hash_norm_collapses_repeated_whitespace() -> None:
+    # Given: the raw UBIST molecule spelling that previously produced a stored/query hash mismatch
+    raw_molecule = "atorvastatin calcium trihydrate  ( as atorvastatin),  ezetimibe"
+    frame = pd.DataFrame(
+        [
+            {
+                "atc4_code": "C10C0",
+                "brand_key": "brand-a",
+                "brand_name": "Brand A",
+                "product_code": "p1",
+                "period_yyyymm": "2026-01",
+                "raw_value": 10.0,
+                "ubist_molecule_raw": raw_molecule,
+            }
+        ]
+    )
+
+    # When: the product-level sidecar writer creates the molecule row
+    rows = sidecar.build_filter_dimension_rows(
+        "ubist",
+        "sales",
+        frame,
+        dimension_types={"molecule"},
+    )
+
+    # Then: display spelling is retained but the hash input uses the canonical whitespace contract
+    assert rows[0]["dimension_value"] == raw_molecule
+    assert rows[0]["dimension_value_norm"] == (
+        "atorvastatin calcium trihydrate ( as atorvastatin), ezetimibe"
+    )
+
+
 def test_build_filter_dimension_rows_keeps_iqvia_product_level_grain() -> None:
     frame = pd.DataFrame(
         [

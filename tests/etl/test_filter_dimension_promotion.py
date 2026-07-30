@@ -3,6 +3,8 @@ from __future__ import annotations
 from argparse import Namespace
 
 import pandas as pd
+import pymysql
+import pytest
 
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
@@ -37,6 +39,10 @@ class _Cursor:
             self.rows = [{"table_count": 0}]
         elif "SELECT COUNT(*) AS n" in sql:
             self.rows = [{"n": self._next_expected_rows()}]
+        elif "INSERT INTO" in sql and "__stage_" in sql and "SELECT *" in sql:
+            self.rowcount = 1 if params and params[-1] == 0 else 0
+        elif "SELECT MAX(id) AS max_id" in sql:
+            self.rows = [{"max_id": 1}]
         elif "SELECT id," in sql:
             self.rows = [
                 {
@@ -88,6 +94,115 @@ def test_shared_promotion_checks_the_approved_serving_schema(monkeypatch) -> Non
         == "jw_mart_d2_stage_20260630_r2"
     )
     assert _serving_guard_schema(Namespace(promote_to=None)) == "jw_mart"
+
+
+def test_admin_connection_has_bounded_network_timeouts(monkeypatch) -> None:
+    from pipeline.scripts.etl import build_filter_dimension_metric as cli
+
+    captured: dict[str, object] = {}
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        cli,
+        "load_env",
+        lambda _path: {
+            "MARIADB_HOST": "db",
+            "MARIADB_PORT": "3306",
+            "MARIADB_USER": "reader",
+            "MARIADB_PASSWORD": "masked",
+        },
+    )
+    monkeypatch.setattr(cli.pymysql, "connect", fake_connect)
+
+    cli._connect_admin()
+
+    assert captured["connect_timeout"] == 10
+    assert captured["read_timeout"] == 30
+    assert captured["write_timeout"] == 30
+
+
+def test_post_gate_timeout_drops_only_this_runs_isolated_stage(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from pipeline.scripts.etl import build_filter_dimension_metric as cli
+
+    calls: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, _params=None) -> None:
+            calls.append(sql)
+            if "ingest_ledger" in sql:
+                raise pymysql.err.OperationalError(
+                    1969,
+                    "Query execution was interrupted (max_statement_time exceeded)",
+                )
+
+        def fetchone(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def close(self) -> None:
+            return None
+
+    conn = Connection()
+    monkeypatch.setattr(cli, "_connect_admin", lambda: conn)
+    monkeypatch.setattr(cli, "_guard_new_sidecar_target", lambda *_args: None)
+    monkeypatch.setattr(cli, "_general_table_counts", lambda *_args: {"general": 1})
+    monkeypatch.setattr(
+        cli,
+        "create_filter_dimension_table",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(cli, "_load_source_rows", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli, "_target_summary", lambda *_args: {"row_count": 1})
+
+    args = Namespace(
+        target_db="jw_mart_dim_stage_postgate_timeout",
+        manifest_path=tmp_path / "manifest.json",
+        source="ubist",
+        copy_ubist_from=None,
+        copy_all_from=None,
+        allow_local_serving_target=False,
+        ubist_dir=None,
+        spool_dir=None,
+        max_rows=None,
+        batch_size=200,
+        dimension_type="molecule",
+        promote_to="jw_mart_d2_stage_20260630_r2",
+        allow_shared_serving_target=True,
+        direct_shared_promotion=False,
+        build_sha="build-sha",
+        promotion_run_id="fdm-postgate-timeout",
+        promotion_epoch="2026-07",
+        ingest_run_id="ingest-timeout",
+        generation_db="jw_mart_dim_stage_postgate_timeout",
+        ledger_db="jw_mart_d2_stage_20260630_r2",
+    )
+
+    with pytest.raises(RuntimeError, match="automatic rollback completed"):
+        cli.run(args)
+
+    assert any(
+        sql == "DROP DATABASE `jw_mart_dim_stage_postgate_timeout`"
+        for sql in calls
+    )
+    assert all(
+        "DROP DATABASE `jw_mart_d2_stage_20260630_r2`" not in sql
+        for sql in calls
+    )
 
 
 def test_isolated_builder_checks_the_configured_serving_schema(monkeypatch) -> None:
@@ -224,8 +339,9 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
     sql = "\n".join(call[0] for call in conn.cursor_instance.calls)
     assert "CREATE DATABASE" not in sql
     assert "ON DUPLICATE KEY UPDATE" in sql
-    assert "CREATE TABLE `jw_mart_d2_stage_20260630_r2`.`mart_general_filter_dimension_metric__old_fdm_run_1`" in sql
-    assert sql.index("CREATE TABLE") < sql.index("ON DUPLICATE KEY UPDATE")
+    assert "CREATE TABLE `jw_mart_d2_stage_20260630_r2`.`mart_general_filter_dimension_metric__stage_fdm_run_1`" in sql
+    assert "mart_general_filter_dimension_metric__old_fdm_run_1" in sql
+    assert sql.index("CREATE TABLE") < sql.index("ON DUPLICATE KEY UPDATE") < sql.index("RENAME TABLE")
     assert "source=%s AND dimension_type=%s" in sql
     assert result["expected_rows"] == 1
     assert result["promoted_rows"] == 1
@@ -318,6 +434,37 @@ def test_source_epoch_uses_configured_runtime_cache_store(monkeypatch) -> None:
     monkeypatch.setattr(runtime_cache.dynamic_response_cache, "_store", _Store())
 
     assert _source_epoch() == "epoch-from-runtime-store"
+
+
+def test_direct_promotion_uses_shared_dimension_hash_contract(monkeypatch) -> None:
+    from pipeline.etl.io.mart import filter_dimension_promote as promote_module
+
+    calls: list[str] = []
+
+    def fake_dimension_value_hash(value: str, *, casefold: bool = False) -> str:
+        assert casefold is False
+        calls.append(value)
+        return "shared-dimension-hash"
+
+    monkeypatch.setattr(promote_module, "dimension_value_hash", fake_dimension_value_hash)
+    payload = promote_module._promotion_payload(
+        {
+            "source": "ubist",
+            "measure": "sales",
+            "atc4_code": "C10C0",
+            "brand_key": "brand-a",
+            "brand_name": "Brand A",
+            "product_code": "p1",
+            "dimension_type": "molecule",
+            "dimension_value": "A  /  B",
+            "dimension_value_norm": "A / B",
+            "raw_value_history": [],
+        },
+        "2026-07-29 00:00:00",
+    )
+
+    assert payload[9] == "shared-dimension-hash"
+    assert calls == ["A / B"]
 
 
 def test_direct_promotion_builds_from_bounded_ubist_partitions(monkeypatch) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
 import re
 from typing import Any, Final
 
@@ -220,6 +221,13 @@ def normalize_dimension_value(value: Any) -> str | None:
     if normalized.lower() in EMPTY_DIMENSION_VALUES:
         return None
     return normalized
+
+
+def dimension_value_hash(value: str, *, casefold: bool = False) -> str:
+    normalized = normalize_dimension_value(value) or ""
+    if casefold:
+        normalized = normalized.casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def normalize_spec_value(value: Any, spec: DimensionSpec) -> str | None:
