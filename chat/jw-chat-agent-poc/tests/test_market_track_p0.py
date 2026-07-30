@@ -599,6 +599,48 @@ def test_brand_comparison_deduplicates_calls_and_computes_share_direction() -> N
     assert "| 로수젯 | 2025-08 9.10% | 2026-05 9.13% | 상승 |" in answer
 
 
+def test_brand_rank_comparison_adds_latest_rank_column() -> None:
+    # Given: the comparison tool returned a current rank for every requested brand.
+    calls = [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                "status": "ok",
+                "brand": brand,
+                "rank": rank,
+                "brand_value_series_10pt": [
+                    {"period": "2025-08", "value_krw": start_sales, "ms_pct": start_share},
+                    {"period": "2026-05", "value_krw": latest_sales, "ms_pct": latest_share},
+                ],
+            },
+        }
+        for brand, rank, start_share, latest_share, start_sales, latest_sales in (
+            ("리바로", 7, 3.93, 3.76, 7_963_000_000, 8_039_000_000),
+            ("리바로젯", 4, 4.88, 5.12, 9_550_000_000, 10_946_000_000),
+            ("로수젯", 1, 9.10, 9.13, 18_459_000_000, 19_524_000_000),
+            ("리피토", 2, 6.31, 6.13, 13_752_000_000, 13_109_000_000),
+        )
+    ]
+
+    # When: the answer contract renders an explicit multi-brand rank comparison.
+    answer = enforce_market_answer_contract(
+        question="리바로, 리바로젯, 로수젯, 리피토 네 브랜드 순위를 비교해줘",
+        answer="",
+        tool_calls=calls,
+    )
+
+    # Then: the existing comparison columns remain and current rank is appended.
+    assert (
+        "| 브랜드 | 시작 점유율 | 최신 점유율 | 방향 | 시작 매출 | 최신 매출 | 최신 순위 |"
+        in answer
+    )
+    assert "| 리바로 | 2025-08 3.93% | 2026-05 3.76% | 하락 | 79.63억원 | 80.39억원 | 7위 |" in answer
+    assert "| 리바로젯 | 2025-08 4.88% | 2026-05 5.12% | 상승 | 95.50억원 | 109.46억원 | 4위 |" in answer
+    assert "| 로수젯 | 2025-08 9.10% | 2026-05 9.13% | 상승 | 184.59억원 | 195.24억원 | 1위 |" in answer
+    assert "| 리피토 | 2025-08 6.31% | 2026-05 6.13% | 하락 | 137.52억원 | 131.09억원 | 2위 |" in answer
+
+
 def test_channel_ranking_uses_only_channel_filtered_rows() -> None:
     answer = enforce_market_answer_contract(
         question="리바로 시장에서 상급종합병원 채널 내 상위 브랜드",
