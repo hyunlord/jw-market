@@ -32,11 +32,15 @@ class BqCardinalityStop:
 
     @property
     def message(self) -> str:
-        labels = ", ".join(self.slots.brands)
-        return (
-            f"{labels} 중 한 브랜드를 지정해 다시 질문해 주세요. "
-            "현재 이 분석 계약은 여러 브랜드를 한 번에 처리하지 않습니다."
-        )
+        return multi_brand_cardinality_message(self.slots.brands)
+
+
+def multi_brand_cardinality_message(brands: tuple[str, ...]) -> str:
+    labels = ", ".join(brands)
+    return (
+        f"{labels} 중 한 브랜드를 지정해 다시 질문해 주세요. "
+        "현재 이 분석 계약은 여러 브랜드를 한 번에 처리하지 않습니다."
+    )
 
 
 _SOURCE_VARIANTS: Final[dict[tuple[str, str], tuple[str, ...]]] = {

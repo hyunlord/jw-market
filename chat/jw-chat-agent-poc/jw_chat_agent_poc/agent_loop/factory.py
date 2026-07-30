@@ -182,6 +182,8 @@ def brand_unresolved_result(
     question: str,
     routes: list[BQSubQuestion] | tuple[BQSubQuestion, ...],
     diagnostics: dict[str, Any],
+    *,
+    message: str | None = None,
 ) -> dict[str, Any]:
     """Ask which brand was meant, instead of letting the planner's exception out.
 
@@ -193,10 +195,15 @@ def brand_unresolved_result(
     only in pod logs.
     """
 
-    markdown = MarkdownResponseBuilder().brand_unresolved(
-        "어느 브랜드 기준인지 확인되지 않아 답변을 드릴 수 없습니다. "
-        "브랜드명을 함께 알려주시거나, 시장 단위로 보시려면 시장을 지정해 주세요."
+    unresolved_message = (
+        message
+        if message is not None
+        else (
+            "어느 브랜드 기준인지 확인되지 않아 답변을 드릴 수 없습니다. "
+            "브랜드명을 함께 알려주시거나, 시장 단위로 보시려면 시장을 지정해 주세요."
+        )
     )
+    markdown = MarkdownResponseBuilder().brand_unresolved(unresolved_message)
     return {
         "question": question,
         "resolution": None,
