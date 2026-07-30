@@ -14,6 +14,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, 
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
 from jw_chat_agent_poc.service.deep_report_cleanup import repair_plain_table_urls, slim_source_tables
 from jw_chat_agent_poc.service.failure_disposition import failure_kind as detect_failure_kind
+from jw_chat_agent_poc.tools.query_layer.errors import INCOMPATIBLE_COMPARISON_REASON
 from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
 
 
@@ -2024,9 +2025,15 @@ def enforce_relational_numeric_claims_with_trace(
 
     failed_metrics = _failed_relational_metrics(question, call_items)
     successful_metrics = _successful_relational_metrics(call_items)
+    incompatible_comparison = _incompatible_comparison_context(call_items)
     if cached_as_of:
         disclosure = f"실시간 조회 실패. 아래는 {cached_as_of} 기준 저장 결과입니다."
         revised = _prepend_disclosure(disclosure, revised)
+    elif incompatible_comparison is not None:
+        revised = _incompatible_comparison_guidance(
+            incompatible_comparison,
+            successful_metrics=successful_metrics,
+        )
     elif failed_metrics and successful_metrics:
         revised = _append_partial_failure_notice(revised, failed_metrics, successful_metrics)
 
@@ -2035,7 +2042,7 @@ def enforce_relational_numeric_claims_with_trace(
     detected_failure_kind = detect_failure_kind(revised, call_items)
     if blocked_to_empty or failed_to_empty:
         revised = _typed_relational_failure_fallback(question, call_items)
-        disposition = "unavailable"
+        disposition = "partial" if incompatible_comparison is not None and successful_metrics else "unavailable"
     elif cached_as_of:
         disposition = "cached_partial"
     elif failed_metrics:
@@ -2371,6 +2378,12 @@ def _has_substantive_answer(answer: str) -> bool:
 
 
 def _typed_relational_failure_fallback(question: str, calls: tuple[dict[str, Any], ...]) -> str:
+    incompatible_comparison = _incompatible_comparison_context(calls)
+    if incompatible_comparison is not None:
+        return _incompatible_comparison_guidance(
+            incompatible_comparison,
+            successful_metrics=_successful_relational_metrics(calls),
+        )
     statuses = tuple(dict.fromkeys(_call_status(call) or "failed" for call in calls if _relational_call_failed(call)))
     reason = "·".join(statuses) if statuses else "관계 근거 부족"
     metric_labels = {
@@ -2386,6 +2399,42 @@ def _typed_relational_failure_fallback(question: str, calls: tuple[dict[str, Any
         "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.\n\n"
         f"상태: 확인 불가\n\n사유: {requested_label} 도구 상태 {reason}\n\n"
         "확인된 범위: 없음\n\n대안: 조회 조건을 확인해 재조회하거나 브랜드와 기간을 지정해 주세요."
+    )
+
+
+def _incompatible_comparison_context(
+    calls: tuple[dict[str, Any], ...],
+) -> tuple[str, str] | None:
+    for call in calls:
+        data = call.get("render_data")
+        if not isinstance(data, dict):
+            continue
+        if str(data.get("reason_code") or "").casefold() != INCOMPATIBLE_COMPARISON_REASON:
+            continue
+        anchor_brand = str(data.get("anchor_brand") or "").strip()
+        comparison_brand = str(data.get("comparison_brand") or "").strip()
+        if anchor_brand and comparison_brand:
+            return anchor_brand, comparison_brand
+    return None
+
+
+def _incompatible_comparison_guidance(
+    context: tuple[str, str],
+    *,
+    successful_metrics: frozenset[str],
+) -> str:
+    anchor_brand, comparison_brand = context
+    verified_scope = (
+        "개별 브랜드 지표 조회는 성공했지만 서로 다른 시장 기준의 수치를 한 표에서 직접 비교하지 않았습니다."
+        if successful_metrics
+        else "동일 시장 기준의 비교 근거를 확인하지 못했습니다."
+    )
+    return cleanup_markdown_answer(
+        f"{anchor_brand}와 {comparison_brand}는 동일한 시장 정의와 분모에서 조회되지 않아 "
+        "점유율 변화를 직접 비교할 수 없습니다.\n\n"
+        "상태: 부분 확인\n\n"
+        f"확인된 범위: {verified_scope}\n\n"
+        "대안: 각 브랜드의 시장 기준을 분리해 개별 추이를 확인해 주세요."
     )
 
 

@@ -33,7 +33,8 @@ from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.external import ExternalApiClient, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics import MetricsTool
-from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer import IncompatibleComparisonError, StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer.errors import INCOMPATIBLE_COMPARISON_REASON
 from jw_chat_agent_poc.tools.query_layer.spec import parse_spec
 
 
@@ -96,6 +97,8 @@ class AgentToolFacade:
         started_at = datetime.now(UTC)
         try:
             execution = self._execute(name, arguments)
+        except IncompatibleComparisonError as exc:
+            execution = self._incompatible_comparison_error(name, arguments, exc)
         except Exception as exc:
             execution = _tool_error(
                 name,
@@ -165,6 +168,8 @@ class AgentToolFacade:
                 return self._dimension_breakdown(grounded_arguments, "specialty")
             if name == "query":
                 return self._query_spec(grounded_arguments)
+        except IncompatibleComparisonError as exc:
+            return self._incompatible_comparison_error(name, grounded_arguments, exc)
         except UnsupportedBrandError as exc:
             return _tool_error(name, arguments, str(exc), status=UNSUPPORTED_STATUS, error=exc)
         except (LookupError, TypeError, ValueError) as exc:
@@ -467,6 +472,25 @@ class AgentToolFacade:
             "market_structure": catalog.market_structure,
         }
 
+    def _incompatible_comparison_error(
+        self,
+        name: str,
+        arguments: Mapping[str, str],
+        error: IncompatibleComparisonError,
+    ) -> ToolExecution:
+        return _tool_error(
+            name,
+            arguments,
+            _incompatible_comparison_message(error),
+            status=QUERY_FAILED_STATUS,
+            error=error,
+            render_data_extra={
+                "reason_code": INCOMPATIBLE_COMPARISON_REASON,
+                "anchor_brand": error.anchor_brand,
+                "comparison_brand": error.comparison_brand,
+            },
+        )
+
 
 def _tool_qa_status(execution: ToolExecution) -> str:
     render_data = execution.call.get("render_data")
@@ -512,6 +536,13 @@ def _tool_error(
 
 def _query_failed_message() -> str:
     return "요청한 지표 조회 실행이 실패했습니다. 데이터가 없다는 뜻은 아니며, 수치를 추정하지 않습니다."
+
+
+def _incompatible_comparison_message(error: IncompatibleComparisonError) -> str:
+    return (
+        f"{error.anchor_brand}와 {error.comparison_brand}는 동일한 시장 정의에서 조회되지 않아 "
+        "직접 비교할 수 없습니다. 각 브랜드는 개별 시장 기준으로 확인해야 합니다."
+    )
 
 
 def _log_tool_execution_failure(name: str, arguments: Mapping[str, str], error: BaseException | None) -> None:
