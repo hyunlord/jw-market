@@ -78,13 +78,20 @@ queued/running/complete 인 동안 no-op; failed 만 재큐. 같은 category 는
 `epoch`, `category`, `manifest_sha`, `status`, `reason`, `job_name`, `run_id`,
 `uploaded_by`, `received_at`, `started_at`, `finished_at`,
 `blocked_by_category`, `requires_reconcile`만 포함한다. 기존
-`GET /ingest/status` 응답에는 마지막 두 boolean만 additive로 추가된다.
+`GET /ingest/status` 응답에는 마지막 두 boolean과, 차단 중일 때 선행
+실행의 `epoch`, `manifest_sha`, `run_id`, `job_name`을 담는
+`category_blocker`가 additive로 포함된다.
 
 Job terminal signal은 `/ingest/terminal`로 돌아와 ledger에서 슬롯 해제를
 확인한 뒤 다음 queued 항목을 승격한다. callback 배포 전에 이미 놓친 terminal
 signal은 서비스 startup의 1회 idle-category drain으로 회복한다. 두 경로 모두
 ledger atomic reservation을 사용하므로 여러 hook replica가 경쟁해도 category별
 running은 최대 1개다.
+
+모든 promotion은 슬롯 예약 전에 해당 category의 running Job을 Kubernetes
+실상과 대조한다. terminal Job은 `job_name`과 `run_id`를 포함한 CAS로만
+정합화하고, 실제 running Job은 유지한다. Kubernetes 조회 실패는 promotion을
+명시적으로 차단하므로 queued 항목이 조용히 잘못 승격되지 않는다.
 
 ## 환경 변수
 

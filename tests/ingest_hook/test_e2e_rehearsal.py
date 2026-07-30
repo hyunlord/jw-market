@@ -24,7 +24,15 @@ IDENTITY_COLUMNS = ("epoch", "category", "manifest_sha")
 
 @pytest.fixture
 def service(sqlite_ledger, bucket, fake_transport) -> IngestService:
-    return IngestService(sqlite_ledger, bucket, transport=fake_transport)
+    return IngestService(
+        sqlite_ledger,
+        bucket,
+        transport=fake_transport,
+        inspect_transport=lambda _namespace, name: {
+            "metadata": {"name": name},
+            "status": {"active": 1},
+        },
+    )
 
 
 @pytest.fixture

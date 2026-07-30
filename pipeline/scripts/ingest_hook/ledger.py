@@ -803,12 +803,18 @@ class Ledger:
             for row in cursor.fetchall()
         ]
 
-    def running_entries(self) -> list[LedgerEntry]:
+    def running_entries(self, category: str | None = None) -> list[LedgerEntry]:
+        params: tuple[str, ...] = (STATUS_RUNNING,)
+        category_clause = ""
+        if category is not None:
+            category_clause = " AND category=?"
+            params += (category,)
         cursor = self._execute(
             "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
             " run_id, row_counts, received_at, started_at, finished_at"
-            " FROM ingest_ledger WHERE status=? ORDER BY category, started_at, id",
-            (STATUS_RUNNING,),
+            f" FROM ingest_ledger WHERE status=?{category_clause}"
+            " ORDER BY category, started_at, id",
+            params,
         )
         return [self._entry(row) for row in cursor.fetchall()]
 

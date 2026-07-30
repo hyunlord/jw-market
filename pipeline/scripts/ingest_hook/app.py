@@ -118,6 +118,15 @@ class IngestService:
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
         with self._category_promotion_lock(category):
+            reconciliation = self.reconcile_terminal_jobs(
+                category=category,
+                promote_after=False,
+            )
+            if reconciliation["inspection_failures"]:
+                raise RuntimeError(
+                    "category terminal reconciliation inspection failed; "
+                    "promotion remains blocked"
+                )
             entry = self.ledger.next_queued(category)
             if entry is None:
                 return None
@@ -126,6 +135,15 @@ class IngestService:
     def promote_exact(self, epoch: str, category: str, manifest_sha: str) -> str | None:
         """Promote one exact queued identity while preserving category serialisation."""
         with self._category_promotion_lock(category):
+            reconciliation = self.reconcile_terminal_jobs(
+                category=category,
+                promote_after=False,
+            )
+            if reconciliation["inspection_failures"]:
+                raise RuntimeError(
+                    "category terminal reconciliation inspection failed; "
+                    "promotion remains blocked"
+                )
             entry = self.ledger.status(epoch, category, manifest_sha)
             if entry is None:
                 raise RuntimeError("exact promotion identity is absent from the ledger")
@@ -208,7 +226,12 @@ class IngestService:
         )
         return name
 
-    def reconcile_terminal_jobs(self) -> dict:
+    def reconcile_terminal_jobs(
+        self,
+        category: str | None = None,
+        *,
+        promote_after: bool = True,
+    ) -> dict:
         """Repair stale running rows from Kubernetes truth, then unblock FIFO.
 
         The ledger transition and append-only evidence are one DB transaction.
@@ -216,11 +239,14 @@ class IngestService:
         the existing idempotent path immediately afterward. If the process dies
         between those steps, the queued row remains eligible for the next
         reconcile instead of leaving the category blocked by stale ``running``.
+
+        A category-scoped pre-promotion pass disables recursive promotion while
+        preserving the same terminal reconciliation contract.
         """
         actions: list[dict] = []
         reconciled = 0
         inspection_failures = 0
-        for entry in self.ledger.running_entries():
+        for entry in self.ledger.running_entries(category):
             if entry.job_name is None:
                 observation = job_launcher.JobObservation(
                     status="Absent",
@@ -306,6 +332,8 @@ class IngestService:
                 actor="terminal_job_reconciler",
                 source=source,
                 evidence=observation.evidence,
+                expected_job_name=entry.job_name,
+                expected_run_id=entry.run_id,
             )
             if not changed:
                 actions.append(
@@ -321,7 +349,7 @@ class IngestService:
                 continue
 
             reconciled += 1
-            promoted = self.promote(entry.category)
+            promoted = self.promote(entry.category) if promote_after else None
             actions.append(
                 {
                     "epoch": entry.epoch,
@@ -608,10 +636,11 @@ def create_app(service: IngestService) -> FastAPI:
                 ),
                 None,
             )
+        category_running = service.ledger.running_entries(entry.category)
         blocked_by_category = (
-            entry.status == STATUS_QUEUED
-            and service.ledger.running_in_category(entry.category) > 0
+            entry.status == STATUS_QUEUED and bool(category_running)
         )
+        blocker = category_running[0] if blocked_by_category else None
         return {
             "epoch": entry.epoch,
             "category": entry.category,
@@ -626,6 +655,16 @@ def create_app(service: IngestService) -> FastAPI:
             "blocked_by_category": blocked_by_category,
             "requires_reconcile": (
                 entry.status == STATUS_QUEUED and not blocked_by_category
+            ),
+            "category_blocker": (
+                {
+                    "epoch": blocker.epoch,
+                    "manifest_sha": blocker.manifest_sha,
+                    "run_id": blocker.run_id,
+                    "job_name": blocker.job_name,
+                }
+                if blocker is not None
+                else None
             ),
             "current_stage": current_stage,
             "expected_stages": expected,

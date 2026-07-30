@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import urllib.error
 
+import pytest
 from fastapi.testclient import TestClient
 
 from pipeline.scripts.ingest_hook import job_launcher
@@ -154,6 +155,119 @@ def test_inspection_error_fails_closed_without_ledger_change(sqlite_ledger, fake
     assert sqlite_ledger.status(*running).status == "running"
     assert sqlite_ledger.status(*queued).status == "queued"
     assert sqlite_ledger.status_transitions(*running)[-1].status == "running"
+
+
+def test_promotion_reconciles_terminal_blocker_before_claim(
+    sqlite_ledger, fake_transport
+):
+    running, queued = _seed_running_and_queued(sqlite_ledger)
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=lambda _namespace, _name: _job_payload(
+            "Failed", reason="BackoffLimitExceeded"
+        ),
+        now=lambda: "20260730050505000000",
+    )
+
+    promoted_job_name = service.promote("ubist")
+
+    assert promoted_job_name == sqlite_ledger.status(*queued).job_name
+    assert sqlite_ledger.status(*running).status == "failed"
+    assert sqlite_ledger.status(*queued).status == "running"
+    assert len(fake_transport.submitted) == 1
+
+
+def test_promotion_leaves_live_blocker_untouched(sqlite_ledger, fake_transport):
+    running, queued = _seed_running_and_queued(sqlite_ledger)
+    inspected: list[str] = []
+
+    def inspect(_namespace: str, name: str) -> dict:
+        inspected.append(name)
+        return {"metadata": {"name": name}, "status": {"active": 1}}
+
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=inspect,
+    )
+
+    assert service.promote("ubist") is None
+    assert inspected == ["jw-ingest-ubist-stale"]
+    assert sqlite_ledger.status(*running).status == "running"
+    assert sqlite_ledger.status(*queued).status == "queued"
+    assert fake_transport.submitted == []
+
+
+def test_promotion_inspection_failure_is_explicit_and_fail_closed(
+    sqlite_ledger, fake_transport
+):
+    running, queued = _seed_running_and_queued(sqlite_ledger)
+
+    def unavailable(_namespace: str, _name: str) -> dict:
+        raise TimeoutError("injected api timeout")
+
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=unavailable,
+    )
+
+    with pytest.raises(RuntimeError, match="terminal reconciliation inspection failed"):
+        service.promote("ubist")
+
+    assert sqlite_ledger.status(*running).status == "running"
+    assert sqlite_ledger.status(*queued).status == "queued"
+    assert fake_transport.submitted == []
+
+
+def test_stale_terminal_observation_cannot_fail_a_replacement_run(
+    sqlite_ledger, fake_transport
+):
+    running = ("2026-06", "ubist", "a" * 64)
+    sqlite_ledger.receive(*running, manifest_path="/input/old.json")
+    sqlite_ledger.mark_running(
+        *running,
+        job_name="jw-ingest-ubist-stale",
+        run_id="run-old",
+    )
+
+    def inspect(_namespace: str, _name: str) -> dict:
+        assert sqlite_ledger.reconcile_terminal(
+            *running,
+            status="failed",
+            reason="injected concurrent terminal callback",
+            actor="test",
+            source="test",
+            evidence={},
+            expected_job_name="jw-ingest-ubist-stale",
+            expected_run_id="run-old",
+        )
+        sqlite_ledger.receive(*running, manifest_path="/input/old.json")
+        sqlite_ledger.mark_running(
+            *running,
+            job_name="jw-ingest-ubist-replacement",
+            run_id="run-replacement",
+        )
+        return _job_payload("Failed", reason="BackoffLimitExceeded")
+
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=inspect,
+    )
+
+    result = service.reconcile_terminal_jobs()
+
+    replacement = sqlite_ledger.status(*running)
+    assert replacement.status == "running"
+    assert replacement.job_name == "jw-ingest-ubist-replacement"
+    assert replacement.run_id == "run-replacement"
+    assert result["actions"][-1]["action"] == "state-changed-concurrently"
 
 
 def test_transition_history_is_append_only(sqlite_ledger):

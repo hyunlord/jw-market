@@ -166,6 +166,39 @@ def test_unblocked_queued_status_requires_reconcile(sqlite_ledger) -> None:
     payload = response.json()
     assert payload["blocked_by_category"] is False
     assert payload["requires_reconcile"] is True
+    assert payload["category_blocker"] is None
+
+
+def test_blocked_status_exposes_the_exact_running_identity(sqlite_ledger) -> None:
+    blocker = ("2026-05", "ubist", "a" * 64)
+    blocked = ("2026-06", "ubist", "b" * 64)
+    sqlite_ledger.receive(*blocker, manifest_path="/input/blocker.json")
+    sqlite_ledger.mark_running(
+        *blocker,
+        job_name="jw-ingest-ubist-blocker",
+        run_id="run-blocker",
+    )
+    sqlite_ledger.receive(*blocked, manifest_path="/input/blocked.json")
+    client = TestClient(create_app(IngestService(sqlite_ledger, None)))
+
+    response = client.get(
+        "/ingest/status",
+        params={
+            "epoch": blocked[0],
+            "category": blocked[1],
+            "manifest_sha": blocked[2],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["blocked_by_category"] is True
+    assert payload["category_blocker"] == {
+        "epoch": "2026-05",
+        "manifest_sha": "a" * 64,
+        "run_id": "run-blocker",
+        "job_name": "jw-ingest-ubist-blocker",
+    }
 
 
 def test_status_preserves_existing_keys_and_adds_only_queue_flags(
@@ -204,6 +237,7 @@ def test_status_preserves_existing_keys_and_adds_only_queue_flags(
         "log_ref",
         "blocked_by_category",
         "requires_reconcile",
+        "category_blocker",
         "expected_stages",
     }
 
@@ -237,6 +271,10 @@ def test_concurrent_promotions_reserve_only_one_running_entry(
         sqlite_ledger,
         None,
         transport=fake_transport,
+        inspect_transport=lambda _namespace, name: {
+            "metadata": {"name": name},
+            "status": {"active": 1},
+        },
         now=lambda: "20260729010101000000",
     )
     barrier = threading.Barrier(8)
