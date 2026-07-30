@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS ingest_ledger (
   started_at    DATETIME     NULL,
   finished_at   DATETIME     NULL,
   UNIQUE KEY uq_ledger_identity (epoch, category, manifest_sha),
-  KEY idx_ledger_category_status (category, status)
+  KEY idx_ledger_category_status (category, status),
+  KEY idx_ledger_run_id_id (run_id, id)
 )
 """
 

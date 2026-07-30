@@ -1,7 +1,13 @@
 """ingest_ledger semantics: idempotency (G-3 unit), serialisation, baselines."""
 from __future__ import annotations
 
+from pipeline.scripts.ingest_hook import ledger as ledger_module
+
 IDENTITY = ("2026-07", "ubist", "a" * 64)
+
+
+def test_mysql_ledger_schema_indexes_post_gate_run_lookup() -> None:
+    assert "KEY idx_ledger_run_id_id (run_id, id)" in ledger_module._DDL_MYSQL
 
 
 def test_same_webhook_three_times_runs_once(sqlite_ledger):

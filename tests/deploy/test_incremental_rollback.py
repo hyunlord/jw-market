@@ -3,6 +3,7 @@ from __future__ import annotations
 from argparse import Namespace
 import sqlite3
 
+import pymysql
 import pytest
 
 from pipeline.scripts.rollback.ledger import PromotionLedger
@@ -107,6 +108,112 @@ def test_post_gate_qualifies_the_explicit_ledger_database() -> None:
     )
 
     require_ingest_post_gate(conn, identity, dialect="sqlite")
+
+
+def test_post_gate_uses_latest_row_for_duplicate_run_id() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE ingest_ledger "
+        "(id INTEGER, run_id TEXT, status TEXT, reason TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO ingest_ledger VALUES "
+        "(1, 'ingest-1', 'running', NULL), "
+        "(2, 'ingest-1', 'complete', NULL)"
+    )
+    identity = PromotionIdentity(
+        "promote-1",
+        "2026-07",
+        "ingest-1",
+        "serving",
+        "generation",
+        ledger_db="main",
+    )
+
+    require_ingest_post_gate(conn, identity, dialect="sqlite")
+
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (None, "absent from ingest_ledger"),
+        (("running", None), "status=running"),
+    ],
+)
+def test_post_gate_distinguishes_absent_and_incomplete_runs(
+    row: tuple[str, str | None] | None,
+    message: str,
+) -> None:
+    class Cursor:
+        def execute(self, _sql, _params) -> None:
+            return None
+
+        def fetchone(self):
+            return row
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    identity = PromotionIdentity(
+        "promote-1",
+        "2026-07",
+        "ingest-1",
+        "serving",
+        "generation",
+        ledger_db="ledger",
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        require_ingest_post_gate(Connection(), identity)
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (
+            pymysql.err.OperationalError(
+                1969,
+                "Query execution was interrupted (max_statement_time exceeded)",
+            ),
+            "post-gate statement timed out",
+        ),
+        (
+            pymysql.err.OperationalError(
+                2013,
+                "Lost connection to MySQL server during query (timed out)",
+            ),
+            "post-gate socket timed out",
+        ),
+    ],
+)
+def test_post_gate_timeout_modes_fail_closed(
+    error: pymysql.err.OperationalError,
+    message: str,
+) -> None:
+    class Cursor:
+        def execute(self, sql, _params) -> None:
+            assert sql.startswith("SET STATEMENT max_statement_time=5 FOR SELECT")
+            raise error
+
+        def fetchone(self):
+            raise AssertionError("timed out query must not return a row")
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+    identity = PromotionIdentity(
+        "promote-1",
+        "2026-07",
+        "ingest-1",
+        "serving",
+        "generation",
+        ledger_db="ledger",
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        require_ingest_post_gate(Connection(), identity)
 
 
 def _ledger() -> PromotionLedger:

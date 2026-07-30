@@ -3,8 +3,36 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import pymysql
+
 from pipeline.scripts.rollback.ledger import PromotionLedger
 from pipeline.scripts.rollback.models import TableBackup
+
+POST_GATE_STATEMENT_TIMEOUT_SECONDS = 5
+
+
+class PostGateError(RuntimeError):
+    """Base failure for a promotion post-gate decision."""
+
+
+class PostGateRunAbsentError(PostGateError):
+    """The requested ingest run has no ledger evidence."""
+
+
+class PostGateRunIncompleteError(PostGateError):
+    """The requested ingest run has not completed."""
+
+
+class PostGateStatementTimeoutError(PostGateError):
+    """The bounded post-gate SQL statement exceeded its deadline."""
+
+
+class PostGateSocketTimeoutError(PostGateError):
+    """The database socket timed out during the post-gate lookup."""
+
+
+class PostGateLookupError(PostGateError):
+    """The post-gate lookup failed for a non-timeout database reason."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,20 +166,46 @@ def require_ingest_post_gate(
     ledger_db = _qualified_ledger_db(identity.ledger_db, dialect=dialect)
     mark = "?" if dialect == "sqlite" else "%s"
     cursor = conn.cursor()
-    cursor.execute(
+    query = (
         f"SELECT status, reason FROM {ledger_db}.ingest_ledger "
-        f"WHERE run_id={mark} ORDER BY id DESC LIMIT 1",
-        (identity.ingest_run_id,),
+        f"WHERE run_id={mark} ORDER BY id DESC LIMIT 1"
     )
+    if dialect == "mysql":
+        query = (
+            "SET STATEMENT "
+            f"max_statement_time={POST_GATE_STATEMENT_TIMEOUT_SECONDS} FOR "
+            f"{query}"
+        )
+    try:
+        cursor.execute(query, (identity.ingest_run_id,))
+    except pymysql.err.OperationalError as exc:
+        code = int(exc.args[0]) if exc.args else 0
+        detail = str(exc.args[1]) if len(exc.args) > 1 else str(exc)
+        if code in {1969, 3024}:
+            raise PostGateStatementTimeoutError(
+                "promotion blocked: post-gate statement timed out after "
+                f"{POST_GATE_STATEMENT_TIMEOUT_SECONDS}s"
+            ) from exc
+        if code == 2013 and "timed out" in detail.lower():
+            raise PostGateSocketTimeoutError(
+                "promotion blocked: post-gate socket timed out"
+            ) from exc
+        raise PostGateLookupError(
+            f"promotion blocked: post-gate lookup failed: mysql_error={code}"
+        ) from exc
+    except pymysql.MySQLError as exc:
+        raise PostGateLookupError(
+            "promotion blocked: post-gate lookup failed"
+        ) from exc
     row = cursor.fetchone()
     if row is None:
-        raise RuntimeError(
+        raise PostGateRunAbsentError(
             f"promotion blocked: ingest_run_id={identity.ingest_run_id} is absent from ingest_ledger"
         )
     values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
     status, reason = str(values[0]), values[1]
     if status != "complete":
-        raise RuntimeError(
+        raise PostGateRunIncompleteError(
             f"promotion blocked: ingest_run_id={identity.ingest_run_id} status={status} "
             f"reason={reason}; rollback=python -m pipeline.scripts.rollback "
             "--to latest-good --dry-run"
