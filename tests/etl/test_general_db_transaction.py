@@ -196,3 +196,80 @@ def test_jsonl_source_replace_bounds_isolated_source_deletes(
     assert all("ORDER BY id LIMIT %s" in sql for sql, _params in delete_calls)
     assert all(params == ("ubist", 2) for _sql, params in delete_calls)
     assert connection.commit_calls == 5
+
+
+def test_jsonl_scoped_replace_bounds_isolated_deletes_for_gcache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = _FakeConnection()
+    delete_results = iter((2, 1, 0, 1, 0))
+
+    def execute(sql: str, params: tuple[object, ...]) -> int:
+        connection.cursor_instance.execute_calls.append((sql, params))
+        if sql.startswith("DELETE FROM "):
+            return next(delete_results)
+        return 0
+
+    connection.cursor_instance.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(general_db, "mariadb_connect", lambda: connection)
+    brand_path, market_path = _paths(tmp_path)
+
+    general_db.replace_scoped_source_rows_from_jsonl(
+        source="ubist",
+        atc4_scope=("C10A1", "A10B2"),
+        brand_path=brand_path,
+        market_path=market_path,
+        brand_columns=["brand_key", "source"],
+        market_columns=["atc4_code", "source"],
+        commit_each_batch=True,
+    )
+
+    delete_calls = [
+        (sql, params)
+        for sql, params in connection.cursor_instance.execute_calls
+        if sql.startswith("DELETE FROM ")
+    ]
+    assert len(delete_calls) == 5
+    assert all(
+        "source=%s AND atc4_code IN (%s,%s) ORDER BY id LIMIT %s" in sql
+        for sql, _params in delete_calls
+    )
+    assert all(
+        params == ("ubist", "A10B2", "C10A1", 100)
+        for _sql, params in delete_calls
+    )
+    assert connection.commit_calls == 5
+
+
+def test_jsonl_scoped_replace_rolls_back_current_batch_after_partial_commits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    connection = _FakeConnection(fail_insert=True)
+    delete_results = iter((1, 0, 0))
+
+    def execute(sql: str, params: tuple[object, ...]) -> int:
+        connection.cursor_instance.execute_calls.append((sql, params))
+        if sql.startswith("DELETE FROM "):
+            return next(delete_results)
+        return 0
+
+    connection.cursor_instance.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(general_db, "mariadb_connect", lambda: connection)
+    brand_path, market_path = _paths(tmp_path)
+
+    with pytest.raises(RuntimeError, match="injected insert failure"):
+        general_db.replace_scoped_source_rows_from_jsonl(
+            source="ubist",
+            atc4_scope=("C10A1",),
+            brand_path=brand_path,
+            market_path=market_path,
+            brand_columns=["brand_key", "source"],
+            market_columns=["atc4_code", "source"],
+            commit_each_batch=True,
+        )
+
+    assert connection.commit_calls == 1
+    assert connection.rolled_back is True
+    assert connection.closed is True
