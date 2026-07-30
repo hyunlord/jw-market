@@ -12,6 +12,9 @@ from jw_chat_agent_poc.orchestrator.source_grading import (
     is_web_search_call,
     requested_authority_source_explicit,
 )
+from jw_chat_agent_poc.tool_use.routing_v4_execution import (
+    official_web_fallback_decision_from_calls,
+)
 
 
 _EXPLICIT_WEB_RE: Final = re.compile(
@@ -36,10 +39,7 @@ _NON_FALLBACK_ERROR_CODES: Final[frozenset[str]] = frozenset(
         "CAPABILITY_NOT_IMPLEMENTED",
         "INVALID_INPUT",
         "INVALID_TOOL_ARGUMENTS",
-        "NO_DATA",
-        "NO_EVIDENCE",
         "NO_MATCH",
-        "NO_RECORD_FOUND",
         "SCHEMA_INVALID",
     }
 )
@@ -64,6 +64,14 @@ def web_presentation_policy(
     web_calls = tuple(call for call in tool_calls if is_web_search_call(call))
     if not web_calls:
         return _deny("NO_WEB_RESULT")
+    canonical_decision = official_web_fallback_decision_from_calls(web_calls)
+    if canonical_decision is not None:
+        return WebPresentationDecision(
+            show_all_results=False,
+            accepted_urls=canonical_decision.accepted_urls,
+            disclosure=canonical_decision.disclosure,
+            reason_code=canonical_decision.reason_code,
+        )
     if any(
         requested_authority_source_explicit(question, source_domain=domain)
         for domain in ("hira", "regulatory", "clinical_trials")

@@ -24,10 +24,13 @@ from jw_chat_agent_poc.tool_use.routing_v4_capabilities import (
     default_capability_matrix,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_execution import (
+    OFFICIAL_WEB_FALLBACK_DECISION_FIELD,
+    OfficialWebFallbackDecision,
     actionable_official_web_failure,
     claim_evidence_bindings,
     failed_call_scopes,
     normalize_execution_result,
+    official_web_fallback_decision_payload,
     official_web_fallback_call_cap,
     official_web_fallback_eligible,
     official_web_fallback_policy,
@@ -456,8 +459,7 @@ def _apply_official_web_fallback(
         _combine_official_web_result(
             result,
             web_result,
-            accepted_urls=decision.accepted_urls,
-            disclosure=decision.disclosure,
+            decision=decision,
         ),
         diagnostics,
         latency_ms,
@@ -556,10 +558,10 @@ def _combine_official_web_result(
     authority_result: AgentResult,
     web_result: AgentResult,
     *,
-    accepted_urls: tuple[str, ...],
-    disclosure: str,
+    decision: OfficialWebFallbackDecision,
 ) -> AgentResult:
-    accepted = set(accepted_urls)
+    accepted = set(decision.accepted_urls)
+    decision_payload = official_web_fallback_decision_payload(decision)
     facts: list[EvidenceFact] = []
     filtered_calls: list[dict[str, Any]] = []
     for call in web_result.tool_calls:
@@ -578,6 +580,7 @@ def _combine_official_web_result(
         filtered_call = dict(call)
         render_data = dict(filtered_call.get("render_data") or {})
         render_data["evidence"] = filtered_evidence
+        render_data[OFFICIAL_WEB_FALLBACK_DECISION_FIELD] = decision_payload
         filtered_call["render_data"] = render_data
         filtered_calls.append(filtered_call)
 
@@ -586,7 +589,7 @@ def _combine_official_web_result(
         part
         for part in (
             authority_result.answer.strip(),
-            disclosure,
+            decision.disclosure,
             f"### 공식 웹 보완 자료\n{appendix}",
         )
         if part

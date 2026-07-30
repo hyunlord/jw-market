@@ -10,6 +10,7 @@ import pytest
 import requests
 
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.service.web_presentation_policy import web_presentation_policy
 from jw_chat_agent_poc.tool_use import integration as routing_integration
 from jw_chat_agent_poc.tool_use import routing_v4_execution
 from jw_chat_agent_poc.tool_use.contracts import AgentResult
@@ -1499,6 +1500,12 @@ def test_d06c_no_record_found_uses_one_official_web_supplement(monkeypatch) -> N
     assert fallback["reason_code"] == "NO_RECORD_FOUND"
     assert fallback["calls_executed"] == 1
     assert "공식 웹 보완 자료" in payload["answer"]
+    presentation = web_presentation_policy(
+        "상병코드 D693의 최근 5개년 환자수 추이를 분석해줘",
+        payload["tool_calls"],
+    )
+    assert presentation.accepted_urls == ("https://opendata.hira.or.kr/search",)
+    assert presentation.reason_code == "NO_RECORD_FOUND"
 
 
 def test_d06b_official_web_fallback_accepts_only_allowlisted_sources_when_enabled(

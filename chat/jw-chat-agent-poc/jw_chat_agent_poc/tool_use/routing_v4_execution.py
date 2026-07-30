@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -16,6 +17,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_plan_support import RoutePlan
 
 
 OFFICIAL_WEB_FALLBACK_FLAG: Final = "CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED"
+OFFICIAL_WEB_FALLBACK_DECISION_FIELD: Final = "_official_web_fallback_decision"
 _WEB_FALLBACK_RUNTIME_REASONS: Final[frozenset[str]] = frozenset(
     {
         "UPSTREAM_UNAVAILABLE",
@@ -49,6 +51,57 @@ class OfficialWebFallbackDecision:
     separate_section: bool
     reason_code: str
     disclosure: str
+
+
+def official_web_fallback_decision_payload(
+    decision: OfficialWebFallbackDecision,
+) -> dict[str, object]:
+    return {
+        "web_call_budget": decision.web_call_budget,
+        "accepted_urls": list(decision.accepted_urls),
+        "separate_section": decision.separate_section,
+        "reason_code": decision.reason_code,
+        "disclosure": decision.disclosure,
+    }
+
+
+def official_web_fallback_decision_from_calls(
+    tool_calls: Sequence[Mapping[str, object]],
+) -> OfficialWebFallbackDecision | None:
+    for call in tool_calls:
+        render_data = call.get("render_data")
+        if not isinstance(render_data, Mapping):
+            continue
+        raw_decision = render_data.get(OFFICIAL_WEB_FALLBACK_DECISION_FIELD)
+        if not isinstance(raw_decision, Mapping):
+            continue
+        accepted_urls = raw_decision.get("accepted_urls")
+        if not isinstance(accepted_urls, list) or not all(
+            isinstance(url, str) for url in accepted_urls
+        ):
+            continue
+        web_call_budget = raw_decision.get("web_call_budget")
+        separate_section = raw_decision.get("separate_section")
+        reason_code = raw_decision.get("reason_code")
+        disclosure = raw_decision.get("disclosure")
+        if (
+            type(web_call_budget) is not int
+            or web_call_budget != 1
+            or separate_section is not True
+            or not accepted_urls
+            or not isinstance(reason_code, str)
+            or reason_code not in _WEB_FALLBACK_RUNTIME_REASONS
+            or not isinstance(disclosure, str)
+        ):
+            continue
+        return OfficialWebFallbackDecision(
+            web_call_budget=web_call_budget,
+            accepted_urls=tuple(accepted_urls),
+            separate_section=separate_section,
+            reason_code=reason_code,
+            disclosure=disclosure,
+        )
+    return None
 
 
 def actionable_official_web_failure(

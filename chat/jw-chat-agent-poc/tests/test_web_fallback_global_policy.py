@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from jw_chat_agent_poc.service.web_presentation_policy import web_presentation_policy
 from jw_chat_agent_poc.tool_use.routing_v4_execution import (
+    OFFICIAL_WEB_FALLBACK_DECISION_FIELD,
     actionable_official_web_failure,
     execution_failure_reason,
+    official_web_fallback_decision_payload,
     official_web_fallback_eligible,
     official_web_fallback_policy,
 )
@@ -30,13 +33,39 @@ def test_non_security_evidence_gaps_are_web_fallback_eligible(
 ) -> None:
     monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
 
+    usable_results = 1 if runtime_reason == "PARTIAL_RESULT" else 0
+    missing_facets = ("2023",) if runtime_reason == "PARTIAL_RESULT" else ()
     assert official_web_fallback_eligible(
         source_domain="hira",
         runtime_reason=runtime_reason,
-        usable_authoritative_results=1 if runtime_reason == "PARTIAL_RESULT" else 0,
+        usable_authoritative_results=usable_results,
         requested_source_explicit=False,
-        missing_requested_facets=("2023",) if runtime_reason == "PARTIAL_RESULT" else (),
+        missing_requested_facets=missing_facets,
     )
+    decision = official_web_fallback_policy(
+        source_domain="hira",
+        runtime_reason=runtime_reason,
+        usable_authoritative_results=usable_results,
+        candidate_urls=("https://opendata.hira.or.kr/official",),
+        missing_requested_facets=missing_facets,
+    )
+    presentation = web_presentation_policy(
+        "상병코드 D693의 환자수 추이를 알려줘",
+        (
+            {
+                "tool": "web_search",
+                "source": "web_search",
+                "status": "ok",
+                "render_data": {
+                    OFFICIAL_WEB_FALLBACK_DECISION_FIELD: (
+                        official_web_fallback_decision_payload(decision)
+                    )
+                },
+            },
+        ),
+    )
+    assert presentation.accepted_urls == decision.accepted_urls
+    assert presentation.reason_code == runtime_reason
 
 
 def test_internal_only_and_proven_nonexistence_never_enable_web(
