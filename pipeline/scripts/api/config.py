@@ -39,6 +39,11 @@ class APIConfig:
     api_port: int = 8000
     cache_ttl_seconds: int = 86400
     dynamic_max_brand_rows: int = 3000
+    actor_assertion_public_key_file: str | None = None
+    actor_assertion_allowed_kid: str | None = None
+    actor_assertion_issuer: str | None = None
+    actor_assertion_audience: str | None = None
+    actor_assertion_environment: str | None = None
 
 
 ApiSettings = APIConfig
@@ -64,6 +69,11 @@ def load_config() -> APIConfig:
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=_env_int("API_PORT", 8000),
         dynamic_max_brand_rows=_env_int("DYNAMIC_MAX_BRAND_ROWS", 3000),
+        actor_assertion_public_key_file=os.getenv("ACTOR_ASSERTION_PUBLIC_KEY_FILE"),
+        actor_assertion_allowed_kid=os.getenv("ACTOR_ASSERTION_ALLOWED_KID"),
+        actor_assertion_issuer=os.getenv("ACTOR_ASSERTION_ISSUER"),
+        actor_assertion_audience=os.getenv("ACTOR_ASSERTION_AUDIENCE"),
+        actor_assertion_environment=os.getenv("ACTOR_ASSERTION_ENVIRONMENT"),
     )
 
 
