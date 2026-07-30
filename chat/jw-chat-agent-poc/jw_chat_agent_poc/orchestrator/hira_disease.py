@@ -5,6 +5,7 @@ import re
 from typing import Final, Protocol, TypeAlias, TypedDict, assert_never
 
 from jw_chat_agent_poc.common.periods import requested_period
+from jw_chat_agent_poc.orchestrator.markdown_formatting import hira_disease_display_name
 from jw_chat_agent_poc.tools.external import ExternalApiClient, ExternalCall
 
 
@@ -641,7 +642,7 @@ def _with_hira_mapping_context(
 
 def _hira_call_summary(tool: str, mapping: HiraMapping) -> str:
     sick_cd = mapping["sick_cd"]
-    disease_name = mapping["disease_name"]
+    disease_name = hira_disease_display_name(mapping["disease_name"])
     summaries = {
         "hira_disease_name_code": f"HIRA 질병명칭/코드조회에서 {sick_cd}({disease_name}) 코드를 확인했습니다.",
         "hira_disease_hospitalization_outpatient_stats": f"HIRA 질병입원외래별통계에서 {sick_cd}({disease_name}) 연간 입원/외래 환자수 분포를 확인했습니다.",

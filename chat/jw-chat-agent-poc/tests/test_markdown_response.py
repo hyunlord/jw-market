@@ -167,6 +167,48 @@ def test_hira_patient_code_is_canonicalized_for_binding(raw_code: str) -> None:
     assert verification.blocked_reasons == ()
 
 
+def test_hira_patient_display_omits_numeric_classification_qualifier_from_claims() -> None:
+    disease_name = (
+        "당뇨병성 망막병증"
+        "(4단위 및 5단위 숫자 .30, .31, .32, .33에 해당되는 E10-E14†)"
+    )
+    response = MarkdownResponseBuilder().build(
+        brand="H36.0",
+        calls=[
+            {
+                "tool": "hira_disease_hospitalization_outpatient_stats",
+                "source": "심사평가원(HIRA) 질병통계",
+                "status": "live",
+                "summary_text": "HIRA H36.0 환자수 통계를 확인했습니다.",
+                "render_data": {
+                    "request": {"sickCd": "H36.0", "year": "2024"},
+                    "items": [
+                        {
+                            "inpatOpat": "외래",
+                            "ptntCnt": "199951",
+                            "sickCd": "H360",
+                            "sickNm": disease_name,
+                        }
+                    ],
+                },
+            }
+        ],
+        sources=["hira_disease"],
+    )
+
+    verification = verify_claim_bindings(
+        question="질병코드 H360 환자수 통계 알려줘",
+        answer=response.markdown,
+        facts=tuple(BindingEvidenceFact(**fact) for fact in response.evidence),
+        expected_entities=("H36.0",),
+    )
+
+    assert disease_name not in response.markdown
+    assert "당뇨병성 망막병증" in response.markdown
+    assert verification.status == "pass"
+    assert verification.blocked_reasons == ()
+
+
 def test_d693_patient_markdown_is_unchanged_by_binding_canonicalization() -> None:
     compact = MarkdownResponseBuilder().build(
         brand="D69.3",

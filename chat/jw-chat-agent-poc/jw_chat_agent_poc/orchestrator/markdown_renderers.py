@@ -7,6 +7,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     TABLE_LIMIT,
     cell,
     eok_value,
+    hira_disease_display_name,
     items,
     latest_series_eok,
     number_value,
@@ -443,7 +444,7 @@ def _hira_item_row(item: dict[str, Any], data: dict[str, Any] | None = None) -> 
     year = surface_year(source, item)
     if not can_surface_derived_value(patient_count, required_period=year):
         return None
-    return (label, item.get("sickCd"), item.get("sickNm"), year, patient_count)
+    return (label, item.get("sickCd"), hira_disease_display_name(item.get("sickNm")), year, patient_count)
 
 
 def _has_unsurfaced_hira_patient_counts(data: dict[str, Any]) -> bool:

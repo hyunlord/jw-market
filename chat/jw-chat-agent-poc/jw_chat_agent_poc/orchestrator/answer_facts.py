@@ -10,6 +10,7 @@ from jw_chat_agent_poc.orchestrator.markdown_formatting import (
     TABLE_LIMIT,
     cell,
     eok_value,
+    hira_disease_display_name,
     items,
     number_value,
     pct_value,
@@ -1610,7 +1611,15 @@ def _hira_rows(data: dict[str, Any]) -> list[HiraRow]:
         label = item.get("inpatOpat") or item.get("age") or item.get("grade") or item.get("lcName") or item.get("sickEngNm")
         patient_count = item.get("ptntCnt") or item.get("specCnt") or "-"
         year = surface_year(data, item)
-        rows.append((label, item.get("sickCd"), item.get("sickNm"), patient_count, year))
+        rows.append(
+            (
+                label,
+                item.get("sickCd"),
+                hira_disease_display_name(item.get("sickNm")),
+                patient_count,
+                year,
+            )
+        )
     return rows
 
 

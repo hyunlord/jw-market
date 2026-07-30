@@ -15,6 +15,9 @@ CODE_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-z0-9])[A-Za-z]{1,8}\d[A-Za-z0-9.-]*(?![A-Za-z0-9])",
 )
 TABLE_LIMIT: Final[int] = 6
+HIRA_CLASSIFICATION_QUALIFIER_RE: Final[re.Pattern[str]] = re.compile(
+    r"\((?=[^)]*단위)(?=[^)]*숫자)[^)]*\)\s*$"
+)
 
 
 def allowed_numbers(markdown: str) -> tuple[str, ...]:
@@ -54,6 +57,11 @@ def table(title: str, headers: tuple[str, ...], rows: tuple[tuple[Any, ...], ...
 def cell(value: Any) -> str:
     text = "-" if value is None or value == "" else str(value)
     return escape(text, quote=False).replace("|", "\\|").replace("\n", " ")
+
+
+def hira_disease_display_name(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    return HIRA_CLASSIFICATION_QUALIFIER_RE.sub("", text).strip()
 
 
 def items(data: dict[str, Any]) -> list[dict[str, Any]]:

@@ -3409,7 +3409,7 @@ def _is_market_clarification_result(result: dict) -> bool:
         return False
     return any(
         isinstance(item, dict)
-        and item.get("intent") == "market_clarification"
+        and item.get("intent") in {"market_clarification", "brand_cardinality_clarification"}
         and item.get("status") == "needs_clarification"
         for item in decomposition
     )

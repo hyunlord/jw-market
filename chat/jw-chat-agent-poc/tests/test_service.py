@@ -2698,6 +2698,47 @@ def test_compute_final_answer_preserves_typed_terminal_result(
     assert final.sources == (expected_source,)
 
 
+def test_compute_final_answer_preserves_brand_cardinality_clarification(monkeypatch) -> None:
+    question = "리바로와 리바로젯 매출 알려줘"
+    answer = "여러 브랜드가 확인되었습니다: 리바로, 리바로젯. 한 브랜드를 지정해 주세요."
+    result = {
+        "question": question,
+        "resolution": {
+            "canonical_brand": "리바로",
+            "canonical_brands": ["리바로", "리바로젯"],
+        },
+        "decomposition": [
+            {
+                "intent": "brand_cardinality_clarification",
+                "status": "needs_clarification",
+                "max_steps": 0,
+            }
+        ],
+        "router_diagnostics": {
+            "mode": "agent_loop",
+            "deterministic_execution": True,
+            "gate": "bq_brand_cardinality",
+        },
+        "tool_calls": [],
+        "answer": answer,
+        "markdown_response": {"markdown": answer, "fact_md": "", "data_md": ""},
+        "sources": [],
+    }
+
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("brand cardinality clarification must bypass final LLM synthesis")
+        ),
+    )
+
+    final = compute_final_answer(question, result, "brand-cardinality-final")
+
+    assert final.text == answer
+    assert final.trace["qa_trace"]["answer_delivery"]["answer_branch"] == "typed_terminal"
+
+
 def test_compute_final_answer_preserves_external_tool_verification_failure(monkeypatch) -> None:
     question = "NeDrug: 리바로 성분 조성 알려줘"
     answer = "식약처 응답에 제품명과 일치하는 성분 조성 근거가 없습니다."
