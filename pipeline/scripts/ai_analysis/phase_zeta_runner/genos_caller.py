@@ -23,6 +23,20 @@ def _bullet_range_for_mode(mode: str) -> tuple[int, int]:
     return BULLET_RANGES_BY_MODE.get(mode, BULLET_RANGES_BY_MODE["full"])
 
 
+def _enforce_bullet_ceiling(parsed: dict[str, Any], mode: str) -> dict[str, Any]:
+    _, max_bullets = _bullet_range_for_mode(mode)
+    normalized = dict(parsed)
+    for stage in STAGES:
+        stage_data = parsed.get(stage)
+        if not isinstance(stage_data, dict):
+            continue
+        bullets = stage_data.get("bullets")
+        if not isinstance(bullets, list) or len(bullets) <= max_bullets:
+            continue
+        normalized[stage] = {**stage_data, "bullets": bullets[:max_bullets]}
+    return normalized
+
+
 def validate_genos_output(parsed: dict[str, Any], mode: str = "full") -> dict[str, Any]:
     min_bullets, max_bullets = _bullet_range_for_mode(mode)
     errors: list[str] = []
@@ -63,10 +77,46 @@ def _has_required_stages(obj: Any) -> bool:
     return isinstance(obj, dict) and all(stage in obj for stage in STAGES)
 
 
+def _escape_unquoted_inner_quotes(text: str) -> str:
+    """Repair only unescaped quotes embedded inside otherwise valid JSON strings."""
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    length = len(text)
+    for index, char in enumerate(text):
+        if not in_string:
+            repaired.append(char)
+            if char == '"':
+                in_string = True
+            continue
+        if escaped:
+            repaired.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            repaired.append(char)
+            escaped = True
+            continue
+        if char != '"':
+            repaired.append(char)
+            continue
+
+        next_index = index + 1
+        while next_index < length and text[next_index].isspace():
+            next_index += 1
+        next_char = text[next_index] if next_index < length else None
+        if next_char is None or next_char in ",:}]":
+            repaired.append(char)
+            in_string = False
+        else:
+            repaired.append('\\"')
+    return "".join(repaired)
+
+
 def _json_candidates_from_text(text: str) -> list[Any]:
     candidates: list[Any] = []
     cleaned = _strip_markdown_fence(text)
-    for candidate in (cleaned,):
+    for candidate in (cleaned, _escape_unquoted_inner_quotes(cleaned)):
         try:
             candidates.append(json.loads(candidate))
         except json.JSONDecodeError:
@@ -77,10 +127,12 @@ def _json_candidates_from_text(text: str) -> list[Any]:
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start >= 0 and end > start:
-        try:
-            candidates.append(json.loads(cleaned[start : end + 1]))
-        except json.JSONDecodeError:
-            pass
+        bounded = cleaned[start : end + 1]
+        for candidate in (bounded, _escape_unquoted_inner_quotes(bounded)):
+            try:
+                candidates.append(json.loads(candidate))
+            except json.JSONDecodeError:
+                pass
     return candidates
 
 
@@ -152,6 +204,7 @@ def parse_genos_response(response_json: dict[str, Any], mode: str = "full") -> d
     parsed = _find_stage_object(response_json)
     if parsed is None:
         raise ValueError("GenOS response does not contain the required 4-stage JSON object")
+    parsed = _enforce_bullet_ceiling(parsed, mode)
     validation = validate_genos_output(parsed, mode)
     if not validation["valid"]:
         raise ValueError("; ".join(validation["errors"]))

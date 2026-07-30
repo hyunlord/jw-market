@@ -1,0 +1,23 @@
+{
+  "previously_fixed": [
+    {"brand": "가리온", "status": "validated", "mode": "compact", "bundle_hash": "sha256:bd2d77ec3871c62abbd75604d0457a50c200e5607e4b6eecf458aaca677345f1"},
+    {"brand": "게보린릴랙스", "status": "validated", "mode": "compact", "bundle_hash": "sha256:b4cb3ac1761091d1dad803d67a20d8d085a5b1268be732f2488666ad50c09095"},
+    {"brand": "뉴베인", "status": "validated", "mode": "compact", "bundle_hash": "sha256:0e3c5a9e51baf47f518bf214f6d006d686459ffe44f989deba111fa9ccf45cf0"},
+    {"brand": "글리파엠", "status": "validated", "mode": "recap", "bundle_hash": "sha256:f36cd00ffac90f76a07067eaf9c115d202afe4648f9d23fee07830d285eef966"},
+    {"brand": "뉴부틴", "status": "validated", "mode": "compact", "bundle_hash": "sha256:ab5aa933581fbe6c8d8a9e486bb2810b7ee97cf1c02788f6add3eee02569a7c4"},
+    {"brand": "누리그라", "status": "validated", "mode": "recap", "bundle_hash": "sha256:a1ecdf5f941d38e3db65ee9cfeb2a2328cfb594f224ca5b046f1d7404281d31a"}
+  ],
+  "new_failures": [
+    {"brand": "글로틴 듀오", "kind": "tiny_percentage", "mode": "compact", "values": ["0.0023%", "0.0006%"]},
+    {"brand": "네오칼시돌", "kind": "bullet_overflow", "mode": "recap", "bullet_count": 4},
+    {"brand": "니세르코드", "kind": "tiny_percentage", "mode": "recap", "values": ["0.00057%"]},
+    {"brand": "니페디온CR", "kind": "tiny_percentage", "mode": "recap", "values": ["0.0015%", "0.0015%p"]},
+    {"brand": "덱사메타", "kind": "tiny_percentage", "mode": "full", "values": ["0.0007%"]},
+    {
+      "brand": "도미나",
+      "kind": "unescaped_inner_quote",
+      "mode": "full",
+      "body": "근거: 뉴스 '\"기미 크림, 제대로 바르고 있나요?\"...헷갈리는 사용법'"
+    }
+  ]
+}

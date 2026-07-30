@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agent2_density_worklist import RoutedAgent2Brand
 from agent2_regen_orchestrator import (
     Agent2RegenOrchestrator,
@@ -89,6 +91,29 @@ def test_formatter_contract_warns_on_decimal_krw_or_quantity_without_blocking():
     assert result.valid
     assert not any(error["type"] == "krw_or_qty_decimal" for error in result.errors)
     assert any(warning["type"] == "krw_or_qty_decimal" for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0.0023%", "0.0006%", "0.00057%", "0.0015%", "0.0015%p", "0.0007%"],
+)
+def test_formatter_contract_accepts_measured_tiny_percentages(value):
+    parsed = _parsed_with_counts(bullet_count=4, sentence_count=4)
+    parsed["phenomenon"]["body"] += f" 근거값은 {value}입니다."
+
+    result = validate_formatter_contract(parsed, brand="극소값", mode="full")
+
+    assert not [error for error in result.errors if error["type"] == "three_plus_decimal"]
+
+
+@pytest.mark.parametrize("value", ["1.234%", "0.0123%", "0.0001234%", "0.00057배", "0.00057"])
+def test_formatter_contract_keeps_non_tiny_or_overprecise_values_blocked(value):
+    parsed = _parsed_with_counts(bullet_count=4, sentence_count=4)
+    parsed["phenomenon"]["body"] += f" 근거값은 {value}입니다."
+
+    result = validate_formatter_contract(parsed, brand="일반값", mode="full")
+
+    assert {"type": "three_plus_decimal", "path": "phenomenon.body", "value": value} in result.errors
 
 
 def test_formatter_contract_keeps_full_strict_but_allows_compact_and_recap_thresholds():

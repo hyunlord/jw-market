@@ -42,9 +42,15 @@ def _forecast_has_all_horizons(forecast: dict[str, Any]) -> bool:
 def _mode_instruction(mode: str) -> str:
     match mode:
         case "compact":
-            return "compact 모드: 동일한 4단 구조를 유지하되 각 단락 body는 최소 2문장 이상 간결하게 쓰고 bullets는 2-4개만 작성하세요."
+            return (
+                "compact 모드: 동일한 4단 구조를 유지하되 각 단락 body는 최소 2문장 이상 간결하게 쓰고 "
+                "bullets는 2-4개만 작성하세요. 각 stage의 bullets는 2-4개 범위를 절대 벗어나지 마세요."
+            )
         case "recap":
-            return "recap 모드: 동일한 4단 구조를 유지하되 각 단락 body는 1-2문장으로 요약하고 bullets는 2개만 작성하세요."
+            return (
+                "recap 모드: 동일한 4단 구조를 유지하되 각 단락 body는 1-2문장으로 요약하고 "
+                "각 stage의 bullets는 1-2개 범위를 절대 벗어나지 마세요."
+            )
         case _:
             return ""
 
@@ -71,6 +77,7 @@ def _validation_contract_block(
     forecast: dict[str, Any],
     analysis_variant: str = "legacy",
     market_views: list[dict[str, Any]] | None = None,
+    mode: str = PROCESSING_MODE_FULL,
 ) -> str:
     variant = require_analysis_variant(analysis_variant)
     horizon_rule = ""
@@ -98,8 +105,14 @@ def _validation_contract_block(
         else "`Market Landscape · {SOURCE} 기준` 또는 `Competitive Dynamics · {SOURCE} 기준` 형식의 전체 표기"
     )
     forbidden_short = "`GENERAL·UBIST·매출`" if has_general else "`ML·UBIST·매출`, `CD·IQVIA·매출`"
+    bullet_range = {
+        PROCESSING_MODE_FULL: "4-5",
+        PROCESSING_MODE_COMPACT: "2-4",
+        PROCESSING_MODE_RECAP: "1-2",
+    }.get(mode, "4-5")
     return (
         "\n\n[검증 계약]\n"
+        f"- 각 stage의 bullets는 {bullet_range}개 범위를 절대 벗어나지 마세요.\n"
         f"- market/competitive 수치를 인용할 때는 반드시 {source_contract}를 함께 쓰세요. "
         f"{forbidden_short} 같은 축약형만 쓰는 것은 금지입니다.\n"
         "- prediction evidence의 event/news 근거는 반드시 위 retained event 목록의 `news_id` 또는 `title`을 정확히 복사해서 쓰세요. "
@@ -110,6 +123,8 @@ def _validation_contract_block(
         "\n- bundle에 있는 수치만 인용하고, bundle 밖의 수치를 계산하거나 추정하지 마세요. "
         "두 시점의 차이·증감률·점유율 합계 같은 파생값은 bundle의 derived_metrics에 동일 값이 명시된 경우에만 사용하고, 직접 계산하지 마세요. "
         "forecast_simulation의 KRW 값은 원문 숫자 그대로 쓰며 억/만 단위로 변환하지 마세요."
+        "\n- 일반 수치는 소수점 둘째 자리까지만 쓰세요. 단, bundle 원문이 0.01% 미만인 극소 % 또는 %p 값이면 "
+        "값을 0으로 만들지 않도록 유효숫자 3자리 이하에서 원문 정밀도를 유지하세요."
         f"{horizon_rule}"
     )
 
@@ -133,7 +148,12 @@ def build_question_string(bundle: dict[str, Any], config: RunnerConfig | None = 
     mode_instruction = _mode_instruction(mode)
     mode_block = f"\n\n[출력 밀도]\n{mode_instruction}" if mode_instruction else ""
     variant_block = f"\n\n[analysis_variant: {analysis_variant}]\n{_variant_instruction(analysis_variant)}"
-    validation_contract = _validation_contract_block(forecast, analysis_variant, bundle.get("market_views") or [])
+    validation_contract = _validation_contract_block(
+        forecast,
+        analysis_variant,
+        bundle.get("market_views") or [],
+        mode,
+    )
 
     return f"""[분석 대상]
 brand: {brand_name}

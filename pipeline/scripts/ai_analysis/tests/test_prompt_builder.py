@@ -78,6 +78,19 @@ def test_prompt_compact_adds_mode_instruction_without_changing_full_default():
     assert "bullets는 2-4개" in compact
 
 
+def test_prompt_pins_tiny_percentage_and_mode_bullet_contracts():
+    bundle = sample_bundle()
+    config = RunnerConfig.default_for_tests().with_analysis_variant("short")
+
+    full = build_question_string(bundle, config, mode="full")
+    recap = build_question_string(bundle, config, mode="recap")
+
+    assert "0.01% 미만" in full
+    assert "유효숫자 3자리 이하" in full
+    assert "각 stage의 bullets는 4-5개" in full
+    assert "각 stage의 bullets는 1-2개" in recap
+
+
 def test_prompt_density_instructions_match_formatter_sentence_policies():
     bundle = sample_bundle()
     config = RunnerConfig.default_for_tests()

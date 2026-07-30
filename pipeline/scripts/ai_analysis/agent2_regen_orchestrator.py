@@ -17,6 +17,7 @@ import re
 import sys
 import time
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, assert_never
@@ -201,6 +202,19 @@ def _formatter_source_matches(text: str) -> list[str]:
     return sources
 
 
+def _allowed_tiny_percentage(match: re.Match[str]) -> bool:
+    raw = match.group(0).strip()
+    if not raw.endswith(("%", "%p")):
+        return False
+    numeric = raw.removesuffix("%p").removesuffix("%").replace(",", "")
+    try:
+        value = Decimal(numeric)
+    except InvalidOperation:
+        return False
+    significant = numeric.lstrip("0").replace(".", "").lstrip("0").rstrip("0")
+    return Decimal("0") < value < Decimal("0.01") and len(significant) <= 3
+
+
 def validate_formatter_contract(
     parsed_output: dict[str, Any],
     brand: str,
@@ -229,6 +243,8 @@ def validate_formatter_contract(
         if KRW_QTY_DECIMAL_RE.search(text):
             warnings.append({"type": "krw_or_qty_decimal", "path": path})
         for match in THREE_PLUS_DECIMAL_RE.finditer(text):
+            if _allowed_tiny_percentage(match):
+                continue
             errors.append({"type": "three_plus_decimal", "path": path, "value": match.group(0)})
         if _has_duplicate_period_prefix(text):
             errors.append({"type": "duplicate_source_period_prefix", "path": path})
