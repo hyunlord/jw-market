@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -23,6 +24,22 @@ _WEB_FALLBACK_RUNTIME_REASONS: Final[frozenset[str]] = frozenset(
         "PARTIAL_RESULT",
     }
 )
+_OFFICIAL_WEB_ENTRY_POINTS: Final[dict[str, tuple[str, str]]] = {
+    "hira": (
+        "HIRA 보험인정기준 검색",
+        "https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do",
+    ),
+    "regulatory": (
+        "식품의약품안전처 의약품 검색",
+        "https://nedrug.mfds.go.kr/",
+    ),
+}
+_REQUEST_ENDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:에\s*대해(?:서)?\s*)?(?:알려\s*줘|알려\s*주세요|확인해\s*줘|확인해\s*주세요)[?.!]*$"
+)
+_IDENTITY_SEARCH_TERM_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:의\s*)?(?:급여\s*기준|급여기준).*$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +49,76 @@ class OfficialWebFallbackDecision:
     separate_section: bool
     reason_code: str
     disclosure: str
+
+
+def actionable_official_web_failure(
+    *,
+    question: str,
+    source_domain: str,
+    reason_code: str,
+    provider_outcome: str,
+    internal_only: bool = False,
+    authoritative_nonexistence_proven: bool = False,
+) -> str | None:
+    if internal_only or authoritative_nonexistence_proven:
+        return None
+    entry_point = _OFFICIAL_WEB_ENTRY_POINTS.get(source_domain)
+    if entry_point is None:
+        return None
+    label, url = entry_point
+    if not is_official_web_url(url, source_domain=source_domain):
+        return None
+
+    search_term = _action_search_term(
+        question,
+        identity_mismatch=reason_code == "IDENTITY_MISMATCH",
+    )
+    link = f"[{label}]({url})"
+    if reason_code == "IDENTITY_MISMATCH":
+        return (
+            "연결된 고시의 제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아 "
+            "그 내용을 답으로 사용하지 않았습니다.\n"
+            f"직접 확인: {link}\n"
+            f"검색어: {search_term}\n"
+            "정확한 제품명 또는 성분 구성을 확인해 다시 요청하면 해당 대상을 기준으로 조회합니다."
+        )
+    if provider_outcome == "empty":
+        check_items = {
+            "hira": "제품명, 성분 구성, 고시 시행일",
+            "regulatory": "제품명, 성분명, 허가일",
+        }[source_domain]
+        return (
+            "공식 웹 보완 검색을 시도했지만 허용된 공식 도메인에서 결과를 찾지 못했습니다.\n"
+            f"직접 확인: {link}\n"
+            f"검색어: {search_term}\n"
+            f"확인할 항목: {check_items}"
+        )
+    if provider_outcome in {"timeout", "error"}:
+        first_line = (
+            "공식 웹 보완 검색이 5초 안에 완료되지 않았습니다."
+            if provider_outcome == "timeout"
+            else "공식 웹 보완 검색을 완료하지 못했습니다."
+        )
+        return (
+            f"{first_line}\n"
+            f"답을 추정하지 않고 공식 확인 경로를 안내합니다: {link}\n"
+            f"검색어: {search_term}"
+        )
+    if provider_outcome == "unavailable":
+        return (
+            "현재 연결된 조회 도구에서는 요청 항목을 직접 제공하지 않습니다.\n"
+            f"공식 확인 경로: {link}\n"
+            f"검색어: {search_term}"
+        )
+    return None
+
+
+def _action_search_term(question: str, *, identity_mismatch: bool) -> str:
+    normalized = " ".join(question.split())
+    normalized = _REQUEST_ENDING_RE.sub("", normalized).strip()
+    if identity_mismatch:
+        normalized = _IDENTITY_SEARCH_TERM_RE.sub("", normalized).strip()
+    return normalized or "요청 대상 + 요청 항목"
 
 
 def official_web_fallback_eligible(
@@ -274,6 +361,8 @@ def execution_failure_reason(result: AgentResult) -> str:
     error_codes.discard("")
     if "TRUNCATED_RESULT" in error_codes:
         return "TRUNCATED_RESULT"
+    if "IDENTITY_MISMATCH" in error_codes:
+        return "IDENTITY_MISMATCH"
     if error_codes and error_codes <= {"NO_EVIDENCE", "NO_DATA"}:
         return "NO_RECORD_FOUND"
     if "SCHEMA_INVALID" in error_codes or (
