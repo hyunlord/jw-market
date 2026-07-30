@@ -345,12 +345,27 @@ def load_catalog(name: str) -> Any:
 
 
 def current_build_sha() -> str:
-    configured = str(os.getenv("GIT_COMMIT") or os.getenv("APP_COMMIT_SHA") or "").strip()
+    configured = str(
+        os.getenv("GIT_COMMIT")
+        or os.getenv("APP_COMMIT_SHA")
+        or os.getenv("APP_VERSION")
+        or ""
+    ).strip()
     if configured:
         return configured
-    return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
-    ).strip()
+    try:
+        discovered = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "no build identifier available: set APP_VERSION or run with git available"
+        ) from exc
+    if not discovered:
+        raise RuntimeError(
+            "no build identifier available: set APP_VERSION or run with git available"
+        )
+    return discovered
 
 
 def catalog_input_manifest(catalogs: dict[str, Any]) -> str:
