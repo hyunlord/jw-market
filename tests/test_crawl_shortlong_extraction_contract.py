@@ -15,7 +15,9 @@ PROTECTED_BLOB_SHA256 = {
     # from shared contract/domain modules; the runtime filtering behavior is
     # byte-locked against the previous implementation by the registry contract.
     "pipeline/scripts/api/dynamic_market/strategic_runtime.py": "366a9a706bc06d6cbaa31284f9be2eb42ec9ea0a9013675047fa85e9dab4e764",
-    "pipeline/scripts/api/main.py": "5ada140bfdf2213a23dfbf885be70257cd185518f714876cf314933c9c401272",
+    # Repinned 2026-07-30: actor verification and nonblocking audit middleware
+    # are installed in observation mode; assertion-free requests still work.
+    "pipeline/scripts/api/main.py": "c385df539d996dc8f672a50e00a04df66ae7188b53fd04a4216e4e34d167fa7b",
     "pipeline/scripts/api/market_definition_display.py": "36cd88d6b0ada9718ddf959f2b8172c0443fb52843ebca64ca8340e1b6bbd269",
     # Repinned 2026-07-22: brand-activity topics company_name openapi description updated to
     # reflect the manufacturer (제조사, IQVIA MFR NAME KOR) source switch. Forward, description-

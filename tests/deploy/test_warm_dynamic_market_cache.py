@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
 import threading
-
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pipeline.scripts.api.dynamic_market import warm_cache
 from pipeline.scripts.api.catalog import DISPLAY_BRANDS
-
+from pipeline.scripts.api.dynamic_market import warm_cache
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,6 +58,7 @@ def test_warm_requests_posts_canonical_requests_and_streams_response_body() -> N
     assert len(seen) == 2
     assert json.loads(seen[0][0].data) == requests[0]
     assert seen[0][0].full_url.endswith("/api/dynamic-market")
+    assert seen[0][0].get_header("X-market-system-actor") == "cache-warm"
     assert seen[0][1] == 90
     assert all(response.read_sizes == [65_536, 65_536, 65_536] for response in responses)
 

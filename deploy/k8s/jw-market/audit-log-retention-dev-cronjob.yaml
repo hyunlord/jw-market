@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-market-audit-retention-dev
+  namespace: llmops
+  labels:
+    app: jw-market-audit-retention
+    environment: dev
+spec:
+  schedule: "20 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app: jw-market-audit-retention
+            environment: dev
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: retention
+              image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-market-backend-api:actor-audit-p2-dev-20260730-2050
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - pipeline.scripts.api.audit_retention
+              envFrom:
+                - secretRef:
+                    name: jw-market-audit-ttl-dev
+              env:
+                - name: AUDIT_RETENTION_DAYS
+                  value: "90"
+                - name: AUDIT_DELETE_BATCH_SIZE
+                  value: "1000"
