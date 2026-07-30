@@ -54,22 +54,22 @@ def enforce_market_answer_contract(
     postcheck_answer = _strategy_market_size_postcheck(question, relevant_calls)
     if postcheck_answer:
         return _public_language(question, postcheck_answer)
-    preserves_identity_mismatch = any(
-        str(_render_data(call).get("error_code") or "").upper() == "IDENTITY_MISMATCH"
-        for call in relevant_calls or calls
-    ) and "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in answer
     requested_sources = frozenset(extract_requested_sources(question))
     source_basis_notes = tuple(
         note
         for source in ("ubist", "iqvia_nsa")
         if (note := source_domain_note((source,))) is not None
     )
-    preserves_source_unavailable = (
-        requested_sources == {"ubist", "iqvia_nsa"}
-        and any(note in answer for note in source_basis_notes)
-    )
+    if requested_sources == {"ubist", "iqvia_nsa"} and any(
+        note in answer for note in source_basis_notes
+    ):
+        return _public_language(question, answer)
+    preserves_identity_mismatch = any(
+        str(_render_data(call).get("error_code") or "").upper() == "IDENTITY_MISMATCH"
+        for call in relevant_calls or calls
+    ) and "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in answer
     status_answer = "" if preserves_identity_mismatch else _status_answer(question, relevant_calls or calls)
-    contracted = answer if preserves_source_unavailable else status_answer
+    contracted = status_answer
     unresolved_answer = ""
     if not contracted:
         unresolved_answer = _unresolved_entity_answer(question, answer, calls)
@@ -99,8 +99,6 @@ def enforce_market_answer_contract(
     if not contracted:
         contracted = answer
     contracted = _public_language(question, contracted)
-    if preserves_source_unavailable:
-        return contracted
     return _replace_provenance(
         question,
         contracted,
