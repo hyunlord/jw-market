@@ -10,6 +10,7 @@ from jw_chat_agent_poc.tools.query_layer.catalog import (
     measure_for_metrics,
     metric_definition,
 )
+from jw_chat_agent_poc.tools.query_layer.errors import IncompatibleComparisonError
 from jw_chat_agent_poc.tools.query_layer.compute import (
     brand_average_share_data,
     brand_yoy_data,
@@ -394,6 +395,14 @@ class StrategicQueryLayer:
     def market_member_metric(self, anchor_brand: str, member_brand: str, market: str | None = None) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, anchor_brand, market)
+        member_markets = snapshot.market_ids_for_brand(member_brand)
+        if member_markets and market not in member_markets:
+            raise IncompatibleComparisonError(
+                anchor_brand=anchor_brand,
+                comparison_brand=member_brand,
+                anchor_market=market,
+                comparison_markets=member_markets,
+            )
         source = snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         record = snapshot.record(market, member_brand, source)

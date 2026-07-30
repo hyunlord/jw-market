@@ -78,6 +78,7 @@ from jw_chat_agent_poc.tools.external.policy import (
 from jw_chat_agent_poc.tools.deep_analysis import DeepAnalysisNewsTool
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tools.query_layer.errors import INCOMPATIBLE_COMPARISON_REASON
 from jw_chat_agent_poc.tools.query_layer.catalog import metric_definition
 from jw_chat_agent_poc.tool_use.contracts import FallbackCode
 from jw_chat_agent_poc.tool_use.integration import (
@@ -98,6 +99,7 @@ LOGGER = logging.getLogger("uvicorn.error")
 
 
 class QueryFailureReason(StrEnum):
+    INCOMPATIBLE_COMPARISON = INCOMPATIBLE_COMPARISON_REASON
     MARKET_UNRESOLVED = "market_unresolved"
     MARKET_AMBIGUOUS = "market_ambiguous"
     RECORD_ABSENT = "record_absent"
@@ -110,6 +112,10 @@ class QueryFailureReason(StrEnum):
 _QUERY_FAILURE_PATTERNS: Final[
     tuple[tuple[QueryFailureReason, tuple[str, ...]], ...]
 ] = (
+    (
+        QueryFailureReason.INCOMPATIBLE_COMPARISON,
+        ("comparison brand belongs to a different market",),
+    ),
     (
         QueryFailureReason.MARKET_AMBIGUOUS,
         ("belongs to multiple markets", "multiple markets", "market ambiguous"),
