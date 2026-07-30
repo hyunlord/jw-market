@@ -37,6 +37,10 @@ from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjec
 from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidationError, validate_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
+from jw_chat_agent_poc.orchestrator.operation_contract import (
+    current_query_spec,
+    observe_plan_coverage,
+)
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.market_answer_contract import (
@@ -292,6 +296,17 @@ class ToolUseAgent:
                     llm_plan_calls += 1
                     _record_planner_token_usage(timing, planner)
                     progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
+            query_spec = current_query_spec()
+            if query_spec is not None:
+                try:
+                    observe_plan_coverage(
+                        query_spec,
+                        decision.tool_calls,
+                        planner_kind=deterministic_plan_kind or type(planner).__name__,
+                        step=step,
+                    )
+                except Exception:  # noqa: BLE001 - shadow observation cannot alter execution
+                    logger.exception("operation_contract_plan_shadow_failed")
             if _has_market_members(tuple(observations)):
                 expanded_members_exposed = True
             if not decision.tool_calls:

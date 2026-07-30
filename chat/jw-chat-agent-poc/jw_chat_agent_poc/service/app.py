@@ -70,6 +70,12 @@ from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     is_actionable_upstream_guidance,
     render_same_market_sales_answer,
 )
+from jw_chat_agent_poc.orchestrator.operation_contract import (
+    clear_current_query_spec,
+    current_query_spec,
+    observe_actual_coverage,
+    set_current_query_spec,
+)
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     explicit_hira_disease_code,
     hira_binding_question,
@@ -77,6 +83,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
 )
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
 from jw_chat_agent_poc.orchestrator.query_spec import (
+    RequestQuerySpec,
     extract_query_spec,
     query_spec_observation,
 )
@@ -311,6 +318,10 @@ class SessionStore:
             return item
 
 
+class _AnswerItem(dict):
+    operation_contract_query_spec: RequestQuerySpec | None = None
+
+
 def _configured_direct_route_hosts() -> set[str]:
     raw_value = os.environ.get(DIRECT_ROUTE_AUTH_HOSTS_ENV)
     if raw_value is None:
@@ -486,7 +497,13 @@ def create_app(
                 )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
-        session_id = store.put({"question": request.question, "result": result["result"]})
+        stored_item = _AnswerItem(
+            {"question": request.question, "result": result["result"]}
+        )
+        stored_item.operation_contract_query_spec = (
+            getattr(result, "operation_contract_query_spec", None)
+        )
+        session_id = store.put(stored_item)
         return ChatAccepted(
             session_id=session_id,
             conversation_id=result["conversation_id"],
@@ -520,7 +537,12 @@ def create_app(
                     use_direct_agent_loop=use_direct_agent_loop,
                     conversation_history=history,
                 )
-                final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+                final_answer = _compute_final_answer_with_query_spec(
+                    item["question"],
+                    item["result"],
+                    item.get("conversation_id"),
+                    item.operation_contract_query_spec,
+                )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         _record_conversation_history(
@@ -571,6 +593,11 @@ def create_app(
                     session_id=session_id,
                     projection_context=projection_context,
                     limiter=limiter,
+                    query_spec=getattr(
+                        item,
+                        "operation_contract_query_spec",
+                        None,
+                    ),
                 ),
                 media_type="text/event-stream",
             )
@@ -647,10 +674,26 @@ def _capture_request_spans(function):
     return wrapped
 
 
+def _capture_operation_contract_query_spec(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        clear_current_query_spec()
+        try:
+            item = function(*args, **kwargs)
+            answer_item = _AnswerItem(item)
+            answer_item.operation_contract_query_spec = current_query_spec()
+            return answer_item
+        finally:
+            clear_current_query_spec()
+
+    return wrapped
+
+
 def _observe_query_spec(
     question: str,
     market_scope_resolver: MarketScopeResolver,
 ) -> None:
+    clear_current_query_spec()
     try:
         with suspend_request_spans():
             query_spec = extract_query_spec(
@@ -661,6 +704,7 @@ def _observe_query_spec(
     except Exception:  # noqa: BLE001 - stage-0 observation cannot alter request behavior
         LOGGER.exception("request_query_spec_observation_failed")
         return
+    set_current_query_spec(query_spec)
     LOGGER.info(
         "request_query_spec_observed spec=%s",
         query_spec_observation(query_spec),
@@ -668,6 +712,7 @@ def _observe_query_spec(
 
 
 @_capture_request_spans
+@_capture_operation_contract_query_spec
 def _answer_question(
     store: SessionStore,
     market_scope_resolver: MarketScopeResolver,
@@ -2332,7 +2377,16 @@ def _stream_resolving_session_events(
                             }
                         )
                         prefix_emitted.wait(timeout=2.0)
-                    final_answer = compute_final_answer(item["question"], item["result"], item.get("conversation_id"))
+                    final_answer = _compute_final_answer_with_query_spec(
+                        item["question"],
+                        item["result"],
+                        item.get("conversation_id"),
+                        getattr(
+                            item,
+                            "operation_contract_query_spec",
+                            None,
+                        ),
+                    )
             _record_conversation_history(
                 history_store,
                 session_id=None,
@@ -2468,6 +2522,7 @@ def _sse_events(
     session_id: str | None = None,
     projection_context: ProjectionRequestContext | None = None,
     limiter: ChatConcurrencyLimiter | None = None,
+    query_spec: RequestQuerySpec | None = None,
 ):
     if limiter is not None and not limiter.try_acquire():
         yield from _sse_busy_events()
@@ -2480,7 +2535,12 @@ def _sse_events(
             text=streamed_prefix,
         )
     try:
-        final_answer = compute_final_answer(question, result, conversation_id)
+        final_answer = _compute_final_answer_with_query_spec(
+            question,
+            result,
+            conversation_id,
+            query_spec,
+        )
         _record_conversation_history(
             history_store,
             session_id=session_id,
@@ -2626,46 +2686,77 @@ def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[
     return tuple(projected)
 
 
-def compute_final_answer(question: str, result: dict, conversation_id: str | None = None) -> FinalAnswer:
-    final_answer = replace(
-        _compute_final_answer(question, result, conversation_id),
-        conversation_slots=extract_conversation_slots(result),
-    )
-    notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
-    answer = final_answer.text
-    if notice and not answer.startswith(notice):
-        answer = f"{notice}\n\n{answer}" if answer else notice
-    raw_calls = result.get("tool_calls")
-    tool_calls = (
-        tuple(call for call in raw_calls if isinstance(call, Mapping))
-        if isinstance(raw_calls, list)
-        else ()
-    )
-    format_result = apply_response_format_contract(
+def compute_final_answer(
+    question: str,
+    result: dict,
+    conversation_id: str | None = None,
+    *,
+    query_spec: RequestQuerySpec | None = None,
+) -> FinalAnswer:
+    query_spec = query_spec or current_query_spec()
+    try:
+        final_answer = replace(
+            _compute_final_answer(question, result, conversation_id),
+            conversation_slots=extract_conversation_slots(result),
+        )
+        notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
+        answer = final_answer.text
+        if notice and not answer.startswith(notice):
+            answer = f"{notice}\n\n{answer}" if answer else notice
+        raw_calls = result.get("tool_calls")
+        tool_calls = (
+            tuple(call for call in raw_calls if isinstance(call, Mapping))
+            if isinstance(raw_calls, list)
+            else ()
+        )
+        if query_spec is not None:
+            try:
+                observe_actual_coverage(query_spec, tool_calls)
+            except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
+                LOGGER.exception("operation_contract_actual_shadow_failed")
+        format_result = apply_response_format_contract(
+            question,
+            answer,
+            tool_calls=tool_calls,
+            sources=final_answer.sources,
+        )
+        output_policy_decision = evaluate_output_leakage(format_result.answer)
+        user_answer = enforced_answer(format_result.answer, output_policy_decision)
+        trace_result = {
+            **result,
+            "_response_format_contract": format_result.report.to_dict(),
+            "_sec12_output_leakage_decision": output_policy_decision,
+        }
+        trace = trace_envelope(
+            question=question,
+            result=trace_result,
+            answer=user_answer,
+            charts=final_answer.charts,
+            timing=final_answer.timing,
+            conversation_id=conversation_id,
+        )
+        return replace(
+            final_answer,
+            text=user_answer,
+            trace=trace,
+        )
+    finally:
+        clear_current_query_spec()
+
+
+def _compute_final_answer_with_query_spec(
+    question: str,
+    result: dict,
+    conversation_id: str | None,
+    query_spec: RequestQuerySpec | None,
+) -> FinalAnswer:
+    if query_spec is None:
+        return compute_final_answer(question, result, conversation_id)
+    return compute_final_answer(
         question,
-        answer,
-        tool_calls=tool_calls,
-        sources=final_answer.sources,
-    )
-    output_policy_decision = evaluate_output_leakage(format_result.answer)
-    user_answer = enforced_answer(format_result.answer, output_policy_decision)
-    trace_result = {
-        **result,
-        "_response_format_contract": format_result.report.to_dict(),
-        "_sec12_output_leakage_decision": output_policy_decision,
-    }
-    trace = trace_envelope(
-        question=question,
-        result=trace_result,
-        answer=user_answer,
-        charts=final_answer.charts,
-        timing=final_answer.timing,
-        conversation_id=conversation_id,
-    )
-    return replace(
-        final_answer,
-        text=user_answer,
-        trace=trace,
+        result,
+        conversation_id,
+        query_spec=query_spec,
     )
 
 
