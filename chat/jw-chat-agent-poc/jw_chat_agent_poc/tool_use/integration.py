@@ -249,6 +249,19 @@ def _run_legacy_external_tool_agent(
     timing: Timing | None,
 ) -> dict[str, Any]:
     registry = ExternalToolRegistry(resolver=resolver, external=external)
+    classification = classify_question(question)
+    rule_id = classification.deterministic_rule_id or ""
+    explicit_source = any(
+        token in question.casefold()
+        for token in ("식약처", "mfds", "nedrug", "심사평가원", "hira", "clinicaltrials")
+    )
+    domain_first_contract = not explicit_source and (
+        rule_id.startswith("DOMAIN_FIRST_")
+        or rule_id in {
+            "HIRA_REIMBURSEMENT_CRITERIA",
+            "NCT_ID",
+        }
+    )
     force_contract_calls = os.environ.get(FORCE_CONTRACT_CALLS_FLAG, "0").lower() in {
         "1",
         "true",
@@ -256,7 +269,7 @@ def _run_legacy_external_tool_agent(
     }
     forced_choices = (
         _deterministic_tool_choices(question, resolver)
-        if provider is None and force_contract_calls
+        if provider is None and (force_contract_calls or domain_first_contract)
         else ()
     )
     if (
