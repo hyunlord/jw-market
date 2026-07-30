@@ -272,32 +272,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     ),
                 )
 
-            if args.direct_shared_promotion:
-                manifest["promotion"] = promote_filter_dimension_rows(
-                    conn,
-                    computed_rows,
-                    target_db=args.promote_to,
-                    source="ubist",
-                    dimension_type="molecule",
-                    build_marker=build_marker,
-                    batch_size=args.batch_size,
-                    allow_shared_serving_target=args.allow_shared_serving_target,
-                    promotion_run_id=promotion_run_id,
-                    on_activated=record_fdm_activation,
-                )
-            else:
-                manifest["promotion"] = promote_filter_dimension_slice(
-                    conn,
-                    source_db=args.target_db,
-                    target_db=args.promote_to,
-                    source="ubist",
-                    dimension_type="molecule",
-                    build_marker=build_marker,
-                    batch_size=args.batch_size,
-                    allow_shared_serving_target=args.allow_shared_serving_target,
-                    promotion_run_id=promotion_run_id,
-                    on_activated=record_fdm_activation,
-                )
+            snapshot_conn = _connect_admin()
+            try:
+                if args.direct_shared_promotion:
+                    manifest["promotion"] = promote_filter_dimension_rows(
+                        conn,
+                        computed_rows,
+                        target_db=args.promote_to,
+                        snapshot_conn=snapshot_conn,
+                        source="ubist",
+                        dimension_type="molecule",
+                        build_marker=build_marker,
+                        batch_size=args.batch_size,
+                        allow_shared_serving_target=args.allow_shared_serving_target,
+                        promotion_run_id=promotion_run_id,
+                        on_activated=record_fdm_activation,
+                    )
+                else:
+                    manifest["promotion"] = promote_filter_dimension_slice(
+                        conn,
+                        source_db=args.target_db,
+                        target_db=args.promote_to,
+                        snapshot_conn=snapshot_conn,
+                        source="ubist",
+                        dimension_type="molecule",
+                        build_marker=build_marker,
+                        batch_size=args.batch_size,
+                        allow_shared_serving_target=args.allow_shared_serving_target,
+                        promotion_run_id=promotion_run_id,
+                        on_activated=record_fdm_activation,
+                    )
+            finally:
+                snapshot_conn.close()
         manifest["live_after"] = _general_table_counts(conn, serving_guard_schema)
         manifest["live_unchanged"] = manifest["live_before"] == manifest["live_after"]
         manifest["elapsed_seconds"] = round(time.perf_counter() - started, 3)

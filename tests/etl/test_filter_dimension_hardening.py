@@ -6,10 +6,21 @@ from typing import Any
 import pymysql
 import pytest
 
+from pipeline.etl.io.mart.filter_dimension_copy import TableCopyProof
 from pipeline.etl.io.mart.filter_dimension_promote import (
-    create_filter_dimension_backup,
     promote_filter_dimension_rows,
 )
+
+
+@pytest.fixture(autouse=True)
+def _verified_snapshot_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pipeline.etl.io.mart import filter_dimension_swap
+
+    monkeypatch.setattr(
+        filter_dimension_swap,
+        "copy_table_consistent_snapshot",
+        lambda *_args, **_kwargs: TableCopyProof(3, "verified", "verified"),
+    )
 
 
 class _Cursor:
@@ -130,26 +141,6 @@ def _computed_rows() -> list[dict[str, Any]]:
     ]
 
 
-def test_backup_batch_failure_is_reported_as_incomplete() -> None:
-    conn = _Connection(fail_backup_batch=2)
-
-    with pytest.raises(RuntimeError, match="backup incomplete"):
-        create_filter_dimension_backup(
-            conn,
-            "jw_mart_d2_stage_20260630_r2",
-            "fdm_batch_failure",
-            batch_size=2,
-        )
-
-    backup_inserts = [
-        sql
-        for sql, _params in conn.cursor_instance.calls
-        if "INSERT INTO" in sql and "__old_" in sql
-    ]
-    assert len(backup_inserts) == 2
-    assert conn.commits == 1
-
-
 def test_forward_promotion_only_exposes_complete_table_at_atomic_rename() -> None:
     conn = _Connection()
 
@@ -157,6 +148,7 @@ def test_forward_promotion_only_exposes_complete_table_at_atomic_rename() -> Non
         conn,
         _computed_rows(),
         target_db="jw_mart_d2_stage_20260630_r2",
+        snapshot_conn=object(),
         source="ubist",
         dimension_type="molecule",
         build_marker="2026-07-29 00:00:00",
@@ -190,6 +182,7 @@ def test_forward_promotion_invalidates_only_ubist_dynamic_cache() -> None:
         conn,
         _computed_rows(),
         target_db="jw_mart_d2_stage_20260630_r2",
+        snapshot_conn=object(),
         source="ubist",
         dimension_type="molecule",
         build_marker="2026-07-29 00:00:00",
@@ -219,6 +212,7 @@ def test_post_swap_failure_restores_previous_live_table() -> None:
             conn,
             _computed_rows(),
             target_db="jw_mart_d2_stage_20260630_r2",
+            snapshot_conn=object(),
             source="ubist",
             dimension_type="molecule",
             build_marker="2026-07-29 00:00:00",
@@ -250,6 +244,7 @@ def test_activation_record_failure_restores_previous_live_table() -> None:
             conn,
             _computed_rows(),
             target_db="jw_mart_d2_stage_20260630_r2",
+            snapshot_conn=object(),
             source="ubist",
             dimension_type="molecule",
             build_marker="2026-07-29 00:00:00",

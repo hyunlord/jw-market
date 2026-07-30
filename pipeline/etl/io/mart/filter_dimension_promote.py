@@ -41,6 +41,7 @@ def promote_filter_dimension_rows(
     rows: Sequence[dict[str, Any]],
     target_db: str,
     *,
+    snapshot_conn: pymysql.connections.Connection,
     source: str,
     dimension_type: str,
     build_marker: str,
@@ -81,6 +82,7 @@ def promote_filter_dimension_rows(
 
     swap = prepare_filter_dimension_swap(
         conn,
+        snapshot_conn,
         target_db,
         promotion_run_id,
         batch_size=batch_size,
@@ -134,6 +136,7 @@ def promote_filter_dimension_slice(
     source_db: str,
     target_db: str,
     *,
+    snapshot_conn: pymysql.connections.Connection,
     source: str,
     dimension_type: str,
     build_marker: str,
@@ -165,6 +168,7 @@ def promote_filter_dimension_slice(
 
     swap = prepare_filter_dimension_swap(
         conn,
+        snapshot_conn,
         target_db,
         promotion_run_id,
         batch_size=batch_size,
@@ -219,11 +223,13 @@ def create_filter_dimension_backup(
     target_db: str,
     promotion_run_id: str,
     *,
+    snapshot_conn: pymysql.connections.Connection,
     batch_size: int = 200,
 ) -> dict[str, Any]:
     _validate_batch_size(batch_size)
     return create_filter_dimension_backup_batched(
         conn,
+        snapshot_conn,
         target_db,
         promotion_run_id,
         batch_size=batch_size,

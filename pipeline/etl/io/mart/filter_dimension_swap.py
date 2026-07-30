@@ -9,7 +9,7 @@ from typing import Any
 import pymysql
 
 from pipeline.etl.io.mart.filter_dimension_copy import (
-    copy_table_batched,
+    copy_table_consistent_snapshot,
     create_filter_dimension_backup_batched,
     qualified,
     require_identifier_length,
@@ -27,6 +27,8 @@ class FilterDimensionSwap:
     stage_table: str
     backup_table: str
     live_rows: int
+    baseline_source_sha256: str
+    baseline_stage_sha256: str
 
     @property
     def qualified_live(self) -> str:
@@ -43,6 +45,7 @@ class FilterDimensionSwap:
 
 def prepare_filter_dimension_swap(
     conn: pymysql.connections.Connection,
+    snapshot_conn: pymysql.connections.Connection,
     target_db: str,
     promotion_run_id: str,
     *,
@@ -59,41 +62,25 @@ def prepare_filter_dimension_swap(
             raise RuntimeError(
                 f"FDM {role} already exists: {target_db}.{table_name}"
             )
-    live_rows = table_count(conn, names.qualified_live)
-    if live_rows < 1:
-        raise RuntimeError(
-            f"refusing to promote over empty FDM table: {target_db}.{FILTER_DIMENSION_TABLE}"
-        )
     with conn.cursor() as cur:
         cur.execute(
             f"CREATE TABLE {names.qualified_stage} LIKE {names.qualified_live}"
         )
-    try:
-        copied = copy_table_batched(
-            conn,
-            source_table=names.qualified_live,
-            target_table=names.qualified_stage,
-            expected_rows=live_rows,
-            batch_size=batch_size,
-        )
-    except (pymysql.MySQLError, RuntimeError) as exc:
-        raise RuntimeError(
-            f"FDM stage incomplete: expected={live_rows} "
-            f"table={target_db}.{names.stage_table}; scratch retained for "
-            f"inspection and same-run retry is blocked; cleanup after verification: "
-            f"DROP TABLE {names.qualified_stage}"
-        ) from exc
-    if copied != live_rows:
-        raise RuntimeError(
-            f"FDM stage incomplete: copied={copied} expected={live_rows} "
-            f"table={target_db}.{names.stage_table}"
-        )
+    proof = copy_table_consistent_snapshot(
+        snapshot_conn,
+        conn,
+        source_table=names.qualified_live,
+        target_table=names.qualified_stage,
+        batch_size=batch_size,
+    )
     return FilterDimensionSwap(
         target_db=target_db,
         live_table=names.live_table,
         stage_table=names.stage_table,
         backup_table=names.backup_table,
-        live_rows=live_rows,
+        live_rows=proof.row_count,
+        baseline_source_sha256=proof.source_sha256,
+        baseline_stage_sha256=proof.target_sha256,
     )
 
 
@@ -128,6 +115,8 @@ def activate_filter_dimension_swap(
             "table": swap.backup_table,
             "row_count": backup_rows,
             "promotion_run_id": _run_id_from_backup(swap.backup_table),
+            "baseline_source_sha256": swap.baseline_source_sha256,
+            "baseline_stage_sha256": swap.baseline_stage_sha256,
             "cache_rows_invalidated": invalidated,
         }
         if on_activated is not None:
