@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.request import Request, urlopen
 
 from pipeline.scripts.api.catalog import DISPLAY_BRANDS
-
 
 GENERAL_REQUESTS: tuple[dict[str, Any], ...] = (
     {"source": "ubist", "measure": "sales", "filters": {"atc4": ["C10A1", "C10C"]}},
@@ -49,7 +48,10 @@ def _warm_one(
     request = Request(
         endpoint,
         data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-Market-System-Actor": "cache-warm",
+        },
         method="POST",
     )
     byte_count = 0

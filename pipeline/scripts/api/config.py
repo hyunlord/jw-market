@@ -19,6 +19,13 @@ def _env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
 @dataclass(frozen=True)
 class APIConfig:
     db_host: str
@@ -44,6 +51,14 @@ class APIConfig:
     actor_assertion_issuer: str | None = None
     actor_assertion_audience: str | None = None
     actor_assertion_environment: str | None = None
+    audit_log_enabled: bool = False
+    audit_db_host: str | None = None
+    audit_db_port: int = 3306
+    audit_db_user: str | None = None
+    audit_db_password: str | None = None
+    audit_db_name: str | None = None
+    audit_log_queue_capacity: int = 2048
+    audit_log_batch_size: int = 50
 
 
 ApiSettings = APIConfig
@@ -74,6 +89,14 @@ def load_config() -> APIConfig:
         actor_assertion_issuer=os.getenv("ACTOR_ASSERTION_ISSUER"),
         actor_assertion_audience=os.getenv("ACTOR_ASSERTION_AUDIENCE"),
         actor_assertion_environment=os.getenv("ACTOR_ASSERTION_ENVIRONMENT"),
+        audit_log_enabled=_env_bool("AUDIT_LOG_ENABLED"),
+        audit_db_host=os.getenv("AUDIT_DB_HOST"),
+        audit_db_port=_env_int("AUDIT_DB_PORT", 3306),
+        audit_db_user=os.getenv("AUDIT_DB_USER"),
+        audit_db_password=os.getenv("AUDIT_DB_PASSWORD"),
+        audit_db_name=os.getenv("AUDIT_DB_NAME"),
+        audit_log_queue_capacity=_env_int("AUDIT_LOG_QUEUE_CAPACITY", 2048),
+        audit_log_batch_size=_env_int("AUDIT_LOG_BATCH_SIZE", 50),
     )
 
 

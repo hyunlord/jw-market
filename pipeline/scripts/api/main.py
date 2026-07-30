@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,19 +11,37 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
-
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from pipeline.scripts.api.actor_assertion import ActorAssertionConfig, install_actor_assertion_middleware  # noqa: E402
-from pipeline.scripts.api.config import config  # noqa: E402
-from pipeline.scripts.api.db import close_pool, init_pool  # noqa: E402
-from pipeline.scripts.api.openapi_docs import install_openapi_overrides  # noqa: E402
-from pipeline.scripts.api.routes import brand_activity, brands, capabilities, cause, deep_analysis, dynamic_market, health, market_filter, market_scope, market_status  # noqa: E402
-
+from pipeline.scripts.api.actor_assertion import (
+    ActorAssertionConfig,
+    install_actor_assertion_middleware,
+)
+from pipeline.scripts.api.audit_logging import (
+    AsyncAuditWriter,
+    create_audit_writer,
+    install_audit_logging_middleware,
+)
+from pipeline.scripts.api.config import config
+from pipeline.scripts.api.db import close_pool, init_pool
+from pipeline.scripts.api.openapi_docs import install_openapi_overrides
+from pipeline.scripts.api.routes import (
+    brand_activity,
+    brands,
+    capabilities,
+    cause,
+    deep_analysis,
+    dynamic_market,
+    health,
+    market_filter,
+    market_scope,
+    market_status,
+)
 
 logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
+audit_writer = create_audit_writer(config)
 
 
 FRONTEND_FILENAME = "jw_market_hardcoded_mockup_v3_4.html"
@@ -41,6 +59,8 @@ def _prefix_path(path: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_pool()
+    if isinstance(audit_writer, AsyncAuditWriter):
+        audit_writer.start()
     logger.info(
         "JW Market API starting: version=%s prefix=%s db=%s:%s/%s",
         config.app_version,
@@ -50,6 +70,8 @@ async def lifespan(app: FastAPI):
         config.db_name,
     )
     yield
+    if isinstance(audit_writer, AsyncAuditWriter):
+        audit_writer.stop()
     close_pool()
 
 
@@ -61,6 +83,7 @@ app = FastAPI(
 )
 
 install_actor_assertion_middleware(app, ActorAssertionConfig.from_api_config(config))
+install_audit_logging_middleware(app, audit_writer)
 
 app.add_middleware(
     CORSMiddleware,
