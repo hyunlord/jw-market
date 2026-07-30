@@ -104,6 +104,49 @@ def test_gate_scrubs_cq09_live_wording() -> None:
         assert public in out
 
 
+def test_gate_scrubs_bq_c1_r6_fragment() -> None:
+    raw = (
+        "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
+        "값은 null로 반환하며 매출 지표로 대체하지 않습니다."
+    )
+
+    out = cleanup_markdown_answer(raw)
+
+    assert "조회 계약" not in out
+    assert "null" not in out.casefold()
+    assert "조회 범위" in out
+    assert "확인 불가" in out
+
+
+@pytest.mark.parametrize(
+    ("case_id", "raw"),
+    (
+        (
+            "BQ-D2",
+            "| 인과 검증 가능·불가능 | 매출·MS proxy는 확인되지만, "
+            "활동→처방·매출 인과는 이 데이터만으로 검증할 수 없습니다. |\n"
+            "| 매출 proxy 해석 | 리바로 매출은 2021-06 67.47억원에서 "
+            "2026-05 80.39억원으로 관찰됩니다. 중간 저점(2022-02 65.00억원) "
+            "이후 최신월은 반등했지만, MS는 4.69%에서 3.76%로 낮아졌습니다. |",
+        ),
+        (
+            "BQ-D3",
+            "| 인과 검증 가능·불가능 | 매출·MS proxy는 확인되지만, "
+            "활동→처방·매출 인과는 이 데이터만으로 검증할 수 없습니다. |\n"
+            "| 매출 proxy 해석 | 리바로 매출은 2025-08 79.63억원에서 "
+            "2026-05 80.39억원로 관찰됩니다. 중간 저점(2026-02 75.08억원) "
+            "이후 최신월은 반등했지만, MS는 3.93%에서 3.76%로 낮아졌습니다. |",
+        ),
+    ),
+    ids=("BQ-D2", "BQ-D3"),
+)
+def test_gate_scrubs_bq_sales_activity_r6_fragments(case_id: str, raw: str) -> None:
+    out = cleanup_markdown_answer(raw)
+
+    assert "proxy" not in out.casefold(), case_id
+    assert out.count("보조 지표") == 2, case_id
+
+
 def test_gate_cq09_terms_are_word_bounded() -> None:
     raw = "nullable, nullification, ingrained, grainy, proxying, proxylike"
 
