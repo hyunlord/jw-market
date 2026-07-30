@@ -15,6 +15,7 @@ from starlette.middleware.gzip import GZipMiddleware
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from pipeline.scripts.api.actor_assertion import ActorAssertionConfig, install_actor_assertion_middleware  # noqa: E402
 from pipeline.scripts.api.config import config  # noqa: E402
 from pipeline.scripts.api.db import close_pool, init_pool  # noqa: E402
 from pipeline.scripts.api.openapi_docs import install_openapi_overrides  # noqa: E402
@@ -58,6 +59,8 @@ app = FastAPI(
     root_path=config.external_path_prefix,
     lifespan=lifespan,
 )
+
+install_actor_assertion_middleware(app, ActorAssertionConfig.from_api_config(config))
 
 app.add_middleware(
     CORSMiddleware,
