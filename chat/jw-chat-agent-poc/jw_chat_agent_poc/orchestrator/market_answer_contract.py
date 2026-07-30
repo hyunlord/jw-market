@@ -50,7 +50,11 @@ def enforce_market_answer_contract(
     postcheck_answer = _strategy_market_size_postcheck(question, relevant_calls)
     if postcheck_answer:
         return _public_language(question, postcheck_answer)
-    status_answer = _status_answer(question, relevant_calls or calls)
+    preserves_identity_mismatch = any(
+        str(_render_data(call).get("error_code") or "").upper() == "IDENTITY_MISMATCH"
+        for call in relevant_calls or calls
+    ) and "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in answer
+    status_answer = "" if preserves_identity_mismatch else _status_answer(question, relevant_calls or calls)
     contracted = status_answer
     unresolved_answer = ""
     if not contracted:

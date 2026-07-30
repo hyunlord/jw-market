@@ -2698,6 +2698,66 @@ def test_compute_final_answer_preserves_typed_terminal_result(
     assert final.sources == (expected_source,)
 
 
+def test_compute_final_answer_preserves_routing_v4_identity_mismatch_guidance(
+    monkeypatch,
+) -> None:
+    question = "리바로 급여기준 알려줘"
+    answer = (
+        "연결된 고시의 제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아 "
+        "그 내용을 답으로 사용하지 않았습니다.\n"
+        "직접 확인: [심사평가원 급여기준]"
+        "(https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do)\n"
+        "검색어: 리바로\n"
+        "정확한 제품명 또는 성분 구성을 확인해 다시 요청하면 해당 대상을 기준으로 조회합니다."
+    )
+    result = {
+        "question": question,
+        "resolution": None,
+        "decomposition": [{"intent": "external_tool_agent", "status": "error"}],
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "fallback_code": None,
+            "routing_v4": {
+                "executed_call_signature": {"reason_code": "IDENTITY_MISMATCH"},
+                "official_web_fallback": {
+                    "reason_code": "IDENTITY_MISMATCH",
+                    "calls_executed": 0,
+                },
+            },
+        },
+        "tool_calls": [
+            {
+                "tool": "hira_reimbursement_criteria",
+                "status": "error",
+                "render_data": {"error_code": "IDENTITY_MISMATCH"},
+            }
+        ],
+        "answer": answer,
+        "markdown_response": {
+            "markdown": answer,
+            "fact_md": "",
+            "data_md": "",
+            "verification": {"status": "fail"},
+        },
+        "sources": [],
+    }
+
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("identity mismatch guidance must bypass final LLM synthesis")
+        ),
+    )
+
+    final = compute_final_answer(question, result, "identity-mismatch-final")
+
+    assert "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in final.text
+    assert "검색어: 리바로" in final.text
+    assert "데이터 존재 여부를 확인하지 못했습니다" not in final.text
+    assert final.trace["qa_trace"]["answer_delivery"]["answer_branch"] == "typed_terminal"
+
+
 def test_compute_final_answer_preserves_brand_cardinality_clarification(monkeypatch) -> None:
     question = "리바로와 리바로젯 매출 알려줘"
     answer = "여러 브랜드가 확인되었습니다: 리바로, 리바로젯. 한 브랜드를 지정해 주세요."

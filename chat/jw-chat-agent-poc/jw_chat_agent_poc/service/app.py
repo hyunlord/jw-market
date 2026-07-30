@@ -3462,6 +3462,15 @@ def _is_terminal_typed_result(result: dict) -> bool:
         return True
     if not isinstance(diagnostics, dict) or diagnostics.get("mode") != "tool_use_agent":
         return False
+    routing_v4 = diagnostics.get("routing_v4")
+    if isinstance(routing_v4, dict):
+        official_web_fallback = routing_v4.get("official_web_fallback")
+        if (
+            isinstance(official_web_fallback, dict)
+            and official_web_fallback.get("reason_code") == "IDENTITY_MISMATCH"
+            and official_web_fallback.get("calls_executed") == 0
+        ):
+            return True
     return diagnostics.get("fallback_code") in {
         "UNSUPPORTED_QUERY",
         "VERIFICATION_FAIL",

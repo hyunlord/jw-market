@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import requests
 
+from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.service.web_presentation_policy import web_presentation_policy
 from jw_chat_agent_poc.tool_use import integration as routing_integration
@@ -776,6 +777,14 @@ def test_enforce_reimbursement_identity_mismatch_keeps_reason_and_skips_web(
     assert "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in payload["answer"]
     assert "검색어: 리바로" in payload["answer"]
     assert "리바로젯정" not in payload["answer"]
+
+    contracted = enforce_market_answer_contract(
+        "리바로 급여기준 알려줘",
+        payload["answer"],
+        payload["tool_calls"],
+    )
+    assert "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in contracted
+    assert "조회 오류" not in contracted
 
 
 def test_a13_preserves_all_exact_family_rows_and_binds_each_claim(monkeypatch) -> None:
