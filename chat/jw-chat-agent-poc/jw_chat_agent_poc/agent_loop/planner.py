@@ -28,6 +28,12 @@ class BrandUnresolvedError(LookupError):
     behaviour, because this is still a LookupError.
     """
 
+    matches: tuple[str, ...]
+
+    def __init__(self, message: str, *, matches: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.matches = matches
+
 
 @dataclass(frozen=True, slots=True)
 class GenosToolPlanner:
@@ -716,7 +722,10 @@ def _brand(question: str, allowed_brands: tuple[str, ...]) -> str:
     if len(allowed_brands) == 1:
         return next(iter(allowed_brands))
     if len(matches) > 1:
-        raise BrandUnresolvedError(f"brand is unresolved: multiple brands matched ({', '.join(matches)})")
+        raise BrandUnresolvedError(
+            f"brand is unresolved: multiple brands matched ({', '.join(matches)})",
+            matches=matches,
+        )
     raise BrandUnresolvedError("brand is unresolved: ask the user to specify a brand")
 
 

@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from jw_chat_agent_poc.agent_loop import is_explicit_quarter_sales_question, should_use_agent_loop
+from jw_chat_agent_poc.agent_loop.bq_planner import multi_brand_cardinality_message
 from jw_chat_agent_poc.agent_loop.element_ledger import market_scope_defers_to_contract
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.agent_loop.factory import (
@@ -2077,7 +2078,7 @@ def _answer_direct_agent_loop(
     with trace_span("agent_loop_execution", "tool-use agent execution"):
         try:
             result = agent.answer(question, **agent_kwargs)
-        except BrandUnresolvedError:
+        except BrandUnresolvedError as exc:
             # The planner's own message is "ask the user to specify a brand", so
             # asking is what it already wanted; until now the request died as an
             # ASGI 500 instead, which also skipped compute_final_answer and left
@@ -2087,6 +2088,11 @@ def _answer_direct_agent_loop(
                 question,
                 routes,
                 router_diagnostics(dependencies.router),
+                message=(
+                    multi_brand_cardinality_message(exc.matches)
+                    if len(exc.matches) >= 2
+                    else None
+                ),
             )
     return attach_routing_v4_legacy_observation(
         question,
