@@ -242,7 +242,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 require_ingest_post_gate(conn, promotion_identity)
             except PostGateError as exc:
-                rollback_result = _rollback_failed_post_gate_candidate(conn, args)
+                try:
+                    rollback_conn = _connect_admin()
+                    try:
+                        rollback_result = _rollback_failed_post_gate_candidate(
+                            rollback_conn,
+                            args,
+                        )
+                    finally:
+                        rollback_conn.close()
+                except Exception as rollback_exc:
+                    raise RuntimeError(
+                        f"{exc}; automatic rollback failed: "
+                        f"{type(rollback_exc).__name__}; isolated candidate retained; "
+                        "live schema unchanged"
+                    ) from rollback_exc
                 raise RuntimeError(
                     f"{exc}; automatic rollback completed: {rollback_result}"
                 ) from exc

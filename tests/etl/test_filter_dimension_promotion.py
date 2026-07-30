@@ -132,13 +132,13 @@ def test_post_gate_timeout_drops_only_this_runs_isolated_stage(
 
     calls: list[str] = []
 
-    class Cursor:
+    class FailedCursor:
         def execute(self, sql, _params=None) -> None:
             calls.append(sql)
             if "ingest_ledger" in sql:
                 raise pymysql.err.OperationalError(
-                    1969,
-                    "Query execution was interrupted (max_statement_time exceeded)",
+                    2013,
+                    "Lost connection to MySQL server during query (timed out)",
                 )
 
         def fetchone(self):
@@ -150,15 +150,31 @@ def test_post_gate_timeout_drops_only_this_runs_isolated_stage(
         def __exit__(self, *_args):
             return False
 
+    class CleanupCursor:
+        def execute(self, sql, _params=None) -> None:
+            calls.append(sql)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
     class Connection:
-        def cursor(self) -> Cursor:
-            return Cursor()
+        def __init__(self, cursor) -> None:
+            self._cursor = cursor
+            self.closed = False
+
+        def cursor(self):
+            return self._cursor
 
         def close(self) -> None:
-            return None
+            self.closed = True
 
-    conn = Connection()
-    monkeypatch.setattr(cli, "_connect_admin", lambda: conn)
+    failed_conn = Connection(FailedCursor())
+    cleanup_conn = Connection(CleanupCursor())
+    connections = iter((failed_conn, cleanup_conn))
+    monkeypatch.setattr(cli, "_connect_admin", lambda: next(connections))
     monkeypatch.setattr(cli, "_guard_new_sidecar_target", lambda *_args: None)
     monkeypatch.setattr(cli, "_general_table_counts", lambda *_args: {"general": 1})
     monkeypatch.setattr(
@@ -203,6 +219,8 @@ def test_post_gate_timeout_drops_only_this_runs_isolated_stage(
         "DROP DATABASE `jw_mart_d2_stage_20260630_r2`" not in sql
         for sql in calls
     )
+    assert failed_conn.closed is True
+    assert cleanup_conn.closed is True
 
 
 def test_isolated_builder_checks_the_configured_serving_schema(monkeypatch) -> None:
