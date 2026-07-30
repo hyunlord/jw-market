@@ -5,7 +5,11 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Final
 
-from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value, precise_eok_value
+from jw_chat_agent_poc.orchestrator.markdown_formatting import (
+    eok_value,
+    precise_eok_value,
+    rank_value,
+)
 from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     MISSING_LABEL,
@@ -26,6 +30,10 @@ _STRATEGIC_VIEW_MARKET_RE: Final[re.Pattern[str]] = re.compile(
     r"^전략뷰\s*\([^)]+\)\s*·\s*(?P<market>.+?)\s*$"
 )
 _YEAR_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
+_RANK_REQUEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"순위|몇\s*위|랭킹|rank",
+    re.IGNORECASE,
+)
 _CAUSAL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?P<claim>[^\n.!?]*(?:때문|이므로|따라서)[^\n.!?]*[.!?]?)"
 )
@@ -525,7 +533,8 @@ def _top_brand_volume_answer(question: str, calls: Sequence[Mapping[str, Any]]) 
 def _brand_comparison_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     if "비교" not in question:
         return ""
-    rows: dict[str, tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
+    rank_requested = _RANK_REQUEST_RE.search(question) is not None
+    rows: dict[str, tuple[Mapping[str, Any], Mapping[str, Any], Any]] = {}
     for call in calls:
         data = _render_data(call)
         brand = str(data.get("brand") or "").strip()
@@ -534,28 +543,46 @@ def _brand_comparison_answer(question: str, calls: Sequence[Mapping[str, Any]]) 
             continue
         points = tuple(item for item in series if isinstance(item, Mapping) and item.get("period"))
         if len(points) >= 2:
-            rows[brand] = (points[0], points[-1])
+            latest = points[-1]
+            rank = data.get("rank")
+            if rank in (None, ""):
+                rank = latest.get("rank")
+            rows[brand] = (points[0], latest, rank)
     requested = tuple(brand for brand in rows if brand in question)
     selected = requested if len(requested) >= 2 else tuple(rows)[:2]
     if len(selected) < 2:
         return ""
     rendered = [
         "## 브랜드 비교",
-        "| 브랜드 | 시작 점유율 | 최신 점유율 | 방향 | 시작 매출 | 최신 매출 |",
-        "| --- | --- | --- | --- | --- | --- |",
+        (
+            "| 브랜드 | 시작 점유율 | 최신 점유율 | 방향 | 시작 매출 | 최신 매출 | 최신 순위 |"
+            if rank_requested
+            else "| 브랜드 | 시작 점유율 | 최신 점유율 | 방향 | 시작 매출 | 최신 매출 |"
+        ),
+        (
+            "| --- | --- | --- | --- | --- | --- | --- |"
+            if rank_requested
+            else "| --- | --- | --- | --- | --- | --- |"
+        ),
     ]
     for brand in selected:
-        start, latest = rows[brand]
+        start, latest, rank = rows[brand]
         start_share = _decimal(start.get("ms_pct") or start.get("ms_recent_pct"))
         latest_share = _decimal(latest.get("ms_pct") or latest.get("ms_recent_pct"))
         if start_share is None or latest_share is None:
             return ""
         direction = "상승" if latest_share > start_share else "하락" if latest_share < start_share else "보합"
-        rendered.append(
+        row = (
             "| "
             f"{brand} | {start['period']} {start_share:.2f}% | {latest['period']} {latest_share:.2f}% | {direction} | "
             f"{_sales_point(start)} | {_sales_point(latest)} |"
         )
+        if rank_requested:
+            rendered_rank = rank_value(rank, None)
+            if not rendered_rank:
+                return ""
+            row = f"{row} {rendered_rank}위 |"
+        rendered.append(row)
     return "\n".join(rendered)
 
 

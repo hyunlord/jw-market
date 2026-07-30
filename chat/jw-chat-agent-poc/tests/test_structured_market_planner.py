@@ -110,6 +110,26 @@ def test_share_plan_expands_to_sales_market_rank_and_series_evidence() -> None:
     }
 
 
+def test_multi_brand_rank_plan_preserves_rank_request_with_comparison_kind() -> None:
+    # Given: an explicit rank request containing four resolvable brands.
+    question = "리바로, 리바로젯, 로수젯, 리피토 네 브랜드 순위를 비교해줘"
+    resolver = BrandResolver(mode="fixture")
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    schemas = tool_schemas(
+        ("리바로", "리바로젯", "로수젯", "리피토"),
+        grounding.schema_periods,
+        default_catalog(),
+    )
+
+    # When: the deterministic planner selects the multi-brand comparison route.
+    plan = plan_structured_market_question(question, resolver, grounding, schemas)
+
+    # Then: comparison remains the route while the explicit rank metric survives.
+    assert plan is not None
+    assert plan.kind == "brand_comparison"
+    assert plan.slots.requested_metric == "brand_rank"
+
+
 def test_external_or_unstructured_question_falls_back_instead_of_false_hit() -> None:
     question = "리바로 최신 가이드라인 근거를 찾아줘"
     resolver = BrandResolver(mode="fixture")

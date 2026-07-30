@@ -16,6 +16,7 @@ from jw_chat_agent_poc.resolver import BrandResolver, UnsupportedBrandError
 class QuerySlots:
     brands: tuple[str, ...]
     metric: str
+    requested_metric: str | None
     period: str
     source: str | None
     axis: str | None
@@ -193,6 +194,7 @@ def plan_structured_market_question(
     slots = QuerySlots(
         brands=brands,
         metric=kind,
+        requested_metric=metric.name if metric is not None else None,
         period=period,
         source=requested_source,
         axis=axis[0] if axis else None,
