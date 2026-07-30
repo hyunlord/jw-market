@@ -73,6 +73,49 @@ def test_gate_scrubs_agent_loop_wording() -> None:
         assert "agent_loop" not in out
 
 
+@pytest.mark.parametrize(
+    ("internal", "public"),
+    (
+        ("null", "확인 불가"),
+        ("grain", "집계 단위"),
+        ("조회 계약", "조회 범위"),
+        ("proxy", "보조 지표"),
+    ),
+)
+def test_gate_scrubs_cq09_internal_terms(internal: str, public: str) -> None:
+    out = cleanup_markdown_answer(f"처방 지표의 {internal} 정보를 안내합니다.")
+
+    assert internal.casefold() not in out.casefold()
+    assert public in out
+
+
+def test_gate_scrubs_cq09_live_wording() -> None:
+    raw = (
+        "요청한 처방 지표는 현재 채팅 조회 계약에 미노출되어 확인할 수 없습니다. "
+        "값은 null로 반환하며 매출 지표로 대체하지 않습니다.\n\n"
+        "매출·점유율은 별도 요청에서 참고용 proxy로 조회할 수 있지만 처방 지표가 아닙니다.\n"
+        "진료과·유통채널 grain의 검증된 원천 필드가 필요합니다."
+    )
+    out = cleanup_markdown_answer(raw)
+
+    for internal in ("null", "grain", "조회 계약", "proxy"):
+        assert internal.casefold() not in out.casefold()
+    for public in ("확인 불가", "집계 단위", "조회 범위", "보조 지표"):
+        assert public in out
+
+
+def test_gate_cq09_terms_are_word_bounded() -> None:
+    raw = "nullable, nullification, ingrained, grainy, proxying, proxylike"
+
+    assert cleanup_markdown_answer(raw) == raw
+
+
+def test_gate_preserves_internal_grain_table_key_for_llm_contract() -> None:
+    raw = "| grain | quarter |"
+
+    assert cleanup_markdown_answer(raw) == raw
+
+
 def test_gate_scrubs_fact_family_headings() -> None:
     for heading in (
         "### 리바로 지표 fact",
