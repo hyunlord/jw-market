@@ -9,6 +9,10 @@ from html import unescape
 from collections.abc import Iterator
 from typing import Any, Final
 
+from jw_chat_agent_poc.orchestrator.comparison_compatibility import (
+    ComparisonCompatibilityDecision,
+    incompatible_direct_comparison,
+)
 from jw_chat_agent_poc.orchestrator.dosage_notes import dosage_combination_note, is_dosage_combination_note
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, eok_value, normalize_number, pct_value
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block_from_facts
@@ -2026,7 +2030,17 @@ def enforce_relational_numeric_claims_with_trace(
     failed_metrics = _failed_relational_metrics(question, call_items)
     successful_metrics = _successful_relational_metrics(call_items)
     incompatible_comparison = _incompatible_comparison_context(call_items)
-    if cached_as_of:
+    multi_source_incompatibility = (
+        None
+        if incompatible_comparison is not None
+        else incompatible_direct_comparison(question, revised, call_items)
+    )
+    if multi_source_incompatibility is not None:
+        revised = _multi_source_incompatible_comparison_guidance(
+            multi_source_incompatibility,
+        )
+        blocked_reasons = (*blocked_reasons, INCOMPATIBLE_COMPARISON_REASON)
+    elif cached_as_of:
         disclosure = f"실시간 조회 실패. 아래는 {cached_as_of} 기준 저장 결과입니다."
         revised = _prepend_disclosure(disclosure, revised)
     elif incompatible_comparison is not None:
@@ -2043,6 +2057,8 @@ def enforce_relational_numeric_claims_with_trace(
     if blocked_to_empty or failed_to_empty:
         revised = _typed_relational_failure_fallback(question, call_items)
         disposition = "partial" if incompatible_comparison is not None and successful_metrics else "unavailable"
+    elif multi_source_incompatibility is not None:
+        disposition = "partial"
     elif cached_as_of:
         disposition = "cached_partial"
     elif failed_metrics:
@@ -2056,7 +2072,11 @@ def enforce_relational_numeric_claims_with_trace(
         blocked_claim_count=blocked_count,
         blocked_reasons=tuple(dict.fromkeys(blocked_reasons)),
         disposition=disposition,
-        failure_kind=detected_failure_kind,
+        failure_kind=(
+            INCOMPATIBLE_COMPARISON_REASON
+            if multi_source_incompatibility is not None
+            else detected_failure_kind
+        ),
     )
 
 
@@ -2435,6 +2455,29 @@ def _incompatible_comparison_guidance(
         "상태: 부분 확인\n\n"
         f"확인된 범위: {verified_scope}\n\n"
         "대안: 각 브랜드의 시장 기준을 분리해 개별 추이를 확인해 주세요."
+    )
+
+
+def _multi_source_incompatible_comparison_guidance(
+    decision: ComparisonCompatibilityDecision,
+) -> str:
+    axis_labels = {
+        "source": "원천",
+        "grain": "자료 주기",
+        "period": "기준기간",
+        "metric": "지표",
+        "unit": "단위",
+        "market_definition": "시장 정의",
+        "denominator": "분모",
+    }
+    brands = "·".join(decision.brands)
+    mismatches = "·".join(axis_labels[axis] for axis in decision.mismatch_axes)
+    return cleanup_markdown_answer(
+        f"{brands}의 {mismatches} 기준이 일치하지 않아 한 표에서 직접 비교할 수 없습니다.\n\n"
+        "상태: 부분 확인\n\n"
+        "확인된 범위: 각 원천의 개별 결과는 확인했지만 서로 다른 기준의 수치를 "
+        "하나의 증감·순위 결론으로 합치지 않았습니다.\n\n"
+        "대안: 원천과 기준기간을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
     )
 
 
