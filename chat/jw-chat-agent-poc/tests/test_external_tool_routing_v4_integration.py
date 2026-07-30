@@ -683,6 +683,100 @@ def test_enforce_reimbursement_hira_absence_is_typed_no_evidence(monkeypatch) ->
     assert ccs["routing_decision"]["source_domain"] == "hira"
 
 
+def test_enforce_reimbursement_empty_web_result_returns_actionable_guidance(
+    monkeypatch,
+) -> None:
+    external = ExternalApiClient(mode="fixture")
+    web_calls = 0
+
+    def empty_web_result(
+        query: str,
+        max_results: int = 5,
+        *,
+        topic: str = "general",
+    ) -> ExternalCall:
+        nonlocal web_calls
+        del query, max_results, topic
+        web_calls += 1
+        return ExternalCall(
+            tool="web_search",
+            source="web_search",
+            status="no_data",
+            summary_text="no official results",
+            render_data={"provider": "fixture", "items": []},
+        )
+
+    _enable_recoverable_reimbursement_cache(monkeypatch)
+    monkeypatch.setattr(HiraReimbursementHttpClient, "fetch", lambda _self, _brand: None)
+    monkeypatch.setattr(external, "web_search", empty_web_result)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    payload = run_external_tool_agent(
+        "아일리아 급여기준 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    fallback = payload["router_diagnostics"]["routing_v4"]["official_web_fallback"]
+    assert web_calls == 1
+    assert fallback["accepted_urls"] == []
+    assert "공식 웹 보완 검색을 시도" in payload["answer"]
+    assert "https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do" in payload["answer"]
+    assert "검색어: 아일리아 급여기준" in payload["answer"]
+
+
+def test_enforce_reimbursement_identity_mismatch_keeps_reason_and_skips_web(
+    monkeypatch,
+) -> None:
+    external = ExternalApiClient(mode="fixture")
+    web_calls = 0
+
+    def mismatched_reimbursement(_self, brand: str) -> ReimbursementCriterion:
+        assert brand == "리바로"
+        return ReimbursementCriterion(
+            brand_name=brand,
+            title="고지혈증 치료제 급여기준",
+            raw_text=(
+                "Ezetimibe + pitavastatin calcium 복합경구제"
+                "(품명: 리바로젯정 등)"
+            ),
+            source_date="2021-10-01",
+            collected_at=datetime(2026, 7, 28, tzinfo=UTC),
+            notice_number="제2021-245호",
+            source_url="https://www.hira.or.kr/rc/example.do",
+        )
+
+    def unexpected_web_search(*_args, **_kwargs) -> ExternalCall:
+        nonlocal web_calls
+        web_calls += 1
+        raise AssertionError("identity mismatch must not promote web snippets")
+
+    _enable_recoverable_reimbursement_cache(monkeypatch)
+    monkeypatch.setattr(HiraReimbursementHttpClient, "fetch", mismatched_reimbursement)
+    monkeypatch.setattr(external, "web_search", unexpected_web_search)
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_OFFICIAL_WEB_FALLBACK_ENABLED", "true")
+
+    payload = run_external_tool_agent(
+        "리바로 급여기준 알려줘",
+        resolver=BrandResolver(),
+        external=external,
+        provider=_no_tool_provider(),
+        routing_provider=_TimeoutProvider(),
+    )
+
+    routing = payload["router_diagnostics"]["routing_v4"]
+    assert web_calls == 0
+    assert routing["executed_call_signature"]["reason_code"] == "IDENTITY_MISMATCH"
+    assert routing["official_web_fallback"]["reason_code"] == "IDENTITY_MISMATCH"
+    assert "제품 또는 성분 구성이 요청한 브랜드와 일치하지 않아" in payload["answer"]
+    assert "검색어: 리바로" in payload["answer"]
+    assert "리바로젯정" not in payload["answer"]
+
+
 def test_a13_preserves_all_exact_family_rows_and_binds_each_claim(monkeypatch) -> None:
     external = ExternalApiClient(mode="fixture")
     rows = [

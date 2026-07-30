@@ -24,6 +24,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_capabilities import (
     default_capability_matrix,
 )
 from jw_chat_agent_poc.tool_use.routing_v4_execution import (
+    actionable_official_web_failure,
     claim_evidence_bindings,
     failed_call_scopes,
     normalize_execution_result,
@@ -362,13 +363,33 @@ def _apply_official_web_fallback(
         authoritative_nonexistence_proven=authoritative_nonexistence_proven,
         missing_requested_facets=missing_requested_facets,
     )
+    if reason == "IDENTITY_MISMATCH":
+        guidance = actionable_official_web_failure(
+            question=question,
+            source_domain=source_domain,
+            reason_code=reason,
+            provider_outcome="not_called",
+            internal_only=internal_only,
+            authoritative_nonexistence_proven=authoritative_nonexistence_proven,
+        )
+        return (
+            _replace_failure_answer(result, guidance),
+            diagnostics,
+            0.0,
+        )
     if not eligible:
         return result, diagnostics, 0.0
 
     web_tool = next((tool for tool in tools if tool.name == "web_search"), None)
     if web_tool is None:
         diagnostics["reason_code"] = "WEB_TOOL_UNAVAILABLE"
-        return result, diagnostics, 0.0
+        guidance = actionable_official_web_failure(
+            question=question,
+            source_domain=source_domain,
+            reason_code=reason,
+            provider_outcome="unavailable",
+        )
+        return _replace_failure_answer(result, guidance), diagnostics, 0.0
 
     started = time.perf_counter()
 
@@ -423,7 +444,13 @@ def _apply_official_web_fallback(
         }
     )
     if not decision.accepted_urls:
-        return result, diagnostics, latency_ms
+        guidance = actionable_official_web_failure(
+            question=question,
+            source_domain=source_domain,
+            reason_code=reason,
+            provider_outcome=_web_provider_outcome(web_result),
+        )
+        return _replace_failure_answer(result, guidance), diagnostics, latency_ms
 
     return (
         _combine_official_web_result(
@@ -497,6 +524,32 @@ def _web_result_urls(result: AgentResult) -> tuple[str, ...]:
             for url in _HTTPS_URL_RE.findall(str(fact.get("source_locator") or ""))
         )
     )
+
+
+def _web_provider_outcome(result: AgentResult) -> str:
+    error_codes = {
+        str(render_data.get("error_code") or "").strip().upper()
+        for call in result.tool_calls
+        if isinstance((render_data := call.get("render_data")), dict)
+    }
+    if result.fallback_code is not None and result.fallback_code.value == "TOOL_TIMEOUT":
+        return "timeout"
+    if error_codes & {"TIMEOUT", "TOOL_TIMEOUT"}:
+        return "timeout"
+    if error_codes & {
+        "CONNECTION_ERROR",
+        "HTTP_ERROR",
+        "RATE_LIMITED",
+        "SERVER_ERROR",
+        "SERVICE_UNAVAILABLE",
+        "UPSTREAM_UNAVAILABLE",
+    }:
+        return "error"
+    return "empty"
+
+
+def _replace_failure_answer(result: AgentResult, guidance: str | None) -> AgentResult:
+    return result if not guidance else result.model_copy(update={"answer": guidance})
 
 
 def _combine_official_web_result(
