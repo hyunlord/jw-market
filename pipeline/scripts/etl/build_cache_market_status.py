@@ -28,7 +28,7 @@ from pipeline.scripts.etl.cache_build_common import (
     payload_size,
     period_key,
     optional_float,
-    replace_rows,
+    upsert_rows,
     series_latest_number,
     source_list,
     decode_json,
@@ -495,7 +495,7 @@ def main() -> None:
         },
         "brand_cards": cards,
     }
-    replace_rows(
+    upsert_rows(
         args.target_table,
         ["query_key", "response_json", "payload_size", "build_sha", "input_manifest_json"],
         [{

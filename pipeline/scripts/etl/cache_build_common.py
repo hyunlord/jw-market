@@ -594,6 +594,27 @@ def replace_rows(table: str, columns: list[str], rows: list[dict[str, Any]]) -> 
         conn.close()
 
 
+def upsert_rows(table: str, columns: list[str], rows: list[dict[str, Any]]) -> None:
+    """Insert cache rows or update every supplied column on key conflicts."""
+    if not rows:
+        return
+    placeholders = ", ".join(["%s"] * len(columns))
+    names = ", ".join(f"`{column}`" for column in columns)
+    updates = ", ".join(f"`{column}` = VALUES(`{column}`)" for column in columns)
+    sql = (
+        f"INSERT INTO {quote_table_name(table)} ({names}) VALUES ({placeholders}) "
+        f"ON DUPLICATE KEY UPDATE {updates}"
+    )
+    values = [tuple(row.get(column) for column in columns) for row in rows]
+    conn = mariadb_connect()
+    try:
+        with conn.cursor() as cur:
+            for value in values:
+                cur.execute(sql, value)
+    finally:
+        conn.close()
+
+
 def insert_rows(table: str, columns: list[str], rows: list[dict[str, Any]]) -> None:
     """Insert rows into a pre-validated empty staging table."""
     if not rows:
