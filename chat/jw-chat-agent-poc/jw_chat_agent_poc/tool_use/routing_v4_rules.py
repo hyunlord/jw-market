@@ -88,13 +88,29 @@ def classify_question(question: str) -> QuestionClassification:
             DomainDecisionSource.INTENT_OWNER,
             "NCT_ID",
         )
-    if any(token in lowered for token in ("급여", "reimbursement")):
+    if any(token in lowered for token in ("급여", "보험인정기준", "reimbursement")):
         return QuestionClassification(
             source_domain="hira",
             domain_decision_source=DomainDecisionSource.INTENT_OWNER,
             requested_capability="HIRA_REIMBURSEMENT_CRITERIA",
             input_key="product_name",
             deterministic_rule_id="HIRA_REIMBURSEMENT_CRITERIA",
+        )
+    if asks_domain_first_label_fields(lowered):
+        return QuestionClassification(
+            source_domain="regulatory",
+            domain_decision_source=DomainDecisionSource.INTENT_OWNER,
+            requested_capability="MFDS_PERMISSION_DETAIL_FIELDS",
+            input_key="product_name",
+            deterministic_rule_id="DOMAIN_FIRST_MFDS_PERMISSION_DETAIL",
+        )
+    if asks_permission_fields(lowered) and not asks_clinical_fields(lowered):
+        return QuestionClassification(
+            source_domain="regulatory",
+            domain_decision_source=DomainDecisionSource.INTENT_OWNER,
+            requested_capability="MFDS_BASIC_PRODUCT_INFO",
+            input_key="product_name",
+            deterministic_rule_id="DOMAIN_FIRST_MFDS_PERMISSION",
         )
     if asks_basic_permission_fields(lowered):
         return QuestionClassification(
@@ -131,12 +147,13 @@ def classify_question(question: str) -> QuestionClassification:
             input_key="ingredient",
             deterministic_rule_id="INGREDIENT_PATENT",
         )
-    if any(token in lowered for token in ("임상시험", "clinical trial", "clinicaltrial")):
+    if asks_clinical_fields(lowered):
         return QuestionClassification(
             source_domain="clinical_trials",
             domain_decision_source=DomainDecisionSource.LLM,
             requested_capability="CLINICAL_TRIAL_SEARCH",
             input_key="ingredient" if ingredient is not None else "natural_query",
+            deterministic_rule_id="DOMAIN_FIRST_CLINICAL_TRIAL",
         )
     if is_hira_disease_question(question):
         mapped_code = hira_disease_code_for_text(body)
@@ -165,6 +182,25 @@ def asks_label_fields(lowered: str) -> bool:
     )
 
 
+def asks_domain_first_label_fields(lowered: str) -> bool:
+    return any(
+        token in lowered
+        for token in (
+            "효능효과",
+            "효능 효과",
+            "효능·효과",
+            "용법용량",
+            "용법 용량",
+            "용법·용량",
+            "사용상주의사항",
+            "사용상 주의사항",
+            "efficacy",
+            "dosage",
+            "precaution",
+        )
+    )
+
+
 def asks_composition_fields(lowered: str) -> bool:
     return any(token in lowered for token in ("성분 조성", "성분·함량", "성분 함량"))
 
@@ -177,6 +213,20 @@ def asks_basic_permission_fields(lowered: str) -> bool:
     asks_permission = any(token in lowered for token in ("허가", "permission", "approval"))
     asks_basic_field = any(token in lowered for token in ("품목명", "업체명", "제조사", "manufacturer"))
     return asks_permission and asks_basic_field
+
+
+def asks_permission_fields(lowered: str) -> bool:
+    return any(
+        token in lowered
+        for token in ("허가정보", "허가 정보", "permission", "approval")
+    )
+
+
+def asks_clinical_fields(lowered: str) -> bool:
+    return any(
+        token in lowered
+        for token in ("임상시험", "clinical trial", "clinicaltrial", "nct")
+    )
 
 
 def _hira_classification(
