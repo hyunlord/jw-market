@@ -6,11 +6,15 @@ from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.answer_contract import (
     CONTRACT_REQUIRED_TOOLS,
     answer_contract_backfill_tool_calls,
+    build_news_selection,
+    enforce_news_claim_selection,
     enforce_answer_contract,
     evaluate_answer_contract,
+    news_selection_prompt_fact_markdown,
     positioning_markdown_response,
 )
 from jw_chat_agent_poc.service.runtime_provenance import _required_tools
+from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response, sanitize_internal_diagnostics
 
@@ -263,6 +267,17 @@ E1_NEWS_FACT_MD = """## 확정 fact set
 | 2026-06-25 | JW중외제약 리바로 영업 채널 확대 | 메디칼타임즈 | https://example.test/news/2 | 의원 채널 활동을 확대한다는 내용 | 영업 채널 확대 |
 | 2026-06-20 | 이상지질혈증 복합제 경쟁 심화 | 데일리팜 | https://example.test/news/1 | 로수바스타틴 복합제가 시장 경쟁을 키웠다는 내용 | 경쟁 심화 |
 | 2026-06-18 | 디지털 헬스케어 RAG 기술 소개 | IT뉴스 | https://example.test/news/3 | 검색 증강 생성 기술 기사 | RAG |
+"""
+
+EX08_NEWS_FACT_MD = """## 확정 fact set
+
+### 인사이트 근거 fact - 뉴스/이슈
+| 날짜 | 제목 | 출처 | URL | 요약 | 매칭 발췌 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-07-29 | 알테오젠바이오로직스, 아일리아 바이오시밀러 ALT-L9 사우디 허가 | 약업신문 | https://www.yakup.com/news/index.html?mode=view&nid=328730 | 아일리아 바이오시밀러의 사우디 허가 소식 | ALT-L9 중동 진출 |
+| 2026-07-28 | 알테오젠바이오, 사우디 허가 획득...ALT-L9 중동 공략 본격화 | 메디파나뉴스 | https://www.medipana.com/news/articleView.html?idxno=413221 | 아일리아 바이오시밀러의 해외 허가 소식 | 아일리아 바이오시밀러 |
+| 2026-07-25 | 고용량 아일리아 전환 후 투약 간격 늘고 효능·안전성 유지 | 의약뉴스 | https://www.newsmp.com/news/articleView.html?idxno=254714 | 고용량 아일리아 임상 활용 기사 | 아일리아 임상 |
+| 2026-07-20 | 생성형 AI 검색 기술 동향 | IT뉴스 | https://example.test/noise/1 | 검색 기술 일반 기사 | 생성형 AI |
 """
 
 
@@ -1449,3 +1464,67 @@ def test_news_ei_contract_adds_relevance_grade_without_stealing_change_drivers()
     )
     assert "## 변화 요인 결론" in id7_revised
     assert "## 뉴스 관련성 등급" not in id7_revised
+
+
+def test_news_selection_uses_canonical_brand_for_prompt_and_relevance_table() -> None:
+    selection = build_news_selection(EX08_NEWS_FACT_MD, canonical_brand="아일리아")
+    markdown_response = {
+        "fact_md": EX08_NEWS_FACT_MD,
+        "_news_selection": selection,
+    }
+
+    prompt_fact_md = news_selection_prompt_fact_markdown(EX08_NEWS_FACT_MD, selection)
+    revised = enforce_answer_contract(
+        "아일리아 관련 최근 이슈 알려줘",
+        "아일리아 관련 이슈를 정리합니다.",
+        markdown_response,
+    )
+
+    assert [item.relevance for item in selection.items] == ["direct", "direct", "direct", "noise"]
+    assert "https://example.test/noise/1" not in prompt_fact_md
+    assert "https://www.yakup.com/news/index.html?mode=view&nid=328730" in prompt_fact_md
+    assert revised.count("| direct |") == 3
+    assert revised.count("| noise |") == 1
+
+
+def test_news_selection_removes_claim_block_that_uses_noise_url() -> None:
+    selection = build_news_selection(EX08_NEWS_FACT_MD, canonical_brand="아일리아")
+    answer = (
+        "아일리아 직접 관련 기사입니다.\n"
+        "https://www.yakup.com/news/index.html?mode=view&nid=328730\n\n"
+        "일반 기술 기사를 아일리아 근거로 사용했습니다.\n"
+        "https://example.test/noise/1#summary"
+    )
+
+    revised = enforce_news_claim_selection(answer, selection)
+
+    assert "https://www.yakup.com/news/index.html?mode=view&nid=328730" in revised
+    assert "https://example.test/noise/1" not in revised
+    assert "일반 기술 기사를 아일리아 근거로 사용했습니다." not in revised
+
+
+def test_genos_prompt_and_answer_contract_share_one_news_selection() -> None:
+    markdown_response = {"fact_md": EX08_NEWS_FACT_MD}
+    result = {
+        "answer": "캐시 대조 답변",
+        "brand": "아일리아",
+        "markdown_response": markdown_response,
+        "tool_calls": [],
+    }
+
+    list(GenosClient(token=None).stream_answer("아일리아 관련 최근 이슈 알려줘", result))
+    selection = markdown_response["_news_selection"]
+    messages = GenosClient._markdown_messages(
+        "아일리아 관련 최근 이슈 알려줘",
+        markdown_response,
+    )
+    revised = enforce_answer_contract(
+        "아일리아 관련 최근 이슈 알려줘",
+        "아일리아 관련 이슈를 정리합니다.",
+        markdown_response,
+    )
+
+    assert selection is markdown_response["_news_selection"]
+    assert "https://example.test/noise/1" not in messages[1]["content"]
+    assert "https://www.yakup.com/news/index.html?mode=view&nid=328730" in messages[1]["content"]
+    assert revised.count("| direct |") == 3

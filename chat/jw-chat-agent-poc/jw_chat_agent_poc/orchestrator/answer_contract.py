@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-import re
 from typing import TYPE_CHECKING, Any, Final, Mapping, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
 from jw_chat_agent_poc.orchestrator.answer_completeness import (
@@ -234,6 +236,12 @@ def enforce_answer_contract(
     """Repair final-model omissions when required facts already exist."""
 
     fact_md = _fact_markdown(markdown_response)
+    news_selection = _news_selection_from_response(markdown_response)
+    if news_selection is None and fact_md:
+        news_selection = build_news_selection(
+            fact_md,
+            canonical_brand=_brand_from_fact_md(fact_md),
+        )
     intent = _intent(question, fact_md)
     repaired = answer
     if intent is not None and fact_md:
@@ -249,7 +257,13 @@ def enforce_answer_contract(
         elif intent in COMPLETENESS_INTENTS:
             repaired = repair_completeness(intent, question, answer, fact_md)
     repaired = _append_general_dosage_combination_note(
-        _enforce_structural_contract(question, repaired, fact_md, tool_calls)
+        _enforce_structural_contract(
+            question,
+            repaired,
+            fact_md,
+            tool_calls,
+            news_selection=news_selection,
+        )
     )
     return enforce_general_view_contract(repaired, dict(general_view_contract) if general_view_contract else None)
 
@@ -379,6 +393,21 @@ class NewsGrade:
     row: NewsFactor
     grade: str
     handling: str
+
+
+@dataclass(frozen=True, slots=True)
+class NewsSelectionItem:
+    key: str
+    row: NewsFactor
+    relevance: str
+    allowed_for_claim: bool
+    handling: str
+
+
+@dataclass(frozen=True, slots=True)
+class NewsSelection:
+    canonical_brand: str
+    items: tuple[NewsSelectionItem, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -924,6 +953,8 @@ def _enforce_structural_contract(
     answer: str,
     fact_md: str,
     tool_calls: Sequence[Mapping[str, Any]],
+    *,
+    news_selection: NewsSelection | None = None,
 ) -> str:
     contract_type = _structural_contract_type(question)
     if not contract_type or not fact_md:
@@ -972,7 +1003,7 @@ def _enforce_structural_contract(
     elif contract_type == "threat_detection":
         block = _threat_detection_contract_block(fact_md)
     elif contract_type == "news_ei":
-        block = _news_ei_contract_block(question, fact_md)
+        block = _news_ei_contract_block(question, fact_md, news_selection)
     elif contract_type == "patent_exclusivity":
         answer = _sanitize_full_unavailable_answer(answer)
         block = _patent_exclusivity_contract_block(fact_md)
@@ -1792,8 +1823,12 @@ def _threat_direction(text: str) -> str:
     return "관찰"
 
 
-def _news_ei_contract_block(question: str, fact_md: str) -> str:
-    rows = _news_grade_rows(question, fact_md)
+def _news_ei_contract_block(
+    question: str,
+    fact_md: str,
+    selection: NewsSelection | None = None,
+) -> str:
+    rows = _news_grade_rows(question, fact_md, selection)
     if not rows:
         return ""
     lines = [
@@ -1819,13 +1854,23 @@ def _news_ei_contract_block(question: str, fact_md: str) -> str:
     return "\n".join(lines)
 
 
-def _news_grade_rows(question: str, fact_md: str) -> tuple[NewsGrade, ...]:
-    brand = _brand_from_question(question) or _brand_from_fact_md(fact_md)
-    rows: list[NewsGrade] = []
-    for row in _news_factor_rows(fact_md):
-        grade = _news_relevance_grade(row, brand)
-        rows.append(NewsGrade(row=row, grade=grade, handling=_news_grade_handling(grade)))
-    return tuple(rows)
+def _news_grade_rows(
+    question: str,
+    fact_md: str,
+    selection: NewsSelection | None = None,
+) -> tuple[NewsGrade, ...]:
+    selected = selection or build_news_selection(
+        fact_md,
+        canonical_brand=_brand_from_fact_md(fact_md),
+    )
+    return tuple(
+        NewsGrade(
+            row=item.row,
+            grade=item.relevance,
+            handling=item.handling,
+        )
+        for item in selected.items
+    )
 
 
 def _news_relevance_grade(row: NewsFactor, brand: str) -> str:
@@ -1851,6 +1896,105 @@ def _news_grade_handling(grade: str) -> str:
     if grade == "background":
         return "배경 정보로 분리하고 브랜드 fact로 승격하지 않습니다."
     return "잡음 후보로 본문 요약 근거에서 제외합니다."
+
+
+def build_news_selection(fact_md: str, *, canonical_brand: str) -> NewsSelection:
+    items: list[NewsSelectionItem] = []
+    for row in _news_factor_rows(fact_md):
+        relevance = _news_relevance_grade(row, canonical_brand)
+        items.append(
+            NewsSelectionItem(
+                key=_news_selection_key(row),
+                row=row,
+                relevance=relevance,
+                allowed_for_claim=relevance != "noise",
+                handling=_news_grade_handling(relevance),
+            )
+        )
+    return NewsSelection(canonical_brand=canonical_brand, items=tuple(items))
+
+
+def news_selection_prompt_fact_markdown(
+    fact_md: str,
+    selection: NewsSelection,
+) -> str:
+    allowed_items = tuple(item for item in selection.items if item.allowed_for_claim)
+    lines: list[str] = []
+    in_news_section = False
+    for raw in fact_md.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("### "):
+            in_news_section = "뉴스/이슈" in stripped
+        if in_news_section and stripped.startswith("|") and "---" not in stripped and "날짜" not in stripped:
+            if not any(_news_item_matches_fact_row(item, stripped) for item in allowed_items):
+                continue
+        lines.append(raw)
+    return "\n".join(lines)
+
+
+def enforce_news_claim_selection(answer: str, selection: NewsSelection | None) -> str:
+    if selection is None:
+        return answer
+    forbidden_keys = {
+        item.key
+        for item in selection.items
+        if not item.allowed_for_claim
+    }
+    if not forbidden_keys:
+        return answer
+    blocks = re.split(r"\n\s*\n", answer)
+    kept = [
+        block
+        for block in blocks
+        if not forbidden_keys.intersection(_news_url_keys_from_answer(block))
+    ]
+    return "\n\n".join(block for block in kept if block.strip()).strip()
+
+
+def _news_selection_from_response(
+    markdown_response: Mapping[str, Any] | None,
+) -> NewsSelection | None:
+    if not isinstance(markdown_response, Mapping):
+        return None
+    selection = markdown_response.get("_news_selection")
+    return selection if isinstance(selection, NewsSelection) else None
+
+
+def _news_selection_key(row: NewsFactor) -> str:
+    return _canonical_news_key(row.url, title=row.title, date=row.date)
+
+
+def _news_item_matches_fact_row(item: NewsSelectionItem, raw: str) -> bool:
+    if item.row.url:
+        return item.row.url in raw
+    return item.row.title in raw and item.row.date in raw
+
+
+def _news_url_keys_from_answer(answer: str) -> set[str]:
+    keys: set[str] = set()
+    for match in re.finditer(r"https?://[^\s)\]}>|]+", answer):
+        url = match.group(0).rstrip(".,;:")
+        keys.add(_canonical_news_key(url, title="", date=""))
+    return keys
+
+
+def _canonical_news_key(url: str, *, title: str, date: str) -> str:
+    stripped_url = url.strip()
+    if stripped_url:
+        parsed = urlsplit(stripped_url)
+        path = parsed.path.rstrip("/") or "/"
+        canonical_url = urlunsplit(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                path,
+                parsed.query,
+                "",
+            )
+        )
+        return f"url:{canonical_url}"
+    digest = hashlib.sha256(f"{title.strip()}\0{date.strip()}".encode()).hexdigest()
+    return f"title-date:{digest}"
 
 
 def _brand_from_question(question: str) -> str:
