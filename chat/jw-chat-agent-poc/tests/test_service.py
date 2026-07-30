@@ -15,6 +15,9 @@ from jw_chat_agent_poc.agent_loop.factory import (
     unsupported_hira_interface_result,
 )
 from jw_chat_agent_poc.orchestrator import ChatAgent
+from jw_chat_agent_poc.orchestrator.market_answer_contract import (
+    enforce_market_answer_contract,
+)
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.service.file_search_client import (
     UploadedFileOverview,
@@ -2756,6 +2759,136 @@ def test_compute_final_answer_preserves_routing_v4_identity_mismatch_guidance(
     assert "검색어: 리바로" in final.text
     assert "데이터 존재 여부를 확인하지 못했습니다" not in final.text
     assert final.trace["qa_trace"]["answer_delivery"]["answer_branch"] == "typed_terminal"
+
+
+@pytest.mark.parametrize("calls_executed", (0, 1))
+def test_upstream_unavailable_actionable_guidance_is_terminal(
+    calls_executed: int,
+) -> None:
+    answer = (
+        "공식 웹 보완 검색을 시도했지만 허용된 공식 도메인에서 결과를 찾지 못했습니다.\n"
+        "직접 확인: [HIRA 보험인정기준 검색]"
+        "(https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do)\n"
+        "검색어: 아일리아 급여기준"
+    )
+    result = {
+        "answer": answer,
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "routing_v4": {
+                "official_web_fallback": {
+                    "reason_code": "UPSTREAM_UNAVAILABLE",
+                    "calls_executed": calls_executed,
+                }
+            },
+        },
+    }
+
+    assert service_app._is_terminal_typed_result(result)
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    ("NO_EVIDENCE", "NO_RECORD_FOUND", "PARTIAL_RESULT"),
+)
+def test_other_web_fallback_reasons_are_not_promoted_to_typed_terminal(
+    reason_code: str,
+) -> None:
+    result = {
+        "answer": "공식 웹 보완 검색을 시도했지만 결과를 찾지 못했습니다.",
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "routing_v4": {
+                "official_web_fallback": {
+                    "reason_code": reason_code,
+                    "calls_executed": 1,
+                }
+            },
+        },
+    }
+
+    assert not service_app._is_terminal_typed_result(result)
+
+
+def test_compute_final_answer_preserves_upstream_unavailable_guidance(
+    monkeypatch,
+) -> None:
+    question = "아일리아 급여기준 알려줘"
+    answer = (
+        "공식 웹 보완 검색을 시도했지만 허용된 공식 도메인에서 결과를 찾지 못했습니다.\n"
+        "직접 확인: [HIRA 보험인정기준 검색]"
+        "(https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do)\n"
+        "검색어: 아일리아 급여기준\n"
+        "확인할 항목: 제품명, 성분 구성, 고시 시행일"
+    )
+    result = {
+        "question": question,
+        "resolution": None,
+        "decomposition": [{"intent": "external_tool_agent", "status": "typed_stop"}],
+        "router_diagnostics": {
+            "mode": "tool_use_agent",
+            "fallback_code": None,
+            "routing_v4": {
+                "executed_call_signature": {
+                    "reason_code": "UPSTREAM_UNAVAILABLE",
+                },
+                "official_web_fallback": {
+                    "reason_code": "UPSTREAM_UNAVAILABLE",
+                    "calls_executed": 1,
+                },
+            },
+        },
+        "tool_calls": [
+            {
+                "tool": "hira_reimbursement_criteria",
+                "status": "error",
+                "render_data": {"error_code": "UPSTREAM_UNAVAILABLE"},
+            }
+        ],
+        "answer": answer,
+        "markdown_response": {
+            "markdown": answer,
+            "fact_md": "",
+            "data_md": "",
+            "verification": {"status": "fail"},
+        },
+        "sources": [],
+    }
+
+    monkeypatch.setattr(
+        GenosClient,
+        "stream_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("upstream guidance must bypass final LLM synthesis")
+        ),
+    )
+
+    final = compute_final_answer(question, result, "upstream-unavailable-final")
+
+    assert final.text == answer
+    assert "조회 오류입니다" not in final.text
+    assert final.trace["qa_trace"]["answer_delivery"]["answer_branch"] == "typed_terminal"
+
+
+def test_market_contract_preserves_upstream_unavailable_guidance() -> None:
+    answer = (
+        "공식 웹 보완 검색을 시도했지만 허용된 공식 도메인에서 결과를 찾지 못했습니다.\n"
+        "직접 확인: [HIRA 보험인정기준 검색]"
+        "(https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do)\n"
+        "검색어: 아일리아 급여기준"
+    )
+    calls = (
+        {
+            "tool": "hira_reimbursement_criteria",
+            "status": "error",
+            "render_data": {"error_code": "UPSTREAM_UNAVAILABLE"},
+        },
+    )
+
+    contracted = enforce_market_answer_contract("아일리아 급여기준 알려줘", answer, calls)
+
+    assert contracted.startswith(answer)
+    assert "조회 오류입니다" not in contracted
 
 
 def test_compute_final_answer_preserves_brand_cardinality_clarification(monkeypatch) -> None:
