@@ -100,12 +100,19 @@ def _delete_source_rows_in_batches(
     source: str,
     *,
     batch_size: int,
+    atc4_scope: tuple[str, ...] | None = None,
 ) -> None:
+    predicate = "source=%s"
+    params: tuple[object, ...] = (source,)
+    if atc4_scope:
+        placeholders = ",".join(["%s"] * len(atc4_scope))
+        predicate += f" AND atc4_code IN ({placeholders})"
+        params = (source, *atc4_scope)
     while True:
         deleted = int(
             cursor.execute(
-                f"DELETE FROM {table} WHERE source=%s ORDER BY id LIMIT %s",
-                (source, batch_size),
+                f"DELETE FROM {table} WHERE {predicate} ORDER BY id LIMIT %s",
+                (*params, batch_size),
             )
             or 0
         )
@@ -189,10 +196,14 @@ def replace_scoped_source_rows_from_jsonl(
     market_path: Path,
     brand_columns: list[str],
     market_columns: list[str],
-    batch_size: int = 500,
+    batch_size: int = 100,
     commit_each_batch: bool = False,
 ) -> None:
-    """Replace only affected ATC4 rows in an isolated clone."""
+    """Replace affected ATC4 rows in an unpublished clone using bounded writesets.
+
+    With per-batch commits, a failed clone is safe to discard or retry: the
+    retry deletes the same scope before replaying the deterministic JSONL.
+    """
 
     scope = tuple(sorted({str(value).strip() for value in atc4_scope if str(value).strip()}))
     if not scope:
@@ -206,13 +217,21 @@ def replace_scoped_source_rows_from_jsonl(
                 "mart_general_brand_metric",
                 "mart_general_market_metric",
             ):
-                cur.execute(
-                    f"DELETE FROM {table} WHERE source=%s "
-                    f"AND atc4_code IN ({placeholders})",
-                    (source, *scope),
-                )
                 if commit_each_batch:
-                    conn.commit()
+                    _delete_source_rows_in_batches(
+                        conn,
+                        cur,
+                        table,
+                        source,
+                        batch_size=batch_size,
+                        atc4_scope=scope,
+                    )
+                else:
+                    cur.execute(
+                        f"DELETE FROM {table} WHERE source=%s "
+                        f"AND atc4_code IN ({placeholders})",
+                        (source, *scope),
+                    )
             for rows in _iter_jsonl_batches(brand_path, batch_size=batch_size):
                 _insert_rows_with_cursor(
                     cur,
