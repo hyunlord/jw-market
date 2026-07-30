@@ -42,6 +42,11 @@ _REASON_CODE_ALLOW = frozenset({reason.value for reason in QueryFailureReason} |
 _REFERENCE_STATUS_ALLOW = frozenset({status.value for status in ReferenceStatus})
 _RECOGNISER_ALLOW = frozenset({recogniser.value for recogniser in ReferenceRecogniser})
 _MODEL_FAMILY_DEFAULT = "gemini-3-flash-preview"
+_MODEL_FAMILY_ENVS = {
+    "router": "JW_CHAT_ROUTER_MODEL_FAMILY",
+    "final": "JW_CHAT_FINAL_MODEL_FAMILY",
+    "planner": "JW_CHAT_PLANNER_MODEL_FAMILY",
+}
 _EMPTY_TOOL_STATUSES = frozenset({"no_data", "unsupported", "error"})
 _ASSEMBLY_GAP_RATIO_THRESHOLD = 0.30
 _ASSEMBLY_GAP_MIN_FACT_CHARS = 500
@@ -68,12 +73,14 @@ _VERSIONED_FILES = {
 def version_payload() -> dict[str, Any]:
     """Return runtime provenance that can be exposed through /__version."""
 
+    model_family = os.environ.get("JW_CHAT_MODEL_FAMILY", _MODEL_FAMILY_DEFAULT)
     return {
         "release_id": _env("JW_CHAT_RELEASE_ID", "RELEASE_ID"),
         "git_sha": _env("JW_CHAT_GIT_SHA", "GIT_SHA", "COMMIT_SHA"),
         "image_digest": _env("JW_CHAT_IMAGE_DIGEST", "IMAGE_DIGEST"),
         "built_at": _env("JW_CHAT_BUILT_AT", "BUILT_AT"),
-        "model_family": os.environ.get("JW_CHAT_MODEL_FAMILY", _MODEL_FAMILY_DEFAULT),
+        "model_family": model_family,
+        "model_families": _model_families(model_family),
         "serving_common_router": _serving_id(
             genos_config.GENOS_SERVING_ID_ENV,
             genos_config.DEFAULT_GENOS_SERVING_ID,
@@ -126,6 +133,7 @@ def trace_envelope(
         facts_surfaced=facts_surfaced,
         answer_contract_status=answer_contract_status,
     )
+    model_families = version["model_families"]
     return {
         "trace_id": trace_id,
         "conversation_id": conversation_id,
@@ -136,8 +144,11 @@ def trace_envelope(
         "route": _route(result),
         "model_stages": {
             "router_serving_id": _serving_id(genos_config.GENOS_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_SERVING_ID),
+            "router_model_family": model_families["router"],
             "final_serving_id": _serving_id(genos_config.GENOS_FINAL_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_FINAL_SERVING_ID),
+            "final_model_family": model_families["final"],
             "planner_serving_id": _serving_id(genos_config.GENOS_PLANNER_SERVING_ID_ENV, genos_config.DEFAULT_GENOS_PLANNER_SERVING_ID),
+            "planner_model_family": model_families["planner"],
         },
         "tools_called": tools_called,
         "facts_returned": facts_returned,
@@ -693,6 +704,13 @@ def _env(*names: str) -> str:
         if value:
             return value
     return _UNKNOWN
+
+
+def _model_families(legacy_family: str) -> dict[str, str]:
+    return {
+        stage: os.environ.get(env_name) or legacy_family
+        for stage, env_name in _MODEL_FAMILY_ENVS.items()
+    }
 
 
 def _serving_id(env_name: str, default: str) -> str:
