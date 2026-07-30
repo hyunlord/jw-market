@@ -6,6 +6,7 @@ import pandas as pd
 import pymysql
 import pytest
 
+from pipeline.etl.io.mart.filter_dimension_copy import TableCopyProof
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.scripts.etl.build_filter_dimension_metric import _guard_new_sidecar_target
@@ -85,6 +86,17 @@ class _Connection:
 
     def commit(self):
         self.commits += 1
+
+
+@pytest.fixture(autouse=True)
+def _verified_snapshot_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pipeline.etl.io.mart import filter_dimension_swap
+
+    monkeypatch.setattr(
+        filter_dimension_swap,
+        "copy_table_consistent_snapshot",
+        lambda *_args, **_kwargs: TableCopyProof(1, "verified", "verified"),
+    )
 
 
 def test_shared_promotion_checks_the_approved_serving_schema(monkeypatch) -> None:
@@ -267,6 +279,7 @@ def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:
         conn,
         source_db="jw_mart_dim_stage_f046",
         target_db="jw_mart_d2_stage_20260630_r2",
+        snapshot_conn=object(),
         source="ubist",
         dimension_type="molecule",
         build_marker="2026-07-13 22:30:00",
@@ -280,6 +293,8 @@ def test_promote_filter_dimension_slice_is_bounded_to_ubist_molecule() -> None:
     assert "source=%s AND dimension_type=%s" in sql
     assert result["expected_rows"] == 1
     assert result["promoted_rows"] == 1
+    assert result["backup"]["baseline_source_sha256"] == "verified"
+    assert result["backup"]["baseline_stage_sha256"] == "verified"
     assert result["stale_rows_deleted"] == 0
 
 
@@ -288,9 +303,10 @@ def test_promote_filter_dimension_slice_rejects_any_other_slice() -> None:
 
     try:
         promote_filter_dimension_slice(
-            conn,
-            source_db="jw_mart_dim_stage_f046",
-            target_db="jw_mart_d2_stage_20260630_r2",
+                conn,
+                source_db="jw_mart_dim_stage_f046",
+                target_db="jw_mart_d2_stage_20260630_r2",
+                snapshot_conn=object(),
             source="ubist",
             dimension_type="form",
             build_marker="2026-07-13 22:30:00",
@@ -308,9 +324,10 @@ def test_promote_filter_dimension_slice_refuses_empty_stage_before_delete() -> N
 
     try:
         promote_filter_dimension_slice(
-            conn,
-            source_db="jw_mart_dim_stage_f046",
-            target_db="jw_mart_d2_stage_20260630_r2",
+                conn,
+                source_db="jw_mart_dim_stage_f046",
+                target_db="jw_mart_d2_stage_20260630_r2",
+                snapshot_conn=object(),
             source="ubist",
             dimension_type="molecule",
             build_marker="2026-07-13 22:30:00",
@@ -346,6 +363,7 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
         conn,
         rows,
         target_db="jw_mart_d2_stage_20260630_r2",
+        snapshot_conn=object(),
         source="ubist",
         dimension_type="molecule",
         build_marker="2026-07-13 22:30:00",
@@ -368,7 +386,7 @@ def test_promote_filter_dimension_rows_writes_only_approved_slice() -> None:
 def test_promote_filter_dimension_rows_waits_for_committed_marker_visibility(monkeypatch) -> None:
     from pipeline.etl.io.mart import filter_dimension_promote as promotion
 
-    conn = _Connection(expected_rows=[1, 1, 0, 1])
+    conn = _Connection(expected_rows=[0, 1, 1])
     monkeypatch.setattr(promotion.time, "sleep", lambda _seconds: None)
     rows = [
         {
@@ -389,6 +407,7 @@ def test_promote_filter_dimension_rows_waits_for_committed_marker_visibility(mon
         conn,
         rows,
         target_db="jw_mart_d2_stage_20260630_r2",
+        snapshot_conn=object(),
         source="ubist",
         dimension_type="molecule",
         build_marker="2026-07-13 22:30:00",
@@ -424,9 +443,10 @@ def test_promote_filter_dimension_rows_refuses_mixed_slice_before_write() -> Non
 
     try:
         promote_filter_dimension_rows(
-            conn,
-            rows,
-            target_db="jw_mart_d2_stage_20260630_r2",
+                conn,
+                rows,
+                target_db="jw_mart_d2_stage_20260630_r2",
+                snapshot_conn=object(),
             source="ubist",
             dimension_type="molecule",
             build_marker="2026-07-13 22:30:00",
