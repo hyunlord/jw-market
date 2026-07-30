@@ -42,6 +42,47 @@ def _rank_latest_period(kpi: dict[str, Any]) -> tuple[dict[str, Any], list[dict[
     return target_history, competitors, target_rank
 
 
+def _derived_metrics(
+    target_history: dict[str, Any],
+    competitors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    derived: dict[str, Any] = {}
+    periods = sorted(target_history)
+    if len(periods) >= 2:
+        from_period = periods[0]
+        to_period = periods[-1]
+        from_pct = (target_history.get(from_period) or {}).get("ms_pct")
+        to_pct = (target_history.get(to_period) or {}).get("ms_pct")
+        if from_pct is not None and to_pct is not None:
+            delta = round(float(to_pct) - float(from_pct), 4)
+            derived["target_share_change_from_history_start"] = {
+                "from_period": from_period,
+                "to_period": to_period,
+                "from_pct": from_pct,
+                "to_pct": to_pct,
+                "delta_pct_points": delta,
+                "absolute_delta_pct_points": abs(delta),
+            }
+
+    if periods:
+        latest_period = periods[-1]
+        top_two = []
+        for competitor in competitors:
+            share = ((competitor.get("history") or {}).get(latest_period) or {}).get("ms_pct")
+            if share is None:
+                continue
+            top_two.append((str(competitor.get("brand_key") or ""), float(share)))
+            if len(top_two) == 2:
+                break
+        if len(top_two) == 2:
+            derived["top2_competitor_share_latest"] = {
+                "period": latest_period,
+                "brand_keys": [brand_key for brand_key, _share in top_two],
+                "share_pct": round(sum(share for _brand_key, share in top_two), 4),
+            }
+    return derived
+
+
 def _market_view(kpi: dict[str, Any], snapshot_at: datetime) -> dict[str, Any]:
     source = str(kpi["source"]).upper()
     measure = str(kpi["measure"])
@@ -78,6 +119,7 @@ def _market_view(kpi: dict[str, Any], snapshot_at: datetime) -> dict[str, Any]:
             },
         },
         "competitors_top5": competitors,
+        "derived_metrics": _derived_metrics(target_history, competitors),
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent2_processing_modes import formatter_policy_for_mode
 from phase_zeta_runner.config import RunnerConfig
 from phase_zeta_runner.prompt_builder import build_question_string
 
@@ -77,6 +78,21 @@ def test_prompt_compact_adds_mode_instruction_without_changing_full_default():
     assert "bullets는 2-4개" in compact
 
 
+def test_prompt_density_instructions_match_formatter_sentence_policies():
+    bundle = sample_bundle()
+    config = RunnerConfig.default_for_tests()
+
+    compact = build_question_string(bundle, config, mode="compact")
+    recap = build_question_string(bundle, config, mode="recap")
+
+    compact_min = formatter_policy_for_mode("compact").min_body_sentences
+    recap_min = formatter_policy_for_mode("recap").min_body_sentences
+    assert compact_min == 2
+    assert f"body는 최소 {compact_min}문장" in compact
+    assert recap_min == 1
+    assert f"body는 {recap_min}-2문장" in recap
+
+
 def test_prompt_combines_density_mode_and_short_variant_instruction():
     bundle = sample_bundle()
     bundle["forecast_simulation"] = {
@@ -136,6 +152,16 @@ def test_prompt_declares_view_label_and_evidence_contracts():
     assert "bundle에 있는 수치만" in question
     assert "억/만 단위로 변환" in question
     assert "계산하거나 추정하지 마세요" in question
+
+
+def test_prompt_explicitly_forbids_unbundled_derived_values():
+    question = build_question_string(sample_bundle(), RunnerConfig.default_for_tests())
+
+    assert "두 시점의 차이" in question
+    assert "증감률" in question
+    assert "점유율 합계" in question
+    assert "bundle의 derived_metrics에 동일 값이 명시된 경우에만" in question
+    assert "직접 계산하지 마세요" in question
 
 
 def test_prompt_declares_simulation_horizon_contract_when_all_horizons_exist():

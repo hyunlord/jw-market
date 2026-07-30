@@ -46,6 +46,15 @@ NUMBER_PATTERNS = [
     },
 ]
 
+KOREAN_COMPOSITE_KRW_RE = re.compile(
+    r"(?:(?P<eok>\d[\d,]*(?:\.\d+)?)\s*억"
+    r"(?:\s*(?P<man_after_eok>\d[\d,]*(?:\.\d+)?)\s*만)?"
+    r"(?:\s*(?P<won_after_eok>\d[\d,]*(?:\.\d+)?))?"
+    r"|(?P<man_only>\d[\d,]*(?:\.\d+)?)\s*만"
+    r"(?:\s*(?P<won_after_man>\d[\d,]*(?:\.\d+)?))?)"
+    r"\s*원"
+)
+
 
 SIMULATION_FORBIDDEN_SCENARIO_RE = re.compile(
     r"(낙관\s*시나리오|비관\s*시나리오|낙관적\s*시나리오|비관적\s*시나리오|\bbest\b|\bworst\b)",
@@ -133,6 +142,19 @@ def _coerce_number(value: str, value_type: str) -> float | int:
     if value_type == "int":
         return int(float(cleaned))
     return float(cleaned)
+
+
+def _parse_korean_composite_krw(match: re.Match[str]) -> float:
+    eok = _coerce_number(match.group("eok") or "0", "float")
+    man = _coerce_number(
+        match.group("man_after_eok") or match.group("man_only") or "0",
+        "float",
+    )
+    won = _coerce_number(
+        match.group("won_after_eok") or match.group("won_after_man") or "0",
+        "float",
+    )
+    return float(eok) * 100_000_000 + float(man) * 10_000 + float(won)
 
 
 def _match_group(match: re.Match[str]) -> str:
@@ -231,16 +253,39 @@ def _tolerance_for_type(number_type: str, config: ValidatorConfig | None = None)
 def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[dict[str, Any]]:
     if config is None:
         config = _default_config()
+    source_text = text or ""
     extracted: list[dict[str, Any]] = []
+    composite_spans: list[tuple[int, int]] = []
+    for match in KOREAN_COMPOSITE_KRW_RE.finditer(source_text):
+        try:
+            value = _parse_korean_composite_krw(match)
+        except (TypeError, ValueError):
+            continue
+        raw_text = match.group(0)
+        composite_spans.append(match.span())
+        extracted.append(
+            {
+                "value": value,
+                "raw_text": raw_text,
+                "pattern": "korean_composite_krw",
+                "number_type": "currency_krw",
+                "tolerance": _tolerance_for_type("currency_krw", config),
+                "low_priority": _is_qualified_threshold(raw_text, source_text),
+                "ci_confidence_literal": False,
+            }
+        )
+
     for spec in NUMBER_PATTERNS:
-        for match in spec["pattern"].finditer(text or ""):
+        for match in spec["pattern"].finditer(source_text):
+            if any(start < match.end() and match.start() < end for start, end in composite_spans):
+                continue
             value_text = _match_group(match)
             try:
                 value = _coerce_number(value_text, spec["type"])
             except ValueError:
                 continue
             raw_text = match.group(0)
-            number_type = classify_number_context(raw_text, text or "", value)
+            number_type = classify_number_context(raw_text, source_text, value)
             extracted.append(
                 {
                     "value": value,
@@ -249,9 +294,9 @@ def extract_numbers(text: str, config: ValidatorConfig | None = None) -> list[di
                     "number_type": number_type,
                     "tolerance": _tolerance_for_type(number_type, config),
                     "low_priority": bool(spec.get("low_priority", False))
-                    or _is_qualified_threshold(raw_text, text or "")
-                    or (number_type == "rank" and _is_approximate_rank_expression(raw_text, text or "")),
-                    "ci_confidence_literal": _is_ci_confidence_literal(raw_text, text or "", value),
+                    or _is_qualified_threshold(raw_text, source_text)
+                    or (number_type == "rank" and _is_approximate_rank_expression(raw_text, source_text)),
+                    "ci_confidence_literal": _is_ci_confidence_literal(raw_text, source_text, value),
                 }
             )
             if extracted[-1]["ci_confidence_literal"]:

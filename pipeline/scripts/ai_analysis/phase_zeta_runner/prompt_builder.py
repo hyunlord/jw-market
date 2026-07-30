@@ -42,7 +42,7 @@ def _forecast_has_all_horizons(forecast: dict[str, Any]) -> bool:
 def _mode_instruction(mode: str) -> str:
     match mode:
         case "compact":
-            return "compact 모드: 동일한 4단 구조를 유지하되 각 단락 body는 간결하게 쓰고 bullets는 2-4개만 작성하세요."
+            return "compact 모드: 동일한 4단 구조를 유지하되 각 단락 body는 최소 2문장 이상 간결하게 쓰고 bullets는 2-4개만 작성하세요."
         case "recap":
             return "recap 모드: 동일한 4단 구조를 유지하되 각 단락 body는 1-2문장으로 요약하고 bullets는 2개만 작성하세요."
         case _:
@@ -108,6 +108,7 @@ def _validation_contract_block(
         "source label만 있는 근거, 예측 데이터 부재 placeholder, 실제 뉴스 제목/수치가 없는 근거를 억지로 만들지 마세요.\n"
         "- 수치/시뮬레이션 근거는 `basis`에 실제 수치와 source/view 표기를 함께 넣어 event/news 근거와 구분하세요."
         "\n- bundle에 있는 수치만 인용하고, bundle 밖의 수치를 계산하거나 추정하지 마세요. "
+        "두 시점의 차이·증감률·점유율 합계 같은 파생값은 bundle의 derived_metrics에 동일 값이 명시된 경우에만 사용하고, 직접 계산하지 마세요. "
         "forecast_simulation의 KRW 값은 원문 숫자 그대로 쓰며 억/만 단위로 변환하지 마세요."
         f"{horizon_rule}"
     )

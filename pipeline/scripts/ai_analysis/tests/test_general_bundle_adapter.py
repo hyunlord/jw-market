@@ -118,3 +118,47 @@ def test_market_view_recomputes_latest_rank_from_raw_values():
     ]
     assert [item["rank_in_market"] for item in view["competitors_top5"]] == [1, 2]
     assert [item["history"]["2026-05"]["rank"] for item in view["competitors_top5"]] == [1, 2]
+
+
+def test_market_view_materializes_deterministic_share_derivations():
+    kpi = FakeProvider(source="ubist").get_kpi("target")
+    kpi["target_history"] = {
+        "2021-06": {"raw_value": 32.1, "ms_pct": 3.21, "rank": None},
+        "2026-05": {"raw_value": 25.4, "ms_pct": 2.54, "rank": 3},
+    }
+    kpi["competitors_top5"] = [
+        {
+            "brand_key": "competitor-a",
+            "brand_name": "경쟁A",
+            "rank_in_market": 1,
+            "history": {
+                "2026-05": {"raw_value": 369.795, "ms_pct": 36.9795, "rank": 1}
+            },
+        },
+        {
+            "brand_key": "competitor-b",
+            "brand_name": "경쟁B",
+            "rank_in_market": 2,
+            "history": {
+                "2026-05": {"raw_value": 112.789, "ms_pct": 11.2789, "rank": 2}
+            },
+        },
+    ]
+
+    view = general_bundle_adapter._market_view(kpi, datetime(2026, 7, 12))
+
+    assert view["derived_metrics"] == {
+        "target_share_change_from_history_start": {
+            "from_period": "2021-06",
+            "to_period": "2026-05",
+            "from_pct": 3.21,
+            "to_pct": 2.54,
+            "delta_pct_points": -0.67,
+            "absolute_delta_pct_points": 0.67,
+        },
+        "top2_competitor_share_latest": {
+            "period": "2026-05",
+            "brand_keys": ["competitor-a", "competitor-b"],
+            "share_pct": 48.2584,
+        },
+    }

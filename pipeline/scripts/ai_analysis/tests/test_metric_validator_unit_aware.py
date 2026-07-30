@@ -146,3 +146,111 @@ def test_validate_output_accepts_run6_integer_rounded_rx_values():
         item["raw_text"] == "26,184,954" and item["number_type"] == "volume_rx" and item["matched_path"]
         for item in result.stage_results["phenomenon"].extracted
     )
+
+
+def test_extract_numbers_treats_korean_composite_krw_as_single_amounts():
+    extracted = extract_numbers(
+        "게보린릴랙스 시장은 1,075억 8,303만 3,730원이며 "
+        "최근 실적은 1,879만 4,572원이고 비교 시장은 1억 2,345만원입니다."
+    )
+
+    assert [
+        (item["raw_text"], item["value"], item["number_type"])
+        for item in extracted
+    ] == [
+        ("1,075억 8,303만 3,730원", 107_583_033_730.0, "currency_krw"),
+        ("1,879만 4,572원", 18_794_572.0, "currency_krw"),
+        ("1억 2,345만원", 123_450_000.0, "currency_krw"),
+    ]
+
+
+def test_korean_composite_krw_matches_raw_bundle_values():
+    bundle_index = build_bundle_path_index(
+        {
+            "market_views": {
+                "market_total_krw": 107_583_033_730,
+                "brand_sales_krw": 18_794_572,
+            }
+        }
+    )
+
+    for extracted in extract_numbers(
+        "시장 1,075억 8,303만 3,730원, 브랜드 1,879만 4,572원"
+    ):
+        assert find_match_unit_aware(
+            extracted["value"],
+            bundle_index,
+            extracted["number_type"],
+            RunnerConfig.default_for_tests().validator,
+        )
+
+
+def test_validate_output_accepts_gevorin_relax_composite_krw_fixture():
+    bundle = {
+        "market_views": {
+            "market_total_krw": 107_583_033_730,
+            "brand_sales_krw": 18_794_572,
+        }
+    }
+    parsed = {
+        "phenomenon": {
+            "title": "게보린릴랙스 시장 현황",
+            "body": (
+                "시장 규모는 1,075억 8,303만 3,730원이며 "
+                "브랜드 실적은 1,879만 4,572원입니다."
+            ),
+            "bullets": [],
+        },
+        "cause": {"title": "원인", "body": "bundle 기반", "bullets": []},
+        "prediction": {"title": "예측", "body": "bundle 기반", "bullets": []},
+        "recommendation": {"title": "권고", "body": "bundle 기반", "bullets": []},
+    }
+
+    result = validate_output(
+        parsed,
+        bundle,
+        RunnerConfig.default_for_tests().validator,
+    )
+
+    assert result.valid
+    assert result.total_numbers_extracted == 2
+    assert result.total_numbers_matched == 2
+    assert result.unmatched_numbers == []
+
+
+def test_simple_percent_and_rank_extraction_is_unchanged():
+    extracted = extract_numbers("점유율 1.44%, 시장 6위")
+
+    assert any(
+        item["value"] == 1.44 and item["number_type"] == "percent"
+        for item in extracted
+    )
+    assert any(
+        item["value"] == 6.0 and item["number_type"] == "rank"
+        for item in extracted
+    )
+
+
+def test_materialized_derived_shares_match_without_whitelisting_calculations():
+    bundle_index = build_bundle_path_index(
+        {
+            "derived_metrics": {
+                "target_share_change_from_history_start": {
+                    "delta_pct_points": -0.67,
+                    "absolute_delta_pct_points": 0.67,
+                },
+                "top2_competitor_share_latest": {
+                    "share_pct": 48.2584,
+                },
+            }
+        }
+    )
+    config = RunnerConfig.default_for_tests().validator
+
+    delta = next(item for item in extract_numbers("점유율 0.67%p 감소") if item["pattern"] == "percent")
+    top_two = next(item for item in extract_numbers("상위 2개 점유율 48.26%") if item["pattern"] == "percent")
+    invented = next(item for item in extract_numbers("상위 2개 점유율 50.00%") if item["pattern"] == "percent")
+
+    assert find_match_unit_aware(delta["value"], bundle_index, delta["number_type"], config)
+    assert find_match_unit_aware(top_two["value"], bundle_index, top_two["number_type"], config)
+    assert find_match_unit_aware(invented["value"], bundle_index, invented["number_type"], config) is None
