@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from jw_chat_agent_poc.orchestrator.agent import _query_failed_metric_call
 from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
@@ -668,6 +671,42 @@ def test_unavailable_states_are_not_conflated() -> None:
     assert mapping.startswith("현재 지원되지 않는 시장 매핑입니다.")
     assert entity.startswith("브랜드 목록에서 일치 항목을 찾지 못했습니다.")
     assert technical.startswith("데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.")
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "아일리아 경쟁 약물 현황 알려줘",
+        "아일리아 쪽 경쟁 상황 한눈에 보여줘",
+    ),
+)
+def test_market_unresolved_preserves_typed_brand_guidance(question: str) -> None:
+    call = _query_failed_metric_call(
+        "아일리아",
+        "market_share",
+        (),
+        LookupError("strategic mart has no market for brand: 아일리아"),
+    )
+
+    answer = enforce_market_answer_contract(question, call["summary_text"], [call])
+
+    assert answer.startswith("아일리아는 현재 전략 시장 분류에 연결되어 있지 않아")
+    assert "경쟁 분석을 제공할 수 없습니다." in answer
+    assert "조회 오류" not in answer
+
+
+def test_unknown_query_failure_is_not_promoted_to_market_unresolved() -> None:
+    call = _query_failed_metric_call(
+        "가상브랜드XYZ",
+        "market_share",
+        (),
+        LookupError("mart brand not found: brand=가상브랜드XYZ"),
+    )
+
+    answer = enforce_market_answer_contract("가상브랜드XYZ 경쟁 현황", call["summary_text"], [call])
+
+    assert answer.startswith("데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다.")
+    assert "전략 시장 분류" not in answer
 
 
 def test_causal_question_separates_observation_from_unverified_hypothesis() -> None:

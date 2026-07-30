@@ -178,6 +178,22 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     statuses = {_call_status(call) for call in calls}
     failed = tuple(call for call in calls if _call_failed(call))
     successful = tuple(call for call in calls if not _call_failed(call) and _has_usable_call_data(call))
+    if not successful:
+        unresolved_market = next(
+            (
+                _render_data(call)
+                for call in failed
+                if str(_render_data(call).get("reason_code") or "").strip().casefold() == "market_unresolved"
+                and str(_render_data(call).get("brand") or "").strip()
+            ),
+            None,
+        )
+        if unresolved_market is not None:
+            brand = str(unresolved_market["brand"]).strip()
+            return (
+                f"{brand}는 현재 전략 시장 분류에 연결되어 있지 않아 경쟁 분석을 제공할 수 없습니다. "
+                "다른 브랜드 또는 ATC4 시장을 지정해 주세요."
+            )
     if failed and not successful and statuses & {"error", "query_failed", "timeout", "failed"}:
         return "데이터 존재 여부를 확인하지 못했습니다. 조회 오류입니다."
     if failed and not successful and statuses & {"not_found", "mapping_failed"}:
