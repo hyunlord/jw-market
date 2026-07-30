@@ -198,6 +198,7 @@ def cleanup_markdown_answer(markdown: str) -> str:
     text = "\n".join(lines).strip()
     text = _remove_adjacent_duplicate_sentences(text)
     text = _remove_duplicate_top_brand_rank_prose(text)
+    text = "\n".join(_separate_adjacent_tables_with_different_widths(text.splitlines()))
     return _sanitize_executable_markup(scrub_internal_terminology(text))
 
 
@@ -266,6 +267,48 @@ def _normalize_table_row(line: str) -> str:
     if all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
         return "| " + " | ".join("---" for _ in cells) + " |"
     return "| " + " | ".join(cells) + " |"
+
+
+def _separate_adjacent_tables_with_different_widths(lines: list[str]) -> list[str]:
+    separated: list[str] = []
+    active_width: int | None = None
+    for index, line in enumerate(lines):
+        if not _is_table_row(line):
+            active_width = None
+            separated.append(line)
+            continue
+
+        width = _table_cell_count(line)
+        starts_table = (
+            index + 1 < len(lines)
+            and _is_table_divider(lines[index + 1], expected_width=width)
+        )
+        if starts_table and active_width is not None and width != active_width:
+            if separated and separated[-1]:
+                separated.append("")
+            active_width = width
+        elif starts_table and active_width is None:
+            active_width = width
+        separated.append(line)
+    return separated
+
+
+def _is_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|")
+
+
+def _table_cell_count(line: str) -> int:
+    return len(line.strip().strip("|").split("|"))
+
+
+def _is_table_divider(line: str, *, expected_width: int) -> bool:
+    if not _is_table_row(line):
+        return False
+    cells = [cell.strip().replace(" ", "") for cell in line.strip().strip("|").split("|")]
+    return len(cells) == expected_width and all(
+        re.fullmatch(r":?-{3,}:?", cell) for cell in cells
+    )
 
 
 def _remove_empty_headings(lines: list[str]) -> list[str]:
