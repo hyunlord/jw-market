@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import logging
 
 import pytest
 
@@ -33,12 +32,11 @@ _MODE_ENVS = (
 )
 
 
-def _log_payloads(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
-    prefix = "shadow_gate_observation "
+def _log_payloads(capsys: pytest.CaptureFixture[str]) -> list[dict[str, object]]:
     return [
-        json.loads(record.getMessage()[len(prefix) :])
-        for record in caplog.records
-        if record.getMessage().startswith(prefix)
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{") and '"event":"shadow_gate_observation"' in line
     ]
 
 
@@ -111,10 +109,9 @@ def test_shadow_gate_modes_default_to_off_and_invalid_values_fail_closed(
 
 def test_operation_and_period_observations_are_structured_and_aggregatable(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _set_all_modes(monkeypatch, "SHADOW")
-    caplog.set_level(logging.INFO)
 
     decision = observe_actual_coverage(
         _sales_spec(start_period="2024-01", end_period="2024-03"),
@@ -131,7 +128,7 @@ def test_operation_and_period_observations_are_structured_and_aggregatable(
         ],
     )
 
-    payloads = _log_payloads(caplog)
+    payloads = _log_payloads(capsys)
     operation = next(
         payload for payload in payloads if payload["gate"] == "operation_contract"
     )
@@ -159,20 +156,15 @@ def test_operation_and_period_observations_are_structured_and_aggregatable(
         assert payload["answer_action"] == "unchanged"
         assert payload["question_fingerprint"] == ""
 
-    serialized = "\n".join(
-        record.getMessage()
-        for record in caplog.records
-        if record.getMessage().startswith("shadow_gate_observation ")
-    )
+    serialized = json.dumps(payloads, ensure_ascii=False)
     assert "리바로" not in serialized
 
 
 def test_off_mode_suppresses_logs_without_changing_decision(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _set_all_modes(monkeypatch, "OFF")
-    caplog.set_level(logging.INFO)
     spec = _sales_spec()
     calls = [
         {
@@ -189,15 +181,14 @@ def test_off_mode_suppresses_logs_without_changing_decision(
     decision = observe_actual_coverage(spec, calls)
 
     assert decision.status.value == "pass"
-    assert _log_payloads(caplog) == []
+    assert _log_payloads(capsys) == []
 
 
 def test_typed_failure_shadow_render_is_structured_and_does_not_log_answer(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _set_all_modes(monkeypatch, "SHADOW")
-    caplog.set_level(logging.INFO)
     result = {
         "error_code": "UPSTREAM_UNAVAILABLE",
         "answer": "사용자에게만 보여야 하는 상세 안내",
@@ -213,7 +204,7 @@ def test_typed_failure_shadow_render_is_structured_and_does_not_log_answer(
     assert normalized is not None
     payload = next(
         payload
-        for payload in _log_payloads(caplog)
+        for payload in _log_payloads(capsys)
         if payload["gate"] == "typed_failure_model"
     )
     assert payload["mode"] == "SHADOW"
@@ -226,22 +217,18 @@ def test_typed_failure_shadow_render_is_structured_and_does_not_log_answer(
     assert payload["question_fingerprint"] == fingerprint
     assert payload["answer_action"] == "unchanged"
     assert payload["evaluator_exception"] is False
-    assert "사용자에게만" not in "\n".join(
-        record.getMessage() for record in caplog.records
-    )
-    assert "기존 최종 답변" not in "\n".join(
-        record.getMessage() for record in caplog.records
-    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "사용자에게만" not in serialized
+    assert "기존 최종 답변" not in serialized
 
 
 def test_typed_failure_observer_error_is_counted_without_changing_public_answer(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from jw_chat_agent_poc.service import app as service_app
 
     _set_all_modes(monkeypatch, "SHADOW")
-    caplog.set_level(logging.INFO)
     monkeypatch.setenv("JW_CHAT_RESPONSE_FORMAT_CONTRACT", "OFF")
     monkeypatch.setattr(
         service_app,
@@ -269,7 +256,7 @@ def test_typed_failure_observer_error_is_counted_without_changing_public_answer(
     )
     payload = next(
         payload
-        for payload in _log_payloads(caplog)
+        for payload in _log_payloads(capsys)
         if payload["gate_name"] == "typed_failure_model"
         and payload["evaluator_exception"] is True
     )

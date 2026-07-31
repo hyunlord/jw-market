@@ -822,6 +822,7 @@ def test_chat_session_replay_carries_internal_query_spec_without_public_key(
     session_id = accepted.json()["session_id"]
     stored = store.get(session_id)
     captured: list[RequestQuerySpec | None] = []
+    captured_request_ids: list[str] = []
 
     def _final_answer(
         _question: str,
@@ -831,6 +832,7 @@ def test_chat_session_replay_carries_internal_query_spec_without_public_key(
         query_spec: RequestQuerySpec | None = None,
     ) -> service_app.FinalAnswer:
         captured.append(query_spec)
+        captured_request_ids.append(service_app.current_shadow_request_id())
         return service_app.FinalAnswer(
             text="리바로 최신 매출입니다.",
             charts=[],
@@ -850,6 +852,9 @@ def test_chat_session_replay_carries_internal_query_spec_without_public_key(
     assert replay.status_code == 200
     assert stored is not None
     assert not any("query_spec" in key for key in stored)
+    assert "shadow_request_id" not in stored
+    assert getattr(stored, "shadow_request_id", "")
     assert captured and captured[0] is not None
+    assert captured_request_ids == [stored.shadow_request_id]
     assert captured[0].operation is QueryOperation.CURRENT_VALUE
     assert current_query_spec() is None

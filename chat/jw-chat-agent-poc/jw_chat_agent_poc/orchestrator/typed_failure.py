@@ -146,6 +146,7 @@ def observe_typed_failure(
     result: Mapping[str, Any],
     *,
     legacy_answer: str = "",
+    served_answer: str | None = None,
     question_fingerprint: str = "",
 ) -> TypedFailureResult | None:
     normalized = normalize_typed_failure(result)
@@ -170,6 +171,9 @@ def observe_typed_failure(
         terminal=normalized.terminal if normalized is not None else None,
         partial=normalized.partial if normalized is not None else None,
         question_fingerprint=question_fingerprint,
+        baseline_answer=legacy_answer,
+        served_answer=served_answer if served_answer is not None else legacy_answer,
+        candidate_answer=shadow_answer,
     )
     return normalized
 
