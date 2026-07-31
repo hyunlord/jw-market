@@ -9,6 +9,8 @@ from jw_chat_agent_poc.orchestrator.typed_failure import (
     normalize_typed_failure,
 )
 from jw_chat_agent_poc.resolver import BrandResolver
+from jw_chat_agent_poc.service.app import compute_final_answer
+from jw_chat_agent_poc.service.genos_client import GenosClient
 from jw_chat_agent_poc.tool_use.integration import run_external_tool_agent
 from jw_chat_agent_poc.tool_use.provider import ToolChoice
 from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
@@ -164,6 +166,22 @@ def test_fb02_successful_clinical_result_is_partial_evidence(monkeypatch) -> Non
     assert typed.code is TypedFailureCode.PARTIAL_EVIDENCE
     assert typed.partial is True
     assert typed.terminal is False
+
+
+def test_fb02_partial_evidence_reaches_the_final_answer_unchanged(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    payload = _run(FB02, _ChoiceSequence((_clinical_choice(),)))
+    expected = payload["answer"]
+
+    def unexpected_stream(*_args, **_kwargs):
+        raise AssertionError("PARTIAL_EVIDENCE must not be replaced by LLM synthesis")
+
+    monkeypatch.setattr(GenosClient, "stream_answer", unexpected_stream)
+
+    final = compute_final_answer(FB02, payload, "fb02-partial-evidence")
+
+    assert final.text == expected
+    assert final.trace["qa_trace"]["answer_delivery"]["answer_branch"] == "typed_partial"
 
 
 def test_pure_clinical_and_permission_answers_remain_byte_identical(monkeypatch) -> None:

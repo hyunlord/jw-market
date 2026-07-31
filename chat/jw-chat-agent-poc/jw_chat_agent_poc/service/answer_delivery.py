@@ -11,6 +11,7 @@ ANSWER_BRANCHES = frozenset(
         "general_view_ready",
         "file_only",
         "typed_terminal",
+        "typed_partial",
         "app_deterministic_market",
         "app_deterministic_file",
         "app_generation_request_fallback",
