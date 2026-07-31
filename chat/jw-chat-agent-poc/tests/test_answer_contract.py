@@ -1507,7 +1507,7 @@ def test_genos_prompt_and_answer_contract_share_one_news_selection() -> None:
     markdown_response = {"fact_md": EX08_NEWS_FACT_MD}
     result = {
         "answer": "캐시 대조 답변",
-        "brand": "아일리아",
+        "resolution": {"canonical_brand": "아일리아"},
         "markdown_response": markdown_response,
         "tool_calls": [],
     }
@@ -1528,6 +1528,22 @@ def test_genos_prompt_and_answer_contract_share_one_news_selection() -> None:
     assert "https://example.test/noise/1" not in messages[1]["content"]
     assert "https://www.yakup.com/news/index.html?mode=view&nid=328730" in messages[1]["content"]
     assert revised.count("| direct |") == 3
+
+
+def test_news_selection_keeps_legacy_prompt_when_fact_set_already_scopes_brand() -> None:
+    selection = build_news_selection(E1_NEWS_FACT_MD, canonical_brand="리바로")
+
+    prompt_fact_md = news_selection_prompt_fact_markdown(E1_NEWS_FACT_MD, selection)
+
+    assert prompt_fact_md == E1_NEWS_FACT_MD
+
+
+def test_news_selection_filters_unscoped_fact_set_when_brand_is_unknown() -> None:
+    selection = build_news_selection(EX08_NEWS_FACT_MD, canonical_brand="")
+
+    prompt_fact_md = news_selection_prompt_fact_markdown(EX08_NEWS_FACT_MD, selection)
+
+    assert "https://example.test/noise/1" not in prompt_fact_md
 
 
 def test_news_selection_recovers_verified_brand_when_runtime_brand_is_empty() -> None:

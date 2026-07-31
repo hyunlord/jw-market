@@ -1919,6 +1919,11 @@ def news_selection_prompt_fact_markdown(
     fact_md: str,
     selection: NewsSelection,
 ) -> str:
+    if (
+        selection.canonical_brand
+        and selection.canonical_brand == _brand_from_fact_md(fact_md)
+    ):
+        return fact_md
     allowed_items = tuple(item for item in selection.items if item.allowed_for_claim)
     lines: list[str] = []
     in_news_section = False

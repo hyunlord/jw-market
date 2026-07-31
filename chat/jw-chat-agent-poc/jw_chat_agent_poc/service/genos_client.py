@@ -998,9 +998,13 @@ class GenosClient:
                 sources=source_names,
             )
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
+            canonical_brand = str(agent_result.get("brand") or "").strip()
+            resolution = agent_result.get("resolution")
+            if not canonical_brand and isinstance(resolution, dict):
+                canonical_brand = str(resolution.get("canonical_brand") or "").strip()
             news_selection = build_news_selection(
                 fact_md,
-                canonical_brand=str(agent_result.get("brand") or ""),
+                canonical_brand=canonical_brand,
             )
             markdown_response["_news_selection"] = news_selection
             if (
