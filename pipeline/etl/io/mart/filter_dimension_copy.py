@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Bounded-copy helpers for filter-dimension promotion tables."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -53,6 +54,7 @@ def copy_table_consistent_snapshot(
     source_table: str,
     target_table: str,
     batch_size: int,
+    on_progress: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> TableCopyProof:
     """Copy one point-in-time source view through bounded writer commits."""
 
@@ -71,6 +73,7 @@ def copy_table_consistent_snapshot(
             target_table=target_table,
             columns=columns,
             batch_size=batch_size,
+            on_progress=on_progress,
         )
         target_count, target_sha256 = _table_sha256(
             writer_conn,
@@ -87,6 +90,15 @@ def copy_table_consistent_snapshot(
                 "FDM consistent snapshot integrity mismatch: "
                 f"source_rows={source_count} target_rows={target_count} "
                 f"source_sha256={source_sha256} target_sha256={target_sha256}"
+            )
+        if on_progress is not None:
+            on_progress(
+                "candidate_ready",
+                {
+                    "pre_live_rows": source_count,
+                    "baseline_source_sha256": source_sha256,
+                    "baseline_stage_sha256": target_sha256,
+                },
             )
         return TableCopyProof(
             row_count=source_count,
@@ -211,6 +223,7 @@ def _copy_snapshot_rows(
     target_table: str,
     columns: tuple[str, ...],
     batch_size: int,
+    on_progress: Callable[[str, dict[str, Any]], None] | None,
 ) -> tuple[int, str]:
     rendered = ", ".join(quote_id(column) for column in columns)
     placeholders = ", ".join(["%s"] * len(columns))
@@ -244,6 +257,15 @@ def _copy_snapshot_rows(
             )
         writer_conn.commit()
         copied += inserted
+        if on_progress is not None:
+            on_progress(
+                "candidate_copy_batch",
+                {
+                    "batch_index": (copied + batch_size - 1) // batch_size,
+                    "rows_affected": inserted,
+                    "rows_completed": copied,
+                },
+            )
         next_id = int(rows[-1]["id"])
         if next_id <= last_id:
             raise RuntimeError("FDM snapshot cursor did not advance")

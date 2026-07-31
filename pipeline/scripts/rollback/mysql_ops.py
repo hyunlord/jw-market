@@ -30,12 +30,30 @@ class MySQLMart:
         with self._conn.cursor() as cursor:
             cursor.execute(f"RENAME TABLE {rendered}")
 
-    def invalidate_dynamic_cache(self, db_name: str) -> None:
+    def invalidate_dynamic_cache(
+        self,
+        db_name: str,
+        *,
+        source: str | None = None,
+    ) -> None:
         with self._conn.cursor() as cursor:
-            cursor.execute(
-                f"UPDATE {quote_id(db_name)}.{quote_id('cache_dynamic_market_response')} "
-                "SET expires_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP()"
+            table = (
+                f"{quote_id(db_name)}."
+                f"{quote_id('cache_dynamic_market_response')}"
             )
+            if source is None:
+                cursor.execute(
+                    f"UPDATE {table} "
+                    "SET expires_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP()"
+                )
+            else:
+                cursor.execute(
+                    f"DELETE FROM {table} "
+                    "WHERE JSON_UNQUOTE("
+                    "JSON_EXTRACT(request_json, '$.source'))=%s",
+                    (source,),
+                )
+        self._conn.commit()
 
     def rollback(self) -> None:
         self._conn.rollback()
@@ -50,3 +68,6 @@ class MySQLMart:
         rendered = ", ".join(f"{quote_id(db_name)}.{quote_id(name)}" for name in table_names)
         with self._conn.cursor() as cursor:
             cursor.execute(f"DROP TABLE {rendered}")
+
+    def drop_tables(self, db_name: str, table_names: tuple[str, ...]) -> None:
+        self.drop_backup_tables(db_name, table_names)

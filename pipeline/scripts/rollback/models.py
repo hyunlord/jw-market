@@ -88,6 +88,23 @@ class FdmRollbackState:
 
 
 @dataclass(frozen=True, slots=True)
+class FdmActivationEvent:
+    promotion_run_id: str
+    target_db: str
+    live_table: str
+    stage_table: str
+    backup_table: str
+    source: str
+    event: str
+    batch_index: int | None
+    rows_affected: int
+    pre_live_rows: int | None
+    pre_live_digest: str | None
+    recorded_at: str
+    last_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RetentionPlan:
     protected_serving_db: str
     retained_generations: tuple[str, ...]

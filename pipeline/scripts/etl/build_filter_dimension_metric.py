@@ -15,6 +15,7 @@ source value; PACK DESC remains outside the dynamic API dimension contract.
 """
 
 import argparse
+from collections.abc import Callable
 import json
 import os
 import time
@@ -32,6 +33,7 @@ from pipeline.etl.io.mart.filter_dimension_metric import build_filter_dimension_
 from pipeline.etl.io.mart.filter_dimension_metric import guard_dimension_stage_target
 from pipeline.etl.io.mart.filter_dimension_metric import summarize_dimension_rows
 from pipeline.etl.io.mart.filter_dimension_metric import validate_filter_dimension_market_coverage
+from pipeline.etl.io.mart.filter_dimension_copy import swap_names
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_slice
 from pipeline.etl.io.mart.filter_dimension_promote import promote_filter_dimension_rows
 from pipeline.etl.io.mart.general_config import PROJECT_ROOT
@@ -45,11 +47,15 @@ from pipeline.etl.io.mart.general_ubist import iter_ubist_base_frames
 from pipeline.etl.io.mart.general_ubist import ubist_measure_frame
 from pipeline.scripts.rollback.recording import (
     PostGateError,
+    PromotionIdentity,
     add_promotion_identity_args,
     identity_from_args,
     record_mysql_component,
     require_ingest_post_gate,
 )
+from pipeline.scripts.rollback.ledger import PromotionLedger
+from pipeline.scripts.rollback.mysql_ops import MySQLMart
+from pipeline.scripts.rollback.service import recover_incomplete_fdm_activation
 
 
 def parse_args() -> argparse.Namespace:
@@ -260,7 +266,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(
                     f"{exc}; automatic rollback completed: {rollback_result}"
                 ) from exc
+            recovered = _recover_prior_fdm_activations(conn, promotion_identity)
+            if recovered:
+                rollback_conn = _connect_admin()
+                try:
+                    rollback_result = _rollback_failed_post_gate_candidate(
+                        rollback_conn,
+                        args,
+                    )
+                finally:
+                    rollback_conn.close()
+                raise RuntimeError(
+                    "prior incomplete FDM activation was automatically compensated; "
+                    f"fail-closed before a new promotion: {', '.join(recovered)}; "
+                    f"current candidate cleanup: {rollback_result}"
+                )
             build_marker = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            activation_progress = _activation_progress_recorder(
+                conn,
+                promotion_identity,
+                source="ubist",
+            )
 
             def record_fdm_activation(backup: dict[str, Any]) -> None:
                 record_mysql_component(
@@ -270,6 +296,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     table_pairs=(
                         (FILTER_DIMENSION_TABLE, str(backup["table"])),
                     ),
+                )
+
+            def discard_fdm_activation() -> None:
+                _delete_fdm_activation_component(
+                    conn,
+                    promotion_identity,
                 )
 
             snapshot_conn = _connect_admin()
@@ -287,6 +319,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         allow_shared_serving_target=args.allow_shared_serving_target,
                         promotion_run_id=promotion_run_id,
                         on_activated=record_fdm_activation,
+                        on_progress=activation_progress,
+                        on_compensated=discard_fdm_activation,
                     )
                 else:
                     manifest["promotion"] = promote_filter_dimension_slice(
@@ -301,6 +335,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         allow_shared_serving_target=args.allow_shared_serving_target,
                         promotion_run_id=promotion_run_id,
                         on_activated=record_fdm_activation,
+                        on_progress=activation_progress,
+                        on_compensated=discard_fdm_activation,
                     )
             finally:
                 snapshot_conn.close()
@@ -311,6 +347,87 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return manifest
     finally:
         conn.close()
+
+
+def _recover_prior_fdm_activations(
+    conn: Any,
+    identity: PromotionIdentity,
+) -> tuple[str, ...]:
+    ledger = PromotionLedger(
+        conn,
+        dialect="mysql",
+        schema_db=identity.serving_db,
+    )
+    ledger.ensure_tables()
+    recovered: list[str] = []
+    mart = MySQLMart(conn)
+    for run_id in ledger.incomplete_fdm_activation_run_ids(identity.serving_db):
+        result = recover_incomplete_fdm_activation(
+            ledger,
+            mart,
+            promotion_run_id=run_id,
+            target_db=identity.serving_db,
+        )
+        if result == "compensated":
+            recovered.append(run_id)
+    return tuple(recovered)
+
+
+def _activation_progress_recorder(
+    conn: Any,
+    identity: PromotionIdentity,
+    *,
+    source: str,
+) -> Callable[[str, dict[str, Any]], None]:
+    ledger = PromotionLedger(
+        conn,
+        dialect="mysql",
+        schema_db=identity.serving_db,
+    )
+    ledger.ensure_tables()
+    mart = MySQLMart(conn)
+    names = swap_names(identity.serving_db, identity.promotion_run_id)
+    pre_live_rows = mart.count(identity.serving_db, names.live_table)
+    pre_live_digest = mart.digest(identity.serving_db, names.live_table)
+
+    def record(event: str, details: dict[str, Any]) -> None:
+        ledger.record_fdm_activation_event(
+            promotion_run_id=identity.promotion_run_id,
+            target_db=identity.serving_db,
+            live_table=names.live_table,
+            stage_table=names.stage_table,
+            backup_table=names.backup_table,
+            source=source,
+            event=event,
+            batch_index=details.get("batch_index"),
+            rows_affected=int(details.get("rows_affected", 0)),
+            pre_live_rows=(
+                pre_live_rows
+                if event in {"started", "candidate_ready"}
+                else None
+            ),
+            pre_live_digest=(
+                pre_live_digest
+                if event in {"started", "candidate_ready"}
+                else None
+            ),
+            error=details.get("last_error"),
+        )
+
+    return record
+
+
+def _delete_fdm_activation_component(
+    conn: Any,
+    identity: PromotionIdentity,
+) -> None:
+    ledger = PromotionLedger(
+        conn,
+        dialect="mysql",
+        schema_db=identity.serving_db,
+    )
+    ledger.ensure_tables()
+    ledger.delete_component(identity.promotion_run_id, "fdm")
 
 
 def _selected_sources(source: str) -> tuple[str, ...]:

@@ -113,9 +113,10 @@ def test_mysql_ledger_creates_only_contract_tables_in_designated_schema() -> Non
             "promotion_component",
             "promotion_rollback_event",
             "promotion_fdm_rollback_state",
+            "promotion_fdm_activation_journal",
         }
     }
-    assert len(conn.executed) == 4
+    assert len(conn.executed) == 5
     assert all("`serving_blue`." in sql for sql, _ in conn.executed)
 
 
@@ -163,7 +164,7 @@ def test_all_mysql_ledger_ddl_and_dml_are_schema_qualified() -> None:
     ledger.record_rollback("run-all", actor="test", reason="qualification")
     assert ledger.rollback_events("run-all") == ()
 
-    assert len(conn.executed) == 17
+    assert len(conn.executed) == 18
     assert all("`serving_all_paths`." in sql for sql, _ in conn.executed)
 
 

@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pipeline.scripts.rollback.ledger import PromotionLedger
 from pipeline.scripts.rollback.models import (
+    FdmActivationEvent,
     FdmRollbackPlan,
     FdmRollbackState,
     RollbackPlan,
@@ -17,13 +18,20 @@ class MartRollbackExecutor(Protocol):
 
     def rename(self, db_name: str, moves: tuple[tuple[str, str], ...]) -> None: ...
 
-    def invalidate_dynamic_cache(self, db_name: str) -> None: ...
+    def invalidate_dynamic_cache(
+        self,
+        db_name: str,
+        *,
+        source: str | None = None,
+    ) -> None: ...
 
     def count(self, db_name: str, table_name: str) -> int: ...
 
     def digest(self, db_name: str, table_name: str) -> str: ...
 
     def rollback(self) -> None: ...
+
+    def drop_tables(self, db_name: str, table_names: tuple[str, ...]) -> None: ...
 
 
 def execute_rollback(
@@ -187,6 +195,161 @@ def recover_incomplete_fdm_rollback(
     )
     ledger.update_fdm_rollback_state(state.promotion_run_id, "compensated")
     return "compensated"
+
+
+def recover_incomplete_fdm_activation(
+    ledger: PromotionLedger,
+    executor: MartRollbackExecutor,
+    *,
+    promotion_run_id: str,
+    target_db: str,
+) -> str | None:
+    events = ledger.fdm_activation_events(promotion_run_id)
+    if not events or events[-1].event in {"completed", "compensated"}:
+        return None
+    identity = events[0]
+    if identity.target_db != target_db:
+        raise RuntimeError(
+            f"FDM activation recovery identity mismatch: {promotion_run_id}"
+        )
+
+    live_exists = executor.exists(target_db, identity.live_table)
+    stage_exists = executor.exists(target_db, identity.stage_table)
+    backup_exists = executor.exists(target_db, identity.backup_table)
+    try:
+        if (
+            live_exists
+            and not stage_exists
+            and backup_exists
+            and _fdm_component_matches_backup(
+                ledger,
+                executor,
+                identity,
+            )
+        ):
+            executor.invalidate_dynamic_cache(
+                target_db,
+                source=identity.source,
+            )
+            _record_activation_recovery(
+                ledger,
+                identity,
+                event="completed",
+            )
+            return "completed"
+        if live_exists and stage_exists and not backup_exists:
+            executor.drop_tables(target_db, (identity.stage_table,))
+        elif live_exists and not stage_exists and backup_exists:
+            pre_live_rows = _latest_activation_rows(events)
+            pre_live_digest = _latest_activation_digest(events)
+            if pre_live_rows is None or pre_live_digest is None:
+                raise RuntimeError(
+                    "post-swap recovery lacks pre-live row and digest identity"
+                )
+            if executor.count(target_db, identity.backup_table) != pre_live_rows:
+                raise RuntimeError("FDM activation backup row count mismatch")
+            if executor.digest(target_db, identity.backup_table) != pre_live_digest:
+                raise RuntimeError("FDM activation backup digest mismatch")
+            executor.rename(
+                target_db,
+                (
+                    (identity.live_table, identity.stage_table),
+                    (identity.backup_table, identity.live_table),
+                ),
+            )
+            if executor.count(target_db, identity.live_table) != pre_live_rows:
+                raise RuntimeError("FDM compensated live row count mismatch")
+            if executor.digest(target_db, identity.live_table) != pre_live_digest:
+                raise RuntimeError("FDM compensated live digest mismatch")
+            executor.invalidate_dynamic_cache(
+                target_db,
+                source=identity.source,
+            )
+            executor.drop_tables(target_db, (identity.stage_table,))
+        elif live_exists and not stage_exists and not backup_exists:
+            pre_live_rows = _latest_activation_rows(events)
+            pre_live_digest = _latest_activation_digest(events)
+            if pre_live_rows is None or pre_live_digest is None:
+                raise RuntimeError(
+                    "live-only activation recovery lacks pre-live identity"
+                )
+            if executor.count(target_db, identity.live_table) != pre_live_rows:
+                raise RuntimeError("FDM live-only row count mismatch")
+            if executor.digest(target_db, identity.live_table) != pre_live_digest:
+                raise RuntimeError("FDM live-only digest mismatch")
+        else:
+            raise RuntimeError(
+                "incomplete FDM activation has ambiguous physical table state: "
+                f"live={live_exists} stage={stage_exists} backup={backup_exists}"
+            )
+        ledger.delete_component(promotion_run_id, "fdm")
+        _record_activation_recovery(
+            ledger,
+            identity,
+            event="compensated",
+        )
+    except Exception as exc:
+        _record_activation_recovery(
+            ledger,
+            identity,
+            event="recovery_failed",
+            error=repr(exc),
+        )
+        raise RuntimeError(
+            "incomplete FDM activation recovery failed; fail-closed"
+        ) from exc
+    return "compensated"
+
+
+def _fdm_component_matches_backup(
+    ledger: PromotionLedger,
+    executor: MartRollbackExecutor,
+    identity: FdmActivationEvent,
+) -> bool:
+    tables = ledger.components(identity.promotion_run_id).get("fdm")
+    if tables is None:
+        return False
+    if len(tables) != 1 or tables[0].backup_table != identity.backup_table:
+        raise RuntimeError("FDM activation component identity mismatch")
+    expected = tables[0]
+    if executor.count(identity.target_db, identity.backup_table) != expected.expected_rows:
+        raise RuntimeError("FDM activation component backup row count mismatch")
+    if executor.digest(identity.target_db, identity.backup_table) != expected.expected_digest:
+        raise RuntimeError("FDM activation component backup digest mismatch")
+    return True
+
+
+def _latest_activation_rows(events: tuple[FdmActivationEvent, ...]) -> int | None:
+    for event in reversed(events):
+        if event.pre_live_rows is not None:
+            return event.pre_live_rows
+    return None
+
+
+def _latest_activation_digest(events: tuple[FdmActivationEvent, ...]) -> str | None:
+    for event in reversed(events):
+        if event.pre_live_digest is not None:
+            return event.pre_live_digest
+    return None
+
+
+def _record_activation_recovery(
+    ledger: PromotionLedger,
+    identity: FdmActivationEvent,
+    *,
+    event: str,
+    error: str | None = None,
+) -> None:
+    ledger.record_fdm_activation_event(
+        promotion_run_id=identity.promotion_run_id,
+        target_db=identity.target_db,
+        live_table=identity.live_table,
+        stage_table=identity.stage_table,
+        backup_table=identity.backup_table,
+        source=identity.source,
+        event=event,
+        error=error,
+    )
 
 
 def _fail_with_compensation(

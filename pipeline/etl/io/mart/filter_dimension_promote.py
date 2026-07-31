@@ -15,6 +15,7 @@ from pipeline.etl.io.mart.filter_dimension_copy import (
     create_filter_dimension_backup_batched,
 )
 from pipeline.etl.io.mart.filter_dimension_swap import (
+    FilterDimensionSwap,
     activate_filter_dimension_swap,
     prepare_filter_dimension_swap,
 )
@@ -48,6 +49,8 @@ def promote_filter_dimension_rows(
     allow_shared_serving_target: bool = False,
     promotion_run_id: str,
     on_activated: Callable[[dict[str, Any]], None] | None = None,
+    on_progress: Callable[[str, dict[str, Any]], None] | None = None,
+    on_compensated: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Promote a fully computed slice through a hidden atomic-swap table."""
 
@@ -79,43 +82,59 @@ def promote_filter_dimension_rows(
     if len(unique_keys) != len(payloads):
         raise ValueError("computed ubist/molecule slice contains duplicate serving keys")
 
+    if on_progress is not None:
+        on_progress("started", {})
     swap = prepare_filter_dimension_swap(
         conn,
         snapshot_conn,
         target_db,
         promotion_run_id,
         batch_size=batch_size,
+        on_progress=on_progress,
     )
-    promoted = _upsert_payloads(
-        conn,
-        target_table=swap.qualified_stage,
-        payloads=payloads,
-        batch_size=batch_size,
-    )
-    expected = len(payloads)
-    _require_complete_promotion(
-        conn,
-        target_table=swap.qualified_stage,
-        source=source,
-        dimension_type=dimension_type,
-        build_marker=build_marker,
-        expected=expected,
-        promoted=promoted,
-    )
-    stale_deleted = _delete_stale_slice(
-        conn,
-        target_table=swap.qualified_stage,
-        source=source,
-        dimension_type=dimension_type,
-        build_marker=build_marker,
-        batch_size=batch_size,
-    )
-    backup = activate_filter_dimension_swap(
-        conn,
-        swap,
-        source=source,
-        on_activated=on_activated,
-    )
+    activation_started = False
+    try:
+        promoted = _upsert_payloads(
+            conn,
+            target_table=swap.qualified_stage,
+            payloads=payloads,
+            batch_size=batch_size,
+            on_progress=on_progress,
+        )
+        expected = len(payloads)
+        _require_complete_promotion(
+            conn,
+            target_table=swap.qualified_stage,
+            source=source,
+            dimension_type=dimension_type,
+            build_marker=build_marker,
+            expected=expected,
+            promoted=promoted,
+        )
+        stale_deleted = _delete_stale_slice(
+            conn,
+            target_table=swap.qualified_stage,
+            source=source,
+            dimension_type=dimension_type,
+            build_marker=build_marker,
+            batch_size=batch_size,
+            on_progress=on_progress,
+        )
+        activation_started = True
+        backup = activate_filter_dimension_swap(
+            conn,
+            swap,
+            source=source,
+            on_activated=on_activated,
+            on_progress=on_progress,
+            on_compensated=on_compensated,
+        )
+    except Exception as exc:
+        if not activation_started:
+            _discard_unactivated_candidate(conn, swap)
+            if on_progress is not None:
+                on_progress("compensated", {"last_error": repr(exc)})
+        raise
     return {
         "source_db": None,
         "target_db": target_db,
@@ -143,6 +162,8 @@ def promote_filter_dimension_slice(
     allow_shared_serving_target: bool = False,
     promotion_run_id: str,
     on_activated: Callable[[dict[str, Any]], None] | None = None,
+    on_progress: Callable[[str, dict[str, Any]], None] | None = None,
+    on_compensated: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Promote one verified sidecar slice without touching adjacent dimensions."""
 
@@ -165,45 +186,61 @@ def promote_filter_dimension_slice(
     if expected < 1:
         raise RuntimeError("refusing to replace ubist/molecule with an empty staged slice")
 
+    if on_progress is not None:
+        on_progress("started", {})
     swap = prepare_filter_dimension_swap(
         conn,
         snapshot_conn,
         target_db,
         promotion_run_id,
         batch_size=batch_size,
+        on_progress=on_progress,
     )
-    promoted = _upsert_slice(
-        conn,
-        source_table=source_table,
-        target_table=swap.qualified_stage,
-        source=source,
-        dimension_type=dimension_type,
-        build_marker=build_marker,
-        batch_size=batch_size,
-    )
-    _require_complete_promotion(
-        conn,
-        target_table=swap.qualified_stage,
-        source=source,
-        dimension_type=dimension_type,
-        build_marker=build_marker,
-        expected=expected,
-        promoted=promoted,
-    )
-    stale_deleted = _delete_stale_slice(
-        conn,
-        target_table=swap.qualified_stage,
-        source=source,
-        dimension_type=dimension_type,
-        build_marker=build_marker,
-        batch_size=batch_size,
-    )
-    backup = activate_filter_dimension_swap(
-        conn,
-        swap,
-        source=source,
-        on_activated=on_activated,
-    )
+    activation_started = False
+    try:
+        promoted = _upsert_slice(
+            conn,
+            source_table=source_table,
+            target_table=swap.qualified_stage,
+            source=source,
+            dimension_type=dimension_type,
+            build_marker=build_marker,
+            batch_size=batch_size,
+            on_progress=on_progress,
+        )
+        _require_complete_promotion(
+            conn,
+            target_table=swap.qualified_stage,
+            source=source,
+            dimension_type=dimension_type,
+            build_marker=build_marker,
+            expected=expected,
+            promoted=promoted,
+        )
+        stale_deleted = _delete_stale_slice(
+            conn,
+            target_table=swap.qualified_stage,
+            source=source,
+            dimension_type=dimension_type,
+            build_marker=build_marker,
+            batch_size=batch_size,
+            on_progress=on_progress,
+        )
+        activation_started = True
+        backup = activate_filter_dimension_swap(
+            conn,
+            swap,
+            source=source,
+            on_activated=on_activated,
+            on_progress=on_progress,
+            on_compensated=on_compensated,
+        )
+    except Exception as exc:
+        if not activation_started:
+            _discard_unactivated_candidate(conn, swap)
+            if on_progress is not None:
+                on_progress("compensated", {"last_error": repr(exc)})
+        raise
     return {
         "source_db": source_db,
         "target_db": target_db,
@@ -244,6 +281,7 @@ def _upsert_slice(
     dimension_type: str,
     build_marker: str,
     batch_size: int,
+    on_progress: Callable[[str, dict[str, Any]], None] | None,
 ) -> int:
     promoted = 0
     last_id = 0
@@ -279,6 +317,15 @@ def _upsert_slice(
             cur.executemany(upsert, payloads)
         conn.commit()
         promoted += len(rows)
+        if on_progress is not None:
+            on_progress(
+                "slice_upsert_batch",
+                {
+                    "batch_index": (promoted + batch_size - 1) // batch_size,
+                    "rows_affected": len(rows),
+                    "rows_completed": promoted,
+                },
+            )
         last_id = int(rows[-1]["id"])
 
 
@@ -320,6 +367,7 @@ def _upsert_payloads(
     target_table: str,
     payloads: Sequence[tuple[Any, ...]],
     batch_size: int,
+    on_progress: Callable[[str, dict[str, Any]], None] | None,
 ) -> int:
     select_columns = ", ".join(quote_id(column) for column in _PROMOTION_COLUMNS)
     placeholders = ",".join(["%s"] * len(_PROMOTION_COLUMNS))
@@ -337,6 +385,15 @@ def _upsert_payloads(
             cur.executemany(upsert, batch)
         conn.commit()
         promoted += len(batch)
+        if on_progress is not None:
+            on_progress(
+                "slice_upsert_batch",
+                {
+                    "batch_index": (promoted + batch_size - 1) // batch_size,
+                    "rows_affected": len(batch),
+                    "rows_completed": promoted,
+                },
+            )
     return promoted
 
 
@@ -378,6 +435,7 @@ def _delete_stale_slice(
     dimension_type: str,
     build_marker: str,
     batch_size: int,
+    on_progress: Callable[[str, dict[str, Any]], None] | None,
 ) -> int:
     stale_deleted = 0
     while True:
@@ -393,5 +451,25 @@ def _delete_stale_slice(
             deleted = int(cur.rowcount)
         conn.commit()
         stale_deleted += deleted
+        if deleted > 0 and on_progress is not None:
+            on_progress(
+                "slice_delete_batch",
+                {
+                    "batch_index": (
+                        stale_deleted + batch_size - 1
+                    ) // batch_size,
+                    "rows_affected": deleted,
+                    "rows_completed": stale_deleted,
+                },
+            )
         if deleted == 0:
             return stale_deleted
+
+
+def _discard_unactivated_candidate(
+    conn: pymysql.connections.Connection,
+    swap: FilterDimensionSwap,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(f"DROP TABLE IF EXISTS {swap.qualified_stage}")
+    conn.commit()

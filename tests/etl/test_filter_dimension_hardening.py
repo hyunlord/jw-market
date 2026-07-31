@@ -29,6 +29,7 @@ class _Cursor:
         *,
         fail_backup_batch: int | None = None,
         fail_cache_delete: bool = False,
+        fail_initial_rename: bool = False,
         rollback_fixture: bool = False,
     ) -> None:
         self.calls: list[tuple[str, tuple[Any, ...] | None]] = []
@@ -39,6 +40,7 @@ class _Cursor:
         self._stage_rows = 0
         self._fail_backup_batch = fail_backup_batch
         self._fail_cache_delete = fail_cache_delete
+        self._fail_initial_rename = fail_initial_rename
         self._rollback_fixture = rollback_fixture
 
     def __enter__(self) -> _Cursor:
@@ -57,7 +59,7 @@ class _Cursor:
             self.rows = [{"table_count": int(exists)}]
         elif "SELECT COUNT(*) AS n" in sql:
             if "computed_at=%s" in sql:
-                count = 1
+                count = self._stage_rows
             elif "__stage_" in sql:
                 count = self._stage_rows
             elif "__old_" in sql:
@@ -81,6 +83,13 @@ class _Cursor:
         elif "DELETE FROM" in sql and "cache_dynamic_market_response" in sql:
             if self._fail_cache_delete:
                 raise pymysql.OperationalError(1205, "injected cache delete failure")
+        elif (
+            sql.startswith("RENAME TABLE")
+            and "__old_" in sql
+            and self._fail_initial_rename
+        ):
+            self._fail_initial_rename = False
+            raise pymysql.OperationalError(1205, "injected rename lock timeout")
 
     def executemany(
         self,
@@ -90,6 +99,8 @@ class _Cursor:
         payloads = tuple(tuple(item) for item in params)
         self.calls.append((sql, payloads))
         self.rowcount = len(payloads)
+        if "__stage_" in sql:
+            self._stage_rows += len(payloads)
 
     def fetchone(self) -> dict[str, Any]:
         return self.rows[0]
@@ -104,11 +115,13 @@ class _Connection:
         *,
         fail_backup_batch: int | None = None,
         fail_cache_delete: bool = False,
+        fail_initial_rename: bool = False,
         rollback_fixture: bool = False,
     ) -> None:
         self.cursor_instance = _Cursor(
             fail_backup_batch=fail_backup_batch,
             fail_cache_delete=fail_cache_delete,
+            fail_initial_rename=fail_initial_rename,
             rollback_fixture=rollback_fixture,
         )
         self.commits = 0
@@ -233,6 +246,38 @@ def test_post_swap_failure_restores_previous_live_table() -> None:
     assert conn.rollbacks == 1
 
 
+def test_initial_swap_failure_discards_candidate_without_restore_attempt() -> None:
+    conn = _Connection(fail_initial_rename=True)
+
+    with pytest.raises(RuntimeError, match="before atomic swap; candidate removed"):
+        promote_filter_dimension_rows(
+            conn,
+            _computed_rows(),
+            target_db="jw_mart_d2_stage_20260630_r2",
+            snapshot_conn=object(),
+            source="ubist",
+            dimension_type="molecule",
+            build_marker="2026-07-29 00:00:00",
+            batch_size=2,
+            allow_shared_serving_target=True,
+            promotion_run_id="fdm_rename_fail",
+        )
+
+    renames = [
+        sql
+        for sql, _params in conn.cursor_instance.calls
+        if sql.startswith("RENAME TABLE")
+    ]
+    drops = [
+        sql
+        for sql, _params in conn.cursor_instance.calls
+        if sql.startswith("DROP TABLE IF EXISTS")
+    ]
+    assert len(renames) == 1
+    assert len(drops) == 1
+    assert "__stage_fdm_rename_fail" in drops[0]
+
+
 def test_activation_record_failure_restores_previous_live_table() -> None:
     conn = _Connection()
 
@@ -261,3 +306,43 @@ def test_activation_record_failure_restores_previous_live_table() -> None:
     ]
     assert len(renames) == 2
     assert conn.rollbacks == 1
+    assert all(
+        "cache_dynamic_market_response" not in sql
+        for sql, _params in conn.cursor_instance.calls
+    )
+
+
+def test_forward_promotion_reports_each_bounded_batch_and_terminal_state() -> None:
+    conn = _Connection()
+    rows = [{**_computed_rows()[0]} for _index in range(3)]
+    for index, row in enumerate(rows):
+        row["brand_key"] = f"brand-{index}"
+        row["product_code"] = f"p{index}"
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    promote_filter_dimension_rows(
+        conn,
+        rows,
+        target_db="jw_mart_d2_stage_20260630_r2",
+        snapshot_conn=object(),
+        source="ubist",
+        dimension_type="molecule",
+        build_marker="2026-07-29 00:00:00",
+        batch_size=2,
+        allow_shared_serving_target=True,
+        promotion_run_id="fdm_journal",
+        on_progress=lambda event, details: events.append((event, details)),
+    )
+
+    upsert_batches = [
+        details for event, details in events if event == "slice_upsert_batch"
+    ]
+    assert [details["batch_index"] for details in upsert_batches] == [1, 2]
+    assert [details["rows_affected"] for details in upsert_batches] == [2, 1]
+    assert [event for event, _details in events][-5:] == [
+        "activation_prepared",
+        "activated",
+        "component_recorded",
+        "cache_invalidated",
+        "completed",
+    ]

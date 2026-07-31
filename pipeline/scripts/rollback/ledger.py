@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from pipeline.scripts.rollback.models import (
+    FdmActivationEvent,
     FdmRollbackPlan,
     FdmRollbackState,
     REQUIRED_COMPONENTS,
@@ -63,6 +64,26 @@ CREATE TABLE IF NOT EXISTS {table} (
   last_error TEXT NULL
 )
 """
+_FDM_ACTIVATION_DDL = """
+CREATE TABLE IF NOT EXISTS {table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  promotion_run_id VARCHAR(64) NOT NULL,
+  target_db VARCHAR(128) NOT NULL,
+  live_table VARCHAR(64) NOT NULL,
+  stage_table VARCHAR(64) NOT NULL,
+  backup_table VARCHAR(64) NOT NULL,
+  source VARCHAR(32) NOT NULL,
+  event VARCHAR(32) NOT NULL,
+  batch_index BIGINT NULL,
+  rows_affected BIGINT NOT NULL,
+  pre_live_rows BIGINT NULL,
+  pre_live_digest VARCHAR(128) NULL,
+  recorded_at VARCHAR(32) NOT NULL,
+  last_error TEXT NULL
+)
+"""
+
+_FDM_ACTIVATION_TERMINAL_EVENTS = frozenset({"completed", "compensated"})
 
 
 def _now() -> str:
@@ -97,9 +118,16 @@ class PromotionLedger:
         fdm_rollback_ddl = _FDM_ROLLBACK_DDL.format(
             table=self._table("promotion_fdm_rollback_state")
         )
+        fdm_activation_ddl = _FDM_ACTIVATION_DDL.format(
+            table=self._table("promotion_fdm_activation_journal")
+        )
         if self._dialect == "mysql":
             rollback_ddl = rollback_ddl.replace(
                 "id INTEGER PRIMARY KEY AUTOINCREMENT", "id BIGINT AUTO_INCREMENT PRIMARY KEY"
+            )
+            fdm_activation_ddl = fdm_activation_ddl.replace(
+                "id INTEGER PRIMARY KEY AUTOINCREMENT",
+                "id BIGINT AUTO_INCREMENT PRIMARY KEY",
             )
         cursor = self._conn.cursor()
         for statement in (
@@ -107,6 +135,7 @@ class PromotionLedger:
             component_ddl,
             rollback_ddl,
             fdm_rollback_ddl,
+            fdm_activation_ddl,
         ):
             cursor.execute(statement)
         self._conn.commit()
@@ -258,6 +287,14 @@ class PromotionLedger:
             result[str(component)] = tuple(TableBackup(**item) for item in json.loads(raw))
         return result
 
+    def delete_component(self, promotion_run_id: str, component: str) -> None:
+        self._execute(
+            f"DELETE FROM {self._table('promotion_component')} "
+            "WHERE promotion_run_id=? AND component=?",
+            (promotion_run_id, component),
+        )
+        self._conn.commit()
+
     def record_rollback(self, promotion_run_id: str, *, actor: str, reason: str) -> None:
         rolled_back_at = _now()
         self._execute(
@@ -372,6 +409,103 @@ class PromotionLedger:
             return None
         values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
         return FdmRollbackState(*values)
+
+    def record_fdm_activation_event(
+        self,
+        *,
+        promotion_run_id: str,
+        target_db: str,
+        live_table: str,
+        stage_table: str,
+        backup_table: str,
+        source: str,
+        event: str,
+        batch_index: int | None = None,
+        rows_affected: int = 0,
+        pre_live_rows: int | None = None,
+        pre_live_digest: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not event.strip():
+            raise ValueError("FDM activation journal event is required")
+        identity = (
+            target_db,
+            live_table,
+            stage_table,
+            backup_table,
+            source,
+        )
+        existing = self._execute(
+            "SELECT target_db, live_table, stage_table, backup_table, source "
+            f"FROM {self._table('promotion_fdm_activation_journal')} "
+            "WHERE promotion_run_id=? ORDER BY id LIMIT 1",
+            (promotion_run_id,),
+        ).fetchone()
+        if existing is not None:
+            values = tuple(existing.values()) if isinstance(existing, dict) else tuple(existing)
+            if values != identity:
+                raise RuntimeError(
+                    f"FDM activation journal identity conflict: {promotion_run_id}"
+                )
+        self._execute(
+            f"INSERT INTO {self._table('promotion_fdm_activation_journal')} "
+            "(promotion_run_id, target_db, live_table, stage_table, backup_table, "
+            "source, event, batch_index, rows_affected, pre_live_rows, "
+            "pre_live_digest, recorded_at, last_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                promotion_run_id,
+                *identity,
+                event,
+                batch_index,
+                rows_affected,
+                pre_live_rows,
+                pre_live_digest,
+                _now(),
+                error,
+            ),
+        )
+        self._conn.commit()
+
+    def fdm_activation_events(
+        self,
+        promotion_run_id: str,
+    ) -> tuple[FdmActivationEvent, ...]:
+        rows = self._execute(
+            "SELECT promotion_run_id, target_db, live_table, stage_table, "
+            "backup_table, source, event, batch_index, rows_affected, "
+            "pre_live_rows, pre_live_digest, recorded_at, last_error "
+            f"FROM {self._table('promotion_fdm_activation_journal')} "
+            "WHERE promotion_run_id=? ORDER BY id",
+            (promotion_run_id,),
+        ).fetchall()
+        return tuple(
+            FdmActivationEvent(
+                *(tuple(row.values()) if isinstance(row, dict) else tuple(row))
+            )
+            for row in rows
+        )
+
+    def incomplete_fdm_activation_run_ids(self, target_db: str) -> tuple[str, ...]:
+        rows = self._execute(
+            "SELECT journal.promotion_run_id "
+            f"FROM {self._table('promotion_fdm_activation_journal')} journal "
+            "WHERE journal.target_db=? AND journal.id=("
+            "SELECT MAX(latest.id) "
+            f"FROM {self._table('promotion_fdm_activation_journal')} latest "
+            "WHERE latest.promotion_run_id=journal.promotion_run_id"
+            ") ORDER BY journal.promotion_run_id",
+            (target_db,),
+        ).fetchall()
+        result: list[str] = []
+        for row in rows:
+            run_id = str(
+                next(iter(row.values())) if isinstance(row, dict) else row[0]
+            )
+            events = self.fdm_activation_events(run_id)
+            if events and events[-1].event not in _FDM_ACTIVATION_TERMINAL_EVENTS:
+                result.append(run_id)
+        return tuple(result)
 
     def rollback_events(self, promotion_run_id: str) -> tuple[RollbackEvent, ...]:
         rows = self._execute(

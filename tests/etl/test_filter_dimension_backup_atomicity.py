@@ -182,6 +182,54 @@ def test_consistent_snapshot_copy_proves_row_count_and_sha256() -> None:
     assert snapshot.rollbacks == 1
 
 
+def test_consistent_snapshot_reports_each_batch_and_ready_identity() -> None:
+    rows = _rows()
+    snapshot = _SnapshotConnection(rows, batch_size=2)
+    writer = _WriterConnection(rows, batch_size=2)
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    proof = copy_table_consistent_snapshot(
+        snapshot,
+        writer,
+        source_table=_SOURCE,
+        target_table=_TARGET,
+        batch_size=2,
+        on_progress=lambda event, details: events.append((event, details)),
+    )
+
+    assert [event for event, _details in events] == [
+        "candidate_copy_batch",
+        "candidate_copy_batch",
+        "candidate_ready",
+    ]
+    assert [details["rows_affected"] for _event, details in events[:2]] == [2, 1]
+    assert events[-1][1]["pre_live_rows"] == 3
+    assert events[-1][1]["baseline_source_sha256"] == proof.source_sha256
+
+
+def test_candidate_ready_journal_failure_discards_verified_candidate() -> None:
+    rows = _rows()
+    snapshot = _SnapshotConnection(rows, batch_size=2)
+    writer = _WriterConnection(rows, batch_size=2)
+
+    def fail_ready(event: str, _details: dict[str, Any]) -> None:
+        if event == "candidate_ready":
+            raise RuntimeError("injected journal failure")
+
+    with pytest.raises(RuntimeError, match="partial target removed"):
+        copy_table_consistent_snapshot(
+            snapshot,
+            writer,
+            source_table=_SOURCE,
+            target_table=_TARGET,
+            batch_size=2,
+            on_progress=fail_ready,
+        )
+
+    assert writer.target_exists is False
+    assert writer.target_rows == []
+
+
 def test_mid_batch_failure_removes_partial_backup_and_preserves_live() -> None:
     rows = _rows()
     snapshot = _SnapshotConnection(rows, batch_size=2)
