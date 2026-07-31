@@ -18,6 +18,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     HiraDiseaseCodeAbsent,
     HiraDiseaseCodeAmbiguous,
     HiraDiseaseCodeResolved,
+    HiraDiseaseCodeUnavailable,
     resolve_hira_disease_code,
 )
 from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
@@ -508,6 +509,8 @@ class ExternalToolRegistry:
                     )
                 case HiraDiseaseCodeAbsent(query=query):
                     return _error("DISEASE_CODE_NOT_FOUND", f"HIRA search_disease_code에서 상병코드를 확인하지 못했습니다: {query}")
+                case HiraDiseaseCodeUnavailable(search_call=search_call):
+                    return _external_call_envelope(search_call, requested, metric)
         function = getattr(self._external, method)
         call = function(sick_cd, year=request.year)
         return _external_call_envelope(call, sick_cd, metric)

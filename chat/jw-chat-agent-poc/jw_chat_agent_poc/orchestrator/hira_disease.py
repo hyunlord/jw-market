@@ -54,8 +54,22 @@ class HiraDiseaseCodeAbsent:
     query: str
 
 
-HiraDiseaseCodeResolution: TypeAlias = HiraDiseaseCodeResolved | HiraDiseaseCodeAmbiguous | HiraDiseaseCodeAbsent
+@dataclass(frozen=True, slots=True)
+class HiraDiseaseCodeUnavailable:
+    search_call: ExternalCall
+    query: str
+
+
+HiraDiseaseCodeResolution: TypeAlias = (
+    HiraDiseaseCodeResolved
+    | HiraDiseaseCodeAmbiguous
+    | HiraDiseaseCodeAbsent
+    | HiraDiseaseCodeUnavailable
+)
 MAX_HIRA_DISEASE_CANDIDATES = 5
+HIRA_DISEASE_STATISTICS_URL: Final = (
+    "https://opendata.hira.or.kr/op/opc/olapHthInsRvStatInfoTab1.do"
+)
 
 
 def _hira_mapping(sick_cd: str, disease_name: str, basis: str) -> HiraMapping:
@@ -412,6 +426,8 @@ def hira_direct_disease_calls(question: str, disease_query: str, external: Exter
             return [_hira_code_ambiguous_call(disease_query, search_call, candidates)]
         case HiraDiseaseCodeAbsent(search_call=search_call, query=query):
             return [_hira_code_absent_call(query, search_call)]
+        case HiraDiseaseCodeUnavailable(search_call=search_call):
+            return [search_call]
         case unreachable:
             assert_never(unreachable)
 
@@ -419,6 +435,8 @@ def hira_direct_disease_calls(question: str, disease_query: str, external: Exter
 def resolve_hira_disease_code(disease_query: str, external: ExternalApiClient) -> HiraDiseaseCodeResolution:
     search_call = external.hira_disease_name_code(disease_query)
     candidates = _hira_candidates(search_call)
+    if _hira_code_lookup_unavailable(search_call):
+        return HiraDiseaseCodeUnavailable(search_call=search_call, query=disease_query)
     if not candidates:
         return HiraDiseaseCodeAbsent(search_call=search_call, query=disease_query)
     if len(candidates) == 1:
@@ -569,6 +587,19 @@ def _hira_candidates(search_call: ExternalCall) -> tuple[HiraDiseaseCandidate, .
     return tuple(candidates)
 
 
+def _hira_code_lookup_unavailable(search_call: ExternalCall) -> bool:
+    status = search_call.status.strip().casefold()
+    error_code = str(search_call.render_data.get("error_code") or "").strip()
+    return status in {
+        "error",
+        "failed",
+        "query_failed",
+        "timeout",
+        "tool_timeout",
+        "deadline_exceeded",
+    } or bool(error_code)
+
+
 def _candidate_dict(candidate: HiraDiseaseCandidate) -> dict[str, str]:
     return {"sickCd": candidate.sick_cd, "sickNm": candidate.disease_name}
 
@@ -599,18 +630,32 @@ def _hira_code_ambiguous_call(
 
 
 def _hira_code_absent_call(query: str, search_call: ExternalCall) -> ExternalCall:
+    user_message = (
+        f"해당 질병명에 대응하는 HIRA 상병코드를 찾지 못했습니다: {query}\n\n"
+        f"공식 확인 경로: [HIRA 국민관심질병통계]({HIRA_DISEASE_STATISTICS_URL})\n"
+        f"검색어: {query}\n"
+        "확인 필드: 상병코드(KCD), 질병명\n\n"
+        "정확한 질병명으로 다시 입력하거나 상병코드를 직접 알려주시면 재조회할 수 있습니다."
+    )
     return ExternalCall(
         tool="hira_disease_code_absent",
         source="hira_disease",
         status="no_data",
-        summary_text=f"HIRA search_disease_code에서 {query} 상병코드를 확인하지 못해 통계를 조회하지 않았습니다.",
+        summary_text=user_message,
         render_data={
             "query": query,
             "reason": "hira_disease_code_search_no_data",
+            "reason_code": "DISEASE_CODE_ABSENT",
+            "user_message": user_message,
+            "recovery_action": "정확한 질병명을 다시 입력하거나 HIRA 상병코드를 직접 제공해 주세요.",
+            "source": "HIRA 국민관심질병통계",
+            "evidence_summary": (
+                f"HIRA 질병명·상병코드 조회에서 검색어 '{query}'에 대응하는 후보가 0건이었습니다.",
+            ),
             "candidates": [],
             "search": search_call.render_data,
         },
-        safe_url=search_call.safe_url,
+        safe_url=HIRA_DISEASE_STATISTICS_URL,
         elapsed_ms=search_call.elapsed_ms,
     )
 

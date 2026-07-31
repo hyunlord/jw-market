@@ -81,7 +81,11 @@ from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     emit_shadow_gate_exception,
     question_fingerprint,
 )
-from jw_chat_agent_poc.orchestrator.typed_failure import observe_typed_failure
+from jw_chat_agent_poc.orchestrator.typed_failure import (
+    TypedFailureCode,
+    normalize_typed_failure,
+    observe_typed_failure,
+)
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     explicit_hira_disease_code,
     hira_binding_question,
@@ -3565,6 +3569,13 @@ def _is_market_membership_mismatch_result(result: dict) -> bool:
 
 
 def _is_terminal_typed_result(result: dict) -> bool:
+    typed_failure = normalize_typed_failure(result)
+    if (
+        typed_failure is not None
+        and typed_failure.code is TypedFailureCode.DISEASE_CODE_ABSENT
+    ):
+        return True
+
     sources = result.get("sources")
     if isinstance(sources, (list, tuple)) and len(sources) == 1:
         if str(sources[0] or "") in {

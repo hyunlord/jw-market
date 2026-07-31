@@ -18,6 +18,7 @@ class TypedFailureCode(StrEnum):
     EVIDENCE_BINDING_FAILED = "EVIDENCE_BINDING_FAILED"
     MARKET_UNRESOLVED = "market_unresolved"
     INCOMPATIBLE_COMPARISON = "incompatible_comparison"
+    DISEASE_CODE_ABSENT = "DISEASE_CODE_ABSENT"
 
     # Reserved until an exact producer contract exists.
     NO_OFFICIAL_RECORD = "NO_OFFICIAL_RECORD"
@@ -47,6 +48,7 @@ _CODE_PRIORITY: Final[tuple[TypedFailureCode, ...]] = (
     TypedFailureCode.INCOMPATIBLE_COMPARISON,
     TypedFailureCode.UNSUPPORTED_MULTI_ENTITY,
     TypedFailureCode.NO_FILE_ATTACHED,
+    TypedFailureCode.DISEASE_CODE_ABSENT,
     TypedFailureCode.NO_OFFICIAL_RECORD,
     TypedFailureCode.INDEX_MISS,
     TypedFailureCode.EVIDENCE_BINDING_FAILED,
@@ -62,6 +64,7 @@ _ACTIVE_CODES: Final[frozenset[TypedFailureCode]] = frozenset(
         TypedFailureCode.EVIDENCE_BINDING_FAILED,
         TypedFailureCode.MARKET_UNRESOLVED,
         TypedFailureCode.INCOMPATIBLE_COMPARISON,
+        TypedFailureCode.DISEASE_CODE_ABSENT,
     }
 )
 _FAILURE_TRAITS: Final[Mapping[TypedFailureCode, tuple[bool, bool]]] = {
@@ -71,6 +74,7 @@ _FAILURE_TRAITS: Final[Mapping[TypedFailureCode, tuple[bool, bool]]] = {
     TypedFailureCode.EVIDENCE_BINDING_FAILED: (True, False),
     TypedFailureCode.MARKET_UNRESOLVED: (True, False),
     TypedFailureCode.INCOMPATIBLE_COMPARISON: (True, True),
+    TypedFailureCode.DISEASE_CODE_ABSENT: (True, False),
 }
 _CODE_KEYS: Final[tuple[str, ...]] = (
     "error_code",
