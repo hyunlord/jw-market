@@ -41,7 +41,9 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     current_question_fingerprint,
     current_query_spec,
     observe_plan_coverage,
+    set_current_query_spec,
 )
+from jw_chat_agent_poc.orchestrator.query_spec import with_resolved_entities
 from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     ShadowGate,
     emit_shadow_gate_exception,
@@ -126,6 +128,12 @@ class ToolUseAgent:
         with stage(timing, self._stage_name("agent_pre_resolve", "deep_research_prepare"), "brand and period grounding"):
             resolutions = _pre_resolutions(question, self.resolver)
             base_allowed_brands = tuple(item.canonical_brand for item in resolutions)
+            observed_spec = current_query_spec()
+            if observed_spec is not None:
+                set_current_query_spec(
+                    with_resolved_entities(observed_spec, tuple(resolutions)),
+                    question_fingerprint=current_question_fingerprint(),
+                )
             market_by_brand = {
                 item.canonical_brand: item.market_id
                 for item in resolutions

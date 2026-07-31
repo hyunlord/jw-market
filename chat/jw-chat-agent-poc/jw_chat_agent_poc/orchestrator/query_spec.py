@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol, TypedDict
 
@@ -30,6 +30,16 @@ class TimeGranularity(StrEnum):
     YEAR = "year"
 
 
+class QueryFacet(StrEnum):
+    FILE = "file"
+    MARKET = "market"
+    CHANNEL = "channel"
+    FORECAST = "forecast"
+    COMPETITOR_ACTIVITY = "competitor_activity"
+    COMPETITION_TREND = "competition_trend"
+    GROWTH_DRIVER = "growth_driver"
+
+
 @dataclass(frozen=True, slots=True)
 class QueryEntity:
     kind: EntityKind
@@ -49,6 +59,7 @@ class RequestQuerySpec:
     comparison_targets: tuple[QueryEntity, ...] = ()
     source: str | None = None
     requested_view: str | None = None
+    facets: tuple[QueryFacet, ...] = ()
 
 
 class QueryEntityResolver(Protocol):
@@ -76,6 +87,7 @@ class QuerySpecObservation(TypedDict):
     comparison_targets: list[ObservedEntity]
     source: str | None
     requested_view: str | None
+    facets: list[str]
 
 
 _WINDOW_RE = re.compile(r"최근\s*(\d+)\s*(?:개\s*)?(개월|달|분기|개년|년)")
@@ -107,6 +119,7 @@ def extract_query_spec(
         comparison_targets=comparison_targets,
         source=_source(question),
         requested_view=_requested_view(question),
+        facets=_facets(question),
     )
 
 
@@ -124,7 +137,44 @@ def query_spec_observation(spec: RequestQuerySpec) -> QuerySpecObservation:
         ],
         "source": spec.source,
         "requested_view": spec.requested_view,
+        "facets": [facet.value for facet in spec.facets],
     }
+
+
+def with_resolved_entities(
+    spec: RequestQuerySpec,
+    resolutions: tuple[BrandResolution, ...],
+) -> RequestQuerySpec:
+    """Reconcile the request contract with the resolver used by execution.
+
+    The service preflight and the agent can have different catalog readers. The
+    execution resolver can add entities that preflight missed, while preflight
+    entities must not disappear before plan coverage is evaluated.
+    """
+
+    runtime_entities = tuple(
+        QueryEntity(
+            kind=EntityKind.BRAND,
+            canonical_id=resolution.canonical_brand,
+            display_name=resolution.canonical_brand,
+        )
+        for resolution in resolutions
+    )
+    entities = tuple(
+        dict.fromkeys((*spec.entities, *runtime_entities))
+    )
+    if entities == spec.entities:
+        return spec
+    comparison_targets = (
+        entities
+        if spec.operation in {QueryOperation.COMPARE_CURRENT, QueryOperation.COMPARE_CHANGE}
+        else ()
+    )
+    return replace(
+        spec,
+        entities=entities,
+        comparison_targets=comparison_targets,
+    )
 
 
 def _entities(
@@ -147,11 +197,12 @@ def _entities(
 
 def _metrics(question: str) -> tuple[str, ...]:
     candidates = (
-        ("sales", ("매출", "실적", "판매")),
+        ("sales", ("매출", "실적", "판매", "팔렸", "팔려")),
         ("share", ("점유율", "MS")),
         ("hhi", ("HHI", "집중도")),
         ("market_size", ("시장 규모", "시장규모")),
         ("rank", ("순위", "랭킹")),
+        ("growth", ("성장률",)),
     )
     normalized = question.upper()
     return tuple(
@@ -183,10 +234,26 @@ def _operation(
 ) -> QueryOperation:
     if "시작일" in question and "종료일" in question:
         return QueryOperation.DATE_RANGE_BOUNDARY
-    if len(entities) > 1 and any(token in question for token in ("변화", "추이", "증감")):
+    explicit_comparison = any(
+        token in question
+        for token in ("비교", "vs", "VS", "중 누가 더", "나란히")
+    )
+    comparison_request = len(entities) > 1 or bool(entities and explicit_comparison)
+    if comparison_request and any(token in question for token in ("변화", "추이", "증감")):
         return QueryOperation.COMPARE_CHANGE
-    if len(entities) > 1 and any(
-        token in question for token in ("비교", "각각", "와", "과", "이랑", "vs", "VS")
+    if comparison_request and any(
+        token in question
+        for token in (
+            "비교",
+            "각각",
+            "와",
+            "과",
+            "이랑",
+            "vs",
+            "VS",
+            "중 누가 더",
+            "나란히",
+        )
     ):
         return QueryOperation.COMPARE_CURRENT
     if window_count is not None or "추이" in question:
@@ -233,6 +300,40 @@ def _requested_view(question: str) -> str | None:
     if "경쟁뷰" in question:
         return "competitive_dynamics"
     return None
+
+
+def _facets(question: str) -> tuple[QueryFacet, ...]:
+    normalized = question.casefold()
+    requested = (
+        (QueryFacet.FILE, any(token in normalized for token in ("파일", "문서", "보고서"))),
+        (
+            QueryFacet.MARKET,
+            any(
+                token in normalized
+                for token in ("시스템 데이터", "시장 데이터", "mart", "db")
+            ),
+        ),
+        (QueryFacet.CHANNEL, any(token in normalized for token in ("채널", "진료과"))),
+        (
+            QueryFacet.FORECAST,
+            any(token in normalized for token in ("앞으로", "전망", "예측")),
+        ),
+        (
+            QueryFacet.COMPETITOR_ACTIVITY,
+            "경쟁" in normalized
+            and any(token in normalized for token in ("영업활동", "영업 활동")),
+        ),
+        (
+            QueryFacet.COMPETITION_TREND,
+            "경쟁" in normalized
+            and any(token in normalized for token in ("변화", "변하", "추이")),
+        ),
+        (
+            QueryFacet.GROWTH_DRIVER,
+            any(token in normalized for token in ("성장 원인", "성장원인")),
+        ),
+    )
+    return tuple(facet for facet, present in requested if present)
 
 
 def _observed_entity(entity: QueryEntity) -> ObservedEntity:

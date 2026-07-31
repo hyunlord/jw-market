@@ -74,6 +74,7 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     clear_current_query_spec,
     current_query_spec,
     observe_actual_coverage,
+    observe_surface_coverage,
     set_current_query_spec,
 )
 from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
@@ -2747,6 +2748,23 @@ def compute_final_answer(
         )
         output_policy_decision = evaluate_output_leakage(format_result.answer)
         user_answer = enforced_answer(format_result.answer, output_policy_decision)
+        if query_spec is not None:
+            try:
+                observe_surface_coverage(
+                    query_spec,
+                    user_answer,
+                    tool_calls,
+                    question_fingerprint=fingerprint,
+                )
+            except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
+                emit_shadow_gate_exception(
+                    gate=ShadowGate.OPERATION_CONTRACT,
+                    phase="surface",
+                    question_fingerprint=fingerprint,
+                    entity_count=len(query_spec.entities),
+                    metric_count=len(query_spec.metrics),
+                )
+                LOGGER.exception("operation_contract_surface_shadow_failed")
         try:
             observe_typed_failure(
                 result,

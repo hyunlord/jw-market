@@ -16,8 +16,10 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     current_query_spec,
     evaluate_actual_coverage,
     evaluate_plan_coverage,
+    evaluate_surface_coverage,
     observe_actual_coverage,
     observe_plan_coverage,
+    observe_surface_coverage,
     set_current_query_spec,
 )
 from jw_chat_agent_poc.orchestrator.query_spec import (
@@ -345,6 +347,97 @@ def test_actual_coverage_uses_returned_values_and_normalizes_latest_period() -> 
     assert {axis.period for axis in decision.observed} == {"latest"}
 
 
+def test_surface_coverage_passes_only_when_all_mb10_rank_rows_are_present() -> None:
+    spec = _spec(
+        "리바로",
+        "리바로젯",
+        "로수젯",
+        "리피토",
+        metrics=("rank",),
+        operation=QueryOperation.COMPARE_CURRENT,
+    )
+    calls = (
+        {
+            "tool": "get_top_brands",
+            "render_data": {
+                "period": "2026-05",
+                "level_segments": [
+                    {"brand": "리바로", "rank": 6},
+                    {"brand": "리바로젯", "rank": 3},
+                    {"brand": "로수젯", "rank": 1},
+                    {"brand": "리피토", "rank": 2},
+                ],
+            },
+        },
+    )
+    answer = """| 브랜드 | 최신 순위 |
+| --- | --- |
+| 리바로 | 6위 |
+| 리바로젯 | 3위 |
+| 로수젯 | 1위 |
+| 리피토 | 2위 |"""
+
+    passed = evaluate_surface_coverage(spec, answer, calls)
+    failed = evaluate_surface_coverage(spec, answer.replace("| 리피토 | 2위 |", ""), calls)
+
+    assert passed.status is CoverageDecisionStatus.PASS
+    assert len(passed.observed) == 4
+    assert failed.status is CoverageDecisionStatus.FAIL
+    assert tuple(axis.entity_id for axis in failed.missing) == ("리피토",)
+
+
+def test_surface_coverage_does_not_confuse_brand_name_prefixes() -> None:
+    spec = _spec(
+        "리바로",
+        "리바로젯",
+        metrics=("rank",),
+        operation=QueryOperation.COMPARE_CURRENT,
+    )
+    calls = (
+        {
+            "tool": "get_top_brands",
+            "render_data": {
+                "period": "2026-05",
+                "level_segments": [
+                    {"brand": "리바로", "rank": 6},
+                    {"brand": "리바로젯", "rank": 3},
+                ],
+            },
+        },
+    )
+
+    decision = evaluate_surface_coverage(
+        spec,
+        "리바로젯 최신 순위는 3위입니다.",
+        calls,
+    )
+
+    assert decision.status is CoverageDecisionStatus.FAIL
+    assert tuple(axis.entity_id for axis in decision.missing) == ("리바로",)
+
+
+def test_surface_observation_is_dry_run_and_does_not_mutate_answer(caplog, monkeypatch) -> None:
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "SHADOW")
+    spec = _spec("리바로", metrics=("rank",))
+    answer = "| 브랜드 | 최신 순위 |\n| --- | --- |\n| 리바로 | 6위 |"
+    calls = (
+        {
+            "tool": "get_top_brands",
+            "render_data": {
+                "period": "2026-05",
+                "level_segments": [{"brand": "리바로", "rank": 6}],
+            },
+        },
+    )
+
+    with caplog.at_level(logging.INFO):
+        decision = observe_surface_coverage(spec, answer, calls)
+
+    assert decision.status is CoverageDecisionStatus.PASS
+    assert answer == "| 브랜드 | 최신 순위 |\n| --- | --- |\n| 리바로 | 6위 |"
+    assert "operation_contract_surface_shadow" in caplog.text
+
+
 def test_actual_coverage_does_not_count_failed_tool_values() -> None:
     # Given
     spec = _spec("리바로")
@@ -514,6 +607,68 @@ def test_agent_loop_decision_point_emits_plan_shadow_without_changing_result(
     assert not any("operation_contract" in key for key in result)
 
 
+def test_agent_runtime_resolution_reconciles_mb10_required_cardinality(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "SHADOW")
+    question = "리바로, 리바로젯, 로수젯, 리피토 네 브랜드 순위를 비교해줘"
+    initial = _spec(
+        "리바로",
+        metrics=("rank",),
+        operation=QueryOperation.COMPARE_CURRENT,
+    )
+    planner = ScriptedPlanner((AgentDecision(final_answer="계획 관측 종료"),))
+    resolver = BrandResolver()
+    runtime_resolutions = tuple(
+        resolver.resolve(brand, allow_default=False)
+        for brand in ("리바로", "리바로젯")
+    )
+    template = runtime_resolutions[0]
+    runtime_resolutions = (
+        *runtime_resolutions,
+        type(template)(
+            canonical_brand="로수젯",
+            audit_code="test:로수젯",
+            molecule_en=(),
+            atc=(),
+            edi_code=None,
+            item_seq=None,
+            is_combo=False,
+        ),
+        type(template)(
+            canonical_brand="리피토",
+            audit_code="test:리피토",
+            molecule_en=(),
+            atc=(),
+            edi_code=None,
+            item_seq=None,
+            is_combo=False,
+        ),
+    )
+    monkeypatch.setattr(resolver, "resolve_many", lambda *_args, **_kwargs: runtime_resolutions)
+    agent = ToolUseAgent(metrics=_metrics_tool(), resolver=resolver, planner=planner)
+    set_current_query_spec(initial, question_fingerprint="mb10-test")
+
+    try:
+        with caplog.at_level(
+            logging.INFO,
+            logger="jw_chat_agent_poc.orchestrator.operation_contract",
+        ):
+            agent.answer(question)
+        reconciled = current_query_spec()
+    finally:
+        clear_current_query_spec()
+
+    assert reconciled is not None
+    assert tuple(entity.canonical_id for entity in reconciled.entities) == (
+        "리바로",
+        "리바로젯",
+        "로수젯",
+        "리피토",
+    )
+
+
 def test_compute_final_answer_emits_actual_shadow_with_byte_identical_answer(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -555,6 +710,11 @@ def test_compute_final_answer_emits_actual_shadow_with_byte_identical_answer(
     assert current_query_spec() is None
     assert any(
         "operation_contract_actual_shadow" in record.message
+        and "'status': 'pass'" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "operation_contract_surface_shadow" in record.message
         and "'status': 'pass'" in record.message
         for record in caplog.records
     )
@@ -618,6 +778,31 @@ def test_actual_shadow_failure_does_not_change_final_answer(
     observed = service_app.compute_final_answer(question, result, "observed")
 
     # Then
+    assert observed.text.encode() == baseline.text.encode()
+    assert current_query_spec() is None
+
+
+def test_surface_shadow_failure_does_not_change_final_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = "리바로 매출 알려줘"
+    result = {
+        "general_view_ready": True,
+        "answer": "리바로 최신 매출은 80.39억원입니다.",
+        "sources": ["UBIST"],
+        "tool_calls": [],
+    }
+    clear_current_query_spec()
+    baseline = service_app.compute_final_answer(question, result, "baseline")
+
+    def _fail_shadow(*_args, **_kwargs):
+        raise RuntimeError("synthetic surface shadow failure")
+
+    monkeypatch.setattr(service_app, "observe_surface_coverage", _fail_shadow)
+    set_current_query_spec(_spec("리바로"))
+
+    observed = service_app.compute_final_answer(question, result, "observed")
+
     assert observed.text.encode() == baseline.text.encode()
     assert current_query_spec() is None
 

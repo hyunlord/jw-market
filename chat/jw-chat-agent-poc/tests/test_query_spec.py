@@ -7,12 +7,14 @@ import pytest
 from jw_chat_agent_poc.agent_loop.periods import build_period_grounding
 from jw_chat_agent_poc.orchestrator.query_spec import (
     EntityKind,
+    QueryFacet,
     QueryOperation,
     TimeGranularity,
     extract_query_spec,
     query_spec_observation,
+    with_resolved_entities,
 )
-from jw_chat_agent_poc.resolver import BrandResolution
+from jw_chat_agent_poc.resolver import BrandResolution, BrandResolver
 
 
 class _AcceptanceResolver:
@@ -113,3 +115,169 @@ def test_query_spec_is_immutable_and_observation_omits_raw_question() -> None:
         {"kind": "brand", "canonical_id": "리바로", "display_name": "리바로"}
     ]
     assert question not in str(observation)
+
+
+def test_runtime_resolutions_restore_all_mb10_entities_without_losing_request_shape() -> None:
+    question = "리바로, 리바로젯, 로수젯, 리피토 네 브랜드 순위를 비교해줘"
+    initial = extract_query_spec(
+        question,
+        _AcceptanceResolver(),
+        build_period_grounding(question),
+    )
+    runtime = tuple(
+        BrandResolution(
+            canonical_brand=brand,
+            audit_code=f"runtime:{brand}",
+            molecule_en=(),
+            atc=(),
+            edi_code=None,
+            item_seq=None,
+            is_combo=False,
+        )
+        for brand in ("리바로", "리바로젯", "로수젯", "리피토")
+    )
+
+    reconciled = with_resolved_entities(initial, runtime)
+
+    assert tuple(entity.canonical_id for entity in initial.entities) == ("리바로",)
+    assert tuple(entity.canonical_id for entity in reconciled.entities) == (
+        "리바로",
+        "리바로젯",
+        "로수젯",
+        "리피토",
+    )
+    assert reconciled.comparison_targets == reconciled.entities
+    assert reconciled.operation is QueryOperation.COMPARE_CURRENT
+    assert reconciled.metrics == ("rank",)
+
+
+def test_mixed_file_market_request_preserves_both_requested_facets() -> None:
+    question = "내 파일에 있는 리바로 매출과 시스템 데이터를 비교해줘"
+
+    spec = extract_query_spec(
+        question,
+        _AcceptanceResolver(),
+        build_period_grounding(question),
+    )
+
+    assert spec.facets == (QueryFacet.FILE, QueryFacet.MARKET)
+    assert query_spec_observation(spec)["facets"] == ["file", "market"]
+
+
+def test_runtime_reconciliation_never_drops_preflight_entities() -> None:
+    question = "아일리아와 비오뷰 매출 비교해줘"
+    initial = extract_query_spec(
+        question,
+        _AcceptanceResolver(),
+        build_period_grounding(question),
+    )
+    runtime = (
+        BrandResolution(
+            canonical_brand="아일리아",
+            audit_code="runtime:아일리아",
+            molecule_en=(),
+            atc=(),
+            edi_code=None,
+            item_seq=None,
+            is_combo=False,
+        ),
+    )
+
+    reconciled = with_resolved_entities(initial, runtime)
+
+    assert tuple(entity.canonical_id for entity in reconciled.entities) == (
+        "아일리아",
+        "비오뷰",
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "operation", "metrics", "facets"),
+    (
+        (
+            "이 시장 앞으로 어떻게 될 것 같아?",
+            QueryOperation.CURRENT_VALUE,
+            (),
+            (QueryFacet.FORECAST,),
+        ),
+        (
+            "리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?",
+            QueryOperation.CURRENT_VALUE,
+            (),
+            (QueryFacet.COMPETITION_TREND,),
+        ),
+        (
+            "리바로 어느 채널이나 진료과에서 잘 팔려?",
+            QueryOperation.CURRENT_VALUE,
+            ("sales",),
+            (QueryFacet.CHANNEL,),
+        ),
+        (
+            "리바로 시장 경쟁사 영업활동 변화 있어?",
+            QueryOperation.CURRENT_VALUE,
+            (),
+            (QueryFacet.COMPETITOR_ACTIVITY, QueryFacet.COMPETITION_TREND),
+        ),
+        (
+            "내 파일에 있는 리바로 매출과 시스템 데이터를 비교해줘",
+            QueryOperation.COMPARE_CURRENT,
+            ("sales",),
+            (QueryFacet.FILE, QueryFacet.MARKET),
+        ),
+        (
+            "리바로랑 리피토 중 누가 더 많이 팔렸어?",
+            QueryOperation.COMPARE_CURRENT,
+            ("sales",),
+            (),
+        ),
+        (
+            "리바로 vs 아토젯 매출과 순위를 비교해줘",
+            QueryOperation.COMPARE_CURRENT,
+            ("sales", "rank"),
+            (),
+        ),
+        (
+            "리바로, 리바로젯, 로수젯 매출을 나란히 보여줘",
+            QueryOperation.COMPARE_CURRENT,
+            ("sales",),
+            (),
+        ),
+        (
+            "리바로 매출 데이터의 시작일과 종료일 알려줘",
+            QueryOperation.DATE_RANGE_BOUNDARY,
+            ("sales",),
+            (),
+        ),
+    ),
+)
+def test_g3_request_shape_is_preserved_before_planning(
+    question: str,
+    operation: QueryOperation,
+    metrics: tuple[str, ...],
+    facets: tuple[QueryFacet, ...],
+) -> None:
+    spec = extract_query_spec(
+        question,
+        BrandResolver(mode="fixture"),
+        build_period_grounding(question),
+    )
+
+    assert spec.operation is operation
+    assert spec.metrics == metrics
+    assert spec.facets == facets
+
+
+def test_ed04_preserves_all_requested_metrics_before_coverage_evaluation() -> None:
+    question = (
+        "리바로, 리바로젯, 로수젯, 리피토의 2022년부터 2024년까지 "
+        "매출, 점유율, 순위, 성장률, 시장 규모를 비교해줘"
+    )
+
+    spec = extract_query_spec(
+        question,
+        BrandResolver(mode="fixture"),
+        build_period_grounding(question),
+    )
+
+    assert spec.operation is QueryOperation.COMPARE_CURRENT
+    assert spec.metrics == ("sales", "share", "market_size", "rank", "growth")

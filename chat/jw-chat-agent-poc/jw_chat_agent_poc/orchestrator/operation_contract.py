@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 import logging
+import re
 from typing import Any, Final, Literal, TypedDict
 
 from jw_chat_agent_poc.agent_loop.models import ToolCallPlan
@@ -165,6 +166,24 @@ def evaluate_actual_coverage(
     return _coverage_decision(contract, observed)
 
 
+def evaluate_surface_coverage(
+    spec: RequestQuerySpec,
+    answer: str,
+    calls: Collection[Mapping[str, Any]],
+) -> CoverageDecision:
+    actual = tuple(
+        sorted({axis for call in calls for axis in _actual_axes(call)})
+    )
+    observed = _surface_axes(answer, actual)
+    contract = operation_contract(
+        spec,
+        observed_periods=tuple(axis.period for axis in observed),
+    )
+    if not contract.applicable:
+        return _not_applicable_decision(contract.reason)
+    return _coverage_decision(contract, observed)
+
+
 def coverage_decision_observation(
     decision: CoverageDecision,
 ) -> CoverageDecisionObservation:
@@ -218,6 +237,28 @@ def observe_actual_coverage(
         decision,
         spec=spec,
         phase="actual",
+        question_fingerprint=question_fingerprint,
+    )
+    return decision
+
+
+def observe_surface_coverage(
+    spec: RequestQuerySpec,
+    answer: str,
+    calls: Collection[Mapping[str, Any]],
+    *,
+    question_fingerprint: str = "",
+) -> CoverageDecision:
+    decision = evaluate_surface_coverage(spec, answer, calls)
+    if shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is not ShadowGateMode.OFF:
+        logger.info(
+            "operation_contract_surface_shadow decision=%s",
+            coverage_decision_observation(decision),
+        )
+    _emit_runtime_observations(
+        decision,
+        spec=spec,
+        phase="surface",
         question_fingerprint=question_fingerprint,
     )
     return decision
@@ -596,6 +637,105 @@ def _actual_metrics(data: Mapping[str, Any]) -> tuple[str, ...]:
     if data.get("rank") is not None:
         metrics.add("rank")
     return tuple(sorted(metrics))
+
+
+def _surface_axes(
+    answer: str,
+    actual: tuple[CoverageAxis, ...],
+) -> tuple[CoverageAxis, ...]:
+    actual_by_entity_metric = {
+        (axis.entity_id, axis.metric): axis
+        for axis in actual
+    }
+    observed: set[CoverageAxis] = set()
+    lines = answer.splitlines()
+    for index, line in enumerate(lines):
+        header = _markdown_cells(line)
+        if not header or index + 1 >= len(lines) or not _is_markdown_separator(lines[index + 1]):
+            continue
+        metric_columns = {
+            column: metric
+            for column, cell in enumerate(header)
+            if (metric := _surface_metric(cell)) is not None
+        }
+        if not metric_columns:
+            continue
+        for row_line in lines[index + 2 :]:
+            row = _markdown_cells(row_line)
+            if not row:
+                break
+            entity = row[0].strip()
+            for column, metric in metric_columns.items():
+                if column >= len(row) or not _surface_value_present(row[column]):
+                    continue
+                axis = actual_by_entity_metric.get((entity, metric))
+                if axis is not None:
+                    observed.add(axis)
+    for axis in actual:
+        if axis in observed:
+            continue
+        if any(_line_surfaces_axis(line, axis) for line in lines):
+            observed.add(axis)
+    return tuple(sorted(observed))
+
+
+def _markdown_cells(line: str) -> tuple[str, ...]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return ()
+    return tuple(cell.strip() for cell in stripped[1:-1].split("|"))
+
+
+def _is_markdown_separator(line: str) -> bool:
+    cells = _markdown_cells(line)
+    return bool(cells) and all(cell and set(cell) <= {"-", ":"} for cell in cells)
+
+
+def _surface_metric(header: str) -> str | None:
+    normalized = header.casefold()
+    if "순위" in normalized or "rank" in normalized:
+        return "rank"
+    if "점유율" in normalized or normalized == "ms" or "share" in normalized:
+        return "share"
+    if "매출" in normalized or "sales" in normalized:
+        return "sales"
+    return None
+
+
+def _surface_value_present(value: str) -> bool:
+    missing = {
+        "",
+        "-",
+        "—",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "근거 불일치로 제외",
+    }
+    return value.strip().casefold() not in missing
+
+
+def _line_surfaces_axis(line: str, axis: CoverageAxis) -> bool:
+    if not _line_mentions_entity(line, axis.entity_id):
+        return False
+    match axis.metric:
+        case "sales":
+            return "매출" in line and ("억원" in line or "원" in line)
+        case "share":
+            return ("점유율" in line or "MS" in line.upper()) and "%" in line
+        case "rank":
+            return ("순위" in line or "랭킹" in line) and bool(re.search(r"\d+\s*위", line))
+        case _:
+            return False
+
+
+def _line_mentions_entity(line: str, entity_id: str) -> bool:
+    suffix = r"(?=$|[^0-9A-Za-z가-힣]|은|는|이|가|을|를|의|와|과|도|로|에서)"
+    return re.search(
+        rf"(?<![0-9A-Za-z가-힣]){re.escape(entity_id)}{suffix}",
+        line,
+    ) is not None
 
 
 def _has_value(data: Mapping[str, Any], keys: tuple[str, ...]) -> bool:
