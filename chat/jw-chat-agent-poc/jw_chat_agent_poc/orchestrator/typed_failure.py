@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
+    ShadowGate,
+    emit_shadow_gate_observation,
+)
+
 
 class TypedFailureCode(StrEnum):
     UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
@@ -129,6 +134,21 @@ def normalize_typed_failure(
         terminal=terminal,
         partial=partial,
     )
+
+
+def observe_typed_failure(
+    result: Mapping[str, Any],
+) -> TypedFailureResult | None:
+    normalized = normalize_typed_failure(result)
+    emit_shadow_gate_observation(
+        gate=ShadowGate.TYPED_FAILURE_MODEL,
+        phase="final",
+        status="MATCHED" if normalized is not None else "NOT_APPLICABLE",
+        reason=normalized.code.value if normalized is not None else "no_active_code",
+        terminal=normalized.terminal if normalized is not None else None,
+        partial=normalized.partial if normalized is not None else None,
+    )
+    return normalized
 
 
 def _active_code(value: Any) -> TypedFailureCode | None:
