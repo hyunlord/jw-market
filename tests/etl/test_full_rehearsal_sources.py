@@ -296,3 +296,48 @@ def test_s4_isolated_schema_fails_closed_when_source_batch_is_not_copied(
         match=r"isolated baseline copy was incomplete.*copied 0 of 2",
     ):
         s4_mart._ensure_isolated_schema("build_db", "source_db")
+
+
+def test_s4_isolated_schema_fails_closed_when_source_batch_cannot_advance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetches = iter(
+        (
+            {"max_id": 2},
+            {"batch_size": 0, "batch_last_id": 0},
+        )
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params=None):  # type: ignore[no-untyped-def]
+            if sql.startswith("INSERT INTO"):
+                raise AssertionError("a stalled source batch must not be inserted")
+            return 0
+
+        def fetchone(self):
+            return next(fetches)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self) -> None:
+            raise AssertionError("a stalled source batch must not commit")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(s4_mart, "_env", lambda: {})
+    monkeypatch.setattr(s4_mart, "_admin_connect", lambda _env: Connection())
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"isolated baseline source made no progress.*after id 0",
+    ):
+        s4_mart._ensure_isolated_schema("build_db", "source_db")
