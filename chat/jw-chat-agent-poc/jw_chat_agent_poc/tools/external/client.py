@@ -11,6 +11,7 @@ from typing import Any, Literal
 import requests
 
 from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient, McpToolResult
+from jw_chat_agent_poc.tools.external.telemetry import emit_external_call_telemetry
 
 
 GENOS_MCP_GATEWAY_BASE_ENV = "GENOS_MCP_GATEWAY_BASE"
@@ -321,10 +322,21 @@ class ExternalApiClient:
                     elapsed,
                 )
             if tool in {"clinicaltrials_v2_search", "clinicaltrials_study_details"}:
-                return _clinicaltrials_failed_call(params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
-            return _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
-        elapsed = round((time.monotonic() - start) * 1000, 1)
-        return _mcp_external_call(tool, spec["source"], params, spec["mcp_tool"], result, safe_url, elapsed)
+                call = _clinicaltrials_failed_call(params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
+            else:
+                call = _mcp_failed_call(tool, spec["source"], params, spec["mcp_tool"], safe_reason, safe_url, elapsed)
+        else:
+            elapsed = round((time.monotonic() - start) * 1000, 1)
+            call = _mcp_external_call(tool, spec["source"], params, spec["mcp_tool"], result, safe_url, elapsed)
+        if tool != "tavily_mcp_search":
+            emit_external_call_telemetry(
+                primary_provider=spec["source"],
+                question=json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                domain_source="MCP",
+                cache_status="not_applicable",
+                call=call,
+            )
+        return call
 
     def _mcp_url(self, resource_id: str, source: str | None = None) -> str:
         direct_env = MCP_DIRECT_URL_ENV_BY_SOURCE.get(source or "")
@@ -343,9 +355,9 @@ class ExternalApiClient:
     ) -> ExternalCall:
         provider = os.environ.get(WEB_SEARCH_PROVIDER_ENV, "tavily").strip().lower()
         if provider == "tavily":
-            return self._live_tavily_search(query, max_results, topic=topic)
-        if provider == TAVILY_MCP_SOURCE:
-            return self._live_mcp_call(
+            call = self._live_tavily_search(query, max_results, topic=topic)
+        elif provider == TAVILY_MCP_SOURCE:
+            call = self._live_mcp_call(
                 "tavily_mcp_search",
                 {
                     "query": query,
@@ -353,18 +365,28 @@ class ExternalApiClient:
                     "topic": topic,
                 },
             )
-        if provider == "serper":
-            return self._live_serper_search(query, max_results)
-        if provider == "brave":
-            return self._live_brave_search(query, max_results)
-        return ExternalCall(
-            tool="web_search",
-            source=WEB_SEARCH_SOURCE,
-            status="unsupported",
-            summary_text=f"지원하지 않는 web search provider: {provider}",
-            render_data={"query": query, "provider": provider, "items": [], "external_claim_policy": "web_results_unverified"},
-            elapsed_ms=0.0,
+        elif provider == "serper":
+            call = self._live_serper_search(query, max_results)
+        elif provider == "brave":
+            call = self._live_brave_search(query, max_results)
+        else:
+            call = ExternalCall(
+                tool="web_search",
+                source=WEB_SEARCH_SOURCE,
+                status="unsupported",
+                summary_text=f"지원하지 않는 web search provider: {provider}",
+                render_data={"query": query, "provider": provider, "items": [], "external_claim_policy": "web_results_unverified"},
+                elapsed_ms=0.0,
+            )
+        emit_external_call_telemetry(
+            primary_provider=provider,
+            question=query,
+            domain_source="web",
+            cache_status="not_applicable",
+            call=call,
+            fallback_blocked=call.status in {"unsupported", "missing_key"},
         )
+        return call
 
     def _live_tavily_search(
         self,
