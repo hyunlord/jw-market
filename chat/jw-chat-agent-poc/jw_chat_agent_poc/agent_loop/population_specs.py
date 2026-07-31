@@ -9,6 +9,7 @@ from jw_chat_agent_poc.agent_loop.bq_slots import requested_prescription_metric
 
 
 QuerySpec: TypeAlias = dict[str, object]
+MAX_FAMILY_AGGREGATE_MEMBERS: Final[int] = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,13 @@ class StrictQueryRule:
     build: StrictPlanBuilder
 
 
+@dataclass(frozen=True, slots=True)
+class FamilyAggregateIntent:
+    """An explicit request to aggregate a named product family."""
+
+    label: str
+
+
 CHANNEL_DISTRIBUTION_TERMS: Final[tuple[str, ...]] = (
     "채널별",
     "채널 별",
@@ -48,6 +56,20 @@ CHANNEL_DISTRIBUTION_TERMS: Final[tuple[str, ...]] = (
 CHANNEL_QUESTION_TERMS: Final[tuple[str, ...]] = ("어느", "어디", "잘 팔", "많이", "매출", "판매", "실적")
 CSD_ACTIVITY_TERMS: Final[tuple[str, ...]] = ("영업활동", "영업 활동", "상기 콜", "콜 수", "콜수", "활동량")
 NON_ANALYTIC_CHANNEL_TERMS: Final[tuple[str, ...]] = ("채널 파트너", "유튜브 채널", "마케팅 채널", "홍보 채널")
+
+
+def family_aggregate_intent(question: str) -> FamilyAggregateIntent | None:
+    """Return the requested family only when the question asks for sales output."""
+
+    if not any(token in question for token in ("매출", "실적")):
+        return None
+    match = re.search(
+        r"(?P<prefix>[0-9A-Za-z가-힣+_.-]{2,})\s*(?:패밀리|계열)(?![0-9A-Za-z가-힣+_.-])",
+        question,
+    )
+    if match is None:
+        return None
+    return FamilyAggregateIntent(label=f"{match.group('prefix')} 계열")
 
 
 def strict_query_plan(question: str, brand: str) -> StrictQueryPlan | None:
