@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 from jw_chat_agent_poc.orchestrator.hira_disease import (
@@ -15,6 +15,12 @@ from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
 
 
 @dataclass(frozen=True, slots=True)
+class UnresolvableFacet:
+    facet: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class QuestionClassification:
     source_domain: str
     domain_decision_source: DomainDecisionSource
@@ -24,6 +30,8 @@ class QuestionClassification:
     direct_calls: tuple[ProposedCall, ...] = ()
     eligible_override: tuple[str, ...] = ()
     unresolved_arguments: bool = False
+    requested_facets: tuple[str, ...] = ()
+    unresolvable_facets: tuple[UnresolvableFacet, ...] = ()
 
 
 PREFIX_RE = re.compile(r"^\s*(?P<prefix>NeDrug|HIRA|ClinicalTrials)\s*:\s*", re.IGNORECASE)
@@ -31,6 +39,21 @@ NCT_ID_RE = re.compile(r"(?<![A-Za-z0-9])NCT\d{8}(?![A-Za-z0-9])", re.IGNORECASE
 
 
 def classify_question(question: str) -> QuestionClassification:
+    classification = _classify_question(question)
+    requested_facets = _requested_facets(question)
+    unresolvable_facets = _unresolvable_facets(
+        question,
+        classification=classification,
+        requested_facets=requested_facets,
+    )
+    return replace(
+        classification,
+        requested_facets=requested_facets,
+        unresolvable_facets=unresolvable_facets,
+    )
+
+
+def _classify_question(question: str) -> QuestionClassification:
     prefix_match = PREFIX_RE.match(question)
     body = question[prefix_match.end() :] if prefix_match else question
     prefix = prefix_match.group("prefix").casefold() if prefix_match else None
@@ -218,7 +241,7 @@ def asks_basic_permission_fields(lowered: str) -> bool:
 def asks_permission_fields(lowered: str) -> bool:
     return any(
         token in lowered
-        for token in ("허가정보", "허가 정보", "permission", "approval")
+        for token in ("허가정보", "허가 정보", "허가 현황", "permission", "approval")
     )
 
 
@@ -227,6 +250,38 @@ def asks_clinical_fields(lowered: str) -> bool:
         token in lowered
         for token in ("임상시험", "clinical trial", "clinicaltrial", "nct")
     )
+
+
+def _requested_facets(question: str) -> tuple[str, ...]:
+    lowered = question.casefold()
+    return tuple(
+        facet
+        for facet, requested in (
+            ("clinical", asks_clinical_fields(lowered)),
+            ("permission", asks_permission_fields(lowered)),
+        )
+        if requested
+    )
+
+
+def _unresolvable_facets(
+    question: str,
+    *,
+    classification: QuestionClassification,
+    requested_facets: tuple[str, ...],
+) -> tuple[UnresolvableFacet, ...]:
+    if (
+        requested_facets == ("clinical", "permission")
+        and classification.source_domain == "clinical_trials"
+        and clinical_disease_for_text(question) is not None
+    ):
+        return (
+            UnresolvableFacet(
+                facet="permission",
+                reason="permission requires product_name, none found in question",
+            ),
+        )
+    return ()
 
 
 def _hira_classification(

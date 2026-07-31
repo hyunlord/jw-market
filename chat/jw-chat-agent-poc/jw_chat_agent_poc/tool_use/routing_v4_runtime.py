@@ -312,6 +312,16 @@ def execute_enforced_route(
         planner_calls_override=planner_calls_override,
     )
     diagnostics = _plan_diagnostics(plan, budget=budget)
+    if runtime_reason == "PARTIAL_EVIDENCE":
+        diagnostics["partial_evidence"] = {
+            "reason_code": "PARTIAL_EVIDENCE",
+            "producer": "unresolvable_facet",
+            "requested_facets": list(plan.requested_facets),
+            "unresolvable_facets": [
+                {"facet": item.facet, "reason": item.reason}
+                for item in plan.unresolvable_facets
+            ],
+        }
     diagnostics["executed_call_signature"] = signature.model_dump(mode="json")
     diagnostics["claim_evidence_binding_status"] = binding_status
     diagnostics["claim_evidence_bindings"] = bindings
@@ -652,6 +662,12 @@ def _plan_diagnostics(
         "deterministic_rule_id": plan.deterministic_rule_id,
         "budget": budget.model_dump(mode="json"),
     }
+    if len(plan.requested_facets) > 1 or plan.unresolvable_facets:
+        diagnostics["requested_facets"] = list(plan.requested_facets)
+        diagnostics["unresolvable_facets"] = [
+            {"facet": item.facet, "reason": item.reason}
+            for item in plan.unresolvable_facets
+        ]
     if status_key is not None:
         diagnostics[status_key] = status_value
     return diagnostics

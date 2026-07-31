@@ -2926,14 +2926,16 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             sources=tuple(result.get("sources", ())),
             conversation_id=conversation_id,
         )
+    partial_evidence_result = _is_partial_evidence_result(result)
     if (
         _is_market_clarification_result(result)
         or _is_market_membership_mismatch_result(result)
         or _is_terminal_typed_result(result)
+        or partial_evidence_result
     ):
         record_answer_delivery(
             result,
-            answer_branch="typed_terminal",
+            answer_branch="typed_partial" if partial_evidence_result else "typed_terminal",
             source_notice_attached=False,
         )
         timing_payload = finish(timing)
@@ -3618,6 +3620,16 @@ def _is_terminal_typed_result(result: dict) -> bool:
         "UNSUPPORTED_QUERY",
         "VERIFICATION_FAIL",
     }
+
+
+def _is_partial_evidence_result(result: dict) -> bool:
+    typed_failure = normalize_typed_failure(result)
+    return (
+        typed_failure is not None
+        and typed_failure.code is TypedFailureCode.PARTIAL_EVIDENCE
+        and typed_failure.partial
+        and not typed_failure.terminal
+    )
 
 
 def _sse_delta(token: str) -> str:
