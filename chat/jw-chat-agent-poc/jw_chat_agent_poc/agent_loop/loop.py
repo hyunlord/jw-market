@@ -38,8 +38,13 @@ from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.bq_runtime_guard import BQAnalysisValidationError, validate_bq_analysis_call
 from jw_chat_agent_poc.orchestrator.narrative_intent import needs_market_series
 from jw_chat_agent_poc.orchestrator.operation_contract import (
+    current_question_fingerprint,
     current_query_spec,
     observe_plan_coverage,
+)
+from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
+    ShadowGate,
+    emit_shadow_gate_exception,
 )
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
@@ -306,6 +311,13 @@ class ToolUseAgent:
                         step=step,
                     )
                 except Exception:  # noqa: BLE001 - shadow observation cannot alter execution
+                    emit_shadow_gate_exception(
+                        gate=ShadowGate.OPERATION_CONTRACT,
+                        phase="plan",
+                        question_fingerprint=current_question_fingerprint(),
+                        entity_count=len(query_spec.entities),
+                        metric_count=len(query_spec.metrics),
+                    )
                     logger.exception("operation_contract_plan_shadow_failed")
             if _has_market_members(tuple(observations)):
                 expanded_members_exposed = True

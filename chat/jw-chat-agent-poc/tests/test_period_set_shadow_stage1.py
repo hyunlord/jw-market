@@ -383,7 +383,10 @@ def test_period_shadow_leaves_final_answer_byte_identical(
 
 def test_shadow_logs_only_bounded_canonical_period_metadata(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "SHADOW")
+    monkeypatch.setenv("JW_CHAT_PERIOD_SET_CONTRACT_MODE", "SHADOW")
     spec = _sales_spec(start_period="2025-01", end_period="2025-12")
     plan = _sales_plan("2025-01")
     calls = (

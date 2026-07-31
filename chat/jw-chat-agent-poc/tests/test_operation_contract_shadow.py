@@ -365,8 +365,11 @@ def test_actual_coverage_counts_numeric_zero_as_real_value() -> None:
 
 def test_shadow_observers_log_internal_decisions_without_mutating_inputs(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "SHADOW")
+    monkeypatch.setenv("JW_CHAT_PERIOD_SET_CONTRACT_MODE", "SHADOW")
     spec = _spec("리바로")
     plan = (_metric("리바로", "sales"),)
     calls = (
@@ -421,8 +424,11 @@ def test_query_spec_context_is_internal_and_explicitly_cleared() -> None:
 
 def test_agent_loop_decision_point_emits_plan_shadow_without_changing_result(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "SHADOW")
+    monkeypatch.setenv("JW_CHAT_PERIOD_SET_CONTRACT_MODE", "SHADOW")
     spec = _spec("리바로")
     planner = ScriptedPlanner(
         (
@@ -460,8 +466,11 @@ def test_agent_loop_decision_point_emits_plan_shadow_without_changing_result(
 
 def test_compute_final_answer_emits_actual_shadow_with_byte_identical_answer(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "SHADOW")
+    monkeypatch.setenv("JW_CHAT_PERIOD_SET_CONTRACT_MODE", "SHADOW")
     question = "리바로 매출 알려줘"
     result = {
         "general_view_ready": True,

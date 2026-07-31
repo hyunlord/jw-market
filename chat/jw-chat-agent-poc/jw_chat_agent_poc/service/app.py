@@ -76,6 +76,11 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     observe_actual_coverage,
     set_current_query_spec,
 )
+from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
+    ShadowGate,
+    emit_shadow_gate_exception,
+    question_fingerprint,
+)
 from jw_chat_agent_poc.orchestrator.typed_failure import observe_typed_failure
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     explicit_hira_disease_code,
@@ -705,7 +710,10 @@ def _observe_query_spec(
     except Exception:  # noqa: BLE001 - stage-0 observation cannot alter request behavior
         LOGGER.exception("request_query_spec_observation_failed")
         return
-    set_current_query_spec(query_spec)
+    set_current_query_spec(
+        query_spec,
+        question_fingerprint=question_fingerprint(question),
+    )
     LOGGER.info(
         "request_query_spec_observed spec=%s",
         query_spec_observation(query_spec),
@@ -2695,6 +2703,7 @@ def compute_final_answer(
     query_spec: RequestQuerySpec | None = None,
 ) -> FinalAnswer:
     query_spec = query_spec or current_query_spec()
+    fingerprint = question_fingerprint(question)
     try:
         final_answer = replace(
             _compute_final_answer(question, result, conversation_id),
@@ -2712,13 +2721,20 @@ def compute_final_answer(
         )
         if query_spec is not None:
             try:
-                observe_actual_coverage(query_spec, tool_calls)
+                observe_actual_coverage(
+                    query_spec,
+                    tool_calls,
+                    question_fingerprint=fingerprint,
+                )
             except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
+                emit_shadow_gate_exception(
+                    gate=ShadowGate.OPERATION_CONTRACT,
+                    phase="actual",
+                    question_fingerprint=fingerprint,
+                    entity_count=len(query_spec.entities),
+                    metric_count=len(query_spec.metrics),
+                )
                 LOGGER.exception("operation_contract_actual_shadow_failed")
-        try:
-            observe_typed_failure(result)
-        except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
-            LOGGER.exception("typed_failure_model_shadow_failed")
         format_result = apply_response_format_contract(
             question,
             answer,
@@ -2727,6 +2743,19 @@ def compute_final_answer(
         )
         output_policy_decision = evaluate_output_leakage(format_result.answer)
         user_answer = enforced_answer(format_result.answer, output_policy_decision)
+        try:
+            observe_typed_failure(
+                result,
+                legacy_answer=user_answer,
+                question_fingerprint=fingerprint,
+            )
+        except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
+            emit_shadow_gate_exception(
+                gate=ShadowGate.TYPED_FAILURE_MODEL,
+                phase="surface",
+                question_fingerprint=fingerprint,
+            )
+            LOGGER.exception("typed_failure_model_shadow_failed")
         trace_result = {
             **result,
             "_response_format_contract": format_result.report.to_dict(),

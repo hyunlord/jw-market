@@ -123,6 +123,10 @@ _CURRENT_QUERY_SPEC: ContextVar[RequestQuerySpec | None] = ContextVar(
     "operation_contract_query_spec",
     default=None,
 )
+_CURRENT_QUESTION_FINGERPRINT: ContextVar[str] = ContextVar(
+    "operation_contract_question_fingerprint",
+    default="",
+)
 
 
 def evaluate_plan_coverage(
@@ -189,13 +193,20 @@ def observe_plan_coverage(
             planner_kind,
             coverage_decision_observation(decision),
         )
-    _emit_runtime_observations(decision, phase="plan")
+    _emit_runtime_observations(
+        decision,
+        spec=spec,
+        phase="plan",
+        question_fingerprint=current_question_fingerprint(),
+    )
     return decision
 
 
 def observe_actual_coverage(
     spec: RequestQuerySpec,
     calls: Collection[Mapping[str, Any]],
+    *,
+    question_fingerprint: str = "",
 ) -> CoverageDecision:
     decision = evaluate_actual_coverage(spec, calls)
     if shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is not ShadowGateMode.OFF:
@@ -203,15 +214,27 @@ def observe_actual_coverage(
             "operation_contract_actual_shadow decision=%s",
             coverage_decision_observation(decision),
         )
-    _emit_runtime_observations(decision, phase="actual")
+    _emit_runtime_observations(
+        decision,
+        spec=spec,
+        phase="actual",
+        question_fingerprint=question_fingerprint,
+    )
     return decision
 
 
 def _emit_runtime_observations(
     decision: CoverageDecision,
     *,
+    spec: RequestQuerySpec,
     phase: str,
+    question_fingerprint: str,
 ) -> None:
+    period_count = (
+        decision.period_coverage.selection.expected_count
+        if decision.period_coverage is not None
+        else len({axis.period for axis in decision.required})
+    )
     emit_shadow_gate_observation(
         gate=ShadowGate.OPERATION_CONTRACT,
         phase=phase,
@@ -220,6 +243,10 @@ def _emit_runtime_observations(
         required_count=len(decision.required),
         observed_count=len(decision.observed),
         missing_count=len(decision.missing),
+        entity_count=len(spec.entities),
+        metric_count=len(spec.metrics),
+        period_count=period_count,
+        question_fingerprint=question_fingerprint,
     )
     period = decision.period_coverage
     if period is None:
@@ -232,19 +259,33 @@ def _emit_runtime_observations(
         required_count=period.selection.expected_count,
         observed_count=len(period.observed),
         missing_count=len(period.missing),
+        entity_count=len(spec.entities),
+        metric_count=len(spec.metrics),
+        period_count=period.selection.expected_count,
+        question_fingerprint=question_fingerprint,
     )
 
 
-def set_current_query_spec(spec: RequestQuerySpec | None) -> None:
+def set_current_query_spec(
+    spec: RequestQuerySpec | None,
+    *,
+    question_fingerprint: str = "",
+) -> None:
     _CURRENT_QUERY_SPEC.set(spec)
+    _CURRENT_QUESTION_FINGERPRINT.set(question_fingerprint)
 
 
 def current_query_spec() -> RequestQuerySpec | None:
     return _CURRENT_QUERY_SPEC.get()
 
 
+def current_question_fingerprint() -> str:
+    return _CURRENT_QUESTION_FINGERPRINT.get()
+
+
 def clear_current_query_spec() -> None:
     _CURRENT_QUERY_SPEC.set(None)
+    _CURRENT_QUESTION_FINGERPRINT.set("")
 
 
 def _coverage_decision(

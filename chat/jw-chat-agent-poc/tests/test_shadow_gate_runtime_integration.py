@@ -18,6 +18,8 @@ from jw_chat_agent_poc.orchestrator.query_spec import (
 from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     ShadowGate,
     ShadowGateMode,
+    question_fingerprint,
+    shadow_gate_exception_count,
     shadow_gate_mode,
 )
 from jw_chat_agent_poc.orchestrator.typed_failure import observe_typed_failure
@@ -84,18 +86,21 @@ def _sales_spec(
     )
 
 
-def test_shadow_gate_modes_default_to_shadow_and_invalid_values_fail_closed(
+def test_shadow_gate_modes_default_to_off_and_invalid_values_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for name in _MODE_ENVS:
         monkeypatch.delenv(name, raising=False)
 
-    assert shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is ShadowGateMode.SHADOW
-    assert shadow_gate_mode(ShadowGate.PERIOD_SET) is ShadowGateMode.SHADOW
-    assert shadow_gate_mode(ShadowGate.TYPED_FAILURE_MODEL) is ShadowGateMode.SHADOW
+    assert shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is ShadowGateMode.OFF
+    assert shadow_gate_mode(ShadowGate.PERIOD_SET) is ShadowGateMode.OFF
+    assert shadow_gate_mode(ShadowGate.TYPED_FAILURE_MODEL) is ShadowGateMode.OFF
 
     monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "off")
     assert shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is ShadowGateMode.OFF
+
+    monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "shadow")
+    assert shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is ShadowGateMode.SHADOW
 
     monkeypatch.setenv("JW_CHAT_OPERATION_CONTRACT_MODE", "enforce")
     assert shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is ShadowGateMode.ENFORCE
@@ -144,6 +149,16 @@ def test_operation_and_period_observations_are_structured_and_aggregatable(
     assert period["observed_count"] == len(decision.period_coverage.observed)
     assert period["missing_count"] == len(decision.period_coverage.missing)
 
+    for payload in (operation, period):
+        assert payload["gate_name"] == payload["gate"]
+        assert payload["gate_version"] == 1
+        assert payload["entity_count"] == 1
+        assert payload["metric_count"] == 1
+        assert payload["period_count"] == 3
+        assert payload["evaluator_exception"] is False
+        assert payload["answer_action"] == "unchanged"
+        assert payload["question_fingerprint"] == ""
+
     serialized = "\n".join(
         record.getMessage()
         for record in caplog.records
@@ -177,7 +192,7 @@ def test_off_mode_suppresses_logs_without_changing_decision(
     assert _log_payloads(caplog) == []
 
 
-def test_typed_failure_observation_is_structured_and_does_not_log_answer(
+def test_typed_failure_shadow_render_is_structured_and_does_not_log_answer(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -188,7 +203,12 @@ def test_typed_failure_observation_is_structured_and_does_not_log_answer(
         "answer": "사용자에게만 보여야 하는 상세 안내",
     }
 
-    normalized = observe_typed_failure(result)
+    fingerprint = question_fingerprint("급여기준 확인 질문")
+    normalized = observe_typed_failure(
+        result,
+        legacy_answer="기존 최종 답변",
+        question_fingerprint=fingerprint,
+    )
 
     assert normalized is not None
     payload = next(
@@ -197,19 +217,31 @@ def test_typed_failure_observation_is_structured_and_does_not_log_answer(
         if payload["gate"] == "typed_failure_model"
     )
     assert payload["mode"] == "SHADOW"
-    assert payload["phase"] == "final"
-    assert payload["status"] == "MATCHED"
+    assert payload["phase"] == "surface"
+    assert payload["status"] == "DIFF"
     assert payload["reason"] == "UPSTREAM_UNAVAILABLE"
+    assert payload["required_count"] == 1
+    assert payload["observed_count"] == 0
+    assert payload["missing_count"] == 1
+    assert payload["question_fingerprint"] == fingerprint
+    assert payload["answer_action"] == "unchanged"
+    assert payload["evaluator_exception"] is False
     assert "사용자에게만" not in "\n".join(
+        record.getMessage() for record in caplog.records
+    )
+    assert "기존 최종 답변" not in "\n".join(
         record.getMessage() for record in caplog.records
     )
 
 
-def test_typed_failure_observer_error_cannot_change_public_answer(
+def test_typed_failure_observer_error_is_counted_without_changing_public_answer(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from jw_chat_agent_poc.service import app as service_app
 
+    _set_all_modes(monkeypatch, "SHADOW")
+    caplog.set_level(logging.INFO)
     monkeypatch.setenv("JW_CHAT_RESPONSE_FORMAT_CONTRACT", "OFF")
     monkeypatch.setattr(
         service_app,
@@ -223,6 +255,7 @@ def test_typed_failure_observer_error_cannot_change_public_answer(
         "tool_calls": [],
     }
 
+    before = shadow_gate_exception_count(ShadowGate.TYPED_FAILURE_MODEL)
     final = compute_final_answer(
         "typed observer 격리",
         result,
@@ -230,6 +263,32 @@ def test_typed_failure_observer_error_cannot_change_public_answer(
     )
 
     assert "관측 실패와 무관하게 유지되는 답변입니다." in final.text
+    assert (
+        shadow_gate_exception_count(ShadowGate.TYPED_FAILURE_MODEL)
+        == before + 1
+    )
+    payload = next(
+        payload
+        for payload in _log_payloads(caplog)
+        if payload["gate_name"] == "typed_failure_model"
+        and payload["evaluator_exception"] is True
+    )
+    assert payload["status"] == "EVALUATOR_EXCEPTION"
+    assert payload["answer_action"] == "unchanged"
+    assert payload["question_fingerprint"] == question_fingerprint(
+        "typed observer 격리"
+    )
+
+
+def test_question_fingerprint_is_irreversible_and_deterministic() -> None:
+    question = "리바로 최신 매출 알려줘"
+
+    first = question_fingerprint(question)
+    second = question_fingerprint(question)
+
+    assert first == second
+    assert len(first) == 64
+    assert question not in first
 
 
 @pytest.mark.parametrize(

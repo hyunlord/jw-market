@@ -138,17 +138,42 @@ def normalize_typed_failure(
 
 def observe_typed_failure(
     result: Mapping[str, Any],
+    *,
+    legacy_answer: str = "",
+    question_fingerprint: str = "",
 ) -> TypedFailureResult | None:
     normalized = normalize_typed_failure(result)
+    shadow_answer = (
+        render_typed_failure_shadow(normalized)
+        if normalized is not None
+        else None
+    )
+    matches = shadow_answer is not None and shadow_answer == legacy_answer
     emit_shadow_gate_observation(
         gate=ShadowGate.TYPED_FAILURE_MODEL,
-        phase="final",
-        status="MATCHED" if normalized is not None else "NOT_APPLICABLE",
+        phase="surface",
+        status=(
+            "NOT_APPLICABLE"
+            if normalized is None
+            else "MATCH" if matches else "DIFF"
+        ),
         reason=normalized.code.value if normalized is not None else "no_active_code",
+        required_count=1 if normalized is not None else 0,
+        observed_count=1 if matches else 0,
+        missing_count=1 if normalized is not None and not matches else 0,
         terminal=normalized.terminal if normalized is not None else None,
         partial=normalized.partial if normalized is not None else None,
+        question_fingerprint=question_fingerprint,
     )
     return normalized
+
+
+def render_typed_failure_shadow(result: TypedFailureResult) -> str:
+    if result.recovery_action is None or result.recovery_action in result.user_message:
+        return result.user_message
+    if not result.user_message:
+        return result.recovery_action
+    return f"{result.user_message}\n\n{result.recovery_action}"
 
 
 def _active_code(value: Any) -> TypedFailureCode | None:
