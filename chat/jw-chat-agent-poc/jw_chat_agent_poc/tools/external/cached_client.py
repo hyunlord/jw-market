@@ -13,6 +13,10 @@ from jw_chat_agent_poc.tools.external.client import (
     _mcp_tool_spec,
 )
 from jw_chat_agent_poc.tools.external.result_cache import ExternalResultCache
+from jw_chat_agent_poc.tools.external.telemetry import (
+    emit_external_call_telemetry,
+    emit_external_source_telemetry,
+)
 
 
 EXTERNAL_RESULT_CACHE_TTL_ENV = "CHAT_EXTERNAL_RESULT_CACHE_TTL_SECONDS"
@@ -37,7 +41,21 @@ class CachedExternalApiClient(ExternalApiClient):
         )
         cached = self._result_cache.get(key)
         if cached is not None:
+            emit_external_call_telemetry(
+                primary_provider=spec["source"],
+                question=key[-1],
+                domain_source="cache",
+                cache_status="hit",
+                call=cached,
+            )
             return cached
+        emit_external_source_telemetry(
+            primary_provider=spec["source"],
+            question=key[-1],
+            failure_class="none",
+            domain_source="cache",
+            cache_status="miss",
+        )
         call = super()._live_mcp_call(tool, params)
         self._result_cache.put(key, call)
         return call
@@ -59,7 +77,21 @@ class CachedExternalApiClient(ExternalApiClient):
         )
         cached = self._result_cache.get(key)
         if cached is not None:
+            emit_external_call_telemetry(
+                primary_provider=provider,
+                question=query,
+                domain_source="cache",
+                cache_status="hit",
+                call=cached,
+            )
             return cached
+        emit_external_source_telemetry(
+            primary_provider=provider,
+            question=query,
+            failure_class="none",
+            domain_source="cache",
+            cache_status="miss",
+        )
         call = super()._live_web_search(query, max_results=max_results, topic=topic)
         self._result_cache.put(key, call)
         return call
