@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 from typing import Any
 
 from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
@@ -223,14 +224,18 @@ def ambiguous_brand_result(
     diagnostics: dict[str, Any],
     candidates: tuple[str, ...],
 ) -> dict[str, Any]:
-    displayed_candidates = candidates[:AMBIGUOUS_BRAND_DISPLAY_LIMIT]
+    displayed_candidates = tuple(
+        _public_candidate_label(candidate)
+        for candidate in candidates[:AMBIGUOUS_BRAND_DISPLAY_LIMIT]
+    )
     candidate_text = ", ".join(displayed_candidates)
     if len(candidates) > AMBIGUOUS_BRAND_DISPLAY_LIMIT:
         message = (
             f"요청한 이름만으로 하나의 브랜드를 정할 수 없습니다. "
             f"후보 {len(candidates)}개 중 {len(displayed_candidates)}개: {candidate_text}. "
             f"외 {len(candidates) - len(displayed_candidates)}개가 더 있습니다. "
-            "브랜드명을 지정해 주세요."
+            "제품명 일부나 제조사명을 포함해 좁혀 질문해 주세요. "
+            f"예: '{displayed_candidates[0]} 매출 알려줘'."
         )
     else:
         message = (
@@ -250,6 +255,11 @@ def ambiguous_brand_result(
         "markdown_response": markdown.to_dict(),
         "sources": ["ambiguous_brand"],
     }
+
+
+def _public_candidate_label(candidate: str) -> str:
+    cleaned = re.sub(r"\s*[/|;,]+\s*$", "", candidate).strip()
+    return cleaned or candidate
 
 
 def unsupported_hira_interface_result(

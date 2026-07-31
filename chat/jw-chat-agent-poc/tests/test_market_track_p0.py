@@ -276,7 +276,7 @@ def test_missing_subject_is_not_reported_as_missing_data() -> None:
         tool_calls=[],
     )
 
-    assert answer.startswith("브랜드·시장·기간을 지정해 주세요.")
+    assert answer.startswith("브랜드를 지정해 주세요.")
 
 
 def test_future_period_reports_owned_range_without_fake_range() -> None:

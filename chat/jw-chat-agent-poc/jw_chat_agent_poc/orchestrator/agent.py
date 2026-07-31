@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from decimal import Decimal
 from enum import StrEnum
 import logging
 from pathlib import Path
@@ -58,6 +59,10 @@ from jw_chat_agent_poc.orchestrator.question_intent import (
     metric_from_question,
 )
 from jw_chat_agent_poc.agent_loop.metric_intent import explicit_base_metrics_from_question
+from jw_chat_agent_poc.agent_loop.population_specs import (
+    MAX_FAMILY_AGGREGATE_MEMBERS,
+    family_aggregate_intent,
+)
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
 from jw_chat_agent_poc.common.timing import Timing, new_timing, stage
@@ -152,6 +157,97 @@ _BEARER_TOKEN_RE: Final = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+")
 _SECRET_ASSIGNMENT_RE: Final = re.compile(
     r"(?i)\b(password|passwd|pwd|token|api[_-]?key|secret|authorization)\s*[:=]\s*[^\s,;]+"
 )
+
+
+def _family_sales_aggregate_result(
+    question: str,
+    routes: list[Any] | tuple[Any, ...],
+    diagnostics: dict[str, Any],
+    candidates: tuple[str, ...],
+    query_layer: StrategicQueryLayer | None,
+) -> dict[str, Any] | None:
+    intent = family_aggregate_intent(question)
+    if (
+        intent is None
+        or query_layer is None
+        or not 2 <= len(candidates) <= MAX_FAMILY_AGGREGATE_MEMBERS
+    ):
+        return None
+
+    member_rows: list[tuple[str, dict[str, Any]]] = []
+    axes: set[tuple[str, str, str, str]] = set()
+    for candidate in candidates:
+        try:
+            call = query_layer.brand_metric(candidate, "sales", "latest")
+        except (LookupError, TypeError, ValueError):
+            return None
+        data = call.get("render_data")
+        if not isinstance(data, dict) or not isinstance(data.get("sales_krw"), int | float):
+            return None
+        axes.add(
+            (
+                str(data.get("market_id") or ""),
+                str(data.get("period") or ""),
+                str(data.get("source_label") or call.get("source") or ""),
+                str(data.get("unit_label") or "KRW"),
+            )
+        )
+        member_rows.append((candidate, data))
+    if len(axes) != 1:
+        return None
+
+    market_id, period, source_label, unit_label = next(iter(axes))
+    sales_krw = sum(
+        (Decimal(str(data["sales_krw"])) for _candidate, data in member_rows),
+        start=Decimal("0"),
+    )
+    aggregate_call = {
+        "source": source_label,
+        "tool": "agent_calculation",
+        "status": "ok",
+        "summary_text": f"{intent.label}의 같은 기준 계열 매출을 합산했습니다.",
+        "render_data": {
+            "status": "ok",
+            "brand": intent.label,
+            "metric": "family_sales",
+            "period": period,
+            "market_id": market_id,
+            "market_name": market_id,
+            "source_label": source_label,
+            "unit_label": unit_label,
+            "sales_krw": float(sales_krw),
+            "sales_억원": round(float(sales_krw / Decimal("100000000")), 2),
+            "family_members": [candidate for candidate, _data in member_rows],
+            "family_member_count": len(member_rows),
+            "calculation": (
+                "sum of all resolved family members on identical market, period, "
+                "source, and unit axes"
+            ),
+        },
+    }
+    markdown = MarkdownResponseBuilder().build(
+        brand=intent.label,
+        calls=[aggregate_call],
+        sources=[source_label],
+    )
+    return {
+        "question": question,
+        "resolution": {
+            "status": "family_aggregate",
+            "canonical_brand": intent.label,
+            "candidates": list(candidates),
+        },
+        "decomposition": [route.__dict__ for route in routes],
+        "router_diagnostics": {
+            **diagnostics,
+            "gate": "family_aggregate",
+            "gate_reason": "explicit_family_sales_on_identical_axes",
+        },
+        "tool_calls": [aggregate_call],
+        "answer": markdown.markdown,
+        "markdown_response": markdown.to_dict(),
+        "sources": [source_label],
+    }
 
 
 class ChatAgent:
@@ -320,6 +416,15 @@ class ChatAgent:
                     or preflight_structured_market_question(question, self.resolver) is not None
                 )
             except AmbiguousBrandError as exc:
+                family_result = _family_sales_aggregate_result(
+                    question,
+                    (),
+                    router_diagnostics(self.router),
+                    exc.candidates,
+                    self.query_layer,
+                )
+                if family_result is not None:
+                    return finish(family_result)
                 return finish(
                     ambiguous_brand_result(
                         question,
@@ -367,6 +472,15 @@ class ChatAgent:
                     else self.resolver.resolve(question, allow_default=False)
                 )
         except AmbiguousBrandError as exc:
+            family_result = _family_sales_aggregate_result(
+                question,
+                routes,
+                router_diagnostics(self.router),
+                exc.candidates,
+                self.query_layer,
+            )
+            if family_result is not None:
+                return finish(family_result)
             return finish(
                 ambiguous_brand_result(
                     question,

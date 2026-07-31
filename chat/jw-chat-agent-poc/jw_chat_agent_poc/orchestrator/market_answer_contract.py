@@ -212,7 +212,7 @@ def _status_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> str:
     ):
         return "현재 지원되지 않는 시장 매핑입니다. 브랜드 또는 ATC4 시장을 지정해 주세요."
     if re.fullmatch(r"매출\s*(?:알려\s*줘|알려주세요)?[?.!]?", compact):
-        return "브랜드·시장·기간을 지정해 주세요."
+        return "브랜드를 지정해 주세요. 예: '리바로 매출 알려줘'."
 
     statuses = {_call_status(call) for call in calls}
     failed = tuple(call for call in calls if _call_failed(call))
@@ -898,7 +898,7 @@ def _status_provenance_row(
         return ProvenanceRow(source="지원 범위", unit="%")
     if answer.startswith("현재 지원되지 않는 시장 매핑입니다."):
         return ProvenanceRow(source="시장 매핑")
-    if answer.startswith("브랜드·시장·기간을 지정해 주세요."):
+    if answer.startswith("브랜드를 지정해 주세요."):
         return ProvenanceRow(source="질문 조건")
     if answer.startswith("브랜드 목록에서 일치 항목을 찾지 못했습니다."):
         return ProvenanceRow(source="브랜드 카탈로그")
