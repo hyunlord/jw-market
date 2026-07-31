@@ -17,12 +17,20 @@ _BRAND_PREFIX_SEPARATORS = (
     " ", ",", ";", "/", "+", "&", "(", ")", "과", "와", "이랑", "랑", "하고", "및",
 )
 _BRAND_SUFFIX_SEPARATORS = (*_BRAND_PREFIX_SEPARATORS, ".", "의", "은", "는", "을", "를", "도", "대비")
+_METRIC_AXES = {
+    "sales": ("source", "grain", "period", "unit"),
+    "share": ("source", "grain", "period", "unit", "market_definition", "denominator"),
+    "rank": ("source", "grain", "period", "unit", "market_definition", "denominator"),
+}
+_AXIS_ORDER = ("metric", "source", "grain", "period", "unit", "market_definition", "denominator")
+_METRIC_ORDER = ("sales", "share", "rank")
 
 
 @dataclass(frozen=True, slots=True)
 class ComparisonCompatibilityDecision:
     brands: tuple[str, ...]
     mismatch_axes: tuple[str, ...]
+    incompatible_metrics: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,16 +88,26 @@ def incompatible_direct_comparison(
         # Old in-memory fixtures predate provenance fields. They cannot establish
         # compatibility, but changing them here would alter unrelated legacy answers.
         return None
-    mismatch_axes = _mismatch_axes(
+    metric_mismatch_axes = _metric_mismatch_axes(
         comparable,
         brands=brands,
         requested_metrics=requested_metrics,
+    )
+    mismatch_axes = tuple(
+        axis
+        for axis in _AXIS_ORDER
+        if any(axis in axes for axes in metric_mismatch_axes.values())
     )
     if not mismatch_axes:
         return None
     return ComparisonCompatibilityDecision(
         brands=brands,
         mismatch_axes=mismatch_axes,
+        incompatible_metrics=tuple(
+            metric
+            for metric in _METRIC_ORDER
+            if metric_mismatch_axes.get(metric)
+        ),
     )
 
 
@@ -300,37 +318,34 @@ def _period_grain(periods: tuple[str, ...]) -> str:
     return next(iter(grains)) if len(grains) == 1 else ""
 
 
-def _mismatch_axes(
+def _metric_mismatch_axes(
     signatures: tuple[_ComparisonSignature, ...],
     *,
     brands: tuple[str, ...],
     requested_metrics: frozenset[str],
-) -> tuple[str, ...]:
-    axes: list[str] = []
-    if any(
-        frozenset(
-            metric
+) -> dict[str, tuple[str, ...]]:
+    mismatches: dict[str, tuple[str, ...]] = {}
+    for metric in requested_metrics:
+        axes: list[str] = []
+        represented_brands = frozenset(
+            signature.brand
             for signature in signatures
-            if signature.brand == brand
-            for metric in signature.metrics
+            if metric in signature.metrics
         )
-        != requested_metrics
-        for brand in brands
-    ):
-        axes.append("metric")
-
-    for axis in ("source", "grain", "period", "unit", "market_definition", "denominator"):
-        if any(
-            _metric_axis_mismatch(
+        if represented_brands != frozenset(brands):
+            axes.append("metric")
+        axes.extend(
+            axis
+            for axis in _METRIC_AXES[metric]
+            if _metric_axis_mismatch(
                 axis,
                 metric=metric,
                 signatures=signatures,
                 brands=brands,
             )
-            for metric in requested_metrics
-        ):
-            axes.append(axis)
-    return tuple(axes)
+        )
+        mismatches[metric] = tuple(axes)
+    return mismatches
 
 
 def _metric_axis_mismatch(

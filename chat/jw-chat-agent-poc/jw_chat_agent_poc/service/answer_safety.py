@@ -2027,17 +2027,33 @@ def enforce_relational_numeric_claims_with_trace(
         if not cached_as_of and _terminal_summary_metric_requested(question):
             revised = _ensure_terminal_relation_summary(question, revised, fact)
 
-    failed_metrics = _failed_relational_metrics(question, call_items)
+    effective_call_items = _comparison_relevant_calls(question, call_items)
+    failed_metrics = _failed_relational_metrics(question, effective_call_items)
     successful_metrics = _successful_relational_metrics(call_items)
-    incompatible_comparison = _incompatible_comparison_context(call_items)
-    multi_source_incompatibility = (
+    multi_source_incompatibility = incompatible_direct_comparison(
+        question,
+        revised,
+        call_items,
+    )
+    incompatible_comparison = (
         None
-        if incompatible_comparison is not None
-        else incompatible_direct_comparison(question, revised, call_items)
+        if multi_source_incompatibility is not None
+        else _incompatible_comparison_context(question, call_items)
     )
     if multi_source_incompatibility is not None:
-        revised = _multi_source_incompatible_comparison_guidance(
-            multi_source_incompatibility,
+        requested_comparison_metrics = _requested_series_metrics(question) - {"generic"}
+        compatible_metrics = requested_comparison_metrics - frozenset(
+            multi_source_incompatibility.incompatible_metrics
+        )
+        revised = (
+            _partial_multi_source_incompatible_comparison_guidance(
+                revised,
+                multi_source_incompatibility,
+            )
+            if compatible_metrics
+            else _multi_source_incompatible_comparison_guidance(
+                multi_source_incompatibility,
+            )
         )
         blocked_reasons = (*blocked_reasons, INCOMPATIBLE_COMPARISON_REASON)
     elif cached_as_of:
@@ -2052,8 +2068,8 @@ def enforce_relational_numeric_claims_with_trace(
         revised = _append_partial_failure_notice(revised, failed_metrics, successful_metrics)
 
     blocked_to_empty = blocked_count > 0 and not _has_substantive_answer(revised)
-    failed_to_empty = _has_failed_relational_call(call_items) and not _has_substantive_answer(revised)
-    detected_failure_kind = detect_failure_kind(revised, call_items)
+    failed_to_empty = _has_failed_relational_call(effective_call_items) and not _has_substantive_answer(revised)
+    detected_failure_kind = detect_failure_kind(revised, effective_call_items)
     if blocked_to_empty or failed_to_empty:
         revised = _typed_relational_failure_fallback(question, call_items)
         disposition = "partial" if incompatible_comparison is not None and successful_metrics else "unavailable"
@@ -2398,7 +2414,7 @@ def _has_substantive_answer(answer: str) -> bool:
 
 
 def _typed_relational_failure_fallback(question: str, calls: tuple[dict[str, Any], ...]) -> str:
-    incompatible_comparison = _incompatible_comparison_context(calls)
+    incompatible_comparison = _incompatible_comparison_context(question, calls)
     if incompatible_comparison is not None:
         return _incompatible_comparison_guidance(
             incompatible_comparison,
@@ -2423,8 +2439,11 @@ def _typed_relational_failure_fallback(question: str, calls: tuple[dict[str, Any
 
 
 def _incompatible_comparison_context(
+    question: str,
     calls: tuple[dict[str, Any], ...],
 ) -> tuple[str, str] | None:
+    if not (_requested_series_metrics(question) & {"share", "rank"}):
+        return None
     for call in calls:
         data = call.get("render_data")
         if not isinstance(data, dict):
@@ -2436,6 +2455,23 @@ def _incompatible_comparison_context(
         if anchor_brand and comparison_brand:
             return anchor_brand, comparison_brand
     return None
+
+
+def _comparison_relevant_calls(
+    question: str,
+    calls: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    if _requested_series_metrics(question) & {"share", "rank"}:
+        return calls
+    return tuple(
+        call
+        for call in calls
+        if not (
+            isinstance(call.get("render_data"), dict)
+            and str(call["render_data"].get("reason_code") or "").casefold()
+            == INCOMPATIBLE_COMPARISON_REASON
+        )
+    )
 
 
 def _incompatible_comparison_guidance(
@@ -2479,6 +2515,101 @@ def _multi_source_incompatible_comparison_guidance(
         "하나의 증감·순위 결론으로 합치지 않았습니다.\n\n"
         "대안: 원천과 기준기간을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
     )
+
+
+def _partial_multi_source_incompatible_comparison_guidance(
+    answer: str,
+    decision: ComparisonCompatibilityDecision,
+) -> str:
+    axis_labels = {
+        "source": "원천",
+        "grain": "자료 주기",
+        "period": "기준기간",
+        "metric": "지표",
+        "unit": "단위",
+        "market_definition": "시장 정의",
+        "denominator": "분모",
+    }
+    metric_labels = {"sales": "매출", "share": "점유율", "rank": "순위"}
+    blocked_metrics = frozenset(decision.incompatible_metrics)
+    compatible_answer = _remove_incompatible_metric_sections(answer, blocked_metrics)
+    brands = "·".join(decision.brands)
+    metrics = "·".join(metric_labels[metric] for metric in decision.incompatible_metrics)
+    mismatches = "·".join(axis_labels[axis] for axis in decision.mismatch_axes)
+    notice = (
+        f"{brands}의 {metrics}은 {mismatches} 기준이 일치하지 않아 직접 비교할 수 없습니다.\n\n"
+        "상태: 부분 확인\n\n"
+        "확인된 범위: 호환되는 지표 값만 표시했습니다."
+    )
+    return cleanup_markdown_answer(f"{compatible_answer}\n\n{notice}")
+
+
+def _remove_incompatible_metric_sections(
+    answer: str,
+    blocked_metrics: frozenset[str],
+) -> str:
+    answer = _remove_blocked_metric_columns(answer, blocked_metrics)
+    heading_labels = {"sales": "매출", "share": "점유율", "rank": "순위"}
+    blocked_labels = tuple(
+        heading_labels[metric]
+        for metric in ("sales", "share", "rank")
+        if metric in blocked_metrics
+    )
+    kept: list[str] = []
+    skipping = False
+    for line in answer.splitlines():
+        if line.startswith("## "):
+            skipping = bool(
+                blocked_labels
+                and "브랜드" in line
+                and "비교" in line
+                and any(label in line for label in blocked_labels)
+            )
+        if not skipping:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _remove_blocked_metric_columns(
+    answer: str,
+    blocked_metrics: frozenset[str],
+) -> str:
+    blocked_header_terms = {
+        "sales": ("매출",),
+        "share": ("점유율", "방향"),
+        "rank": ("순위",),
+    }
+    terms = tuple(
+        term
+        for metric in ("sales", "share", "rank")
+        if metric in blocked_metrics
+        for term in blocked_header_terms[metric]
+    )
+    if not terms:
+        return answer
+
+    rendered: list[str] = []
+    in_combined_comparison = False
+    kept_columns: tuple[int, ...] | None = None
+    expected_columns = 0
+    for line in answer.splitlines():
+        if line.startswith("## "):
+            in_combined_comparison = line.strip() == "## 브랜드 비교"
+            kept_columns = None
+            expected_columns = 0
+        if in_combined_comparison and line.startswith("|"):
+            cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+            if kept_columns is None:
+                expected_columns = len(cells)
+                kept_columns = tuple(
+                    index
+                    for index, cell in enumerate(cells)
+                    if index == 0 or not any(term in cell for term in terms)
+                )
+            if len(cells) == expected_columns:
+                line = "| " + " | ".join(cells[index] for index in kept_columns) + " |"
+        rendered.append(line)
+    return "\n".join(rendered)
 
 
 def _relational_series_fact(

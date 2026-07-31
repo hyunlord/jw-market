@@ -130,6 +130,35 @@ def test_multi_brand_rank_plan_preserves_rank_request_with_comparison_kind() -> 
     assert plan.slots.requested_metric == "brand_rank"
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_measure"),
+    (
+        ("리바로와 가드렛 매출 비교", "sales"),
+        ("리바로와 가드렛 점유율 변화 비교", "market_share"),
+        ("리바로와 가드렛 순위 비교", "rank"),
+    ),
+)
+def test_comparison_plan_passes_requested_measure_to_query_layer(
+    question: str,
+    expected_measure: str,
+) -> None:
+    resolver = BrandResolver(mode="fixture")
+    grounding = build_period_grounding(question, current_month=lambda: "2026-06")
+    brands = tuple(
+        item.canonical_brand
+        for item in resolver.resolve_many(question, allow_default=False)
+    )
+    schemas = tool_schemas(brands, grounding.schema_periods, default_catalog())
+
+    plan = plan_structured_market_question(question, resolver, grounding, schemas)
+
+    assert plan is not None
+    comparison_call = next(
+        call for call in plan.decision.tool_calls if call.name == "compare_brands_series"
+    )
+    assert comparison_call.arguments["measure"] == expected_measure
+
+
 def test_external_or_unstructured_question_falls_back_instead_of_false_hit() -> None:
     question = "리바로 최신 가이드라인 근거를 찾아줘"
     resolver = BrandResolver(mode="fixture")

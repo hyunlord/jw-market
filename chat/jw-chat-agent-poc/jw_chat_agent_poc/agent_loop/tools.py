@@ -399,7 +399,13 @@ class AgentToolFacade:
 
     def _compare_brands_series(self, arguments: Mapping[str, str]) -> ToolExecution:
         brand = self._brand(arguments)
-        result = compare_series(self._query_layer, brand, arguments.get("comparison_brand", ""), self._market(brand))
+        result = compare_series(
+            self._query_layer,
+            brand,
+            arguments.get("comparison_brand", ""),
+            self._market(brand),
+            arguments.get("measure", "series"),
+        )
         return ToolExecution("ok", result.preview, result.call, arguments)
 
     def _top_brands(self, arguments: Mapping[str, str]) -> ToolExecution:

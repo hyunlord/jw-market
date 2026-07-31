@@ -38,6 +38,29 @@ def test_cross_market_comparison_exposes_typed_reason() -> None:
     assert execution.call["render_data"]["comparison_brand"] == "가드렛"
 
 
+def test_cross_market_absolute_sales_uses_each_brands_own_market() -> None:
+    facade = _facade(
+        (
+            _record("ml_006", "리바로", 100.0),
+            _record("ml_009", "가드렛", 80.0),
+        )
+    )
+
+    execution = facade.execute(
+        "compare_brands_series",
+        {
+            "brand": "리바로",
+            "comparison_brand": "가드렛",
+            "measure": "sales",
+        },
+    )
+
+    assert execution.status == "ok"
+    assert execution.call["render_data"]["brand"] == "가드렛"
+    assert execution.call["render_data"]["market_id"] == "ml_009"
+    assert execution.call["render_data"]["metric"] == "sales"
+
+
 def test_absent_comparison_brand_remains_generic_query_failure() -> None:
     facade = _facade((_record("ml_006", "리바로", 100.0),))
 

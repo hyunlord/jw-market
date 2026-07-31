@@ -160,6 +160,56 @@ def test_structured_comparison_plan_covers_both_brands_and_current_metrics() -> 
     assert len(decision.observed) == 4
 
 
+@pytest.mark.parametrize(
+    ("measure", "requested_metric", "other_metric"),
+    (
+        ("sales", "sales", "share"),
+        ("market_share", "share", "sales"),
+        ("rank", "rank", "sales"),
+    ),
+)
+def test_metric_specific_comparison_plan_covers_only_requested_metric(
+    measure: str,
+    requested_metric: str,
+    other_metric: str,
+) -> None:
+    plan = (
+        ToolCallPlan(
+            name="compare_brands_series",
+            arguments={
+                "brand": "리바로",
+                "comparison_brand": "리바로젯",
+                "period": "latest",
+                "measure": measure,
+            },
+            reason="metric-specific comparison",
+        ),
+    )
+
+    requested = evaluate_plan_coverage(
+        _spec(
+            "리바로",
+            "리바로젯",
+            metrics=(requested_metric,),
+            operation=QueryOperation.COMPARE_CURRENT,
+        ),
+        plan,
+    )
+    other = evaluate_plan_coverage(
+        _spec(
+            "리바로",
+            "리바로젯",
+            metrics=(other_metric,),
+            operation=QueryOperation.COMPARE_CURRENT,
+        ),
+        plan,
+    )
+
+    assert requested.status is CoverageDecisionStatus.PASS
+    assert other.status is CoverageDecisionStatus.FAIL
+    assert tuple(axis.metric for axis in other.missing) == (other_metric, other_metric)
+
+
 def test_structured_comparison_plan_does_not_claim_unplanned_rank_coverage() -> None:
     # Given
     spec = _spec(

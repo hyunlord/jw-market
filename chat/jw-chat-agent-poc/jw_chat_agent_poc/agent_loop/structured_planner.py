@@ -112,7 +112,7 @@ _TOOL_ARGUMENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "get_brand_sales": ("brand", "period"),
     "get_brand_share": ("brand", "period"),
     "get_brand_series": ("brand", "period", "history_points"),
-    "compare_brands_series": ("brand", "comparison_brand"),
+    "compare_brands_series": ("brand", "comparison_brand", "measure"),
     "get_top_brands": ("brand", "limit"),
     "get_brand_channel_breakdown": ("brand",),
     "get_brand_specialty_breakdown": ("brand",),
@@ -292,6 +292,15 @@ def _call(tool: str, slots: QuerySlots) -> ToolCallPlan:
         "limit": str(slots.limit),
         "history_points": str(slots.history_points),
         "source": slots.source or "",
+        "measure": (
+            "sales"
+            if slots.requested_metric == "brand_sales"
+            else "market_share"
+            if slots.requested_metric == "brand_share"
+            else "rank"
+            if slots.requested_metric == "brand_rank"
+            else "series"
+        ),
     }
     arguments = {field: values[field] for field in _TOOL_ARGUMENT_FIELDS[tool]}
     if slots.source and tool in _SOURCE_CAPABLE_TOOLS:

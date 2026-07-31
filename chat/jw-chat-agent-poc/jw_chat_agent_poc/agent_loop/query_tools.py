@@ -64,11 +64,17 @@ def brand_metric(
     return QueryToolResult(f"{brand} {metric} query-layer", call)
 
 
-def compare_series(layer: StrategicQueryLayer | None, brand: str, comparison: str, market: str | None = None) -> QueryToolResult:
+def compare_series(
+    layer: StrategicQueryLayer | None,
+    brand: str,
+    comparison: str,
+    market: str | None = None,
+    metric: str = "series",
+) -> QueryToolResult:
     active_layer = required_layer(layer)
     if not comparison:
         raise LookupError("comparison_brand argument is required")
-    call = active_layer.market_member_metric(brand, comparison, market=market)
+    call = active_layer.market_member_metric(brand, comparison, market=market, metric=metric)
     return QueryToolResult(f"{brand} vs {comparison} series query-layer", call)
 
 

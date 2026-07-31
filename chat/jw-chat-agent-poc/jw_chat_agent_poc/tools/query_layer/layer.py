@@ -392,22 +392,31 @@ class StrategicQueryLayer:
             "render_data": data,
         }
 
-    def market_member_metric(self, anchor_brand: str, member_brand: str, market: str | None = None) -> dict[str, Any]:
+    def market_member_metric(
+        self,
+        anchor_brand: str,
+        member_brand: str,
+        market: str | None = None,
+        metric: str = "series",
+    ) -> dict[str, Any]:
         snapshot = self._snapshot()
         market = _required_market(snapshot, anchor_brand, market)
         member_markets = snapshot.market_ids_for_brand(member_brand)
         if member_markets and market not in member_markets:
-            raise IncompatibleComparisonError(
-                anchor_brand=anchor_brand,
-                comparison_brand=member_brand,
-                anchor_market=market,
-                comparison_markets=member_markets,
-            )
+            if metric.casefold() in {"sales", "revenue"}:
+                market = _required_market(snapshot, member_brand, None)
+            else:
+                raise IncompatibleComparisonError(
+                    anchor_brand=anchor_brand,
+                    comparison_brand=member_brand,
+                    anchor_market=market,
+                    comparison_markets=member_markets,
+                )
         source = snapshot.source_for_market(market)
         latest = snapshot.latest_period(market, source)
         record = snapshot.record(market, member_brand, source)
         data = metric_render_data(snapshot, market, source, record, "series", latest)
-        data["metric"] = "market_member_series"
+        data["metric"] = "sales" if metric.casefold() in {"sales", "revenue"} else "market_member_series"
         data["market_member_source_brand"] = anchor_brand
         data["data_scope"] = "mart_level_top5_trend"
         result_id = self._results.put(result_rows_from_render_data(data))
