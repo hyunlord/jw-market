@@ -32,6 +32,14 @@ MIXED_COMPARISON_ANSWER = """## 브랜드 매출 비교
 
 
 def test_mixed_source_direct_comparison_uses_typed_guidance() -> None:
+    expected = (
+        "가드렛·자누비아·트라젠타의 원천·자료 주기·기준기간·분모 기준이 일치하지 않아 "
+        "한 표에서 직접 비교할 수 없습니다.\n\n"
+        "상태: 부분 확인\n\n"
+        "확인된 범위: 각 원천의 개별 결과는 확인했지만 서로 다른 기준의 수치를 "
+        "하나의 증감·순위 결론으로 합치지 않았습니다.\n\n"
+        "대안: 원천과 기준기간을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
+    )
     result = enforce_relational_numeric_claims_with_trace(
         "가드렛, 자누비아, 트라젠타 매출과 점유율을 각각 알려줘",
         MIXED_COMPARISON_ANSWER,
@@ -49,6 +57,7 @@ def test_mixed_source_direct_comparison_uses_typed_guidance() -> None:
     assert "원천" in result.answer
     assert "기준기간" in result.answer
     assert "가드렛은 하락" not in result.answer
+    assert result.answer == expected
 
 
 def test_same_source_direct_comparison_is_byte_identical() -> None:
@@ -287,6 +296,97 @@ def test_existing_market_mismatch_guidance_is_byte_identical() -> None:
     )
 
     assert result.answer == expected
+
+
+def test_absolute_sales_ignores_market_definition_and_denominator_mismatch() -> None:
+    first = _metric_call("리바로", "UBIST", "2025-08", "2026-05", 555)
+    second = _metric_call("가드렛", "UBIST", "2025-08", "2026-05", 976)
+    second["render_data"]["market_definition"] = "가드렛 가드메트"
+
+    decision = incompatible_direct_comparison(
+        "리바로와 가드렛 매출 비교",
+        "## 브랜드 매출 비교\n\n| 브랜드 | 매출 |\n| --- | --- |\n"
+        "| 리바로 | 80.39억원 |\n| 가드렛 | 1.76억원 |",
+        [first, second],
+    )
+
+    assert decision is None
+
+
+def test_n4_sales_keeps_values_despite_cross_market_tool_state() -> None:
+    answer = (
+        "## 브랜드 매출 비교\n\n"
+        "| 브랜드 | 최신 매출 |\n"
+        "| --- | --- |\n"
+        "| 리바로 | 80.39억원 |\n"
+        "| 가드렛 | 1.76억원 |"
+    )
+    first = _metric_call("리바로", "UBIST", "2025-08", "2026-05", 555)
+    second = _metric_call("가드렛", "UBIST", "2025-08", "2026-05", 976)
+    second["render_data"]["market_definition"] = "가드렛 가드메트"
+
+    result = enforce_relational_numeric_claims_with_trace(
+        "리바로와 가드렛 매출 비교",
+        answer,
+        [first, _cross_market_failed_call(), second],
+    )
+
+    assert result.answer == answer
+    assert result.disposition == "answered"
+    assert result.failure_kind is None
+
+
+def test_mixed_market_mismatch_keeps_sales_and_types_only_share() -> None:
+    first = _metric_call("가드렛", "UBIST", "2025-08", "2026-05", 976)
+    second = _metric_call("자누비아", "UBIST", "2025-08", "2026-05", 1055)
+    second["render_data"]["market_definition"] = "DPP-4 억제제 시장"
+
+    result = enforce_relational_numeric_claims_with_trace(
+        "가드렛과 자누비아 매출과 점유율 비교",
+        MIXED_COMPARISON_ANSWER.replace(
+            "| 트라젠타 | 2025-08 | 23.39억원 | 2026-05 | 23.32억원 |\n",
+            "",
+        ).replace(
+            "| 트라젠타 | 1.88% | 1.79% |\n",
+            "",
+        ).replace(
+            "가드렛은 하락, 자누비아는 하락, 트라젠타는 하락했습니다.",
+            "가드렛과 자누비아의 매출은 하락했습니다.",
+        ),
+        [first, _cross_market_failed_call("가드렛", "자누비아"), second],
+    )
+
+    assert "## 브랜드 매출 비교" in result.answer
+    assert "| 가드렛 | 2025-08 | 1.90억원 | 2026-05 | 1.76억원 |" in result.answer
+    assert "| 자누비아 | 2023-Q4 | 53.88억원 | 2026-Q1 | 34.19억원 |" in result.answer
+    assert "## 브랜드 점유율 비교" not in result.answer
+    assert "점유율" in result.answer
+    assert "직접 비교할 수 없습니다" in result.answer
+    assert result.disposition == "partial"
+    assert result.failure_kind == "incompatible_comparison"
+
+
+def test_mixed_market_mismatch_removes_share_columns_from_combined_table() -> None:
+    answer = """## 브랜드 비교
+| 브랜드 | 시작 점유율 | 최신 점유율 | 방향 | 시작 매출 | 최신 매출 | 최신 순위 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 가드렛 | 2025-08 0.15% | 2026-05 0.14% | 하락 | 1.90억원 | 1.76억원 | 21위 |
+| 자누비아 | 2023-Q4 1.73% | 2026-Q1 0.52% | 하락 | 53.88억원 | 34.19억원 | 7위 |"""
+    first = _metric_call("가드렛", "UBIST", "2025-08", "2026-05", 976)
+    second = _metric_call("자누비아", "UBIST", "2025-08", "2026-05", 1055)
+
+    result = enforce_relational_numeric_claims_with_trace(
+        "가드렛과 자누비아 매출과 점유율 비교",
+        answer,
+        [first, _cross_market_failed_call("가드렛", "자누비아"), second],
+    )
+
+    assert "| 브랜드 | 시작 매출 | 최신 매출 | 최신 순위 |" in result.answer
+    assert "| 가드렛 | 1.90억원 | 1.76억원 | 21위 |" in result.answer
+    assert "| 자누비아 | 53.88억원 | 34.19억원 | 7위 |" in result.answer
+    assert "0.15%" not in result.answer
+    assert "0.52%" not in result.answer
+    assert "| 방향 |" not in result.answer
 
 
 @pytest.mark.parametrize(
@@ -598,3 +698,19 @@ def _only_metric(call: dict[str, Any], metric: str) -> dict[str, Any]:
         else:
             point.pop("value_krw")
     return call
+
+
+def _cross_market_failed_call(
+    anchor_brand: str = "리바로",
+    comparison_brand: str = "가드렛",
+) -> dict[str, Any]:
+    return {
+        "tool": "query_failed",
+        "status": "query_failed",
+        "render_data": {
+            "status": "query_failed",
+            "reason_code": "incompatible_comparison",
+            "anchor_brand": anchor_brand,
+            "comparison_brand": comparison_brand,
+        },
+    }

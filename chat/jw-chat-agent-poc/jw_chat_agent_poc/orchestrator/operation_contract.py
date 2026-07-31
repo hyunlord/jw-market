@@ -404,6 +404,9 @@ def _not_applicable(reason: str) -> OperationContract:
 def _plan_axes(call: ToolCallPlan) -> tuple[CoverageAxis, ...]:
     if call.name == "compare_brands_series":
         period = str(call.arguments.get("period") or "latest").strip() or "latest"
+        measure = str(call.arguments.get("measure") or "").strip().casefold()
+        planned_metric = _MEASURE_METRICS.get(measure)
+        metrics = (planned_metric,) if planned_metric is not None else ("sales", "share")
         brands = tuple(
             dict.fromkeys(
                 str(call.arguments.get(key) or "").strip()
@@ -414,7 +417,7 @@ def _plan_axes(call: ToolCallPlan) -> tuple[CoverageAxis, ...]:
         return tuple(
             CoverageAxis(brand, metric, period)
             for brand in brands
-            for metric in ("sales", "share")
+            for metric in metrics
         )
     brand = str(call.arguments.get("brand") or "").strip()
     if not brand:
