@@ -96,10 +96,10 @@ def activate_filter_dimension_swap(
 ) -> dict[str, Any]:
     """Expose the completed candidate and retain the prior live table."""
 
-    if on_progress is not None:
-        on_progress("activation_prepared", {})
     renamed = False
     try:
+        if on_progress is not None:
+            on_progress("activation_prepared", {})
         with conn.cursor() as cur:
             cur.execute(
                 "RENAME TABLE "

@@ -278,6 +278,43 @@ def test_initial_swap_failure_discards_candidate_without_restore_attempt() -> No
     assert "__stage_fdm_rename_fail" in drops[0]
 
 
+def test_activation_prepared_journal_failure_discards_candidate() -> None:
+    conn = _Connection()
+
+    def fail_prepared(event: str, _details: dict[str, Any]) -> None:
+        if event == "activation_prepared":
+            raise RuntimeError("injected activation journal failure")
+
+    with pytest.raises(RuntimeError, match="before atomic swap; candidate removed"):
+        promote_filter_dimension_rows(
+            conn,
+            _computed_rows(),
+            target_db="jw_mart_d2_stage_20260630_r2",
+            snapshot_conn=object(),
+            source="ubist",
+            dimension_type="molecule",
+            build_marker="2026-07-29 00:00:00",
+            batch_size=2,
+            allow_shared_serving_target=True,
+            promotion_run_id="fdm_prepared_fail",
+            on_progress=fail_prepared,
+        )
+
+    renames = [
+        sql
+        for sql, _params in conn.cursor_instance.calls
+        if sql.startswith("RENAME TABLE")
+    ]
+    drops = [
+        sql
+        for sql, _params in conn.cursor_instance.calls
+        if sql.startswith("DROP TABLE IF EXISTS")
+    ]
+    assert renames == []
+    assert len(drops) == 1
+    assert "__stage_fdm_prepared_fail" in drops[0]
+
+
 def test_activation_record_failure_restores_previous_live_table() -> None:
     conn = _Connection()
 
