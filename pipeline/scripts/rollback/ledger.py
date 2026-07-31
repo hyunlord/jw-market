@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from pipeline.scripts.rollback.models import (
+    FdmRollbackPlan,
+    FdmRollbackState,
     REQUIRED_COMPONENTS,
     PromotionGeneration,
     RollbackEvent,
@@ -43,6 +45,24 @@ CREATE TABLE IF NOT EXISTS {table} (
   rolled_back_at VARCHAR(32) NOT NULL
 )
 """
+_FDM_ROLLBACK_DDL = """
+CREATE TABLE IF NOT EXISTS {table} (
+  promotion_run_id VARCHAR(64) PRIMARY KEY,
+  target_db VARCHAR(128) NOT NULL,
+  live_table VARCHAR(64) NOT NULL,
+  backup_table VARCHAR(64) NOT NULL,
+  failed_table VARCHAR(64) NOT NULL,
+  expected_rows BIGINT NOT NULL,
+  expected_digest VARCHAR(128) NOT NULL,
+  pre_live_rows BIGINT NOT NULL,
+  pre_live_digest VARCHAR(128) NOT NULL,
+  actor VARCHAR(128) NOT NULL,
+  reason TEXT NOT NULL,
+  state VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  last_error TEXT NULL
+)
+"""
 
 
 def _now() -> str:
@@ -74,12 +94,20 @@ class PromotionLedger:
         rollback_ddl = _ROLLBACK_DDL.format(
             table=self._table("promotion_rollback_event")
         )
+        fdm_rollback_ddl = _FDM_ROLLBACK_DDL.format(
+            table=self._table("promotion_fdm_rollback_state")
+        )
         if self._dialect == "mysql":
             rollback_ddl = rollback_ddl.replace(
                 "id INTEGER PRIMARY KEY AUTOINCREMENT", "id BIGINT AUTO_INCREMENT PRIMARY KEY"
             )
         cursor = self._conn.cursor()
-        for statement in (generation_ddl, component_ddl, rollback_ddl):
+        for statement in (
+            generation_ddl,
+            component_ddl,
+            rollback_ddl,
+            fdm_rollback_ddl,
+        ):
             cursor.execute(statement)
         self._conn.commit()
 
@@ -244,6 +272,106 @@ class PromotionLedger:
             ("rolled_back", promotion_run_id),
         )
         self._conn.commit()
+
+    def has_rollback_event(self, promotion_run_id: str) -> bool:
+        row = self._execute(
+            f"SELECT 1 FROM {self._table('promotion_rollback_event')} "
+            "WHERE promotion_run_id=? LIMIT 1",
+            (promotion_run_id,),
+        ).fetchone()
+        return row is not None
+
+    def prepare_fdm_rollback(
+        self,
+        plan: FdmRollbackPlan,
+        *,
+        actor: str,
+        reason: str,
+    ) -> FdmRollbackState:
+        current = self.fdm_rollback_state(plan.promotion_run_id)
+        identity = (
+            plan.target_db,
+            plan.table.live_table,
+            plan.table.backup_table,
+            plan.failed_table,
+            plan.table.expected_rows,
+            plan.table.expected_digest,
+            plan.pre_live_rows,
+            plan.pre_live_digest,
+            actor,
+            reason,
+        )
+        if current is not None:
+            existing = (
+                current.target_db,
+                current.live_table,
+                current.backup_table,
+                current.failed_table,
+                current.expected_rows,
+                current.expected_digest,
+                current.pre_live_rows,
+                current.pre_live_digest,
+                current.actor,
+                current.reason,
+            )
+            if existing != identity:
+                raise RuntimeError(
+                    f"FDM rollback journal identity conflict: {plan.promotion_run_id}"
+                )
+            if current.state == "compensated":
+                self.update_fdm_rollback_state(plan.promotion_run_id, "prepared")
+                refreshed = self.fdm_rollback_state(plan.promotion_run_id)
+                if refreshed is None:
+                    raise RuntimeError("FDM rollback journal disappeared after update")
+                return refreshed
+            return current
+        self._execute(
+            f"INSERT INTO {self._table('promotion_fdm_rollback_state')} "
+            "(promotion_run_id, target_db, live_table, backup_table, failed_table, "
+            "expected_rows, expected_digest, pre_live_rows, pre_live_digest, actor, "
+            "reason, state, updated_at, last_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                plan.promotion_run_id,
+                *identity,
+                "prepared",
+                _now(),
+                None,
+            ),
+        )
+        self._conn.commit()
+        created = self.fdm_rollback_state(plan.promotion_run_id)
+        if created is None:
+            raise RuntimeError("FDM rollback journal insert was not visible")
+        return created
+
+    def update_fdm_rollback_state(
+        self,
+        promotion_run_id: str,
+        state: str,
+        *,
+        error: str | None = None,
+    ) -> None:
+        self._execute(
+            f"UPDATE {self._table('promotion_fdm_rollback_state')} "
+            "SET state=?, updated_at=?, last_error=? WHERE promotion_run_id=?",
+            (state, _now(), error, promotion_run_id),
+        )
+        self._conn.commit()
+
+    def fdm_rollback_state(self, promotion_run_id: str) -> FdmRollbackState | None:
+        row = self._execute(
+            "SELECT promotion_run_id, target_db, live_table, backup_table, "
+            "failed_table, expected_rows, expected_digest, pre_live_rows, "
+            "pre_live_digest, actor, reason, state, updated_at, last_error "
+            f"FROM {self._table('promotion_fdm_rollback_state')} "
+            "WHERE promotion_run_id=?",
+            (promotion_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+        return FdmRollbackState(*values)
 
     def rollback_events(self, promotion_run_id: str) -> tuple[RollbackEvent, ...]:
         rows = self._execute(

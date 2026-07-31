@@ -17,7 +17,6 @@ from pipeline.etl.io.mart.filter_dimension_copy import (
 from pipeline.etl.io.mart.filter_dimension_swap import (
     activate_filter_dimension_swap,
     prepare_filter_dimension_swap,
-    rollback_filter_dimension_swap,
 )
 
 
@@ -233,21 +232,6 @@ def create_filter_dimension_backup(
         target_db,
         promotion_run_id,
         batch_size=batch_size,
-    )
-
-
-def rollback_filter_dimension_promotion(
-    conn: pymysql.connections.Connection,
-    *,
-    target_db: str,
-    promotion_run_id: str,
-    expected_backup_rows: int,
-) -> dict[str, Any]:
-    return rollback_filter_dimension_swap(
-        conn,
-        target_db=target_db,
-        promotion_run_id=promotion_run_id,
-        expected_backup_rows=expected_backup_rows,
     )
 
 

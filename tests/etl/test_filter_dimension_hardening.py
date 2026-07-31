@@ -261,24 +261,3 @@ def test_activation_record_failure_restores_previous_live_table() -> None:
     ]
     assert len(renames) == 2
     assert conn.rollbacks == 1
-
-
-def test_standalone_fdm_rollback_restores_backup_without_generic_generation() -> None:
-    from pipeline.etl.io.mart.filter_dimension_promote import (
-        rollback_filter_dimension_promotion,
-    )
-
-    conn = _Connection(rollback_fixture=True)
-    result = rollback_filter_dimension_promotion(
-        conn,
-        target_db="jw_mart_d2_stage_20260630_r2",
-        promotion_run_id="fdm_rollback",
-        expected_backup_rows=3,
-    )
-
-    statements = [sql for sql, _params in conn.cursor_instance.calls]
-    rename = next(sql for sql in statements if sql.startswith("RENAME TABLE"))
-    assert "__old_fdm_rollback" in rename
-    assert "__failed_fdm_rollback" in rename
-    assert result["restored_rows"] == 3
-    assert any("cache_dynamic_market_response" in sql for sql in statements)

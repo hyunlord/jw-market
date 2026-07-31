@@ -4,6 +4,7 @@ from typing import Protocol
 
 from pipeline.scripts.rollback.ledger import PromotionLedger
 from pipeline.scripts.rollback.models import (
+    FdmRollbackPlan,
     REQUIRED_COMPONENTS,
     RetentionPlan,
     RollbackPlan,
@@ -12,6 +13,8 @@ from pipeline.scripts.rollback.models import (
 
 
 DYNAMIC_CACHE_TABLE = "cache_dynamic_market_response"
+FDM_COMPONENT = "fdm"
+FDM_TABLE = "mart_general_filter_dimension_metric"
 
 
 class MartInspector(Protocol):
@@ -61,6 +64,73 @@ def build_rollback_plan(
         moves=tuple(moves),
         cache_tables=(DYNAMIC_CACHE_TABLE,),
         warning="Rollback reverses every source ingested after this generation; partial source rollback is unsupported.",
+    )
+
+
+def build_fdm_rollback_plan(
+    ledger: PromotionLedger,
+    inspector: MartInspector,
+    *,
+    target: str,
+    serving_db: str,
+    expected_rows: int,
+    expected_digest: str,
+) -> FdmRollbackPlan:
+    generation = ledger.generation(target)
+    if generation is None:
+        raise RuntimeError(f"rollback generation not found: {target}")
+    if generation.serving_db != serving_db:
+        raise RuntimeError(
+            f"rollback generation targets {generation.serving_db}, "
+            f"not runtime serving DB {serving_db}"
+        )
+    components = ledger.components(generation.promotion_run_id)
+    if set(components) != {FDM_COMPONENT}:
+        raise RuntimeError(
+            "FDM-only rollback requires an exact scoped component set: "
+            f"found={sorted(components)}"
+        )
+    tables = components[FDM_COMPONENT]
+    if len(tables) != 1 or tables[0].live_table != FDM_TABLE:
+        raise RuntimeError(
+            "FDM-only rollback ledger must contain exactly the canonical FDM table"
+        )
+    table = tables[0]
+    if table.expected_rows != expected_rows:
+        raise RuntimeError(
+            f"requested backup row count mismatch: "
+            f"{expected_rows} != ledger {table.expected_rows}"
+        )
+    if table.expected_digest != expected_digest:
+        raise RuntimeError(
+            f"requested backup digest mismatch: "
+            f"{expected_digest} != ledger {table.expected_digest}"
+        )
+    _validate_backup(inspector, serving_db, table)
+    failed_table = _failed_table_name(table.live_table, generation.promotion_run_id)
+    if inspector.exists(serving_db, failed_table):
+        raise RuntimeError(
+            f"rollback scratch table already exists: {serving_db}.{failed_table}"
+        )
+    pre_live_rows = inspector.count(serving_db, table.live_table)
+    pre_live_digest = inspector.digest(serving_db, table.live_table)
+    return FdmRollbackPlan(
+        promotion_run_id=generation.promotion_run_id,
+        target_db=serving_db,
+        epoch=generation.epoch,
+        ingest_run_id=generation.ingest_run_id,
+        table=table,
+        failed_table=failed_table,
+        pre_live_rows=pre_live_rows,
+        pre_live_digest=pre_live_digest,
+        moves=(
+            (table.live_table, failed_table),
+            (table.backup_table, table.live_table),
+        ),
+        compensation_moves=(
+            (table.live_table, table.backup_table),
+            (failed_table, table.live_table),
+        ),
     )
 
 

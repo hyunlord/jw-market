@@ -12,7 +12,6 @@ from pipeline.etl.io.mart.filter_dimension_copy import (
     copy_table_consistent_snapshot,
     create_filter_dimension_backup_batched,
     qualified,
-    require_identifier_length,
     swap_names,
     table_count,
     table_exists,
@@ -135,60 +134,6 @@ def activate_filter_dimension_swap(
         raise RuntimeError(
             "FDM activation failed after atomic swap; previous live table restored"
         ) from exc
-
-
-def rollback_filter_dimension_swap(
-    conn: pymysql.connections.Connection,
-    *,
-    target_db: str,
-    promotion_run_id: str,
-    expected_backup_rows: int,
-) -> dict[str, Any]:
-    """Restore one FDM backup without requiring a four-component generation."""
-
-    names = swap_names(target_db, promotion_run_id)
-    failed_table = f"{FILTER_DIMENSION_TABLE}__failed_{promotion_run_id}"
-    require_identifier_length(failed_table, "rollback scratch")
-    if not table_exists(conn, target_db, names.live_table):
-        raise RuntimeError(f"FDM live table is missing: {target_db}.{names.live_table}")
-    if not table_exists(conn, target_db, names.backup_table):
-        raise RuntimeError(
-            f"FDM rollback backup is missing: {target_db}.{names.backup_table}"
-        )
-    if table_exists(conn, target_db, failed_table):
-        raise RuntimeError(
-            f"FDM rollback scratch already exists: {target_db}.{failed_table}"
-        )
-    backup_rows = table_count(conn, names.qualified_backup)
-    if backup_rows != expected_backup_rows or backup_rows < 1:
-        raise RuntimeError(
-            f"FDM rollback backup row count mismatch: "
-            f"{backup_rows} != {expected_backup_rows}"
-        )
-    qualified_failed = qualified(target_db, failed_table)
-    with conn.cursor() as cur:
-        cur.execute(
-            "RENAME TABLE "
-            f"{names.qualified_live} TO {qualified_failed}, "
-            f"{names.qualified_backup} TO {names.qualified_live}"
-        )
-    restored_rows = table_count(conn, names.qualified_live)
-    if restored_rows != expected_backup_rows:
-        raise RuntimeError(
-            f"FDM post-rollback row count mismatch: "
-            f"{restored_rows} != {expected_backup_rows}"
-        )
-    invalidated = invalidate_dynamic_market_cache(
-        conn,
-        target_db,
-        source="ubist",
-    )
-    return {
-        "promotion_run_id": promotion_run_id,
-        "restored_rows": restored_rows,
-        "failed_table": failed_table,
-        "cache_rows_invalidated": invalidated,
-    }
 
 
 def invalidate_dynamic_market_cache(

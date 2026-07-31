@@ -56,6 +56,38 @@ class RollbackResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FdmRollbackPlan:
+    promotion_run_id: str
+    target_db: str
+    epoch: str
+    ingest_run_id: str
+    table: TableBackup
+    failed_table: str
+    pre_live_rows: int
+    pre_live_digest: str
+    moves: tuple[tuple[str, str], ...]
+    compensation_moves: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FdmRollbackState:
+    promotion_run_id: str
+    target_db: str
+    live_table: str
+    backup_table: str
+    failed_table: str
+    expected_rows: int
+    expected_digest: str
+    pre_live_rows: int
+    pre_live_digest: str
+    actor: str
+    reason: str
+    state: str
+    updated_at: str
+    last_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RetentionPlan:
     protected_serving_db: str
     retained_generations: tuple[str, ...]

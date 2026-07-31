@@ -37,6 +37,9 @@ class MySQLMart:
                 "SET expires_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP()"
             )
 
+    def rollback(self) -> None:
+        self._conn.rollback()
+
     def drop_generation(self, db_name: str) -> None:
         with self._conn.cursor() as cursor:
             cursor.execute(f"DROP DATABASE {quote_id(db_name)}")
