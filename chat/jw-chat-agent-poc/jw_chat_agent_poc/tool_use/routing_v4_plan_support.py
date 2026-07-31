@@ -8,7 +8,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from jw_chat_agent_poc.tool_use.provider import ToolChoice, ToolChoiceProvider
-from jw_chat_agent_poc.tool_use.routing_v4_rules import PREFIX_RE, QuestionClassification, explicit_disease_code
+from jw_chat_agent_poc.tool_use.routing_v4_rules import (
+    PREFIX_RE,
+    QuestionClassification,
+    UnresolvableFacet,
+    explicit_disease_code,
+)
 from jw_chat_agent_poc.tool_use.routing_v4_types import (
     CapabilityStatus,
     ProposedCall,
@@ -41,11 +46,16 @@ class RoutePlan(BaseModel):
     typed_message: str | None
     repair_count: int = 0
     deterministic_rule_id: str | None = None
+    requested_facets: tuple[str, ...] = ()
+    unresolvable_facets: tuple[UnresolvableFacet, ...] = ()
 
     @model_validator(mode="after")
     def _execution_arguments_match_proposed_calls(self) -> RoutePlan:
         if len(self.execution_args) != len(self.proposal.proposed_calls):
             raise ValueError("execution arguments must match proposed calls one-for-one")
+        requested = set(self.requested_facets)
+        if any(item.facet not in requested for item in self.unresolvable_facets):
+            raise ValueError("unresolvable facets must be present in requested facets")
         return self
 
 
@@ -262,6 +272,8 @@ def call_route_plan(
         typed_message=None,
         repair_count=repair_count,
         deterministic_rule_id=classification.deterministic_rule_id,
+        requested_facets=classification.requested_facets,
+        unresolvable_facets=classification.unresolvable_facets,
     )
 
 
@@ -289,6 +301,8 @@ def no_tool_route_plan(
         reason_code=None,
         typed_message=message,
         deterministic_rule_id=classification.deterministic_rule_id,
+        requested_facets=classification.requested_facets,
+        unresolvable_facets=classification.unresolvable_facets,
     )
 
 
@@ -333,6 +347,8 @@ def typed_route_plan(
         typed_message=typed_message(reason_code),
         repair_count=repair_count,
         deterministic_rule_id=classification.deterministic_rule_id,
+        requested_facets=classification.requested_facets,
+        unresolvable_facets=classification.unresolvable_facets,
     )
 
 
