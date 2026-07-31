@@ -76,6 +76,11 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     observe_actual_coverage,
     set_current_query_spec,
 )
+from jw_chat_agent_poc.orchestrator.typed_failure import (
+    TypedFailureCode,
+    normalize_typed_failure,
+    observe_typed_failure,
+)
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     explicit_hira_disease_code,
     hira_binding_question,
@@ -2714,6 +2719,10 @@ def compute_final_answer(
                 observe_actual_coverage(query_spec, tool_calls)
             except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
                 LOGGER.exception("operation_contract_actual_shadow_failed")
+        try:
+            observe_typed_failure(result)
+        except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
+            LOGGER.exception("typed_failure_model_shadow_failed")
         format_result = apply_response_format_contract(
             question,
             answer,
@@ -3531,6 +3540,13 @@ def _is_market_membership_mismatch_result(result: dict) -> bool:
 
 
 def _is_terminal_typed_result(result: dict) -> bool:
+    typed_failure = normalize_typed_failure(result)
+    if (
+        typed_failure is not None
+        and typed_failure.code is TypedFailureCode.DISEASE_CODE_ABSENT
+    ):
+        return True
+
     sources = result.get("sources")
     if isinstance(sources, (list, tuple)) and len(sources) == 1:
         if str(sources[0] or "") in {

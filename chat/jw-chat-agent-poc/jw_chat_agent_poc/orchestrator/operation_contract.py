@@ -23,6 +23,12 @@ from jw_chat_agent_poc.orchestrator.query_spec import (
     RequestQuerySpec,
     TimeGranularity,
 )
+from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
+    ShadowGate,
+    ShadowGateMode,
+    emit_shadow_gate_observation,
+    shadow_gate_mode,
+)
 
 
 class CoverageDecisionStatus(StrEnum):
@@ -176,12 +182,14 @@ def observe_plan_coverage(
     step: int,
 ) -> CoverageDecision:
     decision = evaluate_plan_coverage(spec, plan)
-    logger.info(
-        "operation_contract_plan_shadow step=%s planner=%s decision=%s",
-        step,
-        planner_kind,
-        coverage_decision_observation(decision),
-    )
+    if shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is not ShadowGateMode.OFF:
+        logger.info(
+            "operation_contract_plan_shadow step=%s planner=%s decision=%s",
+            step,
+            planner_kind,
+            coverage_decision_observation(decision),
+        )
+    _emit_runtime_observations(decision, phase="plan")
     return decision
 
 
@@ -190,11 +198,41 @@ def observe_actual_coverage(
     calls: Collection[Mapping[str, Any]],
 ) -> CoverageDecision:
     decision = evaluate_actual_coverage(spec, calls)
-    logger.info(
-        "operation_contract_actual_shadow decision=%s",
-        coverage_decision_observation(decision),
-    )
+    if shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is not ShadowGateMode.OFF:
+        logger.info(
+            "operation_contract_actual_shadow decision=%s",
+            coverage_decision_observation(decision),
+        )
+    _emit_runtime_observations(decision, phase="actual")
     return decision
+
+
+def _emit_runtime_observations(
+    decision: CoverageDecision,
+    *,
+    phase: str,
+) -> None:
+    emit_shadow_gate_observation(
+        gate=ShadowGate.OPERATION_CONTRACT,
+        phase=phase,
+        status=decision.status.value,
+        reason=decision.reason,
+        required_count=len(decision.required),
+        observed_count=len(decision.observed),
+        missing_count=len(decision.missing),
+    )
+    period = decision.period_coverage
+    if period is None:
+        return
+    emit_shadow_gate_observation(
+        gate=ShadowGate.PERIOD_SET,
+        phase=phase,
+        status=period.status.value,
+        reason=decision.reason,
+        required_count=period.selection.expected_count,
+        observed_count=len(period.observed),
+        missing_count=len(period.missing),
+    )
 
 
 def set_current_query_spec(spec: RequestQuerySpec | None) -> None:
