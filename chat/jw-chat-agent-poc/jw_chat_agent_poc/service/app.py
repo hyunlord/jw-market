@@ -76,6 +76,7 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     observe_actual_coverage,
     set_current_query_spec,
 )
+from jw_chat_agent_poc.orchestrator.typed_failure import observe_typed_failure
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     explicit_hira_disease_code,
     hira_binding_question,
@@ -2714,6 +2715,10 @@ def compute_final_answer(
                 observe_actual_coverage(query_spec, tool_calls)
             except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
                 LOGGER.exception("operation_contract_actual_shadow_failed")
+        try:
+            observe_typed_failure(result)
+        except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
+            LOGGER.exception("typed_failure_model_shadow_failed")
         format_result = apply_response_format_contract(
             question,
             answer,
