@@ -1528,3 +1528,10 @@ def test_genos_prompt_and_answer_contract_share_one_news_selection() -> None:
     assert "https://example.test/noise/1" not in messages[1]["content"]
     assert "https://www.yakup.com/news/index.html?mode=view&nid=328730" in messages[1]["content"]
     assert revised.count("| direct |") == 3
+
+
+def test_news_selection_recovers_verified_brand_when_runtime_brand_is_empty() -> None:
+    selection = build_news_selection(E1_NEWS_FACT_MD, canonical_brand="")
+
+    assert selection.canonical_brand == "리바로"
+    assert [item.relevance for item in selection.items] == ["direct", "market", "noise"]

@@ -241,6 +241,10 @@ def test_mixed_request_keeps_the_prescription_stop_in_the_delivered_body(monkeyp
     assert "매출" in final.text
     assert PRESCRIPTION_STOP_MARKER in final.text
     assert "매출 지표로 대체하지 않습니다" in final.text
+    assert "조회 계약" not in final.text
+    assert "null" not in final.text
+    assert "조회 범위" in final.text
+    assert "확인 불가" in final.text
 
 
 def test_the_stop_is_appended_once_even_when_the_body_already_carries_it(monkeypatch) -> None:

@@ -1899,9 +1899,10 @@ def _news_grade_handling(grade: str) -> str:
 
 
 def build_news_selection(fact_md: str, *, canonical_brand: str) -> NewsSelection:
+    effective_brand = canonical_brand.strip() or _brand_from_fact_md(fact_md)
     items: list[NewsSelectionItem] = []
     for row in _news_factor_rows(fact_md):
-        relevance = _news_relevance_grade(row, canonical_brand)
+        relevance = _news_relevance_grade(row, effective_brand)
         items.append(
             NewsSelectionItem(
                 key=_news_selection_key(row),
@@ -1911,7 +1912,7 @@ def build_news_selection(fact_md: str, *, canonical_brand: str) -> NewsSelection
                 handling=_news_grade_handling(relevance),
             )
         )
-    return NewsSelection(canonical_brand=canonical_brand, items=tuple(items))
+    return NewsSelection(canonical_brand=effective_brand, items=tuple(items))
 
 
 def news_selection_prompt_fact_markdown(

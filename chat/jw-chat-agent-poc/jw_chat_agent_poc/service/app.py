@@ -3077,7 +3077,6 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         safe_answer,
         result,
     )
-    safe_answer = scrub_internal_terminology(safe_answer)
     if not deep_mode and not file_context_fact and market_contract_allowed:
         safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
     if not file_context_fact and market_contract_allowed:
@@ -3086,6 +3085,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     # never weighed as an unbacked claim, and after every contract enforcer, so
     # none of them can drop it again.
     safe_answer = append_deferred_prescription_notice(safe_answer, result)
+    safe_answer = scrub_internal_terminology(safe_answer)
     safe_answer = _strip_verified_evidence_progress(safe_answer)
     trace = trace_envelope(
         question=question,
