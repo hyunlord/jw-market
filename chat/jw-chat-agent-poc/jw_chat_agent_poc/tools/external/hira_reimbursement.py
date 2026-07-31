@@ -17,6 +17,12 @@ from jw_chat_agent_poc.tools.external.hira_reimbursement_parser import (
     is_official_hira_url,
     matching_search_row,
 )
+from jw_chat_agent_poc.tools.external.telemetry import (
+    CacheObservation,
+    FailureClass,
+    emit_external_source_telemetry,
+    failure_class_from_exception,
+)
 
 HIRA_REIMBURSEMENT_LIST_URL = (
     "https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do"
@@ -308,6 +314,11 @@ class ReimbursementLookupService:
         status = _effective_cache_status(cached, now=self._now())
 
         if status is CacheStatus.FRESH and cached.data is not None:
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="hit",
+                failure_class="none",
+            )
             return ReimbursementLookupResult(
                 True,
                 status,
@@ -324,6 +335,11 @@ class ReimbursementLookupService:
                     "reimbursement refresh trigger failed error=%s",
                     type(exc).__name__,
                 )
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="stale",
+                failure_class="none",
+            )
             return ReimbursementLookupResult(
                 True,
                 status,
@@ -333,6 +349,11 @@ class ReimbursementLookupService:
                 cache_schema=cache_schema,
             )
         if lookup_status is CacheLookupStatus.STORE_ABSENT:
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="miss",
+                failure_class="0_results",
+            )
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,
@@ -346,6 +367,11 @@ class ReimbursementLookupService:
             lookup_status is CacheLookupStatus.BRAND_UNMATCHED
             and not self._realtime_allowed()
         ):
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="miss",
+                failure_class="0_results",
+            )
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,
@@ -358,7 +384,12 @@ class ReimbursementLookupService:
 
         try:
             live = self._realtime.fetch(brand)
-        except requests.Timeout:
+        except requests.Timeout as exc:
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="miss",
+                failure_class=failure_class_from_exception(exc),
+            )
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,
@@ -368,7 +399,12 @@ class ReimbursementLookupService:
                 cache_lookup_status=lookup_status,
                 cache_schema=cache_schema,
             )
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="miss",
+                failure_class=failure_class_from_exception(exc),
+            )
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,
@@ -380,6 +416,11 @@ class ReimbursementLookupService:
             )
 
         if live is None:
+            _emit_reimbursement_telemetry(
+                brand,
+                cache_status="miss",
+                failure_class="0_results",
+            )
             return ReimbursementLookupResult(
                 False,
                 CacheStatus.NOT_FOUND,
@@ -402,6 +443,11 @@ class ReimbursementLookupService:
                 type(exc).__name__,
             )
             cache_write = "failed"
+        _emit_reimbursement_telemetry(
+            brand,
+            cache_status="miss",
+            failure_class="none",
+        )
         return ReimbursementLookupResult(
             True,
             CacheStatus.NOT_FOUND,
@@ -411,6 +457,21 @@ class ReimbursementLookupService:
             cache_lookup_status=lookup_status,
             cache_schema=cache_schema,
         )
+
+
+def _emit_reimbursement_telemetry(
+    brand_name: str,
+    *,
+    cache_status: CacheObservation,
+    failure_class: FailureClass,
+) -> None:
+    emit_external_source_telemetry(
+        primary_provider="hira_reimbursement",
+        question=brand_name,
+        failure_class=failure_class,
+        domain_source="cache",
+        cache_status=cache_status,
+    )
 
 
 class HiraReimbursementHttpClient:
