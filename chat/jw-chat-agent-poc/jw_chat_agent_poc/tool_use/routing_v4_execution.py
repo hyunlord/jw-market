@@ -379,6 +379,21 @@ def normalize_execution_result(
             fallback_code=None,
         ), "PARTIAL_RESULT"
 
+    if (
+        plan.unresolvable_facets
+        and proposed_count
+        and len(call_statuses) == proposed_count
+        and successful_count == proposed_count
+    ):
+        return AgentResult(
+            status="partial",
+            answer=_partial_evidence_answer(plan, result),
+            tool_calls=result.tool_calls,
+            sources=result.sources,
+            traces=result.traces,
+            fallback_code=None,
+        ), "PARTIAL_EVIDENCE"
+
     if proposed_count and len(call_statuses) == proposed_count and successful_count == proposed_count:
         if result.status == "ok":
             return result, None
@@ -482,6 +497,20 @@ def _partial_answer(plan: RoutePlan, result: AgentResult) -> str:
         f"확인하지 못한 범위: {scope_text}\n"
         "대안: 누락된 범위를 다시 조회하거나 기간을 지정해 요청해 주세요."
     )
+    return "\n\n".join(part for part in (result.answer.strip(), disclosure) if part)
+
+
+def _partial_evidence_answer(plan: RoutePlan, result: AgentResult) -> str:
+    notices = tuple(
+        (
+            "제품명이 없어 허가 정보는 조회할 수 없습니다. "
+            "정확한 제품명을 알려주시면 확인하겠습니다."
+        )
+        if item.facet == "permission"
+        else f"{item.facet} 범위는 조회 입력을 구성할 수 없습니다: {item.reason}"
+        for item in plan.unresolvable_facets
+    )
+    disclosure = "\n".join(("상태: 일부 근거만 확인했습니다.", *notices))
     return "\n\n".join(part for part in (result.answer.strip(), disclosure) if part)
 
 

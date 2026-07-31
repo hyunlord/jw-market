@@ -75,6 +75,7 @@ _FAILURE_TRAITS: Final[Mapping[TypedFailureCode, tuple[bool, bool]]] = {
     TypedFailureCode.MARKET_UNRESOLVED: (True, False),
     TypedFailureCode.INCOMPATIBLE_COMPARISON: (True, True),
     TypedFailureCode.DISEASE_CODE_ABSENT: (True, False),
+    TypedFailureCode.PARTIAL_EVIDENCE: (False, True),
 }
 _CODE_KEYS: Final[tuple[str, ...]] = (
     "error_code",
@@ -88,6 +89,7 @@ _MAPPING_SURFACES: Final[tuple[str, ...]] = (
     "routing_v4",
     "official_web_fallback",
     "executed_call_signature",
+    "partial_evidence",
 )
 _SEQUENCE_SURFACES: Final[tuple[str, ...]] = ("tool_calls", "sources")
 _MESSAGE_KEYS: Final[tuple[str, ...]] = (
@@ -106,7 +108,7 @@ def normalize_typed_failure(
     candidates: dict[TypedFailureCode, Mapping[str, Any]] = {}
     for surface in _known_surfaces(result):
         for key in _CODE_KEYS:
-            code = _active_code(surface.get(key))
+            code = _active_code(surface.get(key), surface=surface)
             if code is not None:
                 candidates.setdefault(code, surface)
 
@@ -180,13 +182,19 @@ def render_typed_failure_shadow(result: TypedFailureResult) -> str:
     return f"{result.user_message}\n\n{result.recovery_action}"
 
 
-def _active_code(value: Any) -> TypedFailureCode | None:
+def _active_code(
+    value: Any,
+    *,
+    surface: Mapping[str, Any],
+) -> TypedFailureCode | None:
     if not isinstance(value, str):
         return None
     try:
         code = TypedFailureCode(value.strip())
     except ValueError:
         return None
+    if code is TypedFailureCode.PARTIAL_EVIDENCE:
+        return code if surface.get("producer") == "unresolvable_facet" else None
     return code if code in _ACTIVE_CODES else None
 
 

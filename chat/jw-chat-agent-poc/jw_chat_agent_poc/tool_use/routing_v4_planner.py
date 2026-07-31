@@ -205,6 +205,8 @@ class ExternalRoutePlanner:
                     typed_message=typed_message("AMBIGUOUS_INPUT"),
                     repair_count=repair_count,
                     deterministic_rule_id=classification.deterministic_rule_id,
+                    requested_facets=classification.requested_facets,
+                    unresolvable_facets=classification.unresolvable_facets,
                 )
             try:
                 call = validated_llm_tool_call(choice, candidate_specs)
