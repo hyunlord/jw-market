@@ -138,7 +138,7 @@ def test_s4_isolated_schema_seeds_untouched_sources_in_bounded_batches(
     fetches = iter(
         (
             {"max_id": 2},
-            {"max_id": 2},
+            {"batch_size": 2, "batch_last_id": 2},
             {"max_id": 0},
         )
     )
@@ -192,3 +192,107 @@ def test_s4_isolated_schema_seeds_untouched_sources_in_bounded_batches(
         "LIKE `source_db`.`mart_general_market_metric`"
     ) in sql
     assert conn.commits == 1
+
+
+def test_s4_isolated_schema_does_not_depend_on_immediate_target_max_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[tuple[str, object]] = []
+
+    class Cursor:
+        last_sql = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params=None):  # type: ignore[no-untyped-def]
+            self.last_sql = sql
+            statements.append((sql, params))
+            if sql.startswith("INSERT INTO"):
+                return 500
+            return 0
+
+        def fetchone(self):
+            if "mart_general_market_metric" in self.last_sql:
+                return {"max_id": 0}
+            if "AS baseline_batch" in self.last_sql:
+                return {"batch_size": 500, "batch_last_id": 500}
+            if "FROM `source_db`.`mart_general_brand_metric`" in self.last_sql:
+                return {"max_id": 500}
+            if "FROM `build_db`.`mart_general_brand_metric`" in self.last_sql:
+                return {"max_id": 0}
+            raise AssertionError(self.last_sql)
+
+    class Connection:
+        def __init__(self) -> None:
+            self.commits = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def close(self) -> None:
+            return None
+
+    conn = Connection()
+    monkeypatch.setattr(s4_mart, "_env", lambda: {})
+    monkeypatch.setattr(s4_mart, "_admin_connect", lambda _env: conn)
+
+    s4_mart._ensure_isolated_schema("build_db", "source_db")
+
+    assert conn.commits == 1
+    assert not any(
+        "MAX(`id`)" in sql
+        and "FROM `build_db`.`mart_general_brand_metric`" in sql
+        for sql, _params in statements
+    )
+
+
+def test_s4_isolated_schema_fails_closed_when_source_batch_is_not_copied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetches = iter(
+        (
+            {"max_id": 2},
+            {"batch_size": 2, "batch_last_id": 2},
+        )
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params=None):  # type: ignore[no-untyped-def]
+            if sql.startswith("INSERT INTO"):
+                return 0
+            return 0
+
+        def fetchone(self):
+            return next(fetches)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self) -> None:
+            raise AssertionError("incomplete copy must not commit")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(s4_mart, "_env", lambda: {})
+    monkeypatch.setattr(s4_mart, "_admin_connect", lambda _env: Connection())
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"isolated baseline copy was incomplete.*copied 0 of 2",
+    ):
+        s4_mart._ensure_isolated_schema("build_db", "source_db")

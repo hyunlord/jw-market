@@ -132,32 +132,41 @@ def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
                 source_max_id = int(cur.fetchone()["max_id"])
                 last_id = 0
                 while last_id < source_max_id:
+                    cur.execute(
+                        "SELECT COUNT(*) AS batch_size, "
+                        "COALESCE(MAX(`id`), 0) AS batch_last_id "
+                        "FROM ("
+                        f"SELECT `id` FROM `{source_db}`.`{table}` "
+                        "WHERE `id` > %s AND `id` <= %s "
+                        f"ORDER BY `id` LIMIT {_BASELINE_COPY_BATCH_SIZE}"
+                        ") AS baseline_batch",
+                        (last_id, source_max_id),
+                    )
+                    batch = cur.fetchone()
+                    batch_size = int(batch["batch_size"])
+                    new_last_id = int(batch["batch_last_id"])
+                    if batch_size <= 0 or new_last_id <= last_id:
+                        raise RuntimeError(
+                            f"isolated baseline source made no progress for "
+                            f"{source_db}.{table} after id {last_id}"
+                        )
                     inserted = int(
                         cur.execute(
                             f"INSERT INTO `{target_db}`.`{table}` "
                             f"SELECT * FROM `{source_db}`.`{table}` "
                             f"WHERE `id` > %s AND `id` <= %s "
-                            f"ORDER BY `id` LIMIT {_BASELINE_COPY_BATCH_SIZE}",
-                            (last_id, source_max_id),
+                            f"ORDER BY `id`",
+                            (last_id, new_last_id),
                         )
                         or 0
                     )
-                    if inserted <= 0:
+                    if inserted != batch_size:
                         raise RuntimeError(
-                            f"isolated baseline copy made no progress for "
-                            f"{source_db}.{table} after id {last_id}"
+                            f"isolated baseline copy was incomplete for "
+                            f"{source_db}.{table} after id {last_id}: "
+                            f"copied {inserted} of {batch_size}"
                         )
                     conn.commit()
-                    cur.execute(
-                        f"SELECT COALESCE(MAX(`id`), 0) AS max_id "
-                        f"FROM `{target_db}`.`{table}`"
-                    )
-                    new_last_id = int(cur.fetchone()["max_id"])
-                    if new_last_id <= last_id:
-                        raise RuntimeError(
-                            f"isolated baseline copy did not advance for {table}: "
-                            f"{new_last_id} <= {last_id}"
-                        )
                     last_id = new_last_id
     finally:
         conn.close()
