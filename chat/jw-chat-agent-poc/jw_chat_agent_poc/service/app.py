@@ -79,8 +79,11 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
 )
 from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     ShadowGate,
+    current_shadow_request_id,
     emit_shadow_gate_exception,
     question_fingerprint,
+    shadow_request_id_scope,
+    shadow_request_scope,
 )
 from jw_chat_agent_poc.orchestrator.typed_failure import (
     TypedFailureCode,
@@ -331,6 +334,7 @@ class SessionStore:
 
 class _AnswerItem(dict):
     operation_contract_query_spec: RequestQuerySpec | None = None
+    shadow_request_id: str = ""
 
 
 def _configured_direct_route_hosts() -> set[str]:
@@ -514,6 +518,7 @@ def create_app(
         stored_item.operation_contract_query_spec = (
             getattr(result, "operation_contract_query_spec", None)
         )
+        stored_item.shadow_request_id = getattr(result, "shadow_request_id", "")
         session_id = store.put(stored_item)
         return ChatAccepted(
             session_id=session_id,
@@ -548,12 +553,13 @@ def create_app(
                     use_direct_agent_loop=use_direct_agent_loop,
                     conversation_history=history,
                 )
-                final_answer = _compute_final_answer_with_query_spec(
-                    item["question"],
-                    item["result"],
-                    item.get("conversation_id"),
-                    item.operation_contract_query_spec,
-                )
+                with shadow_request_id_scope(item.shadow_request_id):
+                    final_answer = _compute_final_answer_with_query_spec(
+                        item["question"],
+                        item["result"],
+                        item.get("conversation_id"),
+                        item.operation_contract_query_spec,
+                    )
         except ChatBusyError as exc:
             raise HTTPException(status_code=503, detail=BUSY_MESSAGE) from exc
         _record_conversation_history(
@@ -609,6 +615,7 @@ def create_app(
                         "operation_contract_query_spec",
                         None,
                     ),
+                    shadow_request_id=getattr(item, "shadow_request_id", ""),
                 ),
                 media_type="text/event-stream",
             )
@@ -693,6 +700,7 @@ def _capture_operation_contract_query_spec(function):
             item = function(*args, **kwargs)
             answer_item = _AnswerItem(item)
             answer_item.operation_contract_query_spec = current_query_spec()
+            answer_item.shadow_request_id = current_shadow_request_id()
             return answer_item
         finally:
             clear_current_query_spec()
@@ -725,6 +733,7 @@ def _observe_query_spec(
     )
 
 
+@shadow_request_scope
 @_capture_request_spans
 @_capture_operation_contract_query_spec
 def _answer_question(
@@ -2391,16 +2400,19 @@ def _stream_resolving_session_events(
                             }
                         )
                         prefix_emitted.wait(timeout=2.0)
-                    final_answer = _compute_final_answer_with_query_spec(
-                        item["question"],
-                        item["result"],
-                        item.get("conversation_id"),
-                        getattr(
-                            item,
-                            "operation_contract_query_spec",
-                            None,
-                        ),
-                    )
+                    with shadow_request_id_scope(
+                        getattr(item, "shadow_request_id", "")
+                    ):
+                        final_answer = _compute_final_answer_with_query_spec(
+                            item["question"],
+                            item["result"],
+                            item.get("conversation_id"),
+                            getattr(
+                                item,
+                                "operation_contract_query_spec",
+                                None,
+                            ),
+                        )
             _record_conversation_history(
                 history_store,
                 session_id=None,
@@ -2537,6 +2549,7 @@ def _sse_events(
     projection_context: ProjectionRequestContext | None = None,
     limiter: ChatConcurrencyLimiter | None = None,
     query_spec: RequestQuerySpec | None = None,
+    shadow_request_id: str = "",
 ):
     if limiter is not None and not limiter.try_acquire():
         yield from _sse_busy_events()
@@ -2549,12 +2562,13 @@ def _sse_events(
             text=streamed_prefix,
         )
     try:
-        final_answer = _compute_final_answer_with_query_spec(
-            question,
-            result,
-            conversation_id,
-            query_spec,
-        )
+        with shadow_request_id_scope(shadow_request_id):
+            final_answer = _compute_final_answer_with_query_spec(
+                question,
+                result,
+                conversation_id,
+                query_spec,
+            )
         _record_conversation_history(
             history_store,
             session_id=session_id,
@@ -2755,6 +2769,8 @@ def compute_final_answer(
                     user_answer,
                     tool_calls,
                     question_fingerprint=fingerprint,
+                    baseline_answer=user_answer,
+                    served_answer=user_answer,
                 )
             except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery
                 emit_shadow_gate_exception(
@@ -2769,6 +2785,7 @@ def compute_final_answer(
             observe_typed_failure(
                 result,
                 legacy_answer=user_answer,
+                served_answer=user_answer,
                 question_fingerprint=fingerprint,
             )
         except Exception:  # noqa: BLE001 - shadow observation cannot alter answer delivery

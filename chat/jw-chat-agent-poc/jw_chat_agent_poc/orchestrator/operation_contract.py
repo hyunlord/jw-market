@@ -248,6 +248,8 @@ def observe_surface_coverage(
     calls: Collection[Mapping[str, Any]],
     *,
     question_fingerprint: str = "",
+    baseline_answer: str | None = None,
+    served_answer: str | None = None,
 ) -> CoverageDecision:
     decision = evaluate_surface_coverage(spec, answer, calls)
     if shadow_gate_mode(ShadowGate.OPERATION_CONTRACT) is not ShadowGateMode.OFF:
@@ -260,6 +262,8 @@ def observe_surface_coverage(
         spec=spec,
         phase="surface",
         question_fingerprint=question_fingerprint,
+        baseline_answer=baseline_answer,
+        served_answer=served_answer,
     )
     return decision
 
@@ -270,6 +274,8 @@ def _emit_runtime_observations(
     spec: RequestQuerySpec,
     phase: str,
     question_fingerprint: str,
+    baseline_answer: str | None = None,
+    served_answer: str | None = None,
 ) -> None:
     period_count = (
         decision.period_coverage.selection.expected_count
@@ -288,6 +294,8 @@ def _emit_runtime_observations(
         metric_count=len(spec.metrics),
         period_count=period_count,
         question_fingerprint=question_fingerprint,
+        baseline_answer=baseline_answer,
+        served_answer=served_answer,
     )
     period = decision.period_coverage
     if period is None:
@@ -304,6 +312,8 @@ def _emit_runtime_observations(
         metric_count=len(spec.metrics),
         period_count=period.selection.expected_count,
         question_fingerprint=question_fingerprint,
+        baseline_answer=baseline_answer,
+        served_answer=served_answer,
     )
 
 

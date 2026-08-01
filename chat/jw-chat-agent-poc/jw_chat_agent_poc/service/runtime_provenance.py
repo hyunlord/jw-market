@@ -97,6 +97,15 @@ def version_payload() -> dict[str, Any]:
     }
 
 
+def release_identity_payload() -> dict[str, str]:
+    """Return only immutable release identity used by request telemetry."""
+
+    return {
+        "git_sha": _env("JW_CHAT_GIT_SHA", "GIT_SHA", "COMMIT_SHA"),
+        "image_digest": _env("JW_CHAT_IMAGE_DIGEST", "IMAGE_DIGEST"),
+    }
+
+
 def trace_envelope(
     *,
     question: str,
