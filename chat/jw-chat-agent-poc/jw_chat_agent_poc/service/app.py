@@ -64,6 +64,7 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
     DeepResearchToolPlanner,
     parse_deep_research_request,
 )
+from jw_chat_agent_poc.orchestrator.final_surface_assembly import apply_final_surface_assembly
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     enforce_market_answer_contract,
@@ -2729,7 +2730,21 @@ def compute_final_answer(
             conversation_slots=extract_conversation_slots(result),
         )
         notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
-        answer = final_answer.text
+        typed_failure = normalize_typed_failure(result)
+        if typed_failure is None:
+            surface_result = apply_final_surface_assembly(
+                question,
+                final_answer.text,
+                query_spec,
+                markdown_response=(
+                    result.get("markdown_response")
+                    if isinstance(result.get("markdown_response"), Mapping)
+                    else None
+                ),
+            )
+            answer = surface_result.answer
+        else:
+            answer = final_answer.text
         if notice and not answer.startswith(notice):
             answer = f"{notice}\n\n{answer}" if answer else notice
         raw_calls = result.get("tool_calls")
