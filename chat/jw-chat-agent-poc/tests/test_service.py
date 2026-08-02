@@ -3519,6 +3519,52 @@ def test_stream_endpoint_emits_series_chart_from_verified_facts(monkeypatch) -> 
     assert "event: done" in response.text
 
 
+def test_chart_generation_runs_after_evidence_binding_by_default(monkeypatch) -> None:
+    observed_answers: list[str] = []
+    monkeypatch.delenv("JW_CHAT_CHART_AFTER_EVIDENCE_BINDING", raising=False)
+    monkeypatch.setattr(service_app, "_deterministic_simple_market_answer", lambda *_args: "기준 답변")
+    monkeypatch.setattr(service_app, "_apply_evidence_binding_gate", lambda _q, answer, _r: f"{answer}|BOUND")
+    monkeypatch.setattr(
+        service_app,
+        "build_charts",
+        lambda _result, *, question, answer: observed_answers.append(answer) or [],
+    )
+
+    final = service_app._compute_final_answer("리바로 매출 추이", {"tool_calls": [], "sources": []})
+
+    assert observed_answers == [final.text.removesuffix("|BOUND") + "|BOUND"]
+
+
+def test_chart_generation_flag_off_restores_legacy_order(monkeypatch) -> None:
+    observed_answers: list[str] = []
+    monkeypatch.setenv("JW_CHAT_CHART_AFTER_EVIDENCE_BINDING", "0")
+    monkeypatch.setattr(service_app, "_deterministic_simple_market_answer", lambda *_args: "기준 답변")
+    monkeypatch.setattr(service_app, "_apply_evidence_binding_gate", lambda _q, answer, _r: f"{answer}|BOUND")
+    monkeypatch.setattr(
+        service_app,
+        "build_charts",
+        lambda _result, *, question, answer: observed_answers.append(answer) or [],
+    )
+
+    final = service_app._compute_final_answer("리바로 매출 추이", {"tool_calls": [], "sources": []})
+
+    assert observed_answers and "|BOUND" not in observed_answers[0]
+    assert final.text.endswith("|BOUND")
+
+
+def test_chart_binding_exception_keeps_answer_and_omits_chart(monkeypatch) -> None:
+    monkeypatch.setenv("JW_CHAT_CHART_AFTER_EVIDENCE_BINDING", "1")
+    monkeypatch.setattr(service_app, "_deterministic_simple_market_answer", lambda *_args: "기준 답변")
+    monkeypatch.setattr(service_app, "_apply_evidence_binding_gate", lambda _q, answer, _r: answer)
+    monkeypatch.setattr(service_app, "build_charts", lambda *_args, **_kwargs: [{"title": "시장 매출 추이"}])
+    monkeypatch.setattr(service_app, "filter_charts_for_binding", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic binding failure")))
+
+    final = service_app._compute_final_answer("리바로 매출 추이", {"tool_calls": [], "sources": []})
+
+    assert final.text == "기준 답변"
+    assert final.charts == []
+
+
 def test_chat_answer_returns_same_final_markdown_and_metadata_as_stream(monkeypatch) -> None:
     class SeriesAgent:
         def __init__(self, *, external_mode: str = "live") -> None:

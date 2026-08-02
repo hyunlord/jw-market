@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
-from jw_chat_agent_poc.service.charts import build_charts
+from jw_chat_agent_poc.service.charts import build_charts, filter_charts_for_binding
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 
@@ -36,6 +36,90 @@ def test_series_question_builds_fact_backed_brand_sales_chart() -> None:
     assert sales_chart["datasets"][0]["label"] == "리바로 매출"
     assert sales_chart["datasets"][0]["data"][-1] == 8_493_234_217.11
     assert len(sales_chart["labels"]) >= 2
+
+
+def test_single_brand_binding_drops_market_only_sales_chart() -> None:
+    result = {
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "리바로",
+                    "metric": "series",
+                    "source_label": "UBIST",
+                    "brand_value_series_10pt": [
+                        {"period": "2026-03", "value_krw": 8_711_248_139.54},
+                        {"period": "2026-04", "value_krw": 8_493_234_217.11},
+                    ],
+                    "market_size_series": [
+                        {"period": "2026-03", "value_krw": 228_838_670_570.0},
+                        {"period": "2026-04", "value_krw": 225_677_368_890.0},
+                    ],
+                },
+            }
+        ],
+    }
+    charts = build_charts(result, question="리바로 매출 추이", answer="리바로 매출 추이입니다.")
+
+    bound = filter_charts_for_binding(charts, result=result, question="리바로 매출 추이")
+
+    assert [chart["title"] for chart in charts] == ["리바로 매출 추이", "시장 매출 추이"]
+    assert [chart["title"] for chart in bound] == ["리바로 매출 추이"]
+
+
+def test_market_comovement_binding_keeps_market_dataset() -> None:
+    result = {
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "brand": "리바로",
+                    "metric": "series",
+                    "source_label": "UBIST",
+                    "brand_value_series_10pt": [
+                        {"period": "2026-03", "value_krw": 8_711_248_139.54},
+                        {"period": "2026-04", "value_krw": 8_493_234_217.11},
+                    ],
+                    "market_size_series": [
+                        {"period": "2026-03", "value_krw": 228_838_670_570.0},
+                        {"period": "2026-04", "value_krw": 225_677_368_890.0},
+                    ],
+                },
+            }
+        ],
+    }
+    question = "리바로 매출 하락이 시장 영향인지 알려줘"
+    charts = build_charts(result, question=question, answer="리바로와 시장 매출을 비교합니다.")
+
+    bound = filter_charts_for_binding(charts, result=result, question=question)
+
+    assert any("시장 매출" in chart["title"] for chart in bound)
+
+
+def test_failed_evidence_gate_drops_all_charts() -> None:
+    result = {
+        "_qa_claim_gate": {
+            "blocked_claim_count": 1,
+            "blocked_reasons": ("ENTITY_MISMATCH",),
+            "disposition": "unavailable",
+        },
+        "resolution": {"canonical_brand": "리바로"},
+        "tool_calls": [],
+    }
+    charts = [
+        {
+            "type": "line",
+            "title": "리바로 매출 추이",
+            "labels": ["2026-03", "2026-04"],
+            "datasets": [{"label": "리바로 매출", "data": [1, 2]}],
+        }
+    ]
+
+    assert filter_charts_for_binding(charts, result=result, question="리바로 매출 추이") == []
 
 
 def test_single_point_share_and_rank_question_does_not_emit_charts() -> None:

@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from jw_chat_agent_poc.service.bq_charts import build_bq_chart_specs
+from jw_chat_agent_poc.service.evidence_binding import evidence_facts_from_result
 from jw_chat_agent_poc.service.chart_utils import (
     BLUE,
     TEAL,
@@ -45,6 +46,55 @@ def build_charts(
     charts.extend(_metric_call_charts(calls, target_brand, intent))
     charts.extend(_hira_charts(calls, intent))
     return _valid_charts(dedupe_charts(charts))
+
+
+def filter_charts_for_binding(
+    charts: Sequence[Mapping[str, Any]],
+    *,
+    result: Mapping[str, Any],
+    question: str,
+) -> list[dict[str, Any]]:
+    """Drop an obvious market-only sales chart from a brand-only request."""
+
+    gate = result.get("_qa_claim_gate")
+    if isinstance(gate, Mapping) and (
+        int(gate.get("blocked_claim_count") or 0) > 0
+        or gate.get("disposition") == "unavailable"
+    ):
+        return []
+
+    calls = [call for call in result.get("tool_calls", []) if isinstance(call, Mapping)]
+    target_brand = _target_brand(result, calls)
+    if not target_brand or "시장" in question or "market_vs_brand" in _chart_intent(question, ""):
+        return [dict(chart) for chart in charts]
+
+    facts = evidence_facts_from_result(result)
+    has_target_sales_evidence = any(
+        fact.entity.strip().casefold() == target_brand.strip().casefold()
+        and fact.metric in {"매출", "sales"}
+        for fact in facts
+    )
+    if not has_target_sales_evidence:
+        return [dict(chart) for chart in charts]
+
+    return [
+        dict(chart)
+        for chart in charts
+        if not _is_market_only_sales_chart(chart)
+    ]
+
+
+def _is_market_only_sales_chart(chart: Mapping[str, Any]) -> bool:
+    datasets = chart.get("datasets")
+    if not isinstance(datasets, Sequence) or isinstance(datasets, (str, bytes)):
+        return False
+    labels = {
+        text(dataset.get("label"))
+        for dataset in datasets
+        if isinstance(dataset, Mapping)
+    }
+    labels.discard(None)
+    return bool(labels) and labels == {"시장 매출"}
 
 
 def _metric_call_charts(
