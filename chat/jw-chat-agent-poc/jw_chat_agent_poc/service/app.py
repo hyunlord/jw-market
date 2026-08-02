@@ -109,20 +109,12 @@ from jw_chat_agent_poc.orchestrator.query_spec import (
 from jw_chat_agent_poc.orchestrator.response_format_contract import apply_response_format_contract
 from jw_chat_agent_poc.orchestrator.route_decision_shadow import observe_route_decision
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
-from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
+from jw_chat_agent_poc.orchestrator.source_trap import requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
-from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import AmbiguousBrandError, UnsupportedBrandError
 from jw_chat_agent_poc.service.answer_safety import (
     append_deterministic_source_block,
     cleanup_markdown_answer,
-    ensure_cross_file_comparison_judgment,
-    ensure_file_absence_statement,
-    ensure_file_overview_evidence_coverage,
-    ensure_multi_file_evidence_coverage,
-    ensure_file_page_evidence,
-    ensure_deep_research_structure,
-    ensure_hira_patient_summary,
     ensure_natural_fact_lead,
     ensure_top_brand_trend_table,
     enforce_relational_numeric_claims_with_trace,
@@ -132,6 +124,11 @@ from jw_chat_agent_poc.service.answer_safety import (
 from jw_chat_agent_poc.service.answer_delivery import (
     record_answer_delivery,
     record_source_notice_attachment,
+)
+from jw_chat_agent_poc.service.answer_pipeline import (
+    AnswerPipelineContext,
+    build_answer_pipeline_stages,
+    run_selected_answer_pipeline,
 )
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
 from jw_chat_agent_poc.service.charts import build_charts, filter_charts_for_binding
@@ -196,8 +193,6 @@ from jw_chat_agent_poc.service.file_llm_brief import (
 from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_question
 from jw_chat_agent_poc.service.genos_client import (
     GenosClient,
-    append_blocked_metric_notices_from_markdown_response,
-    append_deferred_prescription_notice,
     append_source_basis_notice,
 )
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
@@ -2813,6 +2808,12 @@ def _project_public_file_sources(items: Iterable[dict[str, Any]]) -> tuple[dict[
     return tuple(projected)
 
 
+def _run_legacy_answer_stages(answer: str, stages: Iterable[Any]) -> str:
+    for pipeline_stage in stages:
+        answer = pipeline_stage.transform(answer)
+    return answer
+
+
 def compute_final_answer(
     question: str,
     result: dict,
@@ -3165,7 +3166,6 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         except Exception:
             charts = []
         timing_payload = finish(timing)
-    safe_answer = cleanup_markdown_answer(safe_answer)
     router_diagnostics = result.get("router_diagnostics")
     external_tool_agent_result = (
         isinstance(router_diagnostics, dict)
@@ -3177,101 +3177,46 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     general_contracts_allowed = not deep_mode and (
         not external_tool_agent_result or structural_contract == "positioning"
     )
-    if not file_context_fact and market_contract_allowed and general_contracts_allowed:
-        safe_answer = enforce_answer_contract(
-            active_question,
-            safe_answer,
-            markdown_response,
-            result.get("general_view_contract"),
-            tool_calls=tuple(result.get("tool_calls") or ()),
+
+    pre_chart_stages, post_chart_stages = build_answer_pipeline_stages(
+        AnswerPipelineContext(
+            question=active_question,
+            result=result,
+            markdown_response=markdown_response,
+            fact_md=fact_md,
+            policy_fact_md=policy_fact_md,
+            file_context_fact=file_context_fact,
+            deep_mode=deep_mode,
+            market_contract_allowed=market_contract_allowed,
+            general_contracts_allowed=general_contracts_allowed,
+            external_tool_agent_result=external_tool_agent_result,
+            empty_file_answer=_looks_like_empty_file_context_answer,
+            file_context_fallback=_file_context_fallback_answer,
+            append_file_context_source=_append_file_context_source,
+            record_source_notice=lambda attached: record_source_notice_attachment(
+                result,
+                attached=attached,
+            ),
+            relational_claim_gate=lambda answer: _apply_relational_claim_gate(
+                active_question,
+                answer,
+                result,
+            ),
+            natural_fact_lead=lambda answer: ensure_natural_fact_lead(
+                active_question,
+                answer,
+                fact_md,
+            ),
+            file_postprocess_isolation=lambda answer: _enforce_file_postprocess_isolation(answer, result),
+            evidence_binding_gate=lambda answer: _apply_evidence_binding_gate(active_question, answer, result),
+            strip_verified_progress=_strip_verified_evidence_progress,
         )
-    safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
-    if not file_context_fact and market_contract_allowed and general_contracts_allowed:
-        safe_answer = enforce_answer_contract(
-            active_question,
-            safe_answer,
-            markdown_response,
-            result.get("general_view_contract"),
-            tool_calls=tuple(result.get("tool_calls") or ()),
-        )
-    if file_context_fact and _looks_like_empty_file_context_answer(safe_answer):
-        safe_answer = apply_claim_policy(active_question, _file_context_fallback_answer(file_context_fact), policy_fact_md)
-    safe_answer = ensure_file_page_evidence(
-        active_question,
+    )
+    safe_answer = run_selected_answer_pipeline(
         safe_answer,
-        str(result.get("file_context") or ""),
+        pre_chart_stages,
+        legacy=lambda answer: _run_legacy_answer_stages(answer, pre_chart_stages),
     )
-    safe_answer = ensure_file_overview_evidence_coverage(
-        active_question,
-        safe_answer,
-        str(result.get("file_context") or ""),
-    )
-    safe_answer = ensure_cross_file_comparison_judgment(
-        active_question,
-        safe_answer,
-        str(result.get("file_context") or ""),
-    )
-    safe_answer = ensure_multi_file_evidence_coverage(
-        active_question,
-        safe_answer,
-        str(result.get("file_context") or ""),
-    )
-    safe_answer = _append_file_context_source(safe_answer, fact_md, file_context_fact)
-    safe_answer = append_blocked_metric_notices_from_markdown_response(safe_answer, markdown_response)
-    safe_answer = apply_common_unavailable_response(
-        active_question,
-        safe_answer,
-        markdown_response,
-        tool_calls=result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
-        source_scope=str(result.get("context_scope") or "MARKET"),
-        connected_source_mode=external_tool_agent_result or deep_mode,
-    )
-    safe_answer, source_notice_attached = append_source_basis_notice(
-        safe_answer,
-        markdown_response,
-    )
-    record_source_notice_attachment(
-        result,
-        attached=source_notice_attached,
-    )
-    safe_answer = replace_internal_fact_dump(active_question, safe_answer, markdown_response)
-    if not file_context_fact and market_contract_allowed:
-        safe_answer = apply_requested_source_trap_gate(
-            active_question,
-            safe_answer,
-            identity_only=external_tool_agent_result or deep_mode,
-        )
-    safe_answer = ensure_file_absence_statement(active_question, safe_answer, str(result.get("file_context") or ""))
-    safe_answer = ensure_hira_patient_summary(active_question, safe_answer, fact_md)
-    if not deep_mode:
-        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
-    safe_answer = ensure_natural_fact_lead(active_question, safe_answer, fact_md)
-    if not file_context_fact and market_contract_allowed and not deep_mode:
-        safe_answer = _apply_relational_claim_gate(
-            active_question,
-            safe_answer,
-            result,
-        )
-        safe_answer = enforce_market_answer_contract(
-            active_question,
-            safe_answer,
-            result.get("tool_calls") if isinstance(result.get("tool_calls"), list) else (),
-        )
-    # Final single-gate scrub: catches internal terms re-injected by the post-cleanup
-    # notice/source appenders above so no path bypasses terminology scrubbing.
-    safe_answer = _enforce_file_postprocess_isolation(safe_answer, result)
-    if deep_mode:
-        safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
-        safe_answer = ensure_deep_research_structure(safe_answer)
-    safe_answer = _apply_relational_claim_gate(
-        active_question,
-        safe_answer,
-        result,
-    )
-    if not deep_mode and not file_context_fact and market_contract_allowed:
-        safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
-    if not file_context_fact and market_contract_allowed:
-        safe_answer = _apply_evidence_binding_gate(active_question, safe_answer, result)
     if chart_after_binding:
         try:
             with stage(timing, "chart_generation", "bound fact-backed chart spec"):
@@ -3292,9 +3237,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     # After the binding gate, so a refusal the orchestrator already decided on is
     # never weighed as an unbacked claim, and after every contract enforcer, so
     # none of them can drop it again.
-    safe_answer = append_deferred_prescription_notice(safe_answer, result)
-    safe_answer = scrub_internal_terminology(safe_answer)
-    safe_answer = _strip_verified_evidence_progress(safe_answer)
+    safe_answer = run_selected_answer_pipeline(
+        safe_answer,
+        post_chart_stages,
+        legacy=lambda answer: _run_legacy_answer_stages(answer, post_chart_stages),
+    )
     trace = trace_envelope(
         question=question,
         result=result,
