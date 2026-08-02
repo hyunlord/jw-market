@@ -9,6 +9,8 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     hira_disease_code_for_text,
     is_hira_disease_question,
 )
+from jw_chat_agent_poc.contracts.routing import RejectedRoute, RouteMode
+from jw_chat_agent_poc.orchestrator.route_decision_shadow import observe_route_decision
 from jw_chat_agent_poc.tool_use.clinical_disease import clinical_disease_for_text
 from jw_chat_agent_poc.tool_use.routing_v4_types import DomainDecisionSource, ProposedCall
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
@@ -46,11 +48,38 @@ def classify_question(question: str) -> QuestionClassification:
         classification=classification,
         requested_facets=requested_facets,
     )
-    return replace(
+    result = replace(
         classification,
         requested_facets=requested_facets,
         unresolvable_facets=unresolvable_facets,
     )
+    observe_route_decision(
+        question=question,
+        domain=result.source_domain,
+        handler=result.requested_capability,
+        mode=(
+            RouteMode.AGENTIC
+            if result.domain_decision_source is DomainDecisionSource.LLM
+            else RouteMode.DETERMINISTIC
+        ),
+        decided_by="routing_v4_rules",
+        reason_codes=tuple(
+            code
+            for code in (
+                result.deterministic_rule_id,
+                f"decision_source:{result.domain_decision_source.value}",
+            )
+            if code
+        ),
+        rejected_alternatives=(
+            RejectedRoute(
+                domain="unknown",
+                handler="external_agent",
+                reason_codes=("classified_domain_selected",),
+            ),
+        ),
+    )
+    return result
 
 
 def _classify_question(question: str) -> QuestionClassification:
