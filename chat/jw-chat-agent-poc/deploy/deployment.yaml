@@ -1,6 +1,7 @@
 # Server-side-apply ownership manifest for stable chat environment settings.
 # Apply only to the existing Deployment with field-manager jw-chat-env-canonicalizer.
-# Release automation owns image and identity; the HPA owns replicas.
+# Release automation owns image; security automation owns workload identity.
+# The HPA owns replicas.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,7 +9,11 @@ metadata:
   namespace: llmops
 spec:
   template:
+    metadata:
+      labels:
+        security.jwhealthcare.com/identity: jw-chat-agent-poc
     spec:
+      serviceAccountName: jw-chat-agent-poc-sa
       containers:
       - name: app
         env:

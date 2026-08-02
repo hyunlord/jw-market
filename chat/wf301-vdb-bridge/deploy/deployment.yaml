@@ -1,7 +1,8 @@
 # Server-side-apply ownership manifest for stable bridge environment settings.
 # Apply only to the existing Deployment with field-manager jw-chat-env-canonicalizer.
 # FILE_SQL_ENABLED is intentionally omitted pending a separate policy decision.
-# Release automation owns image and identity; workload automation owns replicas.
+# Release automation owns image; security automation owns workload identity.
+# Workload automation owns replicas.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +10,11 @@ metadata:
   namespace: llmops
 spec:
   template:
+    metadata:
+      labels:
+        security.jwhealthcare.com/identity: code-serving-235
     spec:
+      serviceAccountName: code-serving-235-sa
       containers:
       - name: code-serving-235
         env:

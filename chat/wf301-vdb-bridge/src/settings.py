@@ -12,6 +12,7 @@ TARGET_VDB_COLLECTION = os.environ.get(
     "TARGET_VDB_COLLECTION", "Z87cf9950c34b41b48564482b4112613d"
 )
 COMMIT_ENABLED = os.environ.get("COMMIT_ENABLED", "false").lower() == "true"
+DOCS_ENABLED = os.environ.get("CODE_SERVING_DOCS_ENABLED", "false").lower() == "true"
 ALLOWED_WORKFLOW_IDS = {
     int(x) for x in os.environ.get("ALLOWED_WORKFLOW_IDS", "301").split(",") if x.strip()
 }

@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: code-serving-235-sa
+  namespace: llmops
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jw-chat-agent-poc-sa
+  namespace: llmops
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: code-serving-235-allow-chat-only
+  namespace: llmops
+spec:
+  podSelector:
+    matchLabels:
+      app: code-serving-235
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          security.jwhealthcare.com/identity: jw-chat-agent-poc
+    ports:
+    - protocol: TCP
+      port: 8080

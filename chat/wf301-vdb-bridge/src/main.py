@@ -253,28 +253,7 @@ wf301 파일 업로드와 세션별 문서 검색을 연결하는 code-serving-2
 - 등록 문서 TTL은 {settings.TTL_DAYS}일입니다.
 """
 
-HEALTH_DESCRIPTION = """
-서비스가 요청을 받을 수 있는지와 런타임 제한값을 확인합니다.
-
-내부적으로 애플리케이션 설정을 읽어 commit 모드 활성화 여부, DB 자격 설정 여부, 대상 VDB ID, TTL, 현재 쿼터 한도를 반환합니다. 외부 저장소에 쓰지 않는 읽기 전용 헬스 체크입니다.
-
-언제 사용하나요:
-- 배포 직후 code-serving-235가 정상 기동했는지 확인할 때
-- `/upload` 또는 `/commit` 전에 현재 서비스가 dry-run 모드인지 commit 모드인지 확인할 때
-- 프론트/게이트웨이에서 사용할 수 있는 경로와 쿼터 한도를 빠르게 표시할 때
-
-응답 예시:
-```json
-{
-  "status": "ok",
-  "service": "wf301-vdb-bridge",
-  "mode": "commit",
-  "commit_enabled": true,
-  "target_vdb_id": 139,
-  "ttl_days": 7
-}
-```
-"""
+HEALTH_DESCRIPTION = "서비스 liveness 상태만 반환합니다."
 
 DRY_RUN_DESCRIPTION = """
 임시 VDB에 이미 생성된 `temp_documents`를 공용 VDB 139에 등록하면 어떤 작업이 일어나는지 미리 계산합니다.
@@ -391,6 +370,9 @@ app = FastAPI(
     version="api-0.1.0",
     description=API_DESCRIPTION,
     root_path="/api/gateway/code_serving/235",
+    docs_url="/docs" if settings.DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
+    redoc_url="/redoc" if settings.DOCS_ENABLED else None,
 )
 
 
@@ -864,30 +846,8 @@ def _load_local_docx_chunks(
     summary="서비스 상태와 런타임 한도 확인",
     description=HEALTH_DESCRIPTION,
 )
-def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "service": "wf301-vdb-bridge",
-        "mode": "commit" if settings.COMMIT_ENABLED else "dry_run",
-        "commit_enabled": settings.COMMIT_ENABLED,
-        "db_configured": bool(settings.DB_PASSWORD),
-        "target_vdb_id": settings.TARGET_VDB_ID,
-        "paths": [
-            "/health",
-            "/dry-run",
-            "/commit",
-            "/upload",
-            "/documents",
-            "/documents/delete",
-            "/quota/check",
-            "/search",
-            "/file-sql/schema",
-            "/file-sql/query",
-        ],
-        "file_sql_enabled": settings.FILE_SQL_ENABLED,
-        "ttl_days": settings.TTL_DAYS,
-        "quota": _quota_limits().model_dump(),
-    }
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 @app.post(
