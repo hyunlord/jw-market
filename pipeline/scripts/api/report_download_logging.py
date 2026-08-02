@@ -189,6 +189,7 @@ def create_report_download_router(submitter: ReportDownloadSubmitter) -> APIRout
         "/api/telemetry/report-downloads",
         status_code=status.HTTP_202_ACCEPTED,
         summary="Record a report completion boundary",
+        include_in_schema=False,
     )
     def report_download(payload: ReportDownloadPayload, request: Request) -> dict[str, bool]:
         actor = actor_from_request(request)
