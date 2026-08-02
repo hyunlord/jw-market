@@ -2506,14 +2506,45 @@ def _multi_source_incompatible_comparison_guidance(
         "market_definition": "시장 정의",
         "denominator": "분모",
     }
+    metric_labels = {"sales": "매출", "share": "점유율", "rank": "순위"}
     brands = "·".join(decision.brands)
-    mismatches = "·".join(axis_labels[axis] for axis in decision.mismatch_axes)
+    metrics = (
+        "·".join(metric_labels[metric] for metric in decision.incompatible_metrics)
+        if decision.incompatible_metrics
+        and all(metric in metric_labels for metric in decision.incompatible_metrics)
+        else "요청 지표"
+    )
+    known_axes = bool(decision.mismatch_axes) and all(
+        axis in axis_labels for axis in decision.mismatch_axes
+    )
+    mismatches = (
+        "·".join(axis_labels[axis] for axis in decision.mismatch_axes)
+        if known_axes
+        else "비교"
+    )
+    if not known_axes:
+        recovery = "비교 기준을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
+    else:
+        recovery_axes = [
+            axis_labels[axis]
+            for axis in decision.mismatch_axes
+            if axis not in {"market_definition", "denominator"}
+        ]
+        if {"market_definition", "denominator"} & set(decision.mismatch_axes):
+            recovery_axes.append("시장 기준")
+        recovery_basis = "·".join(recovery_axes)
+        recovery = (
+            "각 브랜드의 시장 기준을 분리해 개별 결과를 확인해 주세요."
+            if recovery_axes == ["시장 기준"]
+            else f"{recovery_basis}별로 각 브랜드 결과를 분리해 확인해 주세요."
+        )
     return cleanup_markdown_answer(
-        f"{brands}의 {mismatches} 기준이 일치하지 않아 한 표에서 직접 비교할 수 없습니다.\n\n"
+        f"{brands}의 {metrics} 비교에서 {mismatches} 기준이 일치하지 않아 "
+        "한 표에서 직접 비교할 수 없습니다.\n\n"
         "상태: 부분 확인\n\n"
         "확인된 범위: 각 원천의 개별 결과는 확인했지만 서로 다른 기준의 수치를 "
         "하나의 증감·순위 결론으로 합치지 않았습니다.\n\n"
-        "대안: 원천과 기준기간을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
+        f"대안: {recovery}"
     )
 
 

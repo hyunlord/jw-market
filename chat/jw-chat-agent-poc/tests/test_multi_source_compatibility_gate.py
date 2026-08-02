@@ -6,9 +6,11 @@ from typing import Any
 import pytest
 
 from jw_chat_agent_poc.orchestrator.comparison_compatibility import (
+    ComparisonCompatibilityDecision,
     incompatible_direct_comparison,
 )
 from jw_chat_agent_poc.service.answer_safety import (
+    _multi_source_incompatible_comparison_guidance,
     enforce_relational_numeric_claims_with_trace,
 )
 from jw_chat_agent_poc.service.app import compute_final_answer
@@ -33,12 +35,14 @@ MIXED_COMPARISON_ANSWER = """## 브랜드 매출 비교
 
 def test_mixed_source_direct_comparison_uses_typed_guidance() -> None:
     expected = (
-        "가드렛·자누비아·트라젠타의 원천·자료 주기·기준기간·분모 기준이 일치하지 않아 "
+        "가드렛·자누비아·트라젠타의 매출·점유율 비교에서 "
+        "원천·자료 주기·기준기간·분모 기준이 일치하지 않아 "
         "한 표에서 직접 비교할 수 없습니다.\n\n"
         "상태: 부분 확인\n\n"
         "확인된 범위: 각 원천의 개별 결과는 확인했지만 서로 다른 기준의 수치를 "
         "하나의 증감·순위 결론으로 합치지 않았습니다.\n\n"
-        "대안: 원천과 기준기간을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
+        "대안: 원천·자료 주기·기준기간·시장 기준별로 "
+        "각 브랜드 결과를 분리해 확인해 주세요."
     )
     result = enforce_relational_numeric_claims_with_trace(
         "가드렛, 자누비아, 트라젠타 매출과 점유율을 각각 알려줘",
@@ -58,6 +62,104 @@ def test_mixed_source_direct_comparison_uses_typed_guidance() -> None:
     assert "기준기간" in result.answer
     assert "가드렛은 하락" not in result.answer
     assert result.answer == expected
+
+
+def test_multi_source_guidance_names_metric_and_actual_market_axes() -> None:
+    decision = ComparisonCompatibilityDecision(
+        brands=("리바로", "가드렛"),
+        mismatch_axes=("market_definition", "denominator"),
+        incompatible_metrics=("share",),
+    )
+
+    answer = _multi_source_incompatible_comparison_guidance(decision)
+
+    assert answer == (
+        "리바로·가드렛의 점유율 비교에서 시장 정의·분모 기준이 일치하지 않아 "
+        "한 표에서 직접 비교할 수 없습니다.\n\n"
+        "상태: 부분 확인\n\n"
+        "확인된 범위: 각 원천의 개별 결과는 확인했지만 서로 다른 기준의 수치를 "
+        "하나의 증감·순위 결론으로 합치지 않았습니다.\n\n"
+        "대안: 각 브랜드의 시장 기준을 분리해 개별 결과를 확인해 주세요."
+    )
+
+
+def test_n6_canonical_decision_is_unchanged_while_guidance_is_precise() -> None:
+    first = _only_metric(
+        _metric_call("리바로", "UBIST", "2025-08", "2026-05", 555),
+        "share",
+    )
+    second = _only_metric(
+        _metric_call("가드렛", "UBIST", "2025-08", "2026-05", 976),
+        "share",
+    )
+    first["render_data"]["market_definition"] = "리바로 고지혈증 시장"
+    answer = (
+        "## 브랜드 점유율 비교\n\n"
+        "| 브랜드 | 최신 점유율 |\n"
+        "| --- | --- |\n"
+        "| 리바로 | 1.00% |\n"
+        "| 가드렛 | 1.00% |"
+    )
+
+    decision = incompatible_direct_comparison(
+        "리바로와 가드렛의 점유율 변화 비교",
+        answer,
+        [first, second],
+    )
+    result = enforce_relational_numeric_claims_with_trace(
+        "리바로와 가드렛의 점유율 변화 비교",
+        answer,
+        [first, second],
+    )
+
+    assert decision == ComparisonCompatibilityDecision(
+        brands=("리바로", "가드렛"),
+        mismatch_axes=("market_definition", "denominator"),
+        incompatible_metrics=("share",),
+    )
+    assert result.disposition == "partial"
+    assert result.failure_kind == "incompatible_comparison"
+    assert result.answer.startswith(
+        "리바로·가드렛의 점유율 비교에서 시장 정의·분모 기준이 일치하지 않아 "
+    )
+    assert result.answer.endswith(
+        "대안: 각 브랜드의 시장 기준을 분리해 개별 결과를 확인해 주세요."
+    )
+    assert "1.00%" not in result.answer
+
+
+def test_multi_source_guidance_lists_rank_and_multiple_metrics() -> None:
+    decision = ComparisonCompatibilityDecision(
+        brands=("리바로", "가드렛"),
+        mismatch_axes=("source", "unit"),
+        incompatible_metrics=("share", "rank"),
+    )
+
+    answer = _multi_source_incompatible_comparison_guidance(decision)
+
+    assert answer.startswith(
+        "리바로·가드렛의 점유율·순위 비교에서 원천·단위 기준이 일치하지 않아 "
+    )
+    assert answer.endswith(
+        "대안: 원천·단위별로 각 브랜드 결과를 분리해 확인해 주세요."
+    )
+
+
+def test_multi_source_guidance_uses_safe_fallback_for_unknown_mapping() -> None:
+    decision = ComparisonCompatibilityDecision(
+        brands=("리바로", "가드렛"),
+        mismatch_axes=("future_axis",),
+        incompatible_metrics=("future_metric",),
+    )
+
+    answer = _multi_source_incompatible_comparison_guidance(decision)
+
+    assert answer.startswith(
+        "리바로·가드렛의 요청 지표 비교에서 비교 기준이 일치하지 않아 "
+    )
+    assert answer.endswith(
+        "대안: 비교 기준을 분리해 각 브랜드 결과를 개별로 확인해 주세요."
+    )
 
 
 def test_same_source_direct_comparison_is_byte_identical() -> None:
