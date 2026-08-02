@@ -9,12 +9,22 @@ def usage_call_from_payload(payload: Mapping[str, Any], *, base_url: str, stream
     usage = payload.get("usage") or payload.get("usage_metadata") or payload.get("usageMetadata")
     if not isinstance(usage, Mapping):
         return None
-    input_tokens = _int_from_keys(usage, ("prompt_tokens", "input_tokens", "prompt_token_count"))
+    input_tokens = _int_from_keys(
+        usage,
+        ("prompt_tokens", "input_tokens", "prompt_token_count", "promptTokenCount", "inputTokenCount"),
+    )
     output_tokens = _int_from_keys(
         usage,
-        ("completion_tokens", "output_tokens", "candidates_token_count", "candidate_tokens"),
+        (
+            "completion_tokens",
+            "output_tokens",
+            "candidates_token_count",
+            "candidate_tokens",
+            "candidatesTokenCount",
+            "outputTokenCount",
+        ),
     )
-    total_tokens = _int_from_keys(usage, ("total_tokens", "total_token_count"))
+    total_tokens = _int_from_keys(usage, ("total_tokens", "total_token_count", "totalTokenCount"))
     if total_tokens is None and (input_tokens is not None or output_tokens is not None):
         total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
     if input_tokens is None and output_tokens is None and total_tokens is None:
