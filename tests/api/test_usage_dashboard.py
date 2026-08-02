@@ -120,6 +120,23 @@ def test_repository_fails_closed_when_reader_settings_are_partial() -> None:
         MariaDBUsageRepository(replace(config, dashboard_db_host="db.internal"))
 
 
+def test_repository_allows_a_bounded_cold_view_read() -> None:
+    from pipeline.scripts.api.dashboard_usage import DASHBOARD_DB_READ_TIMEOUT_SECONDS
+
+    repository = MariaDBUsageRepository(
+        replace(
+            config,
+            dashboard_db_host="db.internal",
+            dashboard_db_user="dashboard_reader",
+            dashboard_db_password="test-only",
+            dashboard_db_name="llmops",
+        )
+    )
+
+    assert DASHBOARD_DB_READ_TIMEOUT_SECONDS == 15
+    assert repository._connect_args["read_timeout"] == DASHBOARD_DB_READ_TIMEOUT_SECONDS
+
+
 def test_period_sql_survives_pymysql_parameter_interpolation() -> None:
     from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL, _PERIOD_SQL
 

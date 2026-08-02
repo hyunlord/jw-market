@@ -15,6 +15,7 @@ from pipeline.scripts.api.config import APIConfig
 Grain = Literal["day", "week"]
 MAX_RANGE_DAYS: Final = 366
 DEFAULT_CACHE_TTL_SECONDS: Final = 60
+DASHBOARD_DB_READ_TIMEOUT_SECONDS: Final = 15
 
 _PERIOD_SQL: Final = {
     "day": "DATE_FORMAT({column}, '%%Y-%%m-%%d')",
@@ -205,7 +206,7 @@ class MariaDBUsageRepository:
             "charset": "utf8mb4",
             "cursorclass": pymysql.cursors.DictCursor,
             "autocommit": True,
-            "read_timeout": 8,
+            "read_timeout": DASHBOARD_DB_READ_TIMEOUT_SECONDS,
             "write_timeout": 8,
             "connect_timeout": 3,
         }
