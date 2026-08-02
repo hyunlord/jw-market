@@ -33,6 +33,7 @@ COPY pipeline/scripts/deploy /app/pipeline/scripts/deploy
 COPY pipeline/scripts/etl /app/pipeline/scripts/etl
 COPY pipeline/scripts/forecast /app/pipeline/scripts/forecast
 COPY pipeline/scripts/utils /app/pipeline/scripts/utils
+COPY pipeline/contracts /app/pipeline/contracts
 COPY pipeline/etl /app/pipeline/etl
 COPY docs/reference /app/static
 
