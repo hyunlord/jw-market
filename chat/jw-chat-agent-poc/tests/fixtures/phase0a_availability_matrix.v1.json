@@ -1,0 +1,13 @@
+{
+  "catalog_snapshot_id": "phase0a-20260802",
+  "market_definition_version": "phase0a-v1",
+  "brands": [
+    {"brand": "리바로", "market_id": "strategy_006", "source_class": "ubist-only"},
+    {"brand": "헴리브라", "market_id": "strategy_013", "source_class": "iqvia-only"},
+    {"brand": "가드렛", "market_id": "strategy_003", "source_class": "dual"},
+    {"brand": "악템라", "market_id": "strategy_011", "source_class": "iqvia-only"},
+    {"brand": "위너프", "market_id": "strategy_014", "source_class": "iqvia-only"},
+    {"brand": "엔커버", "market_id": "strategy_015", "source_class": "dual"}
+  ],
+  "expected": {"cells": 72, "valid": 52, "invalid": 20}
+}

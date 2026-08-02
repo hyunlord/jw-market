@@ -94,6 +94,11 @@ def test_answer_question_observes_query_spec_without_public_surface(caplog) -> N
         and "'operation': 'current_value'" in record.message
         for record in caplog.records
     )
+    assert any(
+        "resolved_query_shadow_observed" in record.message
+        and "resolved_query_phase1a_shadow_v1" in record.message
+        for record in caplog.records
+    )
 
 
 def test_query_spec_observation_failure_does_not_change_answer(monkeypatch, caplog) -> None:
@@ -114,6 +119,40 @@ def test_query_spec_observation_failure_does_not_change_answer(monkeypatch, capl
     assert response["result"]["answer"] == "fallback:리바로 매출 알려줘"
     assert any(
         "request_query_spec_observation_failed" in record.message
+        for record in caplog.records
+    )
+
+
+def test_resolved_query_shadow_failure_does_not_change_answer(monkeypatch, caplog) -> None:
+    baseline = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "리바로 매출 알려줘",
+        "fixture",
+        "phase1a-byte-invariance",
+    )
+
+    def _fail_shadow(*_args, **_kwargs):
+        raise RuntimeError("synthetic resolved query shadow failure")
+
+    monkeypatch.setattr(service_app, "resolved_query_shadow_observation", _fail_shadow)
+    with caplog.at_level(logging.ERROR, logger="jw_chat_agent_poc.service.app"):
+        response = service_app._answer_question(
+            SessionStore(),
+            _market_scope_resolver(),
+            _fake_agent_factory,
+            "리바로 매출 알려줘",
+            "fixture",
+            "phase1a-byte-invariance",
+        )
+
+    assert response["result"]["answer"].encode("utf-8") == baseline["result"][
+        "answer"
+    ].encode("utf-8")
+    assert response["result"]["answer"] == "fallback:리바로 매출 알려줘"
+    assert any(
+        "resolved_query_shadow_observation_failed" in record.message
         for record in caplog.records
     )
 
