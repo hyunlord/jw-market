@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 SQL = Path("deploy/k8s/jw-market/log-dashboard-reader-views.sql").read_text()
+REVOKE_SQL = Path("deploy/k8s/jw-market/log-dashboard-reader-revoke-raw.sql").read_text()
 
 
 def test_dashboard_views_exclude_conversation_content_and_auth_details() -> None:
@@ -21,6 +22,12 @@ def test_reader_receives_views_only_not_raw_tables() -> None:
     assert "GRANT INSERT" not in SQL
     assert "GRANT UPDATE" not in SQL
     assert "GRANT DELETE" not in SQL
+
+
+def test_reader_raw_table_privileges_are_explicitly_revoked() -> None:
+    assert "REVOKE SELECT ON `jw_market_audit_stage`.`audit_api_call_log`" in REVOKE_SQL
+    assert "REVOKE SELECT ON `llmops`.`user_tb`" in REVOKE_SQL
+    assert "dashboard_" not in REVOKE_SQL
 
 
 def test_chat_view_joins_by_full_deterministic_key() -> None:
