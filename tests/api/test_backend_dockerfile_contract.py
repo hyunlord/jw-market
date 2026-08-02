@@ -12,3 +12,9 @@ def test_backend_image_includes_api_import_dependencies() -> None:
     assert "COPY pipeline/contracts /app/pipeline/contracts" in dockerfile
     assert "COPY pipeline/domain /app/pipeline/domain" in dockerfile
     assert "COPY pipeline/scripts/deploy /app/pipeline/scripts/deploy" in dockerfile
+
+
+def test_backend_requirements_include_transitive_workbook_dependency() -> None:
+    requirements = Path("pipeline/scripts/api/requirements.txt").read_text()
+
+    assert "openpyxl" in requirements
