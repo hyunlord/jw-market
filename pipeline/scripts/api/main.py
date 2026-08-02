@@ -26,6 +26,11 @@ from pipeline.scripts.api.audit_logging import (
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.db import close_pool, init_pool
 from pipeline.scripts.api.openapi_docs import install_openapi_overrides
+from pipeline.scripts.api.report_download_logging import (
+    AsyncReportDownloadWriter,
+    create_report_download_router,
+    create_report_download_writer,
+)
 from pipeline.scripts.api.routes import (
     brand_activity,
     brands,
@@ -42,6 +47,7 @@ from pipeline.scripts.api.routes import (
 logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
 audit_writer = create_audit_writer(config)
+report_download_writer = create_report_download_writer(config)
 
 
 FRONTEND_FILENAME = "jw_market_hardcoded_mockup_v3_4.html"
@@ -61,6 +67,8 @@ async def lifespan(app: FastAPI):
     init_pool()
     if isinstance(audit_writer, AsyncAuditWriter):
         audit_writer.start()
+    if isinstance(report_download_writer, AsyncReportDownloadWriter):
+        report_download_writer.start()
     logger.info(
         "JW Market API starting: version=%s prefix=%s db=%s:%s/%s",
         config.app_version,
@@ -72,6 +80,8 @@ async def lifespan(app: FastAPI):
     yield
     if isinstance(audit_writer, AsyncAuditWriter):
         audit_writer.stop()
+    if isinstance(report_download_writer, AsyncReportDownloadWriter):
+        report_download_writer.stop()
     close_pool()
 
 
@@ -113,6 +123,7 @@ app.include_router(dynamic_market.router)
 app.include_router(market_filter.router)
 app.include_router(market_scope.router)
 app.include_router(brand_activity.router)
+app.include_router(create_report_download_router(report_download_writer))
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR), check_dir=False), name="static")
 if config.external_path_prefix:

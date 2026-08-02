@@ -12,6 +12,13 @@ DELETE_SQL = """
     LIMIT %s
 """
 
+DELETE_REPORT_SQL = """
+    DELETE FROM report_download_event
+    WHERE completed_at < %s
+    ORDER BY completed_at ASC, id ASC
+    LIMIT %s
+"""
+
 
 def delete_expired_rows(
     connection,
@@ -27,6 +34,27 @@ def delete_expired_rows(
     while True:
         with connection.cursor() as cursor:
             cursor.execute(DELETE_SQL, (cutoff, batch_size))
+            count = cursor.rowcount
+        connection.commit()
+        deleted += count
+        if count < batch_size:
+            return deleted
+
+
+def delete_expired_report_rows(
+    connection,
+    *,
+    retention_days: int,
+    batch_size: int,
+    now: datetime | None = None,
+) -> int:
+    if retention_days < 1 or batch_size < 1:
+        raise ValueError("retention days and batch size must be positive")
+    cutoff = ((now or datetime.now(UTC)) - timedelta(days=retention_days)).replace(tzinfo=None)
+    deleted = 0
+    while True:
+        with connection.cursor() as cursor:
+            cursor.execute(DELETE_REPORT_SQL, (cutoff, batch_size))
             count = cursor.rowcount
         connection.commit()
         deleted += count
@@ -52,14 +80,22 @@ def main() -> int:
         autocommit=False,
     )
     try:
-        deleted = delete_expired_rows(
+        deleted_api = delete_expired_rows(
+            connection,
+            retention_days=int(os.getenv("AUDIT_RETENTION_DAYS", "90")),
+            batch_size=int(os.getenv("AUDIT_DELETE_BATCH_SIZE", "1000")),
+        )
+        deleted_reports = delete_expired_report_rows(
             connection,
             retention_days=int(os.getenv("AUDIT_RETENTION_DAYS", "90")),
             batch_size=int(os.getenv("AUDIT_DELETE_BATCH_SIZE", "1000")),
         )
     finally:
         connection.close()
-    print(f"audit retention completed deleted_rows={deleted}")
+    print(
+        "audit retention completed "
+        f"api_deleted_rows={deleted_api} report_deleted_rows={deleted_reports}"
+    )
     return 0
 
 

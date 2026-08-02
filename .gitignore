@@ -158,6 +158,7 @@ sample_news_*.json
 *.dump
 *.sql
 !deploy/k8s/jw-market/audit-api-call-log.sql
+!deploy/k8s/jw-market/log-dashboard-reader-views.sql
 !deploy/k8s/ingest-hook/reference/ingest-status-transition.sql
 !pipeline/migrations/*.sql
 !pipeline/migrations/**/*.sql

@@ -12,7 +12,7 @@ from pipeline.scripts.api.audit_logging import (
     AuditEvent,
     install_audit_logging_middleware,
 )
-from pipeline.scripts.api.audit_retention import delete_expired_rows
+from pipeline.scripts.api.audit_retention import delete_expired_report_rows, delete_expired_rows
 
 
 class CollectingSubmitter:
@@ -190,3 +190,22 @@ def test_ttl_delete_is_cutoff_based_and_chunked() -> None:
     assert "ORDER BY called_at ASC, id ASC" in sql
     assert "LIMIT %s" in sql
     assert params == ((now - timedelta(days=90)).replace(tzinfo=None), 2)
+
+
+def test_report_download_ttl_uses_its_own_completion_timestamp() -> None:
+    connection = FakeConnection([1])
+    now = datetime(2026, 8, 2, tzinfo=UTC)
+
+    deleted = delete_expired_report_rows(
+        connection,
+        retention_days=90,
+        batch_size=10,
+        now=now,
+    )
+
+    assert deleted == 1
+    sql, params = connection.cursor_value.calls[0]
+    assert "DELETE FROM report_download_event" in sql
+    assert "completed_at < %s" in sql
+    assert "ORDER BY completed_at ASC, id ASC" in sql
+    assert params == ((now - timedelta(days=90)).replace(tzinfo=None), 10)
