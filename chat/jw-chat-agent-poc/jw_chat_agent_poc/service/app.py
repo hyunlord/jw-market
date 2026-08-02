@@ -48,7 +48,11 @@ from jw_chat_agent_poc.common.periods import (
 )
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
-from jw_chat_agent_poc.contracts.routing import RejectedRoute, RouteMode
+from jw_chat_agent_poc.contracts.routing import (
+    RejectedRoute,
+    RouteMode,
+    unified_router_shadow_enabled,
+)
 from jw_chat_agent_poc.orchestrator.answer_contract import (
     enforce_answer_contract,
     evaluate_answer_contract,
@@ -338,6 +342,22 @@ def decide_market_shortcut(**kwargs: Any) -> MarketShortcutDecision:
     from jw_chat_agent_poc.service.routing_boundaries import decide_market_shortcut as implementation
 
     return implementation(**kwargs)
+
+
+def observe_unified_app_scope_shadow(**kwargs: Any) -> None:
+    if not unified_router_shadow_enabled():
+        return
+    from jw_chat_agent_poc.orchestrator.unified_router_shadow import observe_app_scope_route
+
+    observe_app_scope_route(**kwargs)
+
+
+def observe_unified_market_shortcut_shadow(**kwargs: Any) -> None:
+    if not unified_router_shadow_enabled():
+        return
+    from jw_chat_agent_poc.orchestrator.unified_router_shadow import observe_market_shortcut_route
+
+    observe_market_shortcut_route(**kwargs)
 
 
 def _chart_after_evidence_binding_enabled() -> bool:
@@ -986,6 +1006,22 @@ def _answer_question(
             clarification_message=(
                 "scope clarification required" if needs_scope_clarification else None
             ),
+        )
+        observe_unified_app_scope_shadow(
+            question=effective_question,
+            file_question=file_question,
+            effective_question=effective_question,
+            has_file=has_file,
+            is_fresh_upload=bool(documents),
+            has_market_intent=has_market_intent,
+            has_market_anchor=has_market_anchor,
+            file_schema_columns=tuple(file_schema_columns),
+            needs_brand_clarification=needs_brand_clarification,
+            needs_market_clarification=needs_market_clarification,
+            legacy_domain=context_scope.value,
+            legacy_handler="context_scope_dispatch",
+            legacy_mode=RouteMode.DETERMINISTIC,
+            deep_research=deep_request.enabled,
         )
         delegated_file_context: str | None = None
         file_source_items: tuple[dict[str, Any], ...] = ()
@@ -2117,6 +2153,15 @@ def _answer_existing_without_pending(
                     ),
                 ),
             ),
+        )
+        observe_unified_market_shortcut_shadow(
+            question=question,
+            has_documents=bool(documents),
+            use_direct_agent_loop=use_direct_agent_loop,
+            market_scope_resolver=market_scope_resolver,
+            legacy_domain="market",
+            legacy_handler=handler,
+            legacy_mode=mode,
         )
 
     decision_kwargs = {

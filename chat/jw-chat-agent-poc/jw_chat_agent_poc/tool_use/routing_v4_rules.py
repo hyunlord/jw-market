@@ -9,7 +9,11 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     hira_disease_code_for_text,
     is_hira_disease_question,
 )
-from jw_chat_agent_poc.contracts.routing import RejectedRoute, RouteMode
+from jw_chat_agent_poc.contracts.routing import (
+    RejectedRoute,
+    RouteMode,
+    unified_router_shadow_enabled,
+)
 from jw_chat_agent_poc.orchestrator.route_decision_shadow import observe_route_decision
 from jw_chat_agent_poc.tool_use.clinical_disease import clinical_disease_for_text
 from jw_chat_agent_poc.tool_use.routing_v4_types import DomainDecisionSource, ProposedCall
@@ -41,18 +45,7 @@ NCT_ID_RE = re.compile(r"(?<![A-Za-z0-9])NCT\d{8}(?![A-Za-z0-9])", re.IGNORECASE
 
 
 def classify_question(question: str) -> QuestionClassification:
-    classification = _classify_question(question)
-    requested_facets = _requested_facets(question)
-    unresolvable_facets = _unresolvable_facets(
-        question,
-        classification=classification,
-        requested_facets=requested_facets,
-    )
-    result = replace(
-        classification,
-        requested_facets=requested_facets,
-        unresolvable_facets=unresolvable_facets,
-    )
+    result = classify_question_without_observation(question)
     observe_route_decision(
         question=question,
         domain=result.source_domain,
@@ -78,6 +71,53 @@ def classify_question(question: str) -> QuestionClassification:
                 reason_codes=("classified_domain_selected",),
             ),
         ),
+    )
+    _observe_unified_router_shadow(
+        question=question,
+        legacy_domain=result.source_domain,
+        legacy_handler=result.requested_capability,
+        legacy_mode=(
+            RouteMode.AGENTIC
+            if result.domain_decision_source is DomainDecisionSource.LLM
+            else RouteMode.DETERMINISTIC
+        ),
+    )
+    return result
+
+
+def _observe_unified_router_shadow(
+    *,
+    question: str,
+    legacy_domain: str,
+    legacy_handler: str,
+    legacy_mode: RouteMode,
+) -> None:
+    if not unified_router_shadow_enabled():
+        return
+    from jw_chat_agent_poc.orchestrator.unified_router_shadow import observe_routing_v4_route
+
+    observe_routing_v4_route(
+        question=question,
+        legacy_domain=legacy_domain,
+        legacy_handler=legacy_handler,
+        legacy_mode=legacy_mode,
+    )
+
+
+def classify_question_without_observation(question: str) -> QuestionClassification:
+    """Classify a question without emitting or executing anything."""
+
+    classification = _classify_question(question)
+    requested_facets = _requested_facets(question)
+    unresolvable_facets = _unresolvable_facets(
+        question,
+        classification=classification,
+        requested_facets=requested_facets,
+    )
+    result = replace(
+        classification,
+        requested_facets=requested_facets,
+        unresolvable_facets=unresolvable_facets,
     )
     return result
 
