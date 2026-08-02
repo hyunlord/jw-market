@@ -17,7 +17,7 @@ from pipeline.scripts.api.composers.cache_to_response import compose_dynamic_jso
 from pipeline.scripts.api.config import config
 from pipeline.scripts.api.dynamic_market.aggregator import MetricAggregator
 from pipeline.scripts.api.dynamic_market.composer import ResponseComposer
-from pipeline.scripts.api.dynamic_market.filter_options import build_filter_options
+from pipeline.scripts.api.dynamic_market.filter_options import build_brand_default_scope, build_filter_options
 from pipeline.scripts.api.dynamic_market.resolvers import (
     GeneralViewResolver,
     StrategicMarketSelection,
@@ -407,6 +407,36 @@ def _resolve_strategic_market_selection(payload: DynamicMarketRequest) -> Strate
         source=payload.source,
         measure=payload.measure,
     )
+
+
+@router.get(
+    "/api/dynamic-market/brand-default-scope",
+    tags=[DYNAMIC_MARKET_TAG],
+    summary="브랜드 기본 ATC4 범위",
+    response_model=None,
+    responses=FILTER_OPTIONS_RESPONSES,
+)
+def dynamic_market_brand_default_scope(
+    brand: str = Query(..., description="선택 브랜드명"),
+    view: str = Query("general", description="general, strategic, strategic_cd"),
+    source: str = Query("ubist", description="ubist 또는 iqvia"),
+    measure: str = Query("sales", description="sales 또는 qty"),
+) -> dict:
+    """Return a lightweight default ATC4 list before loading filter options."""
+
+    try:
+        return build_brand_default_scope(
+            mart_db=config.db_name,
+            brand=brand,
+            view=view,
+            source=source,
+            measure=measure,
+        )
+    except DynamicMarketInputError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_dynamic_market_brand_default_scope_request", "message": str(exc)},
+        ) from exc
 
 
 @router.get(
