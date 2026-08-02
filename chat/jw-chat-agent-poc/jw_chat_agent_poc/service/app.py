@@ -144,6 +144,12 @@ from jw_chat_agent_poc.service.conversation import (
     DiseaseCodeCandidateSlot,
     PendingClarification,
 )
+from jw_chat_agent_poc.service.conversation_repository import (
+    CONVERSATION_REPOSITORY_ENV,
+    ConversationRepository,
+    build_conversation_repository,
+    conversation_repository_enabled,
+)
 from jw_chat_agent_poc.service.conversation_context import (
     anaphora_observation,
     extract_conversation_slots,
@@ -333,7 +339,28 @@ class SessionStore:
         self._max_sessions = max(1, max_sessions)
         self._items: OrderedDict[str, dict] = OrderedDict()
         self._lock = threading.Lock()
-        self.conversations = conversations or ConversationStore(max_states=self._max_sessions)
+        self._conversation_cache = conversations or ConversationStore(max_states=self._max_sessions)
+        self._conversation_history: ConversationHistoryStore | None = None
+        self._conversation_repository_enabled = conversation_repository_enabled()
+        self.conversations: ConversationRepository = build_conversation_repository(
+            self._conversation_cache,
+            None,
+        )
+
+    def configure_conversation_repository(
+        self,
+        history: ConversationHistoryStore | None,
+    ) -> None:
+        enabled = conversation_repository_enabled()
+        with self._lock:
+            if (
+                history is self._conversation_history
+                and enabled == self._conversation_repository_enabled
+            ):
+                return
+            self.conversations = build_conversation_repository(self._conversation_cache, history)
+            self._conversation_history = history
+            self._conversation_repository_enabled = enabled
 
     def put(self, item: dict) -> str:
         session_id = uuid4().hex
@@ -439,6 +466,7 @@ def create_app(
     use_direct_agent_loop = agent_factory is None
     projection = projection_runtime or HistoryProjectionRuntime.from_env()
     history = history_store or MySQLConversationHistoryStore(projection_outbox=projection.outbox)
+    store.configure_conversation_repository(history)
     warmup = startup_warmup or DisabledStartupWarmup()
 
     @app.exception_handler(RequestValidationError)
@@ -775,6 +803,7 @@ def _answer_question(
     timing_sink: StageEventSink | None = None,
     conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
+    store.configure_conversation_repository(conversation_history)
     input_policy_decision = evaluate_input_policy(question)
     if policy_is_enforced(input_policy_decision):
         state = store.conversations.get_or_create(conversation_id)
@@ -805,7 +834,7 @@ def _answer_question(
             effective_question,
             known_brand=known_brand,
         ):
-            _hydrate_latest_conversation_turn(store, conversation_history, state.conversation_id)
+            _hydrate_latest_conversation_turn(store, state.conversation_id)
             with trace_span("conversation_state_reload", "state lookup after persisted history hydration"):
                 state = store.conversations.get_or_create(state.conversation_id)
         provided_file = _has_file_signal(documents, file_context)
@@ -1107,28 +1136,9 @@ def _answer_question(
 
 def _hydrate_latest_conversation_turn(
     store: SessionStore,
-    history_store: ConversationHistoryStore | None,
     conversation_id: str,
 ) -> None:
-    latest_turn = getattr(history_store, "latest_turn", None)
-    if not callable(latest_turn):
-        return
-    try:
-        with trace_span("conversation_history_fetch", "fetch latest persisted conversation turn"):
-            turn = latest_turn(conversation_id)
-    except Exception as exc:
-        LOGGER.warning("conversation history hydration failed error_type=%s", type(exc).__name__)
-        return
-    if not isinstance(turn, ConversationTurn):
-        return
-    with trace_span("conversation_history_replay", "restore persisted turn into request state"):
-        store.conversations.record_exchange(
-            conversation_id,
-            turn.question,
-            turn.answer,
-            turn.applied_filters,
-            slots=turn.slots,
-        )
+    store.conversations.hydrate_latest(conversation_id)
 
 
 def _answer_mixed_parallel(
