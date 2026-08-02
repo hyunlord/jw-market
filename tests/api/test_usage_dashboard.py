@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date
 
 import pytest
+import pymysql
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -117,3 +118,20 @@ def test_repository_fails_closed_when_reader_settings_are_partial() -> None:
         match="DASHBOARD_DB_USER, DASHBOARD_DB_PASSWORD, DASHBOARD_DB_NAME",
     ):
         MariaDBUsageRepository(replace(config, dashboard_db_host="db.internal"))
+
+
+def test_period_sql_survives_pymysql_parameter_interpolation() -> None:
+    from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL, _PERIOD_SQL
+
+    connection = pymysql.Connection(defer_connect=True)
+    connection.server_status = 0
+    cursor = connection.cursor()
+    sql = DASHBOARD_SQL["api_trend"].format(
+        period=_PERIOD_SQL["day"].format(column="called_at"),
+        api_filter="",
+        user_filter="",
+    )
+
+    rendered = cursor.mogrify(sql, ("2026-07-01", "2026-08-01"))
+
+    assert "DATE_FORMAT(called_at, '%Y-%m-%d')" in rendered

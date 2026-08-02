@@ -17,8 +17,8 @@ MAX_RANGE_DAYS: Final = 366
 DEFAULT_CACHE_TTL_SECONDS: Final = 60
 
 _PERIOD_SQL: Final = {
-    "day": "DATE_FORMAT({column}, '%Y-%m-%d')",
-    "week": "DATE_FORMAT(DATE_SUB(DATE({column}), INTERVAL WEEKDAY({column}) DAY), '%Y-%m-%d')",
+    "day": "DATE_FORMAT({column}, '%%Y-%%m-%%d')",
+    "week": "DATE_FORMAT(DATE_SUB(DATE({column}), INTERVAL WEEKDAY({column}) DAY), '%%Y-%%m-%%d')",
 }
 
 DASHBOARD_SQL: Final[dict[str, str]] = {
