@@ -69,6 +69,125 @@ def test_build_filter_option_payload_labels_ubist_molecule_as_ingredient() -> No
     ]
 
 
+def test_build_filter_option_payload_adds_molecule_strength_hierarchy_without_changing_flat_dimensions() -> None:
+    dimensions = (
+        filter_options.DimensionOptionRow("molecule", "Apixaban", "Apixaban", 44),
+        filter_options.DimensionOptionRow("molecule", "apixaban", "apixaban", 48),
+        filter_options.DimensionOptionRow("molecule", "Orphan", "orphan", 1),
+        filter_options.DimensionOptionRow("molecule_strength", "Apixaban 5mg", "Apixaban 5mg", 2),
+    )
+    edges = (
+        filter_options.DimensionHierarchyEdgeRow("Apixaban", "Apixaban", "Apixaban 5mg", "Apixaban 5mg"),
+        filter_options.DimensionHierarchyEdgeRow("apixaban", "apixaban", "Apixaban 5mg", "Apixaban 5mg"),
+    )
+
+    baseline = filter_options.build_filter_option_payload(
+        view="general",
+        source="ubist",
+        market_id=None,
+        dimensions=dimensions,
+        atc_rows=(),
+    )
+    hierarchy = filter_options.build_molecule_strength_hierarchy(dimensions, edges)
+    payload = filter_options.build_filter_option_payload(
+        view="general",
+        source="ubist",
+        market_id=None,
+        dimensions=dimensions,
+        atc_rows=(),
+        dimension_hierarchies=(hierarchy,),
+    )
+
+    assert payload["dimensions"] == baseline["dimensions"]
+    assert payload["dimension_hierarchies"] == [
+        {
+            "parent_dimension": "molecule",
+            "child_dimension": "molecule_strength",
+            "relation": "one_to_many",
+            "parents": [
+                {"key": "apixaban", "value": "Apixaban"},
+                {"key": "orphan", "value": "Orphan"},
+            ],
+            "children": [
+                {
+                    "key": "Apixaban 5mg",
+                    "value": "Apixaban 5mg",
+                    "parent_keys": ["apixaban"],
+                }
+            ],
+        }
+    ]
+
+
+def test_molecule_strength_hierarchy_preserves_future_multi_parent_children() -> None:
+    dimensions = (
+        filter_options.DimensionOptionRow("molecule", "Alpha", "alpha", 1),
+        filter_options.DimensionOptionRow("molecule", "Beta", "beta", 1),
+        filter_options.DimensionOptionRow("molecule_strength", "Shared 10mg", "shared 10mg", 2),
+    )
+    edges = (
+        filter_options.DimensionHierarchyEdgeRow("Alpha", "alpha", "Shared 10mg", "shared 10mg"),
+        filter_options.DimensionHierarchyEdgeRow("Beta", "beta", "Shared 10mg", "shared 10mg"),
+    )
+
+    hierarchy = filter_options.build_molecule_strength_hierarchy(dimensions, edges)
+
+    assert hierarchy["children"] == [
+        {"key": "shared 10mg", "value": "Shared 10mg", "parent_keys": ["alpha", "beta"]}
+    ]
+
+
+def test_molecule_strength_hierarchy_preserves_exact_leaf_request_key() -> None:
+    dimensions = (
+        filter_options.DimensionOptionRow("molecule", "Apixaban", "Apixaban", 1),
+        filter_options.DimensionOptionRow("molecule_strength", "Apixaban 5MG", "Apixaban 5MG", 1),
+    )
+    edges = (
+        filter_options.DimensionHierarchyEdgeRow("Apixaban", "Apixaban", "Apixaban 5MG", "Apixaban 5MG"),
+    )
+
+    hierarchy = filter_options.build_molecule_strength_hierarchy(dimensions, edges)
+
+    assert hierarchy["parents"] == [{"key": "apixaban", "value": "Apixaban"}]
+    assert hierarchy["children"] == [
+        {"key": "Apixaban 5MG", "value": "Apixaban 5MG", "parent_keys": ["apixaban"]}
+    ]
+
+
+def test_load_molecule_strength_edges_joins_complete_product_identity(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_all(sql: str, params: list[object]) -> list[dict[str, object]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            {
+                "parent_value": "Apixaban",
+                "parent_value_norm": "Apixaban",
+                "child_value": "Apixaban 5mg",
+                "child_value_norm": "Apixaban 5mg",
+            }
+        ]
+
+    monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
+
+    rows = filter_options._load_molecule_strength_edges(
+        dimension_db="jw_mart",
+        source="ubist",
+        measure="sales",
+        atc4_codes=("B01A0",),
+    )
+
+    sql = str(captured["sql"])
+    for column in ("source", "measure", "atc4_code", "brand_key", "product_code"):
+        assert f"child.{column} = parent.{column}" in sql
+    assert "parent.atc4_code IN (%s)" in sql
+    assert captured["params"] == ["ubist", "sales", "molecule", "molecule_strength", "B01A0"]
+    assert rows == (
+        filter_options.DimensionHierarchyEdgeRow("Apixaban", "Apixaban", "Apixaban 5mg", "Apixaban 5mg"),
+    )
+
+
 def test_filter_options_openapi_documents_key_value_request_contract() -> None:
     app.openapi_schema = None
     schema = app.openapi()

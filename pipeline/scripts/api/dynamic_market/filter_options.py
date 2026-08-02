@@ -48,6 +48,14 @@ class DimensionOptionRow:
 
 
 @dataclass(frozen=True, slots=True)
+class DimensionHierarchyEdgeRow:
+    parent_value: str
+    parent_value_norm: str
+    child_value: str
+    child_value_norm: str
+
+
+@dataclass(frozen=True, slots=True)
 class FilterOptionCacheEntry:
     payload: dict[str, object]
     expires_at: float
@@ -308,6 +316,7 @@ def _build_filter_options_uncached(
         market_id=market_id,
         atc4_codes=atc4_codes,
     )
+    dimension_hierarchies: tuple[dict[str, object], ...] = ()
     if view == "strategic":
         dimensions: tuple[DimensionOptionRow, ...] = ()
         channel_axis: dict[str, object] = {}
@@ -321,6 +330,21 @@ def _build_filter_options_uncached(
             measure=measure,
             atc4_codes=atc4_codes,
             selections=selections,
+        )
+        hierarchy_edges = (
+            _load_molecule_strength_edges(
+                dimension_db=dimension_db,
+                source=source,
+                measure=measure,
+                atc4_codes=atc4_codes,
+            )
+            if source == "ubist" and _has_molecule_strength_dimensions(dimensions)
+            else ()
+        )
+        dimension_hierarchies = (
+            (build_molecule_strength_hierarchy(dimensions, hierarchy_edges),)
+            if hierarchy_edges or _has_molecule_strength_dimensions(dimensions)
+            else ()
         )
         channel_axis = _load_channel_axis_options(
             mart_db=mart_db,
@@ -338,6 +362,7 @@ def _build_filter_options_uncached(
         dimensions=dimensions,
         atc_rows=atc_rows,
         channel_axis=channel_axis,
+        dimension_hierarchies=dimension_hierarchies,
     )
 
 
@@ -379,6 +404,7 @@ def build_filter_option_payload(
     dimensions: Sequence[DimensionOptionRow],
     atc_rows: Sequence[Mapping[str, object]],
     channel_axis: Mapping[str, object] | None = None,
+    dimension_hierarchies: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     grouped: dict[str, list[DimensionOptionRow]] = defaultdict(list)
     for row in dimensions:
@@ -405,7 +431,77 @@ def build_filter_option_payload(
     }
     if channel_axis:
         payload["channel_axis"] = dict(channel_axis)
+    if dimension_hierarchies:
+        payload["dimension_hierarchies"] = [dict(item) for item in dimension_hierarchies]
     return payload
+
+
+def build_molecule_strength_hierarchy(
+    dimensions: Sequence[DimensionOptionRow],
+    edges: Sequence[DimensionHierarchyEdgeRow],
+) -> dict[str, object]:
+    parent_labels: dict[str, set[str]] = defaultdict(set)
+    child_labels: dict[str, set[str]] = defaultdict(set)
+    child_parents: dict[str, set[str]] = defaultdict(set)
+
+    for row in dimensions:
+        key = (
+            _stable_parent_key(row.dimension_value_norm)
+            if row.dimension_type == "molecule"
+            else _stable_child_key(row.dimension_value_norm)
+        )
+        if not key:
+            continue
+        if row.dimension_type == "molecule":
+            parent_labels[key].add(row.dimension_value)
+        elif row.dimension_type == "molecule_strength":
+            child_labels[key].add(row.dimension_value)
+
+    for edge in edges:
+        parent_key = _stable_parent_key(edge.parent_value_norm)
+        child_key = _stable_child_key(edge.child_value_norm)
+        if not parent_key or not child_key:
+            continue
+        parent_labels[parent_key].add(edge.parent_value)
+        child_labels[child_key].add(edge.child_value)
+        child_parents[child_key].add(parent_key)
+
+    return {
+        "parent_dimension": "molecule",
+        "child_dimension": "molecule_strength",
+        "relation": "one_to_many",
+        "parents": [
+            {"key": key, "value": _preferred_hierarchy_label(labels)}
+            for key, labels in sorted(parent_labels.items())
+        ],
+        "children": [
+            {
+                "key": key,
+                "value": _preferred_hierarchy_label(child_labels[key]),
+                "parent_keys": sorted(parent_keys),
+            }
+            for key, parent_keys in sorted(child_parents.items())
+        ],
+    }
+
+
+def _stable_parent_key(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _stable_child_key(value: str) -> str:
+    # Leaf keys are request values. Preserve the exact FDM normalization so the
+    # resolver hashes the same value that produced dimension_value_hash.
+    return " ".join(value.split())
+
+
+def _preferred_hierarchy_label(values: Iterable[str]) -> str:
+    return min(values, key=lambda value: (value.casefold(), value))
+
+
+def _has_molecule_strength_dimensions(dimensions: Sequence[DimensionOptionRow]) -> bool:
+    dimension_types = {row.dimension_type for row in dimensions}
+    return {"molecule", "molecule_strength"}.issubset(dimension_types)
 
 
 def build_atc_hierarchy(rows: Iterable[Mapping[str, object]]) -> dict[str, object]:
@@ -559,6 +655,53 @@ def _load_dimension_options(
         measure=measure,
     )
     return _merge_dimension_rows(sidecar_rows, by_dimension_rows)
+
+
+def _load_molecule_strength_edges(
+    *,
+    dimension_db: str,
+    source: str,
+    measure: str,
+    atc4_codes: Sequence[str],
+) -> tuple[DimensionHierarchyEdgeRow, ...]:
+    where = [
+        "parent.source = %s",
+        "parent.measure = %s",
+        "parent.dimension_type = %s",
+        "child.dimension_type = %s",
+    ]
+    params: list[object] = [source, measure, "molecule", "molecule_strength"]
+    if atc4_codes:
+        where.append(f"parent.atc4_code IN ({', '.join(['%s'] * len(atc4_codes))})")
+        params.extend(atc4_codes)
+    rows = db.fetch_all(
+        f"""
+        SELECT DISTINCT
+               parent.dimension_value AS parent_value,
+               parent.dimension_value_norm AS parent_value_norm,
+               child.dimension_value AS child_value,
+               child.dimension_value_norm AS child_value_norm
+        FROM {quote_identifier(dimension_db)}.{GENERAL_DIMENSION_TABLE} AS parent
+        JOIN {quote_identifier(dimension_db)}.{GENERAL_DIMENSION_TABLE} AS child
+          ON child.source = parent.source
+         AND child.measure = parent.measure
+         AND child.atc4_code = parent.atc4_code
+         AND child.brand_key = parent.brand_key
+         AND child.product_code = parent.product_code
+        WHERE {" AND ".join(where)}
+        ORDER BY parent.dimension_value_norm, child.dimension_value_norm
+        """,
+        params,
+    )
+    return tuple(
+        DimensionHierarchyEdgeRow(
+            parent_value=str(row["parent_value"]),
+            parent_value_norm=str(row["parent_value_norm"]),
+            child_value=str(row["child_value"]),
+            child_value_norm=str(row["child_value_norm"]),
+        )
+        for row in rows
+    )
 
 
 def _dimension_option_rows(rows: Sequence[Mapping[str, object]]) -> tuple[DimensionOptionRow, ...]:
