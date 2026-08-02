@@ -11,7 +11,6 @@ from src.main import app
 FORBIDDEN_PUBLIC_FIELDS = {
     "app_session_id",
     "chunk_id",
-    "document_id",
     "document_upsert_id",
     "errors",
     "file_path",
@@ -158,6 +157,7 @@ def test_upload_projection_hides_internal_fields_and_keeps_sql_contract() -> Non
     assert not {"upload_id", "state", "ready", "status_url"} & projected.keys()
     assert projected["temp_documents"] == [{"file_name": "survey.xlsx"}]
     document = projected["commit"]["documents"][0]
+    assert document["document_id"] == 113052
     assert document["route"] == "sql"
     assert document["status"] == "committed_sql"
     assert document["sql_tables"][0]["logical_name"] == "data_abc"
@@ -290,6 +290,7 @@ def test_documents_projection_keeps_user_assets_and_hides_ledger_fields() -> Non
     encoded = json.dumps(projected)
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
     document = projected["documents"][0]
+    assert document["document_id"] == 42
     assert document["file_size_bytes"] == 12345
     assert document["storage_route"] == "hybrid"
     assert document["file_card"]["title"] == "Survey Workbook"
@@ -330,6 +331,7 @@ def test_search_projection_hides_ids_and_keeps_provenance() -> None:
     projected = models.PublicSearchResponse.model_validate(raw).model_dump()
     encoded = json.dumps(projected)
     assert not any(field in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    assert "document_id" not in encoded
     assert projected["file_context"] == "Germany: 61/22/13/4"
     assert projected["file_sources"][0]["source_channel"] == "vlm_image_extraction"
     assert projected["file_sources"][0]["slide_number"] == 7
@@ -344,6 +346,15 @@ def test_openapi_public_responses_exclude_internal_fields_and_keep_capacity() ->
     encoded = json.dumps({name: schemas[name] for name in public_schema_names})
 
     assert not any(f'"{field}"' in encoded for field in FORBIDDEN_PUBLIC_FIELDS)
+    document_id_schemas = {
+        name
+        for name in public_schema_names
+        if "document_id" in schemas[name].get("properties", {})
+    }
+    assert document_id_schemas == {
+        "PublicCommitDocumentResult",
+        "PublicSessionDocument",
+    }
     assert '"file_size_bytes"' in encoded
     assert '"logical_name"' in encoded
     assert '"route"' in encoded

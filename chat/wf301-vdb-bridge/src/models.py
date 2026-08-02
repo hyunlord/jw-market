@@ -474,6 +474,7 @@ class PublicSqlTableMetadata(BaseModel):
 class PublicCommitDocumentResult(BaseModel):
     """A committed document with only user and query-routing metadata."""
 
+    document_id: int | None = None
     file_name: str
     chunk_count: int
     route: Literal["vdb", "vdb_large", "blocked_oversized", "sql"]
@@ -557,8 +558,9 @@ class PublicUploadStatusResponse(BaseModel):
 
 
 class PublicSessionDocument(BaseModel):
-    """A user asset without ledger identifiers or storage topology."""
+    """A user asset with its deletion identifier and no storage topology."""
 
+    document_id: int
     file_name: str
     uploaded_at: str
     expires_at: str | None = None
@@ -572,7 +574,7 @@ class PublicSessionDocument(BaseModel):
 
 
 class PublicDocumentsResponse(BaseModel):
-    """Session assets projected without session and document identifiers."""
+    """Session assets projected without session or storage identifiers."""
 
     documents: list[PublicSessionDocument]
 
