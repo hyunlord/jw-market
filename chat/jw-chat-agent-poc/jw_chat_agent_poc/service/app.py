@@ -174,6 +174,16 @@ from jw_chat_agent_poc.service.context_scope import (
     matches_file_schema,
     resolve_context_scope,
 )
+from jw_chat_agent_poc.service.routing_boundary_contract import (
+    AppScopeDecision,
+    MarketRouteKind,
+    MarketShortcutDecision,
+    routing_boundaries_enabled,
+)
+from jw_chat_agent_poc.service.routing_boundaries_legacy import (
+    legacy_app_scope_decision as _legacy_app_scope_decision,
+    legacy_market_shortcut_decision as _legacy_market_shortcut_decision,
+)
 from jw_chat_agent_poc.service.file_search_client import (
     UploadedFileOverview,
     fetch_uploaded_file_overviews,
@@ -316,6 +326,18 @@ class FinalAnswer:
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
 DEFAULT_SESSION_STORE_MAX = 500
 CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
+
+
+def decide_app_scope_route(**kwargs: Any) -> AppScopeDecision:
+    from jw_chat_agent_poc.service.routing_boundaries import decide_app_scope_route as implementation
+
+    return implementation(**kwargs)
+
+
+def decide_market_shortcut(**kwargs: Any) -> MarketShortcutDecision:
+    from jw_chat_agent_poc.service.routing_boundaries import decide_market_shortcut as implementation
+
+    return implementation(**kwargs)
 
 
 def _chart_after_evidence_binding_enabled() -> bool:
@@ -904,17 +926,27 @@ def _answer_question(
             if inherit_file_context
             else routing_question
         )
+        app_scope_kwargs = {
+            "file_question": file_question,
+            "effective_question": effective_question,
+            "has_file": has_file,
+            "is_fresh_upload": bool(documents),
+            "has_market_intent": has_market_intent,
+            "has_market_anchor": has_market_anchor,
+            "file_schema_columns": file_schema_columns,
+            "needs_brand_clarification": needs_brand_clarification,
+            "needs_market_clarification": needs_market_clarification,
+            "resolve_context_scope_fn": resolve_context_scope,
+            "matches_file_schema_fn": matches_file_schema,
+            "has_file_reference_fn": has_file_reference,
+        }
         with trace_span("context_scope_resolution", "market, file, and mixed scope classification"):
-            context_scope = resolve_context_scope(
-                file_question,
-                has_active_file=has_file,
-                is_fresh_upload=bool(documents),
-                has_market_intent=has_market_intent,
-                has_market_anchor=has_market_anchor,
-                file_schema_columns=file_schema_columns,
+            app_scope_decision = (
+                decide_app_scope_route(**app_scope_kwargs)
+                if routing_boundaries_enabled()
+                else _legacy_app_scope_decision(**app_scope_kwargs)
             )
-        if needs_brand_clarification or needs_market_clarification:
-            context_scope = ContextScope.MARKET
+        context_scope = app_scope_decision.context_scope
         if deep_request.enabled or context_scope in {ContextScope.FILE, ContextScope.MIXED}:
             emit_completed_stage(
                 None,
@@ -928,14 +960,8 @@ def _answer_question(
                 schema_probe_elapsed_ms,
                 "active uploaded file schema check",
             )
-        file_schema_match = matches_file_schema(file_question, file_schema_columns)
-        needs_scope_clarification = (
-            has_file
-            and has_market_intent
-            and not has_market_anchor
-            and not has_file_reference(effective_question)
-            and not _has_explicit_file_sheet_reference(effective_question)
-            and not file_schema_match
+        needs_scope_clarification = app_scope_decision.needs_scope_clarification and not (
+            _has_explicit_file_sheet_reference(effective_question)
         )
         observe_route_decision(
             question=effective_question,
@@ -2093,94 +2119,82 @@ def _answer_existing_without_pending(
             ),
         )
 
-    explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
-    if explicit_market is not None and "시장" in question:
-        period = requested_period(question) or "latest"
-        observe_market_route("answer_market_id", reason="explicit_market_id")
+    decision_kwargs = {
+        "question": question,
+        "has_documents": bool(documents),
+        "use_direct_agent_loop": use_direct_agent_loop,
+        "market_scope_resolver": market_scope_resolver,
+        "should_use_agent_loop_fn": should_use_agent_loop,
+        "requested_unavailable_source_fn": requested_unavailable_source,
+        "asks_market_members_fn": asks_market_members,
+        "detect_market_scope_intent_fn": detect_market_scope_intent,
+        "market_scope_defers_to_contract_fn": market_scope_defers_to_contract,
+        "tool_use_requirements_fn": tool_use_requirements,
+        "v4_enforces_external_question_fn": _v4_enforces_external_question,
+        "requested_period_fn": requested_period,
+    }
+    decision = (
+        decide_market_shortcut(**decision_kwargs)
+        if routing_boundaries_enabled()
+        else _legacy_market_shortcut_decision(**decision_kwargs)
+    )
+    if decision.kind is MarketRouteKind.EXPLICIT_MARKET_ID:
+        observe_market_route(decision.handler, reason=decision.reason)
         return market_scope_resolver.answer_market_id(
             question,
-            market_id=explicit_market.group(1).lower(),
-            period=period,
+            market_id=decision.market_id or "",
+            period=decision.period or "latest",
         )
-    if requested_unavailable_source(question) is not None and not documents:
+    if decision.kind is MarketRouteKind.REQUESTED_SOURCE_AGENT:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         observe_market_route(
-            "agent_loop",
-            reason="requested_source_unavailable",
+            decision.handler,
+            reason=decision.reason,
             mode=RouteMode.AGENTIC,
         )
         return agent.answer(question, documents, **agent_kwargs)
-    intent = detect_market_scope_intent(question)
-    if asks_market_members(question) and not documents:
-        if market_scope_resolver.has_explicit_brand_anchor(question):
-            observe_market_route("answer_market_landscape", reason="market_members_brand")
-            return market_scope_resolver.answer(question, view_type="market_landscape")
-        if market_scope_resolver.has_explicit_named_market(question):
-            observe_market_route("answer_named_market", reason="named_market")
-            return market_scope_resolver.answer_named_market(question)
-    agent_loop_required = should_use_agent_loop(question)
-    has_brand_anchor = False
-    if not agent_loop_required and should_use_agent_loop(question, has_brand_anchor=True):
-        has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
-        agent_loop_required = has_brand_anchor
-    if (
-        use_direct_agent_loop
-        and agent_loop_required
-        and not documents
-        and not tool_use_requirements(question)
-        and not _v4_enforces_external_question(question)
-    ):
+    if decision.kind is MarketRouteKind.MARKET_MEMBERS_BRAND:
+        observe_market_route(decision.handler, reason=decision.reason)
+        return market_scope_resolver.answer(question, view_type="market_landscape")
+    if decision.kind is MarketRouteKind.NAMED_MARKET:
+        observe_market_route(decision.handler, reason=decision.reason)
+        return market_scope_resolver.answer_named_market(question)
+    if decision.kind is MarketRouteKind.DIRECT_AGENT_LOOP:
         observe_market_route(
-            "direct_agent_loop",
-            reason="direct_agent_loop_required",
+            decision.handler,
+            reason=decision.reason,
             mode=RouteMode.AGENTIC,
         )
         return _answer_direct_agent_loop(question, external_mode, **agent_kwargs)
-    if agent_loop_required:
+    if decision.kind is MarketRouteKind.AGENT_LOOP:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
         observe_market_route(
-            "agent_loop",
-            reason="agent_loop_required",
+            decision.handler,
+            reason=decision.reason,
             mode=RouteMode.AGENTIC,
         )
         return agent.answer(question, documents, **agent_kwargs)
-    if intent is not None and not has_brand_anchor:
-        has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
-    if intent is not None and market_scope_defers_to_contract(question):
-        # The market-scope shortcut answers one period. When the slot extractor
-        # has already selected a multi-period contract, serving the shortcut
-        # would drop the trend the question asked for, so the request is handed
-        # to the agent loop that implements that contract. Questions without a
-        # trend element are untouched and keep taking the shortcut.
-        intent = None
-    if intent is not None and has_brand_anchor:
-        if intent.requires_clarification:
-            brand = intent.brand_hint or "해당 브랜드"
-            expires_at = store.conversations.pending_expiry()
-            pending = PendingClarification(
-                kind="market_view",
-                original_question=question,
-                brand=brand,
-                metric=intent.metric,
-                created_at=expires_at - store.conversations.pending_ttl_seconds,
-                expires_at=expires_at,
-            )
-            store.conversations.set_pending(conversation_id, pending)
-            observe_market_route("market_clarification", reason="view_clarification_required")
-            return market_scope_resolver.clarification(question, brand=brand)
-        if intent.view_type is not None:
-            observe_market_route("market_scope_answer", reason=f"view:{intent.view_type}")
-            return market_scope_resolver.answer(question, view_type=intent.view_type)
-    with stage(None, "question_classification", "agent setup"):
-        agent = agent_factory(external_mode=external_mode)
-    observe_market_route(
-        "agent_loop",
-        reason="market_shortcut_not_selected",
-        mode=RouteMode.AGENTIC,
-    )
-    return agent.answer(question, documents, **agent_kwargs)
+    intent = decision.intent
+    if decision.kind is MarketRouteKind.MARKET_CLARIFICATION and intent is not None:
+        brand = intent.brand_hint or "해당 브랜드"
+        expires_at = store.conversations.pending_expiry()
+        pending = PendingClarification(
+            kind="market_view",
+            original_question=question,
+            brand=brand,
+            metric=intent.metric,
+            created_at=expires_at - store.conversations.pending_ttl_seconds,
+            expires_at=expires_at,
+        )
+        store.conversations.set_pending(conversation_id, pending)
+        observe_market_route(decision.handler, reason=decision.reason)
+        return market_scope_resolver.clarification(question, brand=brand)
+    if decision.kind is MarketRouteKind.MARKET_SCOPE_ANSWER and intent is not None:
+        observe_market_route(decision.handler, reason=decision.reason)
+        return market_scope_resolver.answer(question, view_type=intent.view_type)
+    raise AssertionError(f"unhandled market routing decision: {decision.kind}")
 
 
 def _answer_direct_agent_loop(
