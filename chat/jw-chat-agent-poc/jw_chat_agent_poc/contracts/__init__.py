@@ -1,6 +1,16 @@
 """Canonical contracts introduced ahead of the routing cutover."""
 
 from .base import ContractModel
+from .answer import (
+    AnswerModel,
+    AnswerSection,
+    ChartIntent,
+    ContractFacetFailure,
+    SectionKind,
+    SupportedClaim,
+    TableCell,
+    TableRow,
+)
 from .capability import (
     capability_snapshot_from_source_class,
     parameter_resolution,
@@ -26,13 +36,38 @@ from .query import (
     SourceMeasureCapability,
     UnitSpec,
 )
+from .evidence import (
+    EvidenceBundle,
+    EvidenceFact,
+    EvidenceItem,
+    EvidenceStatus,
+    PartialFailure,
+    RationaleFact,
+    RationaleKind,
+    SourceStatus,
+)
+from .validation import (
+    RenderAuthorization,
+    ValidationDecision,
+    ValidationReport,
+    ValidationSeverity,
+    ValidationViolation,
+)
 
 __all__ = (
+    "AnswerModel",
+    "AnswerSection",
     "BrandCapabilitySnapshot",
     "CatalogSourceClass",
     "ContractModel",
+    "ContractFacetFailure",
+    "ChartIntent",
     "EntityKind",
     "EntityRef",
+    "EvidenceBundle",
+    "EvidenceFact",
+    "EvidenceItem",
+    "EvidenceStatus",
     "MarketAxisSpec",
     "MarketSource",
     "MeasureKind",
@@ -41,13 +76,26 @@ __all__ = (
     "ParameterIssueReason",
     "ParameterResolution",
     "ParameterStatus",
+    "PartialFailure",
     "PeriodGranularity",
     "PeriodSpec",
     "PortalMarketView",
     "ResolutionStatus",
     "ResolvedQuery",
+    "RationaleFact",
+    "RationaleKind",
+    "RenderAuthorization",
+    "SectionKind",
+    "SourceStatus",
     "SourceMeasureCapability",
+    "SupportedClaim",
+    "TableCell",
+    "TableRow",
     "UnitSpec",
+    "ValidationDecision",
+    "ValidationReport",
+    "ValidationSeverity",
+    "ValidationViolation",
     "capability_snapshot_from_source_class",
     "parameter_resolution",
 )

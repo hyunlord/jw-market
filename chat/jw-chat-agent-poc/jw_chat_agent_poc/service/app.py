@@ -97,7 +97,10 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     is_hira_disease_question,
 )
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
-from jw_chat_agent_poc.contracts.shadow import resolved_query_shadow_observation
+from jw_chat_agent_poc.contracts.shadow import (
+    evidence_bundle_shadow_observation,
+    resolved_query_shadow_observation,
+)
 from jw_chat_agent_poc.orchestrator.query_spec import (
     RequestQuerySpec,
     extract_query_spec,
@@ -3246,6 +3249,12 @@ def _apply_relational_claim_gate(question: str, answer: str, result: dict[str, A
 
 def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, Any]) -> str:
     facts = evidence_facts_from_result(result)
+    try:
+        observation = evidence_bundle_shadow_observation(facts)
+    except Exception:  # noqa: BLE001 - shadow contract creation must remain fail-open
+        LOGGER.exception("evidence_bundle_shadow_observation_failed")
+    else:
+        LOGGER.info("evidence_bundle_shadow_observed observation=%s", observation)
     expected_entities = expected_entities_from_result(question, result)
     expected_market_ids = expected_market_ids_from_result(result)
     binding_question = hira_binding_question(question)
