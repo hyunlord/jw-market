@@ -69,6 +69,41 @@ def test_build_filter_option_payload_labels_ubist_molecule_as_ingredient() -> No
     ]
 
 
+def test_brand_default_scope_returns_all_general_atc4_codes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        filter_options,
+        "_general_atc4_codes_for_brand",
+        lambda **_kwargs: ("C10A1", "C10C"),
+    )
+
+    assert filter_options.build_brand_default_scope(
+        mart_db="jw_mart",
+        brand="리바로젯",
+        view="general",
+        source="ubist",
+        measure="sales",
+    ) == {"atc4_codes": ["C10A1", "C10C"]}
+
+
+def test_brand_default_scope_returns_empty_list_for_unknown_general_brand(monkeypatch) -> None:
+    monkeypatch.setattr(filter_options, "_general_atc4_codes_for_brand", lambda **_kwargs: ())
+
+    assert filter_options.build_brand_default_scope(
+        mart_db="jw_mart",
+        brand="없는브랜드",
+        view="general",
+        source="ubist",
+        measure="sales",
+    ) == {"atc4_codes": []}
+
+
+def test_brand_default_scope_is_exposed_as_a_lightweight_route() -> None:
+    operation = app.openapi()["paths"]["/api/dynamic-market/brand-default-scope"]["get"]
+    parameters = {item["name"] for item in operation["parameters"]}
+
+    assert parameters == {"brand", "view", "source", "measure"}
+
+
 def test_build_filter_option_payload_adds_molecule_strength_hierarchy_without_changing_flat_dimensions() -> None:
     dimensions = (
         filter_options.DimensionOptionRow("molecule", "Apixaban", "Apixaban", 44),
@@ -166,7 +201,13 @@ def test_load_molecule_strength_edges_joins_complete_product_identity(monkeypatc
                 "parent_value_norm": "Apixaban",
                 "child_value": "Apixaban 5mg",
                 "child_value_norm": "Apixaban 5mg",
-            }
+            },
+            {
+                "parent_value": "Apixaban",
+                "parent_value_norm": "Apixaban",
+                "child_value": "Apixaban 5mg",
+                "child_value_norm": "Apixaban 5mg",
+            },
         ]
 
     monkeypatch.setattr(filter_options.db, "fetch_all", fake_fetch_all)
@@ -182,6 +223,8 @@ def test_load_molecule_strength_edges_joins_complete_product_identity(monkeypatc
     for column in ("source", "measure", "atc4_code", "brand_key", "product_code"):
         assert f"child.{column} = parent.{column}" in sql
     assert "parent.atc4_code IN (%s)" in sql
+    assert "SELECT DISTINCT" not in sql
+    assert "ORDER BY" not in sql
     assert captured["params"] == ["ubist", "sales", "molecule", "molecule_strength", "B01A0"]
     assert rows == (
         filter_options.DimensionHierarchyEdgeRow("Apixaban", "Apixaban", "Apixaban 5mg", "Apixaban 5mg"),

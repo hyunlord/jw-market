@@ -154,6 +154,56 @@ def build_filter_options(
     return payload
 
 
+def build_brand_default_scope(
+    *,
+    mart_db: str,
+    brand: str,
+    view: str,
+    source: str,
+    measure: str = "sales",
+) -> dict[str, object]:
+    """Return only the default ATC4 scope needed to bootstrap filter options."""
+
+    normalized_view = normalize_view(view)
+    strategic_market_kind = "cd" if normalized_view == "strategic_cd" else "ml"
+    if normalized_view == "strategic_cd":
+        normalized_view = "strategic"
+    normalized_source = normalize_source(source)
+    normalized_measure = measure.strip().lower() or "sales"
+    normalized_brand = brand.strip()
+    if normalized_view == "general":
+        codes = _general_atc4_codes_for_brand(
+            mart_db=mart_db,
+            source=normalized_source,
+            brand=normalized_brand,
+        )
+    else:
+        market_id = resolve_filter_option_market_id(
+            mart_db=mart_db,
+            view=normalized_view,
+            source=normalized_source,
+            brand=normalized_brand,
+            market_id=None,
+            strategic_market_kind=strategic_market_kind,
+            measure=normalized_measure,
+        )
+        rows = _load_atc_rows(
+            mart_db=mart_db,
+            view=normalized_view,
+            source=normalized_source,
+            market_id=market_id,
+            atc4_codes=(),
+        ) if market_id else ()
+        codes = tuple(
+            dict.fromkeys(
+                str(row.get("atc4_code") or "").strip()
+                for row in rows
+                if str(row.get("atc4_code") or "").strip()
+            )
+        )
+    return {"atc4_codes": list(codes)}
+
+
 def resolve_filter_option_market_id(
     *,
     mart_db: str,
@@ -676,7 +726,7 @@ def _load_molecule_strength_edges(
         params.extend(atc4_codes)
     rows = db.fetch_all(
         f"""
-        SELECT DISTINCT
+        SELECT
                parent.dimension_value AS parent_value,
                parent.dimension_value_norm AS parent_value_norm,
                child.dimension_value AS child_value,
@@ -689,11 +739,10 @@ def _load_molecule_strength_edges(
          AND child.brand_key = parent.brand_key
          AND child.product_code = parent.product_code
         WHERE {" AND ".join(where)}
-        ORDER BY parent.dimension_value_norm, child.dimension_value_norm
         """,
         params,
     )
-    return tuple(
+    unique = {
         DimensionHierarchyEdgeRow(
             parent_value=str(row["parent_value"]),
             parent_value_norm=str(row["parent_value_norm"]),
@@ -701,7 +750,13 @@ def _load_molecule_strength_edges(
             child_value_norm=str(row["child_value_norm"]),
         )
         for row in rows
-    )
+    }
+    return tuple(sorted(unique, key=lambda row: (
+        row.parent_value_norm,
+        row.child_value_norm,
+        row.parent_value,
+        row.child_value,
+    )))
 
 
 def _dimension_option_rows(rows: Sequence[Mapping[str, object]]) -> tuple[DimensionOptionRow, ...]:
