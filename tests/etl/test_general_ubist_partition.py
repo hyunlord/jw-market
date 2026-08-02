@@ -576,3 +576,30 @@ def test_enriched_loader_rejects_malformed_value_before_filter(
 
     with pytest.raises(ValueError, match="cast_failures"):
         load_ubist_base_frame(ml="ml_test")
+
+
+def test_atc4_scope_is_not_discarded_when_no_limit_is_set(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from pipeline.etl.io.mart import general_ubist
+
+    plans = [
+        general_ubist.UbistAtc4Partition("A10C1", 1, 1, 1, 0),
+        general_ubist.UbistAtc4Partition("B2D1", 1, 1, 1, 1),
+    ]
+    monkeypatch.setattr(general_ubist, "_build_atc4_spool", lambda **_kwargs: plans)
+    monkeypatch.setattr(
+        general_ubist,
+        "_build_atc4_workset",
+        lambda **kwargs: kwargs["plan"],
+    )
+
+    selected = list(
+        general_ubist.iter_ubist_atc4_worksets(
+            spool_dir=tmp_path,
+            atc4_scope=("A10C1",),
+        )
+    )
+
+    assert [plan.atc4_code for plan in selected] == ["A10C1"]

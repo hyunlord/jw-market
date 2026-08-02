@@ -763,7 +763,7 @@ def iter_ubist_atc4_worksets(
         selected = [plan for plan in selected if plan.atc4_code.upper() in requested]
     if limit_atc4:
         selected = selected[:limit_atc4]
-    if not limit_atc4:
+    if not limit_atc4 and not atc4_scope:
         selected = plans
     try:
         for plan in selected:
