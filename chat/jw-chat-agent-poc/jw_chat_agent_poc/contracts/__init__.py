@@ -53,6 +53,7 @@ from .validation import (
     ValidationSeverity,
     ValidationViolation,
 )
+from .routing import RejectedRoute, RouteDecision, RouteMode
 
 __all__ = (
     "AnswerModel",
@@ -81,7 +82,10 @@ __all__ = (
     "PeriodSpec",
     "PortalMarketView",
     "ResolutionStatus",
+    "RejectedRoute",
     "ResolvedQuery",
+    "RouteDecision",
+    "RouteMode",
     "RationaleFact",
     "RationaleKind",
     "RenderAuthorization",

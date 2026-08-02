@@ -49,6 +49,7 @@ from jw_chat_agent_poc.common.periods import (
 )
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.orchestrator import ChatAgent
+from jw_chat_agent_poc.contracts.routing import RejectedRoute, RouteMode
 from jw_chat_agent_poc.orchestrator.answer_contract import (
     enforce_answer_contract,
     evaluate_answer_contract,
@@ -107,6 +108,7 @@ from jw_chat_agent_poc.orchestrator.query_spec import (
     query_spec_observation,
 )
 from jw_chat_agent_poc.orchestrator.response_format_contract import apply_response_format_contract
+from jw_chat_agent_poc.orchestrator.route_decision_shadow import observe_route_decision
 from jw_chat_agent_poc.orchestrator.router_diagnostics import router_diagnostics
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate, requested_unavailable_source
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
@@ -908,6 +910,30 @@ def _answer_question(
             and not has_file_reference(effective_question)
             and not _has_explicit_file_sheet_reference(effective_question)
             and not file_schema_match
+        )
+        observe_route_decision(
+            question=effective_question,
+            domain=context_scope.value,
+            handler="context_scope_dispatch",
+            mode=RouteMode.DETERMINISTIC,
+            decided_by="app_scope",
+            reason_codes=(
+                f"scope:{context_scope.value}",
+                f"file_present:{str(has_file).lower()}",
+                f"market_intent:{str(has_market_intent).lower()}",
+            ),
+            rejected_alternatives=tuple(
+                RejectedRoute(
+                    domain=alternative.value,
+                    handler="context_scope_dispatch",
+                    reason_codes=("scope_not_selected",),
+                )
+                for alternative in ContextScope
+                if alternative is not context_scope
+            ),
+            clarification_message=(
+                "scope clarification required" if needs_scope_clarification else None
+            ),
         )
         delegated_file_context: str | None = None
         file_source_items: tuple[dict[str, Any], ...] = ()
@@ -2029,9 +2055,41 @@ def _answer_existing_without_pending(
     # Only forwarded when the previous turn actually left an observation, so every
     # question without one reaches the agent through the call it always used.
     agent_kwargs: dict[str, Any] = {"issue_context": issue_context} if issue_context else {}
+
+    def observe_market_route(
+        handler: str,
+        *,
+        reason: str,
+        mode: RouteMode = RouteMode.DETERMINISTIC,
+    ) -> None:
+        observe_route_decision(
+            question=question,
+            domain="market",
+            handler=handler,
+            mode=mode,
+            decided_by="market_shortcut",
+            reason_codes=(reason,),
+            rejected_alternatives=(
+                RejectedRoute(
+                    domain="market",
+                    handler=(
+                        "agent_loop" if mode is RouteMode.DETERMINISTIC else "market_shortcut"
+                    ),
+                    reason_codes=(
+                        (
+                            "shortcut_selected"
+                            if mode is RouteMode.DETERMINISTIC
+                            else "shortcut_not_selected"
+                        ),
+                    ),
+                ),
+            ),
+        )
+
     explicit_market = re.search(r"(?<![A-Za-z0-9_])(ml_\d+)(?![A-Za-z0-9_])", question, re.IGNORECASE)
     if explicit_market is not None and "시장" in question:
         period = requested_period(question) or "latest"
+        observe_market_route("answer_market_id", reason="explicit_market_id")
         return market_scope_resolver.answer_market_id(
             question,
             market_id=explicit_market.group(1).lower(),
@@ -2040,12 +2098,19 @@ def _answer_existing_without_pending(
     if requested_unavailable_source(question) is not None and not documents:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
+        observe_market_route(
+            "agent_loop",
+            reason="requested_source_unavailable",
+            mode=RouteMode.AGENTIC,
+        )
         return agent.answer(question, documents, **agent_kwargs)
     intent = detect_market_scope_intent(question)
     if asks_market_members(question) and not documents:
         if market_scope_resolver.has_explicit_brand_anchor(question):
+            observe_market_route("answer_market_landscape", reason="market_members_brand")
             return market_scope_resolver.answer(question, view_type="market_landscape")
         if market_scope_resolver.has_explicit_named_market(question):
+            observe_market_route("answer_named_market", reason="named_market")
             return market_scope_resolver.answer_named_market(question)
     agent_loop_required = should_use_agent_loop(question)
     has_brand_anchor = False
@@ -2059,10 +2124,20 @@ def _answer_existing_without_pending(
         and not tool_use_requirements(question)
         and not _v4_enforces_external_question(question)
     ):
+        observe_market_route(
+            "direct_agent_loop",
+            reason="direct_agent_loop_required",
+            mode=RouteMode.AGENTIC,
+        )
         return _answer_direct_agent_loop(question, external_mode, **agent_kwargs)
     if agent_loop_required:
         with stage(None, "question_classification", "agent setup"):
             agent = agent_factory(external_mode=external_mode)
+        observe_market_route(
+            "agent_loop",
+            reason="agent_loop_required",
+            mode=RouteMode.AGENTIC,
+        )
         return agent.answer(question, documents, **agent_kwargs)
     if intent is not None and not has_brand_anchor:
         has_brand_anchor = market_scope_resolver.has_explicit_brand_anchor(question)
@@ -2086,11 +2161,18 @@ def _answer_existing_without_pending(
                 expires_at=expires_at,
             )
             store.conversations.set_pending(conversation_id, pending)
+            observe_market_route("market_clarification", reason="view_clarification_required")
             return market_scope_resolver.clarification(question, brand=brand)
         if intent.view_type is not None:
+            observe_market_route("market_scope_answer", reason=f"view:{intent.view_type}")
             return market_scope_resolver.answer(question, view_type=intent.view_type)
     with stage(None, "question_classification", "agent setup"):
         agent = agent_factory(external_mode=external_mode)
+    observe_market_route(
+        "agent_loop",
+        reason="market_shortcut_not_selected",
+        mode=RouteMode.AGENTIC,
+    )
     return agent.answer(question, documents, **agent_kwargs)
 
 

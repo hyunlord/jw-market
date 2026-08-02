@@ -31,6 +31,7 @@ from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
+from jw_chat_agent_poc.contracts.routing import RejectedRoute, RouteMode
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_call_status
 from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
@@ -49,6 +50,7 @@ from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     emit_shadow_gate_exception,
 )
 from jw_chat_agent_poc.orchestrator.question_intent import allows_background_news_context
+from jw_chat_agent_poc.orchestrator.route_decision_shadow import observe_route_decision
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     market_ambiguity_message,
@@ -309,6 +311,36 @@ class ToolUseAgent:
                     llm_plan_calls += 1
                     _record_planner_token_usage(timing, planner)
                     progress.summary = " -> ".join(call.name for call in decision.tool_calls) or "답변 생성"
+            selected_handler = ",".join(call.name for call in decision.tool_calls) or "final_answer"
+            observe_route_decision(
+                question=question,
+                domain="agent_loop",
+                handler=selected_handler,
+                mode=(
+                    RouteMode.DETERMINISTIC
+                    if deterministic_plan_hit
+                    else RouteMode.AGENTIC
+                ),
+                decided_by="agent_loop_planner",
+                reason_codes=(
+                    f"planner_kind:{deterministic_plan_kind or type(planner).__name__}",
+                ),
+                rejected_alternatives=(
+                    RejectedRoute(
+                        domain="agent_loop",
+                        handler=(
+                            "agentic_planner"
+                            if deterministic_plan_hit
+                            else "deterministic_plan"
+                        ),
+                        reason_codes=(
+                            "deterministic_contract_selected"
+                            if deterministic_plan_hit
+                            else "no_deterministic_plan_matched",
+                        ),
+                    ),
+                ),
+            )
             query_spec = current_query_spec()
             if query_spec is not None:
                 try:
