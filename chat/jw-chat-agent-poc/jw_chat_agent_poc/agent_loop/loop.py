@@ -31,7 +31,11 @@ from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
 from jw_chat_agent_poc.agent_loop.population_specs import strict_query_plan
 from jw_chat_agent_poc.agent_loop.external_tools import background_news_context_call
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
-from jw_chat_agent_poc.contracts.routing import RejectedRoute, RouteMode
+from jw_chat_agent_poc.contracts.routing import (
+    RejectedRoute,
+    RouteMode,
+    unified_router_shadow_enabled,
+)
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, answer_contract_backfill_tool_calls, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_call_status
 from jw_chat_agent_poc.orchestrator.answer_completeness import comparison_subjects, completeness_intent
@@ -68,6 +72,27 @@ from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_unified_router_shadow(
+    *,
+    question: str,
+    selected_handler: str,
+    deterministic_plan: bool,
+    planner_kind: str,
+    legacy_mode: RouteMode,
+) -> None:
+    if not unified_router_shadow_enabled():
+        return
+    from jw_chat_agent_poc.orchestrator.unified_router_shadow import observe_agent_planner_route
+
+    observe_agent_planner_route(
+        question=question,
+        selected_handler=selected_handler,
+        deterministic_plan=deterministic_plan,
+        planner_kind=planner_kind,
+        legacy_mode=legacy_mode,
+    )
 
 _PARALLEL_MARKET_TOOLS = frozenset(
     {
@@ -339,6 +364,17 @@ class ToolUseAgent:
                             else "no_deterministic_plan_matched",
                         ),
                     ),
+                ),
+            )
+            _observe_unified_router_shadow(
+                question=question,
+                selected_handler=selected_handler,
+                deterministic_plan=deterministic_plan_hit,
+                planner_kind=deterministic_plan_kind or type(planner).__name__,
+                legacy_mode=(
+                    RouteMode.DETERMINISTIC
+                    if deterministic_plan_hit
+                    else RouteMode.AGENTIC
                 ),
             )
             query_spec = current_query_spec()

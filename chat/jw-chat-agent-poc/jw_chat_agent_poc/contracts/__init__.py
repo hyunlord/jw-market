@@ -53,12 +53,20 @@ from .validation import (
     ValidationSeverity,
     ValidationViolation,
 )
-from .routing import RejectedRoute, RouteDecision, RouteMode
+from .routing import (
+    CanonicalRouteDecision,
+    RejectedRoute,
+    RouteDecision,
+    RouteFieldComparison,
+    RouteMode,
+    RouteShadowComparison,
+)
 
 __all__ = (
     "AnswerModel",
     "AnswerSection",
     "BrandCapabilitySnapshot",
+    "CanonicalRouteDecision",
     "CatalogSourceClass",
     "ContractModel",
     "ContractFacetFailure",
@@ -85,7 +93,9 @@ __all__ = (
     "RejectedRoute",
     "ResolvedQuery",
     "RouteDecision",
+    "RouteFieldComparison",
     "RouteMode",
+    "RouteShadowComparison",
     "RationaleFact",
     "RationaleKind",
     "RenderAuthorization",
