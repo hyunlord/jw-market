@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import copy
 import time
+from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from threading import Lock
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Callable, Final, Literal, Protocol
 
 import pymysql
 
@@ -16,6 +17,8 @@ Grain = Literal["day", "week"]
 MAX_RANGE_DAYS: Final = 366
 DEFAULT_CACHE_TTL_SECONDS: Final = 60
 DASHBOARD_DB_READ_TIMEOUT_SECONDS: Final = 15
+DEFAULT_DASHBOARD_QUERY_WORKERS: Final = 4
+MAX_DASHBOARD_QUERY_WORKERS: Final = 8
 
 _PERIOD_SQL: Final = {
     "day": "DATE_FORMAT({column}, '%%Y-%%m-%%d')",
@@ -236,6 +239,20 @@ class UsageRepository(Protocol):
     def fetch(self, filters: UsageFilters) -> dict[str, Any]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardQuery:
+    name: str
+    ordinal: int
+    sql: str
+    params: tuple[Any, ...]
+
+
+class DashboardQueryError(RuntimeError):
+    def __init__(self, query_name: str) -> None:
+        super().__init__(f"dashboard query failed: {query_name}")
+        self.query_name = query_name
+
+
 class DashboardCache:
     def __init__(self, *, ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS) -> None:
         self.ttl_seconds = ttl_seconds
@@ -256,7 +273,13 @@ class DashboardCache:
 
 
 class MariaDBUsageRepository:
-    def __init__(self, config: APIConfig) -> None:
+    def __init__(
+        self,
+        config: APIConfig,
+        *,
+        max_workers: int = DEFAULT_DASHBOARD_QUERY_WORKERS,
+        connect: Callable[..., Any] = pymysql.connect,
+    ) -> None:
         required = {
             "DASHBOARD_DB_HOST": config.dashboard_db_host,
             "DASHBOARD_DB_USER": config.dashboard_db_user,
@@ -266,6 +289,10 @@ class MariaDBUsageRepository:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError("dashboard reader settings are missing: " + ", ".join(missing))
+        if not 1 <= max_workers <= MAX_DASHBOARD_QUERY_WORKERS:
+            raise ValueError(
+                f"dashboard query workers must be between 1 and {MAX_DASHBOARD_QUERY_WORKERS}"
+            )
         self._connect_args = {
             "host": config.dashboard_db_host,
             "port": config.dashboard_db_port,
@@ -279,35 +306,14 @@ class MariaDBUsageRepository:
             "write_timeout": 8,
             "connect_timeout": 3,
         }
+        self._connect = connect
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="dashboard-query",
+        )
 
     def fetch(self, filters: UsageFilters) -> dict[str, Any]:
-        start = filters.date_from.isoformat()
-        end_exclusive = (filters.date_to + timedelta(days=1)).isoformat()
-        period = _PERIOD_SQL[filters.grain]
-        user_filter, user_params = _user_filter(filters)
-        api_filter, api_params = _api_filter(filters)
-        connection = pymysql.connect(**self._connect_args)
-        try:
-            rows = {}
-            with connection.cursor() as cursor:
-                for name, template in DASHBOARD_SQL.items():
-                    sql = template.format(
-                        period=period.format(column=_time_column(name)),
-                        user_filter=user_filter,
-                        api_filter=api_filter,
-                    )
-                    if name == "filter_options":
-                        params: tuple[Any, ...] = ()
-                    elif name == "auth_audience":
-                        params = (start, start, start, end_exclusive, *user_params)
-                    elif name.startswith("api_") and name not in {"api_user", "api_department"}:
-                        params = (start, end_exclusive, *api_params)
-                    else:
-                        params = (start, end_exclusive, *user_params)
-                    cursor.execute(sql, params)
-                    rows[name] = [_normalize_row(row) for row in cursor.fetchall()]
-        finally:
-            connection.close()
+        rows = self._fetch_rows(self._build_queries(filters))
 
         options = rows["filter_options"]
         return {
@@ -338,9 +344,64 @@ class MariaDBUsageRepository:
             "reports": {"trend": rows["report_trend"], "by_type": rows["report_type"]},
             "filter_options": {
                 "users": options,
-                "departments": sorted({row["department"] for row in options if row.get("department")}),
+                "departments": sorted(
+                    {row["department"] for row in options if row.get("department")}
+                ),
             },
         }
+
+    def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:
+        start = filters.date_from.isoformat()
+        end_exclusive = (filters.date_to + timedelta(days=1)).isoformat()
+        period = _PERIOD_SQL[filters.grain]
+        user_filter, user_params = _user_filter(filters)
+        api_filter, api_params = _api_filter(filters)
+        queries: list[DashboardQuery] = []
+        for ordinal, (name, template) in enumerate(DASHBOARD_SQL.items()):
+            sql = template.format(
+                period=period.format(column=_time_column(name)),
+                user_filter=user_filter,
+                api_filter=api_filter,
+            )
+            if name == "filter_options":
+                params: tuple[Any, ...] = ()
+            elif name == "auth_audience":
+                params = (start, start, start, end_exclusive, *user_params)
+            elif name.startswith("api_") and name not in {"api_user", "api_department"}:
+                params = (start, end_exclusive, *api_params)
+            else:
+                params = (start, end_exclusive, *user_params)
+            queries.append(DashboardQuery(name=name, ordinal=ordinal, sql=sql, params=params))
+        return tuple(queries)
+
+    def _fetch_rows(self, queries: tuple[DashboardQuery, ...]) -> dict[str, list[dict[str, Any]]]:
+        futures: dict[Future[tuple[str, list[dict[str, Any]]]], DashboardQuery] = {
+            self._executor.submit(self._execute_query, query): query for query in queries
+        }
+        done, pending = wait(futures, return_when=FIRST_EXCEPTION)
+        failed = [
+            (query, future.exception())
+            for future, query in futures.items()
+            if future in done and future.exception() is not None
+        ]
+        if failed:
+            for future in pending:
+                future.cancel()
+            query, error = min(failed, key=lambda item: item[0].ordinal)
+            raise DashboardQueryError(query.name) from error
+
+        results = {future.result()[0]: future.result()[1] for future in futures}
+        return {query.name: results[query.name] for query in queries}
+
+    def _execute_query(self, query: DashboardQuery) -> tuple[str, list[dict[str, Any]]]:
+        connection = self._connect(**self._connect_args)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(query.sql, query.params)
+                rows = [_normalize_row(row) for row in cursor.fetchall()]
+        finally:
+            connection.close()
+        return query.name, rows
 
 
 class UsageStatsService:

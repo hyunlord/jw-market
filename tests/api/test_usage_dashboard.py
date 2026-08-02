@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date
+from typing import Any
 
 import pytest
 import pymysql
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pipeline.scripts.api.config import config
+from pipeline.scripts.api.config import APIConfig, config
 from pipeline.scripts.api.dashboard_usage import (
     DashboardCache,
+    DashboardQuery,
+    DashboardQueryError,
     MariaDBUsageRepository,
     UsageFilters,
     UsageStatsService,
@@ -39,6 +46,47 @@ class FakeRepository:
             "reports": {"trend": [], "by_type": []},
             "filter_options": {"users": [], "departments": []},
         }
+
+
+def _dashboard_config() -> APIConfig:
+    return replace(
+        config,
+        dashboard_db_host="db.internal",
+        dashboard_db_user="dashboard_reader",
+        dashboard_db_password="test-only",
+        dashboard_db_name="llmops",
+    )
+
+
+class DeterministicUsageRepository(MariaDBUsageRepository):
+    def __init__(self, *, max_workers: int, failing_query: str | None = None) -> None:
+        super().__init__(_dashboard_config(), max_workers=max_workers)
+        self.failing_query = failing_query
+        self.active_queries = 0
+        self.max_active_queries = 0
+        self.completed_queries: list[str] = []
+        self._state_lock = threading.Lock()
+
+    def _execute_query(self, query: DashboardQuery) -> tuple[str, list[dict[str, Any]]]:
+        with self._state_lock:
+            self.active_queries += 1
+            self.max_active_queries = max(self.max_active_queries, self.active_queries)
+        try:
+            time.sleep(0.005)
+            if query.name == self.failing_query:
+                raise pymysql.OperationalError(1040, "Too many connections")
+            if query.name == "filter_options":
+                rows = [{"user_id": 34, "user_name": "tester", "department": "QA"}]
+            elif query.name == "auth_audience":
+                rows = [{"new_users": 2, "returning_users": 3}]
+            else:
+                rows = [{"query": query.name, "ordinal": query.ordinal}]
+            with self._state_lock:
+                self.completed_queries.append(query.name)
+            return query.name, rows
+        finally:
+            with self._state_lock:
+                self.active_queries -= 1
 
 
 def _client(repository: FakeRepository) -> TestClient:
@@ -189,6 +237,54 @@ def test_repository_allows_a_bounded_cold_view_read() -> None:
 
     assert DASHBOARD_DB_READ_TIMEOUT_SECONDS == 15
     assert repository._connect_args["read_timeout"] == DASHBOARD_DB_READ_TIMEOUT_SECONDS
+
+
+def test_parallel_repository_matches_serial_result_byte_for_byte() -> None:
+    filters = UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day")
+    serial = DeterministicUsageRepository(max_workers=1).fetch(filters)
+    parallel = DeterministicUsageRepository(max_workers=4).fetch(filters)
+
+    assert json.dumps(parallel, sort_keys=True, default=str).encode() == json.dumps(
+        serial, sort_keys=True, default=str
+    ).encode()
+
+
+def test_parallel_repository_bounds_process_wide_query_concurrency() -> None:
+    repository = DeterministicUsageRepository(max_workers=4)
+    filters = UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day")
+
+    with ThreadPoolExecutor(max_workers=2) as callers:
+        results = list(callers.map(repository.fetch, (filters, filters)))
+
+    assert 1 < repository.max_active_queries <= 4
+    assert len(repository.completed_queries) == 38
+    assert results[0] == results[1]
+
+
+def test_parallel_repository_fails_closed_when_connection_capacity_is_exhausted() -> None:
+    def exhausted_connect(**_kwargs: Any) -> Any:
+        raise pymysql.OperationalError(1040, "Too many connections")
+
+    repository = MariaDBUsageRepository(
+        _dashboard_config(), max_workers=4, connect=exhausted_connect
+    )
+
+    with pytest.raises(DashboardQueryError, match="dashboard query failed") as captured:
+        repository.fetch(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert isinstance(captured.value.__cause__, pymysql.OperationalError)
+
+
+def test_service_does_not_cache_a_partial_result_when_one_query_fails() -> None:
+    repository = DeterministicUsageRepository(max_workers=4, failing_query="chat_user")
+    cache = DashboardCache(ttl_seconds=60)
+    service = UsageStatsService(repository, cache=cache)
+    filters = UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day")
+
+    with pytest.raises(DashboardQueryError, match="chat_user"):
+        service.get(filters)
+
+    assert cache.get(filters.cache_key()) is None
 
 
 def test_period_sql_survives_pymysql_parameter_interpolation() -> None:
