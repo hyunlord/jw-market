@@ -6,7 +6,6 @@ from typing import Any
 import pandas as pd
 
 from .brand_key_normalize import normalize_brand_name
-from .general_config import ALLOWED_SOURCES
 from .general_db import ensure_json_columns
 from .general_json import write_jsonl
 from .layer3_compute_market_metric import compute_market_mart_payload
@@ -129,14 +128,17 @@ def compute_strategic_cd(dry_run: bool, insert: bool, output_dir: Path, cd_marke
     cd_markets, cd_brand, cd_filter = load_catalogs()
     if cd_market:
         cd_markets = cd_markets.loc[cd_markets["cd_id"] == cd_market]
-    atc_filter = _atc_filter_for_smoke(cd_markets, cd_brand, cd_filter) if cd_market else None
-    all_general: list[dict[str, Any]] = []
-    for source in ALLOWED_SOURCES:
-        all_general.extend(load_general_rows(source, atc_filter))
     brand_rows: list[dict[str, Any]] = []
     market_rows: list[dict[str, Any]] = []
     for _, row in cd_markets.iterrows():
-        rows, markets = build_cd_rows(row, cd_brand.loc[cd_brand["cd_id"] == row["cd_id"]].copy(), cd_filter, all_general)
+        catalog_rows = cd_brand.loc[cd_brand["cd_id"] == row["cd_id"]].copy()
+        atc_filter = _atc_filter_for_smoke(row.to_frame().T, catalog_rows, cd_filter)
+        if not atc_filter:
+            raise RuntimeError(f"Strategic CD ATC4 scope is empty for {row.get('cd_id')}")
+        general_rows: list[dict[str, Any]] = []
+        for source in required_sources(row.get("data_source")):
+            general_rows.extend(load_general_rows(source, atc_filter))
+        rows, markets = build_cd_rows(row, catalog_rows, cd_filter, general_rows)
         brand_rows.extend(rows)
         market_rows.extend(markets)
     if dry_run:

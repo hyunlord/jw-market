@@ -6,7 +6,6 @@ from typing import Any
 import pandas as pd
 
 from .brand_key_normalize import normalize_brand_name
-from .general_config import ALLOWED_SOURCES
 from .general_db import ensure_json_columns
 from .general_json import write_jsonl
 from .layer3_compute_market_metric import compute_market_mart_payload
@@ -24,6 +23,7 @@ from .strategic_common import (
     load_general_rows,
     output_brand_key,
     parse_json_list,
+    required_sources,
     row_atc4_code,
     truthy,
 )
@@ -138,18 +138,20 @@ def compute_strategic_ml(dry_run: bool, insert: bool, output_dir: Path, ml: str 
     ml_market, strategic_brand, strategic_product = load_catalogs()
     if ml:
         ml_market = ml_market.loc[ml_market["ml_id"] == ml]
-    atc_filter = _atc_filter_for_smoke(ml_market, strategic_brand) if ml else None
-    all_general: list[dict[str, Any]] = []
-    for source in ALLOWED_SOURCES:
-        all_general.extend(load_general_rows(source, atc_filter))
     brand_rows: list[dict[str, Any]] = []
     market_rows: list[dict[str, Any]] = []
     for _, row in ml_market.iterrows():
         catalog_rows = strategic_brand.loc[strategic_brand["ml_id"] == row["ml_id"]].copy()
         product_rows = strategic_product.loc[strategic_product["ml_id"] == row["ml_id"]].copy()
+        atc_filter = _atc_filter_for_smoke(row.to_frame().T, catalog_rows)
+        if not atc_filter:
+            raise RuntimeError(f"Strategic ML ATC4 scope is empty for {row.get('ml_id')}")
+        general_rows: list[dict[str, Any]] = []
+        for source in required_sources(row.get("data_source")):
+            general_rows.extend(load_general_rows(source, atc_filter))
         ubist_context = load_ubist_dimension_context(str(row["ml_id"]), product_rows)
         context = {**ubist_context, "brand_single_dimensions": catalog_single_dimension_by_brand(catalog_rows, product_rows)}
-        rows, markets = build_ml_rows(row, catalog_rows, all_general, context)
+        rows, markets = build_ml_rows(row, catalog_rows, general_rows, context)
         brand_rows.extend(rows)
         market_rows.extend(markets)
     if dry_run:

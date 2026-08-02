@@ -88,6 +88,15 @@ def expected_measure_pairs(data_source: Any) -> set[tuple[str, str]]:
     return expected
 
 
+def required_sources(data_source: Any) -> tuple[str, ...]:
+    expected = expected_measure_pairs(data_source)
+    return tuple(
+        source
+        for source in ALLOWED_SOURCES
+        if any(expected_source == source for expected_source, _measure in expected)
+    )
+
+
 def drop_strict_excluded_rows(brands: pd.DataFrame, label: str) -> pd.DataFrame:
     if "is_excluded" not in brands.columns:
         return brands
