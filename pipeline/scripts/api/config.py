@@ -59,6 +59,11 @@ class APIConfig:
     audit_db_name: str | None = None
     audit_log_queue_capacity: int = 2048
     audit_log_batch_size: int = 50
+    dashboard_db_host: str | None = None
+    dashboard_db_port: int = 3306
+    dashboard_db_user: str | None = None
+    dashboard_db_password: str | None = None
+    dashboard_db_name: str | None = None
 
 
 ApiSettings = APIConfig
@@ -97,6 +102,11 @@ def load_config() -> APIConfig:
         audit_db_name=os.getenv("AUDIT_DB_NAME"),
         audit_log_queue_capacity=_env_int("AUDIT_LOG_QUEUE_CAPACITY", 2048),
         audit_log_batch_size=_env_int("AUDIT_LOG_BATCH_SIZE", 50),
+        dashboard_db_host=os.getenv("DASHBOARD_DB_HOST"),
+        dashboard_db_port=_env_int("DASHBOARD_DB_PORT", 3306),
+        dashboard_db_user=os.getenv("DASHBOARD_DB_USER"),
+        dashboard_db_password=os.getenv("DASHBOARD_DB_PASSWORD"),
+        dashboard_db_name=os.getenv("DASHBOARD_DB_NAME"),
     )
 
 

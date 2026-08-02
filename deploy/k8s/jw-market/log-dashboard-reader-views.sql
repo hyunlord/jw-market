@@ -38,6 +38,7 @@ SELECT
     c.`contract_status`,
     c.`quality_label`,
     c.`elapsed_ms`,
+    s.`service_id`,
     o.`trace_id`,
     JSON_UNQUOTE(JSON_EXTRACT(o.`request_headers_json`, '$."x-request-id"')) AS `request_id`,
     CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.`trace_json`, '$.token_usage.available')), 'false') AS CHAR(5)) AS `token_usage_available`,
@@ -47,7 +48,20 @@ SELECT
     c.`created_at`
 FROM `jw_mart`.`jw_chat_agent_conversation_log` c
 LEFT JOIN `jw_mart`.`jw_chat_agent_history_projection_outbox` o
-    ON o.`source_log_id` = c.`id` AND o.`projection_version` = 1;
+    ON o.`source_log_id` = c.`id` AND o.`projection_version` = 1
+LEFT JOIN (
+    SELECT `uid`,
+           CASE WHEN COUNT(DISTINCT `chat_service_id`) = 1
+                THEN MAX(`chat_service_id`) ELSE NULL END AS `service_id`
+    FROM `llmops`.`chat_session_tb`
+    GROUP BY `uid`
+) s ON s.`uid` = o.`session_id`;
+
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW
+    `jw_market_audit_stage`.`dashboard_user_directory_v` AS
+SELECT `id`, `user_id`, `name`, `department`, `group_name`
+FROM `llmops`.`user_tb`
+WHERE `is_active` = 1 AND `is_deleted` = 0;
 
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW
     `jw_market_audit_stage`.`dashboard_auth_event_v` AS
@@ -72,4 +86,6 @@ GRANT SELECT ON `jw_market_audit_stage`.`dashboard_chat_usage_v`
 GRANT SELECT ON `jw_market_audit_stage`.`dashboard_auth_event_v`
     TO 'jw_market_audit_reader_stage'@'10.%';
 GRANT SELECT ON `jw_market_audit_stage`.`dashboard_credit_usage_v`
+    TO 'jw_market_audit_reader_stage'@'10.%';
+GRANT SELECT ON `jw_market_audit_stage`.`dashboard_user_directory_v`
     TO 'jw_market_audit_reader_stage'@'10.%';
