@@ -97,6 +97,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     is_hira_disease_question,
 )
 from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
+from jw_chat_agent_poc.contracts.shadow import resolved_query_shadow_observation
 from jw_chat_agent_poc.orchestrator.query_spec import (
     RequestQuerySpec,
     extract_query_spec,
@@ -732,6 +733,12 @@ def _observe_query_spec(
         "request_query_spec_observed spec=%s",
         query_spec_observation(query_spec),
     )
+    try:
+        observation = resolved_query_shadow_observation(query_spec)
+    except Exception:  # noqa: BLE001 - shadow contract creation must remain fail-open
+        LOGGER.exception("resolved_query_shadow_observation_failed")
+        return
+    LOGGER.info("resolved_query_shadow_observed observation=%s", observation)
 
 
 @shadow_request_scope
