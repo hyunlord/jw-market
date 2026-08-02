@@ -133,7 +133,7 @@ from jw_chat_agent_poc.service.answer_delivery import (
     record_source_notice_attachment,
 )
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
-from jw_chat_agent_poc.service.charts import build_charts
+from jw_chat_agent_poc.service.charts import build_charts, filter_charts_for_binding
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
 from jw_chat_agent_poc.service.process_observability import process_observability
 from jw_chat_agent_poc.service.conversation import (
@@ -310,6 +310,16 @@ class FinalAnswer:
 
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
 DEFAULT_SESSION_STORE_MAX = 500
+CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
+
+
+def _chart_after_evidence_binding_enabled() -> bool:
+    return os.environ.get(CHART_AFTER_EVIDENCE_BINDING_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 class SessionStore:
@@ -3068,12 +3078,15 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             safe_answer = ensure_top_brand_trend_table(safe_answer, fact_md)
         policy_fact_md = "\n\n".join(part for part in (fact_md, file_context_fact) if part)
         safe_answer = apply_claim_policy(active_question, safe_answer, policy_fact_md)
-    try:
-        with stage(timing, "chart_generation", "fact-backed chart spec"):
-            charts = build_charts(result, question=active_question, answer=safe_answer)
-    except Exception:
-        charts = []
-    timing_payload = finish(timing)
+    chart_after_binding = _chart_after_evidence_binding_enabled()
+    charts: list[dict[str, Any]] = []
+    if not chart_after_binding:
+        try:
+            with stage(timing, "chart_generation", "fact-backed chart spec"):
+                charts = build_charts(result, question=active_question, answer=safe_answer)
+        except Exception:
+            charts = []
+        timing_payload = finish(timing)
     safe_answer = cleanup_markdown_answer(safe_answer)
     router_diagnostics = result.get("router_diagnostics")
     external_tool_agent_result = (
@@ -3181,6 +3194,23 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         safe_answer = enforce_general_view_contract(safe_answer, result.get("general_view_contract"))
     if not file_context_fact and market_contract_allowed:
         safe_answer = _apply_evidence_binding_gate(active_question, safe_answer, result)
+    if chart_after_binding:
+        try:
+            with stage(timing, "chart_generation", "bound fact-backed chart spec"):
+                candidate_charts = build_charts(
+                    result,
+                    question=active_question,
+                    answer=safe_answer,
+                )
+                charts = filter_charts_for_binding(
+                    candidate_charts,
+                    result=result,
+                    question=active_question,
+                )
+        except Exception:
+            LOGGER.exception("bound_chart_generation_failed")
+            charts = []
+        timing_payload = finish(timing)
     # After the binding gate, so a refusal the orchestrator already decided on is
     # never weighed as an unbacked claim, and after every contract enforcer, so
     # none of them can drop it again.
