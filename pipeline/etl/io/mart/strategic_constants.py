@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from pipeline.etl.io.catalog.paths import CATALOG_ROOT_ENV
+
 from .general_config import PROJECT_ROOT, first_existing
 
-CATALOG_DIR = Path(os.environ["S5_CATALOG_DIR"]) if os.environ.get("S5_CATALOG_DIR") else first_existing(PROJECT_ROOT / "output" / "catalog", PROJECT_ROOT / "parquet")
 DRY_RUN_DIR = Path("/tmp")
 ML_BRAND_JSONL = "strategic_ml_v3_brand_rows.jsonl"
 ML_MARKET_JSONL = "strategic_ml_v3_market_rows.jsonl"
@@ -14,6 +15,24 @@ CD_MARKET_JSONL = "strategic_cd_v3_market_rows.jsonl"
 UBIST_MEASURES = ("sales", "volume")
 IQVIA_MEASURES = ("sales", "unit", "dosage_unit", "counting_unit")
 OVERRIDE_COLS = ["class", "class_1", "class_2", "molecule", "dosage_form", "strength_pack", "nhi_type", "ox_gx", "fish_oil", "판매사", "제조사"]
+
+
+def catalog_dir() -> Path:
+    configured = os.environ.get("S5_CATALOG_DIR") or os.environ.get(CATALOG_ROOT_ENV)
+    root = Path(configured) if configured else first_existing(
+        PROJECT_ROOT / "output" / "catalog",
+        PROJECT_ROOT / "parquet",
+    )
+    if not root.is_dir():
+        raise FileNotFoundError(f"S5 catalog root not found: {root}")
+    return root
+
+
+def catalog_file(name: str) -> Path:
+    path = catalog_dir() / name / f"{name}.parquet"
+    if not path.is_file():
+        raise FileNotFoundError(f"S5 catalog artifact not found: {path}")
+    return path
 
 ML_BRAND_COLUMNS = [
     "ml_id", "brand_id", "brand_key", "brand_name", "source", "measure", "is_jw", "unit_label",

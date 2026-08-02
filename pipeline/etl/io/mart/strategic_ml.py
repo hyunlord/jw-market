@@ -27,7 +27,7 @@ from .strategic_common import (
     row_atc4_code,
     truthy,
 )
-from .strategic_constants import CATALOG_DIR, ML_BRAND_COLUMNS, ML_BRAND_JSONL, ML_MARKET_COLUMNS, ML_MARKET_JSONL
+from .strategic_constants import ML_BRAND_COLUMNS, ML_BRAND_JSONL, ML_MARKET_COLUMNS, ML_MARKET_JSONL, catalog_file
 from .strategic_dimension_apply import enhance_strategic_dimensions
 from .strategic_dimensions import catalog_single_dimension_by_brand, load_ubist_dimension_context
 from .strategic_scope import collapse_same_rows, group_by_source_measure, recompute_market_scoped_metric_history
@@ -35,9 +35,9 @@ from .strategic_ubist_channels import UBIST_CHANNEL_CONTRACT_COLUMNS, attach_ubi
 
 
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    ml_market = pd.read_parquet(CATALOG_DIR / "ml_market" / "ml_market.parquet")
-    strategic_brand = pd.read_parquet(CATALOG_DIR / "strategic_brand" / "strategic_brand.parquet")
-    strategic_product = pd.read_parquet(CATALOG_DIR / "strategic_product" / "strategic_product.parquet")
+    ml_market = pd.read_parquet(catalog_file("ml_market"))
+    strategic_brand = pd.read_parquet(catalog_file("strategic_brand"))
+    strategic_product = pd.read_parquet(catalog_file("strategic_product"))
     strategic_brand = drop_strict_excluded_rows(strategic_brand, "strategic_brand")
     strategic_product = drop_strict_excluded_rows(strategic_product, "strategic_product")
     if "general_brand_key" in strategic_brand.columns:

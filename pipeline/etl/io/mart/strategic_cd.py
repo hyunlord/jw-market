@@ -11,17 +11,17 @@ from .general_db import ensure_json_columns
 from .general_json import write_jsonl
 from .layer3_compute_market_metric import compute_market_mart_payload
 from .strategic_common import *
-from .strategic_constants import CATALOG_DIR, CD_BRAND_COLUMNS, CD_BRAND_JSONL, CD_MARKET_COLUMNS, CD_MARKET_JSONL, OVERRIDE_COLS
+from .strategic_constants import CD_BRAND_COLUMNS, CD_BRAND_JSONL, CD_MARKET_COLUMNS, CD_MARKET_JSONL, OVERRIDE_COLS, catalog_file
 from .strategic_dimension_apply import apply_cd_dimension_recode
 from .strategic_scope import collapse_same_rows, group_by_source_measure, recompute_market_scoped_metric_history
 from .strategic_ubist_channels import UBIST_CHANNEL_CONTRACT_COLUMNS, attach_ubist_channel_totals
 
 
 def load_catalogs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    cd_market = pd.read_parquet(CATALOG_DIR / "cd_market" / "cd_market.parquet")
-    cd_brand = pd.read_parquet(CATALOG_DIR / "cd_brand" / "cd_brand.parquet")
+    cd_market = pd.read_parquet(catalog_file("cd_market"))
+    cd_brand = pd.read_parquet(catalog_file("cd_brand"))
     cd_brand = drop_strict_excluded_rows(cd_brand, "cd_brand")
-    cd_filter = pd.read_parquet(CATALOG_DIR / "cd_filter" / "cd_filter.parquet")
+    cd_filter = pd.read_parquet(catalog_file("cd_filter"))
     if "general_brand_key" in cd_brand.columns:
         cd_brand["brand_key"] = cd_brand["general_brand_key"].fillna(cd_brand["name"]).map(normalize_brand_name)
     else:
