@@ -74,10 +74,10 @@ def version_payload() -> dict[str, Any]:
     """Return runtime provenance that can be exposed through /__version."""
 
     model_family = os.environ.get("JW_CHAT_MODEL_FAMILY", _MODEL_FAMILY_DEFAULT)
+    release_identity = release_identity_payload()
     return {
         "release_id": _env("JW_CHAT_RELEASE_ID", "RELEASE_ID"),
-        "git_sha": _env("JW_CHAT_GIT_SHA", "GIT_SHA", "COMMIT_SHA"),
-        "image_digest": _env("JW_CHAT_IMAGE_DIGEST", "IMAGE_DIGEST"),
+        **release_identity,
         "built_at": _env("JW_CHAT_BUILT_AT", "BUILT_AT"),
         "model_family": model_family,
         "model_families": _model_families(model_family),
@@ -101,7 +101,7 @@ def release_identity_payload() -> dict[str, str]:
     """Return only immutable release identity used by request telemetry."""
 
     return {
-        "git_sha": _env("JW_CHAT_GIT_SHA", "GIT_SHA", "COMMIT_SHA"),
+        "git_sha": _env("APP_VERSION", "JW_CHAT_GIT_SHA", "GIT_SHA", "COMMIT_SHA"),
         "image_digest": _env("JW_CHAT_IMAGE_DIGEST", "IMAGE_DIGEST"),
     }
 
