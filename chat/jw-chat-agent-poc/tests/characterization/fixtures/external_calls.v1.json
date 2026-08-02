@@ -1,0 +1,955 @@
+{
+  "entries": [
+    {
+      "dependency": "file_search",
+      "operation": "workflow_301",
+      "recorded_from": "tests/test_file_answer_fidelity.py fixture shape",
+      "request": {
+        "conversation_id": "phase0b-fixture",
+        "question": "이 문서 요약해줘"
+      },
+      "request_sha256": "2f54b0879eecaf4fbf5265262ca8ae9d2f61f43185eb6a36e61c380b92c09d31",
+      "response": {
+        "errors": [],
+        "file_context": "[1] qa_e2e_operations_brief.docx (page=1)\n운영 브리프 요약",
+        "file_sources": [
+          {
+            "chunk_id": "c1",
+            "document_id": 112706,
+            "file_name": "qa_e2e_operations_brief.docx"
+          }
+        ]
+      },
+      "response_sha256": "e3b837484b1a2c6b8e30ddc366a37c0b3c52a92da6b872898ba9a5a3d9a634c3"
+    },
+    {
+      "dependency": "genos",
+      "operation": "final",
+      "recorded_from": "/private/tmp/chat_mass_probe_export_r8_20260730.zip!evidence/all_probes_raw.json",
+      "request": {
+        "question": "뇌경색 관련 임상시험이랑 허가 현황 알려줘",
+        "stage": "final"
+      },
+      "request_sha256": "da3cc66c4cab63d607bc537c8138cd06630bd3c525bd07844eefd5fe87a45df4",
+      "response": {
+        "sources": [
+          "ClinicalTrials.gov 임상시험 정보"
+        ],
+        "text": "뇌경색(Cerebral Infarction)과 관련된 글로벌 임상시험은 총 1,048건이 등록되어 있으며, 이 중 5건의 주요 임상시험 정보를 확인했습니다. 다만, 요청하신 뇌경색 관련 의약품의 허가 현황 데이터는 현재 지원하지 않아 확인이 어렵습니다.\n확인된 5건의 임상시험은 급성 심근경색 및 뇌경색 환자의 레지스트리 및 추적 관찰 연구(NCT03166696), 증상이 있는 만성 중대뇌동맥 폐색 환자를 위한 두개외-두개내 우회 수술 연구(NCT05899582)를 포함하고 있습니다. 또한, 다파글리플로진 투여가 급성 심근경색 환자의 세포사멸 수준에 미치는 영향(NCT06615674), 급성 허혈성 뇌졸중 치료를 위한 Rt-PA와 엡티피바타이드 병용 요법 연구(NCT01977456), 코로나19 관련 동맥 및 정맥 혈전색전증 합병증을 평가하는 레지스트리 연구(NCT04535128) 등 다양한 치료 및 관찰 목적의 연구가 진행되고 있습니다.\n| NCT 번호 | 임상시험 제목 | 링크 |\n| --- | --- | --- |\n| NCT03166696 | Acute Myocardial Infarction and Acute Cerebral Infarction (AMIAC) Registry and Follow-up | [NCT03166696](https://clinicaltrials.gov/study/NCT03166696) |\n| NCT05899582 | Extracranial-intracranial Bypass Surgery for Symptomatic Chronic Middle Cerebral Artery Occlusion: the CMOSS-2 Trial | [NCT05899582](https://clinicaltrials.gov/study/NCT05899582) |\n| NCT06615674 | Effect of Dapagliflozin Administration on the Apoptosis Levels of Patients With Acute Myocardial Infarction | [NCT06615674](https://clinicaltrials.gov/study/NCT06615674) |\n| NCT01977456 | Study of the Combination Therapy of Rt-PA and Eptifibatide to Treat Acute Ischemic Stroke (CLEAR-FDR) | [NCT01977456](https://clinicaltrials.gov/study/NCT01977456) |\n| NCT04535128 | COVID-19 Registry to Assess Frequency, Risk Factors, Management, and Outcomes of Arterial and Venous Thromboembolic Complications | [NCT04535128](https://clinicaltrials.gov/study/NCT04535128) |\n\n## 출처\n\n| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 | 브랜드 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| ClinicalTrials.gov | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 전체 | 해당 없음 | 해당 없음 |"
+      },
+      "response_sha256": "42352c82fcee2aa6e65b80d45946314e9a3533f3c7384433e9fe9b3fe367d968"
+    },
+    {
+      "dependency": "genos",
+      "operation": "planner",
+      "recorded_from": "/private/tmp/chat_mass_probe_export_r8_20260730.zip!evidence/all_probes_raw.json",
+      "request": {
+        "question": "뇌경색 관련 임상시험이랑 허가 현황 알려줘",
+        "stage": "planner"
+      },
+      "request_sha256": "8ec81dcb84603fdc8b935a2b73d70c53ad74eb1e56b7d71d8cbf95bcc018253b",
+      "response": {
+        "intent": {
+          "items": [
+            {
+              "intent": "external_tool_agent",
+              "max_steps": null,
+              "status": "ok"
+            }
+          ]
+        },
+        "model_stages": {
+          "final_model_family": "gemini-3.1-pro-preview",
+          "final_serving_id": "202",
+          "planner_model_family": "gemini-3-flash-preview",
+          "planner_serving_id": "190",
+          "router_model_family": "gemini-3.1-pro-preview",
+          "router_serving_id": "202"
+        },
+        "route": {
+          "deterministic_execution": null,
+          "mode": "tool_use_agent"
+        }
+      },
+      "response_sha256": "f33398b4aca108d7fd9155e6b43b1e682786dbff6b9622b9b1641f792e5110bf"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "clinicaltrials_study_details",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "clinicaltrials_study_details"
+      },
+      "request_sha256": "4b3d9e8a69d7dd57ad98f5aeb8ab4bca92bb3f56e206ddc1b3dc9ce65aa75645",
+      "response": {
+        "render_data": {
+          "detail": {
+            "eligibility": "Adults with DME att...",
+            "enrollment": 300,
+            "interventions": [
+              "Aflibercept"
+            ],
+            "nct_id": "NCT05151731",
+            "outcomes": [
+              "Visual acuity"
+            ],
+            "phase": "PHASE3",
+            "status": "COMPLETED",
+            "title": "DME Study",
+            "url": "https://clinicaltrials.gov/study/NCT05151731"
+          },
+          "eligibility_disclosure": "선정·제외 기준은 원문 앞 200자까지만 제공됩니다.",
+          "field_capabilities": {
+            "dates": "SUPPORTED",
+            "eligibility": "PARTIAL",
+            "enrollment": "SUPPORTED",
+            "interventions": "SUPPORTED",
+            "outcomes": "SUPPORTED",
+            "phase": "SUPPORTED"
+          }
+        },
+        "safe_url": "https://clinicaltrials.gov/study/NCT05151731",
+        "summary_text": "ClinicalTrials.gov에서 NCT05151731 상세 원문을 확인했습니다."
+      },
+      "response_sha256": "652966258ea2d8032641caa60d2f850e72e8e61e44cefbb209a319ca8c0b09d1"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "clinicaltrials_v2_search",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "clinicaltrials_v2_search"
+      },
+      "request_sha256": "da5fa2d7930781cbf441d27301d65bf376c40c8b96eecf348324402ce2b2ac33",
+      "response": {
+        "live": {
+          "default_params": {
+            "format": "json",
+            "pageSize": "5"
+          },
+          "format": "json",
+          "requires_service_key": false,
+          "url": "https://clinicaltrials.gov/api/v2/studies"
+        },
+        "render_data": {
+          "briefTitle": "To Evaluate the Safety and PK Characteristics in Healthy Volunteers-Livalozet",
+          "nct_ids": [
+            "NCT01764178"
+          ],
+          "query.intr": "pitavastatin"
+        },
+        "safe_url": "https://clinicaltrials.gov/api/v2/studies?query.intr=pitavastatin&pageSize=5&format=json",
+        "summary_text": "ClinicalTrials v2에서 pitavastatin 관련 NCT verbatim 결과를 확인했습니다."
+      },
+      "response_sha256": "86938f1b9cf86d6929c855ad5a8cece6d3feb5166f152f9ef73290ffd3111dc5"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_disease_area_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_disease_area_stats"
+      },
+      "request_sha256": "c45675e26f1481dcbef49d0a57bbe480e0f31696894aac5428c8c15cf28b50a2",
+      "response": {
+        "live": {
+          "default_params": {
+            "medTp": "1",
+            "numOfRows": "10",
+            "pageNo": "1",
+            "sickType": "1"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByAreaStats1"
+        },
+        "render_data": {
+          "items": [
+            {
+              "lcName": "서울",
+              "ptntCnt": "679396",
+              "sickCd": "E78",
+              "sickNm": "지질단백질대사장애 및 기타 지질증",
+              "specCnt": "2137249",
+              "vstDdcnt": "2137443"
+            }
+          ],
+          "totalCount": "17",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByAreaStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+        "summary_text": "HIRA 질병의료기관지역별통계 API를 KCD 코드로 조회했습니다."
+      },
+      "response_sha256": "903021d42567647b41c727a965c40f6a26561b3a1f8fa304da6f5c71c78bd866"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_disease_gender_age_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_disease_gender_age_stats"
+      },
+      "request_sha256": "56463a362d9e63f8adc1723d35995e1a000c9f845323b9592c02cef903b7947b",
+      "response": {
+        "live": {
+          "default_params": {
+            "medTp": "1",
+            "numOfRows": "10",
+            "pageNo": "1",
+            "sickType": "1"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByGenderAgeStats1"
+        },
+        "render_data": {
+          "items": [
+            {
+              "age": "0_9세",
+              "ptntCnt": "1379",
+              "sex": "남",
+              "sickCd": "E78",
+              "sickNm": "지질단백질대사장애 및 기타 지질증",
+              "specCnt": "2258",
+              "vstDdcnt": "2262"
+            }
+          ],
+          "totalCount": "18",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByGenderAgeStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+        "summary_text": "HIRA 질병성별연령별통계 API를 KCD 코드로 조회했습니다."
+      },
+      "response_sha256": "d5608046ee4cfe3e71cda5c41abe776c0bd73fa846edc1c95eefa6a8f934600f"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_disease_hospitalization_outpatient_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_disease_hospitalization_outpatient_stats"
+      },
+      "request_sha256": "ff88fbd7c1216f166e2d4b5136d5720a826267601eedbad08287d5d37871b4dc",
+      "response": {
+        "live": {
+          "default_params": {
+            "medTp": "1",
+            "numOfRows": "10",
+            "pageNo": "1",
+            "sickType": "1"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByHsptlzFrgnStats1"
+        },
+        "render_data": {
+          "items": [
+            {
+              "inpatOpat": "입원",
+              "ptntCnt": "4010",
+              "sex": "남",
+              "sickCd": "E78",
+              "sickNm": "지질단백질대사장애 및 기타 지질증",
+              "specCnt": "7405",
+              "vstDdcnt": "11166"
+            }
+          ],
+          "totalCount": "4",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByHsptlzFrgnStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+        "summary_text": "HIRA 질병입원외래별통계에서 2024년 E78 연간 입원/외래 환자수 분포를 확인했습니다."
+      },
+      "response_sha256": "2135c54299eb653cf9332baca0d4ec6b6fe255aa0c58bd31a4b437b766871043"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_disease_institution_class_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_disease_institution_class_stats"
+      },
+      "request_sha256": "2dca8ac8c59d438882fac24f0fdf457c8412cfa89a15f0508f9a80a33b2a2cf6",
+      "response": {
+        "live": {
+          "default_params": {
+            "medTp": "1",
+            "numOfRows": "10",
+            "pageNo": "1",
+            "sickType": "1"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByClassesStats1"
+        },
+        "render_data": {
+          "items": [
+            {
+              "grade": "상급종합병원",
+              "ptntCnt": "13959",
+              "sickCd": "E78",
+              "sickNm": "지질단백질대사장애 및 기타 지질증",
+              "specCnt": "30151",
+              "vstDdcnt": "28147"
+            }
+          ],
+          "totalCount": "5",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissByClassesStats1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&sickCd=E78&year=2024",
+        "summary_text": "HIRA 질병의료기관종별통계에서 2024년 E78 연간 기관종별 환자수 분포를 확인했습니다."
+      },
+      "response_sha256": "40a6cd6827f6a7d8c0f1c64294eea9f2807648c244a570f55fa41568fe81d46e"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_disease_name_code",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_disease_name_code"
+      },
+      "request_sha256": "a84dc42cf45d2594c2d2e8253365d99cd3c3087cce82d56171b152eb63ad0b0b",
+      "response": {
+        "live": {
+          "default_params": {
+            "diseaseType": "SICK_CD",
+            "medTp": "1",
+            "numOfRows": "10",
+            "pageNo": "1",
+            "sickType": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "sickCd": "searchText"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissNameCodeList1"
+        },
+        "render_data": {
+          "items": [
+            {
+              "sickCd": "E78",
+              "sickEngNm": "Disorders of lipoprotein metabolism and other lipidaemias",
+              "sickNm": "지질단백질대사장애 및 기타 지질증"
+            },
+            {
+              "sickCd": "D69.3",
+              "sickEngNm": "Immune thrombocytopenic purpura",
+              "sickNm": "면역성 혈소판감소성 자반"
+            },
+            {
+              "sickCd": "H36.0",
+              "sickEngNm": "Diabetic retinopathy",
+              "sickNm": "당뇨병성 망막병증"
+            },
+            {
+              "sickCd": "I10",
+              "sickEngNm": "Essential hypertension",
+              "sickNm": "본태성 고혈압"
+            },
+            {
+              "sickCd": "E11",
+              "sickEngNm": "Type 2 diabetes mellitus",
+              "sickNm": "2형 당뇨병"
+            }
+          ],
+          "request_note": "고지혈증/이상지질혈증 명칭 검색은 0건이며 SICK_CD=E78 또는 공식명 일부인 '지질' 검색을 사용합니다.",
+          "totalCount": "1"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissNameCodeList1?serviceKey=<redacted>&numOfRows=10&pageNo=1&sickType=1&medTp=1&diseaseType=SICK_CD&searchText=E78",
+        "summary_text": "HIRA 질병명칭/코드조회에서 E78은 '지질단백질대사장애 및 기타 지질증'으로 확인됩니다."
+      },
+      "response_sha256": "e912bb1fb6287250b48acf0b4d6f3298848d066a76204e903f73f23016293a76"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_procedure_area_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_procedure_area_stats"
+      },
+      "request_sha256": "c3c625329b322788f4b0d93d06f490cafb12925638826816f4478b87e661cd45",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "10",
+            "pageNo": "1",
+            "stdType": "1",
+            "year": "2024"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByAreaStats"
+        },
+        "render_data": {
+          "items": [
+            {
+              "lcName": "서울",
+              "ptntCnt": "678",
+              "specCnt": "789",
+              "st5Cd": "MM302",
+              "st5Nm": "진료행위 예시",
+              "useQty": "890"
+            }
+          ],
+          "totalCount": "17",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByAreaStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+        "summary_text": "HIRA 행위요양기관소재지별통계에서 2024년 MM302 행위코드 분포를 확인했습니다."
+      },
+      "response_sha256": "ffb84182e43f947d8edc3e04c3156b3a561797ec4903c7456ed86eca5fbe70d8"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_procedure_gender_age_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_procedure_gender_age_stats"
+      },
+      "request_sha256": "694a00d69763346b3b14c2d2587124de6b6969f61dabaefdaa282132a89ef75d",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "10",
+            "pageNo": "1",
+            "stdType": "1",
+            "year": "2024"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderAgeStats"
+        },
+        "render_data": {
+          "items": [
+            {
+              "age": "50_59세",
+              "ptntCnt": "321",
+              "sex": "남",
+              "specCnt": "456",
+              "st5Cd": "MM302",
+              "st5Nm": "진료행위 예시",
+              "useQty": "789"
+            }
+          ],
+          "totalCount": "18",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderAgeStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+        "summary_text": "HIRA 행위성별연령별통계에서 2024년 MM302 행위코드 분포를 확인했습니다."
+      },
+      "response_sha256": "a7ec3e61b76ad45c4234719e637e0b71cdc5400123781fb3baa2cbcd90d8e6bc"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_procedure_gender_ipat_opat_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_procedure_gender_ipat_opat_stats"
+      },
+      "request_sha256": "3d7a2846d3d7b1c33c830139b8583e924ffe3eaff7518e580b28b115d9c2ddd5",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "10",
+            "pageNo": "1",
+            "stdType": "1",
+            "year": "2024"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderIpatOpatStats"
+        },
+        "render_data": {
+          "items": [
+            {
+              "inpatOpat": "외래",
+              "ptntCnt": "1234",
+              "sex": "남",
+              "specCnt": "1567",
+              "st5Cd": "MM302",
+              "st5Nm": "진료행위 예시",
+              "useQty": "1789"
+            }
+          ],
+          "totalCount": "4",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByGenderIpatOpatStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+        "summary_text": "HIRA 행위성별입원외래별통계에서 2024년 MM302 행위코드 분포를 확인했습니다."
+      },
+      "response_sha256": "9bd29ac29bb29c459bcab26ae2780e75522d53a25d2a925112faff541af68652"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "hira_procedure_institution_class_stats",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "hira_procedure_institution_class_stats"
+      },
+      "request_sha256": "9b34ee471017ee568104f145fedb56c5c823736c6ee434d32f5236a6af5c59fa",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "10",
+            "pageNo": "1",
+            "stdType": "1",
+            "year": "2024"
+          },
+          "format": "xml",
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByClassesStats"
+        },
+        "render_data": {
+          "items": [
+            {
+              "grade": "종합병원",
+              "ptntCnt": "234",
+              "specCnt": "345",
+              "st5Cd": "MM302",
+              "st5Nm": "진료행위 예시",
+              "useQty": "456"
+            }
+          ],
+          "totalCount": "5",
+          "year": "2024"
+        },
+        "safe_url": "https://apis.data.go.kr/B551182/mdlrtActionInfoService/getMdlrtActionByClassesStats?serviceKey=<redacted>&numOfRows=10&pageNo=1&year=2024&stdType=1&st5Cd=MM302",
+        "summary_text": "HIRA 행위요양기관종별통계에서 2024년 MM302 행위코드 분포를 확인했습니다."
+      },
+      "response_sha256": "15d2602bca4c1a3f3bb375d19842f978e1319f4d9dc3e9ef0a3f25d8c943bfc7"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_clinical_trial_kr",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_clinical_trial_kr"
+      },
+      "request_sha256": "d51e6d38d7bc246501229dcd015eff08543da00ecf7cf44bb6f3ce7323b7a875",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "keyword": "itemName"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/MdcinClincTestInfoService02/getMdcinClincTestInfoList02"
+        },
+        "render_data": {
+          "items": [
+            {
+              "CLINIC_STEP_NAME": "2상",
+              "CLNC_TEST_SN": "201002160",
+              "GOODS_NAME": "CJ-20001"
+            }
+          ],
+          "totalCount": "13965",
+          "unknown": "itemName, drugNm, searchKeyword, prduct probes returned the same unfiltered first page"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/MdcinClincTestInfoService02/getMdcinClincTestInfoList02?serviceKey=<redacted>&itemName=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+        "summary_text": "국내 임상시험 Service02는 XML 응답을 반환하지만 리바로 필터 후보는 전체 목록과 동일했습니다."
+      },
+      "response_sha256": "a38ffafd0fd23572671c33a454612cb174ca308f733817541c85f90d20590c50"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_composition",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_composition"
+      },
+      "request_sha256": "ff7705069d08cdbb8f6aebeb2bcede868b214e6b5a9cf6d761ec23e7f3f80ce8",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "item_seq": "item_seq"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtMcpnDtlInq07"
+        },
+        "render_data": {
+          "items": [
+            {
+              "ITEM_SEQ": "195500005",
+              "MAIN_INGR_ENG": "Glucose/Sodium Chloride",
+              "MTRAL_NM": "포도당",
+              "PRDUCT": "중외5%포도당생리식염액(수출명:5%DextroseinnormalsalineInj.)"
+            }
+          ],
+          "totalCount": "127014",
+          "unknown": "item_seq, ITEM_SEQ, PRDUCT, item_name all returned the unfiltered first page in live probes"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtMcpnDtlInq07?serviceKey=<redacted>&item_seq=200500287&pageNo=1&numOfRows=5",
+        "summary_text": "MFDS 조성 API는 XML 파싱은 정상이나 실측 파라미터 필터가 전체 목록을 반환해 resolver 연결은 UNKNOWN입니다."
+      },
+      "response_sha256": "e354b168122467d83a2dba290c7c0614009837f772b5d12500729603e88a6fa0"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_easy_drug",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_easy_drug"
+      },
+      "request_sha256": "fcde51c718f2105b45206dde38cadc8fa66d937370b8b1c8ddf622669b2fc1d9",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "item_seq": "ITEM_SEQ"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList"
+        },
+        "render_data": {
+          "items": [
+            {
+              "efcyQesitm": "이 약은 식욕감퇴, 위부팽만감, 소화불량, 과식, 체함, 구역, 구토에 사용합니다.",
+              "itemName": "활명수",
+              "itemSeq": "195700020"
+            }
+          ],
+          "totalCount": "4803"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList?serviceKey=<redacted>&ITEM_SEQ=200402090&pageNo=1&numOfRows=5",
+        "summary_text": "e약은요 XML API는 ITEM_SEQ 대문자에서 목록 응답을 반환했습니다."
+      },
+      "response_sha256": "c91baff454fa4ebbf6d918218d1d687d218a432533834ec8b8a8fed35821a204"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_fda_orangebook",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_fda_orangebook"
+      },
+      "request_sha256": "c7a1ba192e1d64f1818e71adf059dd4adaa51e0466453cd973cb5616d24ce7ed",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "query": "ingr_name"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01"
+        },
+        "render_data": {
+          "items": [
+            {
+              "INGR_NAME": "Pitavastatin Calcium",
+              "KOR_EXP_DATE": "2024-02-02 00:00:00",
+              "KOR_PAT_NO": "8557993",
+              "PRT_NAME": "LIVALO"
+            }
+          ],
+          "totalCount": "18"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/FdaOrngbkPatentInfoService01/getFdaOrngbkPatentInfoList01?serviceKey=<redacted>&ingr_name=Pitavastatin&pageNo=1&numOfRows=5",
+        "summary_text": "FDA 오렌지북 특허 XML API는 lowercase ingr_name에서 성분 기반 특허 만료 정보를 확인했습니다."
+      },
+      "response_sha256": "79910b9762fd8046ba420aa11beb96d0cd9fd1ea79ac33f63ff41365c6dcd6da"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_main_ingredient",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json via mfds_permission_search fixture alias",
+      "request": {
+        "brand": "리바로"
+      },
+      "request_sha256": "645fd36cbcf4b42e3293bb59b5243897aef8510d733a0edb01c65faf63bfd6dc",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "brand": "item_name"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07"
+        },
+        "render_data": {
+          "items": [
+            {
+              "EDI_CODE": "644900790",
+              "ITEM_ENG_NAME": "Livalo Tablet 1mg (Pitavastatin Calcium Hydrate)",
+              "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+              "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+              "ITEM_SEQ": "200500287"
+            },
+            {
+              "EDI_CODE": "644900800",
+              "ITEM_ENG_NAME": "Livalo Tablet 2mg",
+              "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+              "ITEM_NAME": "리바로정2밀리그램",
+              "ITEM_SEQ": "200500288"
+            }
+          ],
+          "request": {
+            "brand": "리바로"
+          },
+          "totalCount": "21"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+        "summary_text": "MFDS 품목 검색에서 리바로 계열 21건을 확인했습니다."
+      },
+      "response_sha256": "cb83355f293d29866990d239559504f110e80828655e153842d534a476ef8cb9"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_patent",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_patent"
+      },
+      "request_sha256": "8ff27ec690e6464ca2205950baebbb2b89431a02536a7435eec481eb4f0a2edd",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "query": "item_name"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2"
+        },
+        "render_data": {
+          "items": [
+            {
+              "DOMESTIC_END_DATE": "2010-11-12",
+              "DOMESTIC_PATENT_NO": "10-0777553",
+              "INGR_ENG_NAME": "Pitavastatin Calcium",
+              "ITEM_NAME": "리바로정2밀리그램",
+              "ITEM_SEQ": "200500288"
+            }
+          ],
+          "totalCount": "541"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/MdcinPatentInfoService2/getMdcinPatentInfoList2?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+        "summary_text": "국내 의약품특허 XML API는 item_name=리바로에서 품목-특허 연결 필드를 확인했습니다."
+      },
+      "response_sha256": "307c0f0870259100fedccefb73495e96df336c3fb042818ab7b6d5fcefe6617d"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_permission_detail",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_permission_detail"
+      },
+      "request_sha256": "68a9af14dd508f122133b8d013b375a868ef8e1bbc96726ad1d1ca9ec179e7ac",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "item_seq": "item_seq"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq06"
+        },
+        "render_data": {
+          "items": [
+            {
+              "ATC_CODE": "C10AA08",
+              "EDI_CODE": "644900790",
+              "ETC_OTC_CODE": "전문의약품",
+              "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+              "ITEM_SEQ": "200500287",
+              "MAIN_INGR_ENG": "Pitavastatin Calcium Hydrate"
+            }
+          ],
+          "totalCount": "1"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq06?serviceKey=<redacted>&item_seq=200500287&pageNo=1&numOfRows=5",
+        "summary_text": "MFDS 품목 상세에서 리바로 ITEM_SEQ 1건의 허가 상세를 확인했습니다."
+      },
+      "response_sha256": "32419eec65526c4924ae2d68862e9479ebfa59ffed2cbf032c62b0e6dbbe219c"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "mfds_permission_search",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "mfds_permission_search"
+      },
+      "request_sha256": "8927d4cb30b935f63258da5c09583c8cc5ec62aa9e14240aef352d18f11e6bcc",
+      "response": {
+        "live": {
+          "default_params": {
+            "numOfRows": "5",
+            "pageNo": "1"
+          },
+          "format": "xml",
+          "param_map": {
+            "brand": "item_name"
+          },
+          "requires_service_key": true,
+          "url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07"
+        },
+        "render_data": {
+          "items": [
+            {
+              "EDI_CODE": "644900790",
+              "ITEM_ENG_NAME": "Livalo Tablet 1mg (Pitavastatin Calcium Hydrate)",
+              "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+              "ITEM_NAME": "리바로정1밀리그램(피타바스타틴칼슘수화물)",
+              "ITEM_SEQ": "200500287"
+            },
+            {
+              "EDI_CODE": "644900800",
+              "ITEM_ENG_NAME": "Livalo Tablet 2mg",
+              "ITEM_INGR_NAME": "Pitavastatin Calcium Hydrate",
+              "ITEM_NAME": "리바로정2밀리그램",
+              "ITEM_SEQ": "200500288"
+            }
+          ],
+          "totalCount": "21"
+        },
+        "safe_url": "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07?serviceKey=<redacted>&item_name=%EB%A6%AC%EB%B0%94%EB%A1%9C&pageNo=1&numOfRows=5",
+        "summary_text": "MFDS 품목 검색에서 리바로 계열 21건을 확인했습니다."
+      },
+      "response_sha256": "2ebc1bb626448af4fd85e060e6c82dbb246713b7fa191984b5ec5d26f6241653"
+    },
+    {
+      "dependency": "mcp",
+      "operation": "openfda_label_search",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "openfda_label_search"
+      },
+      "request_sha256": "14164d523beb1645a28f10aaa5075515aac1a6be745f1dc0b21778b52cabb61f",
+      "response": {
+        "live": {
+          "default_params": {
+            "limit": "1"
+          },
+          "format": "json",
+          "requires_service_key": false,
+          "url": "https://api.fda.gov/drug/label.json"
+        },
+        "render_data": {
+          "label_sections": [
+            "indications_and_usage",
+            "dosage_and_administration",
+            "dosage_forms_and_strengths"
+          ],
+          "substance_name": "PITAVASTATIN",
+          "total": 15
+        },
+        "safe_url": "https://api.fda.gov/drug/label.json?search=openfda.substance_name%3A%22PITAVASTATIN%22&limit=1",
+        "summary_text": "openFDA label에서 성분별 substance_name 검색을 수행했습니다."
+      },
+      "response_sha256": "8ae8f3a8e0a1418b42ac9cfc4f351c7334660806210b60df58dad264ef12a9d3"
+    },
+    {
+      "dependency": "search_news",
+      "operation": "search_news",
+      "recorded_from": "jw_chat_agent_poc/fixtures/deep_analysis_events.json",
+      "request": {
+        "brand": "리바로",
+        "query": "최근 이슈"
+      },
+      "request_sha256": "d2f7873229445d88379ad1dfec3f2d960de916fbe4b13df3005e0d6b0f52cac8",
+      "response": {
+        "리바로": {
+          "data": {
+            "events": [
+              {
+                "date": "2026-06-11",
+                "impact_score": 91,
+                "on_list": true,
+                "source": "fixture-news",
+                "summary": "fixture curated event",
+                "title": "리바로 처방 동향 점검",
+                "url": "https://example.invalid/livalo-news"
+              }
+            ]
+          }
+        },
+        "리바로젯": {
+          "data": {
+            "events": [
+              {
+                "date": "2026-06-10",
+                "impact_score": 88,
+                "on_list": true,
+                "source": "fixture-news",
+                "summary": "fixture curated event",
+                "title": "리바로젯 최근 이슈 점검",
+                "url": "https://example.invalid/livalojet-news"
+              }
+            ]
+          }
+        }
+      },
+      "response_sha256": "a8baa9601b7ce90749fd5e5113f8bd1ac141fdae13e35080f3153146a328e390"
+    },
+    {
+      "dependency": "web_search",
+      "operation": "web_search",
+      "recorded_from": "jw_chat_agent_poc/fixtures/external_api_fixtures.json",
+      "request": {
+        "fixture_key": "web_search"
+      },
+      "request_sha256": "8be7d8027e01c09569d8a49418ad0a2fa154e1fe6649e263ad539863a0f66522",
+      "response": {
+        "live": {
+          "format": "json",
+          "requires_service_key": false,
+          "url": "https://api.tavily.com/search"
+        },
+        "render_data": {
+          "external_claim_policy": "web_results_unverified",
+          "items": [
+            {
+              "snippet": "경쟁제품 디테일링 메시지를 설명하는 fixture snippet입니다.",
+              "title": "리바로 경쟁제품 디테일링 사례",
+              "url": "https://example.com/livalo-detailing"
+            },
+            {
+              "snippet": "시장 동향을 요약한 fixture snippet입니다.",
+              "title": "스타틴 시장 동향",
+              "url": "https://example.com/statin-market"
+            }
+          ],
+          "provider": "fixture",
+          "query": "리바로 경쟁제품 디테일링"
+        },
+        "safe_url": "fixture://web_search",
+        "summary_text": "fixture 웹 검색 결과 2건을 확인했습니다."
+      },
+      "response_sha256": "85d157f1e848c064d453b24ee7a1fc2a1b064ad63df23e07ea2e4d124c0cd77f"
+    }
+  ],
+  "entry_count": 25,
+  "live_fallback": false,
+  "mode": "recorded_fixture_only",
+  "schema": "phase0b_external_call_cassette_v1"
+}

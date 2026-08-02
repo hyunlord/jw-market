@@ -1,0 +1,80 @@
+{
+  "case_id": "dead_end_inventory_r8:FB02",
+  "disposition": "answered",
+  "evidence_facts": [
+    {
+      "count": 5,
+      "entity": "Cerebral Infarction",
+      "market_id": "",
+      "metric": "글로벌 임상시험",
+      "period": "",
+      "unit": "",
+      "view": ""
+    },
+    {
+      "count": 1,
+      "entity": "Cerebral Infarction",
+      "market_id": "",
+      "metric": "원천 제공 총 건수",
+      "period": "",
+      "unit": "건",
+      "view": ""
+    },
+    {
+      "count": 1,
+      "entity": "Cerebral Infarction",
+      "market_id": "",
+      "metric": "표시 건수",
+      "period": "",
+      "unit": "건",
+      "view": ""
+    },
+    {
+      "count": 1,
+      "entity": "Cerebral Infarction",
+      "market_id": "",
+      "metric": "현재 연결 조회 건수",
+      "period": "",
+      "unit": "건",
+      "view": ""
+    }
+  ],
+  "failure_kind": "",
+  "final_answer": "뇌경색(Cerebral Infarction)과 관련된 글로벌 임상시험은 총 1,048건이 등록되어 있으며, 이 중 5건의 주요 임상시험 정보를 확인했습니다. 다만, 요청하신 뇌경색 관련 의약품의 허가 현황 데이터는 현재 지원하지 않아 확인이 어렵습니다.\n확인된 5건의 임상시험은 급성 심근경색 및 뇌경색 환자의 레지스트리 및 추적 관찰 연구(NCT03166696), 증상이 있는 만성 중대뇌동맥 폐색 환자를 위한 두개외-두개내 우회 수술 연구(NCT05899582)를 포함하고 있습니다. 또한, 다파글리플로진 투여가 급성 심근경색 환자의 세포사멸 수준에 미치는 영향(NCT06615674), 급성 허혈성 뇌졸중 치료를 위한 Rt-PA와 엡티피바타이드 병용 요법 연구(NCT01977456), 코로나19 관련 동맥 및 정맥 혈전색전증 합병증을 평가하는 레지스트리 연구(NCT04535128) 등 다양한 치료 및 관찰 목적의 연구가 진행되고 있습니다.\n| NCT 번호 | 임상시험 제목 | 링크 |\n| --- | --- | --- |\n| NCT03166696 | Acute Myocardial Infarction and Acute Cerebral Infarction (AMIAC) Registry and Follow-up | [NCT03166696](https://clinicaltrials.gov/study/NCT03166696) |\n| NCT05899582 | Extracranial-intracranial Bypass Surgery for Symptomatic Chronic Middle Cerebral Artery Occlusion: the CMOSS-2 Trial | [NCT05899582](https://clinicaltrials.gov/study/NCT05899582) |\n| NCT06615674 | Effect of Dapagliflozin Administration on the Apoptosis Levels of Patients With Acute Myocardial Infarction | [NCT06615674](https://clinicaltrials.gov/study/NCT06615674) |\n| NCT01977456 | Study of the Combination Therapy of Rt-PA and Eptifibatide to Treat Acute Ischemic Stroke (CLEAR-FDR) | [NCT01977456](https://clinicaltrials.gov/study/NCT01977456) |\n| NCT04535128 | COVID-19 Registry to Assess Frequency, Risk Factors, Management, and Outcomes of Arterial and Venous Thromboembolic Complications | [NCT04535128](https://clinicaltrials.gov/study/NCT04535128) |\n\n## 출처\n\n| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채널 | 단위 | 브랜드 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| ClinicalTrials.gov | 해당 없음 | 해당 없음 | 해당 없음 | 해당 없음 | 전체 | 해당 없음 | 해당 없음 |",
+  "final_answer_sha256": "f48fcdb4463ef9bfa5c110bb4fb85ca56360c29de2e09f3cfed739adb07c7a5f",
+  "gate_decisions": {
+    "answer_contract_status": {
+      "intent": null,
+      "status": "not_applicable",
+      "structural_contract": "clinical_evidence"
+    },
+    "render_status": {
+      "issues": [],
+      "status": "pass"
+    },
+    "response_format_contract": {
+      "actions": [],
+      "binding_state": "not_required",
+      "blocked": false,
+      "blocked_codes": [],
+      "mode": "OFF",
+      "violations": []
+    },
+    "routing_gate": "tool_use_agent",
+    "routing_gate_reason": null
+  },
+  "question": "뇌경색 관련 임상시험이랑 허가 현황 알려줘",
+  "reason_codes": [],
+  "router_planner": "tool_use_agent",
+  "tool_call_fingerprints": [
+    {
+      "call": {
+        "arguments": "not_recorded_in_source_capture",
+        "reason_code": null,
+        "status": "ok",
+        "tool": "clinicaltrials_v2_search"
+      },
+      "sha256": "25f86178bab5b4de3788df1ae2b3800333376a2589f5c9b39fe4981f46ff6352"
+    }
+  ]
+}
