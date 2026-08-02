@@ -62,6 +62,23 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         GROUP BY COALESCE(NULLIF(u.department, ''), '미지정')
         ORDER BY calls DESC, department
     """,
+    "api_status": """
+        SELECT http_status, COUNT(*) AS calls
+        FROM dashboard_api_usage_v
+        WHERE called_at >= %s AND called_at < %s
+        {api_filter}
+        GROUP BY http_status ORDER BY calls DESC, http_status
+    """,
+    "api_weekday_hour": """
+        SELECT WEEKDAY(called_at) AS weekday, HOUR(called_at) AS hour,
+               COUNT(*) AS calls,
+               SUM(http_status NOT BETWEEN 200 AND 299) AS failed_calls
+        FROM dashboard_api_usage_v
+        WHERE called_at >= %s AND called_at < %s
+        {api_filter}
+        GROUP BY WEEKDAY(called_at), HOUR(called_at)
+        ORDER BY weekday, hour
+    """,
     "chat_trend": """
         SELECT {period} AS period, service_id, COUNT(*) AS turns,
                COUNT(DISTINCT conversation_id) AS sessions,
@@ -84,6 +101,18 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         GROUP BY u.id, u.name, u.department
         ORDER BY turns DESC, u.id LIMIT 100
     """,
+    "chat_user_service": """
+        SELECT u.id AS user_id, u.name AS user_name, u.department,
+               c.service_id, COUNT(*) AS turns,
+               COUNT(DISTINCT c.conversation_id) AS sessions,
+               SUM(c.total_tokens) AS total_tokens
+        FROM dashboard_chat_usage_v c
+        JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
+        WHERE c.created_at >= %s AND c.created_at < %s
+        {user_filter}
+        GROUP BY u.id, u.name, u.department, c.service_id
+        ORDER BY turns DESC, u.id, c.service_id LIMIT 200
+    """,
     "auth_trend": """
         SELECT {period} AS period, type_code, COUNT(*) AS events
         FROM dashboard_auth_event_v a
@@ -100,8 +129,34 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         {user_filter}
         GROUP BY type_code ORDER BY events DESC, type_code
     """,
+    "auth_hour": """
+        SELECT HOUR(a.reg_date) AS hour,
+               SUM(a.type_code='AT0001') AS successful_logins,
+               SUM(a.type_code='AT0004') AS failed_logins
+        FROM dashboard_auth_event_v a
+        LEFT JOIN dashboard_user_directory_v u ON u.id=a.user_id
+        WHERE a.reg_date >= %s AND a.reg_date < %s
+        {user_filter}
+        GROUP BY HOUR(a.reg_date) ORDER BY hour
+    """,
+    "auth_audience": """
+        SELECT COALESCE(SUM(first_login >= %s), 0) AS new_users,
+               COALESCE(SUM(first_login < %s), 0) AS returning_users
+        FROM (
+            SELECT a.user_id, MIN(history.reg_date) AS first_login
+            FROM dashboard_auth_event_v a
+            JOIN dashboard_auth_event_v history
+              ON history.user_id=a.user_id AND history.type_code='AT0001'
+            LEFT JOIN dashboard_user_directory_v u ON u.id=a.user_id
+            WHERE a.reg_date >= %s AND a.reg_date < %s
+              AND a.type_code='AT0001' AND a.user_id IS NOT NULL
+            {user_filter}
+            GROUP BY a.user_id
+        ) audience
+    """,
     "credit_trend": """
         SELECT {period} AS period, COUNT(*) AS events,
+               SUM(c.user_id IS NOT NULL) AS attributed_events,
                SUM(COALESCE(input_token_count,0)) AS input_tokens,
                SUM(COALESCE(output_token_count,0)) AS output_tokens,
                SUM(COALESCE(charge,0)+COALESCE(overused_charge,0)) AS credits
@@ -121,6 +176,17 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         {user_filter}
         GROUP BY u.id, u.name, u.department
         ORDER BY credits DESC, u.id LIMIT 100
+    """,
+    "credit_department": """
+        SELECT COALESCE(NULLIF(u.department, ''), '미지정') AS department,
+               COUNT(*) AS events,
+               SUM(COALESCE(c.charge,0)+COALESCE(c.overused_charge,0)) AS credits
+        FROM dashboard_credit_usage_v c
+        JOIN dashboard_user_directory_v u ON u.id=c.user_id
+        WHERE c.reg_date >= %s AND c.reg_date < %s AND c.applied=1
+        {user_filter}
+        GROUP BY COALESCE(NULLIF(u.department, ''), '미지정')
+        ORDER BY credits DESC, department
     """,
     "report_trend": """
         SELECT {period} AS period, COUNT(*) AS attempts,
@@ -229,6 +295,8 @@ class MariaDBUsageRepository:
                     )
                     if name == "filter_options":
                         params: tuple[Any, ...] = ()
+                    elif name == "auth_audience":
+                        params = (start, start, start, end_exclusive, *user_params)
                     elif name.startswith("api_") and name not in {"api_user", "api_department"}:
                         params = (start, end_exclusive, *api_params)
                     else:
@@ -245,10 +313,25 @@ class MariaDBUsageRepository:
                 "by_endpoint": rows["api_endpoint"],
                 "by_user": rows["api_user"],
                 "by_department": rows["api_department"],
+                "by_status": rows["api_status"],
+                "by_weekday_hour": rows["api_weekday_hour"],
             },
-            "chat": {"trend": rows["chat_trend"], "by_user": rows["chat_user"]},
-            "auth": {"trend": rows["auth_trend"], "by_type": rows["auth_type"]},
-            "credit": {"trend": rows["credit_trend"], "by_user": rows["credit_user"]},
+            "chat": {
+                "trend": rows["chat_trend"],
+                "by_user": rows["chat_user"],
+                "by_user_service": rows["chat_user_service"],
+            },
+            "auth": {
+                "trend": rows["auth_trend"],
+                "by_type": rows["auth_type"],
+                "by_hour": rows["auth_hour"],
+                "audience": (rows["auth_audience"] or [{"new_users": 0, "returning_users": 0}])[0],
+            },
+            "credit": {
+                "trend": rows["credit_trend"],
+                "by_user": rows["credit_user"],
+                "by_department": rows["credit_department"],
+            },
             "reports": {"trend": rows["report_trend"], "by_type": rows["report_type"]},
             "filter_options": {
                 "users": options,
@@ -285,6 +368,8 @@ class UsageStatsService:
             return cached
         result = self._repository.fetch(filters)
         for row in result["chat"]["trend"]:
+            row["service_category"] = self.service_category(row.get("service_id"))
+        for row in result["chat"]["by_user_service"]:
             row["service_category"] = self.service_category(row.get("service_id"))
         for row in result["auth"]["trend"] + result["auth"]["by_type"]:
             row["label"] = self.AUTH_LABELS.get(str(row.get("type_code")), "기타 인증 이벤트")
@@ -346,9 +431,15 @@ def _data_quality(result: dict[str, Any]) -> dict[str, int]:
     api_attributed = sum(int(row.get("attributed_calls") or 0) for row in result["api"]["trend"])
     chat_total = sum(int(row.get("turns") or 0) for row in result["chat"]["trend"])
     chat_attributed = sum(int(row.get("attributed_turns") or 0) for row in result["chat"]["trend"])
+    credit_total = sum(int(row.get("events") or 0) for row in result["credit"]["trend"])
+    credit_attributed = sum(
+        int(row.get("attributed_events") or 0) for row in result["credit"]["trend"]
+    )
     return {
         "api_attributed_calls": api_attributed,
         "api_unknown_calls": max(api_total - api_attributed, 0),
         "chat_attributed_turns": chat_attributed,
         "chat_unknown_turns": max(chat_total - chat_attributed, 0),
+        "credit_attributed_events": credit_attributed,
+        "credit_unknown_events": max(credit_total - credit_attributed, 0),
     }

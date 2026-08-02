@@ -25,10 +25,17 @@ class FakeRepository:
     def fetch(self, filters: UsageFilters) -> dict:
         self.calls.append(filters)
         return {
-            "api": {"trend": [], "by_endpoint": [], "by_user": [], "by_department": []},
-            "chat": {"trend": [], "by_user": []},
-            "auth": {"trend": [], "by_type": []},
-            "credit": {"trend": [], "by_user": []},
+            "api": {
+                "trend": [],
+                "by_endpoint": [],
+                "by_user": [],
+                "by_department": [],
+                "by_status": [],
+                "by_weekday_hour": [],
+            },
+            "chat": {"trend": [], "by_user": [], "by_user_service": []},
+            "auth": {"trend": [], "by_type": [], "by_hour": [], "audience": []},
+            "credit": {"trend": [], "by_user": [], "by_department": []},
             "reports": {"trend": [], "by_type": []},
             "filter_options": {"users": [], "departments": []},
         }
@@ -88,6 +95,43 @@ def test_service_category_is_explicit_and_unknown_is_not_relabelled() -> None:
     assert UsageStatsService.service_category(94) == "market"
     assert UsageStatsService.service_category(999) == "unknown"
     assert UsageStatsService.service_category(None) == "unknown"
+
+
+def test_service_adds_categories_to_chat_user_rows_without_rewriting_unknown() -> None:
+    class CategorizedRepository(FakeRepository):
+        def fetch(self, filters: UsageFilters) -> dict:
+            result = super().fetch(filters)
+            result["chat"]["by_user_service"] = [
+                {"user_id": 1, "service_id": 61, "turns": 4, "sessions": 2},
+                {"user_id": 2, "service_id": None, "turns": 1, "sessions": 1},
+            ]
+            return result
+
+    payload = UsageStatsService(
+        CategorizedRepository(), cache=DashboardCache(ttl_seconds=60)
+    ).get(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert [row["service_category"] for row in payload["chat"]["by_user_service"]] == [
+        "rnd",
+        "unknown",
+    ]
+
+
+def test_dashboard_sql_exposes_supported_multidimensional_statistics() -> None:
+    from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL
+
+    assert {
+        "api_status",
+        "api_weekday_hour",
+        "chat_user_service",
+        "auth_hour",
+        "auth_audience",
+        "credit_department",
+    }.issubset(DASHBOARD_SQL)
+    assert "http_status" in DASHBOARD_SQL["api_status"]
+    assert "HOUR(" in DASHBOARD_SQL["api_weekday_hour"]
+    assert "service_id" in DASHBOARD_SQL["chat_user_service"]
+    assert "AT0001" in DASHBOARD_SQL["auth_audience"]
 
 
 def test_repository_queries_are_sanitized_view_only() -> None:
@@ -152,3 +196,51 @@ def test_period_sql_survives_pymysql_parameter_interpolation() -> None:
     rendered = cursor.mogrify(sql, ("2026-07-01", "2026-08-01"))
 
     assert "DATE_FORMAT(called_at, '%Y-%m-%d')" in rendered
+
+
+def test_all_dashboard_queries_bind_for_unfiltered_and_filtered_requests() -> None:
+    from pipeline.scripts.api.dashboard_usage import (
+        DASHBOARD_SQL,
+        _PERIOD_SQL,
+        _api_filter,
+        _time_column,
+        _user_filter,
+    )
+
+    connection = pymysql.Connection(defer_connect=True)
+    connection.server_status = 0
+    cursor = connection.cursor()
+    for filters in (
+        UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"),
+        UsageFilters(
+            date(2026, 7, 1),
+            date(2026, 7, 31),
+            "week",
+            user_id=34,
+            department="JW중외제약",
+        ),
+    ):
+        user_filter, user_params = _user_filter(filters)
+        api_filter, api_params = _api_filter(filters)
+        for name, template in DASHBOARD_SQL.items():
+            sql = template.format(
+                period=_PERIOD_SQL[filters.grain].format(column=_time_column(name)),
+                user_filter=user_filter,
+                api_filter=api_filter,
+            )
+            if name == "filter_options":
+                params = ()
+            elif name == "auth_audience":
+                params = (
+                    filters.date_from.isoformat(),
+                    filters.date_from.isoformat(),
+                    filters.date_from.isoformat(),
+                    "2026-08-01",
+                    *user_params,
+                )
+            elif name.startswith("api_") and name not in {"api_user", "api_department"}:
+                params = (filters.date_from.isoformat(), "2026-08-01", *api_params)
+            else:
+                params = (filters.date_from.isoformat(), "2026-08-01", *user_params)
+
+            assert cursor.mogrify(sql, params)
