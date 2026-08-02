@@ -134,6 +134,16 @@ def test_dashboard_sql_exposes_supported_multidimensional_statistics() -> None:
     assert "AT0001" in DASHBOARD_SQL["auth_audience"]
 
 
+def test_auth_audience_deduplicates_active_users_before_history_join() -> None:
+    from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL
+
+    sql = " ".join(DASHBOARD_SQL["auth_audience"].split())
+
+    assert "SELECT DISTINCT a.user_id" in sql
+    assert ") active ON active.user_id=history.user_id" in sql
+    assert "WHERE history.type_code='AT0001'" in sql
+
+
 def test_repository_queries_are_sanitized_view_only() -> None:
     from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL
 

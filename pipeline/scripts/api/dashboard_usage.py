@@ -143,15 +143,18 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         SELECT COALESCE(SUM(first_login >= %s), 0) AS new_users,
                COALESCE(SUM(first_login < %s), 0) AS returning_users
         FROM (
-            SELECT a.user_id, MIN(history.reg_date) AS first_login
-            FROM dashboard_auth_event_v a
-            JOIN dashboard_auth_event_v history
-              ON history.user_id=a.user_id AND history.type_code='AT0001'
-            LEFT JOIN dashboard_user_directory_v u ON u.id=a.user_id
-            WHERE a.reg_date >= %s AND a.reg_date < %s
-              AND a.type_code='AT0001' AND a.user_id IS NOT NULL
-            {user_filter}
-            GROUP BY a.user_id
+            SELECT history.user_id, MIN(history.reg_date) AS first_login
+            FROM dashboard_auth_event_v history
+            JOIN (
+                SELECT DISTINCT a.user_id
+                FROM dashboard_auth_event_v a
+                LEFT JOIN dashboard_user_directory_v u ON u.id=a.user_id
+                WHERE a.reg_date >= %s AND a.reg_date < %s
+                  AND a.type_code='AT0001' AND a.user_id IS NOT NULL
+                {user_filter}
+            ) active ON active.user_id=history.user_id
+            WHERE history.type_code='AT0001'
+            GROUP BY history.user_id
         ) audience
     """,
     "credit_trend": """
