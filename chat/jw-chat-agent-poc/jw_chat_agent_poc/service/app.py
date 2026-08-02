@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import queue
@@ -218,7 +217,10 @@ from jw_chat_agent_poc.service.security_policy import (
     evaluate_output_leakage,
     policy_is_enforced,
 )
-from jw_chat_agent_poc.service.sse_protocol import iter_markdown_sse_events
+from jw_chat_agent_poc.service.sse_presenter import (
+    SSE_PRESENTER_ENV,
+    selected_sse_presenter,
+)
 from jw_chat_agent_poc.service.startup_warmup import (
     DisabledStartupWarmup,
     StartupWarmup,
@@ -2692,9 +2694,7 @@ def _sse_events(
 
 
 def _sse_busy_events():
-    yield _sse_delta(BUSY_MESSAGE)
-    yield _sse_json_event("error", {"type": "ServiceBusy", "message": BUSY_MESSAGE})
-    yield "event: done\ndata: error\n\n"
+    yield from selected_sse_presenter().busy_events(BUSY_MESSAGE)
 
 
 def _file_ready_prefix(result: dict[str, Any]) -> str:
@@ -2725,10 +2725,11 @@ def _sse_initial_text_events(
     sources: tuple[str, ...],
     text: str,
 ):
-    if conversation_id:
-        yield f"event: conversation\ndata: {conversation_id}\n\n"
-    yield f"event: sources\ndata: {','.join(source_labels(sources))}\n\n"
-    yield from iter_markdown_sse_events(text)
+    yield from selected_sse_presenter().initial_text_events(
+        conversation_id=conversation_id,
+        source_labels=source_labels(sources),
+        text=text,
+    )
 
 
 def _sse_events_from_final_answer(
@@ -2736,31 +2737,16 @@ def _sse_events_from_final_answer(
     *,
     streamed_prefix: str = "",
 ):
-    if final_answer.conversation_id and not streamed_prefix:
-        yield f"event: conversation\ndata: {final_answer.conversation_id}\n\n"
-    public_file_sources = _project_public_file_sources(final_answer.file_sources)
-    labels = source_labels(final_answer.sources)
-    for item in public_file_sources:
-        file_name = (
-            str(item.get("file_name") or "").replace("\n", " ").replace(",", "，").strip()
-        )
-        label = f"업로드 문서: {file_name}" if file_name else ""
-        if label and label not in labels:
-            labels.append(label)
-    if not streamed_prefix:
-        yield f"event: sources\ndata: {','.join(labels)}\n\n"
-    if public_file_sources and not streamed_prefix:
-        yield _sse_json_event("file_sources", list(public_file_sources))
-    remaining_text = final_answer.text
-    if streamed_prefix and remaining_text.startswith(streamed_prefix):
-        remaining_text = remaining_text[len(streamed_prefix):].lstrip()
-    if remaining_text:
-        yield from iter_markdown_sse_events(remaining_text)
-    if final_answer.charts:
-        yield _sse_json_event("charts", final_answer.charts)
-    yield _sse_json_event("timing", final_answer.timing)
-    yield _sse_json_event("trace", final_answer.trace)
-    yield "event: done\ndata: ok\n\n"
+    yield from selected_sse_presenter().final_answer_events(
+        conversation_id=final_answer.conversation_id,
+        source_labels=source_labels(final_answer.sources),
+        file_sources=_project_public_file_sources(final_answer.file_sources),
+        text=final_answer.text,
+        charts=final_answer.charts,
+        timing=final_answer.timing,
+        trace=final_answer.trace,
+        streamed_prefix=streamed_prefix,
+    )
 
 
 def _record_conversation_history(
@@ -3811,16 +3797,11 @@ def _is_partial_evidence_result(result: dict) -> bool:
 
 
 def _sse_delta(token: str) -> str:
-    lines = token.split("\n")
-    data = "\n".join(f"data: {line}" for line in lines)
-    return f"event: delta\n{data}\n\n"
+    return selected_sse_presenter().delta(token)
 
 
 def _sse_json_event(event_name: str, payload: object) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    lines = data.split("\n")
-    encoded = "\n".join(f"data: {line}" for line in lines)
-    return f"event: {event_name}\n{encoded}\n\n"
+    return selected_sse_presenter().json_event(event_name, payload)
 
 
 app = create_app(startup_warmup=startup_warmup_from_env())
