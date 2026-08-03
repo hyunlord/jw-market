@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from pipeline.scripts.etl.rnd_trace_adapter import (
     MonitoringRequestError,
     RndTraceAdapter,
     SessionRef,
+    _window,
     build_source_turn_id,
     parse_monitoring_payload,
 )
@@ -206,6 +208,25 @@ def test_parser_records_successful_turn_without_answer_as_rejection() -> None:
     assert len(parsed.rejections) == 1
     assert parsed.rejections[0].reason_code == "turn_answer_missing"
     assert "sensitive" not in repr(parsed.rejections[0])
+
+
+def test_incremental_window_normalizes_naive_database_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "pipeline.scripts.etl.rnd_trace_adapter._state_cursor",
+        lambda _connection: datetime(2026, 8, 3, 9, 0),
+    )
+    args = Namespace(
+        mode="incremental",
+        start=None,
+        end_exclusive="2026-08-03T10:00:00+00:00",
+    )
+
+    start, end_exclusive = _window(args, object())
+
+    assert start == datetime(2026, 7, 27, 9, 0, tzinfo=UTC)
+    assert end_exclusive == datetime(2026, 8, 3, 10, 0, tzinfo=UTC)
 
 
 def test_adapter_commits_turns_and_complete_state_together() -> None:

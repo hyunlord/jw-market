@@ -533,6 +533,10 @@ def _naive_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC).replace(tzinfo=None)
 
 
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
+
+
 def _connect() -> Any:
     password = os.environ.get("MARIADB_ROOT_PASSWORD")
     if not password:
@@ -586,20 +590,22 @@ def _load_sessions(
 
 def _window(args: argparse.Namespace, connection: Any) -> tuple[datetime, datetime]:
     end_exclusive = (
-        datetime.fromisoformat(args.end_exclusive).replace(tzinfo=UTC)
+        _aware_utc(datetime.fromisoformat(args.end_exclusive))
         if args.end_exclusive
         else datetime.now(UTC)
     )
     if args.mode == "backfill":
         if not args.start:
             raise ValueError("--start is required in backfill mode")
-        start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
+        start = _aware_utc(datetime.fromisoformat(args.start))
     else:
         overlap_hours = int(
             os.environ.get("RND_TRACE_OVERLAP_HOURS", str(DEFAULT_OVERLAP_HOURS))
         )
         cursor_value = _state_cursor(connection)
-        start = (cursor_value or end_exclusive) - timedelta(hours=overlap_hours)
+        start = _aware_utc(cursor_value or end_exclusive) - timedelta(
+            hours=overlap_hours
+        )
     if start >= end_exclusive:
         raise ValueError("adapter window start must precede end")
     return start, end_exclusive
