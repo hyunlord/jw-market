@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jw-rnd-trace-adapter-test2
+  namespace: llmops
+spec:
+  schedule: "2-57/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: adapter
+              image: JW_MARKET_API_IMAGE
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - -m
+                - pipeline.scripts.etl.rnd_trace_adapter
+                - --mode
+                - incremental
+              env:
+                - name: MARIADB_HOST
+                  value: galera-mariadb-galera.llmops.svc.cluster.local
+                - name: MARIADB_PORT
+                  value: "3306"
+                - name: MARIADB_USER
+                  value: root
+                - name: MARIADB_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: galera-mariadb-galera
+                      key: mariadb-root-password
+                - name: MONITORING_API_BASE_URL
+                  value: http://llmops-monitoring-api-service.llmops.svc.cluster.local
+                - name: RND_TRACE_BATCH_SIZE
+                  value: "20"
+                - name: RND_TRACE_OVERLAP_HOURS
+                  value: "168"
+                - name: RND_TRACE_REQUEST_INTERVAL_SECONDS
+                  value: "1"
+                - name: RND_TRACE_SESSION_LIMIT
+                  value: "2000"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
