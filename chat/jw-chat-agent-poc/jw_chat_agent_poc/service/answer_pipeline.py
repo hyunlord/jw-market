@@ -31,6 +31,7 @@ from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminolog
 
 
 ANSWER_PIPELINE_ENV = "JW_CHAT_ANSWER_PIPELINE_ENABLED"
+PIPELINE_DEDUP_ENV = "JW_CHAT_PIPELINE_DEDUP_ENABLED"
 
 PRE_CHART_STAGE_NAMES = (
     "cleanup",
@@ -107,6 +108,15 @@ def answer_pipeline_enabled() -> bool:
     }
 
 
+def pipeline_dedup_enabled() -> bool:
+    return os.getenv(PIPELINE_DEDUP_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 def run_answer_pipeline(answer: str, stages: Sequence[AnswerPipelineStage]) -> str:
     for pipeline_stage in stages:
         answer = pipeline_stage.transform(answer)
@@ -171,11 +181,22 @@ def build_answer_pipeline_stages(
             return answer
         return transform(answer)
 
+    def claim_policy(answer: str) -> str:
+        return apply_claim_policy(question, answer, context.policy_fact_md)
+
+    answer_contract_transform = answer_contract
+    claim_policy_transform = claim_policy
+    if pipeline_dedup_enabled():
+        from jw_chat_agent_poc.service.pipeline_dedup import memoize_exact_input
+
+        answer_contract_transform = memoize_exact_input(answer_contract_transform)
+        claim_policy_transform = memoize_exact_input(claim_policy_transform)
+
     transforms: dict[str, Callable[[str], str]] = {
         "cleanup": cleanup_markdown_answer,
-        "answer_contract_first": answer_contract,
-        "claim_policy_repeat": lambda answer: apply_claim_policy(question, answer, context.policy_fact_md),
-        "answer_contract_second": answer_contract,
+        "answer_contract_first": answer_contract_transform,
+        "claim_policy_repeat": claim_policy_transform,
+        "answer_contract_second": answer_contract_transform,
         "empty_file_context_fallback": empty_file_context_fallback,
         "file_page_evidence": lambda answer: ensure_file_page_evidence(question, answer, file_context),
         "file_overview_evidence": lambda answer: ensure_file_overview_evidence_coverage(question, answer, file_context),
@@ -208,7 +229,7 @@ def build_answer_pipeline_stages(
         "file_absence_statement": lambda answer: ensure_file_absence_statement(question, answer, file_context),
         "hira_patient_summary": lambda answer: ensure_hira_patient_summary(question, answer, context.fact_md),
         "claim_policy_post": lambda answer: (
-            answer if context.deep_mode else apply_claim_policy(question, answer, context.policy_fact_md)
+            answer if context.deep_mode else claim_policy_transform(answer)
         ),
         "natural_fact_lead": context.natural_fact_lead,
         "relational_claim_pre_market": lambda answer: market_only(answer, context.relational_claim_gate),
@@ -222,7 +243,7 @@ def build_answer_pipeline_stages(
         ),
         "file_postprocess_isolation": context.file_postprocess_isolation,
         "deep_claim_policy": lambda answer: (
-            apply_claim_policy(question, answer, context.policy_fact_md) if context.deep_mode else answer
+            claim_policy_transform(answer) if context.deep_mode else answer
         ),
         "deep_research_structure": lambda answer: (
             ensure_deep_research_structure(answer) if context.deep_mode else answer
