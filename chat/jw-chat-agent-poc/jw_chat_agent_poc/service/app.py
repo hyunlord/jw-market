@@ -331,6 +331,7 @@ SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
 DEFAULT_SESSION_STORE_MAX = 500
 CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
 HIRA_REIMBURSEMENT_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT"
+HIRA_DISEASE_STATS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS"
 
 
 def decide_app_scope_route(**kwargs: Any) -> AppScopeDecision:
@@ -392,6 +393,39 @@ def _answer_hira_reimbursement_cutover(question: str, external_mode: str) -> dic
         )
     except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
         LOGGER.exception("hira_reimbursement_cutover_execution_failed")
+        return None
+
+
+def _hira_disease_stats_cutover_decision(**kwargs: Any) -> Any | None:
+    if os.getenv(HIRA_DISEASE_STATS_CUTOVER_ENV, "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return None
+    try:
+        from jw_chat_agent_poc.service.unified_router_cutover import (
+            select_hira_disease_stats_cutover,
+        )
+
+        return select_hira_disease_stats_cutover(**kwargs)
+    except Exception:  # noqa: BLE001 - selection failures retain the proven legacy route
+        LOGGER.exception("hira_disease_stats_cutover_selection_failed")
+        return None
+
+
+def _answer_hira_disease_stats_cutover(
+    agent_factory,
+    question: str,
+    external_mode: str,
+    agent_kwargs: dict[str, Any],
+) -> dict | None:
+    try:
+        agent = agent_factory(external_mode=external_mode)
+        return agent.answer(question, None, **agent_kwargs)
+    except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
+        LOGGER.exception("hira_disease_stats_cutover_execution_failed")
         return None
 
 
@@ -2238,6 +2272,33 @@ def _answer_existing_without_pending(
                 "domain": canonical_cutover.domain,
                 "handler": canonical_cutover.handler,
                 "mode": canonical_cutover.execution_mode.value,
+            }
+            canonical_result["router_diagnostics"] = diagnostics
+            return canonical_result
+    disease_stats_cutover = _hira_disease_stats_cutover_decision(
+        question=question,
+        has_documents=bool(documents),
+        use_direct_agent_loop=use_direct_agent_loop,
+        market_scope_resolver=market_scope_resolver,
+    )
+    if disease_stats_cutover is not None:
+        canonical_result = _answer_hira_disease_stats_cutover(
+            agent_factory,
+            question,
+            external_mode,
+            agent_kwargs,
+        )
+        if canonical_result is not None:
+            observe_market_route(
+                disease_stats_cutover.handler,
+                reason="canonical_hira_disease_stats_cutover",
+                domain=disease_stats_cutover.domain,
+            )
+            diagnostics = dict(canonical_result.get("router_diagnostics") or {})
+            diagnostics["canonical_router_cutover"] = {
+                "domain": disease_stats_cutover.domain,
+                "handler": disease_stats_cutover.handler,
+                "mode": disease_stats_cutover.execution_mode.value,
             }
             canonical_result["router_diagnostics"] = diagnostics
             return canonical_result
