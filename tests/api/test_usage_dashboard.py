@@ -5,7 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -22,7 +22,11 @@ from pipeline.scripts.api.dashboard_usage import (
     UsageFilters,
     UsageStatsService,
 )
-from pipeline.scripts.api.chat_usage_materialization import ChatMaterializationState
+from pipeline.scripts.api.chat_usage_materialization import (
+    ChatMaterializationState,
+    ChatMaterializationUnavailable,
+    validate_materialization_state,
+)
 from pipeline.scripts.api.routes.dashboard_usage import create_usage_dashboard_router
 
 
@@ -47,6 +51,23 @@ class FakeRepository:
             "reports": {"trend": [], "by_type": []},
             "filter_options": {"users": [], "departments": []},
         }
+
+
+class CoverageRepository(FakeRepository):
+    def __init__(self, state: ChatMaterializationState | None) -> None:
+        super().__init__()
+        self.state = state
+
+    def fetch(self, filters: UsageFilters) -> dict:
+        self.calls.append(filters)
+        validate_materialization_state(
+            self.state,
+            filters,
+            now=datetime(2026, 8, 4, 0, 5, tzinfo=UTC),
+        )
+        result = super().fetch(filters)
+        self.calls.pop()
+        return result
 
 
 def _dashboard_config() -> APIConfig:
@@ -116,6 +137,154 @@ def test_usage_dashboard_defaults_to_thirty_days_and_daily_grain(monkeypatch) ->
         UsageFilters(date_from=date(2026, 7, 4), date_to=date(2026, 8, 2), grain="day")
     ]
     assert response.json()["limits"] == {"max_days": 366, "cache_ttl_seconds": 60}
+
+
+def test_usage_dashboard_clamps_omitted_defaults_to_fresh_coverage(monkeypatch) -> None:
+    repository = CoverageRepository(
+        ChatMaterializationState(
+            coverage_start=date(2026, 7, 9),
+            coverage_end_exclusive=date(2026, 8, 4),
+            last_success_at=datetime(2026, 8, 4, 0, 1, tzinfo=UTC),
+            status="complete",
+        )
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.api.routes.dashboard_usage._today", lambda: date(2026, 8, 4)
+    )
+
+    response = _client(repository).get("/api/dashboard/usage-stats")
+
+    assert response.status_code == 200
+    assert response.json()["filters"] == {
+        "date_from": "2026-07-09",
+        "date_to": "2026-08-03",
+        "grain": "day",
+        "user_id": None,
+        "department": None,
+    }
+    assert repository.calls == [
+        UsageFilters(date(2026, 7, 6), date(2026, 8, 4), "day"),
+        UsageFilters(date(2026, 7, 9), date(2026, 8, 3), "day"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_from", "expected_to"),
+    [
+        ("date_from=2026-07-09", "2026-07-09", "2026-08-03"),
+        ("date_to=2026-08-03", "2026-07-09", "2026-08-03"),
+    ],
+)
+def test_usage_dashboard_clamps_only_omitted_coverage_bound(
+    monkeypatch,
+    query: str,
+    expected_from: str,
+    expected_to: str,
+) -> None:
+    repository = CoverageRepository(
+        ChatMaterializationState(
+            coverage_start=date(2026, 7, 9),
+            coverage_end_exclusive=date(2026, 8, 4),
+            last_success_at=datetime(2026, 8, 4, 0, 1, tzinfo=UTC),
+            status="complete",
+        )
+    )
+    monkeypatch.setattr(
+        "pipeline.scripts.api.routes.dashboard_usage._today", lambda: date(2026, 8, 4)
+    )
+
+    response = _client(repository).get(f"/api/dashboard/usage-stats?{query}")
+
+    assert response.status_code == 200
+    assert response.json()["filters"]["date_from"] == expected_from
+    assert response.json()["filters"]["date_to"] == expected_to
+
+
+@pytest.mark.parametrize(
+    ("date_from", "date_to", "expected_status"),
+    [
+        ("2026-07-08", "2026-08-03", 503),
+        ("2026-07-09", "2026-08-03", 200),
+        ("2026-07-09", "2026-08-04", 503),
+    ],
+)
+def test_usage_dashboard_preserves_explicit_coverage_boundaries(
+    date_from: str,
+    date_to: str,
+    expected_status: int,
+) -> None:
+    repository = CoverageRepository(
+        ChatMaterializationState(
+            date(2026, 7, 9),
+            date(2026, 8, 4),
+            datetime(2026, 8, 4, 0, 1, tzinfo=UTC),
+            "complete",
+        )
+    )
+
+    response = _client(repository).get(
+        f"/api/dashboard/usage-stats?date_from={date_from}&date_to={date_to}"
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 503:
+        assert response.json() == {
+            "detail": {
+                "error": "chat_materialization_unavailable",
+                "reason": "coverage",
+                "message": "요청한 기간의 채팅 통계가 아직 준비되지 않았습니다.",
+                "available_from": "2026-07-09",
+                "available_to": "2026-08-03",
+            }
+        }
+
+
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        (None, "missing"),
+        (
+            ChatMaterializationState(
+                date(2026, 7, 9),
+                date(2026, 8, 4),
+                datetime(2026, 8, 4, 0, 1, tzinfo=UTC) - timedelta(minutes=16),
+                "complete",
+            ),
+            "stale",
+        ),
+    ],
+)
+def test_usage_dashboard_maps_unavailable_materialization_to_json_503(
+    state: ChatMaterializationState | None,
+    reason: str,
+) -> None:
+    response = _client(CoverageRepository(state)).get(
+        "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03"
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["error"] == "chat_materialization_unavailable"
+    assert detail["reason"] == reason
+    assert isinstance(detail["message"], str)
+
+
+def test_usage_dashboard_maps_query_failure_to_json_503() -> None:
+    class FailingRepository(FakeRepository):
+        def fetch(self, filters: UsageFilters) -> dict:
+            raise DashboardQueryError("chat_trend")
+
+    response = _client(FailingRepository()).get(
+        "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03"
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {
+            "error": "dashboard_query_unavailable",
+            "message": "사용 통계 데이터 소스를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        }
+    }
 
 
 def test_usage_dashboard_rejects_an_inverted_or_oversized_range() -> None:

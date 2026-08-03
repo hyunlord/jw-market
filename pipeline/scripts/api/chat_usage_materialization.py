@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 CHAT_MATERIALIZATION_MAX_AGE: Final = timedelta(minutes=15)
 
@@ -97,7 +97,19 @@ CHAT_MATERIALIZATION_STATE_SQL: Final = """
 
 
 class ChatMaterializationUnavailable(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: Literal["missing", "status", "stale", "coverage"],
+        state: ChatMaterializationState | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.available_from = state.coverage_start if state is not None else None
+        self.available_to = (
+            state.coverage_end_exclusive - timedelta(days=1) if state is not None else None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,20 +139,33 @@ def validate_materialization_state(
     now: datetime | None = None,
 ) -> None:
     if state is None:
-        raise ChatMaterializationUnavailable("chat materialization state is missing")
+        raise ChatMaterializationUnavailable(
+            "chat materialization state is missing",
+            reason="missing",
+        )
     if state.status != "complete":
         raise ChatMaterializationUnavailable(
-            f"chat materialization status is not complete: {state.status}"
+            f"chat materialization status is not complete: {state.status}",
+            reason="status",
+            state=state,
         )
     current = now or datetime.now(UTC)
     if (
         state.last_success_at is None
         or current - state.last_success_at > CHAT_MATERIALIZATION_MAX_AGE
     ):
-        raise ChatMaterializationUnavailable("chat materialization is stale")
+        raise ChatMaterializationUnavailable(
+            "chat materialization is stale",
+            reason="stale",
+            state=state,
+        )
     requested_end = filters.date_to + timedelta(days=1)
     if (
         state.coverage_start > filters.date_from
         or state.coverage_end_exclusive < requested_end
     ):
-        raise ChatMaterializationUnavailable("chat materialization coverage is incomplete")
+        raise ChatMaterializationUnavailable(
+            "chat materialization coverage is incomplete",
+            reason="coverage",
+            state=state,
+        )

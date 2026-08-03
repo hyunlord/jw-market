@@ -86,3 +86,23 @@ def test_materialization_fails_closed_for_missing_failed_stale_or_partial_state(
             UsageFilters(date(2026, 7, 3), date(2026, 8, 3), "day"),
             now=datetime(2026, 8, 3, 1, 0, tzinfo=UTC),
         )
+
+
+def test_coverage_failure_preserves_available_range_for_http_mapping() -> None:
+    state = ChatMaterializationState(
+        date(2026, 7, 9),
+        date(2026, 8, 4),
+        datetime(2026, 8, 4, 0, 1, tzinfo=UTC),
+        "complete",
+    )
+
+    with pytest.raises(ChatMaterializationUnavailable) as caught:
+        validate_materialization_state(
+            state,
+            UsageFilters(date(2026, 7, 8), date(2026, 8, 3), "day"),
+            now=datetime(2026, 8, 4, 0, 5, tzinfo=UTC),
+        )
+
+    assert caught.value.reason == "coverage"
+    assert caught.value.available_from == date(2026, 7, 9)
+    assert caught.value.available_to == date(2026, 8, 3)

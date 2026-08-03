@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
+from pipeline.scripts.api.chat_usage_materialization import ChatMaterializationUnavailable
 from pipeline.scripts.api.dashboard_usage import (
+    DashboardQueryError,
     MAX_USAGE_LOG_PAGE_SIZE,
     MAX_USAGE_LOG_RANGE_DAYS,
     MAX_RANGE_DAYS,
@@ -17,9 +20,34 @@ from pipeline.scripts.api.dashboard_usage import (
     decode_usage_log_cursor,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 
 def _today() -> date:
     return datetime.now(UTC).date()
+
+
+def _validate_range(date_from: date, date_to: date) -> None:
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="시작일은 종료일보다 늦을 수 없습니다.")
+    if (date_to - date_from).days + 1 > MAX_RANGE_DAYS:
+        raise HTTPException(status_code=422, detail=f"조회 기간은 최대 {MAX_RANGE_DAYS}일입니다.")
+
+
+def _materialization_error_detail(error: ChatMaterializationUnavailable) -> dict:
+    messages = {
+        "missing": "채팅 통계 준비 상태를 확인할 수 없습니다.",
+        "status": "채팅 통계 갱신이 완료되지 않았습니다.",
+        "stale": "채팅 통계가 최신 상태가 아닙니다. 잠시 후 다시 시도해 주세요.",
+        "coverage": "요청한 기간의 채팅 통계가 아직 준비되지 않았습니다.",
+    }
+    return {
+        "error": "chat_materialization_unavailable",
+        "reason": error.reason,
+        "message": messages[error.reason],
+        "available_from": error.available_from.isoformat() if error.available_from else None,
+        "available_to": error.available_to.isoformat() if error.available_to else None,
+    }
 
 
 def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
@@ -35,19 +63,59 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
     ) -> dict:
         resolved_to = date_to or _today()
         resolved_from = date_from or (resolved_to - timedelta(days=29))
-        if resolved_from > resolved_to:
-            raise HTTPException(status_code=422, detail="시작일은 종료일보다 늦을 수 없습니다.")
-        if (resolved_to - resolved_from).days + 1 > MAX_RANGE_DAYS:
-            raise HTTPException(status_code=422, detail=f"조회 기간은 최대 {MAX_RANGE_DAYS}일입니다.")
-        return service.get(
-            UsageFilters(
-                date_from=resolved_from,
-                date_to=resolved_to,
-                grain=grain,
-                user_id=user_id,
-                department=department.strip() if department else None,
+        _validate_range(resolved_from, resolved_to)
+
+        def fetch(resolved_date_from: date, resolved_date_to: date) -> dict:
+            return service.get(
+                UsageFilters(
+                    date_from=resolved_date_from,
+                    date_to=resolved_date_to,
+                    grain=grain,
+                    user_id=user_id,
+                    department=department.strip() if department else None,
+                )
             )
-        )
+
+        try:
+            return fetch(resolved_from, resolved_to)
+        except ChatMaterializationUnavailable as error:
+            if (
+                error.reason == "coverage"
+                and error.available_from is not None
+                and error.available_to is not None
+                and (date_from is None or date_to is None)
+            ):
+                clamped_from = (
+                    max(resolved_from, error.available_from)
+                    if date_from is None
+                    else resolved_from
+                )
+                clamped_to = (
+                    min(resolved_to, error.available_to) if date_to is None else resolved_to
+                )
+                if clamped_from <= clamped_to and (
+                    clamped_from != resolved_from or clamped_to != resolved_to
+                ):
+                    try:
+                        return fetch(clamped_from, clamped_to)
+                    except ChatMaterializationUnavailable as retry_error:
+                        error = retry_error
+            raise HTTPException(
+                status_code=503,
+                detail=_materialization_error_detail(error),
+            ) from error
+        except DashboardQueryError as error:
+            LOGGER.exception(
+                "usage dashboard query failed",
+                extra={"query_name": error.query_name},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "dashboard_query_unavailable",
+                    "message": "사용 통계 데이터 소스를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+                },
+            ) from error
 
     return router
 
