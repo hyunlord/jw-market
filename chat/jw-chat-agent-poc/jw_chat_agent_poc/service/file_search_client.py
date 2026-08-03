@@ -8,6 +8,7 @@ from typing import Any
 
 import requests
 
+from jw_chat_agent_poc.service.actor_context import code_serving_actor_headers
 from jw_chat_agent_poc.service.file_sql_query import (
     SqlFileSource,
     fetch_sql_schema_columns,
@@ -94,7 +95,12 @@ def search_uploaded_files(
         "question": question,
     }
     try:
-        response = requests.post(f"{base_url}/search", json=payload, timeout=timeout_s)
+        response = requests.post(
+            f"{base_url}/search",
+            json=payload,
+            headers=code_serving_actor_headers(),
+            timeout=timeout_s,
+        )
         response.raise_for_status()
         body = response.json()
     except (requests.RequestException, ValueError):
@@ -115,6 +121,7 @@ def search_uploaded_files(
             supplemental_response = requests.post(
                 f"{base_url}/search",
                 json=supplemental_payload,
+                headers=code_serving_actor_headers(),
                 timeout=timeout_s,
             )
             supplemental_response.raise_for_status()
@@ -219,6 +226,7 @@ def has_active_uploaded_file(conversation_id: str | None) -> bool:
                 "app_session_id": conversation_id,
                 "chat_id": conversation_id,
             },
+            headers=code_serving_actor_headers(),
             timeout=timeout_s,
         )
         response.raise_for_status()
@@ -251,6 +259,7 @@ def fetch_uploaded_file_overviews(
                 "app_session_id": conversation_id,
                 "chat_id": conversation_id,
             },
+            headers=code_serving_actor_headers(),
             timeout=timeout_s,
         )
         response.raise_for_status()
@@ -340,6 +349,7 @@ def fetch_uploaded_file_schema_columns(conversation_id: str | None) -> tuple[str
                 "chat_id": conversation_id,
                 "question": "업로드 파일의 열 구조를 확인합니다.",
             },
+            headers=code_serving_actor_headers(),
             timeout=timeout_s,
         )
         response.raise_for_status()
@@ -525,6 +535,7 @@ def _active_file_fallback(
                 "app_session_id": conversation_id,
                 "chat_id": conversation_id,
             },
+            headers=code_serving_actor_headers(),
             timeout=timeout_s,
         )
         response.raise_for_status()

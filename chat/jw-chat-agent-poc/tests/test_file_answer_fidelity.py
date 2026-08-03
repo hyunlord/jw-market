@@ -411,7 +411,7 @@ def test_file_search_client_parses_file_source_items(monkeypatch) -> None:
         "errors": [],
     }
 
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(url, json=None, headers=None, timeout=None):
         return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
 
     monkeypatch.setattr("jw_chat_agent_poc.service.file_search_client.requests.post", fake_post)
@@ -532,7 +532,7 @@ def test_file_search_client_prioritizes_substantive_overview_over_title_only_blo
 def test_file_search_client_supplements_truncated_conclusion_context(monkeypatch) -> None:
     questions: list[str] = []
 
-    def search_response(url, json=None, timeout=None):
+    def search_response(url, json=None, headers=None, timeout=None):
         question = str((json or {}).get("question") or "")
         questions.append(question)
         context = (
@@ -571,7 +571,7 @@ def test_file_search_client_supplements_truncated_conclusion_context(monkeypatch
 def test_file_search_client_supplements_general_document_summary_context(monkeypatch) -> None:
     questions: list[str] = []
 
-    def search_response(url, json=None, timeout=None):
+    def search_response(url, json=None, headers=None, timeout=None):
         question = str((json or {}).get("question") or "")
         questions.append(question)
         context = (
@@ -661,10 +661,10 @@ def test_file_search_client_keeps_retrieval_order_for_specific_file_question(mon
 
 
 def test_file_search_client_preserves_active_session_when_search_times_out(monkeypatch) -> None:
-    def timeout_post(url, json=None, timeout=None):
+    def timeout_post(url, json=None, headers=None, timeout=None):
         raise requests.Timeout("search timeout")
 
-    def documents_get(url, params=None, timeout=None):
+    def documents_get(url, params=None, headers=None, timeout=None):
         return SimpleNamespace(
             raise_for_status=lambda: None,
             json=lambda: {"documents": [{"document_id": 112829, "file_name": "fixture.xlsx"}]},
@@ -682,7 +682,7 @@ def test_file_search_client_preserves_active_session_when_search_times_out(monke
 
 
 def test_uploaded_file_overviews_preserve_public_sql_shape(monkeypatch) -> None:
-    def documents_get(url, params=None, timeout=None):
+    def documents_get(url, params=None, headers=None, timeout=None):
         assert url.endswith("/documents")
         assert params["chat_id"] == "conv-card"
         return SimpleNamespace(

@@ -196,6 +196,7 @@ from jw_chat_agent_poc.service.history_projection import (
     sanitize_http_headers,
     trusted_portal_user_id,
 )
+from jw_chat_agent_poc.service.actor_context import actor_user_scope
 from jw_chat_agent_poc.service.models import (
     COMBINED_FILE_CONTEXT_MAX_CHARS,
     QUESTION_MAX_CHARS,
@@ -493,12 +494,15 @@ def create_app(
         summary="Create a chat session result",
         description=CHAT_ACCEPTED_DESCRIPTION,
     )
-    def chat(request: ChatRequest, _api_key: None = Depends(_require_direct_route_api_key)) -> ChatAccepted:
+    def chat(
+        request: ChatRequest,
+        projection_context: ProjectionRequestContext = Depends(_require_direct_route_api_key),
+    ) -> ChatAccepted:
         documents = tuple(Path(path) for path in request.document_paths)
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
         try:
-            with limiter.slot():
+            with limiter.slot(), actor_user_scope(projection_context.portal_user_id):
                 result = _answer_question(
                     store,
                     resolver,
@@ -541,7 +545,7 @@ def create_app(
         if not request.question.strip() and not _has_file_signal(list(documents), request.file_context):
             raise HTTPException(status_code=400, detail="질문 또는 파일 업로드가 필요합니다.")
         try:
-            with limiter.slot():
+            with limiter.slot(), actor_user_scope(projection_context.portal_user_id):
                 item = _answer_question(
                     store,
                     resolver,
@@ -592,16 +596,17 @@ def create_app(
         projection_context: ProjectionRequestContext = Depends(_require_direct_route_api_key),
     ) -> StreamingResponse:
         if session_id:
-            item = _resolve_session(
-                store,
-                resolver,
-                make_agent,
-                session_id,
-                None,
-                external_mode,
-                conversation_id,
-                use_direct_agent_loop=use_direct_agent_loop,
-            )
+            with actor_user_scope(projection_context.portal_user_id):
+                item = _resolve_session(
+                    store,
+                    resolver,
+                    make_agent,
+                    session_id,
+                    None,
+                    external_mode,
+                    conversation_id,
+                    use_direct_agent_loop=use_direct_agent_loop,
+                )
             return StreamingResponse(
                 _sse_events(
                     item["question"],
@@ -2375,7 +2380,9 @@ def _stream_resolving_session_events(
             deep_request = parse_deep_research_request(question)
             total_stage = "deep_research_total" if deep_request.enabled else "answer_generation_total"
             total_detail = "딥리서치 전체 진행" if deep_request.enabled else "request processing"
-            with stage_event_sink(emit_step):
+            with stage_event_sink(emit_step), actor_user_scope(
+                projection_context.portal_user_id if projection_context is not None else None
+            ):
                 with stage(None, total_stage, total_detail):
                     item = _answer_question(
                         store,
