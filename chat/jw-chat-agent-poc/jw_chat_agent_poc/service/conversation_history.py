@@ -9,7 +9,11 @@ from typing import Any, Protocol
 
 import pymysql
 
-from jw_chat_agent_poc.service.history_projection import ProjectionRequestContext
+from jw_chat_agent_poc.service.history_projection import (
+    ProjectionEnqueueRecordingError,
+    ProjectionRequestContext,
+    qualified_table_name,
+)
 from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
     ConversationTurn,
@@ -59,6 +63,8 @@ class _DbConfig:
 class ProjectionOutboxEnqueuer(Protocol):
     def enqueue(self, **kwargs: Any) -> None: ...
 
+    def record_enqueue_failure(self, **kwargs: Any) -> None: ...
+
 
 class MySQLConversationHistoryStore:
     def __init__(
@@ -70,13 +76,13 @@ class MySQLConversationHistoryStore:
         context_ttl_seconds: int = DEFAULT_CONTEXT_TTL_SECONDS,
     ) -> None:
         self._config = config or _db_config_from_env()
-        self._table_name = table_name
+        self._table_name = qualified_table_name(table_name, setting="chat history table")
         self._projection_outbox = projection_outbox
         self._context_ttl_seconds = max(1, context_ttl_seconds)
 
     @classmethod
     def from_env(cls) -> "MySQLConversationHistoryStore":
-        return cls()
+        return cls(table_name=os.environ.get("CHAT_HISTORY_TABLE_NAME", HISTORY_TABLE_NAME).strip())
 
     def record_turn(
         self,
@@ -157,8 +163,27 @@ class MySQLConversationHistoryStore:
                     projection_context=projection_context,
                 )
             except Exception as exc:
-                LOGGER.warning(
-                    "history projection enqueue failed source_log_id=%s error_type=%s",
+                source_kind = projection_context.source_kind if projection_context is not None else "unknown"
+                try:
+                    self._projection_outbox.record_enqueue_failure(
+                        source_log_id=source_log_id,
+                        session_id=conversation_id or session_id,
+                        source_kind=source_kind,
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                except Exception as recording_exc:
+                    LOGGER.exception(
+                        "history projection enqueue failure ledger write failed "
+                        "source_log_id=%s enqueue_error_type=%s recording_error_type=%s",
+                        source_log_id,
+                        type(exc).__name__,
+                        type(recording_exc).__name__,
+                    )
+                    raise ProjectionEnqueueRecordingError(exc, recording_exc) from recording_exc
+                LOGGER.error(
+                    "history projection enqueue failed and was recorded "
+                    "source_log_id=%s error_type=%s",
                     source_log_id,
                     type(exc).__name__,
                 )

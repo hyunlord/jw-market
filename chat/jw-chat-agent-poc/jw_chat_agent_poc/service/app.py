@@ -215,8 +215,10 @@ from jw_chat_agent_poc.service.genos_client import (
 )
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
+    _env_bool,
     HistoryProjectionRuntime,
     ProjectionRequestContext,
+    projection_source_kind,
     sanitize_http_headers,
     trusted_portal_user_id,
 )
@@ -628,7 +630,11 @@ def _require_direct_route_api_key(
 ) -> ProjectionRequestContext:
     public_request = _is_direct_public_request(request)
     if not public_request:
-        return ProjectionRequestContext(portal_user_id=None, http_headers=sanitize_http_headers(request.headers))
+        return ProjectionRequestContext(
+            portal_user_id=None,
+            http_headers=sanitize_http_headers(request.headers),
+            source_kind=projection_source_kind(public_request=False, portal_user_id=None),
+        )
     expected_key = os.environ.get(DIRECT_ROUTE_API_KEY_ENV)
     if not expected_key:
         raise HTTPException(status_code=503, detail="direct route API key is not configured")
@@ -642,9 +648,18 @@ def _require_direct_route_api_key(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    synthetic_test = (
+        _env_bool("HISTORY_PROJECTION_TEST_SOURCE_HEADER_ENABLED", default=False)
+        and request.headers.get("x-jw-test-traffic", "").strip().lower() in {"1", "true", "yes", "on"}
+    )
     return ProjectionRequestContext(
         portal_user_id=portal_user_id,
         http_headers=sanitize_http_headers(request.headers),
+        source_kind=projection_source_kind(
+            public_request=True,
+            portal_user_id=portal_user_id,
+            synthetic_test=synthetic_test,
+        ),
     )
 
 
