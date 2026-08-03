@@ -82,6 +82,7 @@ def test_case17_matches_legacy_market_shortcut_without_relaxing_comparison() -> 
 def test_full_recomparison_changes_only_case17(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT", "0")
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS", "0")
+    monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_MFDS", "0")
     actual = capture_corpus(
         FIXTURES / "corpus.v1.json",
         FIXTURES / "observed_snapshots.v1.json",

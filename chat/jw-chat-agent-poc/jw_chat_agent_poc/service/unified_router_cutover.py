@@ -12,8 +12,12 @@ from jw_chat_agent_poc.service.routing_boundary_contract import MarketScopeRouti
 
 HIRA_REIMBURSEMENT_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT"
 HIRA_DISEASE_STATS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS"
+MFDS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_MFDS"
 _HIRA_REIMBURSEMENT_CAPABILITY = "HIRA_REIMBURSEMENT_CRITERIA"
 _HIRA_DISEASE_STATS_CAPABILITY = "HIRA_DISEASE_PATIENT_STATS"
+_MFDS_CAPABILITIES = frozenset(
+    {"MFDS_BASIC_PRODUCT_INFO", "MFDS_PERMISSION_DETAIL_FIELDS"}
+)
 
 
 def select_hira_reimbursement_cutover(
@@ -86,9 +90,48 @@ def select_hira_disease_stats_cutover(
     return decision
 
 
+def select_mfds_cutover(
+    *,
+    question: str,
+    has_documents: bool,
+    use_direct_agent_loop: bool,
+    market_scope_resolver: MarketScopeRoutingPort,
+) -> CanonicalRouteDecision | None:
+    """Select only single-facet deterministic MFDS routes."""
+
+    if has_documents:
+        return None
+    decision = route(
+        UnifiedRouteInput(
+            question=question,
+            security_verdict=SecurityVerdict.ALLOW,
+            market_shortcut=MarketShortcutSignals(
+                has_documents=False,
+                use_direct_agent_loop=use_direct_agent_loop,
+                market_scope_resolver=market_scope_resolver,
+            ),
+        )
+    )
+    capability = decision.capability
+    requested = decision.requested_capabilities
+    if capability not in _MFDS_CAPABILITIES:
+        return None
+    if requested and requested != (capability,):
+        return None
+    if (
+        decision.domain != "regulatory"
+        or decision.handler != capability
+        or decision.execution_mode is not RouteMode.DETERMINISTIC
+    ):
+        return None
+    return decision
+
+
 __all__ = (
     "HIRA_DISEASE_STATS_CUTOVER_ENV",
     "HIRA_REIMBURSEMENT_CUTOVER_ENV",
+    "MFDS_CUTOVER_ENV",
     "select_hira_disease_stats_cutover",
     "select_hira_reimbursement_cutover",
+    "select_mfds_cutover",
 )
