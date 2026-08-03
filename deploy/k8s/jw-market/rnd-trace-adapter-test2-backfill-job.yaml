@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jw-rnd-trace-adapter-backfill-test2
+  namespace: llmops
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1200
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: adapter
+          image: JW_MARKET_API_IMAGE
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - pipeline.scripts.etl.rnd_trace_adapter
+            - --mode
+            - backfill
+            - --start
+            - "2026-07-13"
+            - --ensure-schema
+          env:
+            - name: MARIADB_HOST
+              value: galera-mariadb-galera.llmops.svc.cluster.local
+            - name: MARIADB_PORT
+              value: "3306"
+            - name: MARIADB_USER
+              value: root
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: galera-mariadb-galera
+                  key: mariadb-root-password
+            - name: MONITORING_API_BASE_URL
+              value: http://llmops-monitoring-api-service.llmops.svc.cluster.local
+            - name: RND_TRACE_BATCH_SIZE
+              value: "20"
+            - name: RND_TRACE_REQUEST_INTERVAL_SECONDS
+              value: "1"
+            - name: RND_TRACE_SESSION_LIMIT
+              value: "2000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi

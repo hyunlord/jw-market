@@ -255,3 +255,16 @@ def test_cronjob_is_test2_only_bounded_and_non_concurrent() -> None:
     assert 'value: "168"' in manifest
     assert "question" not in manifest.lower()
     assert "answer" not in manifest.lower()
+
+
+def test_backfill_job_is_separate_and_has_explicit_window() -> None:
+    manifest = Path(
+        "deploy/k8s/jw-market/rnd-trace-adapter-test2-backfill-job.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "name: jw-rnd-trace-adapter-backfill-test2" in manifest
+    assert "- backfill" in manifest
+    assert "- --ensure-schema" in manifest
+    assert "- --start" in manifest
+    assert "- \"2026-07-13\"" in manifest
+    assert "restartPolicy: Never" in manifest
