@@ -11,6 +11,12 @@ from typing import Any, Callable, Final, Literal, Protocol
 
 import pymysql
 
+from pipeline.scripts.api.chat_usage_materialization import (
+    CHAT_MATERIALIZATION_STATE_SQL,
+    CHAT_USAGE_SQL,
+    ChatMaterializationState,
+    validate_materialization_state,
+)
 from pipeline.scripts.api.config import APIConfig
 
 Grain = Literal["day", "week"]
@@ -82,40 +88,7 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         GROUP BY WEEKDAY(called_at), HOUR(called_at)
         ORDER BY weekday, hour
     """,
-    "chat_trend": """
-        SELECT {period} AS period, service_id, COUNT(*) AS turns,
-               COUNT(DISTINCT conversation_id) AS sessions,
-               SUM(portal_user_id IS NOT NULL) AS attributed_turns,
-               SUM(total_tokens) AS total_tokens
-        FROM dashboard_chat_usage_v c
-        LEFT JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
-        WHERE c.created_at >= %s AND c.created_at < %s
-        {user_filter}
-        GROUP BY period, service_id ORDER BY period, service_id
-    """,
-    "chat_user": """
-        SELECT u.id AS user_id, u.name AS user_name, u.department,
-               COUNT(*) AS turns, COUNT(DISTINCT c.conversation_id) AS sessions,
-               SUM(c.total_tokens) AS total_tokens
-        FROM dashboard_chat_usage_v c
-        JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
-        WHERE c.created_at >= %s AND c.created_at < %s
-        {user_filter}
-        GROUP BY u.id, u.name, u.department
-        ORDER BY turns DESC, u.id LIMIT 100
-    """,
-    "chat_user_service": """
-        SELECT u.id AS user_id, u.name AS user_name, u.department,
-               c.service_id, COUNT(*) AS turns,
-               COUNT(DISTINCT c.conversation_id) AS sessions,
-               SUM(c.total_tokens) AS total_tokens
-        FROM dashboard_chat_usage_v c
-        JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
-        WHERE c.created_at >= %s AND c.created_at < %s
-        {user_filter}
-        GROUP BY u.id, u.name, u.department, c.service_id
-        ORDER BY turns DESC, u.id, c.service_id LIMIT 200
-    """,
+    **CHAT_USAGE_SQL,
     "auth_trend": """
         SELECT {period} AS period, type_code, COUNT(*) AS events
         FROM dashboard_auth_event_v a
@@ -313,6 +286,11 @@ class MariaDBUsageRepository:
         )
 
     def fetch(self, filters: UsageFilters) -> dict[str, Any]:
+        try:
+            state = self._fetch_chat_materialization_state()
+        except Exception as exc:
+            raise DashboardQueryError("chat_materialization_state") from exc
+        validate_materialization_state(state, filters)
         rows = self._fetch_rows(self._build_queries(filters))
 
         options = rows["filter_options"]
@@ -367,12 +345,33 @@ class MariaDBUsageRepository:
                 params: tuple[Any, ...] = ()
             elif name == "auth_audience":
                 params = (start, start, start, end_exclusive, *user_params)
+            elif name == "chat_trend":
+                params = (
+                    start,
+                    end_exclusive,
+                    *user_params,
+                    start,
+                    end_exclusive,
+                    *user_params,
+                )
+            elif name in {"chat_user", "chat_user_service"}:
+                params = (start, end_exclusive, start, end_exclusive, *user_params)
             elif name.startswith("api_") and name not in {"api_user", "api_department"}:
                 params = (start, end_exclusive, *api_params)
             else:
                 params = (start, end_exclusive, *user_params)
             queries.append(DashboardQuery(name=name, ordinal=ordinal, sql=sql, params=params))
         return tuple(queries)
+
+    def _fetch_chat_materialization_state(self) -> ChatMaterializationState | None:
+        connection = self._connect(**self._connect_args)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(CHAT_MATERIALIZATION_STATE_SQL)
+                row = cursor.fetchone()
+        finally:
+            connection.close()
+        return ChatMaterializationState.from_row(row) if row else None
 
     def _fetch_rows(self, queries: tuple[DashboardQuery, ...]) -> dict[str, list[dict[str, Any]]]:
         futures: dict[Future[tuple[str, list[dict[str, Any]]]], DashboardQuery] = {
@@ -477,7 +476,7 @@ def _time_column(query_name: str) -> str:
     if query_name.startswith("api_"):
         return "called_at"
     if query_name.startswith("chat_"):
-        return "created_at"
+        return "usage_date"
     if query_name.startswith(("auth_", "credit_")):
         return "reg_date"
     return "completed_at"

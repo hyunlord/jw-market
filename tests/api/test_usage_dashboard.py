@@ -5,7 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -22,6 +22,7 @@ from pipeline.scripts.api.dashboard_usage import (
     UsageFilters,
     UsageStatsService,
 )
+from pipeline.scripts.api.chat_usage_materialization import ChatMaterializationState
 from pipeline.scripts.api.routes.dashboard_usage import create_usage_dashboard_router
 
 
@@ -87,6 +88,14 @@ class DeterministicUsageRepository(MariaDBUsageRepository):
         finally:
             with self._state_lock:
                 self.active_queries -= 1
+
+    def _fetch_chat_materialization_state(self) -> ChatMaterializationState:
+        return ChatMaterializationState(
+            coverage_start=date(2020, 1, 1),
+            coverage_end_exclusive=date(2030, 1, 1),
+            last_success_at=datetime.now(UTC),
+            status="complete",
+        )
 
 
 def _client(repository: FakeRepository) -> TestClient:
@@ -206,7 +215,8 @@ def test_repository_queries_are_sanitized_view_only() -> None:
     sql = "\n".join(DASHBOARD_SQL.values()).lower()
 
     assert "dashboard_api_usage_v" in sql
-    assert "dashboard_chat_usage_v" in sql
+    assert "jw_mart.mart_chat_usage_daily" in sql
+    assert "jw_mart.mart_chat_usage_daily_session" in sql
     assert "dashboard_auth_event_v" in sql
     assert "dashboard_credit_usage_v" in sql
     assert "dashboard_report_download_v" in sql
@@ -305,17 +315,10 @@ def test_period_sql_survives_pymysql_parameter_interpolation() -> None:
 
 
 def test_all_dashboard_queries_bind_for_unfiltered_and_filtered_requests() -> None:
-    from pipeline.scripts.api.dashboard_usage import (
-        DASHBOARD_SQL,
-        _PERIOD_SQL,
-        _api_filter,
-        _time_column,
-        _user_filter,
-    )
-
     connection = pymysql.Connection(defer_connect=True)
     connection.server_status = 0
     cursor = connection.cursor()
+    repository = MariaDBUsageRepository(_dashboard_config())
     for filters in (
         UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"),
         UsageFilters(
@@ -326,27 +329,5 @@ def test_all_dashboard_queries_bind_for_unfiltered_and_filtered_requests() -> No
             department="JW중외제약",
         ),
     ):
-        user_filter, user_params = _user_filter(filters)
-        api_filter, api_params = _api_filter(filters)
-        for name, template in DASHBOARD_SQL.items():
-            sql = template.format(
-                period=_PERIOD_SQL[filters.grain].format(column=_time_column(name)),
-                user_filter=user_filter,
-                api_filter=api_filter,
-            )
-            if name == "filter_options":
-                params = ()
-            elif name == "auth_audience":
-                params = (
-                    filters.date_from.isoformat(),
-                    filters.date_from.isoformat(),
-                    filters.date_from.isoformat(),
-                    "2026-08-01",
-                    *user_params,
-                )
-            elif name.startswith("api_") and name not in {"api_user", "api_department"}:
-                params = (filters.date_from.isoformat(), "2026-08-01", *api_params)
-            else:
-                params = (filters.date_from.isoformat(), "2026-08-01", *user_params)
-
-            assert cursor.mogrify(sql, params)
+        for query in repository._build_queries(filters):
+            assert cursor.mogrify(query.sql, query.params)
