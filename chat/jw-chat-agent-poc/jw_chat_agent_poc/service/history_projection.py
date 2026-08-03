@@ -6,11 +6,12 @@ from datetime import UTC, datetime
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
-from typing import Any, Protocol
-from uuid import uuid4
+from typing import Any, Literal, Protocol, cast
+from uuid import UUID, uuid4, uuid5
 
 import pymysql
 
@@ -23,6 +24,18 @@ MONGO_SERVER_SELECTION_TIMEOUT_MS = 3000
 MONGO_CONNECT_TIMEOUT_MS = 3000
 MONGO_SOCKET_TIMEOUT_MS = 10000
 LOGGER = logging.getLogger(__name__)
+PROJECTION_SESSION_NAMESPACE = UUID("b1f492b7-fc15-5ec8-ae84-5e6e4532c6d8")
+SourceKind = Literal[
+    "portal_user",
+    "synthetic_test",
+    "internal_system",
+    "anonymous_direct",
+    "unknown",
+]
+SOURCE_KINDS = frozenset(
+    {"portal_user", "synthetic_test", "internal_system", "anonymous_direct", "unknown"}
+)
+_QUALIFIED_TABLE_NAME = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)?$")
 SAFE_HTTP_HEADERS = frozenset(
     {
         "accept",
@@ -35,10 +48,17 @@ SAFE_HTTP_HEADERS = frozenset(
 )
 
 
+def qualified_table_name(value: str, *, setting: str) -> str:
+    if not _QUALIFIED_TABLE_NAME.fullmatch(value):
+        raise ValueError(f"{setting} must be an unquoted table name with an optional schema")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectionRequestContext:
     portal_user_id: int | None
     http_headers: dict[str, str]
+    source_kind: SourceKind = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +74,48 @@ class CompletedTurn:
     trace: dict[str, Any]
     timing: dict[str, Any]
     created_at: datetime
+    source_conversation_id: str | None = None
+    source_kind: SourceKind = "unknown"
+
+
+class ProjectionEnqueueRecordingError(RuntimeError):
+    def __init__(self, enqueue_error: Exception, recording_error: Exception) -> None:
+        super().__init__(
+            "projection enqueue failed and its failure ledger could not be written: "
+            f"{type(enqueue_error).__name__}; {type(recording_error).__name__}"
+        )
+        self.enqueue_error_type = type(enqueue_error).__name__
+        self.recording_error_type = type(recording_error).__name__
+
+
+def projection_session_id(source_session_id: str) -> str:
+    if not source_session_id:
+        raise ValueError("projection source session id must not be empty")
+    if len(source_session_id) <= 36:
+        return source_session_id
+    return str(uuid5(PROJECTION_SESSION_NAMESPACE, source_session_id))
+
+
+def projection_source_kind(
+    *,
+    public_request: bool | None,
+    portal_user_id: int | None,
+    synthetic_test: bool = False,
+) -> SourceKind:
+    if synthetic_test:
+        return "synthetic_test"
+    if public_request is True:
+        return "portal_user" if portal_user_id is not None else "anonymous_direct"
+    if public_request is False:
+        return "internal_system"
+    return "unknown"
+
+
+def source_kind_from_value(value: object) -> SourceKind:
+    normalized = str(value or "unknown")
+    if normalized in SOURCE_KINDS:
+        return cast(SourceKind, normalized)
+    return "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,10 +185,12 @@ def build_projection_documents(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     turn = job.turn
     elapsed_ms = _number(turn.timing.get("total_elapsed_ms")) or 0.0
+    source_conversation_id = turn.source_conversation_id or turn.session_id
     common_markers = {
         "origin": PROJECTION_ORIGIN,
         "synthetic_history_projection": True,
         "history_projection_version": job.projection_version,
+        "source_kind": turn.source_kind,
     }
     service_trace = {
         "service": "chat-api",
@@ -173,7 +237,7 @@ def build_projection_documents(
                 "text": turn.answer,
                 "charts": list(turn.charts),
                 "sources": list(turn.sources),
-                "conversation_id": turn.session_id,
+                "conversation_id": source_conversation_id,
                 "trace": dict(turn.trace),
                 "elapsed_ms": int(round(elapsed_ms)),
                 "file_context_included": False,
@@ -181,7 +245,7 @@ def build_projection_documents(
         },
         "charts": list(turn.charts),
         "sources": list(turn.sources),
-        "conversation_id": turn.session_id,
+        "conversation_id": source_conversation_id,
         "_chat_agent_restored": False,
         "chat_session_title": turn.question[:20] if turn.question else "새로운 채팅",
         "_jw_chat_agent_direct": True,
@@ -235,15 +299,56 @@ class MySQLProjectionOutbox:
         config: ProjectionDbConfig,
         *,
         table_name: str = "jw_chat_agent_history_projection_outbox",
+        failure_table_name: str = "jw_chat_agent_history_projection_enqueue_failure",
         default_user_id: int | None = None,
         max_attempts: int = 5,
         session_writer: SessionProjectionWriter | None = None,
     ) -> None:
         self._config = config
-        self._table_name = table_name
+        self._table_name = qualified_table_name(table_name, setting="projection outbox table")
+        self._failure_table_name = qualified_table_name(
+            failure_table_name, setting="projection failure table"
+        )
         self._default_user_id = default_user_id
         self._max_attempts = max_attempts
         self._session_writer = session_writer
+
+    def record_enqueue_failure(
+        self,
+        *,
+        source_log_id: int,
+        session_id: str | None,
+        source_kind: SourceKind,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        source_conversation_id = session_id or ""
+        projected_session_id = (
+            projection_session_id(source_conversation_id) if source_conversation_id else None
+        )
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self._failure_table_name}
+                        (source_log_id, projection_session_id, source_conversation_id,
+                         source_kind, error_type, error_message, status, occurrences)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'enqueue_failed', 1)
+                    ON DUPLICATE KEY UPDATE
+                        error_type=VALUES(error_type), error_message=VALUES(error_message),
+                        source_kind=VALUES(source_kind), occurrences=occurrences+1,
+                        last_failed_at=NOW()
+                    """,
+                    (
+                        source_log_id,
+                        projected_session_id,
+                        source_conversation_id or None,
+                        source_kind,
+                        error_type[:128],
+                        f"{error_type}: projection enqueue failed"[:1000],
+                    ),
+                )
+            connection.commit()
 
     def enqueue(
         self,
@@ -262,6 +367,9 @@ class MySQLProjectionOutbox:
         if not session_id:
             LOGGER.warning("history projection skipped: completed turn has no conversation id")
             return
+        source_conversation_id = session_id
+        projected_session_id = projection_session_id(source_conversation_id)
+        source_kind = projection_context.source_kind if projection_context is not None else "unknown"
         trace_id = str(trace.get("trace_id") or uuid4())
         turn_id = trace_id
         span_id = uuid4().hex[:16]
@@ -286,15 +394,19 @@ class MySQLProjectionOutbox:
                 cursor.execute(
                     f"""
                     INSERT INTO {self._table_name}
-                        (source_log_id, session_id, turn_id, turn_index, projection_version,
+                        (source_log_id, session_id, source_conversation_id, source_kind,
+                         turn_id, turn_index, projection_version,
                          trace_id, span_id, portal_user_id, request_headers_json, payload_json,
                          status, attempts, max_attempts, next_attempt_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 0, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            'pending', 0, %s, NOW())
                     ON DUPLICATE KEY UPDATE id = id
                     """,
                     (
                         source_log_id,
-                        session_id,
+                        projected_session_id,
+                        source_conversation_id,
+                        source_kind,
                         turn_id,
                         turn_index,
                         PROJECTION_VERSION,
@@ -312,7 +424,7 @@ class MySQLProjectionOutbox:
                 outbox_id=source_log_id,
                 turn=CompletedTurn(
                     source_log_id=source_log_id,
-                    session_id=session_id,
+                    session_id=projected_session_id,
                     turn_id=turn_id,
                     turn_index=turn_index,
                     question=question_text,
@@ -322,6 +434,8 @@ class MySQLProjectionOutbox:
                     trace=dict(trace),
                     timing=dict(timing),
                     created_at=created_at,
+                    source_conversation_id=source_conversation_id,
+                    source_kind=source_kind,
                 ),
                 projection_version=PROJECTION_VERSION,
                 trace_id=trace_id,
@@ -420,10 +534,18 @@ class ProjectionOwnershipError(RuntimeError):
 
 
 class MySQLSessionProjectionWriter:
-    def __init__(self, config: ProjectionDbConfig, *, endpoint: str, cache_ttl_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        config: ProjectionDbConfig,
+        *,
+        endpoint: str,
+        cache_ttl_seconds: int = 60,
+        table_name: str = "llmops.chat_session_tb",
+    ) -> None:
         self._config = config
         self._endpoint = endpoint
         self._cache_ttl_seconds = cache_ttl_seconds
+        self._table_name = qualified_table_name(table_name, setting="projection session table")
         self._cached_active: tuple[float, ActiveChatService] | None = None
 
     def active_service(self) -> ActiveChatService:
@@ -465,14 +587,14 @@ class MySQLSessionProjectionWriter:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT id, reg_user_id FROM llmops.chat_session_tb WHERE uid=%s AND is_active=1 FOR UPDATE",
+                    f"SELECT id, reg_user_id FROM {self._table_name} WHERE uid=%s AND is_active=1 FOR UPDATE",
                     (job.turn.session_id,),
                 )
                 row = cursor.fetchone()
                 if row is None:
                     cursor.execute(
-                        """
-                        INSERT INTO llmops.chat_session_tb
+                        f"""
+                        INSERT INTO {self._table_name}
                             (title, chat_service_id, chat_service_rev_id, chat_service_pub_id,
                              reg_user_id, uid, turns, first_user_message, first_user_request,
                              last_user_request, last_bot_response, is_display, is_active)
@@ -496,8 +618,8 @@ class MySQLSessionProjectionWriter:
                     raise ProjectionOwnershipError("session owner does not match trusted portal user")
                 else:
                     cursor.execute(
-                        """
-                        UPDATE llmops.chat_session_tb
+                        f"""
+                        UPDATE {self._table_name}
                         SET turns=GREATEST(turns, %s), last_user_request=%s, last_bot_response=%s
                         WHERE id=%s
                         """,
@@ -510,16 +632,16 @@ class MySQLSessionProjectionWriter:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
-                    UPDATE llmops.chat_session_tb SET is_display=1
+                    f"""
+                    UPDATE {self._table_name} SET is_display=1
                     WHERE uid=%s AND reg_user_id=%s AND is_active=1
                     """,
                     (job.turn.session_id, job.portal_user_id),
                 )
                 if cursor.rowcount != 1:
                     cursor.execute(
-                        """
-                        SELECT reg_user_id, is_display FROM llmops.chat_session_tb
+                        f"""
+                        SELECT reg_user_id, is_display FROM {self._table_name}
                         WHERE uid=%s AND is_active=1
                         """,
                         (job.turn.session_id,),
@@ -653,9 +775,23 @@ class HistoryProjectionRuntime:
         if db_config is None or not endpoint or not all(mongo_values.values()):
             raise RuntimeError("history projection is enabled but required configuration is incomplete")
         default_user_id = _optional_positive_int(os.environ.get("PROJECTION_DEFAULT_USER_ID"))
-        session_writer = MySQLSessionProjectionWriter(db_config, endpoint=endpoint)
+        session_writer = MySQLSessionProjectionWriter(
+            db_config,
+            endpoint=endpoint,
+            table_name=os.environ.get(
+                "HISTORY_PROJECTION_SESSION_TABLE", "llmops.chat_session_tb"
+            ).strip(),
+        )
         outbox = MySQLProjectionOutbox(
             db_config,
+            table_name=os.environ.get(
+                "HISTORY_PROJECTION_OUTBOX_TABLE",
+                "jw_chat_agent_history_projection_outbox",
+            ).strip(),
+            failure_table_name=os.environ.get(
+                "HISTORY_PROJECTION_FAILURE_TABLE",
+                "jw_chat_agent_history_projection_enqueue_failure",
+            ).strip(),
             default_user_id=default_user_id,
             max_attempts=_positive_int_env("HISTORY_PROJECTION_MAX_ATTEMPTS", default=5),
             session_writer=session_writer,
@@ -765,6 +901,8 @@ def _job_from_row(row: Mapping[str, Any]) -> ProjectionJob:
         trace=dict(payload.get("trace", {})),
         timing=dict(payload.get("timing", {})),
         created_at=created_at,
+        source_conversation_id=str(row.get("source_conversation_id") or row["session_id"]),
+        source_kind=source_kind_from_value(row.get("source_kind")),
     )
     return ProjectionJob(
         outbox_id=int(row["id"]),
