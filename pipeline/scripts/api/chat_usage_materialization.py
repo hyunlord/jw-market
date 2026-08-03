@@ -10,7 +10,7 @@ CHAT_USAGE_SQL: Final[dict[str, str]] = {
     "chat_trend": """
         WITH daily AS (
             SELECT {period} AS period, d.service_id,
-                   SUM(d.turns) AS turns,
+                   CAST(SUM(d.turns) AS UNSIGNED) AS turns,
                    SUM(d.attributed_turns) AS attributed_turns,
                    SUM(d.total_tokens) AS total_tokens
             FROM jw_mart.mart_chat_usage_daily d
@@ -37,7 +37,7 @@ CHAT_USAGE_SQL: Final[dict[str, str]] = {
     """,
     "chat_user": """
         WITH daily AS (
-            SELECT d.portal_user_id, SUM(d.turns) AS turns,
+            SELECT d.portal_user_id, CAST(SUM(d.turns) AS UNSIGNED) AS turns,
                    SUM(d.total_tokens) AS total_tokens
             FROM jw_mart.mart_chat_usage_daily d
             WHERE d.usage_date >= %s AND d.usage_date < %s
@@ -61,7 +61,8 @@ CHAT_USAGE_SQL: Final[dict[str, str]] = {
     """,
     "chat_user_service": """
         WITH daily AS (
-            SELECT d.portal_user_id, d.service_id, SUM(d.turns) AS turns,
+            SELECT d.portal_user_id, d.service_id,
+                   CAST(SUM(d.turns) AS UNSIGNED) AS turns,
                    SUM(d.total_tokens) AS total_tokens
             FROM jw_mart.mart_chat_usage_daily d
             WHERE d.usage_date >= %s AND d.usage_date < %s

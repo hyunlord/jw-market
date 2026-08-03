@@ -20,6 +20,10 @@ def test_chat_queries_use_daily_facts_and_exact_session_bridge() -> None:
     assert "jw_mart.mart_chat_usage_daily_session" in sql
     assert "count(distinct s.conversation_id)" in sql
     assert "dashboard_chat_usage_v" not in sql
+    assert all(
+        "CAST(SUM(d.turns) AS UNSIGNED)" in query
+        for query in CHAT_USAGE_SQL.values()
+    )
     assert "trace_json" not in sql
 
 
