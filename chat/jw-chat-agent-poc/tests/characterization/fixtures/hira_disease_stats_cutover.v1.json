@@ -1,0 +1,18 @@
+{
+  "schema": "jw_chat.phase5c3.hira_disease_stats_cutover.v1",
+  "source": "routing_mismatch_adjudication.v1.json",
+  "reason": "Preserve legacy and canonical route ownership side by side without replacing characterization snapshots.",
+  "target_count": 10,
+  "cases": [
+    {"question":"D693 상병 환자수 최근 5년 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"D693 연령대별 환자수 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"D693 환자수 2021년부터 2024년까지 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"D693 환자수 최근 3년 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"H360 상병 환자수 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"고지혈증 환자수","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"당뇨망막병증 환자수 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"당뇨망창병증 환자수 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"질병코드 H36.0 환자수 통계 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}},
+    {"question":"질병코드 H360 환자수 통계 알려줘","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"hira","handler":"HIRA_DISEASE_PATIENT_STATS","mode":"deterministic"}}}
+  ]
+}
