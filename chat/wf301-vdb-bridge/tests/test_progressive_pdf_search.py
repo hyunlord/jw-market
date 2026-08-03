@@ -21,6 +21,7 @@ def _request() -> SearchRequest:
 
 
 def _install_empty_ledger(monkeypatch) -> None:
+    monkeypatch.setattr(main, "_require_session_owner", lambda *_args: "genos-user:42")
     monkeypatch.setattr(main.ledger, "ledger_connection", _connection)
     monkeypatch.setattr(main.ledger, "list_session_documents", lambda *args, **kwargs: [])
 
@@ -55,7 +56,7 @@ def test_search_uses_session_owned_pdf_preview_before_full_commit(monkeypatch) -
         ],
     )
 
-    response = main.search(_request())
+    response = main.search(_request(), "42")
 
     assert response.document_count == 1
     assert response.result_count == 1
@@ -83,7 +84,7 @@ def test_empty_preview_search_never_claims_document_wide_absence(monkeypatch) ->
     monkeypatch.setattr(weaviate_ops, "embed_text", lambda client, text: [0.1, 0.2])
     monkeypatch.setattr(weaviate_ops, "search_temp_chunks", lambda *args, **kwargs: [])
 
-    response = main.search(_request())
+    response = main.search(_request(), "42")
 
     assert response.document_count == 1
     assert response.result_count == 0
@@ -137,7 +138,10 @@ def test_page_question_reads_exact_preview_page_without_embedding(monkeypatch) -
         ],
     )
 
-    response = main.search(_request().model_copy(update={"question": "3페이지 내용 알려줘"}))
+    response = main.search(
+        _request().model_copy(update={"question": "3페이지 내용 알려줘"}),
+        "42",
+    )
 
     assert response.result_count == 1
     assert "3페이지의 정확한 근거" in response.file_context
@@ -164,7 +168,10 @@ def test_page_outside_preview_scope_does_not_search_unrelated_pages(monkeypatch)
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("page is not indexed")),
     )
 
-    response = main.search(_request().model_copy(update={"question": "100페이지 내용 알려줘"}))
+    response = main.search(
+        _request().model_copy(update={"question": "100페이지 내용 알려줘"}),
+        "42",
+    )
 
     assert response.result_count == 0
     assert "현재까지 인덱싱된 범위(앞 20/185페이지)에서는 확인되지 않았습니다" in response.file_context

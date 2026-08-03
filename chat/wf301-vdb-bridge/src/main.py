@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 
 from . import (
     delete_ops,
@@ -38,6 +38,11 @@ from .file_sql import (
     run_scoped_query,
 )
 from .logging_utils import safe_log
+from .session_ownership import (
+    SessionNotFoundError,
+    SessionOwnershipRegistry,
+    normalize_actor_uid,
+)
 from .upload_ownership import TempDocumentNotFoundError, UploadOwnershipRegistry
 from .upload_status import (
     UploadFileCard as StatusUploadFileCard,
@@ -105,6 +110,70 @@ from .xlsx_sql_route import (
 WORKFLOW_ID_EXAMPLE = 301
 SESSION_KEY_EXAMPLE = "puc-004928"
 SESSION_KEY_SCHEMA = {"maxLength": 36, "pattern": "^[A-Za-z0-9_-]{1,36}$"}
+
+_SESSION_OWNERSHIP = SessionOwnershipRegistry(Path(settings.TEMP_DOCUMENT_DIR))
+
+
+def _actor_uid(raw_user_id: str) -> str:
+    try:
+        return normalize_actor_uid(raw_user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _legacy_actor_uid(session_id: str) -> str | None:
+    with ledger.ledger_connection() as conn:
+        return ledger.legacy_session_actor_uid(conn, session_id)
+
+
+def _session_has_documents(session_id: str, workflow_id: int) -> bool:
+    with ledger.ledger_connection() as conn:
+        return bool(
+            ledger.list_session_documents(
+                conn,
+                workflow_id=workflow_id,
+                session_id=session_id,
+                include_expired=True,
+            )
+        )
+
+
+def _require_session_owner(session_id: str, raw_user_id: str) -> str:
+    actor_uid = _actor_uid(raw_user_id)
+    try:
+        if _SESSION_OWNERSHIP.is_registered(session_id):
+            _SESSION_OWNERSHIP.require_owner(session_id, actor_uid)
+        else:
+            _SESSION_OWNERSHIP.require_owner(
+                session_id,
+                actor_uid,
+                legacy_actor_uid=_legacy_actor_uid(session_id),
+            )
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="session not found") from exc
+    return actor_uid
+
+
+def _claim_upload_session(session_id: str, workflow_id: int, raw_user_id: str) -> str:
+    actor_uid = _actor_uid(raw_user_id)
+    try:
+        if _SESSION_OWNERSHIP.is_registered(session_id):
+            _SESSION_OWNERSHIP.claim_new(session_id, actor_uid)
+        else:
+            legacy_actor_uid = _legacy_actor_uid(session_id)
+            if legacy_actor_uid is None:
+                if _session_has_documents(session_id, workflow_id):
+                    raise SessionNotFoundError("session not found")
+                _SESSION_OWNERSHIP.claim_new(session_id, actor_uid)
+            else:
+                _SESSION_OWNERSHIP.require_owner(
+                    session_id,
+                    actor_uid,
+                    legacy_actor_uid=legacy_actor_uid,
+                )
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="session not found") from exc
+    return actor_uid
 
 
 def _inspect_path_upload_card(file_path: str, file_name: str) -> StatusUploadFileCard:
@@ -396,6 +465,10 @@ def _session_guard(req: SessionRequest) -> list[str]:
 
 def _session_id(req: SessionRequest | BridgeRequest) -> str:
     return req.chat_id or req.app_session_id
+
+
+def _upload_session_id(app_session_id: str | None, chat_id: str | None) -> str:
+    return chat_id or app_session_id or uuid.uuid4().hex
 
 
 def _audit_hash(value: str | int | None) -> str:
@@ -856,7 +929,11 @@ def health() -> dict[str, str]:
     summary="임시 문서 등록 계획 미리보기",
     description=DRY_RUN_DESCRIPTION,
 )
-def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
+def dry_run(
+    req: BridgeRequest,
+    request: Request,
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
+) -> DryRunResponse:
     errors = _guard(req)
     plans: list[DocumentPlan] = []
     if errors and any("not allowed" in item for item in errors):
@@ -869,6 +946,7 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
             errors=errors,
         )
 
+    _require_session_owner(_session_id(req), x_portal_user_id)
     req = _owned_bridge_request(req, request_id=_request_id(request))
     session_id = _session_id(req)
     with httpx.Client() as client:
@@ -1020,7 +1098,12 @@ def dry_run(req: BridgeRequest, request: Request) -> DryRunResponse:
     summary="임시 문서를 공용 VDB 139에 정식 등록",
     description=COMMIT_DESCRIPTION,
 )
-def commit(req: BridgeRequest, request: Request) -> CommitResponse:
+def commit(
+    req: BridgeRequest,
+    request: Request,
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
+) -> CommitResponse:
+    _require_session_owner(_session_id(req), x_portal_user_id)
     return _commit_temp_documents(req, request_id=_request_id(request))
 
 
@@ -1888,8 +1971,9 @@ def upload(
             "accepted는 파일을 안전하게 저장한 뒤 즉시 upload_id를 반환하고 백그라운드에서 완료합니다."
         ),
     ),
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
 ) -> UploadResponse:
-    session_value = chat_id or app_session_id or ""
+    session_value = _upload_session_id(app_session_id, chat_id)
     app_session_value = app_session_id or session_value
     req = _session_request(
         workflow_id=workflow_id,
@@ -1899,8 +1983,6 @@ def upload(
         vdb_id=vdb_id,
     )
     errors = _session_guard(req)
-    if not session_value:
-        errors.append("app_session_id or chat_id is required")
     if not settings.COMMIT_ENABLED:
         errors.append("commit stage is disabled")
     if errors:
@@ -1911,6 +1993,8 @@ def upload(
             session_id=session_value,
             errors=errors,
         )
+
+    _claim_upload_session(session_value, workflow_id, x_portal_user_id)
 
     with ledger.ledger_connection() as conn:
         config = upload_adapter.load_file_upload_config(conn, workflow_id=workflow_id)
@@ -2191,10 +2275,12 @@ def upload_status(
     app_session_id: str | None = Query(None),
     chat_id: str | None = Query(None),
     upload_id: str = Query(...),
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
 ) -> dict[str, object]:
     session_value = chat_id or app_session_id or ""
     if not session_value:
         raise HTTPException(status_code=400, detail="app_session_id or chat_id is required")
+    _require_session_owner(session_value, x_portal_user_id)
     try:
         status = _UPLOAD_STATUS.resolve(
             session_id=session_value,
@@ -2267,6 +2353,7 @@ def documents(
         description="조회 대상 VDB ID입니다. 기본값은 139이며 다른 값은 거부됩니다.",
         examples=[TARGET_VDB_EXAMPLE],
     ),
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
 ) -> DocumentsResponse:
     req = _session_request(
         workflow_id=workflow_id,
@@ -2286,6 +2373,7 @@ def documents(
             documents=[],
             errors=errors,
         )
+    _require_session_owner(session_id, x_portal_user_id)
     with ledger.ledger_connection() as conn:
         rows = ledger.list_session_documents(
             conn,
@@ -2313,7 +2401,10 @@ def documents(
     summary="세션 등록 문서 1건 삭제(DELETE)",
     description=DELETE_DELETE_DESCRIPTION,
 )
-def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
+def delete_document(
+    req: DeleteDocumentRequest,
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
+) -> DeleteDocumentResponse:
     errors = _session_guard(req)
     session_id = _session_id(req)
     if req.document_id is None and req.temp_document_id is None:
@@ -2325,6 +2416,7 @@ def delete_document(req: DeleteDocumentRequest) -> DeleteDocumentResponse:
             status="rejected",
             errors=errors,
         )
+    _require_session_owner(session_id, x_portal_user_id)
     response = delete_ops.delete_session_document(
         req,
         session_id=session_id,
@@ -2368,6 +2460,7 @@ def quota_check(
         description="쿼터 확인 대상 VDB ID입니다. 기본값은 139이며 다른 값은 거부됩니다.",
         examples=[TARGET_VDB_EXAMPLE],
     ),
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
 ) -> QuotaCheckResponse:
     req = _session_request(
         workflow_id=workflow_id,
@@ -2380,6 +2473,7 @@ def quota_check(
     session_id = _session_id(req)
     rows: list[dict[str, Any]] = []
     if not errors:
+        _require_session_owner(session_id, x_portal_user_id)
         with ledger.ledger_connection() as conn:
             rows = ledger.list_session_documents(
                 conn,
@@ -2715,11 +2809,15 @@ def _sql_sources_from_rows(rows: list[dict[str, Any]]) -> list[FileSqlSource]:
     return sources
 
 
-def _require_owned_sql_source(req: FileSqlSchemaRequest) -> FileSqlSource:
+def _require_owned_sql_source(
+    req: FileSqlSchemaRequest,
+    x_portal_user_id: str,
+) -> FileSqlSource:
     errors = _session_guard(req)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
     session_id = _session_id(req)
+    _require_session_owner(session_id, x_portal_user_id)
     with ledger.ledger_connection() as conn:
         sources = _sql_sources_from_rows(
             ledger.list_session_documents(
@@ -2738,8 +2836,11 @@ def _require_owned_sql_source(req: FileSqlSchemaRequest) -> FileSqlSource:
 
 
 @app.post("/file-sql/schema", response_model=FileSqlSchemaResponse)
-def file_sql_schema(req: FileSqlSchemaRequest) -> FileSqlSchemaResponse:
-    _require_owned_sql_source(req)
+def file_sql_schema(
+    req: FileSqlSchemaRequest,
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
+) -> FileSqlSchemaResponse:
+    _require_owned_sql_source(req, x_portal_user_id)
     try:
         schema = describe_schema_for_llm(_session_id(req), req.logical_name)
     except (FileSqlNotFoundError, FileSqlRejectedError) as exc:
@@ -2759,8 +2860,11 @@ def file_sql_schema(req: FileSqlSchemaRequest) -> FileSqlSchemaResponse:
 
 
 @app.post("/file-sql/query", response_model=FileSqlQueryResponse)
-def file_sql_query(req: FileSqlQueryRequest) -> FileSqlQueryResponse:
-    _require_owned_sql_source(req)
+def file_sql_query(
+    req: FileSqlQueryRequest,
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
+) -> FileSqlQueryResponse:
+    _require_owned_sql_source(req, x_portal_user_id)
     try:
         result = run_scoped_query(_session_id(req), req.logical_name, req.sql)
     except (FileSqlNotFoundError, FileSqlRejectedError) as exc:
@@ -2779,7 +2883,10 @@ def file_sql_query(req: FileSqlQueryRequest) -> FileSqlQueryResponse:
     summary="세션 등록 문서 벡터 검색",
     description=SEARCH_DESCRIPTION,
 )
-def search(req: SearchRequest) -> SearchResponse:
+def search(
+    req: SearchRequest,
+    x_portal_user_id: str = Header(..., alias="X-Portal-User-Id"),
+) -> SearchResponse:
     errors = _session_guard(req)
     session_id = _session_id(req)
     if errors:
@@ -2795,6 +2902,7 @@ def search(req: SearchRequest) -> SearchResponse:
             file_sources=[],
             errors=errors,
         )
+    _require_session_owner(session_id, x_portal_user_id)
     previews = _UPLOAD_STATUS.queryable_previews(
         session_id=session_id,
         workflow_id=req.workflow_id,

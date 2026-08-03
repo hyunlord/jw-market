@@ -154,6 +154,31 @@ def list_session_documents(
     return documents
 
 
+def legacy_session_actor_uid(
+    conn: pymysql.connections.Connection,
+    session_id: str,
+) -> str | None:
+    """Return the owner recorded by the existing GenOS chat session ledger."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT reg_user_id
+            FROM chat_session_tb
+            WHERE uid=%s
+              AND is_active=1
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        )
+        row = cur.fetchone()
+    if not row or row.get("reg_user_id") is None:
+        return None
+    user_id = int(row["reg_user_id"])
+    return f"genos-user:{user_id}" if user_id > 0 else None
+
+
 def insert_document(
     conn: pymysql.connections.Connection,
     *,
