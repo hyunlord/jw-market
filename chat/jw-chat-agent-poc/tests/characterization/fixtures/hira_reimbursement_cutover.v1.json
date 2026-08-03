@@ -1,0 +1,61 @@
+{
+  "schema": "hira_reimbursement_cutover.v1",
+  "target_count": 4,
+  "change_reason": "Consume the canonical HIRA reimbursement route before the generic market agent loop. The legacy agent already delegated to the same authoritative routing-v4 executor, so answer bytes are allowed to remain equal while route ownership changes.",
+  "cases": [
+    {
+      "question": "리바로 급여기준 알려줘",
+      "before": {
+        "route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"},
+        "answer_snapshots": [
+          {"case_id": "r3_live_gate:N8-RIVARO", "sha256": "fd3b08f06a4969c06056e59c2863a393b625c9ab3bee2d714c1f0a0844e7f941"}
+        ]
+      },
+      "after": {
+        "route": {"domain": "hira", "handler": "HIRA_REIMBURSEMENT_CRITERIA", "mode": "deterministic"},
+        "answer_contract": "same authoritative HIRA execution"
+      }
+    },
+    {
+      "question": "아일리아 급여기준 알려줘",
+      "before": {
+        "route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"},
+        "answer_snapshots": [
+          {"case_id": "dead_end_inventory_r8:FB03", "sha256": "e03883ae08135dac013ee1cf580de814523adbd85ddc243a03bbbbda001a3417"},
+          {"case_id": "r3_live_gate:HIRA-FB03", "sha256": "e03883ae08135dac013ee1cf580de814523adbd85ddc243a03bbbbda001a3417"}
+        ]
+      },
+      "after": {
+        "route": {"domain": "hira", "handler": "HIRA_REIMBURSEMENT_CRITERIA", "mode": "deterministic"},
+        "answer_contract": "same authoritative HIRA execution"
+      }
+    },
+    {
+      "question": "악템라 급여기준 알려줘",
+      "before": {
+        "route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"},
+        "answer_snapshots": [
+          {"case_id": "dead_end_inventory_r8:EX09", "sha256": "c01b5771c16bfdefaed2aded51cefdde37eb64c7de8c09093ecfc85cb82f3ab1"},
+          {"case_id": "representative:EX09", "sha256": "d35b86c1acbc3be4a33e476827dd82e8b7af760ea5d1b192cd4de5de80202cef"}
+        ]
+      },
+      "after": {
+        "route": {"domain": "hira", "handler": "HIRA_REIMBURSEMENT_CRITERIA", "mode": "deterministic"},
+        "answer_contract": "same authoritative HIRA execution"
+      }
+    },
+    {
+      "question": "헴리브라 급여기준 알려줘",
+      "before": {
+        "route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"},
+        "answer_snapshots": [
+          {"case_id": "dead_end_inventory_r8:EX10", "sha256": "d177f1162602c0a21b8b3d8bbadcac7962e6fdeb6d78f42b0140bbc9422e38bd"}
+        ]
+      },
+      "after": {
+        "route": {"domain": "hira", "handler": "HIRA_REIMBURSEMENT_CRITERIA", "mode": "deterministic"},
+        "answer_contract": "same authoritative HIRA execution"
+      }
+    }
+  ]
+}

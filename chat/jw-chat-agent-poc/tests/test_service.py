@@ -952,6 +952,7 @@ def test_enforce_external_question_bypasses_direct_legacy_loop(monkeypatch) -> N
         raise AssertionError("ENFORCE external requests must use the canonical router")
 
     monkeypatch.setenv("CHAT_TOOL_ROUTING_MODE", "ENFORCE")
+    monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT", "0")
     monkeypatch.setattr(service_app, "should_use_agent_loop", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(service_app, "tool_use_requirements", lambda _question: ())
     monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop_bomb)
