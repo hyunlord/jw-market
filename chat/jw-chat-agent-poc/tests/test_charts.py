@@ -1,11 +1,31 @@
 from __future__ import annotations
 
 from jw_chat_agent_poc.orchestrator.agent import ChatAgent
-from jw_chat_agent_poc.service.charts import build_charts, filter_charts_for_binding
+from jw_chat_agent_poc.service.charts import (
+    build_charts as _build_charts,
+    filter_charts_for_binding,
+    issue_render_authorization,
+)
 from jw_chat_agent_poc.tools.metrics import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import StaticCausePayloadReader, StaticMetricsCacheReader
 
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS, CAUSE_READER, cause_payload_with_top_brand_trends
+
+
+def build_charts(result, *, question="", answer="", cause_reader=None):
+    authorization = issue_render_authorization(
+        result,
+        question=question,
+        answer=answer,
+        enforce_binding=False,
+    )
+    return _build_charts(
+        result,
+        authorization=authorization,
+        question=question,
+        answer=answer,
+        cause_reader=cause_reader,
+    )
 
 
 def test_cache_snapshot_without_chart_intent_does_not_emit_charts() -> None:

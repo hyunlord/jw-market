@@ -3528,7 +3528,7 @@ def test_chart_generation_runs_after_evidence_binding_by_default(monkeypatch) ->
     monkeypatch.setattr(
         service_app,
         "build_charts",
-        lambda _result, *, question, answer: observed_answers.append(answer) or [],
+        lambda _result, *, authorization, question, answer: observed_answers.append(answer) or [],
     )
 
     final = service_app._compute_final_answer("리바로 매출 추이", {"tool_calls": [], "sources": []})
@@ -3544,13 +3544,41 @@ def test_chart_generation_flag_off_restores_legacy_order(monkeypatch) -> None:
     monkeypatch.setattr(
         service_app,
         "build_charts",
-        lambda _result, *, question, answer: observed_answers.append(answer) or [],
+        lambda _result, *, authorization, question, answer: observed_answers.append(answer) or [],
     )
 
     final = service_app._compute_final_answer("리바로 매출 추이", {"tool_calls": [], "sources": []})
 
     assert observed_answers and "|BOUND" not in observed_answers[0]
     assert final.text.endswith("|BOUND")
+
+
+def test_render_authorization_flag_off_injects_permissive_authorization(monkeypatch) -> None:
+    observed_authorizations = []
+    monkeypatch.setenv("JW_CHAT_CHART_AFTER_EVIDENCE_BINDING", "1")
+    monkeypatch.setenv("JW_CHAT_RENDER_AUTHORIZATION_ENFORCED", "0")
+    monkeypatch.setattr(service_app, "_deterministic_simple_market_answer", lambda *_args: "기준 답변")
+
+    def block_claim(_question, answer, result):
+        result["_qa_claim_gate"] = {
+            "blocked_claim_count": 1,
+            "disposition": "blocked",
+        }
+        return answer
+
+    monkeypatch.setattr(service_app, "_apply_evidence_binding_gate", block_claim)
+    monkeypatch.setattr(
+        service_app,
+        "build_charts",
+        lambda _result, *, authorization, question, answer: (
+            observed_authorizations.append(authorization) or []
+        ),
+    )
+
+    service_app._compute_final_answer("리바로 매출 추이", {"tool_calls": [], "sources": []})
+
+    assert len(observed_authorizations) == 1
+    assert observed_authorizations[0].passed is True
 
 
 def test_chart_binding_exception_keeps_answer_and_omits_chart(monkeypatch) -> None:

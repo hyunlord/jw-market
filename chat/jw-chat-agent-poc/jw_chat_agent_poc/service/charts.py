@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from jw_chat_agent_poc.contracts import RenderAuthorization
+from jw_chat_agent_poc.contracts.shadow import evidence_bundle_from_legacy_facts
 from jw_chat_agent_poc.service.bq_charts import build_bq_chart_specs
 from jw_chat_agent_poc.service.evidence_binding import evidence_facts_from_result
 from jw_chat_agent_poc.service.chart_utils import (
@@ -22,6 +26,56 @@ from jw_chat_agent_poc.tools.metrics.cache_live import CausePayloadReader
 
 
 def build_charts(
+    result: Mapping[str, Any],
+    *,
+    authorization: RenderAuthorization,
+    question: str = "",
+    answer: str = "",
+    cause_reader: CausePayloadReader | None = None,
+) -> list[dict[str, Any]]:
+    """Materialize only chart specs authorized for the current evidence bundle."""
+
+    if not authorization.passed:
+        return []
+    if authorization.evidence_bundle_hash != _evidence_bundle_hash(result):
+        return []
+
+    authorized_ids = set(authorization.authorized_chart_ids)
+    return [
+        chart
+        for chart in _compile_charts(
+            result,
+            question=question,
+            answer=answer,
+            cause_reader=cause_reader,
+        )
+        if _chart_id(chart) in authorized_ids
+    ]
+
+
+def issue_render_authorization(
+    result: Mapping[str, Any],
+    *,
+    question: str,
+    answer: str,
+    enforce_binding: bool,
+) -> RenderAuthorization:
+    """Authorize exact legacy chart specs without exposing them to the response.
+
+    The builders still emit dictionaries directly. This private preflight derives
+    stable IDs until the separately scoped ChartIntent migration replaces it.
+    """
+
+    charts = _compile_charts(result, question=question, answer=answer)
+    passed = not enforce_binding or _binding_allows_render(result)
+    return RenderAuthorization(
+        passed=passed,
+        authorized_chart_ids=tuple(_chart_id(chart) for chart in charts) if passed else (),
+        evidence_bundle_hash=_evidence_bundle_hash(result),
+    )
+
+
+def _compile_charts(
     result: Mapping[str, Any],
     *,
     question: str = "",
@@ -46,6 +100,32 @@ def build_charts(
     charts.extend(_metric_call_charts(calls, target_brand, intent))
     charts.extend(_hira_charts(calls, intent))
     return _valid_charts(dedupe_charts(charts))
+
+
+def _chart_id(chart: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        chart,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _evidence_bundle_hash(result: Mapping[str, Any]) -> str:
+    facts = evidence_facts_from_result(result)
+    return evidence_bundle_from_legacy_facts(facts).bundle_hash
+
+
+def _binding_allows_render(result: Mapping[str, Any]) -> bool:
+    gate = result.get("_qa_claim_gate")
+    if not isinstance(gate, Mapping):
+        return True
+    try:
+        blocked_claim_count = int(gate.get("blocked_claim_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return blocked_claim_count == 0 and gate.get("disposition") != "unavailable"
 
 
 def filter_charts_for_binding(

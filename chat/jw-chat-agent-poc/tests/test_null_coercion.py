@@ -2,22 +2,38 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from jw_chat_agent_poc.service.chart_utils import share_chart
-from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
+from jw_chat_agent_poc.service.chart_utils import share_chart
+from jw_chat_agent_poc.service.charts import build_charts as _build_charts, issue_render_authorization
+from jw_chat_agent_poc.tools.metrics.cache_fixture import MetricsTool
 from jw_chat_agent_poc.tools.metrics.cache_live import (
     CsdActivityTarget,
     StaticCsdActivityReader,
     StaticCsdActivityTargetReader,
+    StaticMetricsCacheReader,
     _best_csd_activity_candidate,
 )
-from jw_chat_agent_poc.tools.metrics.cache_fixture import MetricsTool
 from jw_chat_agent_poc.tools.query_layer.compute import brand_average_share_data, brand_yoy_data, top_trend
 from jw_chat_agent_poc.tools.query_layer.render import level_segments, metric_summary
 from jw_chat_agent_poc.tools.query_layer.store import MartRecord, MartSnapshot
 
-from jw_chat_agent_poc.tools.metrics.cache_live import StaticMetricsCacheReader
 from test_metrics_cache import BRAND_CARDS, CACHE_BRANDS
+
+
+def build_charts(result, *, question="", answer="", cause_reader=None):
+    authorization = issue_render_authorization(
+        result,
+        question=question,
+        answer=answer,
+        enforce_binding=False,
+    )
+    return _build_charts(
+        result,
+        authorization=authorization,
+        question=question,
+        answer=answer,
+        cause_reader=cause_reader,
+    )
 
 
 def _snapshot(*, failed_middle: bool = True) -> MartSnapshot:

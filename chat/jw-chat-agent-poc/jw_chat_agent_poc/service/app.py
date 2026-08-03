@@ -135,7 +135,11 @@ from jw_chat_agent_poc.service.answer_pipeline import (
     run_selected_answer_pipeline,
 )
 from jw_chat_agent_poc.service.markdown_cleanup import scrub_internal_terminology
-from jw_chat_agent_poc.service.charts import build_charts, filter_charts_for_binding
+from jw_chat_agent_poc.service.charts import (
+    build_charts,
+    filter_charts_for_binding,
+    issue_render_authorization,
+)
 from jw_chat_agent_poc.service.concurrency import BUSY_MESSAGE, ChatBusyError, ChatConcurrencyLimiter
 from jw_chat_agent_poc.service.process_observability import process_observability
 from jw_chat_agent_poc.service.conversation import (
@@ -333,6 +337,7 @@ class FinalAnswer:
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
 DEFAULT_SESSION_STORE_MAX = 500
 CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
+RENDER_AUTHORIZATION_ENV = "JW_CHAT_RENDER_AUTHORIZATION_ENFORCED"
 HIRA_REIMBURSEMENT_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT"
 HIRA_DISEASE_STATS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS"
 MFDS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_MFDS"
@@ -524,6 +529,15 @@ def _answer_clinical_trials_cutover(
 
 def _chart_after_evidence_binding_enabled() -> bool:
     return os.environ.get(CHART_AFTER_EVIDENCE_BINDING_ENV, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _render_authorization_enforced() -> bool:
+    return os.environ.get(RENDER_AUTHORIZATION_ENV, "1").strip().lower() not in {
         "0",
         "false",
         "no",
@@ -3483,7 +3497,18 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if not chart_after_binding:
         try:
             with stage(timing, "chart_generation", "fact-backed chart spec"):
-                charts = build_charts(result, question=active_question, answer=safe_answer)
+                authorization = issue_render_authorization(
+                    result,
+                    question=active_question,
+                    answer=safe_answer,
+                    enforce_binding=False,
+                )
+                charts = build_charts(
+                    result,
+                    authorization=authorization,
+                    question=active_question,
+                    answer=safe_answer,
+                )
         except Exception:
             charts = []
         timing_payload = finish(timing)
@@ -3541,8 +3566,15 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if chart_after_binding:
         try:
             with stage(timing, "chart_generation", "bound fact-backed chart spec"):
+                authorization = issue_render_authorization(
+                    result,
+                    question=active_question,
+                    answer=safe_answer,
+                    enforce_binding=_render_authorization_enforced(),
+                )
                 candidate_charts = build_charts(
                     result,
+                    authorization=authorization,
                     question=active_question,
                     answer=safe_answer,
                 )
