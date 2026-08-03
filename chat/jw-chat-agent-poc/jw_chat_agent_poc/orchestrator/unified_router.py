@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import assert_never
 
+from jw_chat_agent_poc.agent_loop.bq_slots import contract_id_for_slots, extract_bq_slots
 from jw_chat_agent_poc.contracts.query import ResolvedQuery
 from jw_chat_agent_poc.contracts.routing import (
     UNIFIED_ROUTER_SHADOW_ENV,
@@ -143,6 +144,37 @@ def route(route_input: UnifiedRouteInput) -> CanonicalRouteDecision:
     }
 
     classification = classify_question_without_observation(route_input.question)
+    requested_capabilities = _requested_capabilities(route_input.question, classification)
+    if len(requested_capabilities) > 1 and route_input.market_shortcut is not None:
+        market_signals = route_input.market_shortcut
+        market_decision = decide_market_shortcut(
+            question=route_input.question,
+            has_documents=market_signals.has_documents,
+            use_direct_agent_loop=market_signals.use_direct_agent_loop,
+            market_scope_resolver=market_signals.market_scope_resolver,
+        )
+        mode = _market_execution_mode(market_decision.kind)
+        return CanonicalRouteDecision(
+            **{
+                **context_fields,
+                "context_scope": context_scope or ContextScope.MARKET.value,
+            },
+            domain="market",
+            handler=market_decision.handler,
+            execution_mode=mode,
+            capability_domain=classification.source_domain,
+            capability=classification.requested_capability,
+            capability_mode=RouteMode.DETERMINISTIC,
+            requested_capabilities=requested_capabilities,
+            tool_plan_owner="agent_loop_planner",
+            market_route_kind=market_decision.kind.value,
+            decided_layers=("routing_v4_rules", "market_shortcut"),
+            reason_codes=(
+                *_classification_reason_codes(classification),
+                "facets:hira_disease_stats+market_brand_sales",
+                market_decision.reason,
+            ),
+        )
     if classification.source_domain != "unresolved":
         mode = (
             RouteMode.AGENTIC
@@ -160,13 +192,21 @@ def route(route_input: UnifiedRouteInput) -> CanonicalRouteDecision:
             capability_domain=classification.source_domain,
             capability=classification.requested_capability,
             capability_mode=mode,
+            requested_capabilities=requested_capabilities,
+            unresolved_capabilities=(
+                (classification.requested_capability,)
+                if classification.unresolved_arguments and not requested_capabilities
+                else ()
+            ),
             tool_plan_owner=planner_fields["tool_plan_owner"] or "routing_v4_rules",
             tool_plan_handler=planner_fields["tool_plan_handler"],
             tool_plan_mode=planner_fields["tool_plan_mode"],
             decided_layers=(*layers, *(("agent_loop_planner",) if planner else ())),
             reason_codes=_classification_reason_codes(classification),
             clarification_message=(
-                "capability arguments unresolved" if classification.unresolved_arguments else None
+                "capability arguments unresolved"
+                if classification.unresolved_arguments and not requested_capabilities
+                else None
             ),
         )
 
@@ -322,6 +362,22 @@ def _classification_reason_codes(
             f"decision_source:{classification.domain_decision_source.value}",
         )
         if code
+    )
+
+
+def _requested_capabilities(
+    question: str,
+    classification: QuestionClassification,
+) -> tuple[str, ...]:
+    slots = extract_bq_slots(question, brand="", period="")
+    if (
+        contract_id_for_slots(slots) != "A3"
+        or classification.requested_capability != "HIRA_DISEASE_PATIENT_STATS"
+    ):
+        return ()
+    return (
+        classification.requested_capability,
+        "MARKET_BRAND_SALES",
     )
 
 
