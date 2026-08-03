@@ -302,7 +302,33 @@ def _qa_trace(
     routing_v4 = project_routing_v4_qa_trace(diagnostic_items)
     if routing_v4 is not None:
         qa_trace["routing_v4"] = routing_v4
+    try:
+        canonical_cutover = _canonical_router_cutover_trace(diagnostic_items)
+    except Exception:  # noqa: BLE001 - request telemetry must never affect delivery
+        canonical_cutover = None
+    if canonical_cutover is not None:
+        qa_trace["canonical_router_cutover"] = canonical_cutover
     return qa_trace
+
+
+def _canonical_router_cutover_trace(
+    diagnostics: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw = diagnostics.get("canonical_router_cutover")
+    if not isinstance(raw, Mapping):
+        return None
+    domain = raw.get("domain")
+    capability = raw.get("handler")
+    mode = raw.get("mode")
+    if not all(isinstance(value, str) and value for value in (domain, capability, mode)):
+        return None
+    return {
+        "fired": True,
+        "domain": domain,
+        "capability": capability,
+        "mode": mode,
+        "deterministic": mode == "deterministic",
+    }
 
 
 def _security_decision(
