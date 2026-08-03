@@ -174,6 +174,71 @@ def test_service_adds_categories_to_chat_user_rows_without_rewriting_unknown() -
     ]
 
 
+def test_service_reports_chat_service_linkage_quality_without_rewriting_trend() -> None:
+    class ChatQualityRepository(FakeRepository):
+        def fetch(self, filters: UsageFilters) -> dict:
+            result = super().fetch(filters)
+            result["chat"]["trend"] = [
+                {
+                    "period": "2026-07-01",
+                    "service_id": 61,
+                    "turns": 4,
+                    "sessions": 2,
+                    "attributed_turns": 3,
+                    "total_tokens": 40,
+                },
+                {
+                    "period": "2026-07-01",
+                    "service_id": None,
+                    "turns": 6,
+                    "sessions": 3,
+                    "attributed_turns": 1,
+                    "total_tokens": 60,
+                },
+                {
+                    "period": "2026-07-02",
+                    "service_id": 94,
+                    "turns": 6,
+                    "sessions": 2,
+                    "attributed_turns": 6,
+                    "total_tokens": 80,
+                },
+            ]
+            return result
+
+    payload = UsageStatsService(
+        ChatQualityRepository(), cache=DashboardCache(ttl_seconds=60)
+    ).get(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert payload["data_quality"]["chat_service_linked_turns"] == 10
+    assert payload["data_quality"]["chat_service_linkage_missing_turns"] == 6
+    assert payload["chat"]["trend"][1]["service_id"] is None
+    assert payload["chat"]["trend"][1]["turns"] == 6
+
+
+def test_service_adds_chat_service_share_excluding_unknown_from_denominator() -> None:
+    class ChatShareRepository(FakeRepository):
+        def fetch(self, filters: UsageFilters) -> dict:
+            result = super().fetch(filters)
+            result["chat"]["trend"] = [
+                {"period": "2026-07-01", "service_id": 61, "turns": 2},
+                {"period": "2026-07-01", "service_id": 91, "turns": 3},
+                {"period": "2026-07-01", "service_id": None, "turns": 95},
+                {"period": "2026-07-02", "service_id": 999, "turns": 5},
+            ]
+            return result
+
+    payload = UsageStatsService(
+        ChatShareRepository(), cache=DashboardCache(ttl_seconds=60)
+    ).get(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert payload["chat"]["service_share"] == [
+        {"service_category": "market", "turns": 3, "share": 0.6},
+        {"service_category": "rnd", "turns": 2, "share": 0.4},
+    ]
+    assert [row["turns"] for row in payload["chat"]["trend"]] == [2, 3, 95, 5]
+
+
 def test_dashboard_sql_exposes_supported_multidimensional_statistics() -> None:
     from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL
 

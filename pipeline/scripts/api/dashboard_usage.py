@@ -578,6 +578,7 @@ class UsageStatsService:
         result = self._repository.fetch(filters)
         for row in result["chat"]["trend"]:
             row["service_category"] = self.service_category(row.get("service_id"))
+        result["chat"]["service_share"] = _chat_service_share(result["chat"]["trend"])
         for row in result["chat"]["by_user_service"]:
             row["service_category"] = self.service_category(row.get("service_id"))
         for row in result["auth"]["trend"] + result["auth"]["by_type"]:
@@ -647,6 +648,11 @@ def _data_quality(result: dict[str, Any]) -> dict[str, int]:
     api_attributed = sum(int(row.get("attributed_calls") or 0) for row in result["api"]["trend"])
     chat_total = sum(int(row.get("turns") or 0) for row in result["chat"]["trend"])
     chat_attributed = sum(int(row.get("attributed_turns") or 0) for row in result["chat"]["trend"])
+    chat_service_linked = sum(
+        int(row.get("turns") or 0)
+        for row in result["chat"]["trend"]
+        if row.get("service_id") is not None
+    )
     credit_total = sum(int(row.get("events") or 0) for row in result["credit"]["trend"])
     credit_attributed = sum(
         int(row.get("attributed_events") or 0) for row in result["credit"]["trend"]
@@ -656,6 +662,33 @@ def _data_quality(result: dict[str, Any]) -> dict[str, int]:
         "api_unknown_calls": max(api_total - api_attributed, 0),
         "chat_attributed_turns": chat_attributed,
         "chat_unknown_turns": max(chat_total - chat_attributed, 0),
+        "chat_service_linked_turns": chat_service_linked,
+        "chat_service_linkage_missing_turns": max(chat_total - chat_service_linked, 0),
         "credit_attributed_events": credit_attributed,
         "credit_unknown_events": max(credit_total - credit_attributed, 0),
     }
+
+
+def _chat_service_share(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    turns_by_category: dict[str, int] = {}
+    for row in rows:
+        service_category = UsageStatsService.service_category(row.get("service_id"))
+        if service_category == "unknown":
+            continue
+        turns_by_category[service_category] = turns_by_category.get(service_category, 0) + int(
+            row.get("turns") or 0
+        )
+    denominator = sum(turns_by_category.values())
+    if denominator == 0:
+        return []
+    return [
+        {
+            "service_category": service_category,
+            "turns": turns,
+            "share": turns / denominator,
+        }
+        for service_category, turns in sorted(
+            turns_by_category.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
