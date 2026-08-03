@@ -37,7 +37,7 @@ spec:
             - name: MONITORING_API_BASE_URL
               value: http://jw-rnd-monitoring-api-read-test2.llmops.svc.cluster.local:8080
             - name: RND_TRACE_BATCH_SIZE
-              value: "20"
+              value: "5"
             - name: RND_TRACE_REQUEST_INTERVAL_SECONDS
               value: "1"
             - name: RND_TRACE_SESSION_LIMIT
@@ -48,4 +48,4 @@ spec:
               memory: 128Mi
             limits:
               cpu: "1"
-              memory: 512Mi
+              memory: 1Gi

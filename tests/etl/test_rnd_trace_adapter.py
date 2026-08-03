@@ -310,7 +310,8 @@ def test_cronjob_is_test2_only_bounded_and_non_concurrent() -> None:
     assert "name: jw-rnd-trace-adapter-test2" in manifest
     assert 'schedule: "2-57/5 * * * *"' in manifest
     assert "concurrencyPolicy: Forbid" in manifest
-    assert 'value: "20"' in manifest
+    assert 'value: "5"' in manifest
+    assert "memory: 1Gi" in manifest
     assert 'value: "168"' in manifest
     assert "jw-rnd-monitoring-api-read-test2.llmops.svc.cluster.local" in manifest
     assert "question" not in manifest.lower()
@@ -328,6 +329,8 @@ def test_backfill_job_is_separate_and_has_explicit_window() -> None:
     assert "- --start" in manifest
     assert "- \"2026-07-13\"" in manifest
     assert "restartPolicy: Never" in manifest
+    assert 'value: "5"' in manifest
+    assert "memory: 1Gi" in manifest
     assert "jw-rnd-monitoring-api-read-test2.llmops.svc.cluster.local" in manifest
 
 
