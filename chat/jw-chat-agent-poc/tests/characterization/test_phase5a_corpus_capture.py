@@ -47,6 +47,7 @@ def test_capture_is_deterministic_across_two_local_runs(monkeypatch) -> None:
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT", "0")
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS", "0")
     monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_MFDS", "0")
+    monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_CLINICAL_TRIALS", "0")
     first = capture_corpus(CORPUS_V1, FIXTURES / "observed_snapshots.v1.json")
     second = capture_corpus(CORPUS_V1, FIXTURES / "observed_snapshots.v1.json")
 

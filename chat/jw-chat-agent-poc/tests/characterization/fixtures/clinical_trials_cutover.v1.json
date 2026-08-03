@@ -1,0 +1,14 @@
+{
+  "schema": "jw_chat.phase5c5.clinical_trials_cutover.v1",
+  "source": "routing_mismatch_adjudication.v1.json",
+  "reason": "Preserve legacy and canonical route ownership side by side without replacing characterization snapshots.",
+  "target_count": 6,
+  "cases": [
+    {"case_id":6,"question":"NCT05151731 선정제외기준 알려줘","capability":"CLINICAL_TRIAL_NCT_DETAIL_FIELDS","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"clinical_trials","handler":"CLINICAL_TRIAL_NCT_DETAIL_FIELDS","mode":"deterministic"}}},
+    {"case_id":7,"question":"NCT05151731 시험 디자인 알려줘","capability":"CLINICAL_TRIAL_NCT_DETAIL_FIELDS","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"clinical_trials","handler":"CLINICAL_TRIAL_NCT_DETAIL_FIELDS","mode":"deterministic"}}},
+    {"case_id":8,"question":"NCT05151731 임상시험 상태 알려줘","capability":"CLINICAL_TRIAL_NCT_DETAIL_FIELDS","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"clinical_trials","handler":"CLINICAL_TRIAL_NCT_DETAIL_FIELDS","mode":"deterministic"}}},
+    {"case_id":10,"question":"뇌경색 관련 임상시험이랑 허가 현황 알려줘","capability":"CLINICAL_TRIAL_SEARCH","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"clinical_trials","handler":"CLINICAL_TRIAL_SEARCH","mode":"agentic"}},"fb02":true},
+    {"case_id":11,"question":"뇌경색 관련 진행 중인 임상시험 알려줘","capability":"CLINICAL_TRIAL_SEARCH","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"clinical_trials","handler":"CLINICAL_TRIAL_SEARCH","mode":"agentic"}}},
+    {"case_id":16,"question":"리바로 임상시험 알려줘","capability":"CLINICAL_TRIAL_SEARCH","before":{"route":{"domain":"market","handler":"agent_loop","mode":"agentic"}},"after":{"route":{"domain":"clinical_trials","handler":"CLINICAL_TRIAL_SEARCH","mode":"agentic"}}}
+  ]
+}
