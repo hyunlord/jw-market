@@ -9,7 +9,7 @@ from scripts.phase5a_routing_input_capture import capture_corpus
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CORPUS_V1 = FIXTURES / "corpus.v1.json"
-ROUTING_INPUTS_V2 = FIXTURES / "routing_inputs.v2.json"
+ROUTING_INPUTS_LATEST = FIXTURES / "routing_inputs.v3.json"
 
 
 def _read_json(path: Path) -> dict:
@@ -17,7 +17,7 @@ def _read_json(path: Path) -> dict:
 
 
 def test_capture_preserves_v1_and_accounts_for_all_route_point_cells() -> None:
-    payload = _read_json(ROUTING_INPUTS_V2)
+    payload = _read_json(ROUTING_INPUTS_LATEST)
     corpus_sha256 = hashlib.sha256(CORPUS_V1.read_bytes()).hexdigest()
 
     assert payload["source_corpus"] == "corpus.v1.json"
@@ -29,7 +29,7 @@ def test_capture_preserves_v1_and_accounts_for_all_route_point_cells() -> None:
 
 
 def test_capture_distinguishes_unfired_from_missing_input() -> None:
-    payload = _read_json(ROUTING_INPUTS_V2)
+    payload = _read_json(ROUTING_INPUTS_LATEST)
     statuses = {
         point["capture_status"]
         for case in payload["cases"]
@@ -45,11 +45,11 @@ def test_capture_is_deterministic_across_two_local_runs() -> None:
     first = capture_corpus(CORPUS_V1, FIXTURES / "observed_snapshots.v1.json")
     second = capture_corpus(CORPUS_V1, FIXTURES / "observed_snapshots.v1.json")
 
-    assert first == second == _read_json(ROUTING_INPUTS_V2)
+    assert first == second == _read_json(ROUTING_INPUTS_LATEST)
 
 
 def test_capture_contains_no_credential_values_or_live_fallback() -> None:
-    payload = _read_json(ROUTING_INPUTS_V2)
+    payload = _read_json(ROUTING_INPUTS_LATEST)
     serialized = json.dumps(payload, ensure_ascii=False).casefold()
 
     assert payload["capture_environment"] == {
@@ -66,7 +66,7 @@ def test_capture_contains_no_credential_values_or_live_fallback() -> None:
 
 
 def test_routing_v4_is_captured_and_matches_for_all_128_questions() -> None:
-    payload = _read_json(ROUTING_INPUTS_V2)
+    payload = _read_json(ROUTING_INPUTS_LATEST)
     routing_v4_points = [
         case["route_points"]["routing_v4_rules"] for case in payload["cases"]
     ]

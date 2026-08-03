@@ -17,6 +17,9 @@ retained.
   points. It preserves `corpus.v1.json` unchanged and records `captured`,
   `unfired`, and `missing_input` separately. Missing historical conversation
   and planner inputs are never reconstructed with defaults.
+- `routing_inputs.v3.json`: current canonical-router capture after preserving
+  the mixed disease-statistics and brand-sales facets. Version 2 remains the
+  Phase 5-B adjudication record; the answer snapshots remain unchanged.
 
 The replay key is `(dependency, operation, request_sha256)`. A missing key raises
 `MissingCassetteError`; replay never falls through to a live dependency.

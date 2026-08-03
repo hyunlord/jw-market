@@ -1,0 +1,229 @@
+{
+  "schema": "jw_chat.phase5b.routing_mismatch_adjudication.v1",
+  "source": "routing_inputs.v2.json",
+  "method": "local fixture and cassette evidence plus current routing contracts; no live calls",
+  "summary": {
+    "LEGACY_CORRECT": 1,
+    "CANONICAL_CORRECT": 23,
+    "BOTH_DEFENSIBLE": 0,
+    "cutover_answer_change_count": 23
+  },
+  "cases": [
+    {
+      "case_id": 1,
+      "question": "D693 상병 환자수 최근 5년 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed agent loop calls HIRA disease-code and patient-stat tools",
+      "canonical_contract_evidence": "routing_v4_rules DISEASE_CODE -> HIRA_DISEASE_PATIENT_STATS; explicit code and period are resolved",
+      "answer_comparison": "Canonical selects the authoritative deterministic HIRA capability directly; legacy can reach it only through a broader planner."
+    },
+    {
+      "case_id": 2,
+      "question": "D693 연령대별 환자수 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed agent loop dispatches HIRA disease statistics",
+      "canonical_contract_evidence": "routing_v4_rules DISEASE_CODE -> HIRA_DISEASE_PATIENT_STATS with demographic field handling downstream",
+      "answer_comparison": "The canonical capability owns the requested disease-stat dimension and avoids generic planning."
+    },
+    {
+      "case_id": 3,
+      "question": "D693 환자수 2021년부터 2024년까지 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; fixture planning reaches HIRA stats with the requested period",
+      "canonical_contract_evidence": "explicit disease code plus closed period is deterministically owned by HIRA_DISEASE_PATIENT_STATS",
+      "answer_comparison": "Canonical expresses the exact source and capability; legacy is an unnecessarily broad delegation."
+    },
+    {
+      "case_id": 4,
+      "question": "D693 환자수 최근 3년 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed planner reaches HIRA stats",
+      "canonical_contract_evidence": "DISEASE_CODE and patient-count intent deterministically select HIRA_DISEASE_PATIENT_STATS",
+      "answer_comparison": "Both can eventually query HIRA, but canonical is the precise routing owner and expected cutover behavior."
+    },
+    {
+      "case_id": 5,
+      "question": "H360 상병 환자수 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; fixture dispatches disease-stat tools",
+      "canonical_contract_evidence": "normalized disease code is accepted by the HIRA_DISEASE_PATIENT_STATS contract",
+      "answer_comparison": "Canonical directly captures identifier-backed HIRA intent; legacy's market label is semantically inaccurate."
+    },
+    {
+      "case_id": 6,
+      "question": "NCT05151731 선정제외기준 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed planner invokes ClinicalTrials detail lookup",
+      "canonical_contract_evidence": "NCT_ID -> CLINICAL_TRIAL_NCT_DETAIL_FIELDS -> clinicaltrials_study_details",
+      "answer_comparison": "The explicit NCT identifier has a deterministic detail contract; the generic market delegation adds no value."
+    },
+    {
+      "case_id": 7,
+      "question": "NCT05151731 시험 디자인 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; fixture ultimately uses NCT detail evidence",
+      "canonical_contract_evidence": "CLINICAL_TRIAL_NCT_DETAIL_FIELDS explicitly exposes study design fields",
+      "answer_comparison": "Canonical is the exact capability contract for the requested NCT field."
+    },
+    {
+      "case_id": 8,
+      "question": "NCT05151731 임상시험 상태 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed planner invokes NCT detail lookup",
+      "canonical_contract_evidence": "NCT_ID deterministically selects CLINICAL_TRIAL_NCT_DETAIL_FIELDS including status",
+      "answer_comparison": "Canonical routes directly to the authoritative identifier lookup and is more precise."
+    },
+    {
+      "case_id": 9,
+      "question": "고지혈증 환자수",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; fixture resolves the known disease then queries HIRA stats",
+      "canonical_contract_evidence": "known DISEASE_NAME -> HIRA_DISEASE_PATIENT_STATS",
+      "answer_comparison": "The question is a HIRA patient-count request, not a market operation; canonical owns it."
+    },
+    {
+      "case_id": 10,
+      "question": "뇌경색 관련 임상시험이랑 허가 현황 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "tool_use_agent called clinicaltrials_v2_search and returned clinical evidence with an explicit permission limitation",
+      "canonical_contract_evidence": "CLINICAL_TRIAL_SEARCH is the executable facet; QuestionClassification preserves requested_facets=(clinical,permission) and unresolvable permission",
+      "answer_comparison": "Canonical capability does not silently drop permission: the approved FB02 PARTIAL_EVIDENCE path preserves and explains the unresolved facet."
+    },
+    {
+      "case_id": 11,
+      "question": "뇌경색 관련 진행 중인 임상시험 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed planner invokes clinical trial search",
+      "canonical_contract_evidence": "clinical intent -> CLINICAL_TRIAL_SEARCH",
+      "answer_comparison": "Canonical is the direct domain owner and retains the same downstream evidence path."
+    },
+    {
+      "case_id": 12,
+      "question": "당뇨망막병증 환자수 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "FB04 snapshot records hira_disease_code_absent and a bounded unavailable answer rather than market evidence",
+      "canonical_contract_evidence": "DISEASE_NAME -> HIRA_DISEASE_PATIENT_STATS with unresolved arguments, preserving the FB04 DISEASE_CODE_ABSENT producer",
+      "answer_comparison": "Canonical identifies the correct source and allows the typed missing-code path; legacy's market label is not the answer owner."
+    },
+    {
+      "case_id": 13,
+      "question": "당뇨망창병증 환자수 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "representative fixture records hira_disease_name_code error and bounded unavailable output",
+      "canonical_contract_evidence": "DISEASE_NAME -> HIRA_DISEASE_PATIENT_STATS with unresolved arguments and fail-closed name/code resolution",
+      "answer_comparison": "Canonical preserves the authoritative lookup and typed failure semantics without inventing a disease code."
+    },
+    {
+      "case_id": 14,
+      "question": "리바로 급여기준 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; planner can call hira_reimbursement_criteria",
+      "canonical_contract_evidence": "reimbursement intent -> HIRA_REIMBURSEMENT_CRITERIA with typed absence/timeout handling",
+      "answer_comparison": "Canonical is the exact official-source capability and avoids unrelated generic tools."
+    },
+    {
+      "case_id": 15,
+      "question": "리바로 식약처 허가정보 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; fixture can invoke MFDS permission search",
+      "canonical_contract_evidence": "permission intent -> MFDS_BASIC_PRODUCT_INFO -> mfds_permission_search",
+      "answer_comparison": "Canonical directly selects the official MFDS contract and is more accurate than a market delegation."
+    },
+    {
+      "case_id": 16,
+      "question": "리바로 임상시험 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; planner can ground the product then search trials",
+      "canonical_contract_evidence": "domain-first clinical intent -> CLINICAL_TRIAL_SEARCH",
+      "answer_comparison": "The canonical domain contract owns the request while preserving downstream product grounding."
+    },
+    {
+      "case_id": 17,
+      "question": "리바로 질병 환자수랑 최근 매출 한번에",
+      "route_point": "market_shortcut",
+      "verdict": "LEGACY_CORRECT",
+      "legacy_fixture_evidence": "current deterministic BQ A3 plan contains get_disease_stats plus UBIST/IQVIA sales calls",
+      "canonical_contract_evidence": "canonical route returns only HIRA_DISEASE_PATIENT_STATS plus capability-arguments-unresolved and carries no requested market facet",
+      "answer_comparison": "Canonical cardinality is incomplete: cutover would lose the explicitly requested sales facet or clarify the whole request unnecessarily."
+    },
+    {
+      "case_id": 18,
+      "question": "리바로 효능효과 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; planner can invoke MFDS permission search",
+      "canonical_contract_evidence": "detail-field intent -> MFDS_PERMISSION_DETAIL_FIELDS",
+      "answer_comparison": "Canonical maps the requested field to the authoritative MFDS detail capability."
+    },
+    {
+      "case_id": 19,
+      "question": "아일리아 급여기준 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; planner can invoke HIRA reimbursement lookup",
+      "canonical_contract_evidence": "HIRA_REIMBURSEMENT_CRITERIA is the exact official-source contract",
+      "answer_comparison": "Canonical is more precise and retains typed upstream/no-evidence behavior."
+    },
+    {
+      "case_id": 20,
+      "question": "아일리아 허가정보 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; fixture can reach MFDS permission search",
+      "canonical_contract_evidence": "permission intent -> MFDS_BASIC_PRODUCT_INFO",
+      "answer_comparison": "Canonical directly expresses the regulatory owner and capability."
+    },
+    {
+      "case_id": 21,
+      "question": "악템라 급여기준 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; planner can invoke HIRA reimbursement lookup",
+      "canonical_contract_evidence": "HIRA_REIMBURSEMENT_CRITERIA is the exact official-source contract",
+      "answer_comparison": "Canonical removes generic planning while retaining the same typed failure boundary."
+    },
+    {
+      "case_id": 22,
+      "question": "질병코드 H36.0 환자수 통계 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed path uses HIRA disease-stat tools",
+      "canonical_contract_evidence": "normalized explicit disease code -> HIRA_DISEASE_PATIENT_STATS",
+      "answer_comparison": "Identifier-backed HIRA routing is deterministic and more accurate than the market label."
+    },
+    {
+      "case_id": 23,
+      "question": "질병코드 H360 환자수 통계 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; observed path uses HIRA disease-stat tools",
+      "canonical_contract_evidence": "compact normalized disease code -> HIRA_DISEASE_PATIENT_STATS",
+      "answer_comparison": "Canonical owns the explicit HIRA identifier and preserves normalization behavior."
+    },
+    {
+      "case_id": 24,
+      "question": "헴리브라 급여기준 알려줘",
+      "route_point": "market_shortcut",
+      "verdict": "CANONICAL_CORRECT",
+      "legacy_fixture_evidence": "market/agent_loop/agentic; planner can invoke HIRA reimbursement lookup",
+      "canonical_contract_evidence": "HIRA_REIMBURSEMENT_CRITERIA is the exact official-source contract",
+      "answer_comparison": "Canonical selects the authoritative contract directly and retains typed failures."
+    }
+  ]
+}
