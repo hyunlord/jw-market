@@ -9,6 +9,8 @@ from typing import Any, Mapping, Sequence
 
 import requests
 
+from jw_chat_agent_poc.service.actor_context import code_serving_actor_headers
+
 from jw_chat_agent_poc.common.periods import month_keys
 from jw_chat_agent_poc.orchestrator.unavailable_response import file_absence_answer
 
@@ -877,6 +879,7 @@ def _fetch_schema(source: SqlFileSource, conversation_id: str) -> dict[str, Any]
             conversation_id,
             logical_name=source.logical_name,
         ),
+        headers=code_serving_actor_headers(),
         timeout=_file_service_timeout(),
     )
     response.raise_for_status()
@@ -1422,6 +1425,7 @@ def _run_query(
             logical_name=logical_name,
             sql=sql,
         ),
+        headers=code_serving_actor_headers(),
         timeout=_file_service_timeout(),
     )
     response.raise_for_status()

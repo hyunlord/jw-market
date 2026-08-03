@@ -18,7 +18,10 @@ from jw_chat_agent_poc.service.history_projection import (
     ProjectionJob,
     ProjectionProcessor,
     ProjectionRequestContext,
+    ProjectionEnqueueRecordingError,
     build_projection_documents,
+    projection_session_id,
+    projection_source_kind,
     sanitize_http_headers,
     trusted_portal_user_id,
     _positive_int_env,
@@ -66,6 +69,26 @@ def test_portal_user_header_is_trusted_only_after_public_api_key_auth() -> None:
 
     with pytest.raises(ValueError, match="positive integer"):
         trusted_portal_user_id("jw-proj-smoke-01", public_request=True, api_key_authenticated=True)
+
+
+def test_projection_session_id_preserves_short_ids_and_deterministically_maps_long_ids() -> None:
+    short = "54c0fd4c-0fd5-4ce8-bb47-bb68416cd670"
+    long = "portal-conversation-20260803-" + "x" * 80
+
+    assert projection_session_id(short) == short
+    assert projection_session_id(long) == projection_session_id(long)
+    assert len(projection_session_id(long)) == 36
+    assert projection_session_id(long) != projection_session_id(long + "-different")
+
+
+def test_projection_source_kind_uses_only_verified_request_signals() -> None:
+    assert projection_source_kind(public_request=True, portal_user_id=85) == "portal_user"
+    assert projection_source_kind(public_request=True, portal_user_id=None) == "anonymous_direct"
+    assert projection_source_kind(public_request=False, portal_user_id=None) == "internal_system"
+    assert projection_source_kind(public_request=None, portal_user_id=None) == "unknown"
+    assert projection_source_kind(
+        public_request=True, portal_user_id=None, synthetic_test=True
+    ) == "synthetic_test"
 
 
 def test_http_header_projection_uses_allowlist_and_drops_credentials() -> None:
@@ -125,6 +148,25 @@ def test_golden_projection_shape_restores_question_text_and_agent_flow() -> None
         "agentFlowExecutedData": rendered["agentFlowExecutedData"],
     }
 
+
+def test_long_source_conversation_id_is_preserved_separately_from_projection_key() -> None:
+    source_id = "portal-conversation-20260803-" + "x" * 80
+    turn = replace(
+        _turn(),
+        session_id=projection_session_id(source_id),
+        source_conversation_id=source_id,
+    )
+    docs = build_projection_documents(
+        replace(_job(), turn=turn),
+        ActiveChatService(service_id=91, revision_id=181, publication_id=838, endpoint="endpoint"),
+        pod="pod",
+        ip="10.0.0.8",
+    )
+
+    service_trace, request_doc, response_doc = docs
+    assert len(service_trace["session_id"]) == 36
+    assert request_doc["data"]["chatId"] == turn.session_id
+    assert response_doc["data"]["data"]["conversation_id"] == source_id
 
 def _assemble_like_get_chat_log(service_trace: dict, request_doc: dict, response_doc: dict) -> dict:
     assert service_trace["name"] == "middleware"
@@ -265,6 +307,7 @@ def test_public_api_key_auth_carries_trusted_portal_user_to_history(monkeypatch)
 
     assert response.status_code == 200
     assert history.calls[0]["projection_context"].portal_user_id == 85
+    assert history.calls[0]["projection_context"].source_kind == "portal_user"
     assert history.calls[0]["conversation_slots"] == ConversationSlots()
 
 
@@ -281,6 +324,33 @@ def test_internal_request_ignores_portal_user_header(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert history.calls[0]["projection_context"].portal_user_id is None
+    assert history.calls[0]["projection_context"].source_kind == "internal_system"
+
+
+def test_explicit_test_traffic_header_is_gated_by_environment(monkeypatch) -> None:
+    monkeypatch.setattr(GenosClient, "stream_answer", lambda *_args: iter(("answer",)))
+    monkeypatch.setenv("DIRECT_ROUTE_API_KEY", "expected-key")
+    history = _HistoryStore()
+    client = TestClient(
+        create_app(
+            agent_factory=lambda external_mode="live": _Agent(external_mode=external_mode),
+            history_store=history,
+        )
+    )
+    headers = {
+        "host": "jwai-dev.jwhealthcare.com",
+        "x-api-key": "expected-key",
+        "x-jw-test-traffic": "true",
+    }
+
+    response = client.get("/chat/stream", params={"question": "question"}, headers=headers)
+    assert response.status_code == 200
+    assert history.calls[-1]["projection_context"].source_kind == "anonymous_direct"
+
+    monkeypatch.setenv("HISTORY_PROJECTION_TEST_SOURCE_HEADER_ENABLED", "true")
+    response = client.get("/chat/stream", params={"question": "question"}, headers=headers)
+    assert response.status_code == 200
+    assert history.calls[-1]["projection_context"].source_kind == "synthetic_test"
 
 
 def test_history_failure_never_blocks_sse_answer(monkeypatch) -> None:
@@ -337,14 +407,21 @@ class _Connection:
 
 
 class _OutboxEnqueuer:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, record_fail: bool = False) -> None:
         self.fail = fail
+        self.record_fail = record_fail
         self.calls: list[dict] = []
+        self.failures: list[dict] = []
 
     def enqueue(self, **kwargs) -> None:
         if self.fail:
             raise RuntimeError("outbox unavailable")
         self.calls.append(kwargs)
+
+    def record_enqueue_failure(self, **kwargs) -> None:
+        if self.record_fail:
+            raise OSError("failure ledger unavailable")
+        self.failures.append(kwargs)
 
 
 def test_source_log_commits_before_projection_outbox_enqueue(monkeypatch) -> None:
@@ -402,9 +479,10 @@ def test_latest_turn_restores_slots_from_trace_json(monkeypatch) -> None:
 
 def test_projection_outbox_failure_does_not_rollback_source_log(monkeypatch) -> None:
     connection = _Connection()
+    outbox = _OutboxEnqueuer(fail=True)
     store = MySQLConversationHistoryStore(
         _DbConfig("db", 3306, "jw_mart", "user", "password"),
-        projection_outbox=_OutboxEnqueuer(fail=True),
+        projection_outbox=outbox,
     )
     monkeypatch.setattr(store, "_connect", lambda: connection)
 
@@ -422,6 +500,34 @@ def test_projection_outbox_failure_does_not_rollback_source_log(monkeypatch) -> 
 
     assert connection.commits == 1
     assert connection.cursor_instance.lastrowid == 41
+    assert outbox.failures[0]["source_log_id"] == 41
+    assert outbox.failures[0]["error_type"] == "RuntimeError"
+
+
+def test_projection_enqueue_failure_ledger_failure_preserves_both_errors(monkeypatch) -> None:
+    connection = _Connection()
+    store = MySQLConversationHistoryStore(
+        _DbConfig("db", 3306, "jw_mart", "user", "password"),
+        projection_outbox=_OutboxEnqueuer(fail=True, record_fail=True),
+    )
+    monkeypatch.setattr(store, "_connect", lambda: connection)
+
+    with pytest.raises(ProjectionEnqueueRecordingError) as captured:
+        store.record_turn(
+            session_id=None,
+            conversation_id="portal-conversation-20260803-" + "x" * 80,
+            question_text=_turn().question,
+            answer_text=_turn().answer,
+            trace=_turn().trace,
+            timing=_turn().timing,
+            sources=_turn().sources,
+            charts=_turn().charts,
+            projection_context=ProjectionRequestContext(85, {}, "portal_user"),
+        )
+
+    assert isinstance(captured.value.__cause__, OSError)
+    assert captured.value.enqueue_error_type == "RuntimeError"
+    assert connection.commits == 1
 
 
 def test_outbox_enqueue_has_idempotency_guard_and_its_own_commit(monkeypatch) -> None:
@@ -444,7 +550,39 @@ def test_outbox_enqueue_has_idempotency_guard_and_its_own_commit(monkeypatch) ->
 
     statement = connection.cursor_instance.statements[-1][0]
     assert "ON DUPLICATE KEY UPDATE id = id" in statement
+    params = connection.cursor_instance.statements[-1][1]
+    assert params is not None
+    assert params[1] == _turn().session_id
+    assert params[2] == _turn().session_id
     assert connection.commits == 1
+
+
+def test_outbox_enqueue_maps_long_id_and_persists_provenance(monkeypatch) -> None:
+    connection = _Connection()
+    outbox = MySQLProjectionOutbox(ProjectionDbConfig("db", 3306, "jw_mart", "user", "password"))
+    monkeypatch.setattr(outbox, "_connect", lambda: connection)
+    source_id = "portal-conversation-20260803-" + "x" * 80
+
+    outbox.enqueue(
+        source_log_id=42,
+        session_id=source_id,
+        turn_index=1,
+        question_text=_turn().question,
+        answer_text=_turn().answer,
+        charts=_turn().charts,
+        sources=_turn().sources,
+        trace=_turn().trace,
+        timing=_turn().timing,
+        projection_context=ProjectionRequestContext(None, {}, "anonymous_direct"),
+    )
+
+    statement, params = connection.cursor_instance.statements[-1]
+    assert "source_conversation_id" in statement
+    assert "source_kind" in statement
+    assert params is not None
+    assert len(params[1]) == 36
+    assert params[2] == source_id
+    assert params[3] == "anonymous_direct"
 
 
 def test_outbox_enqueue_makes_portal_session_visible_without_waiting_for_worker(monkeypatch) -> None:
