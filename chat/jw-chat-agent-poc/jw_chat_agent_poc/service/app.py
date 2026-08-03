@@ -332,6 +332,7 @@ DEFAULT_SESSION_STORE_MAX = 500
 CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
 HIRA_REIMBURSEMENT_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT"
 HIRA_DISEASE_STATS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS"
+MFDS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_MFDS"
 
 
 def decide_app_scope_route(**kwargs: Any) -> AppScopeDecision:
@@ -426,6 +427,49 @@ def _answer_hira_disease_stats_cutover(
         return agent.answer(question, None, **agent_kwargs)
     except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
         LOGGER.exception("hira_disease_stats_cutover_execution_failed")
+        return None
+
+
+def _mfds_cutover_decision(**kwargs: Any) -> Any | None:
+    if os.getenv(MFDS_CUTOVER_ENV, "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return None
+    try:
+        from jw_chat_agent_poc.service.unified_router_cutover import select_mfds_cutover
+
+        return select_mfds_cutover(**kwargs)
+    except Exception:  # noqa: BLE001 - selection failures retain the proven legacy route
+        LOGGER.exception("mfds_cutover_selection_failed")
+        return None
+
+
+def _answer_mfds_cutover(question: str, external_mode: str) -> dict | None:
+    try:
+        dependencies = build_chat_agent_dependencies(external_mode=external_mode)
+        from jw_chat_agent_poc.tool_use.integration import run_enforced_external_tool_agent
+
+        result = run_enforced_external_tool_agent(
+            question,
+            resolver=dependencies.resolver,
+            external=dependencies.external,
+        )
+        for call in result.get("tool_calls", []):
+            render_data = call.get("render_data")
+            if (
+                call.get("tool") == "mfds_permission_search"
+                and call.get("status") == "error"
+                and isinstance(render_data, dict)
+                and render_data.get("error_message")
+            ):
+                result["answer"] = str(render_data["error_message"])
+                break
+        return result
+    except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
+        LOGGER.exception("mfds_cutover_execution_failed")
         return None
 
 
@@ -2299,6 +2343,28 @@ def _answer_existing_without_pending(
                 "domain": disease_stats_cutover.domain,
                 "handler": disease_stats_cutover.handler,
                 "mode": disease_stats_cutover.execution_mode.value,
+            }
+            canonical_result["router_diagnostics"] = diagnostics
+            return canonical_result
+    mfds_cutover = _mfds_cutover_decision(
+        question=question,
+        has_documents=bool(documents),
+        use_direct_agent_loop=use_direct_agent_loop,
+        market_scope_resolver=market_scope_resolver,
+    )
+    if mfds_cutover is not None:
+        canonical_result = _answer_mfds_cutover(question, external_mode)
+        if canonical_result is not None:
+            observe_market_route(
+                mfds_cutover.handler,
+                reason="canonical_mfds_cutover",
+                domain=mfds_cutover.domain,
+            )
+            diagnostics = dict(canonical_result.get("router_diagnostics") or {})
+            diagnostics["canonical_router_cutover"] = {
+                "domain": mfds_cutover.domain,
+                "handler": mfds_cutover.handler,
+                "mode": mfds_cutover.execution_mode.value,
             }
             canonical_result["router_diagnostics"] = diagnostics
             return canonical_result

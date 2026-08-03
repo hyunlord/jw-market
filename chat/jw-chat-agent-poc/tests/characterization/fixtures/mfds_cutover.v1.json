@@ -1,0 +1,26 @@
+{
+  "schema": "jw_chat.phase5c4.mfds_cutover.v1",
+  "source": "routing_mismatch_adjudication.v1.json",
+  "reason": "Preserve legacy and canonical route ownership without replacing characterization snapshots.",
+  "target_count": 3,
+  "cases": [
+    {
+      "question": "리바로 식약처 허가정보 알려줘",
+      "capability": "MFDS_BASIC_PRODUCT_INFO",
+      "before": {"route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"}},
+      "after": {"route": {"domain": "regulatory", "handler": "MFDS_BASIC_PRODUCT_INFO", "mode": "deterministic"}}
+    },
+    {
+      "question": "리바로 효능효과 알려줘",
+      "capability": "MFDS_PERMISSION_DETAIL_FIELDS",
+      "before": {"route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"}},
+      "after": {"route": {"domain": "regulatory", "handler": "MFDS_PERMISSION_DETAIL_FIELDS", "mode": "deterministic"}}
+    },
+    {
+      "question": "아일리아 허가정보 알려줘",
+      "capability": "MFDS_BASIC_PRODUCT_INFO",
+      "before": {"route": {"domain": "market", "handler": "agent_loop", "mode": "agentic"}},
+      "after": {"route": {"domain": "regulatory", "handler": "MFDS_BASIC_PRODUCT_INFO", "mode": "deterministic"}}
+    }
+  ]
+}
