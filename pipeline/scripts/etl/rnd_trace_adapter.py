@@ -58,6 +58,25 @@ CREATE TABLE IF NOT EXISTS `jw_mart`.`rnd_trace_adapter_state` (
 ) ENGINE=InnoDB
 """
 
+RND_REJECTION_DDL: Final = """
+CREATE TABLE IF NOT EXISTS `jw_mart`.`rnd_trace_adapter_rejection` (
+    source_system VARCHAR(32) NOT NULL,
+    service_id BIGINT UNSIGNED NOT NULL,
+    source_turn_id VARCHAR(257) NOT NULL,
+    trace_id VARCHAR(128) NOT NULL,
+    span_id VARCHAR(128) NOT NULL,
+    session_uid VARCHAR(128) NOT NULL,
+    created_at DATETIME(6) NOT NULL,
+    reason_code VARCHAR(64) NOT NULL,
+    first_seen_at DATETIME(6) NOT NULL,
+    last_seen_at DATETIME(6) NOT NULL,
+    occurrence_count BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (source_system, service_id, source_turn_id),
+    KEY idx_rnd_rejection_created (created_at),
+    KEY idx_rnd_rejection_reason (reason_code, created_at)
+) ENGINE=InnoDB
+"""
+
 _TURN_UPSERT_SQL: Final = """
 INSERT INTO `jw_mart`.`rnd_trace_conversation_log` (
     source_system, service_id, source_turn_id, trace_id, span_id,
@@ -72,6 +91,19 @@ ON DUPLICATE KEY UPDATE
     answer_text=VALUES(answer_text), created_at=VALUES(created_at),
     source_last_user_request=VALUES(source_last_user_request),
     updated_at=UTC_TIMESTAMP(6)
+"""
+
+_REJECTION_UPSERT_SQL: Final = """
+INSERT INTO `jw_mart`.`rnd_trace_adapter_rejection` (
+    source_system, service_id, source_turn_id, trace_id, span_id,
+    session_uid, created_at, reason_code, first_seen_at, last_seen_at,
+    occurrence_count
+)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+        UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), 1)
+ON DUPLICATE KEY UPDATE
+    reason_code=VALUES(reason_code), last_seen_at=UTC_TIMESTAMP(6),
+    occurrence_count=occurrence_count + 1
 """
 
 _STATE_COMPLETE_SQL: Final = """
@@ -179,9 +211,38 @@ class RndTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectedTurn:
+    source_turn_id: str
+    trace_id: str
+    span_id: str
+    session_uid: str
+    created_at: datetime
+    reason_code: str
+
+    def as_sql_params(self) -> tuple[object, ...]:
+        return (
+            SOURCE_SYSTEM,
+            RND_SERVICE_ID,
+            self.source_turn_id,
+            self.trace_id,
+            self.span_id,
+            self.session_uid,
+            _naive_utc(self.created_at),
+            self.reason_code,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedMonitoringPayload:
+    turns: list[RndTurn]
+    rejections: list[RejectedTurn]
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterResult:
     sessions: int
     turns: int
+    rejected_turns: int
     cursor_last_user_request: datetime | None
 
 
@@ -209,15 +270,26 @@ def _required_text(value: object, field: str) -> str:
     return value
 
 
+def _answer_text(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        markdown = value.get("markdown")
+        if isinstance(markdown, str) and markdown:
+            return markdown
+    return None
+
+
 def parse_monitoring_payload(
     payload: dict[str, object],
     sessions: dict[str, SessionRef],
-) -> list[RndTurn]:
+) -> ParsedMonitoringPayload:
     if payload.get("code") != 0 or not isinstance(payload.get("data"), dict):
         raise MonitoringPayloadError("monitoring response envelope is invalid")
     data = payload["data"]
     assert isinstance(data, dict)
     turns: dict[str, RndTurn] = {}
+    rejections: dict[str, RejectedTurn] = {}
     for session_uid, session in sessions.items():
         raw_items = data.get(session_uid)
         if not isinstance(raw_items, list):
@@ -248,9 +320,25 @@ def parse_monitoring_payload(
             nested_response = response_data.get("data") or {}
             if not isinstance(nested_response, dict):
                 raise MonitoringPayloadError("monitoring response data is invalid")
-            question = _required_text(request_data.get("question"), "question")
+            created_at = _parse_timestamp(metadata.get("created_at"))
+            response_code = response_data.get("code")
+            if response_code not in (None, 0, 200) or not nested_response:
+                rejections[source_turn_id] = RejectedTurn(
+                    source_turn_id=source_turn_id,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    session_uid=session_uid,
+                    created_at=created_at,
+                    reason_code="upstream_response_failed",
+                )
+                continue
+            raw_question = request_data.get("question")
+            if not isinstance(raw_question, str):
+                raw_question = nested_response.get("question")
+            question = _required_text(raw_question, "question")
             answer = _required_text(
-                nested_response.get("text") or nested_response.get("message"),
+                _answer_text(nested_response.get("text"))
+                or _answer_text(nested_response.get("message")),
                 "answer",
             )
             turn = RndTurn(
@@ -262,14 +350,20 @@ def parse_monitoring_payload(
                 turn_index=turn_index,
                 question_text=question,
                 answer_text=answer,
-                created_at=_parse_timestamp(metadata.get("created_at")),
+                created_at=created_at,
                 source_last_user_request=session.last_user_request,
             )
             existing = turns.get(source_turn_id)
             if existing is not None and existing != turn:
                 raise MonitoringPayloadError("duplicate source turn has conflicting data")
             turns[source_turn_id] = turn
-    return sorted(turns.values(), key=lambda turn: (turn.created_at, turn.source_turn_id))
+    return ParsedMonitoringPayload(
+        turns=sorted(turns.values(), key=lambda turn: (turn.created_at, turn.source_turn_id)),
+        rejections=sorted(
+            rejections.values(),
+            key=lambda rejection: (rejection.created_at, rejection.source_turn_id),
+        ),
+    )
 
 
 class GenosMonitoringClient:
@@ -342,6 +436,7 @@ class RndTraceAdapter:
     def ensure_schema(self) -> None:
         with self._connection.cursor() as cursor:
             cursor.execute(RND_CONVERSATION_DDL)
+            cursor.execute(RND_REJECTION_DDL)
             cursor.execute(RND_ADAPTER_STATE_DDL)
         self._connection.commit()
 
@@ -350,10 +445,13 @@ class RndTraceAdapter:
             raise ValueError("mode must be backfill or incremental")
         try:
             turns: list[RndTurn] = []
+            rejections: list[RejectedTurn] = []
             for batch in _batches(sessions, self._batch_size):
                 by_uid = {session.uid: session for session in batch}
                 payload = self._monitoring_client.fetch_turns(list(by_uid))
-                turns.extend(parse_monitoring_payload(payload, by_uid))
+                parsed = parse_monitoring_payload(payload, by_uid)
+                turns.extend(parsed.turns)
+                rejections.extend(parsed.rejections)
             cursor_value = max(
                 (session.last_user_request for session in sessions),
                 default=None,
@@ -363,6 +461,11 @@ class RndTraceAdapter:
                     cursor.executemany(
                         _TURN_UPSERT_SQL,
                         [turn.as_sql_params() for turn in turns],
+                    )
+                if rejections:
+                    cursor.executemany(
+                        _REJECTION_UPSERT_SQL,
+                        [rejection.as_sql_params() for rejection in rejections],
                     )
                 cursor.execute(
                     _STATE_COMPLETE_SQL,
@@ -376,7 +479,7 @@ class RndTraceAdapter:
                     ),
                 )
             self._connection.commit()
-            return AdapterResult(len(sessions), len(turns), cursor_value)
+            return AdapterResult(len(sessions), len(turns), len(rejections), cursor_value)
         except Exception as primary_error:
             secondary_errors: list[Exception] = []
             try:
@@ -534,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
                 "mode": args.mode,
                 "sessions": result.sessions,
                 "turns": result.turns,
+                "rejected_turns": result.rejected_turns,
                 "elapsed_seconds": round((datetime.now(UTC) - started).total_seconds(), 3),
             },
             sort_keys=True,

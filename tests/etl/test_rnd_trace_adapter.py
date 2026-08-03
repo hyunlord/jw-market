@@ -10,6 +10,7 @@ import pytest
 from pipeline.scripts.etl.rnd_trace_adapter import (
     RND_ADAPTER_STATE_DDL,
     RND_CONVERSATION_DDL,
+    RND_REJECTION_DDL,
     GenosMonitoringClient,
     MonitoringPayloadError,
     MonitoringRequestError,
@@ -100,10 +101,11 @@ def _sessions() -> list[SessionRef]:
 
 
 def test_schema_is_separate_and_has_deterministic_composite_key() -> None:
-    ddl = f"{RND_CONVERSATION_DDL}\n{RND_ADAPTER_STATE_DDL}".lower()
+    ddl = f"{RND_CONVERSATION_DDL}\n{RND_REJECTION_DDL}\n{RND_ADAPTER_STATE_DDL}".lower()
 
     assert "jw_mart`.`rnd_trace_conversation_log" in ddl
     assert "jw_mart`.`rnd_trace_adapter_state" in ddl
+    assert "jw_mart`.`rnd_trace_adapter_rejection" in ddl
     assert "primary key (source_system, service_id, source_turn_id)" in ddl
     assert "jw_chat_agent_conversation_log" not in ddl
     assert "question_text" in ddl and "answer_text" in ddl
@@ -118,9 +120,11 @@ def test_source_turn_id_requires_trace_and_span() -> None:
 
 
 def test_parser_maps_turn_without_emitting_raw_text_in_summary() -> None:
-    turns = parse_monitoring_payload(_payload(), {"session-1": _sessions()[0]})
+    parsed = parse_monitoring_payload(_payload(), {"session-1": _sessions()[0]})
+    turns = parsed.turns
 
     assert len(turns) == 1
+    assert parsed.rejections == []
     assert turns[0].source_turn_id == "trace-1:span-1"
     assert turns[0].question_text == "sensitive question"
     assert turns[0].answer_text == "sensitive answer"
@@ -131,6 +135,43 @@ def test_parser_maps_turn_without_emitting_raw_text_in_summary() -> None:
     assert "answer_length=16" in summary
 
 
+def test_parser_supports_rnd_metadata_question_and_markdown_answer() -> None:
+    payload = _payload()
+    item = payload["data"]["session-1"][0]
+    item["request"]["data"]["question"] = {
+        "session_id": "session-1",
+        "trace_ids": ["trace-1"],
+    }
+    item["response"]["data"]["data"] = {
+        "question": "sensitive question",
+        "text": {"markdown": "sensitive answer", "references": []},
+    }
+
+    parsed = parse_monitoring_payload(payload, {"session-1": _sessions()[0]})
+
+    assert len(parsed.turns) == 1
+    assert parsed.turns[0].question_text == "sensitive question"
+    assert parsed.turns[0].answer_text == "sensitive answer"
+    assert parsed.rejections == []
+
+
+def test_parser_records_explicit_upstream_failure_without_raw_text() -> None:
+    payload = _payload()
+    item = payload["data"]["session-1"][0]
+    item["response"]["data"] = {
+        "code": 500,
+        "error_code": "sensitive-upstream-detail",
+        "errMsg": "sensitive response body",
+    }
+
+    parsed = parse_monitoring_payload(payload, {"session-1": _sessions()[0]})
+
+    assert parsed.turns == []
+    assert len(parsed.rejections) == 1
+    assert parsed.rejections[0].reason_code == "upstream_response_failed"
+    assert "sensitive" not in repr(parsed.rejections[0])
+
+
 def test_adapter_commits_turns_and_complete_state_together() -> None:
     connection = FakeConnection()
     adapter = RndTraceAdapter(connection, FakeMonitoringClient(_payload()), batch_size=10)
@@ -139,6 +180,7 @@ def test_adapter_commits_turns_and_complete_state_together() -> None:
 
     assert result.sessions == 1
     assert result.turns == 1
+    assert result.rejected_turns == 0
     assert connection.commits == 1
     assert connection.rollbacks == 0
     sql = "\n".join(statement for statement, _ in connection.statements)
