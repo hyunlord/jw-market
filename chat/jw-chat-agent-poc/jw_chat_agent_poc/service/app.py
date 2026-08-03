@@ -330,6 +330,7 @@ class FinalAnswer:
 SESSION_STORE_MAX_ENV = "SESSION_STORE_MAX"
 DEFAULT_SESSION_STORE_MAX = 500
 CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
+HIRA_REIMBURSEMENT_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT"
 
 
 def decide_app_scope_route(**kwargs: Any) -> AppScopeDecision:
@@ -358,6 +359,40 @@ def observe_unified_market_shortcut_shadow(**kwargs: Any) -> None:
     from jw_chat_agent_poc.orchestrator.unified_router_shadow import observe_market_shortcut_route
 
     observe_market_shortcut_route(**kwargs)
+
+
+def _hira_reimbursement_cutover_decision(**kwargs: Any) -> Any | None:
+    if os.getenv(HIRA_REIMBURSEMENT_CUTOVER_ENV, "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return None
+    try:
+        from jw_chat_agent_poc.service.unified_router_cutover import (
+            select_hira_reimbursement_cutover,
+        )
+
+        return select_hira_reimbursement_cutover(**kwargs)
+    except Exception:  # noqa: BLE001 - cutover selection falls back to the proven legacy route
+        LOGGER.exception("hira_reimbursement_cutover_selection_failed")
+        return None
+
+
+def _answer_hira_reimbursement_cutover(question: str, external_mode: str) -> dict | None:
+    try:
+        dependencies = build_chat_agent_dependencies(external_mode=external_mode)
+        from jw_chat_agent_poc.tool_use.integration import run_enforced_external_tool_agent
+
+        return run_enforced_external_tool_agent(
+            question,
+            resolver=dependencies.resolver,
+            external=dependencies.external,
+        )
+    except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
+        LOGGER.exception("hira_reimbursement_cutover_execution_failed")
+        return None
 
 
 def _chart_after_evidence_binding_enabled() -> bool:
@@ -2130,10 +2165,11 @@ def _answer_existing_without_pending(
         *,
         reason: str,
         mode: RouteMode = RouteMode.DETERMINISTIC,
+        domain: str = "market",
     ) -> None:
         observe_route_decision(
             question=question,
-            domain="market",
+            domain=domain,
             handler=handler,
             mode=mode,
             decided_by="market_shortcut",
@@ -2159,7 +2195,7 @@ def _answer_existing_without_pending(
             has_documents=bool(documents),
             use_direct_agent_loop=use_direct_agent_loop,
             market_scope_resolver=market_scope_resolver,
-            legacy_domain="market",
+            legacy_domain=domain,
             legacy_handler=handler,
             legacy_mode=mode,
         )
@@ -2183,6 +2219,28 @@ def _answer_existing_without_pending(
         if routing_boundaries_enabled()
         else _legacy_market_shortcut_decision(**decision_kwargs)
     )
+    canonical_cutover = _hira_reimbursement_cutover_decision(
+        question=question,
+        has_documents=bool(documents),
+        use_direct_agent_loop=use_direct_agent_loop,
+        market_scope_resolver=market_scope_resolver,
+    )
+    if canonical_cutover is not None:
+        canonical_result = _answer_hira_reimbursement_cutover(question, external_mode)
+        if canonical_result is not None:
+            observe_market_route(
+                canonical_cutover.handler,
+                reason="canonical_hira_reimbursement_cutover",
+                domain=canonical_cutover.domain,
+            )
+            diagnostics = dict(canonical_result.get("router_diagnostics") or {})
+            diagnostics["canonical_router_cutover"] = {
+                "domain": canonical_cutover.domain,
+                "handler": canonical_cutover.handler,
+                "mode": canonical_cutover.execution_mode.value,
+            }
+            canonical_result["router_diagnostics"] = diagnostics
+            return canonical_result
     if decision.kind is MarketRouteKind.EXPLICIT_MARKET_ID:
         observe_market_route(decision.handler, reason=decision.reason)
         return market_scope_resolver.answer_market_id(

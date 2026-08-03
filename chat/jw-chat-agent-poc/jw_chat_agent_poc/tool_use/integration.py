@@ -131,6 +131,28 @@ def run_external_tool_agent(
     return payload
 
 
+def run_enforced_external_tool_agent(
+    question: str,
+    *,
+    resolver: BrandResolver,
+    external: ExternalApiClient,
+    timing: Timing | None = None,
+) -> dict[str, Any]:
+    """Execute the canonical external route independently of the legacy mode flag."""
+
+    registry = ExternalToolRegistry(resolver=resolver, external=external)
+    enforced = execute_enforced_route(
+        question,
+        tools=registry.list_for_query(question),
+        provider=_routing_v4_provider(None),
+        completion_policy=_external_evidence_complete,
+        timing=timing,
+    )
+    payload = _agent_result_payload(question, enforced.result, timing=timing)
+    payload["router_diagnostics"]["routing_v4"] = enforced.diagnostics
+    return payload
+
+
 def attach_routing_v4_legacy_observation(
     question: str,
     payload: dict[str, Any],

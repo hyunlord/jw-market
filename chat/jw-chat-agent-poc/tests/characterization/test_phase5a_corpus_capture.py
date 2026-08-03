@@ -41,7 +41,10 @@ def test_capture_distinguishes_unfired_from_missing_input() -> None:
     assert "captured" in statuses
 
 
-def test_capture_is_deterministic_across_two_local_runs() -> None:
+def test_capture_is_deterministic_across_two_local_runs(monkeypatch) -> None:
+    # v3 is the preserved pre-cutover baseline. Phase 5-C-2 owns a separate
+    # before/after contract instead of overwriting this characterization asset.
+    monkeypatch.setenv("JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT", "0")
     first = capture_corpus(CORPUS_V1, FIXTURES / "observed_snapshots.v1.json")
     second = capture_corpus(CORPUS_V1, FIXTURES / "observed_snapshots.v1.json")
 
