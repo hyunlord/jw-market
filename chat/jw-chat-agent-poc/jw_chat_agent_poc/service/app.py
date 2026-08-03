@@ -255,7 +255,10 @@ from jw_chat_agent_poc.common.timing import (
 )
 from jw_chat_agent_poc.common.token_usage import record_token_usage
 from jw_chat_agent_poc.tool_use.integration import attach_routing_v4_legacy_observation
-from jw_chat_agent_poc.tool_use.routing_v4_rules import classify_question
+from jw_chat_agent_poc.tool_use.routing_v4_rules import (
+    classify_question,
+    classify_question_without_observation,
+)
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import configured_routing_mode
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
 from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
@@ -333,6 +336,8 @@ CHART_AFTER_EVIDENCE_BINDING_ENV = "JW_CHAT_CHART_AFTER_EVIDENCE_BINDING"
 HIRA_REIMBURSEMENT_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_REIMBURSEMENT"
 HIRA_DISEASE_STATS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_HIRA_DISEASE_STATS"
 MFDS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_MFDS"
+CLINICAL_TRIALS_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_CLINICAL_TRIALS"
+CLINICAL_FB02_CUTOVER_ENV = "JW_CHAT_ROUTER_CUTOVER_CLINICAL_FB02"
 
 
 def decide_app_scope_route(**kwargs: Any) -> AppScopeDecision:
@@ -470,6 +475,50 @@ def _answer_mfds_cutover(question: str, external_mode: str) -> dict | None:
         return result
     except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
         LOGGER.exception("mfds_cutover_execution_failed")
+        return None
+
+
+def _clinical_trials_cutover_decision(**kwargs: Any) -> Any | None:
+    if os.getenv(CLINICAL_TRIALS_CUTOVER_ENV, "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return None
+    try:
+        question = str(kwargs.get("question") or "")
+        classification = classify_question_without_observation(question)
+        requested_facets = set(classification.requested_facets)
+        is_fb02_shape = {"clinical", "permission"}.issubset(requested_facets)
+        if is_fb02_shape and os.getenv(CLINICAL_FB02_CUTOVER_ENV, "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            return None
+        from jw_chat_agent_poc.service.unified_router_cutover import (
+            select_clinical_trials_cutover,
+        )
+
+        return select_clinical_trials_cutover(**kwargs)
+    except Exception:  # noqa: BLE001 - selection failures retain the proven legacy route
+        LOGGER.exception("clinical_trials_cutover_selection_failed")
+        return None
+
+
+def _answer_clinical_trials_cutover(
+    agent_factory,
+    question: str,
+    external_mode: str,
+    agent_kwargs: dict[str, Any],
+) -> dict | None:
+    try:
+        agent = agent_factory(external_mode=external_mode)
+        return agent.answer(question, None, **agent_kwargs)
+    except Exception:  # noqa: BLE001 - unexpected setup failures retain the legacy execution path
+        LOGGER.exception("clinical_trials_cutover_execution_failed")
         return None
 
 
@@ -2365,6 +2414,34 @@ def _answer_existing_without_pending(
                 "domain": mfds_cutover.domain,
                 "handler": mfds_cutover.handler,
                 "mode": mfds_cutover.execution_mode.value,
+            }
+            canonical_result["router_diagnostics"] = diagnostics
+            return canonical_result
+    clinical_trials_cutover = _clinical_trials_cutover_decision(
+        question=question,
+        has_documents=bool(documents),
+        use_direct_agent_loop=use_direct_agent_loop,
+        market_scope_resolver=market_scope_resolver,
+    )
+    if clinical_trials_cutover is not None:
+        canonical_result = _answer_clinical_trials_cutover(
+            agent_factory,
+            question,
+            external_mode,
+            agent_kwargs,
+        )
+        if canonical_result is not None:
+            observe_market_route(
+                clinical_trials_cutover.handler,
+                reason="canonical_clinical_trials_cutover",
+                mode=clinical_trials_cutover.execution_mode,
+                domain=clinical_trials_cutover.domain,
+            )
+            diagnostics = dict(canonical_result.get("router_diagnostics") or {})
+            diagnostics["canonical_router_cutover"] = {
+                "domain": clinical_trials_cutover.domain,
+                "handler": clinical_trials_cutover.handler,
+                "mode": clinical_trials_cutover.execution_mode.value,
             }
             canonical_result["router_diagnostics"] = diagnostics
             return canonical_result
