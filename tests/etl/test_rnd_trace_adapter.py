@@ -172,6 +172,23 @@ def test_parser_records_explicit_upstream_failure_without_raw_text() -> None:
     assert "sensitive" not in repr(parsed.rejections[0])
 
 
+def test_parser_records_nested_turn_failure_without_raw_text() -> None:
+    payload = _payload()
+    item = payload["data"]["session-1"][0]
+    item["response"]["data"]["data"]["text"] = {
+        "code": 500,
+        "error_code": "sensitive-turn-detail",
+        "errMsg": "sensitive response body",
+    }
+
+    parsed = parse_monitoring_payload(payload, {"session-1": _sessions()[0]})
+
+    assert parsed.turns == []
+    assert len(parsed.rejections) == 1
+    assert parsed.rejections[0].reason_code == "turn_response_failed"
+    assert "sensitive" not in repr(parsed.rejections[0])
+
+
 def test_adapter_commits_turns_and_complete_state_together() -> None:
     connection = FakeConnection()
     adapter = RndTraceAdapter(connection, FakeMonitoringClient(_payload()), batch_size=10)
