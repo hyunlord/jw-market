@@ -10,6 +10,7 @@ import re
 import shutil
 import zipfile
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,6 +27,49 @@ LOCAL_PREPROCESSOR_EXTENSIONS = frozenset({"docx"})
 LOCAL_XLSX_EXTENSIONS = frozenset({"xlsx", "xlsm"})
 GATED_EXTERNAL_PREPROCESSOR_EXTENSIONS = frozenset({"pdf", "pptx"})
 PPTX_SLIDE_NAME = re.compile(r"^ppt/slides/slide\d+\.xml$")
+DANGEROUS_FILENAME_EXTENSIONS = frozenset(
+    {
+        "asp",
+        "aspx",
+        "bat",
+        "cgi",
+        "cmd",
+        "com",
+        "dll",
+        "exe",
+        "hta",
+        "jar",
+        "js",
+        "jsp",
+        "php",
+        "pl",
+        "ps1",
+        "py",
+        "rb",
+        "sh",
+        "vbs",
+        "war",
+    }
+)
+EXECUTABLE_SIGNATURES = (
+    b"\x7fELF",
+    b"MZ",
+    b"#!",
+)
+OOXML_ROOTS = {
+    "docx": "word/",
+    "pptx": "ppt/",
+    "xlsx": "xl/",
+    "xlsm": "xl/",
+}
+OOXML_REQUIRED_PARTS = {
+    "docx": frozenset({"[Content_Types].xml", "word/document.xml"}),
+    "pptx": frozenset({"[Content_Types].xml", "ppt/presentation.xml"}),
+    "xlsx": frozenset({"[Content_Types].xml", "xl/workbook.xml"}),
+    "xlsm": frozenset({"[Content_Types].xml", "xl/workbook.xml"}),
+}
+OLE_COMPOUND_FILE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+PPT_DOCUMENT_STREAM_NAME = "PowerPoint Document".encode("utf-16le")
 PREPROCESSOR_TIMEOUT_MESSAGE = (
     "문서가 커서 처리 시간이 초과되었습니다. "
     "파일을 나누거나 페이지 범위를 줄여 다시 시도해 주세요."
@@ -202,6 +246,62 @@ def _extension(file_name: str | None) -> str:
     return Path(file_name or "").suffix.lower().lstrip(".")
 
 
+def _has_dangerous_inner_extension(file_name: str) -> bool:
+    segments = file_name.lower().split(".")
+    return any(segment in DANGEROUS_FILENAME_EXTENSIONS for segment in segments[1:-1])
+
+
+def _is_safe_file_name(file_name: str) -> bool:
+    return (
+        bool(file_name)
+        and Path(file_name).name == file_name
+        and "\\" not in file_name
+        and "\x00" not in file_name
+    )
+
+
+def _read_upload_bytes(file: UploadFile) -> bytes:
+    stream = file.file
+    position = stream.tell()
+    try:
+        stream.seek(0)
+        return stream.read()
+    finally:
+        stream.seek(position)
+
+
+def _is_valid_pdf(content: bytes) -> bool:
+    if not content.startswith(b"%PDF-"):
+        return False
+    try:
+        with fitz.open(stream=content, filetype="pdf") as document:
+            return len(document) > 0
+    except (RuntimeError, ValueError):
+        return False
+
+
+def _is_valid_ooxml(content: bytes, extension: str) -> bool:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    required_parts = OOXML_REQUIRED_PARTS[extension]
+    return required_parts.issubset(names)
+
+
+def _content_matches_extension(content: bytes, extension: str) -> bool:
+    if not content or any(content.startswith(signature) for signature in EXECUTABLE_SIGNATURES):
+        return False
+    if extension == "pdf":
+        return _is_valid_pdf(content)
+    if extension == "ppt":
+        return content.startswith(OLE_COMPOUND_FILE_SIGNATURE) and PPT_DOCUMENT_STREAM_NAME in content
+    if extension in OOXML_ROOTS:
+        return _is_valid_ooxml(content, extension)
+    return False
+
+
 def _external_preprocessor_limit_bytes() -> int:
     return settings.EXTERNAL_PREPROCESSOR_MAX_FILE_MB * 1024 * 1024
 
@@ -368,14 +468,27 @@ def blocked_saved_external_preprocessor_documents(
 
 def validate_extensions(files: list[UploadFile], allowed_extensions: frozenset[str]) -> list[str]:
     if not allowed_extensions:
-        return []
+        return ["허용된 파일 확장자 설정을 확인할 수 없습니다."]
+    effective_allowed_extensions = (
+        allowed_extensions | LOCAL_PREPROCESSOR_EXTENSIONS | LOCAL_XLSX_EXTENSIONS
+    )
     errors: list[str] = []
     for file in files:
-        extension = _extension(file.filename)
-        if extension in LOCAL_PREPROCESSOR_EXTENSIONS or extension in LOCAL_XLSX_EXTENSIONS:
+        file_name = file.filename or "upload"
+        if not _is_safe_file_name(file_name):
+            errors.append(f"안전하지 않은 파일명입니다: {Path(file_name).name or 'upload'}")
             continue
-        if extension not in allowed_extensions:
-            errors.append(f"허용되지 않는 파일 확장자입니다: {file.filename}")
+        extension = _extension(file_name)
+        if extension not in effective_allowed_extensions:
+            errors.append(f"허용되지 않는 파일 확장자입니다: {file_name}")
+            continue
+        if _has_dangerous_inner_extension(file_name):
+            errors.append(f"위험한 이중 확장자 파일명입니다: {file_name}")
+            continue
+        if upload_file_size(file) > settings.QUOTA_MAX_FILE_MB * 1024 * 1024:
+            continue
+        if not _content_matches_extension(_read_upload_bytes(file), extension):
+            errors.append(f"파일 내용이 확장자와 일치하지 않습니다: {file_name}")
     return errors
 
 
@@ -466,6 +579,7 @@ def save_temp_documents(
         file.file.seek(0)
         with temp_path.open("wb") as output:
             shutil.copyfileobj(file.file, output, length=8192)
+        temp_path.chmod(0o644)
         saved.append(
             SavedTempDocument(
                 temp_document_id=temp_document_id,

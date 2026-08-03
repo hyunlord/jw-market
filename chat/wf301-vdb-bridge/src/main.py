@@ -1914,15 +1914,6 @@ def upload(
 
     with ledger.ledger_connection() as conn:
         config = upload_adapter.load_file_upload_config(conn, workflow_id=workflow_id)
-        extension_errors = upload_adapter.validate_extensions(files, config.allowed_extensions)
-        if extension_errors:
-            return UploadResponse(
-                target_vdb_id=vdb_id,
-                workflow_id=workflow_id,
-                app_session_id=app_session_value,
-                session_id=session_value,
-                errors=extension_errors,
-            )
         incoming_sizes = [upload_adapter.upload_file_size(file) for file in files]
         current_docs = ledger.list_session_documents(
             conn,
@@ -1943,6 +1934,15 @@ def upload(
                 session_id=session_value,
                 quota=quota,
                 errors=quota.violations,
+            )
+        extension_errors = upload_adapter.validate_extensions(files, config.allowed_extensions)
+        if extension_errors:
+            return UploadResponse(
+                target_vdb_id=vdb_id,
+                workflow_id=workflow_id,
+                app_session_id=app_session_value,
+                session_id=session_value,
+                errors=extension_errors,
             )
         upload_blocks = upload_adapter.blocked_external_preprocessor_uploads(files)
         if upload_blocks:
