@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
@@ -70,10 +71,114 @@ POST_CHART_STAGE_NAMES = (
 )
 
 
+class ValidationEngine(StrEnum):
+    """Stable ownership labels for validation boundaries."""
+
+    INPUT_SECURITY = "input_security"
+    RELATIONAL_CLAIM = "relational_claim"
+    EVIDENCE_BINDING = "evidence_binding"
+    COVERAGE_VALIDATION = "coverage_validation"
+    OUTPUT_HYGIENE = "output_hygiene"
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationBoundary:
+    """Declarative ownership for a boundary outside the answer stage list."""
+
+    name: str
+    engines: tuple[ValidationEngine, ...]
+
+
+ANSWER_STAGE_ENGINE_ASSIGNMENTS: Final[
+    tuple[tuple[str, tuple[ValidationEngine, ...]], ...]
+] = (
+    ("cleanup", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ("answer_contract_first", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("claim_policy_repeat", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ("answer_contract_second", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("empty_file_context_fallback", (ValidationEngine.COVERAGE_VALIDATION,)),
+    (
+        "file_page_evidence",
+        (ValidationEngine.EVIDENCE_BINDING, ValidationEngine.COVERAGE_VALIDATION),
+    ),
+    (
+        "file_overview_evidence",
+        (ValidationEngine.EVIDENCE_BINDING, ValidationEngine.COVERAGE_VALIDATION),
+    ),
+    (
+        "cross_file_comparison",
+        (ValidationEngine.RELATIONAL_CLAIM, ValidationEngine.EVIDENCE_BINDING),
+    ),
+    (
+        "multi_file_evidence",
+        (ValidationEngine.EVIDENCE_BINDING, ValidationEngine.COVERAGE_VALIDATION),
+    ),
+    ("file_context_source", (ValidationEngine.EVIDENCE_BINDING,)),
+    ("blocked_metric_notices", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("common_unavailable_response", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("source_basis_notice", (ValidationEngine.EVIDENCE_BINDING,)),
+    ("replace_internal_fact_dump", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ("requested_source_trap", (ValidationEngine.EVIDENCE_BINDING,)),
+    ("file_absence_statement", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("hira_patient_summary", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("claim_policy_post", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ("natural_fact_lead", ()),
+    ("relational_claim_pre_market", (ValidationEngine.RELATIONAL_CLAIM,)),
+    (
+        "market_answer_contract",
+        (ValidationEngine.RELATIONAL_CLAIM, ValidationEngine.EVIDENCE_BINDING),
+    ),
+    ("file_postprocess_isolation", (ValidationEngine.EVIDENCE_BINDING,)),
+    ("deep_claim_policy", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ("deep_research_structure", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("relational_claim_final", (ValidationEngine.RELATIONAL_CLAIM,)),
+    ("general_view_contract", (ValidationEngine.COVERAGE_VALIDATION,)),
+    ("evidence_binding", (ValidationEngine.EVIDENCE_BINDING,)),
+    ("deferred_prescription_notice", ()),
+    ("internal_terminology_scrub", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ("verified_progress_strip", (ValidationEngine.OUTPUT_HYGIENE,)),
+)
+
+
+OUTER_DELIVERY_BOUNDARIES: Final[tuple[ValidationBoundary, ...]] = (
+    ValidationBoundary(
+        "final_surface_assembly",
+        (ValidationEngine.COVERAGE_VALIDATION,),
+    ),
+    ValidationBoundary("conversation_notice_prepend", ()),
+    ValidationBoundary(
+        "actual_coverage_observation",
+        (ValidationEngine.COVERAGE_VALIDATION,),
+    ),
+    ValidationBoundary("response_format_contract", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ValidationBoundary("sec12_output_leakage", (ValidationEngine.OUTPUT_HYGIENE,)),
+    ValidationBoundary(
+        "surface_coverage_observation",
+        (ValidationEngine.COVERAGE_VALIDATION,),
+    ),
+    ValidationBoundary("typed_failure_model_observation", ()),
+)
+
+
+UPSTREAM_VALIDATION_BOUNDARIES: Final[tuple[ValidationBoundary, ...]] = (
+    ValidationBoundary("sec12_input_policy", (ValidationEngine.INPUT_SECURITY,)),
+)
+
+
+def validation_engines_for_stage(name: str) -> tuple[ValidationEngine, ...]:
+    """Return declared engine ownership without affecting stage execution."""
+
+    for stage_name, engines in ANSWER_STAGE_ENGINE_ASSIGNMENTS:
+        if stage_name == name:
+            return engines
+    raise KeyError(name)
+
+
 @dataclass(frozen=True)
 class AnswerPipelineStage:
     name: str
     transform: Callable[[str], str]
+    engines: tuple[ValidationEngine, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,7 +232,10 @@ def ordered_stages(
     transforms: dict[str, Callable[[str], str]],
     names: Sequence[str],
 ) -> tuple[AnswerPipelineStage, ...]:
-    return tuple(AnswerPipelineStage(name, transforms[name]) for name in names)
+    return tuple(
+        AnswerPipelineStage(name, transforms[name], validation_engines_for_stage(name))
+        for name in names
+    )
 
 
 def build_answer_pipeline_stages(
