@@ -35,7 +35,7 @@ spec:
                   name: galera-mariadb-galera
                   key: mariadb-root-password
             - name: MONITORING_API_BASE_URL
-              value: http://llmops-monitoring-api-service.llmops.svc.cluster.local
+              value: http://jw-rnd-monitoring-api-read-test2.llmops.svc.cluster.local:8080
             - name: RND_TRACE_BATCH_SIZE
               value: "20"
             - name: RND_TRACE_REQUEST_INTERVAL_SECONDS
