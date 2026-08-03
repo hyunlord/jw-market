@@ -340,19 +340,21 @@ def parse_monitoring_payload(
                 nested_response.get("message")
             )
             raw_answer = nested_response.get("text") or nested_response.get("message")
-            if answer is None and isinstance(raw_answer, dict) and any(
-                key in raw_answer for key in ("error_code", "errMsg", "code")
-            ):
+            if answer is None:
+                reason_code = "turn_answer_missing"
+                if isinstance(raw_answer, dict) and any(
+                    key in raw_answer for key in ("error_code", "errMsg", "code")
+                ):
+                    reason_code = "turn_response_failed"
                 rejections[source_turn_id] = RejectedTurn(
                     source_turn_id=source_turn_id,
                     trace_id=trace_id,
                     span_id=span_id,
                     session_uid=session_uid,
                     created_at=created_at,
-                    reason_code="turn_response_failed",
+                    reason_code=reason_code,
                 )
                 continue
-            answer = _required_text(answer, "answer")
             turn = RndTurn(
                 source_turn_id=source_turn_id,
                 trace_id=trace_id,

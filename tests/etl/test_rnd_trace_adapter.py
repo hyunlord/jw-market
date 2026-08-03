@@ -189,6 +189,25 @@ def test_parser_records_nested_turn_failure_without_raw_text() -> None:
     assert "sensitive" not in repr(parsed.rejections[0])
 
 
+def test_parser_records_successful_turn_without_answer_as_rejection() -> None:
+    payload = _payload()
+    item = payload["data"]["session-1"][0]
+    item["response"]["data"]["data"] = {
+        "chat_session_title": "sensitive title",
+        "json": {
+            "question": "sensitive question",
+            "sourceDocuments": [],
+        },
+    }
+
+    parsed = parse_monitoring_payload(payload, {"session-1": _sessions()[0]})
+
+    assert parsed.turns == []
+    assert len(parsed.rejections) == 1
+    assert parsed.rejections[0].reason_code == "turn_answer_missing"
+    assert "sensitive" not in repr(parsed.rejections[0])
+
+
 def test_adapter_commits_turns_and_complete_state_together() -> None:
     connection = FakeConnection()
     adapter = RndTraceAdapter(connection, FakeMonitoringClient(_payload()), batch_size=10)
