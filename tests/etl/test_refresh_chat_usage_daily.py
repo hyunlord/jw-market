@@ -74,6 +74,8 @@ def test_refresh_commits_daily_session_and_state_as_one_transaction() -> None:
     assert "INSERT INTO `jw_mart`.`mart_chat_usage_daily`" in sql
     assert "INSERT INTO `jw_mart`.`mart_chat_usage_daily_session`" in sql
     assert "INSERT INTO `jw_mart`.`mart_chat_usage_refresh_state`" in sql
+    assert "c.conversation_id IS NOT NULL" in sql
+    assert "c.conversation_id <> ''" not in sql
     assert connection.commits == 1
     assert connection.rollbacks == 0
 

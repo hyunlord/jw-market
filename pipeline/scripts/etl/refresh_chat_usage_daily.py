@@ -156,7 +156,7 @@ SELECT DISTINCT DATE(c.created_at), COALESCE(c.service_id, -1), c.service_id,
        c.conversation_id, UTC_TIMESTAMP(6)
 FROM `jw_market_audit_stage`.`dashboard_chat_usage_v` c
 WHERE c.created_at >= %s AND c.created_at < %s
-  AND c.conversation_id IS NOT NULL AND c.conversation_id <> ''
+  AND c.conversation_id IS NOT NULL
 """
 
 _STATE_UPSERT_SQL: Final = """
