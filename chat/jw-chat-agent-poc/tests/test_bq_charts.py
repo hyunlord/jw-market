@@ -1,7 +1,23 @@
 from __future__ import annotations
 
-from jw_chat_agent_poc.service.charts import build_charts
 from jw_chat_agent_poc.service.bq_charts import build_bq_chart_specs
+from jw_chat_agent_poc.service.charts import build_charts as _build_charts, issue_render_authorization
+
+
+def build_charts(result, *, question="", answer="", cause_reader=None):
+    authorization = issue_render_authorization(
+        result,
+        question=question,
+        answer=answer,
+        enforce_binding=False,
+    )
+    return _build_charts(
+        result,
+        authorization=authorization,
+        question=question,
+        answer=answer,
+        cause_reader=cause_reader,
+    )
 
 
 def test_line_chart_preserves_null_and_zero_with_evidence_refs() -> None:
