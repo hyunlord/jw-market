@@ -36,7 +36,10 @@ from pipeline.scripts.api.dashboard_usage import (
     MariaDBUsageRepository,
     UsageStatsService,
 )
-from pipeline.scripts.api.routes.dashboard_usage import create_usage_dashboard_router
+from pipeline.scripts.api.routes.dashboard_usage import (
+    create_usage_dashboard_router,
+    create_usage_logs_router,
+)
 from pipeline.scripts.api.routes import (
     brand_activity,
     brands,
@@ -54,9 +57,10 @@ logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INF
 logger = logging.getLogger(__name__)
 audit_writer = create_audit_writer(config)
 report_download_writer = create_report_download_writer(config)
+usage_dashboard_repository = MariaDBUsageRepository(config) if config.dashboard_db_host else None
 usage_dashboard_service = (
-    UsageStatsService(MariaDBUsageRepository(config), cache=DashboardCache(ttl_seconds=60))
-    if config.dashboard_db_host
+    UsageStatsService(usage_dashboard_repository, cache=DashboardCache(ttl_seconds=60))
+    if usage_dashboard_repository is not None
     else None
 )
 
@@ -135,8 +139,9 @@ app.include_router(market_filter.router)
 app.include_router(market_scope.router)
 app.include_router(brand_activity.router)
 app.include_router(create_report_download_router(report_download_writer))
-if usage_dashboard_service is not None:
+if usage_dashboard_service is not None and usage_dashboard_repository is not None:
     app.include_router(create_usage_dashboard_router(usage_dashboard_service))
+    app.include_router(create_usage_logs_router(usage_dashboard_repository))
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR), check_dir=False), name="static")
 if config.external_path_prefix:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
+import json
 import time
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from threading import Lock
 from typing import Any, Callable, Final, Literal, Protocol
@@ -21,6 +24,9 @@ from pipeline.scripts.api.config import APIConfig
 
 Grain = Literal["day", "week"]
 MAX_RANGE_DAYS: Final = 366
+MAX_USAGE_LOG_RANGE_DAYS: Final = 31
+DEFAULT_USAGE_LOG_PAGE_SIZE: Final = 50
+MAX_USAGE_LOG_PAGE_SIZE: Final = 100
 DEFAULT_CACHE_TTL_SECONDS: Final = 60
 DASHBOARD_DB_READ_TIMEOUT_SECONDS: Final = 15
 DEFAULT_DASHBOARD_QUERY_WORKERS: Final = 4
@@ -195,6 +201,19 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
     """,
 }
 
+USAGE_LOGS_SQL: Final = """
+    SELECT a.id, a.called_at, a.endpoint, a.http_status, a.actor_type,
+           CASE WHEN a.actor_type='user' THEN u.name ELSE NULL END AS user_name,
+           CASE WHEN a.actor_type='user' THEN u.department ELSE NULL END AS department
+    FROM dashboard_api_usage_v a
+    LEFT JOIN dashboard_user_directory_v u
+      ON a.actor_type='user' AND a.actor_uid=CONCAT('genos-user:', u.id)
+    WHERE a.called_at >= %s AND a.called_at < %s
+    {filters}
+    ORDER BY a.called_at DESC, a.id DESC
+    LIMIT %s
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class UsageFilters:
@@ -208,8 +227,75 @@ class UsageFilters:
         return (self.date_from, self.date_to, self.grain, self.user_id, self.department)
 
 
+@dataclass(frozen=True, slots=True)
+class UsageLogCursor:
+    called_at: datetime
+    id: int
+
+
+@dataclass(frozen=True, slots=True)
+class UsageLogFilters:
+    date_from: date
+    date_to: date
+    user_id: int | None = None
+    department: str | None = None
+    endpoint: str | None = None
+    http_status: int | None = None
+    page_size: int = DEFAULT_USAGE_LOG_PAGE_SIZE
+    cursor: UsageLogCursor | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UsageLogPage:
+    items: tuple[dict[str, Any], ...]
+    next_cursor: str | None
+    has_more: bool
+
+
+class InvalidUsageLogCursor(ValueError):
+    pass
+
+
+def encode_usage_log_cursor(cursor: UsageLogCursor) -> str:
+    payload = json.dumps(
+        {"called_at": cursor.called_at.isoformat(timespec="microseconds"), "id": cursor.id},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_usage_log_cursor(value: str) -> UsageLogCursor:
+    try:
+        padding = "=" * (-len(value) % 4)
+        raw = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+        payload = json.loads(raw.decode("ascii"))
+        if not isinstance(payload, dict) or set(payload) != {"called_at", "id"}:
+            raise InvalidUsageLogCursor
+        called_at_raw = payload["called_at"]
+        row_id = payload["id"]
+        if not isinstance(called_at_raw, str) or not isinstance(row_id, int) or row_id < 1:
+            raise InvalidUsageLogCursor
+        called_at = datetime.fromisoformat(called_at_raw)
+        if called_at.tzinfo is not None:
+            raise InvalidUsageLogCursor
+        cursor = UsageLogCursor(called_at=called_at, id=row_id)
+        if encode_usage_log_cursor(cursor) != value:
+            raise InvalidUsageLogCursor
+        return cursor
+    except InvalidUsageLogCursor:
+        raise
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise InvalidUsageLogCursor from exc
+
+
 class UsageRepository(Protocol):
     def fetch(self, filters: UsageFilters) -> dict[str, Any]: ...
+
+
+class UsageLogsRepository(Protocol):
+    def fetch_logs(self, filters: UsageLogFilters) -> UsageLogPage: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +413,66 @@ class MariaDBUsageRepository:
                 ),
             },
         }
+
+    def fetch_logs(self, filters: UsageLogFilters) -> UsageLogPage:
+        clauses: list[str] = []
+        params: list[Any] = [
+            filters.date_from.isoformat(),
+            (filters.date_to + timedelta(days=1)).isoformat(),
+        ]
+        if filters.user_id is not None:
+            clauses.append("u.id=%s")
+            params.append(filters.user_id)
+        if filters.department:
+            clauses.append("u.department=%s")
+            params.append(filters.department)
+        if filters.endpoint:
+            clauses.append("a.endpoint=%s")
+            params.append(filters.endpoint)
+        if filters.http_status is not None:
+            clauses.append("a.http_status=%s")
+            params.append(filters.http_status)
+        if filters.cursor is not None:
+            clauses.append("(a.called_at < %s OR (a.called_at = %s AND a.id < %s))")
+            params.extend(
+                (filters.cursor.called_at, filters.cursor.called_at, filters.cursor.id)
+            )
+        params.append(filters.page_size + 1)
+        sql = USAGE_LOGS_SQL.format(
+            filters=(" AND " + " AND ".join(clauses)) if clauses else ""
+        )
+
+        connection = self._connect(**self._connect_args)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, tuple(params))
+                rows = [_normalize_row(row) for row in cursor.fetchall()]
+        finally:
+            connection.close()
+
+        has_more = len(rows) > filters.page_size
+        page_rows = rows[: filters.page_size]
+        items: list[dict[str, Any]] = []
+        for row in page_rows:
+            method, path = split_usage_endpoint(str(row["endpoint"]))
+            items.append(
+                {
+                    "called_at": row["called_at"],
+                    "method": method,
+                    "path": path,
+                    "http_status": row["http_status"],
+                    "actor_type": row["actor_type"],
+                    "user_name": row.get("user_name"),
+                    "department": row.get("department"),
+                }
+            )
+        next_cursor = None
+        if has_more and page_rows:
+            last = page_rows[-1]
+            next_cursor = encode_usage_log_cursor(
+                UsageLogCursor(called_at=last["called_at"], id=int(last["id"]))
+            )
+        return UsageLogPage(items=tuple(items), next_cursor=next_cursor, has_more=has_more)
 
     def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:
         start = filters.date_from.isoformat()
@@ -487,6 +633,13 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
         key: float(value) if isinstance(value, Decimal) else value
         for key, value in row.items()
     }
+
+
+def split_usage_endpoint(endpoint: str) -> tuple[str, str]:
+    method, separator, path = endpoint.partition(" ")
+    if not separator or not method or not path:
+        return "UNKNOWN", endpoint
+    return method, path
 
 
 def _data_quality(result: dict[str, Any]) -> dict[str, int]:
