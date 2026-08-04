@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -7,6 +9,10 @@ from typing import Protocol, TypedDict
 
 from jw_chat_agent_poc.agent_loop.periods import AgentPeriodGrounding
 from jw_chat_agent_poc.resolver import BrandResolution
+
+
+LOGGER = logging.getLogger(__name__)
+V3_TOOL_SELECTION_SHADOW_ENV = "JW_CHAT_V3_TOOL_SELECTION_SHADOW"
 
 
 class EntityKind(StrEnum):
@@ -98,6 +104,7 @@ def extract_query_spec(
     resolver: QueryEntityResolver,
     grounding: AgentPeriodGrounding,
 ) -> RequestQuerySpec:
+    _observe_v3_tool_selection_shadow(question)
     entities = _entities(question, resolver)
     metrics = _metrics(question)
     window_count, granularity = _window(question)
@@ -121,6 +128,30 @@ def extract_query_spec(
         requested_view=_requested_view(question),
         facets=_facets(question),
     )
+
+
+def _observe_v3_tool_selection_shadow(question: str) -> None:
+    if os.environ.get(V3_TOOL_SELECTION_SHADOW_ENV, "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    try:
+        from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
+            current_shadow_request_id,
+        )
+        from jw_chat_agent_poc.tool_use.v3_selection_shadow import (
+            start_v3_selection_shadow,
+        )
+
+        start_v3_selection_shadow(
+            question,
+            request_id=current_shadow_request_id(),
+        )
+    except Exception:  # noqa: BLE001 - V3 observation cannot affect the served answer
+        LOGGER.exception("v3_tool_selection_shadow_start_failed")
 
 
 def query_spec_observation(spec: RequestQuerySpec) -> QuerySpecObservation:
