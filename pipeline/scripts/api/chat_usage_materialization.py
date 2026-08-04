@@ -18,14 +18,22 @@ CHAT_USAGE_SQL: Final[dict[str, str]] = {
             WHERE d.usage_date >= %s AND d.usage_date < %s
             {user_filter}
             GROUP BY period, d.service_id
-        ), sessions AS (
-            SELECT {period} AS period, s.service_id,
-                   COUNT(DISTINCT s.conversation_id) AS sessions
+        ), session_candidates AS (
+            SELECT s.usage_date, s.service_id, s.conversation_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.conversation_id
+                       ORDER BY CASE WHEN s.service_id IN (61, 91, 94) THEN 0 ELSE 1 END,
+                                s.usage_date, s.service_key, s.portal_user_key
+                   ) AS session_rank
             FROM jw_mart.mart_chat_usage_daily_session s
             LEFT JOIN dashboard_user_directory_v u ON u.id=s.portal_user_id
             WHERE s.usage_date >= %s AND s.usage_date < %s
             {user_filter}
-            GROUP BY period, s.service_id
+        ), sessions AS (
+            SELECT {period} AS period, service_id, COUNT(*) AS sessions
+            FROM session_candidates
+            WHERE session_rank = 1
+            GROUP BY period, service_id
         )
         SELECT d.period, d.service_id, d.turns,
                COALESCE(s.sessions, 0) AS sessions,
@@ -43,13 +51,21 @@ CHAT_USAGE_SQL: Final[dict[str, str]] = {
             WHERE d.usage_date >= %s AND d.usage_date < %s
               AND d.portal_user_id IS NOT NULL
             GROUP BY d.portal_user_id
-        ), sessions AS (
-            SELECT s.portal_user_id,
-                   COUNT(DISTINCT s.conversation_id) AS sessions
+        ), session_candidates AS (
+            SELECT s.portal_user_id, s.conversation_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.conversation_id
+                       ORDER BY CASE WHEN s.service_id IN (61, 91, 94) THEN 0 ELSE 1 END,
+                                s.usage_date, s.service_key, s.portal_user_key
+                   ) AS session_rank
             FROM jw_mart.mart_chat_usage_daily_session s
             WHERE s.usage_date >= %s AND s.usage_date < %s
               AND s.portal_user_id IS NOT NULL
-            GROUP BY s.portal_user_id
+        ), sessions AS (
+            SELECT portal_user_id, COUNT(*) AS sessions
+            FROM session_candidates
+            WHERE session_rank = 1
+            GROUP BY portal_user_id
         )
         SELECT u.id AS user_id, u.name AS user_name, u.department,
                d.turns, COALESCE(s.sessions, 0) AS sessions, d.total_tokens
@@ -68,13 +84,21 @@ CHAT_USAGE_SQL: Final[dict[str, str]] = {
             WHERE d.usage_date >= %s AND d.usage_date < %s
               AND d.portal_user_id IS NOT NULL
             GROUP BY d.portal_user_id, d.service_id
-        ), sessions AS (
-            SELECT s.portal_user_id, s.service_id,
-                   COUNT(DISTINCT s.conversation_id) AS sessions
+        ), session_candidates AS (
+            SELECT s.portal_user_id, s.service_id, s.conversation_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY s.conversation_id
+                       ORDER BY CASE WHEN s.service_id IN (61, 91, 94) THEN 0 ELSE 1 END,
+                                s.usage_date, s.service_key, s.portal_user_key
+                   ) AS session_rank
             FROM jw_mart.mart_chat_usage_daily_session s
             WHERE s.usage_date >= %s AND s.usage_date < %s
               AND s.portal_user_id IS NOT NULL
-            GROUP BY s.portal_user_id, s.service_id
+        ), sessions AS (
+            SELECT portal_user_id, service_id, COUNT(*) AS sessions
+            FROM session_candidates
+            WHERE session_rank = 1
+            GROUP BY portal_user_id, service_id
         )
         SELECT u.id AS user_id, u.name AS user_name, u.department,
                d.service_id, d.turns, COALESCE(s.sessions, 0) AS sessions,
