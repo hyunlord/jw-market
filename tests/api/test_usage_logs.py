@@ -51,6 +51,7 @@ class FakeLogsRepository:
         return UsageLogPage(
             items=(
                 {
+                    "user_id": 34,
                     "called_at": datetime(2026, 8, 3, 9, 30),
                     "method": "GET",
                     "path": "/api/brands",
@@ -106,6 +107,7 @@ def test_usage_logs_forwards_exact_filters_and_caps_page_size() -> None:
             "date_from": "2026-08-01",
             "date_to": "2026-08-03",
             "user_id": 34,
+            "user_ids": [34, 35],
             "department": "Market",
             "endpoint": "GET /api/brands",
             "http_status": 200,
@@ -124,6 +126,7 @@ def test_usage_logs_forwards_exact_filters_and_caps_page_size() -> None:
             date_from=date(2026, 8, 1),
             date_to=date(2026, 8, 3),
             user_id=34,
+            user_ids=(34, 35),
             department="Market",
             endpoint="GET /api/brands",
             http_status=200,
@@ -162,6 +165,7 @@ def test_usage_logs_response_never_exposes_sensitive_fields() -> None:
     assert response.status_code == 200
     assert set(payload) == {"items", "next_cursor", "has_more"}
     assert set(payload["items"][0]) == {
+        "user_id",
         "called_at",
         "method",
         "path",

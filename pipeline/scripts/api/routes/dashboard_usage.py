@@ -59,11 +59,16 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
         date_to: date | None = Query(default=None),
         grain: Literal["day", "week"] = Query(default="day"),
         user_id: int | None = Query(default=None, ge=1),
+        user_ids: list[int] | None = Query(default=None),
         department: str | None = Query(default=None, min_length=1, max_length=100),
     ) -> dict:
         resolved_to = date_to or _today()
         resolved_from = date_from or (resolved_to - timedelta(days=29))
         _validate_range(resolved_from, resolved_to)
+
+        resolved_user_ids = tuple(sorted(set(user_ids or ())))
+        if len(resolved_user_ids) > 200 or any(user < 1 for user in resolved_user_ids):
+            raise HTTPException(status_code=422, detail="사용자 목록 필터가 올바르지 않습니다.")
 
         def fetch(resolved_date_from: date, resolved_date_to: date) -> dict:
             return service.get(
@@ -72,6 +77,7 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
                     date_to=resolved_date_to,
                     grain=grain,
                     user_id=user_id,
+                    user_ids=resolved_user_ids,
                     department=department.strip() if department else None,
                 )
             )
@@ -128,6 +134,7 @@ def create_usage_logs_router(repository: UsageLogsRepository) -> APIRouter:
         date_from: date = Query(),
         date_to: date = Query(),
         user_id: int | None = Query(default=None, ge=1),
+        user_ids: list[int] | None = Query(default=None),
         department: str | None = Query(default=None, min_length=1, max_length=100),
         endpoint: str | None = Query(default=None, min_length=1, max_length=255),
         http_status: int | None = Query(default=None, ge=100, le=599),
@@ -141,6 +148,9 @@ def create_usage_logs_router(repository: UsageLogsRepository) -> APIRouter:
                 status_code=422,
                 detail=f"조회 기간은 최대 {MAX_USAGE_LOG_RANGE_DAYS}일입니다.",
             )
+        resolved_user_ids = tuple(sorted(set(user_ids or ())))
+        if len(resolved_user_ids) > 200 or any(user < 1 for user in resolved_user_ids):
+            raise HTTPException(status_code=422, detail="사용자 목록 필터가 올바르지 않습니다.")
         try:
             decoded_cursor = decode_usage_log_cursor(cursor) if cursor else None
         except InvalidUsageLogCursor as exc:
@@ -150,6 +160,7 @@ def create_usage_logs_router(repository: UsageLogsRepository) -> APIRouter:
                 date_from=date_from,
                 date_to=date_to,
                 user_id=user_id,
+                user_ids=resolved_user_ids,
                 department=department.strip() if department else None,
                 endpoint=endpoint.strip() if endpoint else None,
                 http_status=http_status,

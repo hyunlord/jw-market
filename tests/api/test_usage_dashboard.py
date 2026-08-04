@@ -315,6 +315,17 @@ def test_usage_dashboard_forwards_filters_and_uses_cache() -> None:
     assert repository.calls[0].department == "JW중외제약"
 
 
+def test_usage_dashboard_accepts_repeated_user_ids_as_an_additive_filter() -> None:
+    repository = FakeRepository()
+    response = _client(repository).get(
+        "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03"
+        "&user_ids=34&user_ids=35"
+    )
+
+    assert response.status_code == 200
+    assert repository.calls[0].user_ids == (34, 35)
+
+
 def test_service_category_is_explicit_and_unknown_is_not_relabelled() -> None:
     assert UsageStatsService.service_category(61) == "rnd"
     assert UsageStatsService.service_category(91) == "market"

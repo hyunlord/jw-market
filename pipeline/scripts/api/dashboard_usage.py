@@ -203,6 +203,7 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
 
 USAGE_LOGS_SQL: Final = """
     SELECT a.id, a.called_at, a.endpoint, a.http_status, a.actor_type,
+           CASE WHEN a.actor_type='user' THEN u.id ELSE NULL END AS user_id,
            CASE WHEN a.actor_type='user' THEN u.name ELSE NULL END AS user_name,
            CASE WHEN a.actor_type='user' THEN u.department ELSE NULL END AS department
     FROM dashboard_api_usage_v a
@@ -221,10 +222,11 @@ class UsageFilters:
     date_to: date
     grain: Grain
     user_id: int | None = None
+    user_ids: tuple[int, ...] = ()
     department: str | None = None
 
     def cache_key(self) -> tuple[Any, ...]:
-        return (self.date_from, self.date_to, self.grain, self.user_id, self.department)
+        return (self.date_from, self.date_to, self.grain, self.user_id, self.user_ids, self.department)
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +240,7 @@ class UsageLogFilters:
     date_from: date
     date_to: date
     user_id: int | None = None
+    user_ids: tuple[int, ...] = ()
     department: str | None = None
     endpoint: str | None = None
     http_status: int | None = None
@@ -423,6 +426,9 @@ class MariaDBUsageRepository:
         if filters.user_id is not None:
             clauses.append("u.id=%s")
             params.append(filters.user_id)
+        if filters.user_ids:
+            clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
+            params.extend(filters.user_ids)
         if filters.department:
             clauses.append("u.department=%s")
             params.append(filters.department)
@@ -457,6 +463,7 @@ class MariaDBUsageRepository:
             method, path = split_usage_endpoint(str(row["endpoint"]))
             items.append(
                 {
+                    "user_id": row.get("user_id"),
                     "called_at": row["called_at"],
                     "method": method,
                     "path": path,
@@ -583,8 +590,11 @@ class UsageStatsService:
             row["service_category"] = self.service_category(row.get("service_id"))
         for row in result["auth"]["trend"] + result["auth"]["by_type"]:
             row["label"] = self.AUTH_LABELS.get(str(row.get("type_code")), "기타 인증 이벤트")
+        serialized_filters = asdict(filters)
+        if not filters.user_ids:
+            serialized_filters.pop("user_ids")
         payload = {
-            "filters": asdict(filters),
+            "filters": serialized_filters,
             "limits": {"max_days": MAX_RANGE_DAYS, "cache_ttl_seconds": self._cache.ttl_seconds},
             "data_quality": _data_quality(result),
             **result,
@@ -599,6 +609,9 @@ def _user_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
     if filters.user_id is not None:
         clauses.append("u.id=%s")
         params.append(filters.user_id)
+    if filters.user_ids:
+        clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
+        params.extend(filters.user_ids)
     if filters.department:
         clauses.append("u.department=%s")
         params.append(filters.department)
@@ -611,6 +624,9 @@ def _api_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
     if filters.user_id is not None:
         clauses.append("actor_uid=%s")
         params.append(f"genos-user:{filters.user_id}")
+    if filters.user_ids:
+        clauses.append(f"actor_uid IN ({','.join(['%s'] * len(filters.user_ids))})")
+        params.extend(f"genos-user:{user_id}" for user_id in filters.user_ids)
     if filters.department:
         clauses.append(
             "actor_uid IN (SELECT CONCAT('genos-user:',id) FROM dashboard_user_directory_v WHERE department=%s)"
