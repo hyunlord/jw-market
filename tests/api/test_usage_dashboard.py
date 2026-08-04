@@ -328,6 +328,33 @@ def test_usage_dashboard_accepts_repeated_user_ids_as_an_additive_filter() -> No
     assert repository.calls[0].user_ids == (34, 35)
 
 
+def test_usage_dashboard_accepts_exclusions_without_exposing_internal_filter() -> None:
+    repository = FakeRepository()
+    response = _client(repository).get(
+        "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03"
+        "&excluded_user_ids=82&excluded_user_ids=85"
+    )
+
+    assert response.status_code == 200
+    assert repository.calls[0].excluded_user_ids == (82, 85)
+    assert "excluded_user_ids" not in response.json()["filters"]
+
+
+def test_usage_dashboard_rejects_invalid_or_oversized_exclusions() -> None:
+    client = _client(FakeRepository())
+    invalid = client.get(
+        "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03"
+        "&excluded_user_ids=-1"
+    )
+    oversized = client.get(
+        "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03&"
+        + "&".join(f"excluded_user_ids={value}" for value in range(1, 202))
+    )
+
+    assert invalid.status_code == 422
+    assert oversized.status_code == 422
+
+
 def test_comparison_window_requires_previous_period_inside_chat_coverage() -> None:
     filters = UsageFilters(date(2026, 7, 20), date(2026, 7, 26), "day")
     covered = ChatMaterializationState(
@@ -686,7 +713,33 @@ def test_all_dashboard_queries_bind_for_unfiltered_and_filtered_requests() -> No
             "week",
             user_id=34,
             department="JW중외제약",
+            excluded_user_ids=(82, 85),
         ),
     ):
         for query in repository._build_queries(filters):
             assert cursor.mogrify(query.sql, query.params)
+
+
+def test_excluded_users_are_filtered_from_current_and_comparison_queries() -> None:
+    repository = MariaDBUsageRepository(_dashboard_config())
+    filters = UsageFilters(
+        date(2026, 7, 1),
+        date(2026, 7, 31),
+        "day",
+        excluded_user_ids=(82, 85),
+    )
+    queries = (
+        *repository._build_queries(filters),
+        *repository._build_comparison_queries(
+            filters,
+            (date(2026, 6, 1), date(2026, 6, 30)),
+        ),
+    )
+
+    for query in queries:
+        normalized = " ".join(query.sql.split())
+        assert "NOT IN" in normalized, query.name
+        serialized_params = {str(value) for value in query.params}
+        assert ({"82", "85"} <= serialized_params) or (
+            {"genos-user:82", "genos-user:85"} <= serialized_params
+        ), query.name

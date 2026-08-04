@@ -196,7 +196,8 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
     """,
     "filter_options": """
         SELECT id AS user_id, name AS user_name, department
-        FROM dashboard_user_directory_v
+        FROM dashboard_user_directory_v u
+        WHERE 1=1 {user_filter}
         ORDER BY name, id
     """,
 }
@@ -278,9 +279,18 @@ class UsageFilters:
     user_id: int | None = None
     user_ids: tuple[int, ...] = ()
     department: str | None = None
+    excluded_user_ids: tuple[int, ...] = ()
 
     def cache_key(self) -> tuple[Any, ...]:
-        return (self.date_from, self.date_to, self.grain, self.user_id, self.user_ids, self.department)
+        return (
+            self.date_from,
+            self.date_to,
+            self.grain,
+            self.user_id,
+            self.user_ids,
+            self.department,
+            self.excluded_user_ids,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +305,7 @@ class UsageLogFilters:
     date_to: date
     user_id: int | None = None
     user_ids: tuple[int, ...] = ()
+    excluded_user_ids: tuple[int, ...] = ()
     department: str | None = None
     endpoint: str | None = None
     http_status: int | None = None
@@ -325,6 +336,7 @@ class ChatTurnFilters:
     date_to: date
     user_id: int | None = None
     user_ids: tuple[int, ...] = ()
+    excluded_user_ids: tuple[int, ...] = ()
     department: str | None = None
     page_size: int = DEFAULT_USAGE_LOG_PAGE_SIZE
     cursor: ChatTurnCursor | None = None
@@ -584,6 +596,10 @@ class MariaDBUsageRepository:
         if filters.user_ids:
             clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
             params.extend(filters.user_ids)
+        clauses.append("(u.id IS NULL OR LOWER(u.user_id) NOT LIKE '%%test%%')")
+        if filters.excluded_user_ids:
+            clauses.append(f"(u.id IS NULL OR u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))}))")
+            params.extend(filters.excluded_user_ids)
         if filters.department:
             clauses.append("u.department=%s")
             params.append(filters.department)
@@ -654,6 +670,10 @@ class MariaDBUsageRepository:
         if filters.user_ids:
             clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
             params.extend(filters.user_ids)
+        clauses.append("LOWER(u.user_id) NOT LIKE '%%test%%'")
+        if filters.excluded_user_ids:
+            clauses.append(f"u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))})")
+            params.extend(filters.excluded_user_ids)
         if filters.department:
             clauses.append("u.department=%s")
             params.append(filters.department)
@@ -712,7 +732,7 @@ class MariaDBUsageRepository:
                 api_filter=api_filter,
             )
             if name == "filter_options":
-                params: tuple[Any, ...] = ()
+                params = user_params
             elif name == "auth_audience":
                 params = (start, start, start, end_exclusive, *user_params)
             elif name == "chat_trend":
@@ -883,6 +903,7 @@ class UsageStatsService:
         serialized_filters = asdict(filters)
         if not filters.user_ids:
             serialized_filters.pop("user_ids")
+        serialized_filters.pop("excluded_user_ids")
         payload = {
             "filters": serialized_filters,
             "limits": {"max_days": MAX_RANGE_DAYS, "cache_ttl_seconds": self._cache.ttl_seconds},
@@ -992,7 +1013,7 @@ def _chat_turn_item(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _user_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
-    clauses: list[str] = []
+    clauses: list[str] = ["(u.id IS NULL OR LOWER(u.user_id) NOT LIKE '%%test%%')"]
     params: list[Any] = []
     if filters.user_id is not None:
         clauses.append("u.id=%s")
@@ -1000,6 +1021,9 @@ def _user_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
     if filters.user_ids:
         clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
         params.extend(filters.user_ids)
+    if filters.excluded_user_ids:
+        clauses.append(f"(u.id IS NULL OR u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))}))")
+        params.extend(filters.excluded_user_ids)
     if filters.department:
         clauses.append("u.department=%s")
         params.append(filters.department)
@@ -1007,7 +1031,11 @@ def _user_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
 
 
 def _api_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
-    clauses: list[str] = []
+    clauses: list[str] = [
+        "(actor_uid IS NULL OR actor_uid NOT IN "
+        "(SELECT CONCAT('genos-user:', id) FROM dashboard_user_directory_v "
+        "WHERE LOWER(user_id) LIKE '%%test%%'))"
+    ]
     params: list[Any] = []
     if filters.user_id is not None:
         clauses.append("actor_uid=%s")
@@ -1015,6 +1043,11 @@ def _api_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:
     if filters.user_ids:
         clauses.append(f"actor_uid IN ({','.join(['%s'] * len(filters.user_ids))})")
         params.extend(f"genos-user:{user_id}" for user_id in filters.user_ids)
+    if filters.excluded_user_ids:
+        clauses.append(
+            f"(actor_uid IS NULL OR actor_uid NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))}))"
+        )
+        params.extend(f"genos-user:{user_id}" for user_id in filters.excluded_user_ids)
     if filters.department:
         clauses.append(
             "actor_uid IN (SELECT CONCAT('genos-user:',id) FROM dashboard_user_directory_v WHERE department=%s)"
