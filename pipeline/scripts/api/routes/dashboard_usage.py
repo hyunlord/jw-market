@@ -5,18 +5,24 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from pipeline.scripts.api.chat_usage_materialization import ChatMaterializationUnavailable
 from pipeline.scripts.api.dashboard_usage import (
+    DEFAULT_CACHE_TTL_SECONDS,
     DashboardQueryError,
+    ChatTurnFilters,
+    ChatTurnsRepository,
+    InvalidChatTurnCursor,
     MAX_USAGE_LOG_PAGE_SIZE,
     MAX_USAGE_LOG_RANGE_DAYS,
     MAX_RANGE_DAYS,
     InvalidUsageLogCursor,
     UsageLogFilters,
-    UsageLogsRepository,
+    UsageHistoryRepository,
     UsageFilters,
     UsageStatsService,
+    decode_chat_turn_cursor,
     decode_usage_log_cursor,
 )
 
@@ -126,7 +132,7 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
     return router
 
 
-def create_usage_logs_router(repository: UsageLogsRepository) -> APIRouter:
+def create_usage_logs_router(repository: UsageHistoryRepository) -> APIRouter:
     router = APIRouter(tags=["internal-dashboard"])
 
     @router.get("/api/dashboard/usage-logs", include_in_schema=False)
@@ -174,4 +180,80 @@ def create_usage_logs_router(repository: UsageLogsRepository) -> APIRouter:
             "has_more": page.has_more,
         }
 
+    router.include_router(create_chat_turns_router(repository))
     return router
+
+
+def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
+    router = APIRouter(tags=["internal-dashboard"])
+
+    @router.get("/api/dashboard/chat-turns", include_in_schema=False)
+    def chat_turns(
+        date_from: date = Query(),
+        date_to: date = Query(),
+        user_id: int | None = Query(default=None, ge=1),
+        user_ids: list[int] | None = Query(default=None),
+        department: str | None = Query(default=None, min_length=1, max_length=100),
+        page_size: int = Query(default=50, ge=1, le=MAX_USAGE_LOG_PAGE_SIZE),
+        cursor: str | None = Query(default=None, min_length=1, max_length=512),
+    ) -> dict:
+        if date_from > date_to:
+            raise HTTPException(status_code=422, detail="시작일은 종료일보다 늦을 수 없습니다.")
+        if (date_to - date_from).days + 1 > MAX_USAGE_LOG_RANGE_DAYS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"조회 기간은 최대 {MAX_USAGE_LOG_RANGE_DAYS}일입니다.",
+            )
+        resolved_user_ids = tuple(sorted(set(user_ids or ())))
+        if len(resolved_user_ids) > 200 or any(user < 1 for user in resolved_user_ids):
+            raise HTTPException(status_code=422, detail="사용자 목록 필터가 올바르지 않습니다.")
+        try:
+            decoded_cursor = decode_chat_turn_cursor(cursor) if cursor else None
+        except InvalidChatTurnCursor as exc:
+            raise HTTPException(status_code=400, detail="cursor가 올바르지 않습니다.") from exc
+        try:
+            page = repository.fetch_chat_turns(
+                ChatTurnFilters(
+                    date_from=date_from,
+                    date_to=date_to,
+                    user_id=user_id,
+                    user_ids=resolved_user_ids,
+                    department=department.strip() if department else None,
+                    page_size=page_size,
+                    cursor=decoded_cursor,
+                )
+            )
+        except ChatMaterializationUnavailable as error:
+            return _chat_turns_unavailable(error)
+        except DashboardQueryError as error:
+            LOGGER.exception(
+                "chat turn history query failed",
+                extra={"query_name": error.query_name},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "dashboard_query_unavailable",
+                    "message": "채팅 이력을 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+                },
+            ) from error
+        return {
+            "items": list(page.items),
+            "next_cursor": page.next_cursor,
+            "has_more": page.has_more,
+        }
+
+    return router
+
+
+def _chat_turns_unavailable(error: ChatMaterializationUnavailable) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": _materialization_error_detail(error),
+            "limits": {
+                "max_days": MAX_USAGE_LOG_RANGE_DAYS,
+                "cache_ttl_seconds": DEFAULT_CACHE_TTL_SECONDS,
+            },
+        },
+    )

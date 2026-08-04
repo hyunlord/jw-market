@@ -201,6 +201,45 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
     """,
 }
 
+COMPARISON_SQL: Final[dict[str, str]] = {
+    "api": """
+        SELECT COUNT(*) AS value
+        FROM dashboard_api_usage_v
+        WHERE called_at >= %s AND called_at < %s
+        {api_filter}
+    """,
+    "chat_sessions": """
+        SELECT COUNT(DISTINCT s.conversation_id) AS value
+        FROM jw_mart.mart_chat_usage_daily_session s
+        LEFT JOIN dashboard_user_directory_v u ON u.id=s.portal_user_id
+        WHERE s.usage_date >= %s AND s.usage_date < %s
+          AND s.service_id IN (61, 91, 94)
+        {user_filter}
+    """,
+    "successful_logins": """
+        SELECT COUNT(*) AS value
+        FROM dashboard_auth_event_v a
+        LEFT JOIN dashboard_user_directory_v u ON u.id=a.user_id
+        WHERE a.reg_date >= %s AND a.reg_date < %s AND a.type_code='AT0001'
+        {user_filter}
+    """,
+    "credits": """
+        SELECT COALESCE(SUM(COALESCE(c.charge,0)+COALESCE(c.overused_charge,0)),0) AS value
+        FROM dashboard_credit_usage_v c
+        LEFT JOIN dashboard_user_directory_v u ON u.id=c.user_id
+        WHERE c.reg_date >= %s AND c.reg_date < %s AND c.applied=1
+        {user_filter}
+    """,
+    "successful_downloads": """
+        SELECT COALESCE(SUM(r.success=1),0) AS value
+        FROM dashboard_report_download_v r
+        LEFT JOIN dashboard_user_directory_v u
+          ON r.actor_uid=CONCAT('genos-user:', u.id)
+        WHERE r.completed_at >= %s AND r.completed_at < %s
+        {user_filter}
+    """,
+}
+
 USAGE_LOGS_SQL: Final = """
     SELECT a.id, a.called_at, a.endpoint, a.http_status, a.actor_type,
            CASE WHEN a.actor_type='user' THEN u.id ELSE NULL END AS user_id,
@@ -212,6 +251,21 @@ USAGE_LOGS_SQL: Final = """
     WHERE a.called_at >= %s AND a.called_at < %s
     {filters}
     ORDER BY a.called_at DESC, a.id DESC
+    LIMIT %s
+"""
+
+CHAT_TURNS_SQL: Final = """
+    SELECT c.conversation_log_id, c.created_at, c.service_id,
+           c.portal_user_id AS user_id, u.name AS user_name, u.department,
+           c.conversation_id, c.turn_index, c.contract_status, c.quality_label,
+           c.elapsed_ms, c.input_tokens, c.output_tokens, c.total_tokens
+    FROM dashboard_chat_usage_v c
+    JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
+    WHERE c.created_at >= %s AND c.created_at < %s
+      AND c.portal_user_id IS NOT NULL
+      AND c.service_id IN (61, 91, 94)
+    {filters}
+    ORDER BY c.created_at DESC, c.conversation_log_id DESC
     LIMIT %s
 """
 
@@ -259,6 +313,34 @@ class InvalidUsageLogCursor(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class ChatTurnCursor:
+    created_at: datetime
+    conversation_log_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurnFilters:
+    date_from: date
+    date_to: date
+    user_id: int | None = None
+    user_ids: tuple[int, ...] = ()
+    department: str | None = None
+    page_size: int = DEFAULT_USAGE_LOG_PAGE_SIZE
+    cursor: ChatTurnCursor | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurnPage:
+    items: tuple[dict[str, Any], ...]
+    next_cursor: str | None
+    has_more: bool
+
+
+class InvalidChatTurnCursor(ValueError):
+    pass
+
+
 def encode_usage_log_cursor(cursor: UsageLogCursor) -> str:
     payload = json.dumps(
         {"called_at": cursor.called_at.isoformat(timespec="microseconds"), "id": cursor.id},
@@ -293,12 +375,60 @@ def decode_usage_log_cursor(value: str) -> UsageLogCursor:
         raise InvalidUsageLogCursor from exc
 
 
+def encode_chat_turn_cursor(cursor: ChatTurnCursor) -> str:
+    payload = json.dumps(
+        {
+            "created_at": cursor.created_at.isoformat(timespec="microseconds"),
+            "conversation_log_id": cursor.conversation_log_id,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_chat_turn_cursor(value: str) -> ChatTurnCursor:
+    try:
+        padding = "=" * (-len(value) % 4)
+        raw = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+        payload = json.loads(raw.decode("ascii"))
+        if not isinstance(payload, dict) or set(payload) != {
+            "created_at",
+            "conversation_log_id",
+        }:
+            raise InvalidChatTurnCursor
+        created_at_raw = payload["created_at"]
+        row_id = payload["conversation_log_id"]
+        if not isinstance(created_at_raw, str) or not isinstance(row_id, int) or row_id < 1:
+            raise InvalidChatTurnCursor
+        created_at = datetime.fromisoformat(created_at_raw)
+        if created_at.tzinfo is not None:
+            raise InvalidChatTurnCursor
+        cursor = ChatTurnCursor(created_at=created_at, conversation_log_id=row_id)
+        if encode_chat_turn_cursor(cursor) != value:
+            raise InvalidChatTurnCursor
+        return cursor
+    except InvalidChatTurnCursor:
+        raise
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise InvalidChatTurnCursor from exc
+
+
 class UsageRepository(Protocol):
     def fetch(self, filters: UsageFilters) -> dict[str, Any]: ...
 
 
 class UsageLogsRepository(Protocol):
     def fetch_logs(self, filters: UsageLogFilters) -> UsageLogPage: ...
+
+
+class ChatTurnsRepository(Protocol):
+    def fetch_chat_turns(self, filters: ChatTurnFilters) -> ChatTurnPage: ...
+
+
+class UsageHistoryRepository(UsageLogsRepository, ChatTurnsRepository, Protocol):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,10 +510,27 @@ class MariaDBUsageRepository:
         except Exception as exc:
             raise DashboardQueryError("chat_materialization_state") from exc
         validate_materialization_state(state, filters)
-        rows = self._fetch_rows(self._build_queries(filters))
+        previous_window = comparison_window(filters, state)
+        queries = self._build_queries(filters)
+        comparison_queries = (
+            self._build_comparison_queries(
+                filters,
+                previous_window,
+                ordinal_offset=len(queries),
+            )
+            if previous_window is not None
+            else ()
+        )
+        rows, failed_optional = self._fetch_rows_with_optional(queries, comparison_queries)
+        previous_rows = {
+            name: value for name, value in rows.items() if name.startswith("comparison_")
+        }
+        comparison_failure_reason: str | None = None
+        if failed_optional:
+            comparison_failure_reason = "comparison_query_unavailable"
 
         options = rows["filter_options"]
-        return {
+        result = {
             "api": {
                 "trend": rows["api_trend"],
                 "by_endpoint": rows["api_endpoint"],
@@ -416,6 +563,14 @@ class MariaDBUsageRepository:
                 ),
             },
         }
+        result["comparison"] = build_usage_comparison(
+            result,
+            filters=filters,
+            previous_window=previous_window,
+            previous_rows=previous_rows,
+            unavailable_reason=comparison_failure_reason,
+        )
+        return result
 
     def fetch_logs(self, filters: UsageLogFilters) -> UsageLogPage:
         clauses: list[str] = []
@@ -481,6 +636,68 @@ class MariaDBUsageRepository:
             )
         return UsageLogPage(items=tuple(items), next_cursor=next_cursor, has_more=has_more)
 
+    def fetch_chat_turns(self, filters: ChatTurnFilters) -> ChatTurnPage:
+        try:
+            state = self._fetch_chat_materialization_state()
+        except Exception as exc:
+            raise DashboardQueryError("chat_materialization_state") from exc
+        validate_materialization_state(state, filters)
+
+        clauses: list[str] = []
+        params: list[Any] = [
+            filters.date_from.isoformat(),
+            (filters.date_to + timedelta(days=1)).isoformat(),
+        ]
+        if filters.user_id is not None:
+            clauses.append("u.id=%s")
+            params.append(filters.user_id)
+        if filters.user_ids:
+            clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
+            params.extend(filters.user_ids)
+        if filters.department:
+            clauses.append("u.department=%s")
+            params.append(filters.department)
+        if filters.cursor is not None:
+            clauses.append(
+                "(c.created_at < %s OR "
+                "(c.created_at = %s AND c.conversation_log_id < %s))"
+            )
+            params.extend(
+                (
+                    filters.cursor.created_at,
+                    filters.cursor.created_at,
+                    filters.cursor.conversation_log_id,
+                )
+            )
+        params.append(filters.page_size + 1)
+        sql = CHAT_TURNS_SQL.format(
+            filters=(" AND " + " AND ".join(clauses)) if clauses else ""
+        )
+
+        connection = self._connect(**self._connect_args)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, tuple(params))
+                rows = [_normalize_row(row) for row in cursor.fetchall()]
+        except Exception as exc:
+            raise DashboardQueryError("chat_turns") from exc
+        finally:
+            connection.close()
+
+        has_more = len(rows) > filters.page_size
+        page_rows = rows[: filters.page_size]
+        items = tuple(_chat_turn_item(row) for row in page_rows)
+        next_cursor = None
+        if has_more and page_rows:
+            last = page_rows[-1]
+            next_cursor = encode_chat_turn_cursor(
+                ChatTurnCursor(
+                    created_at=last["created_at"],
+                    conversation_log_id=int(last["conversation_log_id"]),
+                )
+            )
+        return ChatTurnPage(items=items, next_cursor=next_cursor, has_more=has_more)
+
     def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:
         start = filters.date_from.isoformat()
         end_exclusive = (filters.date_to + timedelta(days=1)).isoformat()
@@ -516,6 +733,35 @@ class MariaDBUsageRepository:
             queries.append(DashboardQuery(name=name, ordinal=ordinal, sql=sql, params=params))
         return tuple(queries)
 
+    def _build_comparison_queries(
+        self,
+        filters: UsageFilters,
+        window: tuple[date, date],
+        *,
+        ordinal_offset: int = 0,
+    ) -> tuple[DashboardQuery, ...]:
+        start = window[0].isoformat()
+        end_exclusive = (window[1] + timedelta(days=1)).isoformat()
+        user_filter, user_params = _user_filter(filters)
+        api_filter, api_params = _api_filter(filters)
+        queries: list[DashboardQuery] = []
+        for ordinal, (name, template) in enumerate(COMPARISON_SQL.items()):
+            sql = template.format(user_filter=user_filter, api_filter=api_filter)
+            params = (
+                (start, end_exclusive, *api_params)
+                if name == "api"
+                else (start, end_exclusive, *user_params)
+            )
+            queries.append(
+                DashboardQuery(
+                    name=f"comparison_{name}",
+                    ordinal=ordinal_offset + ordinal,
+                    sql=sql,
+                    params=params,
+                )
+            )
+        return tuple(queries)
+
     def _fetch_chat_materialization_state(self) -> ChatMaterializationState | None:
         connection = self._connect(**self._connect_args)
         try:
@@ -544,6 +790,50 @@ class MariaDBUsageRepository:
 
         results = {future.result()[0]: future.result()[1] for future in futures}
         return {query.name: results[query.name] for query in queries}
+
+    def _fetch_rows_with_optional(
+        self,
+        required: tuple[DashboardQuery, ...],
+        optional: tuple[DashboardQuery, ...],
+    ) -> tuple[dict[str, list[dict[str, Any]]], tuple[str, ...]]:
+        optional_names = {query.name for query in optional}
+        all_queries = required + optional
+        futures: dict[Future[tuple[str, list[dict[str, Any]]]], DashboardQuery] = {
+            self._executor.submit(self._execute_query, query): query for query in all_queries
+        }
+        pending = set(futures)
+        results: dict[str, list[dict[str, Any]]] = {}
+        failed_optional: list[str] = []
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_EXCEPTION)
+            failed_required = [
+                (futures[future], future.exception())
+                for future in done
+                if future.exception() is not None
+                and futures[future].name not in optional_names
+            ]
+            if failed_required:
+                for remaining in pending:
+                    remaining.cancel()
+                query, error = min(failed_required, key=lambda item: item[0].ordinal)
+                raise DashboardQueryError(query.name) from error
+            for future in done:
+                query = futures[future]
+                error = future.exception()
+                if error is None:
+                    name, rows = future.result()
+                    results[name] = rows
+                    continue
+                if query.name in optional_names:
+                    failed_optional.append(query.name)
+                    continue
+
+        ordered = {
+            query.name: results[query.name]
+            for query in all_queries
+            if query.name in results
+        }
+        return ordered, tuple(sorted(failed_optional))
 
     def _execute_query(self, query: DashboardQuery) -> tuple[str, list[dict[str, Any]]]:
         connection = self._connect(**self._connect_args)
@@ -601,6 +891,104 @@ class UsageStatsService:
         }
         self._cache.put(filters.cache_key(), payload)
         return payload
+
+
+def comparison_window(
+    filters: UsageFilters,
+    state: ChatMaterializationState,
+) -> tuple[date, date] | None:
+    days = (filters.date_to - filters.date_from).days + 1
+    previous_to = filters.date_from - timedelta(days=1)
+    previous_from = previous_to - timedelta(days=days - 1)
+    if previous_from < state.coverage_start:
+        return None
+    return previous_from, previous_to
+
+
+def build_usage_comparison(
+    result: dict[str, Any],
+    filters: UsageFilters,
+    *,
+    previous_window: tuple[date, date] | None,
+    previous_rows: dict[str, list[dict[str, Any]]] | None,
+    unavailable_reason: str | None = None,
+) -> dict[str, Any]:
+    current_period = {
+        "date_from": filters.date_from.isoformat(),
+        "date_to": filters.date_to.isoformat(),
+    }
+    if previous_window is None or unavailable_reason is not None:
+        return {
+            "available": False,
+            "reason": unavailable_reason or "previous_period_outside_coverage",
+            "current_period": current_period,
+            "previous_period": None,
+            "metrics": {},
+        }
+
+    current_values = {
+        "api_calls": sum(int(row.get("total_calls") or 0) for row in result["api"]["trend"]),
+        "chat_sessions": sum(
+            int(row.get("sessions") or 0)
+            for row in result["chat"]["trend"]
+            if row.get("service_id") in {61, 91, 94}
+        ),
+        "successful_logins": sum(
+            int(row.get("events") or 0)
+            for row in result["auth"]["by_type"]
+            if row.get("type_code") == "AT0001"
+        ),
+        "credits": sum(float(row.get("credits") or 0) for row in result["credit"]["trend"]),
+        "successful_downloads": sum(
+            int(row.get("successful_downloads") or 0)
+            for row in result["reports"]["trend"]
+        ),
+    }
+    row_names = {
+        "api_calls": "comparison_api",
+        "chat_sessions": "comparison_chat_sessions",
+        "successful_logins": "comparison_successful_logins",
+        "credits": "comparison_credits",
+        "successful_downloads": "comparison_successful_downloads",
+    }
+    metrics: dict[str, dict[str, int | float | None]] = {}
+    for metric, current in current_values.items():
+        rows = (previous_rows or {}).get(row_names[metric]) or [{"value": 0}]
+        previous = rows[0].get("value") or 0
+        change = None if float(previous) == 0 else round((float(current) - float(previous)) / float(previous) * 100, 2)
+        metrics[metric] = {
+            "current": current,
+            "previous": previous,
+            "change_rate_percent": change,
+        }
+    return {
+        "available": True,
+        "reason": None,
+        "current_period": current_period,
+        "previous_period": {
+            "date_from": previous_window[0].isoformat(),
+            "date_to": previous_window[1].isoformat(),
+        },
+        "metrics": metrics,
+    }
+
+
+def _chat_turn_item(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "user_id": row["user_id"],
+        "user_name": row.get("user_name"),
+        "department": row.get("department"),
+        "created_at": row["created_at"],
+        "service_id": row["service_id"],
+        "service_category": UsageStatsService.service_category(row.get("service_id")),
+        "turn_index": row.get("turn_index"),
+        "contract_status": row.get("contract_status"),
+        "quality_label": row.get("quality_label"),
+        "elapsed_ms": row.get("elapsed_ms"),
+        "input_tokens": row.get("input_tokens"),
+        "output_tokens": row.get("output_tokens"),
+        "total_tokens": row.get("total_tokens"),
+    }
 
 
 def _user_filter(filters: UsageFilters) -> tuple[str, tuple[Any, ...]]:

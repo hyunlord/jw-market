@@ -21,6 +21,8 @@ from pipeline.scripts.api.dashboard_usage import (
     MariaDBUsageRepository,
     UsageFilters,
     UsageStatsService,
+    build_usage_comparison,
+    comparison_window,
 )
 from pipeline.scripts.api.chat_usage_materialization import (
     ChatMaterializationState,
@@ -326,6 +328,100 @@ def test_usage_dashboard_accepts_repeated_user_ids_as_an_additive_filter() -> No
     assert repository.calls[0].user_ids == (34, 35)
 
 
+def test_comparison_window_requires_previous_period_inside_chat_coverage() -> None:
+    filters = UsageFilters(date(2026, 7, 20), date(2026, 7, 26), "day")
+    covered = ChatMaterializationState(
+        date(2026, 7, 9),
+        date(2026, 8, 5),
+        datetime.now(UTC),
+        "complete",
+    )
+    uncovered = replace(covered, coverage_start=date(2026, 7, 15))
+
+    assert comparison_window(filters, covered) == (date(2026, 7, 13), date(2026, 7, 19))
+    assert comparison_window(filters, uncovered) is None
+
+
+def test_usage_comparison_is_additive_and_excludes_unlinked_chat_sessions() -> None:
+    result = FakeRepository().fetch(UsageFilters(date(2026, 7, 20), date(2026, 7, 26), "day"))
+    result["api"]["trend"] = [{"total_calls": 120, "attributed_calls": 100}]
+    result["chat"]["trend"] = [
+        {"service_id": 61, "sessions": 4},
+        {"service_id": 91, "sessions": 6},
+        {"service_id": None, "sessions": 90},
+    ]
+    result["auth"]["by_type"] = [
+        {"type_code": "AT0001", "events": 20},
+        {"type_code": "AT0004", "events": 7},
+    ]
+    result["credit"]["trend"] = [{"credits": 300.5}]
+    result["reports"]["trend"] = [{"successful_downloads": 8}]
+    previous = {
+        "comparison_api": [{"value": 100}],
+        "comparison_chat_sessions": [{"value": 5}],
+        "comparison_successful_logins": [{"value": 10}],
+        "comparison_credits": [{"value": 0}],
+        "comparison_successful_downloads": [{"value": 4}],
+    }
+
+    comparison = build_usage_comparison(
+        result,
+        UsageFilters(date(2026, 7, 20), date(2026, 7, 26), "day"),
+        previous_window=(date(2026, 7, 13), date(2026, 7, 19)),
+        previous_rows=previous,
+    )
+
+    assert comparison["available"] is True
+    assert comparison["metrics"]["api_calls"] == {
+        "current": 120,
+        "previous": 100,
+        "change_rate_percent": 20.0,
+    }
+    assert comparison["metrics"]["chat_sessions"]["current"] == 10
+    assert comparison["metrics"]["chat_sessions"]["previous"] == 5
+    assert comparison["metrics"]["credits"]["change_rate_percent"] is None
+
+
+def test_usage_comparison_hides_values_when_previous_coverage_is_unavailable() -> None:
+    filters = UsageFilters(date(2026, 7, 9), date(2026, 8, 3), "day")
+    result = FakeRepository().fetch(filters)
+
+    comparison = build_usage_comparison(
+        result,
+        filters,
+        previous_window=None,
+        previous_rows=None,
+    )
+
+    assert comparison == {
+        "available": False,
+        "reason": "previous_period_outside_coverage",
+        "current_period": {"date_from": "2026-07-09", "date_to": "2026-08-03"},
+        "previous_period": None,
+        "metrics": {},
+    }
+
+
+def test_usage_comparison_is_best_effort_when_optional_queries_fail() -> None:
+    filters = UsageFilters(date(2026, 7, 20), date(2026, 7, 26), "day")
+
+    comparison = build_usage_comparison(
+        FakeRepository().fetch(filters),
+        filters,
+        previous_window=(date(2026, 7, 13), date(2026, 7, 19)),
+        previous_rows=None,
+        unavailable_reason="comparison_query_unavailable",
+    )
+
+    assert comparison == {
+        "available": False,
+        "reason": "comparison_query_unavailable",
+        "current_period": {"date_from": "2026-07-20", "date_to": "2026-07-26"},
+        "previous_period": None,
+        "metrics": {},
+    }
+
+
 def test_service_category_is_explicit_and_unknown_is_not_relabelled() -> None:
     assert UsageStatsService.service_category(61) == "rnd"
     assert UsageStatsService.service_category(91) == "market"
@@ -512,7 +608,7 @@ def test_parallel_repository_bounds_process_wide_query_concurrency() -> None:
         results = list(callers.map(repository.fetch, (filters, filters)))
 
     assert 1 < repository.max_active_queries <= 4
-    assert len(repository.completed_queries) == 38
+    assert len(repository.completed_queries) == 48
     assert results[0] == results[1]
 
 
@@ -528,6 +624,24 @@ def test_parallel_repository_fails_closed_when_connection_capacity_is_exhausted(
         repository.fetch(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
 
     assert isinstance(captured.value.__cause__, pymysql.OperationalError)
+
+
+def test_optional_comparison_failure_preserves_required_dashboard_rows() -> None:
+    repository = DeterministicUsageRepository(
+        max_workers=4,
+        failing_query="comparison_api",
+    )
+
+    result = repository.fetch(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert result["api"]["trend"]
+    assert result["comparison"] == {
+        "available": False,
+        "reason": "comparison_query_unavailable",
+        "current_period": {"date_from": "2026-07-01", "date_to": "2026-07-31"},
+        "previous_period": None,
+        "metrics": {},
+    }
 
 
 def test_service_does_not_cache_a_partial_result_when_one_query_fails() -> None:
