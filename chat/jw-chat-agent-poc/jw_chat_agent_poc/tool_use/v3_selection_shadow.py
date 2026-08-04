@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from threading import Thread
 from typing import Callable
 
@@ -9,7 +10,10 @@ from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     current_shadow_request_id,
     question_fingerprint,
 )
-from jw_chat_agent_poc.tool_use.v3_selection import V3ToolSelector
+from jw_chat_agent_poc.tool_use.v3_selection import (
+    V3SelectionResult,
+    V3ToolSelector,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -44,6 +48,11 @@ def run_v3_selection_shadow_once(
     LOGGER.info(
         "v3_tool_selection_shadow_observed payload=%s",
         json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+    )
+    _observe_v3_execution_shadow(
+        question,
+        result,
+        request_id=str(payload["request_id"] or ""),
     )
     return payload
 
@@ -91,3 +100,30 @@ def _default_selector() -> V3ToolSelector:
     )
 
     return V3ToolSelector(provider=GenosV3ToolChoiceProvider.from_env())
+
+
+def _observe_v3_execution_shadow(
+    question: str,
+    result: V3SelectionResult,
+    *,
+    request_id: str,
+) -> None:
+    if os.environ.get("JW_CHAT_V3_TOOL_EXECUTION_SHADOW", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    try:
+        from jw_chat_agent_poc.tool_use.v3_execution_shadow import (
+            start_v3_execution_shadow,
+        )
+
+        start_v3_execution_shadow(
+            question,
+            result,
+            request_id=request_id,
+        )
+    except Exception:  # noqa: BLE001 - execution SHADOW cannot affect selection or answer
+        LOGGER.exception("v3_tool_execution_shadow_start_failed")
