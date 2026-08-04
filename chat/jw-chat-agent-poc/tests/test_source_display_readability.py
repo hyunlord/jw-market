@@ -18,7 +18,11 @@ PROVENANCE_HEADER = "| 출처 | 기준기간 | 뷰 | 시장정의 | 분모 | 채
 
 
 def test_every_registered_external_tool_has_public_step_and_source_labels() -> None:
-    registered = {record.name for record in TOOL_DESCRIPTION_CATALOG if record.has_spec}
+    registered = {
+        record.name
+        for record in TOOL_DESCRIPTION_CATALOG
+        if record.has_spec and record.selection_enabled
+    }
 
     assert registered <= TOOL_STEP_LABELS.keys()
     assert registered <= TOOL_SOURCE_LABELS.keys()

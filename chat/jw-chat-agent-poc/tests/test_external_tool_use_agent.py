@@ -1256,16 +1256,17 @@ def test_agent_executor_continues_when_completion_policy_requires_final_tool() -
     assert "provider_payload" not in result.answer
 
 
-def test_tool_catalog_has_descriptions_for_all_23_tools() -> None:
-    # Given: the phase-1 external tool inventory.
+def test_tool_catalog_keeps_descriptions_for_all_23_selectable_tools() -> None:
+    # Given: the expanded catalog and the phase-1 selectable external inventory.
     records = TOOL_DESCRIPTION_CATALOG
+    selectable = tuple(record for record in records if record.selection_enabled)
 
     # When: descriptions are checked as the routing contract.
-    descriptions = tuple(record.description.casefold() for record in records)
+    descriptions = tuple(record.description.casefold() for record in selectable)
 
-    # Then: every tool has explicit positive and negative guidance.
-    assert len(records) == 23
-    assert len({record.name for record in records}) == 23
+    # Then: the active 23-tool prompt contract is unchanged.
+    assert len(selectable) == 23
+    assert len({record.name for record in selectable}) == 23
     assert all("when to use" in description for description in descriptions)
     assert all("when not" in description for description in descriptions)
 
@@ -1281,16 +1282,18 @@ def test_tool_descriptions_route_trials_and_web_topics_without_misclassifying_gu
     assert "topic=news" in descriptions["web_search"]
 
 
-def test_registry_exposes_a_spec_for_every_cataloged_tool() -> None:
+def test_registry_exposes_a_spec_for_every_selection_enabled_tool() -> None:
     # Given: the real fixture-backed external client and local resolver.
     registry = ExternalToolRegistry(resolver=BrandResolver(), external=ExternalApiClient(mode="fixture"))
 
     # When: the external tool pack is built.
     specs = registry.list_for_query("외부 근거 조회")
 
-    # Then: every cataloged tool is executable and names are identical.
+    # Then: only the existing selection-enabled tools are executable.
     assert len(specs) == 23
-    assert {spec.name for spec in specs} == {record.name for record in TOOL_DESCRIPTION_CATALOG}
+    assert {spec.name for spec in specs} == {
+        record.name for record in TOOL_DESCRIPTION_CATALOG if record.selection_enabled
+    }
 
 
 @pytest.mark.parametrize(
