@@ -26,7 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
@@ -37,7 +37,13 @@ from pipeline.scripts.ingest_hook.category_map import (
 )
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest
 from pipeline.scripts.ingest_hook.g3 import G3Error, validate
-from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_QUEUED, Ledger
+from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_AWAITING_APPROVAL,
+    STATUS_COMPLETE,
+    STATUS_PUBLISH_RUNNING,
+    STATUS_QUEUED,
+    Ledger,
+)
 from pipeline.scripts.ingest_hook.post_gate import (
     PostGateError,
     SigmaEvidence,
@@ -48,7 +54,6 @@ from pipeline.scripts.ingest_hook.post_gate import (
     sample_existing_periods,
     staging_row_count,
 )
-from pipeline.scripts.ingest_hook import publish_approval
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
 
 
@@ -319,6 +324,18 @@ def _recovery_tracker(
 
 
 _EMPTY_UBIST_MANIFEST = '{"schema_version": "1.0", "partitions": []}'
+_ENV_PUBLISH_CANDIDATE_TTL_SECONDS = "INGEST_PUBLISH_CANDIDATE_TTL_SECONDS"
+_DEFAULT_PUBLISH_CANDIDATE_TTL_SECONDS = 86400
+
+
+def _publish_candidate_ttl_seconds() -> int:
+    raw = os.environ.get(_ENV_PUBLISH_CANDIDATE_TTL_SECONDS, "").strip()
+    if not raw:
+        return _DEFAULT_PUBLISH_CANDIDATE_TTL_SECONDS
+    value = int(raw)
+    if value < 1:
+        raise RuntimeError(f"{_ENV_PUBLISH_CANDIDATE_TTL_SECONDS} must be a positive integer")
+    return value
 
 
 def _seed_empty_manifest(target_dir: Path, verify_kind: str | None) -> None:
@@ -528,6 +545,13 @@ def run(
         # Defence in depth: a re-delivered Job for a completed identity is a no-op.
         print(f"result=noop reason=identity already complete epoch={manifest.epoch} category={manifest.category}")
         return 0
+    if entry.status in {STATUS_AWAITING_APPROVAL, STATUS_PUBLISH_RUNNING}:
+        print(
+            "result=noop "
+            f"reason=identity already {entry.status} "
+            f"epoch={manifest.epoch} category={manifest.category}"
+        )
+        return 0
     if entry.status == STATUS_QUEUED:
         ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
 
@@ -545,6 +569,7 @@ def run(
     writer_lock_name = None
     publish_actions: tuple[object, ...] = ()
     activation_succeeded = False
+    awaiting_approval_prepared = False
     ledger_completed = False
     completion_signal_emitted = False
     baseline_live_snapshot = None
@@ -800,6 +825,7 @@ def run(
                         catalog_root=catalog_root,
                         ubist_dir=load_result["target_dir"],
                         atc4_scope=atc4_scope,
+                        period_scope=loaded_periods,
                     )
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
@@ -872,75 +898,73 @@ def run(
                 if mart_activation is not None:
                     from pipeline.scripts.ingest_hook import ubist_mart_activation
 
-                    publish_approval.wait_for_exact_publish_approval(
-                        publish_approval.PublishApprovalIdentity(
-                            epoch=manifest.epoch,
-                            category=manifest.category,
-                            manifest_sha=manifest.manifest_sha,
-                            run_id=run_id,
-                        )
-                    )
-                    tracker.enter("mart_publish")
-                    writer_db = mart_activation.target_db if is_shadow else None
-                    writer_conn = config.open_mart_connection(writer_db)
-                    writer_lock_name = (
-                        ubist_mart_activation.shadow_lock_name(mart_activation.target_db)
-                        if is_shadow
-                        else ubist_mart_activation.WRITER_LOCK_NAME
-                    )
-                    ubist_mart_activation.acquire_writer_lock(
-                        writer_conn, timeout_seconds=0, lock_name=writer_lock_name
-                    )
-                    writer_lock_acquired = True
-                    ubist_mart_activation.require_writer_lock_owner(
-                        writer_conn, lock_name=writer_lock_name
-                    )
-                    ubist_mart_activation.require_corpus_manifest(
-                        corpus_candidate.live_root, baseline_manifest_sha
-                    )
-                    snapshot_conn = config.open_mart_connection(mart_activation.source_db)
-                    try:
-                        current_live_snapshot = fingerprint_untouched_sources(
-                            snapshot_conn, touched_source="__jw_ingest_no_source__"
-                        )
-                    finally:
-                        snapshot_conn.close()
-                    if current_live_snapshot != baseline_live_snapshot:
-                        raise RuntimeError("serving general mart changed while candidate was built")
                     activation_journal = ubist_mart_activation.write_activation_journal(
                         corpus_candidate,
                         mart_activation,
                         run_id=run_id,
-                        phase="prepared",
+                        phase="awaiting_approval",
                         identity=identity,
                     )
-                    ubist_mart_activation.promote_candidate_corpus(corpus_candidate)
-                    ubist_mart_activation.update_activation_journal(
-                        activation_journal, "corpus_promoted"
+                    if load_result["epoch_rows"] is not None:
+                        report.file_rows[f"epoch:{manifest.epoch}"] = load_result["epoch_rows"]
+                    prepared_at = datetime.now(timezone.utc)
+                    expires_at = prepared_at + timedelta(
+                        seconds=_publish_candidate_ttl_seconds()
                     )
-                    if is_shadow:
-                        ubist_mart_activation.maybe_inject_shadow_crash(
-                            "after_corpus_publish"
-                        )
-                    print(f"phase=mart_publish status=start build_db={mart_activation.build_db}")
-                    publish_actions = ubist_mart_activation.publish_shadow(
-                        writer_conn,
-                        mart_activation,
+                    candidate_payload = {
+                        "epoch": manifest.epoch,
+                        "category": manifest.category,
+                        "manifest_sha": manifest.manifest_sha,
+                        "run_id": run_id,
+                        "mode": mode,
+                        "activation_journal": str(activation_journal),
+                        "live_root": str(corpus_candidate.live_root),
+                        "candidate_root": str(corpus_candidate.candidate_root),
+                        "backup_root": str(corpus_candidate.backup_root),
+                        "source_db": mart_activation.source_db,
+                        "target_db": mart_activation.target_db,
+                        "build_db": mart_activation.build_db,
+                        "baseline_manifest_sha": baseline_manifest_sha,
+                        "baseline_live_snapshot": [
+                            {
+                                "table": item.table,
+                                "row_count": item.row_count,
+                                "sample_sha256": item.sample_sha256,
+                            }
+                            for item in (
+                                getattr(baseline_live_snapshot, "tables", ())
+                                if baseline_live_snapshot is not None
+                                else ()
+                            )
+                        ],
+                        "rows_before": rows_before,
+                        "rows_after": rows_after,
+                        "rows_loaded": rows_loaded,
+                        "row_counts": report.file_rows,
+                        "periods": sorted(periods),
+                    }
+                    ledger.mark_awaiting_approval(
+                        *identity,
                         run_id=run_id,
-                        epoch=manifest.epoch,
-                        ingest_run_id=run_id,
-                        activation_journal=activation_journal,
-                        require_ledger_gate=not is_shadow,
+                        candidate=candidate_payload,
+                        prepared_at=prepared_at.isoformat(),
+                        expires_at=expires_at.isoformat(),
                     )
-                    ubist_mart_activation.update_activation_journal(
-                        activation_journal, "mart_promoted"
+                    tracker.skip("mart_publish", "awaiting explicit publish approval")
+                    tracker.skip("refresh", "awaiting explicit publish approval")
+                    awaiting_approval_prepared = True
+                    _emit_completion_signal(
+                        ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
+                        event="prepared", mode=mode, rows_before=rows_before,
+                        rows_after=rows_after, rows_loaded=rows_loaded,
+                        periods=periods, started_at=started_at, failure_reason=None,
                     )
-                    if is_shadow:
-                        ubist_mart_activation.maybe_inject_shadow_crash(
-                            "after_mart_publish"
-                        )
-                    print(f"phase=mart_publish status=complete tables={len(publish_actions)}")
-                    tracker.done()
+                    completion_signal_emitted = True
+                    print(
+                        "result=awaiting_approval "
+                        f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"
+                    )
+                    return 0
                 else:
                     tracker.skip("mart_publish", "category has no mart activation")
                 tracker.enter("refresh")
@@ -1076,7 +1100,7 @@ def run(
         print(f"result=failed reason={type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     finally:
-        if mart_activation is not None and not activation_succeeded:
+        if mart_activation is not None and not activation_succeeded and not awaiting_approval_prepared:
             from pipeline.scripts.ingest_hook import ubist_mart_activation
 
             if activation_journal is not None and writer_conn is not None:

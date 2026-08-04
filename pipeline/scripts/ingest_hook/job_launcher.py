@@ -71,6 +71,20 @@ _LOCAL_INPUT_VOLUME = "ingest-input"
 _LOCAL_INPUT_PVC = "llmops-nfs-root"
 _LOCAL_INPUT_SUB_PATH = "autoIngestion"
 _MARKET_OUTPUT_VOLUME = "market-output"
+_ENV_BUILD_ACTIVE_DEADLINE_SECONDS = "INGEST_BUILD_ACTIVE_DEADLINE_SECONDS"
+_ENV_PUBLISH_ACTIVE_DEADLINE_SECONDS = "INGEST_PUBLISH_ACTIVE_DEADLINE_SECONDS"
+_DEFAULT_BUILD_ACTIVE_DEADLINE_SECONDS = 28800
+_DEFAULT_PUBLISH_ACTIVE_DEADLINE_SECONDS = 7200
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    value = int(raw)
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
 
 
 def _job_env() -> list[dict]:
@@ -177,6 +191,16 @@ def agent_refresh_job_name(category: str, manifest_sha: str, ingest_run_id: str)
     return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
 
 
+def publish_job_name(category: str, manifest_sha: str, publish_run_id: str) -> str:
+    suffix = "".join(
+        char.lower() for char in publish_run_id if char.isalnum() or char == "-"
+    )
+    if not suffix:
+        raise ValueError("publish_run_id must contain a Kubernetes name character")
+    base = f"jw-ingest-publish-{category.replace('_', '-')}-{manifest_sha[:8]}"
+    return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
+
+
 def render_job(
     *,
     category: str,
@@ -197,18 +221,6 @@ def render_job(
             ),
         },
     ]
-    if os.environ.get("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "").strip() == "1":
-        if run_id is None:
-            raise ValueError("exact publish approval requires a run_id")
-        job_env.append(
-            {
-                "name": "INGEST_PUBLISH_APPROVAL_FILE",
-                "value": (
-                    f"{config.MARKET_OUTPUT_ROOT}/ingest-approvals/"
-                    f"{category}/{manifest_sha}/{run_id}.json"
-                ),
-            }
-        )
     local_root = (
         config.input_root()
         if os.environ.get(config.ENV_INPUT_BACKEND, "").strip().lower() == "local"
@@ -274,7 +286,10 @@ def render_job(
         },
         "spec": {
             "backoffLimit": 0,
-            "activeDeadlineSeconds": 21600,
+            "activeDeadlineSeconds": _positive_int_env(
+                _ENV_BUILD_ACTIVE_DEADLINE_SECONDS,
+                _DEFAULT_BUILD_ACTIVE_DEADLINE_SECONDS,
+            ),
             "ttlSecondsAfterFinished": 259200,
             "template": {
                 "metadata": {
@@ -377,6 +392,64 @@ def render_agent_refresh_job(
         manifest_sha,
         "--ingest-run-id",
         ingest_run_id,
+    ]
+    container["env"] = [
+        item
+        for item in container["env"]
+        if item["name"] != "INGEST_PUBLISH_APPROVAL_FILE"
+    ]
+    return body
+
+
+def render_publish_job(
+    *,
+    epoch: str,
+    category: str,
+    manifest_sha: str,
+    build_run_id: str,
+    publish_run_id: str,
+    namespace: str | None = None,
+) -> dict:
+    body = render_job(
+        category=category,
+        manifest_sha=manifest_sha,
+        manifest_path="/dev/null",
+        namespace=namespace,
+        run_id=publish_run_id,
+    )
+    name = publish_job_name(category, manifest_sha, publish_run_id)
+    body["metadata"]["name"] = name
+    body["metadata"]["labels"] = {
+        "app": "jw-ingest-publish",
+        "jw-ingest/category": category,
+        "jw-ingest/manifest-sha8": manifest_sha[:8],
+        "jw-ingest/parent-run-id": build_run_id,
+    }
+    body["spec"]["activeDeadlineSeconds"] = _positive_int_env(
+        _ENV_PUBLISH_ACTIVE_DEADLINE_SECONDS,
+        _DEFAULT_PUBLISH_ACTIVE_DEADLINE_SECONDS,
+    )
+    template = body["spec"]["template"]
+    template["metadata"]["labels"] = {
+        "app": "jw-ingest-publish",
+        "jw-ingest/category": category,
+    }
+    container = template["spec"]["containers"][0]
+    container["name"] = "ingest-publish"
+    container["command"] = [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.publish_runner",
+        "--epoch",
+        epoch,
+        "--category",
+        category,
+        "--manifest-sha",
+        manifest_sha,
+        "--build-run-id",
+        build_run_id,
+        "--publish-run-id",
+        publish_run_id,
     ]
     container["env"] = [
         item
@@ -599,6 +672,45 @@ def submit_agent_refresh_job(
         category=category,
         manifest_sha=manifest_sha,
         ingest_run_id=ingest_run_id,
+        namespace=namespace,
+    )
+    send = transport or _in_cluster_transport
+    try:
+        send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 409:
+            raise
+        inspect = inspect_transport or _in_cluster_inspect
+        existing = inspect(body["metadata"]["namespace"], body["metadata"]["name"])
+        existing_status = _job_status(existing)
+        if existing_status in {"Pending", "Running", "Complete"}:
+            return body["metadata"]["name"]
+        metadata = existing.get("metadata") or {}
+        raise JobSubmissionConflict(
+            job_name=body["metadata"]["name"],
+            existing_status=existing_status,
+            created_at=metadata.get("creationTimestamp"),
+        ) from exc
+    return body["metadata"]["name"]
+
+
+def submit_publish_job(
+    *,
+    epoch: str,
+    category: str,
+    manifest_sha: str,
+    build_run_id: str,
+    publish_run_id: str,
+    transport: Transport | None = None,
+    namespace: str | None = None,
+    inspect_transport: InspectTransport | None = None,
+) -> str:
+    body = render_publish_job(
+        epoch=epoch,
+        category=category,
+        manifest_sha=manifest_sha,
+        build_run_id=build_run_id,
+        publish_run_id=publish_run_id,
         namespace=namespace,
     )
     send = transport or _in_cluster_transport

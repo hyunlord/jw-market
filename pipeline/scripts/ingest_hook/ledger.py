@@ -68,7 +68,20 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
 STATUS_GATE_FAILED = "gate_failed"
-_HELD_STATUSES = (STATUS_QUEUED, STATUS_RUNNING, STATUS_COMPLETE)
+STATUS_AWAITING_APPROVAL = "awaiting_approval"
+STATUS_PUBLISH_RUNNING = "publish_running"
+_HELD_STATUSES = (
+    STATUS_QUEUED,
+    STATUS_RUNNING,
+    STATUS_AWAITING_APPROVAL,
+    STATUS_PUBLISH_RUNNING,
+    STATUS_COMPLETE,
+)
+_CATEGORY_BLOCKING_STATUSES = (
+    STATUS_RUNNING,
+    STATUS_AWAITING_APPROVAL,
+    STATUS_PUBLISH_RUNNING,
+)
 
 _DDL_SQLITE = """
 CREATE TABLE IF NOT EXISTS ingest_ledger (
@@ -98,7 +111,7 @@ CREATE TABLE IF NOT EXISTS ingest_ledger (
   manifest_sha  CHAR(64)     NOT NULL,
   manifest_path VARCHAR(512) NOT NULL,
   uploaded_by   VARCHAR(128) NULL,
-  status        VARCHAR(16)  NOT NULL,
+  status        VARCHAR(32)  NOT NULL,
   reason        TEXT         NULL,
   job_name      VARCHAR(128) NULL,
   run_id        VARCHAR(64)  NULL,
@@ -149,7 +162,7 @@ CREATE TABLE IF NOT EXISTS ingest_stage_event (
   run_id        VARCHAR(64)  NOT NULL,
   seq           INT          NOT NULL,
   stage         VARCHAR(32)  NOT NULL,
-  status        VARCHAR(16)  NOT NULL,
+  status        VARCHAR(32)  NOT NULL,
   reason        TEXT         NULL,
   started_at    DATETIME     NULL,
   finished_at   DATETIME     NULL,
@@ -223,8 +236,8 @@ CREATE TABLE IF NOT EXISTS ingest_status_transition (
   epoch           VARCHAR(32) NOT NULL,
   category        VARCHAR(32) NOT NULL,
   manifest_sha    CHAR(64) NOT NULL,
-  previous_status VARCHAR(16) NULL,
-  status          VARCHAR(16) NOT NULL,
+  previous_status VARCHAR(32) NULL,
+  status          VARCHAR(32) NOT NULL,
   actor           VARCHAR(64) NOT NULL,
   source          VARCHAR(64) NOT NULL,
   reason          TEXT NULL,
@@ -236,9 +249,51 @@ CREATE TABLE IF NOT EXISTS ingest_status_transition (
 )
 """
 
+_DDL_CANDIDATE_SQLITE = """
+CREATE TABLE IF NOT EXISTS ingest_publish_candidate (
+  epoch            TEXT NOT NULL,
+  category         TEXT NOT NULL,
+  manifest_sha     TEXT NOT NULL,
+  build_run_id     TEXT NOT NULL,
+  publish_job_name TEXT,
+  payload_json     TEXT NOT NULL,
+  prepared_at      TEXT NOT NULL,
+  expires_at       TEXT NOT NULL,
+  approved_at      TEXT,
+  approved_by      TEXT,
+  PRIMARY KEY (epoch, category, manifest_sha)
+)
+"""
+
+_DDL_CANDIDATE_MYSQL = """
+CREATE TABLE IF NOT EXISTS ingest_publish_candidate (
+  epoch            VARCHAR(32) NOT NULL,
+  category         VARCHAR(32) NOT NULL,
+  manifest_sha     CHAR(64) NOT NULL,
+  build_run_id     VARCHAR(64) NOT NULL,
+  publish_job_name VARCHAR(128) NULL,
+  payload_json     LONGTEXT NOT NULL,
+  prepared_at      DATETIME NOT NULL,
+  expires_at       DATETIME NOT NULL,
+  approved_at      DATETIME NULL,
+  approved_by      VARCHAR(128) NULL,
+  PRIMARY KEY (epoch, category, manifest_sha)
+)
+"""
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _utc_timestamp(value: object) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -303,6 +358,20 @@ class StatusTransition:
     created_at: str
 
 
+@dataclass(frozen=True)
+class PreparedCandidate:
+    epoch: str
+    category: str
+    manifest_sha: str
+    build_run_id: str
+    publish_job_name: str | None
+    payload: dict
+    prepared_at: str
+    expires_at: str
+    approved_at: str | None
+    approved_by: str | None
+
+
 class Ledger:
     """Dialect-neutral ledger operations over an injected DB-API connection."""
 
@@ -316,7 +385,7 @@ class Ledger:
         # threadpool; DB-API connections are not thread-safe, so every _execute
         # is serialized (a single shared connection touched by >1 thread corrupts
         # the pymysql wire protocol -> struct.error / 'NoneType'.settimeout -> 500).
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     # -- schema ------------------------------------------------------------
     def ensure_table(self) -> None:
@@ -328,6 +397,11 @@ class Ledger:
             _DDL_TRANSITION_SQLITE
             if self._dialect == "sqlite"
             else _DDL_TRANSITION_MYSQL
+        )
+        cursor.execute(
+            _DDL_CANDIDATE_SQLITE
+            if self._dialect == "sqlite"
+            else _DDL_CANDIDATE_MYSQL
         )
         self._conn.commit()
 
@@ -461,6 +535,55 @@ class Ledger:
         evidence_json = json.dumps(
             evidence or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
+
+        def operation(cursor):
+            return self._transition_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                status=status,
+                assignments=assignments,
+                values=values,
+                actor=actor,
+                source=source,
+                reason=reason,
+                evidence_json=evidence_json,
+                event_id=event_id,
+                created_at=created_at,
+                expected_status=expected_status,
+                expected_job_name=expected_job_name,
+                expected_run_id=expected_run_id,
+            )
+
+        return bool(self._transaction(operation))
+
+    def _transition_with_cursor(
+        self,
+        cursor,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        status: str,
+        assignments: str,
+        values: tuple,
+        actor: str,
+        source: str,
+        reason: str | None,
+        evidence_json: str,
+        event_id: str,
+        created_at: str,
+        expected_status: str | None = None,
+        expected_job_name: str | None = None,
+        expected_run_id: str | None = None,
+        before_update=None,
+    ) -> bool:
+        """Apply one transition on an existing transaction cursor.
+
+        Candidate mutations use ``before_update`` so the candidate row and ledger
+        status share one commit and one lock order (ledger, then candidate).
+        """
         mark = self._mark
         select_sql = (
             "SELECT status, job_name, run_id FROM ingest_ledger"
@@ -483,44 +606,43 @@ class Ledger:
         else:
             history_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
 
-        def operation(cursor):
-            cursor.execute(select_sql, (epoch, category, manifest_sha))
-            row = cursor.fetchone()
-            if row is None:
-                return False
-            values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
-            previous_status, job_name, run_id = (
-                str(values_row[0]),
-                values_row[1],
-                values_row[2],
-            )
-            if expected_status is not None and previous_status != expected_status:
-                return False
-            if expected_job_name is not None and job_name != expected_job_name:
-                return False
-            if expected_run_id is not None and run_id != expected_run_id:
-                return False
-            cursor.execute(update_sql, values + (epoch, category, manifest_sha))
-            cursor.execute(
-                history_sql,
-                (
-                    event_id,
-                    epoch,
-                    category,
-                    manifest_sha,
-                    previous_status,
-                    status,
-                    actor,
-                    source,
-                    reason[:4000] if reason else None,
-                    job_name,
-                    evidence_json,
-                    created_at,
-                ),
-            )
-            return True
-
-        return bool(self._transaction(operation))
+        cursor.execute(select_sql, (epoch, category, manifest_sha))
+        row = cursor.fetchone()
+        if row is None:
+            return False
+        values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+        previous_status, job_name, run_id = (
+            str(values_row[0]),
+            values_row[1],
+            values_row[2],
+        )
+        if expected_status is not None and previous_status != expected_status:
+            return False
+        if expected_job_name is not None and job_name != expected_job_name:
+            return False
+        if expected_run_id is not None and run_id != expected_run_id:
+            return False
+        if before_update is not None and not before_update(cursor):
+            return False
+        cursor.execute(update_sql, values + (epoch, category, manifest_sha))
+        cursor.execute(
+            history_sql,
+            (
+                event_id,
+                epoch,
+                category,
+                manifest_sha,
+                previous_status,
+                status,
+                actor,
+                source,
+                reason[:4000] if reason else None,
+                job_name,
+                evidence_json,
+                created_at,
+            ),
+        )
+        return True
 
     def _insert_queued(
         self,
@@ -804,6 +926,23 @@ class Ledger:
             for row in cursor.fetchall()
         ]
 
+    def blocking_entries(self, category: str | None = None) -> list[LedgerEntry]:
+        params: tuple[str, ...] = _CATEGORY_BLOCKING_STATUSES
+        category_clause = ""
+        if category is not None:
+            category_clause = " AND category=?"
+            params += (category,)
+        marks = ",".join("?" for _status in _CATEGORY_BLOCKING_STATUSES)
+        cursor = self._execute(
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
+            " run_id, row_counts, received_at, started_at, finished_at"
+            f" FROM ingest_ledger WHERE status IN ({marks})"
+            f"{category_clause}"
+            " ORDER BY category, started_at, id",
+            params,
+        )
+        return [self._entry(row) for row in cursor.fetchall()]
+
     def running_entries(self, category: str | None = None) -> list[LedgerEntry]:
         params: tuple[str, ...] = (STATUS_RUNNING,)
         category_clause = ""
@@ -819,19 +958,44 @@ class Ledger:
         )
         return [self._entry(row) for row in cursor.fetchall()]
 
-    def active_entries(self, category: str | None = None) -> list[LedgerEntry]:
-        params: tuple[str, ...] = (STATUS_RUNNING, STATUS_QUEUED)
+    def publish_running_entries(
+        self, category: str | None = None
+    ) -> list[LedgerEntry]:
+        params: tuple[str, ...] = (STATUS_PUBLISH_RUNNING,)
         category_clause = ""
         if category is not None:
             category_clause = " AND category=?"
             params += (category,)
+        cursor = self._execute(
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
+            " run_id, row_counts, received_at, started_at, finished_at"
+            f" FROM ingest_ledger WHERE status=?{category_clause}"
+            " ORDER BY category, started_at, id",
+            params,
+        )
+        return [self._entry(row) for row in cursor.fetchall()]
+
+    def active_entries(self, category: str | None = None) -> list[LedgerEntry]:
+        active_statuses = (
+            STATUS_RUNNING,
+            STATUS_AWAITING_APPROVAL,
+            STATUS_PUBLISH_RUNNING,
+            STATUS_QUEUED,
+        )
+        params: tuple[str, ...] = active_statuses
+        category_clause = ""
+        if category is not None:
+            category_clause = " AND category=?"
+            params += (category,)
+        marks = ",".join("?" for _status in active_statuses)
         statement = (
             "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
             " run_id, row_counts, received_at, started_at, finished_at"
-            " FROM ingest_ledger WHERE status IN (?,?)"
+            f" FROM ingest_ledger WHERE status IN ({marks})"
             f"{category_clause}"
             " ORDER BY category,"
-            " CASE status WHEN 'running' THEN 0 ELSE 1 END,"
+            " CASE status WHEN 'running' THEN 0 WHEN 'awaiting_approval' THEN 1"
+            " WHEN 'publish_running' THEN 2 ELSE 3 END,"
             " received_at, id"
         )
         if self._dialect == "mysql":
@@ -859,7 +1023,7 @@ class Ledger:
         mark = self._mark
         active_sql = (
             "SELECT epoch, category, manifest_sha, status FROM ingest_ledger"
-            f" WHERE category={mark} AND status IN ({mark},{mark})"
+            f" WHERE category={mark} AND status IN ({mark},{mark},{mark},{mark})"
             " ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, received_at, id"
         )
         if self._dialect == "mysql":
@@ -884,14 +1048,20 @@ class Ledger:
         def operation(cursor):
             cursor.execute(
                 active_sql,
-                (category, STATUS_RUNNING, STATUS_QUEUED),
+                (
+                    category,
+                    STATUS_RUNNING,
+                    STATUS_AWAITING_APPROVAL,
+                    STATUS_PUBLISH_RUNNING,
+                    STATUS_QUEUED,
+                ),
             )
             rows = cursor.fetchall()
             statuses = [
                 str(row["status"] if isinstance(row, dict) else row[3])
                 for row in rows
             ]
-            if STATUS_RUNNING in statuses:
+            if any(status in _CATEGORY_BLOCKING_STATUSES for status in statuses):
                 return False
             candidate_present = any(
                 (
@@ -1002,6 +1172,283 @@ class Ledger:
             reason=reason,
         )
 
+    def mark_awaiting_approval(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        run_id: str,
+        candidate: dict,
+        prepared_at: str,
+        expires_at: str,
+    ) -> None:
+        payload_json = json.dumps(
+            candidate,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        mark = self._mark
+        upsert_sql = (
+            "INSERT INTO ingest_publish_candidate"
+            " (epoch, category, manifest_sha, build_run_id, payload_json, prepared_at, expires_at)"
+            f" VALUES ({', '.join([mark] * 7)})"
+        )
+        if self._dialect == "sqlite":
+            upsert_sql += (
+                " ON CONFLICT(epoch, category, manifest_sha) DO UPDATE SET"
+                " build_run_id=excluded.build_run_id,"
+                " payload_json=excluded.payload_json,"
+                " prepared_at=excluded.prepared_at,"
+                " expires_at=excluded.expires_at,"
+                " publish_job_name=NULL,"
+                " approved_at=NULL,"
+                " approved_by=NULL"
+            )
+        else:
+            upsert_sql += (
+                " ON DUPLICATE KEY UPDATE"
+                " build_run_id=VALUES(build_run_id),"
+                " payload_json=VALUES(payload_json),"
+                " prepared_at=VALUES(prepared_at),"
+                " expires_at=VALUES(expires_at),"
+                " publish_job_name=NULL,"
+                " approved_at=NULL,"
+                " approved_by=NULL"
+            )
+
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        evidence_json = json.dumps(
+            {"run_id": run_id, "expires_at": expires_at},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        def upsert_candidate(cursor):
+            cursor.execute(
+                upsert_sql,
+                (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    run_id,
+                    payload_json,
+                    prepared_at,
+                    expires_at,
+                ),
+            )
+            return True
+
+        def operation(cursor):
+            return self._transition_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                status=STATUS_AWAITING_APPROVAL,
+                assignments=(
+                    f"status={mark}, reason={mark}, run_id={mark}, finished_at=NULL"
+                ),
+                values=(
+                    STATUS_AWAITING_APPROVAL,
+                    "post_gate passed; awaiting explicit publish approval",
+                    run_id,
+                ),
+                actor="job_runner",
+                source="post_gate_prepared",
+                reason="post_gate passed; awaiting explicit publish approval",
+                evidence_json=evidence_json,
+                event_id=event_id,
+                created_at=created_at,
+                expected_status=STATUS_RUNNING,
+                expected_run_id=run_id,
+                before_update=upsert_candidate,
+            )
+
+        if not self._transaction(operation):
+            raise RuntimeError("ledger changed before publish candidate could be prepared")
+
+    def mark_publish_running(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        build_run_id: str,
+        publish_job_name: str,
+        approved_by: str,
+        approved_at: str,
+    ) -> bool:
+        mark = self._mark
+        update_candidate_sql = (
+            f"UPDATE ingest_publish_candidate SET publish_job_name={mark},"
+            f" approved_at={mark}, approved_by={mark}"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND build_run_id={mark}"
+            " AND publish_job_name IS NULL"
+        )
+        select_candidate_sql = (
+            "SELECT build_run_id, publish_job_name, expires_at FROM ingest_publish_candidate"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        if self._dialect == "mysql":
+            select_candidate_sql += " FOR UPDATE"
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        evidence_json = json.dumps(
+            {
+                "build_run_id": build_run_id,
+                "publish_job_name": publish_job_name,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        def reserve_candidate(cursor):
+            cursor.execute(select_candidate_sql, (epoch, category, manifest_sha))
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            candidate_run_id, existing_job_name, expires_at = values_row
+            if (
+                str(candidate_run_id) != build_run_id
+                or existing_job_name is not None
+                or _utc_timestamp(approved_at) > _utc_timestamp(expires_at)
+            ):
+                return False
+            cursor.execute(
+                update_candidate_sql,
+                (
+                    publish_job_name,
+                    approved_at,
+                    approved_by,
+                    epoch,
+                    category,
+                    manifest_sha,
+                    build_run_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        def operation(cursor):
+            return self._transition_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                status=STATUS_PUBLISH_RUNNING,
+                assignments=f"status={mark}, job_name={mark}, started_at={mark}",
+                values=(STATUS_PUBLISH_RUNNING, publish_job_name, approved_at),
+                actor=approved_by,
+                source="publish_approval",
+                reason="exact publish candidate approved",
+                evidence_json=evidence_json,
+                event_id=event_id,
+                created_at=created_at,
+                expected_status=STATUS_AWAITING_APPROVAL,
+                expected_run_id=build_run_id,
+                before_update=reserve_candidate,
+            )
+
+        changed = bool(self._transaction(operation))
+        if not changed:
+            refreshed = self.prepared_candidate(epoch, category, manifest_sha)
+            return bool(refreshed and refreshed.publish_job_name == publish_job_name)
+        return True
+
+    def restore_awaiting_approval_after_submit_failure(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        build_run_id: str,
+        publish_job_name: str,
+    ) -> bool:
+        mark = self._mark
+        candidate_sql = (
+            "UPDATE ingest_publish_candidate SET publish_job_name=NULL,"
+            " approved_at=NULL, approved_by=NULL"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND build_run_id={mark} AND publish_job_name={mark}"
+        )
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        reason = "publish Job was not created; explicit approval remains retryable"
+
+        def release_candidate(cursor):
+            cursor.execute(
+                candidate_sql,
+                (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    build_run_id,
+                    publish_job_name,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        def operation(cursor):
+            return self._transition_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                status=STATUS_AWAITING_APPROVAL,
+                assignments=(
+                    f"status={mark}, reason={mark}, job_name=NULL,"
+                    " finished_at=NULL"
+                ),
+                values=(STATUS_AWAITING_APPROVAL, reason),
+                actor="ingest_hook",
+                source="publish_submission_failed_retryable",
+                reason=reason,
+                evidence_json=json.dumps(
+                    {"build_run_id": build_run_id},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                event_id=event_id,
+                created_at=created_at,
+                expected_status=STATUS_PUBLISH_RUNNING,
+                expected_job_name=publish_job_name,
+                expected_run_id=build_run_id,
+                before_update=release_candidate,
+            )
+
+        return bool(self._transaction(operation))
+
+    def mark_publish_candidate_expired(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        build_run_id: str,
+        actor: str,
+    ) -> bool:
+        reason = "publish candidate expired before approval"
+        return self._transition(
+            epoch,
+            category,
+            manifest_sha,
+            status=STATUS_FAILED,
+            assignments=f"status={self._mark}, reason={self._mark}, finished_at={self._mark}",
+            values=(STATUS_FAILED, reason, _now()),
+            actor=actor,
+            source="publish_candidate_expired",
+            reason=reason,
+            evidence={"build_run_id": build_run_id},
+            expected_status=STATUS_AWAITING_APPROVAL,
+            expected_run_id=build_run_id,
+        )
+
     def reconcile_terminal(
         self,
         epoch: str,
@@ -1015,6 +1462,7 @@ class Ledger:
         evidence: dict,
         expected_job_name: str | None = None,
         expected_run_id: str | None = None,
+        expected_status: str = STATUS_RUNNING,
     ) -> bool:
         if status not in (STATUS_COMPLETE, STATUS_FAILED):
             raise ValueError(f"terminal reconciliation requires complete/failed, got {status!r}")
@@ -1029,7 +1477,7 @@ class Ledger:
             source=source,
             reason=reason,
             evidence=evidence,
-            expected_status=STATUS_RUNNING,
+            expected_status=expected_status,
             expected_job_name=expected_job_name,
             expected_run_id=expected_run_id,
         )
@@ -1038,6 +1486,61 @@ class Ledger:
     def status(self, epoch: str, category: str, manifest_sha: str) -> LedgerEntry | None:
         row = self._fetch_row(epoch, category, manifest_sha)
         return self._entry(row) if row is not None else None
+
+    def prepared_candidate(
+        self, epoch: str, category: str, manifest_sha: str
+    ) -> PreparedCandidate | None:
+        cursor = self._execute(
+            "SELECT epoch, category, manifest_sha, build_run_id, publish_job_name,"
+            " payload_json, prepared_at, expires_at, approved_at, approved_by"
+            " FROM ingest_publish_candidate"
+            " WHERE epoch=? AND category=? AND manifest_sha=?",
+            (epoch, category, manifest_sha),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._prepared_candidate(row)
+
+    def awaiting_publish_candidates(
+        self, category: str | None = None
+    ) -> list[PreparedCandidate]:
+        category_clause = ""
+        params: tuple[str, ...] = (STATUS_AWAITING_APPROVAL,)
+        if category is not None:
+            category_clause = f" AND candidate.category={self._mark}"
+            params += (category,)
+        cursor = self._execute(
+            "SELECT candidate.epoch, candidate.category, candidate.manifest_sha,"
+            " candidate.build_run_id, candidate.publish_job_name,"
+            " candidate.payload_json, candidate.prepared_at, candidate.expires_at,"
+            " candidate.approved_at, candidate.approved_by"
+            " FROM ingest_publish_candidate AS candidate"
+            " INNER JOIN ingest_ledger AS ledger"
+            " ON ledger.epoch=candidate.epoch"
+            " AND ledger.category=candidate.category"
+            " AND ledger.manifest_sha=candidate.manifest_sha"
+            f" WHERE ledger.status={self._mark}{category_clause}"
+            " ORDER BY candidate.prepared_at, candidate.epoch",
+            params,
+        )
+        return [self._prepared_candidate(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def _prepared_candidate(row) -> PreparedCandidate:
+        values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+        return PreparedCandidate(
+            epoch=str(values[0]),
+            category=str(values[1]),
+            manifest_sha=str(values[2]),
+            build_run_id=str(values[3]),
+            publish_job_name=str(values[4]) if values[4] else None,
+            payload=json.loads(values[5]),
+            prepared_at=str(values[6]),
+            expires_at=str(values[7]),
+            approved_at=str(values[8]) if values[8] else None,
+            approved_by=str(values[9]) if values[9] else None,
+        )
 
     def status_transitions(
         self, epoch: str, category: str, manifest_sha: str

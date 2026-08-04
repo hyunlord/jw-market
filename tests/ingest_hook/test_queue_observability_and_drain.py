@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import urllib.error
 
 from fastapi.testclient import TestClient
 
@@ -239,7 +240,445 @@ def test_status_preserves_existing_keys_and_adds_only_queue_flags(
         "requires_reconcile",
         "category_blocker",
         "expected_stages",
+        "prepared",
     }
+
+
+def test_status_exposes_awaiting_approval_prepared_signal(sqlite_ledger) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="b" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-bbbbbbbb-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "activation_journal": "/market-output/.ubist_activation_build_run.json",
+        },
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).get(
+        "/ingest/status",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "awaiting_approval"
+    assert payload["blocked_by_category"] is True
+    assert payload["requires_reconcile"] is False
+    assert payload["prepared"] == {
+        "run_id": "build-run",
+        "prepared_at": "2026-08-04T00:00:00+00:00",
+        "expires_at": "2026-08-05T00:00:00+00:00",
+        "expired": False,
+        "publish_job_name": None,
+    }
+
+
+def test_queue_list_marks_approval_and_publish_states_as_category_blockers(
+    sqlite_ledger,
+) -> None:
+    blocker = _seed(
+        sqlite_ledger,
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha="a" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *blocker,
+        job_name="jw-ingest-ubist-aaaaaaaa-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *blocker,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    queued = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="b" * 64,
+    )
+    client = TestClient(create_app(IngestService(sqlite_ledger, None)))
+
+    awaiting = client.get("/ingest/queue").json()["items"]
+    queued_item = next(item for item in awaiting if item["manifest_sha"] == queued[2])
+    assert queued_item["blocked_by_category"] is True
+    assert queued_item["requires_reconcile"] is False
+
+    assert sqlite_ledger.mark_publish_running(
+        *blocker,
+        build_run_id="build-run",
+        publish_job_name="jw-ingest-publish-ubist-aaaaaaaa-run",
+        approved_by="pl@example.com",
+        approved_at="2026-08-04T01:00:00+00:00",
+    )
+    publishing = client.get("/ingest/queue").json()["items"]
+    queued_item = next(item for item in publishing if item["manifest_sha"] == queued[2])
+    assert queued_item["blocked_by_category"] is True
+    assert queued_item["requires_reconcile"] is False
+
+
+def test_publish_approval_submits_publish_job_idempotently(sqlite_ledger, fake_transport) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="b" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-bbbbbbbb-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "activation_journal": "/market-output/.ubist_activation_build_run.json",
+        },
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        now=lambda: "publish-run",
+        timestamp=lambda: "2026-08-04T01:00:00+00:00",
+    )
+    client = TestClient(create_app(service))
+
+    payload = {
+        "epoch": identity[0],
+        "category": identity[1],
+        "manifest_sha": identity[2],
+        "run_id": "build-run",
+        "requested_by": "pl@example.com",
+    }
+    first = client.post("/ingest/publish/approve", json=payload)
+    second = client.post("/ingest/publish/approve", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["publish_job_name"] == second.json()["publish_job_name"]
+    assert first.json()["status"] == "publish_running"
+    assert len(fake_transport.submitted) == 1
+    assert sqlite_ledger.status(*identity).status == "publish_running"
+
+
+def test_publish_approval_rejects_identity_mismatch_and_expired_candidate(
+    sqlite_ledger,
+    fake_transport,
+    monkeypatch,
+) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="b" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-bbbbbbbb-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "activation_journal": "/market-output/.ubist_activation_build_run.json",
+        },
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-04T00:30:00+00:00",
+    )
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        timestamp=lambda: "2026-08-04T01:00:00+00:00",
+    )
+    cleaned: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_cleanup_expired_publish_candidate",
+        lambda candidate: cleaned.append(candidate.build_run_id),
+    )
+    client = TestClient(create_app(service))
+
+    mismatch = client.post(
+        "/ingest/publish/approve",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "wrong-run",
+            "requested_by": "pl@example.com",
+        },
+    )
+    expired = client.post(
+        "/ingest/publish/approve",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "requested_by": "pl@example.com",
+        },
+    )
+
+    assert mismatch.status_code == 409
+    assert expired.status_code == 409
+    assert "expired" in expired.json()["detail"]
+    assert fake_transport.submitted == []
+    assert sqlite_ledger.status(*identity).status == "failed"
+    assert sqlite_ledger.running_in_category("ubist") == 0
+    assert cleaned == ["build-run"]
+
+
+def test_publish_submission_failure_restores_retryable_approval_state(sqlite_ledger) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="c" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-cccccccc-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+
+    def fail_transport(_url, _body):
+        raise RuntimeError("injected Kubernetes submission failure")
+
+    def absent(_namespace, name):
+        raise urllib.error.HTTPError(name, 404, "Not Found", {}, None)
+
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=fail_transport,
+                inspect_transport=absent,
+                now=lambda: "publish-run",
+                timestamp=lambda: "2026-08-04T01:00:00+00:00",
+            )
+        )
+    )
+    response = client.post(
+        "/ingest/publish/approve",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "requested_by": "pl@example.com",
+        },
+    )
+
+    assert response.status_code == 503
+    assert sqlite_ledger.status(*identity).status == "awaiting_approval"
+    assert sqlite_ledger.prepared_candidate(*identity).publish_job_name is None
+
+
+def test_publish_submission_timeout_keeps_running_when_job_exists(sqlite_ledger) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="d" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-dddddddd-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+
+    def timeout_after_create(_url, _body):
+        raise TimeoutError("injected response loss after Job creation")
+
+    inspected: list[str] = []
+
+    def running(_namespace, name):
+        inspected.append(name)
+        return {
+            "metadata": {"name": name, "uid": "publish-job-uid"},
+            "status": {"active": 1},
+        }
+
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=timeout_after_create,
+                inspect_transport=running,
+                now=lambda: "publish-run",
+                timestamp=lambda: "2026-08-04T01:00:00+00:00",
+            )
+        )
+    )
+
+    response = client.post(
+        "/ingest/publish/approve",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "requested_by": "pl@example.com",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "publish_running"
+    assert response.json()["submission_reconciled"] is True
+    candidate = sqlite_ledger.prepared_candidate(*identity)
+    assert sqlite_ledger.status(*identity).status == "publish_running"
+    assert inspected == [candidate.publish_job_name]
+
+
+def test_publish_submission_inspection_failure_stays_fail_closed(sqlite_ledger) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="e" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-eeeeeeee-build",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+
+    def unavailable(*_args):
+        raise TimeoutError("injected Kubernetes API outage")
+
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=unavailable,
+                inspect_transport=unavailable,
+                now=lambda: "publish-run",
+                timestamp=lambda: "2026-08-04T01:00:00+00:00",
+            )
+        )
+    )
+
+    response = client.post(
+        "/ingest/publish/approve",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+            "requested_by": "pl@example.com",
+        },
+    )
+
+    assert response.status_code == 500
+    assert "requires reconciliation" in response.json()["detail"]
+    assert sqlite_ledger.status(*identity).status == "publish_running"
+    assert sqlite_ledger.prepared_candidate(*identity).publish_job_name is not None
+
+
+def test_promote_expires_stale_candidate_and_launches_next_queued_entry(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    expired = _seed(
+        sqlite_ledger,
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha="a" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *expired,
+        job_name="build-job",
+        run_id="build-run",
+    )
+    sqlite_ledger.mark_awaiting_approval(
+        *expired,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-04T01:00:00+00:00",
+    )
+    queued = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="b" * 64,
+    )
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        now=lambda: "20260804020000000000",
+        timestamp=lambda: "2026-08-04T02:00:00+00:00",
+    )
+
+    job_name = service.promote("ubist")
+
+    assert job_name is not None
+    assert sqlite_ledger.status(*expired).status == "failed"
+    assert "expired" in sqlite_ledger.status(*expired).reason
+    assert sqlite_ledger.status(*queued).status == "running"
+    assert len(fake_transport.submitted) == 1
 
 
 def test_unknown_status_keeps_existing_404_contract(sqlite_ledger) -> None:

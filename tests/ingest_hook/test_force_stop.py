@@ -137,6 +137,64 @@ def test_force_stop_deletes_exact_job_then_reconciles_and_promotes(
     assert transition.evidence["run_id"] == RUN_ID
 
 
+def test_force_stop_publish_job_recovers_before_terminal_transition(
+    sqlite_ledger, fake_transport
+) -> None:
+    _seed_running(sqlite_ledger)
+    publish_name = "jw-ingest-publish-ubist-aaaaaaaa-publish-run"
+    sqlite_ledger.mark_awaiting_approval(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        run_id=RUN_ID,
+        candidate={"run_id": RUN_ID},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    assert sqlite_ledger.mark_publish_running(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        build_run_id=RUN_ID,
+        publish_job_name=publish_name,
+        approved_by="pl@example.test",
+        approved_at="2026-08-04T01:00:00+00:00",
+    )
+    inspected = 0
+
+    def inspect(_namespace: str, requested_name: str) -> dict:
+        nonlocal inspected
+        assert requested_name == publish_name
+        inspected += 1
+        if inspected == 1:
+            return _running_job(publish_name)
+        raise _not_found(publish_name)
+
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=inspect,
+        delete_transport=DeleteRecorder(),
+        sleep=lambda _seconds: None,
+        timestamp=lambda: "2026-08-04T01:02:03+00:00",
+    )
+    recovered: list[str] = []
+    service._recover_publish_activation = lambda entry: recovered.append(entry.job_name)
+
+    result = service.force_stop(
+        epoch=EPOCH,
+        category=CATEGORY,
+        manifest_sha=MANIFEST_SHA,
+        run_id=RUN_ID,
+        requested_by="pl@example.test",
+    )
+
+    assert recovered == [publish_name]
+    assert result["job_name"] == publish_name
+    assert sqlite_ledger.status(EPOCH, CATEGORY, MANIFEST_SHA).status == "failed"
+
+
 def test_force_stop_endpoint_rejects_run_mismatch_without_delete(sqlite_ledger):
     _seed_running(sqlite_ledger)
     deleted = DeleteRecorder()

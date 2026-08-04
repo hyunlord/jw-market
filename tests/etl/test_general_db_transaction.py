@@ -10,10 +10,18 @@ from pipeline.etl.io.mart.general_json import write_jsonl
 
 
 class _FakeCursor:
-    def __init__(self, *, fail_insert: bool) -> None:
+    def __init__(
+        self,
+        *,
+        fail_insert: bool,
+        existing_by_table: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
         self.fail_insert = fail_insert
+        self.existing_by_table = existing_by_table or {}
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
         self.executemany_calls = 0
+        self.executemany_payloads: list[list[tuple[Any, ...]]] = []
+        self._selected: list[dict[str, Any]] = []
 
     def __enter__(self) -> _FakeCursor:
         return self
@@ -23,16 +31,35 @@ class _FakeCursor:
 
     def execute(self, sql: str, params: tuple[object, ...]) -> None:
         self.execute_calls.append((sql, params))
+        if sql.startswith("SELECT "):
+            table = next((
+                name
+                for name in self.existing_by_table
+                if f"FROM {name} " in sql
+            ), None)
+            self._selected = self.existing_by_table.get(table, [])
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._selected
 
     def executemany(self, _sql: str, _payloads: list[tuple[Any, ...]]) -> None:
         self.executemany_calls += 1
+        self.executemany_payloads.append(_payloads)
         if self.fail_insert:
             raise RuntimeError("injected insert failure")
 
 
 class _FakeConnection:
-    def __init__(self, *, fail_insert: bool = False) -> None:
-        self.cursor_instance = _FakeCursor(fail_insert=fail_insert)
+    def __init__(
+        self,
+        *,
+        fail_insert: bool = False,
+        existing_by_table: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.cursor_instance = _FakeCursor(
+            fail_insert=fail_insert,
+            existing_by_table=existing_by_table,
+        )
         self.autocommit_values: list[bool] = []
         self.commit_calls = 0
         self.rolled_back = False
@@ -59,7 +86,7 @@ def _paths(tmp_path: Path) -> tuple[Path, Path]:
     market_path = tmp_path / "market.jsonl"
     write_jsonl(
         brand_path,
-        [{"brand_key": "a", "source": "ubist"}],
+        [{"brand_key": "a", "atc4_code": "C10A1", "source": "ubist"}],
     )
     write_jsonl(
         market_path,
@@ -125,13 +152,19 @@ def test_jsonl_scoped_replace_deletes_only_requested_atc4(
     general_db.replace_scoped_source_rows_from_jsonl(
         source="ubist",
         atc4_scope=("C10A1", "A10B2"),
+        period_scope=("2026-05",),
         brand_path=brand_path,
         market_path=market_path,
         brand_columns=["brand_key", "source"],
         market_columns=["atc4_code", "source"],
     )
 
-    delete_calls = connection.cursor_instance.execute_calls[:2]
+    delete_calls = [
+        (sql, params)
+        for sql, params in connection.cursor_instance.execute_calls
+        if sql.startswith("DELETE FROM ")
+    ]
+    assert len(delete_calls) == 2
     assert all("source=%s AND atc4_code IN (%s,%s)" in sql for sql, _ in delete_calls)
     assert all(params == ("ubist", "A10B2", "C10A1") for _, params in delete_calls)
     assert connection.cursor_instance.executemany_calls == 2
@@ -218,6 +251,7 @@ def test_jsonl_scoped_replace_bounds_isolated_deletes_for_gcache(
     general_db.replace_scoped_source_rows_from_jsonl(
         source="ubist",
         atc4_scope=("C10A1", "A10B2"),
+        period_scope=("2026-05",),
         brand_path=brand_path,
         market_path=market_path,
         brand_columns=["brand_key", "source"],
@@ -263,6 +297,7 @@ def test_jsonl_scoped_replace_rolls_back_current_batch_after_partial_commits(
         general_db.replace_scoped_source_rows_from_jsonl(
             source="ubist",
             atc4_scope=("C10A1",),
+            period_scope=("2026-05",),
             brand_path=brand_path,
             market_path=market_path,
             brand_columns=["brand_key", "source"],
@@ -273,3 +308,110 @@ def test_jsonl_scoped_replace_rolls_back_current_batch_after_partial_commits(
     assert connection.commit_calls == 1
     assert connection.rolled_back is True
     assert connection.closed is True
+
+
+def test_scoped_replace_requires_explicit_period_scope(tmp_path: Path) -> None:
+    brand_path, market_path = _paths(tmp_path)
+
+    with pytest.raises(ValueError, match="period scope"):
+        general_db.replace_scoped_source_rows_from_jsonl(
+            source="ubist",
+            atc4_scope=("C10A1",),
+            period_scope=(),
+            brand_path=brand_path,
+            market_path=market_path,
+            brand_columns=["brand_key", "source"],
+            market_columns=["atc4_code", "source"],
+        )
+
+
+def test_scoped_replace_reads_existing_row_and_upserts_period_merged_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    brand_path = tmp_path / "brand.jsonl"
+    market_path = tmp_path / "market.jsonl"
+    write_jsonl(
+        brand_path,
+        [
+            {
+                "brand_key": "a",
+                "atc4_code": "C10A1",
+                "source": "ubist",
+                "measure": "sales",
+                "metric_history": {
+                    "2026-04": {"raw_value": 999},
+                    "2026-05": {"raw_value": 20},
+                },
+                "raw_value_history": {"2026-04": 999, "2026-05": 20},
+                "payload": {},
+            }
+        ],
+    )
+    write_jsonl(
+        market_path,
+        [
+            {
+                "atc4_code": "C10A1",
+                "source": "ubist",
+                "measure": "sales",
+                "market_size_series": {"2026-04": 999, "2026-05": 20},
+                "payload": {},
+            }
+        ],
+    )
+    connection = _FakeConnection(
+        existing_by_table={
+            "mart_general_brand_metric": [
+                {
+                    "brand_key": "a",
+                    "atc4_code": "C10A1",
+                    "source": "ubist",
+                    "measure": "sales",
+                    "metric_history": '{"2026-04":{"raw_value":10},"2026-05":{"raw_value":11}}',
+                    "raw_value_history": '{"2026-04":10,"2026-05":11}',
+                    "payload": "{}",
+                }
+            ],
+            "mart_general_market_metric": [
+                {
+                    "atc4_code": "C10A1",
+                    "source": "ubist",
+                    "measure": "sales",
+                    "market_size_series": '{"2026-04":10,"2026-05":11}',
+                    "payload": "{}",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(general_db, "mariadb_connect", lambda: connection)
+
+    general_db.replace_scoped_source_rows_from_jsonl(
+        source="ubist",
+        atc4_scope=("C10A1",),
+        period_scope=("2026-05",),
+        brand_path=brand_path,
+        market_path=market_path,
+        brand_columns=[
+            "brand_key",
+            "atc4_code",
+            "source",
+            "measure",
+            "metric_history",
+            "raw_value_history",
+            "payload",
+        ],
+        market_columns=[
+            "atc4_code",
+            "source",
+            "measure",
+            "market_size_series",
+            "payload",
+        ],
+    )
+
+    brand_payload = connection.cursor_instance.executemany_payloads[0][0]
+    market_payload = connection.cursor_instance.executemany_payloads[1][0]
+    assert brand_payload[4] == '{"2026-04":{"raw_value":10},"2026-05":{"raw_value":20}}'
+    assert brand_payload[5] == '{"2026-04":10,"2026-05":20}'
+    assert market_payload[3] == '{"2026-04":10,"2026-05":20}'

@@ -1,6 +1,10 @@
 """ingest_ledger semantics: idempotency (G-3 unit), serialisation, baselines."""
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from pipeline.scripts.ingest_hook import ledger as ledger_module
 
 IDENTITY = ("2026-07", "ubist", "a" * 64)
@@ -64,3 +68,118 @@ def test_uploaded_by_recorded_and_refreshed_on_requeue(sqlite_ledger):
     sqlite_ledger.mark_failed(*IDENTITY, reason="boom")
     sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json", uploaded_by="b@jw.example")
     assert sqlite_ledger.status(*IDENTITY).uploaded_by == "b@jw.example"
+
+
+def test_awaiting_approval_holds_identity_and_same_category_slot(sqlite_ledger) -> None:
+    # Given: a completed build has prepared an exact publish candidate.
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build-job", run_id="build-run")
+
+    # When: the runner marks the candidate as awaiting explicit publish approval.
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id="build-run",
+        candidate={
+            "epoch": IDENTITY[0],
+            "category": IDENTITY[1],
+            "manifest_sha": IDENTITY[2],
+            "run_id": "build-run",
+            "activation_journal": "/market-output/.ubist_activation_build_run.json",
+        },
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+
+    # Then: duplicate webhooks are no-ops and the next same-category row is blocked.
+    assert sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json").action == "noop"
+    sqlite_ledger.receive("2026-08", "ubist", "b" * 64, manifest_path="/x/next.json")
+    assert sqlite_ledger.next_queued("ubist").manifest_sha == "b" * 64
+    assert sqlite_ledger.claim_queued(
+        "2026-08",
+        "ubist",
+        "b" * 64,
+        job_name="next-job",
+        run_id="next-run",
+    ) is False
+    assert sqlite_ledger.prepared_candidate(*IDENTITY).payload["run_id"] == "build-run"
+
+
+def test_publish_reservation_rolls_back_ledger_when_candidate_update_fails(
+    sqlite_ledger,
+) -> None:
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build-job", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    sqlite_ledger._conn.execute(
+        "CREATE TRIGGER reject_publish_candidate_update "
+        "BEFORE UPDATE OF publish_job_name ON ingest_publish_candidate "
+        "BEGIN SELECT RAISE(ABORT, 'injected candidate update failure'); END"
+    )
+    sqlite_ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected candidate update failure"):
+        sqlite_ledger.mark_publish_running(
+            *IDENTITY,
+            build_run_id="build-run",
+            publish_job_name="publish-job",
+            approved_by="pl@example.com",
+            approved_at="2026-08-04T01:00:00+00:00",
+        )
+
+    assert sqlite_ledger.status(*IDENTITY).status == "awaiting_approval"
+    assert sqlite_ledger.prepared_candidate(*IDENTITY).publish_job_name is None
+
+
+def test_publish_reservation_rechecks_expiry_inside_locked_candidate_read(
+    sqlite_ledger,
+) -> None:
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build-job", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id="build-run",
+        candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-04T01:00:00+00:00",
+    )
+
+    changed = sqlite_ledger.mark_publish_running(
+        *IDENTITY,
+        build_run_id="build-run",
+        publish_job_name="publish-job",
+        approved_by="pl@example.com",
+        approved_at="2026-08-04T01:00:00.000001+00:00",
+    )
+
+    assert changed is False
+    assert sqlite_ledger.status(*IDENTITY).status == "awaiting_approval"
+    assert sqlite_ledger.prepared_candidate(*IDENTITY).publish_job_name is None
+
+
+def test_prepare_candidate_rolls_back_when_candidate_insert_fails(sqlite_ledger) -> None:
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build-job", run_id="build-run")
+    sqlite_ledger._conn.execute(
+        "CREATE TRIGGER reject_publish_candidate_insert "
+        "BEFORE INSERT ON ingest_publish_candidate "
+        "BEGIN SELECT RAISE(ABORT, 'injected candidate insert failure'); END"
+    )
+    sqlite_ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected candidate insert failure"):
+        sqlite_ledger.mark_awaiting_approval(
+            *IDENTITY,
+            run_id="build-run",
+            candidate={"run_id": "build-run"},
+            prepared_at="2026-08-04T00:00:00+00:00",
+            expires_at="2026-08-05T00:00:00+00:00",
+        )
+
+    assert sqlite_ledger.status(*IDENTITY).status == "running"
+    assert sqlite_ledger.prepared_candidate(*IDENTITY) is None

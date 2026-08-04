@@ -122,6 +122,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         catalog_root=Path("/market-output/shadow/catalog"),
         ubist_dir=Path("/market-output/.ubist-candidate-run1"),
         atc4_scope=("C10A1", "C10A2"),
+        period_scope=("2026-05",),
     )
 
     assert general_calls == [{
@@ -132,6 +133,7 @@ def test_build_shadow_uses_isolated_catalog_and_candidate_ubist_roots(monkeypatc
         "input_mode": "raw",
         "sources": ("ubist",),
         "atc4_scope": ("C10A1", "C10A2"),
+        "period_scope": ("2026-05",),
     }]
     assert strategic_calls == [{
         "build_db": "jw_mart_ingest_run1",
@@ -688,6 +690,123 @@ def test_activation_journal_recovers_corpus_and_atomic_mart_group(tmp_path, monk
         ("jw_mart", "recovery_run1", *activation.NUMERIC_TABLES)
     ]
     assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "rollback_needs_refresh"
+
+
+def test_recovery_leaves_intentional_awaiting_approval_journal_prepared(
+    tmp_path, monkeypatch
+) -> None:
+    # Given: a post-gate build has prepared a candidate but has not been approved.
+    live = tmp_path / "ubist"
+    live.mkdir()
+    (live / "_manifest.json").write_text("{}", encoding="utf-8")
+    corpus = activation.prepare_candidate_corpus(live, run_id="build-run")
+    target = activation.MartActivation("jw_mart", "jw_mart", "jw_mart_ingest_build_run")
+    journal = activation.write_activation_journal(
+        corpus,
+        target,
+        run_id="build-run",
+        phase="awaiting_approval",
+        identity=("2026-07", "ubist", "a" * 64),
+    )
+    restored: list[str] = []
+    monkeypatch.setattr(
+        activation,
+        "restore_table_group_atomically",
+        lambda *_args, **_kwargs: restored.append("mart"),
+    )
+
+    # When: startup recovery scans incomplete activation journals.
+    recovered = activation.recover_incomplete_activations(object(), output_root=tmp_path)
+
+    # Then: the intentional candidate remains available for the publish job.
+    assert recovered == ()
+    assert restored == []
+    assert corpus.candidate_root.exists()
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "awaiting_approval"
+
+
+def test_recovery_repairs_awaiting_journal_if_corpus_rename_already_started(
+    tmp_path, monkeypatch
+) -> None:
+    live = tmp_path / "ubist"
+    live.mkdir()
+    (live / "old.txt").write_text("old", encoding="utf-8")
+    corpus = activation.prepare_candidate_corpus(live, run_id="crash-window")
+    (corpus.candidate_root / "new.txt").write_text("new", encoding="utf-8")
+    target = activation.MartActivation(
+        "jw_mart", "jw_mart", "jw_mart_ingest_crash_window"
+    )
+    journal = activation.write_activation_journal(
+        corpus,
+        target,
+        run_id="crash-window",
+        phase="awaiting_approval",
+        identity=("2026-07", "ubist", "a" * 64),
+    )
+    activation.promote_candidate_corpus(corpus)
+    monkeypatch.setattr(activation, "table_exists", lambda *_args: False)
+
+    recovered = activation.recover_incomplete_activations(
+        object(),
+        output_root=tmp_path,
+        ledger_status=lambda *_identity: "publish_running",
+    )
+
+    assert recovered == (journal,)
+    assert (live / "old.txt").read_text(encoding="utf-8") == "old"
+    assert not corpus.backup_root.exists()
+    assert not corpus.candidate_root.exists()
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == (
+        "rollback_needs_refresh"
+    )
+
+
+def test_recovery_discards_expired_unpublished_candidate_and_build_schema(
+    tmp_path, monkeypatch
+) -> None:
+    live = tmp_path / "ubist"
+    live.mkdir()
+    (live / "_manifest.json").write_text("{}", encoding="utf-8")
+    corpus = activation.prepare_candidate_corpus(live, run_id="expired-run")
+    (corpus.candidate_root / "new.txt").write_text("new", encoding="utf-8")
+    target = activation.MartActivation(
+        "jw_mart",
+        "jw_mart",
+        "jw_mart_ingest_expired_run",
+    )
+    journal = activation.write_activation_journal(
+        corpus,
+        target,
+        run_id="expired-run",
+        phase="awaiting_approval",
+        identity=("2026-07", "ubist", "a" * 64),
+    )
+    statements: list[str] = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql):
+            statements.append(sql)
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    recovered = activation.recover_incomplete_activations(
+        Connection(),
+        output_root=tmp_path,
+        ledger_status=lambda *_identity: "failed",
+    )
+
+    assert recovered == ()
+    assert not corpus.candidate_root.exists()
+    assert statements == ["DROP DATABASE IF EXISTS `jw_mart_ingest_expired_run`"]
+    assert json.loads(journal.read_text(encoding="utf-8"))["phase"] == "expired_cleaned"
 
 
 def test_numeric_refresh_failure_restores_all_numeric_marts_and_corpus(

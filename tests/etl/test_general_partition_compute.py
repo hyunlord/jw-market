@@ -205,12 +205,18 @@ def test_scoped_insert_recomputes_only_requested_atc4_and_preserves_other_rows(
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, object]] = []
+    source_periods = ("2021-05", "2021-06", "2026-05")
 
     def partitions(**kwargs):
         calls.append(("partition_scope", kwargs.get("atc4_scope")))
         yield "C10A1", _base_frame()
 
     monkeypatch.setattr(general_compute, "load_catalog_key_map", lambda: {})
+    monkeypatch.setattr(
+        general_compute,
+        "_available_ubist_periods",
+        lambda: source_periods,
+    )
     monkeypatch.setattr(general_compute, "iter_ubist_atc4_worksets", partitions)
     monkeypatch.setattr(general_compute, "ensure_json_columns", lambda *_args: None)
     monkeypatch.setattr(
@@ -223,19 +229,39 @@ def test_scoped_insert_recomputes_only_requested_atc4_and_preserves_other_rows(
     monkeypatch.setattr(
         general_compute,
         "replace_scoped_source_rows_from_jsonl",
-        lambda **kwargs: calls.append(("replace_scope", kwargs["atc4_scope"])),
+        lambda **kwargs: calls.extend(
+            [
+                ("replace_scope", kwargs["atc4_scope"]),
+                ("period_scope", kwargs["period_scope"]),
+                ("source_periods", kwargs["source_periods"]),
+            ]
+        ),
     )
 
     general_compute.compute_general(
         "ubist",
         insert=True,
         atc4_scope=("C10A1",),
+        period_scope=("2026-05",),
     )
 
     assert calls == [
         ("partition_scope", ("C10A1",)),
         ("replace_scope", ("C10A1",)),
+        ("period_scope", ("2026-05",)),
+        ("source_periods", source_periods),
     ]
+
+
+def test_scoped_insert_without_period_scope_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(general_compute, "load_catalog_key_map", lambda: {})
+
+    with pytest.raises(ValueError, match="period scope"):
+        general_compute.compute_general(
+            "ubist",
+            insert=True,
+            atc4_scope=("C10A1",),
+        )
 
 
 def test_later_partition_failure_preserves_existing_rows(

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import pymysql
 
-from pipeline.scripts.ingest_hook import config, job_runner, publish_approval
+from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook import ubist_mart_activation
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -486,11 +486,6 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "publish_shadow",
         lambda *_args, **_kwargs: order.append("mart_publish") or (),
     )
-    monkeypatch.setattr(
-        publish_approval,
-        "wait_for_exact_publish_approval",
-        lambda *_args, **_kwargs: order.append("publish_approval"),
-    )
     original_update_journal = ubist_mart_activation.update_activation_journal
 
     def update_journal(path, phase):
@@ -531,17 +526,19 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
     assert order.index("load") < order.index("mart_build")
     assert catalog_preflight_args[0]["ubist_dir"] == live_root
     assert order.index("mart_build") < order.index("post_gate")
-    assert order.index("post_gate") < order.index("publish_approval")
-    assert order.index("publish_approval") < order.index("corpus_promote")
-    assert order.index("post_gate") < order.index("corpus_promote")
-    assert order.index("corpus_promote") < order.index("mart_publish")
-    assert order.index("mart_publish") < order.index("refresh")
-    assert order.index("refresh") < order.index("journal:refresh_succeeded")
-    assert order.index("journal:refresh_succeeded") < order.index("ledger:complete")
-    assert order.index("ledger:complete") < order.index("journal:ledger_complete")
-    assert order.index("journal:ledger_complete") < order.index("journal:signal_complete")
+    assert "corpus_promote" not in order
+    assert "mart_publish" not in order
+    assert "refresh" not in order
+    assert "ledger:complete" not in order
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
-    assert entry.row_counts.get("epoch:2026-07") == 9
+    assert entry.status == "awaiting_approval"
+    candidate = sqlite_ledger.prepared_candidate(
+        manifest.epoch, "ubist", manifest.manifest_sha
+    )
+    assert candidate.payload["row_counts"]["epoch:2026-07"] == 9
+    assert sqlite_ledger.signal_events(
+        manifest.epoch, manifest.category, manifest.manifest_sha
+    )[0].event == "prepared"
 
 
 def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
@@ -667,14 +664,17 @@ def test_shadow_ubist_publishes_only_to_isolated_db_and_skips_live_refresh(
     assert job_runner.run(
         manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
     ) == 0
-    assert "jw_mart_ingest_shadow_test" in opened
+    assert "jw_mart_ingest_shadow_test" not in opened
     assert "shadow_bootstrap" in order
     assert order.index("shadow_bootstrap") < order.index("mart_build")
-    assert ("publish", False) in order
-    assert "shadow_refresh" in order
+    assert not any(isinstance(item, tuple) and item[0] == "publish" for item in order)
+    assert "shadow_refresh" not in order
+    assert sqlite_ledger.status(
+        manifest.epoch, manifest.category, manifest.manifest_sha
+    ).status == "awaiting_approval"
     assert sqlite_ledger.signal_events(
         manifest.epoch, manifest.category, manifest.manifest_sha
-    )[0].mode == "shadow"
+    )[0].event == "prepared"
 
 
 def test_production_ubist_does_not_release_unacquired_writer_lock(

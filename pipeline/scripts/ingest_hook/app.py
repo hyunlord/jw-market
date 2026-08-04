@@ -31,9 +31,11 @@ from pipeline.scripts.ingest_hook import config, job_launcher, job_runner, stage
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
 from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_AWAITING_APPROVAL,
     STATUS_COMPLETE,
     STATUS_FAILED,
     STATUS_GATE_FAILED,
+    STATUS_PUBLISH_RUNNING,
     STATUS_QUEUED,
     STATUS_RUNNING,
     Ledger,
@@ -49,6 +51,13 @@ PORTAL_QUEUE_CATEGORIES = frozenset(
         "mi_master",
     }
 )
+
+
+def _utc_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class WebhookPayload(BaseModel):
@@ -69,6 +78,14 @@ class TerminalPayload(BaseModel):
     epoch: str
     manifest_sha: str
     mode: str = "unknown"
+
+
+class PublishApprovalPayload(BaseModel):
+    epoch: str
+    category: str
+    manifest_sha: str
+    run_id: str
+    requested_by: str
 
 
 class IngestService:
@@ -106,7 +123,11 @@ class IngestService:
         """Make one startup pass over queued categories missed by callbacks."""
         launched: dict[str, str] = {}
         errors: dict[str, str] = {}
-        for category in sorted(set(self.ledger.queued_categories())):
+        categories = set(self.ledger.queued_categories())
+        categories.update(
+            candidate.category for candidate in self.ledger.awaiting_publish_candidates()
+        )
+        for category in sorted(categories):
             try:
                 job_name = self.promote(category)
             except Exception as exc:  # one category must not block service startup
@@ -119,6 +140,7 @@ class IngestService:
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
         with self._category_promotion_lock(category):
+            self._expire_publish_candidates(category)
             reconciliation = self.reconcile_terminal_jobs(
                 category=category,
                 promote_after=False,
@@ -136,6 +158,7 @@ class IngestService:
     def promote_exact(self, epoch: str, category: str, manifest_sha: str) -> str | None:
         """Promote one exact queued identity while preserving category serialisation."""
         with self._category_promotion_lock(category):
+            self._expire_publish_candidates(category)
             reconciliation = self.reconcile_terminal_jobs(
                 category=category,
                 promote_after=False,
@@ -153,6 +176,42 @@ class IngestService:
                     f"exact promotion requires queued status, got {entry.status!r}"
                 )
             return self._claim_and_submit(entry)
+
+    def _expire_publish_candidates(self, category: str) -> list[tuple[str, str, str]]:
+        now = _utc_timestamp(self.timestamp())
+        expired: list[tuple[str, str, str]] = []
+        for candidate in self.ledger.awaiting_publish_candidates(category):
+            if now <= _utc_timestamp(candidate.expires_at):
+                continue
+            if self.ledger.mark_publish_candidate_expired(
+                candidate.epoch,
+                candidate.category,
+                candidate.manifest_sha,
+                build_run_id=candidate.build_run_id,
+                actor="ingest_hook",
+            ):
+                self._cleanup_expired_publish_candidate(candidate)
+                expired.append(
+                    (candidate.epoch, candidate.category, candidate.manifest_sha)
+                )
+        return expired
+
+    @staticmethod
+    def _cleanup_expired_publish_candidate(candidate) -> None:
+        journal_value = str(candidate.payload.get("activation_journal") or "").strip()
+        source_db = str(candidate.payload.get("source_db") or "").strip()
+        if not journal_value or not source_db:
+            return
+        from pipeline.scripts.ingest_hook import ubist_mart_activation
+
+        conn = config.open_mart_connection(source_db)
+        try:
+            ubist_mart_activation.discard_unpublished_candidate(
+                conn,
+                Path(journal_value),
+            )
+        finally:
+            conn.close()
 
     def _claim_and_submit(self, entry) -> str | None:
         category = entry.category
@@ -247,7 +306,11 @@ class IngestService:
         actions: list[dict] = []
         reconciled = 0
         inspection_failures = 0
-        for entry in self.ledger.running_entries(category):
+        entries = [
+            *self.ledger.running_entries(category),
+            *self.ledger.publish_running_entries(category),
+        ]
+        for entry in entries:
             if entry.job_name is None:
                 observation = job_launcher.JobObservation(
                     status="Absent",
@@ -324,6 +387,26 @@ class IngestService:
                 inspection_failures += 1
                 continue
 
+            if (
+                entry.status == STATUS_PUBLISH_RUNNING
+                and observation.status in {"Failed", "Absent"}
+            ):
+                try:
+                    self._recover_publish_activation(entry)
+                except Exception as exc:  # publish recovery must fail closed
+                    inspection_failures += 1
+                    actions.append(
+                        {
+                            "epoch": entry.epoch,
+                            "category": entry.category,
+                            "manifest_sha": entry.manifest_sha,
+                            "job_name": entry.job_name,
+                            "action": "recovery-failed",
+                            "error": type(exc).__name__,
+                        }
+                    )
+                    continue
+
             changed = self.ledger.reconcile_terminal(
                 entry.epoch,
                 entry.category,
@@ -335,6 +418,7 @@ class IngestService:
                 evidence=observation.evidence,
                 expected_job_name=entry.job_name,
                 expected_run_id=entry.run_id,
+                expected_status=entry.status,
             )
             if not changed:
                 actions.append(
@@ -370,6 +454,68 @@ class IngestService:
             "actions": actions,
         }
 
+    def _recover_publish_activation(self, entry) -> None:
+        from pipeline.scripts.ingest_hook import ubist_mart_activation
+
+        candidate = self.ledger.prepared_candidate(
+            entry.epoch,
+            entry.category,
+            entry.manifest_sha,
+        )
+        if candidate is None:
+            raise RuntimeError("publish recovery candidate is absent")
+        payload = candidate.payload
+        journal = Path(str(payload["activation_journal"]))
+        target_db = str(payload["target_db"])
+        mode = str(payload.get("mode") or "production")
+        spec = resolve_category(entry.category)
+        conn = config.open_mart_connection(target_db)
+        lock_name = (
+            ubist_mart_activation.shadow_lock_name(target_db)
+            if mode == "shadow"
+            else ubist_mart_activation.WRITER_LOCK_NAME
+        )
+        acquired = False
+        failure_reason = None
+        try:
+            ubist_mart_activation.acquire_writer_lock(
+                conn,
+                timeout_seconds=0,
+                lock_name=lock_name,
+            )
+            acquired = True
+            recovered = ubist_mart_activation.recover_incomplete_activations(
+                conn,
+                output_root=journal.parent,
+            )
+            if recovered:
+                if mode == "shadow":
+                    activation = ubist_mart_activation.MartActivation(
+                        str(payload["source_db"]),
+                        target_db,
+                        str(payload["build_db"]),
+                    )
+                    ubist_mart_activation.validate_shadow_publish(conn, activation)
+                else:
+                    job_runner._run_commands_with_writer_lock(
+                        "refresh-recovery",
+                        spec.refresh_argv,
+                        connection=conn,
+                        lock_name=lock_name,
+                    )
+                ubist_mart_activation.complete_recovery(recovered)
+        except Exception as exc:
+            failure_reason = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            if acquired:
+                job_runner._release_writer_lock_preserving_primary(
+                    conn,
+                    lock_name=lock_name,
+                    primary_failure_reason=failure_reason,
+                )
+            conn.close()
+
     def force_stop(
         self,
         *,
@@ -383,14 +529,23 @@ class IngestService:
         entry = self.ledger.status(epoch, category, manifest_sha)
         if entry is None:
             raise HTTPException(status_code=404, detail="unknown submission identity")
-        if entry.status != "running":
+        if entry.status not in {STATUS_RUNNING, STATUS_PUBLISH_RUNNING}:
             raise HTTPException(
                 status_code=409,
-                detail=f"force stop requires a running ledger row, got {entry.status}",
+                detail=f"force stop requires an active ledger row, got {entry.status}",
             )
         if entry.run_id != run_id:
             raise HTTPException(status_code=409, detail="run_id does not match the active ledger row")
-        expected_name = job_launcher.job_name(category, manifest_sha, run_id)
+        if entry.status == STATUS_PUBLISH_RUNNING:
+            candidate = self.ledger.prepared_candidate(epoch, category, manifest_sha)
+            expected_name = candidate.publish_job_name if candidate is not None else None
+        else:
+            expected_name = job_launcher.job_name(category, manifest_sha, run_id)
+        if not expected_name:
+            raise HTTPException(
+                status_code=409,
+                detail="active publish candidate has no deterministic Job identity",
+            )
         if entry.job_name != expected_name:
             raise HTTPException(
                 status_code=409,
@@ -434,6 +589,15 @@ class IngestService:
                 detail="Kubernetes Job deletion was not confirmed; ledger remains running",
             )
 
+        if entry.status == STATUS_PUBLISH_RUNNING:
+            try:
+                self._recover_publish_activation(entry)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="publish Job stopped but activation recovery did not complete",
+                ) from exc
+
         stopped_at = self.timestamp()
         reason = (
             f"PL 강제 정지: 요청자={actor}, 시각={stopped_at}, "
@@ -457,6 +621,7 @@ class IngestService:
             evidence=evidence,
             expected_job_name=expected_name,
             expected_run_id=run_id,
+            expected_status=entry.status,
         )
         if not changed:
             raise HTTPException(
@@ -531,6 +696,213 @@ class IngestService:
             "job_name": launched,
         }
 
+    def approve_publish(self, payload: PublishApprovalPayload) -> dict:
+        actor = payload.requested_by.strip()
+        if not actor:
+            raise HTTPException(status_code=422, detail="requested_by is required")
+        entry = self.ledger.status(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="unknown submission identity")
+        candidate = self.ledger.prepared_candidate(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=409, detail="publish candidate is absent")
+        if candidate.build_run_id != payload.run_id:
+            raise HTTPException(status_code=409, detail="run_id does not match prepared candidate")
+        now = self.timestamp()
+        if _utc_timestamp(now) > _utc_timestamp(candidate.expires_at):
+            expired = self.ledger.mark_publish_candidate_expired(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+                build_run_id=payload.run_id,
+                actor=actor,
+            )
+            if expired:
+                try:
+                    self._cleanup_expired_publish_candidate(candidate)
+                except Exception as exc:  # cleanup is required before releasing residue
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            "publish candidate expired but cleanup requires "
+                            "reconciliation"
+                        ),
+                    ) from exc
+            if not expired:
+                entry = self.ledger.status(
+                    payload.epoch,
+                    payload.category,
+                    payload.manifest_sha,
+                )
+                candidate = self.ledger.prepared_candidate(
+                    payload.epoch,
+                    payload.category,
+                    payload.manifest_sha,
+                )
+                if (
+                    entry is not None
+                    and entry.status == STATUS_PUBLISH_RUNNING
+                    and candidate is not None
+                    and candidate.publish_job_name
+                ):
+                    return {
+                        "accepted": True,
+                        "status": STATUS_PUBLISH_RUNNING,
+                        "publish_job_name": candidate.publish_job_name,
+                        "idempotent": True,
+                    }
+            raise HTTPException(status_code=409, detail="publish candidate expired")
+        if entry.status == STATUS_PUBLISH_RUNNING and candidate.publish_job_name:
+            return {
+                "accepted": True,
+                "status": STATUS_PUBLISH_RUNNING,
+                "publish_job_name": candidate.publish_job_name,
+                "idempotent": True,
+            }
+        if entry.status != STATUS_AWAITING_APPROVAL:
+            raise HTTPException(
+                status_code=409,
+                detail=f"publish approval requires awaiting_approval, got {entry.status}",
+            )
+        publish_run_id = self.now()
+        expected_name = job_launcher.publish_job_name(
+            payload.category,
+            payload.manifest_sha,
+            publish_run_id,
+        )
+        changed = self.ledger.mark_publish_running(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+            build_run_id=payload.run_id,
+            publish_job_name=expected_name,
+            approved_by=actor,
+            approved_at=now,
+        )
+        if not changed:
+            refreshed = self.ledger.prepared_candidate(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+            )
+            if refreshed and refreshed.publish_job_name:
+                return {
+                    "accepted": True,
+                    "status": STATUS_PUBLISH_RUNNING,
+                    "publish_job_name": refreshed.publish_job_name,
+                    "idempotent": True,
+                }
+            if refreshed and _utc_timestamp(now) > _utc_timestamp(refreshed.expires_at):
+                expired = self.ledger.mark_publish_candidate_expired(
+                    payload.epoch,
+                    payload.category,
+                    payload.manifest_sha,
+                    build_run_id=payload.run_id,
+                    actor=actor,
+                )
+                if expired:
+                    self._cleanup_expired_publish_candidate(refreshed)
+                raise HTTPException(status_code=409, detail="publish candidate expired")
+            raise HTTPException(status_code=409, detail="publish candidate changed concurrently")
+        try:
+            name = job_launcher.submit_publish_job(
+                epoch=payload.epoch,
+                category=payload.category,
+                manifest_sha=payload.manifest_sha,
+                build_run_id=payload.run_id,
+                publish_run_id=publish_run_id,
+                transport=self.transport,
+                inspect_transport=self.inspect_transport,
+            )
+        except Exception as exc:  # noqa: BLE001 - Kubernetes is an external boundary
+            try:
+                observation = job_launcher.inspect_job(
+                    expected_name,
+                    transport=self.inspect_transport,
+                )
+            except Exception as inspection_exc:  # preserve ambiguous publish ownership
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "publish Job submission outcome is unknown and requires "
+                        "reconciliation"
+                    ),
+                ) from inspection_exc
+            if observation.status != "Absent":
+                if observation.status in {"Pending", "Running"}:
+                    return {
+                        "accepted": True,
+                        "status": STATUS_PUBLISH_RUNNING,
+                        "publish_job_name": expected_name,
+                        "idempotent": True,
+                        "submission_reconciled": True,
+                    }
+                self.reconcile_terminal_jobs(
+                    category=payload.category,
+                    promote_after=False,
+                )
+                refreshed_entry = self.ledger.status(
+                    payload.epoch,
+                    payload.category,
+                    payload.manifest_sha,
+                )
+                if refreshed_entry is not None and refreshed_entry.status == STATUS_COMPLETE:
+                    return {
+                        "accepted": True,
+                        "status": STATUS_COMPLETE,
+                        "publish_job_name": expected_name,
+                        "idempotent": True,
+                        "submission_reconciled": True,
+                    }
+                raise HTTPException(
+                    status_code=500,
+                    detail="publish Job is terminal and requires reconciliation",
+                ) from exc
+            restored = self.ledger.restore_awaiting_approval_after_submit_failure(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+                build_run_id=payload.run_id,
+                publish_job_name=expected_name,
+            )
+            if not restored:
+                raise HTTPException(
+                    status_code=500,
+                    detail="publish Job submission failed and ledger requires reconciliation",
+                ) from exc
+            raise HTTPException(
+                status_code=503,
+                detail="publish Job submission failed; approval remains retryable",
+            ) from exc
+        if name != expected_name:
+            restored = self.ledger.restore_awaiting_approval_after_submit_failure(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+                build_run_id=payload.run_id,
+                publish_job_name=expected_name,
+            )
+            if not restored:
+                raise HTTPException(
+                    status_code=500,
+                    detail="unexpected publish Job identity requires reconciliation",
+                )
+            raise HTTPException(status_code=502, detail="publish Job identity mismatch")
+        return {
+            "accepted": True,
+            "status": STATUS_PUBLISH_RUNNING,
+            "publish_job_name": name,
+            "idempotent": False,
+        }
+
 
 def create_app(service: IngestService) -> FastAPI:
     @asynccontextmanager
@@ -572,8 +944,10 @@ def create_app(service: IngestService) -> FastAPI:
         entries = [
             entry for entry in entries if entry.category in PORTAL_QUEUE_CATEGORIES
         ]
-        running_categories = {
-            entry.category for entry in entries if entry.status == STATUS_RUNNING
+        blocking_categories = {
+            entry.category
+            for entry in service.ledger.blocking_entries(category)
+            if entry.category in PORTAL_QUEUE_CATEGORIES
         }
         return {
             "items": [
@@ -591,11 +965,11 @@ def create_app(service: IngestService) -> FastAPI:
                     "finished_at": entry.finished_at,
                     "blocked_by_category": (
                         entry.status == STATUS_QUEUED
-                        and entry.category in running_categories
+                        and entry.category in blocking_categories
                     ),
                     "requires_reconcile": (
                         entry.status == STATUS_QUEUED
-                        and entry.category not in running_categories
+                        and entry.category not in blocking_categories
                     ),
                 }
                 for entry in entries
@@ -637,11 +1011,14 @@ def create_app(service: IngestService) -> FastAPI:
                 ),
                 None,
             )
-        category_running = service.ledger.running_entries(entry.category)
+        category_running = service.ledger.blocking_entries(entry.category)
         blocked_by_category = (
-            entry.status == STATUS_QUEUED and bool(category_running)
+            entry.status in {STATUS_QUEUED, STATUS_AWAITING_APPROVAL}
+            and bool(category_running)
         )
         blocker = category_running[0] if blocked_by_category else None
+        candidate = service.ledger.prepared_candidate(epoch, category, manifest_sha)
+        now = service.timestamp()
         return {
             "epoch": entry.epoch,
             "category": entry.category,
@@ -696,6 +1073,17 @@ def create_app(service: IngestService) -> FastAPI:
                 }
                 for signal in signals
             ],
+            "prepared": (
+                {
+                    "run_id": candidate.build_run_id,
+                    "prepared_at": candidate.prepared_at,
+                    "expires_at": candidate.expires_at,
+                    "expired": now > candidate.expires_at,
+                    "publish_job_name": candidate.publish_job_name,
+                }
+                if candidate is not None
+                else None
+            ),
             "log_ref": {
                 "job_name": entry.job_name,
                 "run_id": entry.run_id,
@@ -764,6 +1152,10 @@ def create_app(service: IngestService) -> FastAPI:
             "agent_trigger_reason": agent_trigger_reason,
         }
 
+    @app.post("/ingest/publish/approve")
+    def approve_publish(payload: PublishApprovalPayload) -> dict:
+        return service.approve_publish(payload)
+
     @app.get("/ingest/logs")
     def logs(
         epoch: str,
@@ -824,9 +1216,14 @@ def create_app(service: IngestService) -> FastAPI:
     @app.post("/ingest/reconcile")
     def reconcile() -> dict:
         terminal = service.reconcile_terminal_jobs()
+        categories = set(service.ledger.queued_categories())
+        categories.update(
+            candidate.category
+            for candidate in service.ledger.awaiting_publish_candidates()
+        )
         launched = {
             category: name
-            for category in service.ledger.queued_categories()
+            for category in sorted(categories)
             if (name := service.promote(category)) is not None
         }
         return {"terminal": terminal, "launched": launched}

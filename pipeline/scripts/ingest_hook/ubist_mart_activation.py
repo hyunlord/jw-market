@@ -465,6 +465,7 @@ def build_shadow(
     catalog_root: Path | None,
     ubist_dir: Path,
     atc4_scope: tuple[str, ...] | None = None,
+    period_scope: tuple[str, ...] | None = None,
 ) -> None:
     previous = {key: os.environ.get(key) for key in _S4_MUTATED_ENV}
     try:
@@ -476,6 +477,7 @@ def build_shadow(
             input_mode="raw",
             sources=("ubist",),
             atc4_scope=atc4_scope,
+            period_scope=period_scope,
         )
         run_s5_strategic(
             build_db=config.build_db,
@@ -596,10 +598,14 @@ def rollback_candidate_corpus(corpus: CorpusCandidate) -> None:
         if corpus.candidate_root.exists():
             shutil.rmtree(corpus.candidate_root)
         return
+    if corpus.live_root.exists() and corpus.candidate_root.exists():
+        raise RuntimeError("ambiguous corpus rollback state: live and candidate both exist")
     if corpus.live_root.exists():
         if failed.exists():
             raise RuntimeError(f"corpus rollback scratch path already exists: {failed}")
         corpus.live_root.rename(failed)
+    elif corpus.candidate_root.exists():
+        shutil.rmtree(corpus.candidate_root)
     corpus.backup_root.rename(corpus.live_root)
 
 
@@ -656,7 +662,7 @@ def recover_incomplete_activations(
     for path in sorted(output_root.glob(".ubist_activation_*.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         phase = str(payload.get("phase") or "")
-        if phase in {"complete", "recovered"}:
+        if phase in {"complete", "recovered", "expired_cleaned"}:
             continue
         run_id = str(payload.get("run_id") or "")
         target_db = str(payload.get("target_db") or "")
@@ -677,8 +683,29 @@ def recover_incomplete_activations(
             str(payload.get("category") or ""),
             str(payload.get("manifest_sha") or ""),
         )
-        if ledger_status is not None and all(identity):
-            status = ledger_status(*identity)
+        status = ledger_status(*identity) if ledger_status is not None and all(identity) else None
+        corpus = CorpusCandidate(
+            _journal_child_path(output_root, payload.get("live_root")),
+            _journal_child_path(output_root, payload.get("candidate_root")),
+            _journal_child_path(output_root, payload.get("backup_root")),
+        )
+        if phase in {"awaiting_approval", "expired_cleanup_started"}:
+            if status == "failed":
+                discard_unpublished_candidate(conn, path)
+                continue
+            if phase == "expired_cleanup_started":
+                continue
+            if not corpus.backup_root.exists():
+                if (
+                    not corpus.live_root.is_dir()
+                    or not corpus.candidate_root.is_dir()
+                    or _failed_corpus_path(corpus).exists()
+                ):
+                    raise RuntimeError(
+                        f"awaiting approval corpus state requires reconciliation: {path}"
+                    )
+                continue
+        if status is not None:
             if status == "complete":
                 if phase not in {"refresh_succeeded", "ledger_complete", "signal_complete"}:
                     raise RuntimeError(
@@ -686,11 +713,6 @@ def recover_incomplete_activations(
                     )
                 update_activation_journal(path, "complete")
                 continue
-        corpus = CorpusCandidate(
-            _journal_child_path(output_root, payload.get("live_root")),
-            _journal_child_path(output_root, payload.get("candidate_root")),
-            _journal_child_path(output_root, payload.get("backup_root")),
-        )
         actions = tuple(
             PublishAction(
                 table,
@@ -740,10 +762,16 @@ def recover_incomplete_activations(
         if corpus.backup_root.exists():
             update_activation_journal(path, "recovery_corpus_started")
             rollback_candidate_corpus(corpus)
+        elif phase == "corpus_promotion_started":
+            if not corpus.live_root.is_dir() or not corpus.candidate_root.is_dir():
+                raise RuntimeError(f"corpus promotion-start state is not resumable: {path}")
+            update_activation_journal(path, "recovery_corpus_started")
+            rollback_candidate_corpus(corpus)
         elif phase == "recovery_corpus_started":
             if not corpus.live_root.exists() or not _failed_corpus_path(corpus).exists():
                 raise RuntimeError(f"corpus recovery state is not resumable: {path}")
         elif phase in {
+            "corpus_promotion_started",
             "corpus_promoted",
             "mart_promoted",
             "refresh_started",
@@ -756,6 +784,41 @@ def recover_incomplete_activations(
         update_activation_journal(path, "rollback_needs_refresh")
         recovered.append(path)
     return tuple(recovered)
+
+
+def discard_unpublished_candidate(conn: Any, journal_path: Path) -> None:
+    """Idempotently discard a never-published build after approval expiry."""
+
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    phase = str(payload.get("phase") or "")
+    if phase == "expired_cleaned":
+        return
+    if phase not in {"awaiting_approval", "expired_cleanup_started"}:
+        raise RuntimeError(
+            f"refusing to discard candidate after publish mutation phase {phase!r}"
+        )
+    source_db = str(payload.get("source_db") or "")
+    target_db = str(payload.get("target_db") or "")
+    build_db = str(payload.get("build_db") or "")
+    if (
+        not _SCHEMA_RE.fullmatch(build_db)
+        or not build_db.startswith("jw_mart_ingest")
+        or build_db in {source_db, target_db, "jw_mart"}
+    ):
+        raise RuntimeError(f"refusing unsafe expired build schema cleanup: {build_db!r}")
+    corpus = CorpusCandidate(
+        _journal_child_path(journal_path.parent, payload.get("live_root")),
+        _journal_child_path(journal_path.parent, payload.get("candidate_root")),
+        _journal_child_path(journal_path.parent, payload.get("backup_root")),
+    )
+    if corpus.backup_root.exists():
+        raise RuntimeError("refusing expired cleanup after corpus promotion started")
+    update_activation_journal(journal_path, "expired_cleanup_started")
+    with conn.cursor() as cursor:
+        cursor.execute(f"DROP DATABASE IF EXISTS {quote_id(build_db)}")
+    if corpus.candidate_root.exists():
+        shutil.rmtree(corpus.candidate_root)
+    update_activation_journal(journal_path, "expired_cleaned")
 
 
 def complete_recovery(paths: tuple[Path, ...]) -> None:

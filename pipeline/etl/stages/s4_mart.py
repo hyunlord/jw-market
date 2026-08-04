@@ -224,6 +224,7 @@ def run(params: dict[str, Any]) -> int:
                 memory_budget_bytes=params.get("memory_budget_bytes"),
                 commit_each_batch=True,
                 atc4_scope=tuple(params.get("atc4_scope") or ()) or None,
+                period_scope=tuple(params.get("period_scope") or ()) or None,
             )
             stats.append(source_stats)
             print(

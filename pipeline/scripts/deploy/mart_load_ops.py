@@ -163,6 +163,7 @@ def run_s4_general(
     input_mode: str,
     sources: tuple[str, ...] | None = None,
     atc4_scope: tuple[str, ...] | None = None,
+    period_scope: tuple[str, ...] | None = None,
 ) -> None:
     params = {
         "target_db": build_db,
@@ -172,6 +173,7 @@ def run_s4_general(
         "input_mode": input_mode,
         "sources": sources,
         "atc4_scope": atc4_scope,
+        "period_scope": period_scope,
     }
     rc = s4_mart.run(params)
     if rc != 0:

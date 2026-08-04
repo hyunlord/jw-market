@@ -38,6 +38,7 @@ from .general_rows import (
 )
 from .general_ubist import (
     UbistAtc4Workset,
+    _available_ubist_periods,
     iter_ubist_atc4_worksets,
     load_ubist_base_frame,
     ubist_measure_frame,
@@ -65,11 +66,16 @@ def compute_general(
     memory_budget_bytes: int | None = None,
     commit_each_batch: bool = False,
     atc4_scope: tuple[str, ...] | None = None,
+    period_scope: tuple[str, ...] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if source not in ALLOWED_SOURCES:
         raise ValueError(f"unsupported source: {source}")
     if not dry_run and not insert:
         raise RuntimeError("Use --dry-run or --insert")
+    if insert and atc4_scope and not period_scope:
+        raise ValueError("period scope is required for ATC4-scoped mart insert")
+    if insert and period_scope and not atc4_scope:
+        raise ValueError("period scope requires an ATC4-scoped mart insert")
     catalog_map = load_catalog_key_map()
     all_brand_rows: list[dict[str, Any]] = []
     all_market_rows: list[dict[str, Any]] = []
@@ -88,7 +94,10 @@ def compute_general(
     )
     iqvia_base = load_iqvia_base_frame(max_rows=max_rows) if source == "iqvia_nsa" else None
     prepared_partitions = None
+    source_periods: tuple[str, ...] | None = None
     if raw_partitioned_ubist:
+        if atc4_scope:
+            source_periods = _available_ubist_periods()
         partition_kwargs: dict[str, Any] = {
             "max_rows": max_rows,
             "limit_atc4": limit_atc4,
@@ -222,6 +231,8 @@ def compute_general(
                 replace_kwargs: dict[str, Any] = {}
                 if atc4_scope:
                     replace_kwargs["atc4_scope"] = atc4_scope
+                    replace_kwargs["period_scope"] = period_scope
+                    replace_kwargs["source_periods"] = source_periods
                 replace_rows(
                     source=source,
                     brand_path=brand_output_path,
@@ -286,6 +297,7 @@ def compute_general(
         "measures": measure_stats,
         "return_mode": "streamed_preview" if dry_run else "complete",
         "atc4_scope": list(atc4_scope or ()),
+        "period_scope": list(period_scope or ()),
     }
     if dry_run:
         stats["output_paths"] = {

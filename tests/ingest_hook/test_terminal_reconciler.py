@@ -106,6 +106,87 @@ def test_complete_job_marks_complete_and_promotes_next(sqlite_ledger, fake_trans
     assert result["actions"][0]["ledger_status"] == "complete"
 
 
+@pytest.mark.parametrize("job_status", ["Failed", "Absent"])
+def test_publish_job_terminal_failure_recovers_before_unblocking_category(
+    sqlite_ledger,
+    fake_transport,
+    job_status,
+):
+    publishing, queued = _seed_running_and_queued(sqlite_ledger)
+    sqlite_ledger.mark_awaiting_approval(
+        *publishing,
+        run_id="run-old",
+        candidate={"run_id": "run-old", "activation_journal": "/tmp/journal.json"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    assert sqlite_ledger.mark_publish_running(
+        *publishing,
+        build_run_id="run-old",
+        publish_job_name="jw-ingest-publish-ubist-aaaaaaaa-run",
+        approved_by="pl@example.com",
+        approved_at="2026-08-04T01:00:00+00:00",
+    )
+
+    def inspect(_namespace: str, _name: str) -> dict:
+        if job_status == "Absent":
+            raise urllib.error.HTTPError(
+                url="https://kubernetes.invalid/jobs/publish",
+                code=404,
+                msg="Not Found",
+                hdrs=None,
+                fp=io.BytesIO(b""),
+            )
+        return _job_payload("Failed", reason="BackoffLimitExceeded")
+
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=inspect,
+        now=lambda: "20260804020202000000",
+    )
+    recovered: list[str] = []
+    service._recover_publish_activation = lambda entry: recovered.append(entry.job_name)
+
+    result = service.reconcile_terminal_jobs()
+
+    assert recovered == ["jw-ingest-publish-ubist-aaaaaaaa-run"]
+    assert sqlite_ledger.status(*publishing).status == "failed"
+    assert sqlite_ledger.status(*queued).status == "running"
+    assert result["reconciled"] == 1
+
+
+def test_publish_job_inspection_failure_stays_blocking(sqlite_ledger, fake_transport):
+    publishing, queued = _seed_running_and_queued(sqlite_ledger)
+    sqlite_ledger.mark_awaiting_approval(
+        *publishing,
+        run_id="run-old",
+        candidate={"run_id": "run-old"},
+        prepared_at="2026-08-04T00:00:00+00:00",
+        expires_at="2026-08-05T00:00:00+00:00",
+    )
+    assert sqlite_ledger.mark_publish_running(
+        *publishing,
+        build_run_id="run-old",
+        publish_job_name="jw-ingest-publish-ubist-aaaaaaaa-run",
+        approved_by="pl@example.com",
+        approved_at="2026-08-04T01:00:00+00:00",
+    )
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=lambda *_args: (_ for _ in ()).throw(TimeoutError("injected")),
+    )
+
+    result = service.reconcile_terminal_jobs()
+
+    assert result["inspection_failures"] == 1
+    assert sqlite_ledger.status(*publishing).status == "publish_running"
+    assert sqlite_ledger.status(*queued).status == "queued"
+
+
 def test_absent_job_is_distinct_from_terminal_present(sqlite_ledger, fake_transport):
     running, queued = _seed_running_and_queued(sqlite_ledger)
 

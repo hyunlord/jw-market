@@ -10,6 +10,7 @@ from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.job_launcher import (
     render_agent_refresh_job,
     render_job,
+    render_publish_job,
     submit_job,
 )
 
@@ -200,7 +201,7 @@ def test_rendered_retries_share_manifest_scoped_durable_stage_checkpoint():
     assert state_path(second) == expected
 
 
-def test_rendered_job_scopes_publish_approval_to_exact_run(monkeypatch):
+def test_rendered_build_job_does_not_poll_for_publish_approval(monkeypatch):
     monkeypatch.setenv("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "1")
     run_id = "run-a4"
 
@@ -215,9 +216,44 @@ def test_rendered_job_scopes_publish_approval_to_exact_run(monkeypatch):
     container = body["spec"]["template"]["spec"]["containers"][0]
     env = {item["name"]: item.get("value") for item in container["env"]}
     assert env["INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL"] == "1"
-    assert env["INGEST_PUBLISH_APPROVAL_FILE"] == (
-        f"/market-output/ingest-approvals/ubist/{SHA}/{run_id}.json"
+    assert "INGEST_PUBLISH_APPROVAL_FILE" not in env
+    assert body["spec"]["activeDeadlineSeconds"] == 28800
+
+
+def test_rendered_publish_job_is_separate_immutable_lifecycle(monkeypatch):
+    monkeypatch.setenv("INGEST_REQUIRE_EXACT_PUBLISH_APPROVAL", "1")
+
+    body = render_publish_job(
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha=SHA,
+        build_run_id="build-run",
+        publish_run_id="publish-run",
+        namespace="llmops",
     )
+
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    assert body["metadata"]["name"] == f"jw-ingest-publish-ubist-{SHA[:8]}-publish-run"
+    assert body["metadata"]["labels"]["app"] == "jw-ingest-publish"
+    assert body["metadata"]["labels"]["jw-ingest/parent-run-id"] == "build-run"
+    assert body["spec"]["activeDeadlineSeconds"] == 7200
+    assert container["command"] == [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.publish_runner",
+        "--epoch",
+        "2026-05",
+        "--category",
+        "ubist",
+        "--manifest-sha",
+        SHA,
+        "--build-run-id",
+        "build-run",
+        "--publish-run-id",
+        "publish-run",
+    ]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert "INGEST_PUBLISH_APPROVAL_FILE" not in env
 
 
 def test_submit_uses_injected_transport(fake_transport):
