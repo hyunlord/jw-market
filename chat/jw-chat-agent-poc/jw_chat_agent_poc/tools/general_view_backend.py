@@ -58,9 +58,14 @@ class GeneralMarket:
     top_brands: tuple[TopBrand, ...]
     market_size_series: tuple[tuple[str, float], ...] = ()
     member_brands: tuple[TopBrand, ...] = ()
+    member_population: tuple[str, ...] | None = None
+    active_members: tuple[TopBrand, ...] = ()
+    display_members: tuple[TopBrand, ...] = ()
     selected_data_path: str = "backend_fallback"
     fallback_reason: str | None = None
     hhi_recent: float | None = None
+    market_size_period: str | None = None
+    hhi_period: str | None = None
     brand_metric_series: tuple[BrandMetricPoint, ...] = ()
 
 
@@ -220,14 +225,13 @@ def parse_general_market_response(
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     kpi = data.get("kpi") if isinstance(data.get("kpi"), dict) else {}
     source_data = data.get("sources_data") if isinstance(data.get("sources_data"), dict) else {}
-    hhi_series = data.get("hhi_series_5y")
-    hhi_recent = _latest_hhi(hhi_series)
     series = source_data.get("market_size_series")
     period = "latest"
     if isinstance(series, list) and series:
         period = str(series[-1].get("period") or "latest") if isinstance(series[-1], dict) else "latest"
     elif isinstance(series, dict) and series:
         period = sorted(str(value) for value in series)[-1]
+    hhi_recent = _hhi_for_period(data.get("hhi_series_5y"), period)
 
     matrix = data.get("ei_ms_matrix") if isinstance(data.get("ei_ms_matrix"), dict) else {}
     current_rows = matrix.get("data")
@@ -244,22 +248,6 @@ def parse_general_market_response(
         if isinstance(row, dict)
         if row.get("brand") or row.get("brand_name")
     ), key=lambda row: row.rank if row.rank is not None else 10_000))
-    ranking = data.get("brand_ranking") if isinstance(data.get("brand_ranking"), dict) else {}
-    yearly = ranking.get("yearly") if isinstance(ranking.get("yearly"), list) else []
-    yearly_rows = tuple(row for row in yearly if isinstance(row, dict))
-    latest_year = max(yearly_rows, key=lambda row: str(row.get("year") or ""), default={})
-    latest_rankings = latest_year.get("rankings") if isinstance(latest_year.get("rankings"), list) else []
-    ranked_members = tuple(sorted((
-        TopBrand(
-            brand=str(row.get("brand") or row.get("brand_name") or ""),
-            rank=_first_int(row, "rank", "rank_overall"),
-            value=None,
-            share_pct=None,
-        )
-        for row in latest_rankings
-        if isinstance(row, dict)
-        if row.get("brand") or row.get("brand_name")
-    ), key=lambda row: row.rank if row.rank is not None else 10_000))
     requested_row = None
     if requested_brand:
         requested_key = _normalize_brand_name(requested_brand)
@@ -271,7 +259,17 @@ def parse_general_market_response(
             raise GeneralViewBrandMismatchError(
                 "general-view brand mismatch: requested brand is absent from current-period matrix"
             )
-    top_brands = current_brands[:5]
+    active_members = tuple(
+        row for row in current_brands if row.value is not None and row.value > 0
+    )
+    top_brands = active_members[:5]
+    ranked_members = _latest_ranked_members(data.get("brand_ranking"))
+    member_brands = (
+        ranked_members if len(ranked_members) > len(current_brands) else current_brands
+    )
+    member_population = (
+        tuple(row.brand for row in ranked_members) if ranked_members else None
+    )
     description = str(
         market_meta.get("market_definition_label")
         or market_meta.get("market_name")
@@ -303,8 +301,13 @@ def parse_general_market_response(
             and item.get("period")
             and isinstance(item.get("value"), int | float)
         ),
-        member_brands=ranked_members if len(ranked_members) > len(current_brands) else current_brands,
-        hhi_recent=hhi_recent if hhi_recent is not None else _as_float(kpi.get("hhi_recent")),
+        member_brands=member_brands,
+        member_population=member_population,
+        active_members=active_members,
+        display_members=top_brands,
+        hhi_recent=hhi_recent,
+        market_size_period=period if period != "latest" else None,
+        hhi_period=period if hhi_recent is not None and period != "latest" else None,
     )
 
 
@@ -336,19 +339,48 @@ def _as_int(value: object) -> int | None:
     return int(value) if isinstance(value, int | float) else None
 
 
-def _latest_hhi(value: object) -> float | None:
+def _hhi_for_period(value: object, period: str) -> float | None:
     if isinstance(value, dict):
-        for period in sorted(value, reverse=True):
-            hhi = _as_float(value[period])
-            if hhi is not None:
-                return hhi
+        return _as_float(value.get(period))
     if isinstance(value, list):
-        rows = [row for row in value if isinstance(row, dict)]
-        for row in sorted(rows, key=lambda item: str(item.get("period") or ""), reverse=True):
-            hhi = _first_float(row, "hhi", "value")
-            if hhi is not None:
-                return hhi
+        for row in value:
+            if isinstance(row, dict) and str(row.get("period") or "") == period:
+                return _first_float(row, "hhi", "value")
     return None
+
+
+def _latest_ranked_members(value: object) -> tuple[TopBrand, ...]:
+    if not isinstance(value, dict):
+        return ()
+    yearly = value.get("yearly")
+    if not isinstance(yearly, list):
+        return ()
+    rows = [row for row in yearly if isinstance(row, dict)]
+    if not rows:
+        return ()
+    latest = max(rows, key=lambda row: str(row.get("year") or ""))
+    rankings = latest.get("rankings")
+    if not isinstance(rankings, list):
+        return ()
+    return tuple(
+        sorted(
+            (
+                TopBrand(
+                    brand=str(row.get("brand") or row.get("brand_name") or ""),
+                    rank=_first_int(row, "rank", "rank_overall"),
+                    value=_first_float(row, "value", "raw_value", "value_recent"),
+                    share_pct=_first_float(row, "ms_pct", "share_pct", "ms"),
+                )
+                for row in rankings
+                if isinstance(row, dict) and (row.get("brand") or row.get("brand_name"))
+            ),
+            key=lambda row: (
+                row.rank is None,
+                row.rank if row.rank is not None else 10_000,
+                row.brand,
+            ),
+        )
+    )
 
 
 def _first_float(row: dict[str, Any], *keys: str) -> float | None:

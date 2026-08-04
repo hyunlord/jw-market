@@ -235,11 +235,11 @@ def _market_schema_values(
             "unit_source": "raw.render_data.market_size_recent_krw[field]",
         }
     if tool_name == "market.get_market_members" and _is_present(
-        render_data.get("member_brands")
+        render_data.get("member_population")
     ):
         return {
             "metric": "market_members",
-            "metric_source": "raw.render_data.member_brands[field]",
+            "metric_source": "raw.render_data.member_population[field]",
         }
     return {}
 

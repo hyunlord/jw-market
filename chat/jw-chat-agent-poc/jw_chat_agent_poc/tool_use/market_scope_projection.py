@@ -40,10 +40,19 @@ def general_scope_result(
                 else None
             ),
             "hhi_recent": rounded_hhi(market.hhi_recent),
-            "member_brands": tuple(row.brand for row in market.member_brands),
-            "total_brands_in_market": len(market.member_brands),
+            "hhi_period": market.hhi_period,
+            "market_size_period": market.market_size_period,
+            "active_members": tuple(row.brand for row in market.active_members),
+            "active_member_count": len(market.active_members),
+            "active_members_period": market.period,
+            "display_members": tuple(row.brand for row in market.display_members),
+            "display_member_count": len(market.display_members),
+            "display_projection": "top_5",
         }
     )
+    if market.member_population is not None:
+        render_data["member_population"] = market.member_population
+        render_data["member_population_count"] = len(market.member_population)
     return {
         "source": market.source,
         "tool": (
@@ -73,6 +82,8 @@ def general_metric_result(
             "market_share": market.brand_share_pct,
             "rank": market.brand_rank,
             "hhi_recent": rounded_hhi(market.hhi_recent),
+            "hhi_period": market.hhi_period,
+            "market_size_period": market.market_size_period,
         }
     )
     return {

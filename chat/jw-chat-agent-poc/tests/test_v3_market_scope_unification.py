@@ -5,6 +5,7 @@ import pytest
 from jw_chat_agent_poc.tool_use.internal_adapters import InternalToolAdapterRegistry
 from jw_chat_agent_poc.tool_use.market_scope_execution import (
     AmbiguousFamilyError,
+    AmbiguousMarketError,
     GeneralCompositeUnavailableError,
     InvalidMarketLabelError,
     MarketScopeKind,
@@ -15,6 +16,8 @@ from jw_chat_agent_poc.tool_use.market_scope_execution import (
 )
 from jw_chat_agent_poc.tool_use.v3_selection import selection_tool_specs
 from v3_market_scope_fakes import FakeGeneralMembership, FakeStrategicLayer, make_backend
+from jw_chat_agent_poc.tools.general_view_backend import AtcCandidate
+from jw_chat_agent_poc.tools.general_view_membership import GeneralMembershipResolution
 
 
 def test_no_strategic_membership_is_the_only_implicit_general_fallback() -> None:
@@ -67,6 +70,33 @@ def test_existing_route_hint_preserves_specific_unresolved_failures(
 
     with pytest.raises(error_type):
         resolver.resolve({"brand": brand, "metric": "sales"})
+
+
+def test_multiple_atc4_memberships_are_not_reported_as_family_language() -> None:
+    class MultipleMarketMembership:
+        def resolve(
+            self,
+            brand: str,
+            source: str,
+        ) -> GeneralMembershipResolution | None:
+            if brand != "복수시장브랜드" or source != "iqvia":
+                return None
+            return GeneralMembershipResolution(
+                brand_key=brand,
+                brand_name=brand,
+                candidates=(
+                    AtcCandidate("A10B0", "첫 번째 시장"),
+                    AtcCandidate("A10C0", "두 번째 시장"),
+                ),
+            )
+
+    resolver = ScopeResolver(
+        strategic_memberships=FakeStrategicLayer().brand_memberships,
+        general_membership=MultipleMarketMembership(),
+    )
+
+    with pytest.raises(AmbiguousMarketError, match="A10B0,A10C0"):
+        resolver.resolve({"brand": "복수시장브랜드", "metric": "sales"})
 
 
 def test_existing_strategic_call_is_byte_for_byte_delegate_equivalent() -> None:
@@ -184,8 +214,31 @@ def test_general_surface_reproduces_legacy_s01p0_values() -> None:
     assert rank["value"] == 1
     assert hhi["value"] == 3188.0404
     assert members["market_size_recent_krw"] == 42_559_564_361.0
-    assert members["total_brands_in_market"] == 9
-    assert members["member_brands"][0] == "아일리아"
+    assert members["member_population_count"] == 10
+    assert members["member_population"][-1] == "비쥬다인"
+    assert members["active_member_count"] == 9
+    assert members["active_members"][0] == "아일리아"
+    assert members["active_members_period"] == "2026-Q1"
+    assert members["display_member_count"] == 5
+    assert members["display_members"][0] == "아일리아"
+    assert "total_brands_in_market" not in members
+
+
+@pytest.mark.parametrize(
+    ("raw_hhi", "display_hhi"),
+    (
+        (3188.040362260885, 3188.0404),
+        (3015.4124533412323, 3015.4125),
+        (5652.065915370253, 5652.0659),
+    ),
+)
+def test_hhi_is_rounded_only_at_the_display_boundary(
+    raw_hhi: float,
+    display_hhi: float,
+) -> None:
+    from jw_chat_agent_poc.tool_use.market_scope_projection import rounded_hhi
+
+    assert rounded_hhi(raw_hhi) == display_hhi
 
 
 @pytest.mark.parametrize(

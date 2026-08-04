@@ -69,6 +69,8 @@ def scope_filters(raw: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
 
 def raise_unresolved_brand(brand: str) -> None:
     compact = "".join(brand.split())
+    # These markers are evidence-bounded to the 61-case market-scope corpus.
+    # Extend them only with a separately verified semantic resolver source.
     if compact.endswith("패밀리"):
         raise AmbiguousFamilyError(brand)
     if compact in {"이시장", "그시장", "해당시장"}:

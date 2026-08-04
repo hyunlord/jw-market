@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 from jw_chat_agent_poc.tool_use.market_scope_contract import (
-    AmbiguousFamilyError,
+    AmbiguousMarketError,
     GeneralCompositeUnavailableError,
     InvalidMarketLabelError,
     MarketScope,
@@ -196,7 +196,7 @@ class ScopeResolver:
         if not candidates:
             raise_unresolved_brand(brand)
         if len(candidates) != 1:
-            raise AmbiguousFamilyError(
+            raise AmbiguousMarketError(
                 f"{brand} maps to multiple ATC4 codes: "
                 f"{','.join(candidate.code for candidate in candidates)}"
             )

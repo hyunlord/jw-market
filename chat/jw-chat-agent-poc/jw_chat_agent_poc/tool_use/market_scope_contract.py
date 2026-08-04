@@ -54,6 +54,10 @@ class AmbiguousFamilyError(MarketScopeResolutionError):
     reason_code = "ambiguous_family"
 
 
+class AmbiguousMarketError(MarketScopeResolutionError):
+    reason_code = "ambiguous_market"
+
+
 class NoAnchorError(MarketScopeResolutionError):
     reason_code = "no_anchor"
 

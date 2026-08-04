@@ -35,6 +35,7 @@ class GeneralMartRows:
     brand_name: str | None
     brand_metric_history: dict[str, dict[str, Any]]
     hhi_series: dict[str, float] = field(default_factory=dict)
+    member_population: tuple[str, ...] | None = None
 
 
 class GeneralMartReader(Protocol):
@@ -103,6 +104,16 @@ class MariaDbGeneralMartReader:
                             (atc4.upper(), mart_source, measure.lower(), focus_brand_key(brand)),
                         )
                         brand_row = cursor.fetchone()
+                    cursor.execute(
+                        """
+                        SELECT brand_name
+                        FROM mart_general_brand_metric
+                        WHERE atc4_code=%s AND source=%s AND measure=%s
+                        ORDER BY brand_key
+                        """,
+                        (atc4.upper(), mart_source, measure.lower()),
+                    )
+                    population_rows = cursor.fetchall()
         except pymysql.MySQLError as exc:
             raise GeneralViewMartLoadError(
                 "general-view mart query failed",
@@ -124,6 +135,11 @@ class MariaDbGeneralMartReader:
             brand_name=str(brand_row["brand_name"]) if brand_row else None,
             brand_metric_history=_metric_map(brand_row["metric_history"]) if brand_row else {},
             hhi_series=_number_map(market_row["hhi_series"]),
+            member_population=(
+                tuple(str(row["brand_name"]) for row in population_rows)
+                if population_rows
+                else None
+            ),
         )
 
 
@@ -156,17 +172,16 @@ class GeneralViewMartBackend:
 
 
 def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
-    periods = (
-        set(rows.market_size_series)
-        | set(rows.hhi_series)
-        | set(rows.brand_ranking)
-        | set(rows.brand_metric_history)
-    )
+    periods = set(rows.market_size_series) & set(rows.brand_ranking)
+    if rows.hhi_series:
+        periods &= set(rows.hhi_series)
+    if rows.brand_name and rows.brand_metric_history:
+        periods &= set(rows.brand_metric_history)
     if not periods:
         raise GeneralViewMartLoadError("general-view mart rows contain no periods", reason="missing_period")
     period = max(periods)
     ranking_rows = rows.brand_ranking.get(period, [])
-    member_brands = tuple(
+    ranked_members = tuple(
         sorted(
             (
                 TopBrand(
@@ -185,6 +200,10 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
             ),
         )
     )
+    active_members = tuple(
+        row for row in ranked_members if row.value is not None and row.value > 0
+    )
+    display_members = active_members[:5]
     metric = rows.brand_metric_history.get(period, {})
     return GeneralMarket(
         view_type="general_view",
@@ -200,11 +219,16 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         brand_value=_as_float(metric.get("raw_value")),
         brand_share_pct=_as_float(metric.get("ms")),
         brand_rank=_as_int(metric.get("rank")),
-        top_brands=member_brands[:5],
+        top_brands=display_members,
         market_size_series=tuple(sorted(rows.market_size_series.items())),
-        member_brands=member_brands,
+        member_brands=ranked_members,
+        member_population=rows.member_population,
+        active_members=active_members,
+        display_members=display_members,
         selected_data_path="direct_mart",
         hhi_recent=rows.hhi_series.get(period),
+        market_size_period=period,
+        hhi_period=period if rows.hhi_series.get(period) is not None else None,
         brand_metric_series=tuple(
             BrandMetricPoint(
                 period=point_period,

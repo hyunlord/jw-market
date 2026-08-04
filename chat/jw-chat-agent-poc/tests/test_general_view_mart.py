@@ -27,6 +27,7 @@ class FakeGeneralMartReader:
             brand_name=brand,
             brand_metric_history={"2025-Q4": {"raw_value": 190.0, "ms": 95.0, "rank": 1}, "2026-Q1": {"raw_value": 270.0, "ms": 90.0, "rank": 1}},
             hhi_series={"2025-Q4": 9050.0, "2026-Q1": 8200.0},
+            member_population=("마운자로", "오젠픽", "제로브랜드"),
         )
 
 
@@ -76,3 +77,29 @@ def test_mart_backend_sorts_full_member_population_by_rank() -> None:
     market = backend.market("A10S0", "마운자로", "iqvia", "sales")
 
     assert [row.brand for row in market.member_brands] == ["마운자로", "오젠픽"]
+
+
+def test_mart_backend_separates_full_active_and_display_member_populations() -> None:
+    backend = GeneralViewMartBackend(FakeGeneralMartReader(), CandidateOnlyBackend())
+
+    market = backend.market("A10S0", "마운자로", "iqvia", "sales")
+
+    assert market.member_population == ("마운자로", "오젠픽", "제로브랜드")
+    assert [row.brand for row in market.active_members] == ["마운자로", "오젠픽"]
+    assert [row.brand for row in market.display_members] == ["마운자로", "오젠픽"]
+
+
+def test_mart_backend_uses_latest_period_shared_by_market_size_hhi_and_ranking() -> None:
+    class MisalignedLatestReader(FakeGeneralMartReader):
+        def read(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMartRows:
+            rows = super().read(atc4, brand, source, measure)
+            rows.hhi_series["2026-Q2"] = 8100.0
+            return rows
+
+    backend = GeneralViewMartBackend(MisalignedLatestReader(), CandidateOnlyBackend())
+
+    market = backend.market("A10S0", "마운자로", "iqvia", "sales")
+
+    assert market.period == "2026-Q1"
+    assert market.market_size == 300.0
+    assert market.hhi_recent == 8200.0

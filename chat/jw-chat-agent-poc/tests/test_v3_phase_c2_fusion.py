@@ -1,0 +1,500 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import replace
+
+import pytest
+
+from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
+    MarketMetricFact,
+    ToolFailureRecord,
+    V3EvidenceBundle,
+)
+from jw_chat_agent_poc.tool_use.v3_fusion import (
+    V3FusionEngine,
+    build_fusion_messages,
+    validate_fusion_answer,
+)
+from jw_chat_agent_poc.tool_use.v3_fusion_contracts import (
+    GeneratedFusionAnswer,
+    GeneratedFusionClaim,
+)
+from jw_chat_agent_poc.tool_use.v3_fusion_provider import (
+    FusionProviderResult,
+    GenosV3FusionProvider,
+)
+
+
+def _fact(
+    evidence_id: str,
+    *,
+    value: object,
+    metric: str = "share",
+    unit: str = "%",
+) -> MarketMetricFact:
+    return MarketMetricFact(
+        evidence_id=evidence_id,
+        tool_name="market.get_brand_metric",
+        arguments={"brand": "아일리아", "metric": metric},
+        raw_result={
+            "render_data": {
+                "brand": "아일리아",
+                "metric": metric,
+                "value": value,
+                "unit_label": unit,
+                "period": "2026-Q1",
+                "view_type": "general_view",
+                "market_id": "S01P0",
+            }
+        },
+        missing_required_fields=(),
+        entity="아일리아",
+        metric=metric,
+        period="2026-Q1",
+        unit=unit,
+        view="general_view",
+        market="S01P0",
+    )
+
+
+def _bundle(
+    *facts: MarketMetricFact,
+    failures: tuple[ToolFailureRecord, ...] = (),
+) -> V3EvidenceBundle:
+    return V3EvidenceBundle(
+        status="partial" if facts and failures else "complete" if facts else "failed",
+        facts=facts,
+        failures=failures,
+        deferred=(),
+        executions=(),
+        original_call_count=len(facts) + len(failures),
+        executed_call_count=len(facts) + len(failures),
+        deduplicated_call_count=0,
+    )
+
+
+def _population_fact(evidence_id: str = "fact-population") -> MarketMetricFact:
+    return MarketMetricFact(
+        evidence_id=evidence_id,
+        tool_name="market.get_market_members",
+        arguments={"brand": "아일리아"},
+        raw_result={
+            "render_data": {
+                "metric": "market_members",
+                "period": "2026-Q1",
+                "view_type": "general_view",
+                "market_id": "S01P0",
+                "member_population": tuple(f"전체{i}" for i in range(1, 11)),
+                "member_population_count": 10,
+                "active_members": tuple(f"활성{i}" for i in range(1, 10)),
+                "active_member_count": 9,
+                "active_members_period": "2026-Q1",
+                "display_members": tuple(f"표시{i}" for i in range(1, 6)),
+                "display_member_count": 5,
+            }
+        },
+        missing_required_fields=(),
+        entity="아일리아",
+        metric="market_members",
+        period="2026-Q1",
+        unit="brand",
+        view="general_view",
+        market="S01P0",
+    )
+
+
+def test_claim_requires_existing_evidence_and_exact_numeric_literal() -> None:
+    fact = _fact("fact-share", value=51.38)
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="아일리아 점유율은 51.38%입니다.",
+                evidence_ids=("fact-share",),
+            ),
+        ),
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert [claim.text for claim in result.answer.claims] == [
+        "아일리아 점유율은 51.38%입니다."
+    ]
+    assert result.audit.rejected_claims == ()
+    assert result.audit.ungrounded_numeric_literals == ()
+
+
+def test_ungrounded_numeric_claim_is_removed_without_discarding_grounded_claim() -> None:
+    fact = _fact("fact-share", value=51.38)
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="아일리아 점유율은 51.38%입니다.",
+                evidence_ids=("fact-share",),
+            ),
+            GeneratedFusionClaim(
+                text="아일리아 점유율은 52%입니다.",
+                evidence_ids=("fact-share",),
+            ),
+        ),
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert [claim.text for claim in result.answer.claims] == [
+        "아일리아 점유율은 51.38%입니다."
+    ]
+    assert result.audit.ungrounded_numeric_literals == ("52",)
+    assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
+    assert result.answer.limitations
+
+
+def test_missing_evidence_reference_is_rejected_at_the_claim_boundary() -> None:
+    fact = _fact("fact-share", value=51.38)
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="근거가 없는 문장입니다.",
+                evidence_ids=(),
+            ),
+            GeneratedFusionClaim(
+                text="존재하지 않는 근거입니다.",
+                evidence_ids=("missing-fact",),
+            ),
+        ),
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert {item.reason for item in result.audit.rejected_claims} == {
+        "missing_evidence_reference",
+        "unknown_evidence_reference",
+    }
+
+
+def test_typed_failure_is_added_to_limitations_when_model_omits_it() -> None:
+    failure = ToolFailureRecord(
+        tool_name="market.get_brand_metric",
+        arguments={"brand": "리바로", "source": "IQVIA"},
+        stage="execution",
+        error_type="UnsupportedSourceError",
+        message="unsupported_source: iqvia",
+    )
+
+    result = validate_fusion_answer(GeneratedFusionAnswer(), _bundle(failures=(failure,)))
+
+    assert result.answer.claims == ()
+    assert result.answer.limitations == ("그 소스에는 해당 지표가 없습니다.",)
+    assert result.audit.injected_limitation_reason_codes == ("unsupported_source",)
+
+
+def test_partial_success_keeps_claim_and_records_failed_facet() -> None:
+    fact = _fact("fact-share", value=51.38)
+    failure = ToolFailureRecord(
+        tool_name="hira_reimbursement_criteria",
+        arguments={"query": "아일리아"},
+        stage="execution",
+        error_type="UPSTREAM_ERROR",
+        message="upstream unavailable",
+    )
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="아일리아 점유율은 51.38%입니다.",
+                evidence_ids=("fact-share",),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact, failures=(failure,)))
+
+    assert len(result.answer.claims) == 1
+    assert len(result.answer.limitations) == 1
+
+
+def test_general_composite_remains_fail_closed_in_fusion() -> None:
+    failure = ToolFailureRecord(
+        tool_name="market.get_market_size",
+        arguments={"scope": {"kind": "general_composite"}},
+        stage="execution",
+        error_type="GeneralCompositeUnavailableError",
+        message="formula parity details must not be exposed",
+    )
+    attempted = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="복합 시장 결과가 확인됐습니다.",
+                evidence_ids=("fabricated",),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(attempted, _bundle(failures=(failure,)))
+
+    assert result.answer.claims == ()
+    assert result.answer.limitations == ("현재 지원하지 않는 시장 조합입니다.",)
+    assert "formula" not in result.answer.limitations[0]
+
+
+def test_hhi_keeps_direct_mart_precision_and_rejects_truncation() -> None:
+    fact = _fact("fact-hhi", value=3188.0404, metric="hhi", unit="index")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026-Q1 HHI는 3,188.0404입니다.",
+                evidence_ids=("fact-hhi",),
+            ),
+            GeneratedFusionClaim(
+                text="2026-Q1 HHI는 3,188.0403입니다.",
+                evidence_ids=("fact-hhi",),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert [claim.text for claim in result.answer.claims] == [
+        "2026-Q1 HHI는 3,188.0404입니다."
+    ]
+    assert result.audit.ungrounded_numeric_literals == ("3,188.0403",)
+
+
+def test_hhi_claim_without_its_evidence_period_is_rejected() -> None:
+    fact = _fact("fact-hhi", value=3015.4125, metric="hhi", unit="index")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="HHI는 3,015.4125입니다.",
+                evidence_ids=("fact-hhi",),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "hhi_period_missing"
+
+
+def test_hhi_claim_accepts_equivalent_korean_quarter_period() -> None:
+    fact = _fact("fact-hhi", value=3188.0404, metric="hhi", unit="index")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026년 1분기 기준 HHI는 3,188.0404입니다.",
+                evidence_ids=("fact-hhi",),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert [claim.text for claim in result.answer.claims] == [
+        "2026년 1분기 기준 HHI는 3,188.0404입니다."
+    ]
+    assert result.audit.rejected_claims == ()
+
+
+def test_period_quarter_digit_cannot_supply_rank_evidence() -> None:
+    fact = _fact("fact-share", value=51.38)
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026-Q1 기준 아일리아는 1위이고 점유율은 51.38%입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
+    assert result.audit.ungrounded_numeric_literals == ("1",)
+
+
+def test_active_member_count_cannot_be_labeled_as_full_population() -> None:
+    fact = _population_fact()
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="이 시장의 전체 브랜드는 9개입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "population_layer_mismatch"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "이 시장의 전체 mart 관측 브랜드는 10개입니다.",
+        "2026-Q1 양수 실적 활성 브랜드는 9개입니다.",
+        "화면 표시 브랜드는 상위 5개입니다.",
+    ),
+)
+def test_population_claim_is_accepted_when_count_and_layer_label_match(text: str) -> None:
+    fact = _population_fact()
+    answer = GeneratedFusionAnswer(
+        claims=(GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),)
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_market_size_and_hhi_with_different_periods_cannot_share_a_claim() -> None:
+    market_size = _fact("fact-size", value=42559564361.0, metric="market_size", unit="KRW")
+    hhi = _fact("fact-hhi", value=3188.0404, metric="hhi", unit="index")
+    hhi = replace(hhi, period="2025")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026-Q1 시장 규모는 42559564361.0원이고 2025 HHI는 3188.0404입니다.",
+                evidence_ids=(market_size.evidence_id, hhi.evidence_id),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(market_size, hhi))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "market_hhi_period_mismatch"
+
+
+def test_prompt_contains_fact_values_and_safe_failure_language_only() -> None:
+    fact = _fact("fact-hhi", value=3188.0404, metric="hhi", unit="index")
+    failure = ToolFailureRecord(
+        tool_name="market.get_market_size",
+        arguments={"scope": {"kind": "general_composite"}},
+        stage="execution",
+        error_type="GeneralCompositeUnavailableError",
+        message="formula parity internal detail",
+    )
+
+    messages = build_fusion_messages("시장 집중도를 알려줘", _bundle(fact, failures=(failure,)))
+    user_payload = json.loads(messages[1]["content"])
+
+    assert user_payload["evidence"][0]["evidence_id"] == "fact-hhi"
+    assert "3188.0404" in user_payload["evidence"][0]["allowed_numeric_literals"]
+    assert user_payload["failures"] == [
+        {
+            "reason_code": "general_composite_unavailable",
+            "limitation": "현재 지원하지 않는 시장 조합입니다.",
+        }
+    ]
+    assert "formula parity" not in messages[1]["content"]
+
+
+def test_engine_preserves_raw_provider_response_and_validates_before_return() -> None:
+    fact = _fact("fact-share", value=51.38)
+
+    class FakeProvider:
+        def generate(self, *, messages: list[dict[str, str]]) -> FusionProviderResult:
+            assert len(messages) == 2
+            return FusionProviderResult(
+                content=json.dumps(
+                    {
+                        "claims": [
+                            {
+                                "text": "아일리아 점유율은 51.38%입니다.",
+                                "evidence_ids": ["fact-share"],
+                            }
+                        ],
+                        "limitations": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                raw_text='{"model":"fixture","usage":{"total_tokens":10}}',
+                raw_bytes_sha256="b" * 64,
+                raw_response={"model": "fixture", "usage": {"total_tokens": 10}},
+                usage={"total_tokens": 10},
+                model="fixture",
+                latency_ms=1.0,
+                completed_at_utc="2026-08-05T00:00:00Z",
+                request_body_sha256="a" * 64,
+            )
+
+    result = V3FusionEngine(FakeProvider()).generate("점유율 알려줘", _bundle(fact))
+
+    assert result.validated.answer.claims[0].evidence_ids == ("fact-share",)
+    assert result.provider.raw_response["model"] == "fixture"
+    assert result.generated.claims[0].text == "아일리아 점유율은 51.38%입니다."
+
+
+def test_genos_provider_records_usage_without_exposing_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        encoding = "utf-8"
+
+        @property
+        def text(self) -> str:
+            return json.dumps(self.json(), ensure_ascii=False, separators=(",", ":"))
+
+        @property
+        def content(self) -> bytes:
+            return self.text.encode("utf-8")
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "model": "genos/514/fixture",
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"claims":[],"limitations":["확인할 근거가 없습니다."]}'
+                        }
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                },
+            }
+
+    def fake_post(url: str, **kwargs: object) -> FakeResponse:
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr("jw_chat_agent_poc.tool_use.v3_fusion_provider.requests.post", fake_post)
+    provider = GenosV3FusionProvider(
+        base_url="https://example.invalid/api/gateway/rep/serving/514",
+        token="fixture-secret",
+        model="fixture-model",
+    )
+
+    result = provider.generate(messages=[{"role": "user", "content": "fixture"}])
+
+    assert result.model == "genos/514/fixture"
+    assert result.usage == {
+        "model": "genos/514/fixture",
+        "serving_id": "514",
+        "stream": False,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "raw_usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+        },
+    }
+    assert captured["headers"] == {"Authorization": "Bearer fixture-secret"}
+    assert captured["json"]["max_tokens"] == 4096
+    assert "fixture-secret" not in json.dumps(result.raw_response)
+    assert result.raw_text == FakeResponse().text
+    assert result.raw_bytes_sha256 == hashlib.sha256(
+        result.raw_text.encode("utf-8")
+    ).hexdigest()

@@ -199,6 +199,50 @@ def test_parse_general_market_response_preserves_zero_current_metrics() -> None:
     assert market.hhi_recent == 0.0
 
 
+def test_parse_general_market_response_does_not_relabel_misaligned_hhi_period() -> None:
+    payload = _payload()
+    payload["result"]["data"]["hhi_series_5y"] = [
+        {"period": "2026-05", "hhi": 999.0}
+    ]
+
+    market = parse_general_market_response(
+        payload,
+        requested_atc4="C10A1",
+        requested_source="ubist",
+        requested_measure="sales",
+    )
+
+    assert market.period == "2026-04"
+    assert market.market_size_period == "2026-04"
+    assert market.hhi_recent is None
+    assert market.hhi_period is None
+
+
+def test_parse_general_market_response_keeps_full_population_separate_from_active() -> None:
+    payload = _payload()
+    payload["result"]["data"]["brand_ranking"]["yearly"][0]["rankings"].extend(
+        {
+            "brand": f"전체브랜드{rank}",
+            "rank": rank,
+            "value": 0,
+            "ms_pct": 0.0,
+        }
+        for rank in range(3, 9)
+    )
+
+    market = parse_general_market_response(
+        payload,
+        requested_atc4="C10A1",
+        requested_source="ubist",
+        requested_measure="sales",
+    )
+
+    assert len(market.member_population or ()) == 8
+    assert len(market.member_brands) == 8
+    assert [row.brand for row in market.active_members] == ["리피토", "리바로"]
+    assert [row.brand for row in market.display_members] == ["리피토", "리바로"]
+
+
 def test_parse_general_market_response_fails_closed_when_requested_brand_is_missing() -> None:
     payload = _payload()
     payload["result"]["data"]["brand_ranking"]["yearly"][-1]["rankings"].append(

@@ -118,6 +118,7 @@ class FakeGeneralBackend:
             ("브랜드9", 9, 492_237_401.0, 1.157),
         )
         members = tuple(TopBrand(*row) for row in rows)
+        member_population = tuple(row.brand for row in members) + ("비쥬다인",)
         selected = next((row for row in members if row.brand == brand), None)
         series = (
             BrandMetricPoint("2025-Q4", 20_000_000_000.0, 49.0, 1),
@@ -145,6 +146,9 @@ class FakeGeneralBackend:
             top_brands=members[:5],
             market_size_series=(("2025-Q4", 40_000_000_000.0), ("2026-Q1", 42_559_564_361.0)),
             member_brands=members,
+            member_population=member_population,
+            active_members=members,
+            display_members=members[:5],
             selected_data_path="direct_mart",
             hhi_recent=3188.040362260885,
             brand_metric_series=series,

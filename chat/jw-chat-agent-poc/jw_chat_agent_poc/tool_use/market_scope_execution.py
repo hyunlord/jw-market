@@ -10,6 +10,7 @@ from jw_chat_agent_poc.tool_use.market_scope_backends import (
 
 from jw_chat_agent_poc.tool_use.market_scope_contract import (
     AmbiguousFamilyError,
+    AmbiguousMarketError,
     GeneralCompositeUnavailableError,
     GeneralMetricUnavailableError,
     InvalidMarketLabelError,
@@ -43,6 +44,7 @@ from jw_chat_agent_poc.tool_use.market_scope_resolver import ScopeResolver
 
 __all__ = (
     "AmbiguousFamilyError",
+    "AmbiguousMarketError",
     "GeneralCompositeUnavailableError",
     "GeneralMetricUnavailableError",
     "InvalidMarketLabelError",
