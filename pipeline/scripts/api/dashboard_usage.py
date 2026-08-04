@@ -255,18 +255,31 @@ USAGE_LOGS_SQL: Final = """
     LIMIT %s
 """
 
-CHAT_TURNS_SQL: Final = """
+_CHAT_TURN_SOURCE_SQL: Final = (
+    "CASE WHEN c.conversation_log_id IS NULL THEN 'rnd' ELSE 'market' END"
+)
+_CHAT_TURN_ID_SQL: Final = """
+    CASE WHEN c.conversation_log_id IS NULL THEN
+        SHA2(CONCAT('rnd:', CHAR_LENGTH(c.conversation_id), ':', c.conversation_id,
+                    ':', LPAD(c.turn_index, 10, '0'),
+                    ':', CHAR_LENGTH(c.trace_id), ':', c.trace_id), 256)
+    ELSE SHA2(CONCAT('market:', c.conversation_log_id), 256) END
+""".strip()
+
+CHAT_TURNS_SQL: Final = f"""
     SELECT c.conversation_log_id, c.created_at, c.service_id,
            c.portal_user_id AS user_id, u.name AS user_name, u.department,
            c.conversation_id, c.turn_index, c.contract_status, c.quality_label,
-           c.elapsed_ms, c.input_tokens, c.output_tokens, c.total_tokens
+           c.elapsed_ms, c.input_tokens, c.output_tokens, c.total_tokens,
+           c.trace_id, {_CHAT_TURN_SOURCE_SQL} AS source,
+           {_CHAT_TURN_ID_SQL} AS source_turn_id
     FROM dashboard_chat_usage_v c
     JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
     WHERE c.created_at >= %s AND c.created_at < %s
       AND c.portal_user_id IS NOT NULL
       AND c.service_id IN (61, 91, 94)
-    {filters}
-    ORDER BY c.created_at DESC, c.conversation_log_id DESC
+    {{filters}}
+    ORDER BY c.created_at DESC, source DESC, source_turn_id DESC
     LIMIT %s
 """
 
@@ -327,7 +340,8 @@ class InvalidUsageLogCursor(ValueError):
 @dataclass(frozen=True, slots=True)
 class ChatTurnCursor:
     created_at: datetime
-    conversation_log_id: int
+    source: Literal["market", "rnd"]
+    source_turn_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +364,10 @@ class ChatTurnPage:
 
 
 class InvalidChatTurnCursor(ValueError):
+    pass
+
+
+class ChatTurnDataContractError(RuntimeError):
     pass
 
 
@@ -390,8 +408,10 @@ def decode_usage_log_cursor(value: str) -> UsageLogCursor:
 def encode_chat_turn_cursor(cursor: ChatTurnCursor) -> str:
     payload = json.dumps(
         {
+            "v": 2,
             "created_at": cursor.created_at.isoformat(timespec="microseconds"),
-            "conversation_log_id": cursor.conversation_log_id,
+            "source": cursor.source,
+            "source_turn_id": cursor.source_turn_id,
         },
         ensure_ascii=True,
         separators=(",", ":"),
@@ -406,18 +426,33 @@ def decode_chat_turn_cursor(value: str) -> ChatTurnCursor:
         raw = base64.b64decode(value + padding, altchars=b"-_", validate=True)
         payload = json.loads(raw.decode("ascii"))
         if not isinstance(payload, dict) or set(payload) != {
+            "v",
             "created_at",
-            "conversation_log_id",
+            "source",
+            "source_turn_id",
         }:
             raise InvalidChatTurnCursor
+        version = payload["v"]
         created_at_raw = payload["created_at"]
-        row_id = payload["conversation_log_id"]
-        if not isinstance(created_at_raw, str) or not isinstance(row_id, int) or row_id < 1:
+        source = payload["source"]
+        source_turn_id = payload["source_turn_id"]
+        if (
+            version != 2
+            or not isinstance(created_at_raw, str)
+            or source not in {"market", "rnd"}
+            or not isinstance(source_turn_id, str)
+            or len(source_turn_id) != 64
+            or any(character not in "0123456789abcdef" for character in source_turn_id)
+        ):
             raise InvalidChatTurnCursor
         created_at = datetime.fromisoformat(created_at_raw)
         if created_at.tzinfo is not None:
             raise InvalidChatTurnCursor
-        cursor = ChatTurnCursor(created_at=created_at, conversation_log_id=row_id)
+        cursor = ChatTurnCursor(
+            created_at=created_at,
+            source=source,
+            source_turn_id=source_turn_id,
+        )
         if encode_chat_turn_cursor(cursor) != value:
             raise InvalidChatTurnCursor
         return cursor
@@ -680,13 +715,16 @@ class MariaDBUsageRepository:
         if filters.cursor is not None:
             clauses.append(
                 "(c.created_at < %s OR "
-                "(c.created_at = %s AND c.conversation_log_id < %s))"
+                f"(c.created_at = %s AND ({_CHAT_TURN_SOURCE_SQL} < %s OR "
+                f"({_CHAT_TURN_SOURCE_SQL} = %s AND {_CHAT_TURN_ID_SQL} < %s))))"
             )
             params.extend(
                 (
                     filters.cursor.created_at,
                     filters.cursor.created_at,
-                    filters.cursor.conversation_log_id,
+                    filters.cursor.source,
+                    filters.cursor.source,
+                    filters.cursor.source_turn_id,
                 )
             )
         params.append(filters.page_size + 1)
@@ -706,16 +744,20 @@ class MariaDBUsageRepository:
 
         has_more = len(rows) > filters.page_size
         page_rows = rows[: filters.page_size]
-        items = tuple(_chat_turn_item(row) for row in page_rows)
-        next_cursor = None
-        if has_more and page_rows:
-            last = page_rows[-1]
-            next_cursor = encode_chat_turn_cursor(
-                ChatTurnCursor(
-                    created_at=last["created_at"],
-                    conversation_log_id=int(last["conversation_log_id"]),
+        try:
+            items = tuple(_chat_turn_item(row) for row in page_rows)
+            next_cursor = None
+            if has_more and page_rows:
+                last = page_rows[-1]
+                next_cursor = encode_chat_turn_cursor(
+                    ChatTurnCursor(
+                        created_at=last["created_at"],
+                        source=last["source"],
+                        source_turn_id=last["source_turn_id"],
+                    )
                 )
-            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ChatTurnDataContractError("invalid chat turn cursor identity") from exc
         return ChatTurnPage(items=items, next_cursor=next_cursor, has_more=has_more)
 
     def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:

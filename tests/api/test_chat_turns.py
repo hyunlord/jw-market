@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from pipeline.scripts.api.dashboard_usage import (
     ChatTurnCursor,
     ChatTurnFilters,
     ChatTurnPage,
+    MariaDBUsageRepository,
     decode_chat_turn_cursor,
     encode_chat_turn_cursor,
 )
@@ -45,21 +47,25 @@ class FakeChatTurnsRepository:
                 },
             ),
             next_cursor=encode_chat_turn_cursor(
-                ChatTurnCursor(datetime(2026, 8, 3, 9, 30), 42)
+                ChatTurnCursor(datetime(2026, 8, 3, 9, 30), "market", "a" * 64)
             ),
             has_more=True,
         )
 
 
-def _client(repository: FakeChatTurnsRepository) -> TestClient:
+def _client(
+    repository: FakeChatTurnsRepository, *, raise_server_exceptions: bool = True
+) -> TestClient:
     app = FastAPI()
     app.include_router(create_chat_turns_router(repository))
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def test_chat_turns_forwards_bounded_filters_and_opaque_cursor() -> None:
     repository = FakeChatTurnsRepository()
-    cursor = encode_chat_turn_cursor(ChatTurnCursor(datetime(2026, 8, 3, 8, 0), 41))
+    cursor = encode_chat_turn_cursor(
+        ChatTurnCursor(datetime(2026, 8, 3, 8, 0), "rnd", "b" * 64)
+    )
 
     response = _client(repository).get(
         "/api/dashboard/chat-turns",
@@ -85,11 +91,11 @@ def test_chat_turns_forwards_bounded_filters_and_opaque_cursor() -> None:
             excluded_user_ids=(82, 85),
             department="Market",
             page_size=100,
-            cursor=ChatTurnCursor(datetime(2026, 8, 3, 8, 0), 41),
+            cursor=ChatTurnCursor(datetime(2026, 8, 3, 8, 0), "rnd", "b" * 64),
         )
     ]
     assert decode_chat_turn_cursor(response.json()["next_cursor"]) == ChatTurnCursor(
-        datetime(2026, 8, 3, 9, 30), 42
+        datetime(2026, 8, 3, 9, 30), "market", "a" * 64
     )
 
 
@@ -146,7 +152,9 @@ def test_chat_turn_query_is_sanitized_linked_and_keyset_ordered() -> None:
     assert "join dashboard_user_directory_v u" in normalized
     assert "c.service_id in (61, 91, 94)" in normalized
     assert "c.portal_user_id is not null" in normalized
-    assert "order by c.created_at desc, c.conversation_log_id desc" in normalized
+    assert "as source" in normalized
+    assert "as source_turn_id" in normalized
+    assert "order by c.created_at desc, source desc, source_turn_id desc" in normalized
     for forbidden in ("question", "answer", "email", "actor_uid", "request_params", "jti"):
         assert forbidden not in normalized
 
@@ -177,3 +185,96 @@ def test_chat_turns_maps_coverage_failure_to_structured_503() -> None:
         "available_to": "2026-08-03",
     }
     assert response.json()["limits"] == {"max_days": 31, "cache_ttl_seconds": 60}
+
+
+def test_chat_turn_repository_pages_past_nullable_market_identity() -> None:
+    base = datetime(2026, 8, 3, 12, 0)
+    rows = []
+    for index in range(51):
+        is_rnd = index >= 23
+        rows.append(
+            {
+                "conversation_log_id": None if is_rnd else 1000 - index,
+                "created_at": base - timedelta(seconds=index),
+                "service_id": 61 if is_rnd else 91,
+                "user_id": 34,
+                "user_name": "display name",
+                "department": "Market",
+                "conversation_id": f"session-{index}",
+                "turn_index": index + 1,
+                "trace_id": f"trace-{index}",
+                "contract_status": "complete",
+                "quality_label": "rnd_trace" if is_rnd else "na",
+                "elapsed_ms": None,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "source": "rnd" if is_rnd else "market",
+                "source_turn_id": f"{index:064x}",
+            }
+        )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params):
+            self.executed = (sql, params)
+
+        def fetchall(self):
+            return rows
+
+    class Connection:
+        def __init__(self):
+            self.db_cursor = Cursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.db_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    config = SimpleNamespace(
+        dashboard_db_host="db",
+        dashboard_db_port=3306,
+        dashboard_db_user="reader",
+        dashboard_db_password="not-recorded",
+        dashboard_db_name="audit",
+    )
+    repository = MariaDBUsageRepository(config, connect=lambda **_kwargs: connection)
+    repository._fetch_chat_materialization_state = lambda: ChatMaterializationState(  # type: ignore[method-assign]
+        date(2026, 7, 9),
+        date(2026, 8, 4),
+        datetime.now(UTC),
+        "complete",
+    )
+
+    page = repository.fetch_chat_turns(
+        ChatTurnFilters(date(2026, 8, 1), date(2026, 8, 3), page_size=50)
+    )
+
+    assert page.has_more is True
+    assert len(page.items) == 50
+    assert connection.closed is True
+    cursor = decode_chat_turn_cursor(page.next_cursor or "")
+    assert cursor.source == "rnd"
+    assert cursor.source_turn_id == f"{49:064x}"
+
+
+def test_chat_turns_maps_unexpected_repository_failure_to_json() -> None:
+    class BrokenRepository(FakeChatTurnsRepository):
+        def fetch_chat_turns(self, filters: ChatTurnFilters) -> ChatTurnPage:
+            raise TypeError("nullable source identity")
+
+    response = _client(BrokenRepository(), raise_server_exceptions=False).get(
+        "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03"
+    )
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["detail"]["error"] == "chat_turns_internal_error"

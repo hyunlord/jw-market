@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pipeline.scripts.api.chat_usage_materialization import ChatMaterializationUnavailable
 from pipeline.scripts.api.dashboard_usage import (
     DEFAULT_CACHE_TTL_SECONDS,
+    ChatTurnDataContractError,
     DashboardQueryError,
     ChatTurnFilters,
     ChatTurnsRepository,
@@ -135,7 +136,6 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
                     "message": "사용 통계 데이터 소스를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.",
                 },
             ) from error
-
     return router
 
 
@@ -256,6 +256,24 @@ def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
                 detail={
                     "error": "dashboard_query_unavailable",
                     "message": "채팅 이력을 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+                },
+            ) from error
+        except ChatTurnDataContractError as error:
+            LOGGER.exception("chat turn history data contract failed")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "chat_turn_data_contract_error",
+                    "message": "채팅 이력 응답을 구성할 수 없습니다.",
+                },
+            ) from error
+        except Exception as error:
+            LOGGER.exception("chat turn history request failed unexpectedly")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "chat_turns_internal_error",
+                    "message": "채팅 이력 요청을 처리할 수 없습니다.",
                 },
             ) from error
         return {
