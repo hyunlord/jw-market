@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,7 +24,19 @@ class _SelectionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class MarketBrandMetricInput(_SelectionInput):
+class MarketScopeSpecInput(_SelectionInput):
+    kind: Literal["strategic", "general_atc4", "general_composite"]
+    market_id: str | None = None
+    atc4: tuple[str, ...] = ()
+    filters: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+
+
+class _MarketSelectionInput(_SelectionInput):
+    view: Literal["strategic", "general"] | None = None
+    scope: MarketScopeSpecInput | None = None
+
+
+class MarketBrandMetricInput(_MarketSelectionInput):
     brand: str
     metric: str
     period: str = "latest"
@@ -33,12 +45,12 @@ class MarketBrandMetricInput(_SelectionInput):
     history_points: int = 10
 
 
-class MarketScopeInput(_SelectionInput):
+class MarketScopeInput(_MarketSelectionInput):
     brand: str
     market: str | None = None
 
 
-class MarketTimeseriesInput(_SelectionInput):
+class MarketTimeseriesInput(_MarketSelectionInput):
     brand: str
     metric: str = "sales"
     period: str = "latest"
@@ -47,7 +59,7 @@ class MarketTimeseriesInput(_SelectionInput):
     history_points: int = 10
 
 
-class MarketChannelBreakdownInput(_SelectionInput):
+class MarketChannelBreakdownInput(_MarketSelectionInput):
     brand: str
     source: str = ""
     period: str = "latest"
@@ -56,7 +68,7 @@ class MarketChannelBreakdownInput(_SelectionInput):
     metric: str = "sales"
 
 
-class MarketDerivedMetricInput(_SelectionInput):
+class MarketDerivedMetricInput(_MarketSelectionInput):
     brand: str
     period: str = "latest"
     market: str | None = None
@@ -64,7 +76,7 @@ class MarketDerivedMetricInput(_SelectionInput):
     history_points: int = 10
 
 
-class MarketComparisonInput(_SelectionInput):
+class MarketComparisonInput(_MarketSelectionInput):
     brand: str
     comparison_brand: str
     market: str | None = None

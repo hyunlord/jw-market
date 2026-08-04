@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
+    BrandMetricPoint,
     GeneralMarket,
     GeneralViewBackendError,
     TopBrand,
@@ -130,8 +131,14 @@ class MariaDbGeneralMartReader:
 class GeneralViewMartBackend:
     reader: GeneralMartReader
     fallback: GeneralBackendFallback
+    allow_fallback: bool = True
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
+        if not self.allow_fallback:
+            raise GeneralViewMartLoadError(
+                "general-view backend candidate fallback is disabled",
+                reason="fallback_disabled",
+            )
         return self.fallback.candidates(brand, source)
 
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket:
@@ -139,6 +146,8 @@ class GeneralViewMartBackend:
             rows = self.reader.read(atc4, brand, source, measure)
             return _market_from_rows(rows)
         except GeneralViewMartLoadError as exc:
+            if not self.allow_fallback:
+                raise
             return replace(
                 self.fallback.market(atc4, brand, source, measure),
                 selected_data_path="backend_fallback",
@@ -196,6 +205,15 @@ def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:
         member_brands=member_brands,
         selected_data_path="direct_mart",
         hhi_recent=rows.hhi_series.get(period),
+        brand_metric_series=tuple(
+            BrandMetricPoint(
+                period=point_period,
+                value=_as_float(point.get("raw_value")),
+                share_pct=_as_float(point.get("ms")),
+                rank=_as_int(point.get("rank")),
+            )
+            for point_period, point in sorted(rows.brand_metric_history.items())
+        ),
     )
 
 

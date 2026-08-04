@@ -126,6 +126,9 @@ class InternalToolAdapterRegistry:
         return tuple(sorted(self._adapters))
 
     def execute(self, name: str, arguments: CatalogArguments) -> CatalogToolResult:
+        scoped_execute = getattr(self._market, "execute_catalog_tool", None)
+        if name.startswith("market.") and callable(scoped_execute):
+            return cast(CatalogToolResult, scoped_execute(name, arguments))
         try:
             adapter = self._adapters[name]
         except KeyError as exc:

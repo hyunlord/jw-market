@@ -33,6 +33,14 @@ class TopBrand:
 
 
 @dataclass(frozen=True, slots=True)
+class BrandMetricPoint:
+    period: str
+    value: float | None
+    share_pct: float | None
+    rank: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class GeneralMarket:
     view_type: str
     market_basis: str
@@ -53,6 +61,7 @@ class GeneralMarket:
     selected_data_path: str = "backend_fallback"
     fallback_reason: str | None = None
     hhi_recent: float | None = None
+    brand_metric_series: tuple[BrandMetricPoint, ...] = ()
 
 
 @dataclass(slots=True)

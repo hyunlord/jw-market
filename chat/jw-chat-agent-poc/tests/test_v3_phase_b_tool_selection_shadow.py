@@ -191,7 +191,9 @@ def test_genos_provider_requests_parallel_calls_and_returns_every_tool_call(
 def test_internal_tools_have_selection_schemas_but_no_executor() -> None:
     specs = {spec.name: spec for spec in selection_tool_specs()}
 
-    assert specs["market.get_brand_metric"].input_model.model_fields.keys() == {
+    assert set(specs["market.get_brand_metric"].input_model.model_fields) == {
+        "view",
+        "scope",
         "brand",
         "metric",
         "period",
@@ -199,7 +201,9 @@ def test_internal_tools_have_selection_schemas_but_no_executor() -> None:
         "source",
         "history_points",
     }
-    assert specs["market.compare_brands"].input_model.model_fields.keys() == {
+    assert set(specs["market.compare_brands"].input_model.model_fields) == {
+        "view",
+        "scope",
         "brand",
         "comparison_brand",
         "market",
