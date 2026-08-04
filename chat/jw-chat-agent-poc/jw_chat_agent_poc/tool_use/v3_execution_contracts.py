@@ -48,6 +48,14 @@ class MarketMetricFact:
     arguments: dict[str, object]
     raw_result: object
     missing_required_fields: tuple[str, ...]
+    entity: object | None = None
+    metric: object | None = None
+    period: object | None = None
+    unit: object | None = None
+    view: object | None = None
+    market: object | None = None
+    projection_sources: tuple[tuple[str, str], ...] = ()
+    projection_missing_reasons: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +66,10 @@ class RegulatoryRuleFact:
     arguments: dict[str, object]
     raw_result: object
     missing_required_fields: tuple[str, ...]
+    effective_date: object | None = None
+    last_checked: object | None = None
+    projection_sources: tuple[tuple[str, str], ...] = ()
+    projection_missing_reasons: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +80,10 @@ class ClinicalTrialFact:
     arguments: dict[str, object]
     raw_result: object
     missing_required_fields: tuple[str, ...]
+    status: object | None = None
+    last_update_posted: object | None = None
+    projection_sources: tuple[tuple[str, str], ...] = ()
+    projection_missing_reasons: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +94,31 @@ class FileCellFact:
     arguments: dict[str, object]
     raw_result: object
     missing_required_fields: tuple[str, ...]
+    file_id: object | None = None
+    sheet: object | None = None
+    range: object | None = None
+    projection_sources: tuple[tuple[str, str], ...] = ()
+    projection_missing_reasons: tuple[tuple[str, str], ...] = ()
 
 
 V3EvidenceFact: TypeAlias = (
     MarketMetricFact | RegulatoryRuleFact | ClinicalTrialFact | FileCellFact
 )
+
+
+def fact_supports_fields(
+    fact: V3EvidenceFact,
+    required_fields: tuple[str, ...],
+) -> bool:
+    missing = set(fact.missing_required_fields)
+    return all(
+        field not in missing and _is_present(getattr(fact, field, None))
+        for field in required_fields
+    )
+
+
+def _is_present(value: object) -> bool:
+    return value is not None and value != "" and value != () and value != []
 
 
 @dataclass(frozen=True, slots=True)

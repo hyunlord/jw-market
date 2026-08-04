@@ -14,6 +14,12 @@ from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ToolFailureRecord,
     V3EvidenceFact,
 )
+from jw_chat_agent_poc.tool_use.v3_fact_projection import (
+    project_clinical_fact,
+    project_file_fact,
+    project_market_fact,
+    project_regulatory_fact,
+)
 from jw_chat_agent_poc.tool_use.v3_execution_normalization import (
     canonical_argument_key,
 )
@@ -37,39 +43,74 @@ def convert_execution(
         )
 
     evidence_id = _evidence_id(record.tool_name, record.arguments)
+    raw = _raw_payload(record.raw_result)
     if domain == "market":
+        projection = project_market_fact(record.tool_name, record.arguments, raw)
         return MarketMetricFact(
-            evidence_id,
-            record.tool_name,
-            record.arguments,
-            record.raw_result,
-            _missing_fields(
-                record,
-                ("brand", "metric", "period", "unit", "view", "market"),
+            evidence_id=evidence_id,
+            tool_name=record.tool_name,
+            arguments=record.arguments,
+            raw_result=record.raw_result,
+            missing_required_fields=projection.missing(
+                ("entity", "metric", "period", "unit", "view", "market")
+            ),
+            entity=projection.values["entity"],
+            metric=projection.values["metric"],
+            period=projection.values["period"],
+            unit=projection.values["unit"],
+            view=projection.values["view"],
+            market=projection.values["market"],
+            projection_sources=projection.sources,
+            projection_missing_reasons=projection.reasons(
+                ("entity", "metric", "period", "unit", "view", "market")
             ),
         ), None, None
     if domain == "clinical":
+        projection = project_clinical_fact(raw)
         return ClinicalTrialFact(
-            evidence_id,
-            record.tool_name,
-            record.arguments,
-            record.raw_result,
-            _missing_fields(record, ("status", "last_update_posted")),
+            evidence_id=evidence_id,
+            tool_name=record.tool_name,
+            arguments=record.arguments,
+            raw_result=record.raw_result,
+            missing_required_fields=projection.missing(
+                ("status", "last_update_posted")
+            ),
+            status=projection.values["status"],
+            last_update_posted=projection.values["last_update_posted"],
+            projection_sources=projection.sources,
+            projection_missing_reasons=projection.reasons(
+                ("status", "last_update_posted")
+            ),
         ), None, None
     if domain == "file":
+        projection = project_file_fact(record.arguments, raw)
         return FileCellFact(
-            evidence_id,
-            record.tool_name,
-            record.arguments,
-            record.raw_result,
-            _missing_fields(record, ("file_id", "sheet", "range")),
+            evidence_id=evidence_id,
+            tool_name=record.tool_name,
+            arguments=record.arguments,
+            raw_result=record.raw_result,
+            missing_required_fields=projection.missing(("file_id", "sheet", "range")),
+            file_id=projection.values["file_id"],
+            sheet=projection.values["sheet"],
+            range=projection.values["range"],
+            projection_sources=projection.sources,
+            projection_missing_reasons=projection.reasons(
+                ("file_id", "sheet", "range")
+            ),
         ), None, None
+    projection = project_regulatory_fact(raw)
     return RegulatoryRuleFact(
-        evidence_id,
-        record.tool_name,
-        record.arguments,
-        record.raw_result,
-        _missing_fields(record, ("effective_date", "last_checked")),
+        evidence_id=evidence_id,
+        tool_name=record.tool_name,
+        arguments=record.arguments,
+        raw_result=record.raw_result,
+        missing_required_fields=projection.missing(("effective_date", "last_checked")),
+        effective_date=projection.values["effective_date"],
+        last_checked=projection.values["last_checked"],
+        projection_sources=projection.sources,
+        projection_missing_reasons=projection.reasons(
+            ("effective_date", "last_checked")
+        ),
     ), None, None
 
 
@@ -100,22 +141,8 @@ def failure_sort_key(record: ToolFailureRecord) -> tuple[str, str, str]:
     return record.tool_name, record.stage, record.error_type
 
 
-def _missing_fields(
-    record: ToolExecutionRecord,
-    required: tuple[str, ...],
-) -> tuple[str, ...]:
-    available = set(record.arguments)
-    raw = (
-        record.raw_result.raw
-        if isinstance(record.raw_result, ToolEnvelope)
-        else record.raw_result
-    )
-    if isinstance(raw, Mapping):
-        available.update(str(key) for key in raw)
-        render_data = raw.get("render_data")
-        if isinstance(render_data, Mapping):
-            available.update(str(key) for key in render_data)
-    return tuple(field for field in required if field not in available)
+def _raw_payload(raw_result: object) -> object:
+    return raw_result.raw if isinstance(raw_result, ToolEnvelope) else raw_result
 
 
 def _evidence_id(tool_name: str, arguments: Mapping[str, object]) -> str:
