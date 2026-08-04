@@ -12,6 +12,11 @@ from time import perf_counter
 from typing import Any
 
 from pipeline.scripts.api.config import config
+from pipeline.scripts.api.competitor_ranking import (
+    MAX_COMPETITOR_COUNT,
+    CompetitorRankItem,
+    select_top_competitors,
+)
 from pipeline.scripts.api.dynamic_market.analysis_levels import build_analysis_level_sections
 from pipeline.scripts.api.dynamic_market.cause_ranking import brand_ranking, company_hhi_series, company_ranking
 from pipeline.scripts.api.dynamic_market.cause_sections import (
@@ -26,6 +31,7 @@ from pipeline.scripts.api.dynamic_market.cause_time import (
     avg_share,
     empty_analysis_levels,
     hhi_series,
+    history,
     latest_hhi,
     latest_market_value,
     market_size_series,
@@ -155,7 +161,15 @@ def build_cause_data(
             (perf_counter() - competition_started) * 1000,
             len(target_channels),
         )
-    hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
+    if definition.view == "general":
+        hhi_recent = latest_hhi(metrics.all_brands)
+    else:
+        hhi_recent = hhi[-1]["hhi"] if hhi else latest_hhi(metrics.all_brands)
+    population = _population_layers(
+        metrics=metrics,
+        focus=focus,
+        latest_period=str(series[-1]["period"]) if series else None,
+    )
     matrix_payload = {
         "data": display_matrix,
         "ms_avg_pct": avg_share(display_matrix),
@@ -183,6 +197,7 @@ def build_cause_data(
         "growth_contribution_ms_matrix": matrix_payload,
         "hhi_recent": hhi_recent,
         "hhi_series_5y": hhi,
+        **population,
         "kpi": kpi(metrics=metrics, matrix=full_matrix, focus=focus, hhi_recent=hhi_recent),
         "level_top5_trend": (
             analysis_sections["level_top5_trend"]
@@ -224,6 +239,57 @@ def build_cause_data(
         data["kpi_reason"] = "focus_not_found"
     normalized = normalize_portal_read_data(data)
     return slim_general_response_data(normalized) if definition.view == "general" else normalized
+
+
+def _population_layers(
+    *,
+    metrics: AggregatedMetrics,
+    focus: BrandMetric | None,
+    latest_period: str | None,
+) -> dict[str, Any]:
+    members = list(metrics.all_brands)
+    active = [
+        brand
+        for brand in members
+        if latest_period is not None and history(brand).get(latest_period, 0.0) > 0
+    ]
+    displayed = list(
+        select_top_competitors(
+            tuple(
+                CompetitorRankItem(brand.brand_key, brand.total_value, brand)
+                for brand in members
+            ),
+            selected_brand_key=focus.brand_key if focus else None,
+        )
+    )
+    has_others = len(displayed) < len(members)
+
+    def identity(brand: BrandMetric) -> dict[str, str]:
+        return {"brand_key": brand.brand_key, "brand": brand.brand_name}
+
+    display_members = [
+        {**identity(brand), "is_others": False}
+        for brand in displayed
+    ]
+    if has_others:
+        display_members.append({"brand_key": None, "brand": "기타", "is_others": True})
+    return {
+        "member_population": {
+            "count": len(members),
+            "members": [identity(brand) for brand in members],
+        },
+        "active_members": {
+            "period": latest_period,
+            "count": len(active),
+            "members": [identity(brand) for brand in active],
+        },
+        "display_members": {
+            "top_n": MAX_COMPETITOR_COUNT,
+            "count": len(display_members),
+            "has_others": has_others,
+            "members": display_members,
+        },
+    }
 
 
 def slim_general_response_data(data: dict[str, Any]) -> dict[str, Any]:

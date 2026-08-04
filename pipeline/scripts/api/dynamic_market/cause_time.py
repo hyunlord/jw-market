@@ -63,9 +63,7 @@ def hhi_series(brands: tuple[BrandMetric, ...], *, source: str | None = None) ->
         if year not in complete_years:
             continue
         market = sum(totals.values())
-        hhi = sum((round(value / market * 100, 4)) ** 2 for value in totals.values()) if market else None
-        if hhi is not None:
-            hhi = round(hhi, 4)
+        hhi = sum((value / market * 100) ** 2 for value in totals.values()) if market else None
         rows.append({"period": year, "period_full": year, "year": int(year), "hhi": hhi})
     return rows
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any
 
 
 DISPLAY_KEY_SUFFIXES = ("_display", "_formatted")
+HHI_VALUE_KEYS = frozenset({"hhi", "hhi_recent", "hhi_values"})
 _FOUR_DECIMAL_PLACES = Decimal("0.0001")
 _FLOAT_FAST_PATH_LIMIT = 100_000_000.0
 _SCALED_BOUNDARY_EPSILON = 0.00025
@@ -44,13 +45,32 @@ def format_number(value: Any) -> Any:
     return value
 
 
-def deep_format_numbers(value: Any) -> Any:
+def format_number_for_key(key: str | None, value: Any) -> Any:
+    if key not in HHI_VALUE_KEYS:
+        return format_number(value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return float(
+            Decimal(str(value)).quantize(
+                _FOUR_DECIMAL_PLACES,
+                rounding=ROUND_HALF_UP,
+            )
+        )
+    if isinstance(value, Decimal):
+        return float(value.quantize(_FOUR_DECIMAL_PLACES, rounding=ROUND_HALF_UP))
+    return value
+
+
+def deep_format_numbers(value: Any, *, _field_name: str | None = None) -> Any:
     if isinstance(value, dict):
         return {
-            key: deep_format_numbers(item)
+            key: deep_format_numbers(item, _field_name=str(key))
             for key, item in value.items()
             if not str(key).endswith(DISPLAY_KEY_SUFFIXES)
         }
     if isinstance(value, list):
-        return [deep_format_numbers(item) for item in value]
-    return format_number(value)
+        return [deep_format_numbers(item, _field_name=_field_name) for item in value]
+    return format_number_for_key(_field_name, value)

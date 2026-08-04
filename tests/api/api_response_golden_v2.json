@@ -13,7 +13,7 @@
           ]
         }
       },
-      "canonical_sha256": "1e00e276ff140338e24eee8344c4bc085dd3af1abf9344e9214f1b983cb28b75",
+      "canonical_sha256": "4dadfe291d58c72ffef694203af6b02cd0787c5618ad8c55163d4b332bb4d18c",
       "canonical_response": {
         "status": "SUCCESS",
         "result": {
@@ -110,6 +110,21 @@
             },
             "hhi_recent": null,
             "hhi_series_5y": [],
+            "member_population": {
+              "count": 0,
+              "members": []
+            },
+            "active_members": {
+              "period": "2026-05",
+              "count": 0,
+              "members": []
+            },
+            "display_members": {
+              "top_n": 5,
+              "count": 0,
+              "has_others": false,
+              "members": []
+            },
             "kpi": {},
             "level_top5_trend": {
               "available_levels": [],
@@ -229,7 +244,7 @@
           ]
         }
       },
-      "canonical_sha256": "72622a0ca3012bf93099e15c463c869da6d45438ded1c01738805cb9c637c75c",
+      "canonical_sha256": "a196d3f19d4782cac94bc00ebea7078845ac61d37a2f40c7bde6622f9a487879",
       "canonical_response": {
         "status": "SUCCESS",
         "result": {
@@ -326,6 +341,21 @@
             },
             "hhi_recent": null,
             "hhi_series_5y": [],
+            "member_population": {
+              "count": 0,
+              "members": []
+            },
+            "active_members": {
+              "period": "2026-05",
+              "count": 0,
+              "members": []
+            },
+            "display_members": {
+              "top_n": 5,
+              "count": 0,
+              "has_others": false,
+              "members": []
+            },
             "kpi": {},
             "level_top5_trend": {
               "available_levels": [],
@@ -445,7 +475,7 @@
           ]
         }
       },
-      "canonical_sha256": "d06afa014b2a6eb77d1307dfcbf3c6f86c8362fea59e6f035e3288f9c9f6d720",
+      "canonical_sha256": "d4cf44bf54a7e92777e609ff20161cf645b3f87ad3f4a562965aba88a4ade963",
       "canonical_response": {
         "status": "SUCCESS",
         "result": {
@@ -542,6 +572,21 @@
             },
             "hhi_recent": null,
             "hhi_series_5y": [],
+            "member_population": {
+              "count": 0,
+              "members": []
+            },
+            "active_members": {
+              "period": "2026-05",
+              "count": 0,
+              "members": []
+            },
+            "display_members": {
+              "top_n": 5,
+              "count": 0,
+              "has_others": false,
+              "members": []
+            },
             "kpi": {},
             "level_top5_trend": {
               "available_levels": [],
@@ -663,7 +708,7 @@
           ]
         }
       },
-      "canonical_sha256": "4a8731414487beee493d416e11e2b5c469c9d6c75ed1ad552a7a48591cf02ad3",
+      "canonical_sha256": "af0d1242e51a7859c6917b87461b00d84a62d55532c341ec4e43b6e89f7696f7",
       "canonical_response": {
         "status": "SUCCESS",
         "result": {
@@ -760,6 +805,21 @@
             },
             "hhi_recent": null,
             "hhi_series_5y": [],
+            "member_population": {
+              "count": 0,
+              "members": []
+            },
+            "active_members": {
+              "period": "2026-05",
+              "count": 0,
+              "members": []
+            },
+            "display_members": {
+              "top_n": 5,
+              "count": 0,
+              "has_others": false,
+              "members": []
+            },
             "kpi": {},
             "level_top5_trend": {
               "available_levels": [],

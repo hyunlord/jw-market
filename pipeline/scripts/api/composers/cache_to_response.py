@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pipeline.scripts.api.composers.number_format import DISPLAY_KEY_SUFFIXES, format_number
+from pipeline.scripts.api.composers.number_format import DISPLAY_KEY_SUFFIXES, format_number, format_number_for_key
 from pipeline.scripts.api.market_growth import fixed_five_year_growth_series, growth_endpoint_meta
 from pipeline.scripts.api.utils import loads_json_maybe
 
@@ -148,6 +148,7 @@ def _clean_dict_recursive(
     source: str | None = None,
     *,
     format_derived_inputs: bool = False,
+    field_name: str | None = None,
 ) -> Any:
     if isinstance(obj, list):
         return [
@@ -156,11 +157,12 @@ def _clean_dict_recursive(
                 measure,
                 source,
                 format_derived_inputs=format_derived_inputs,
+                field_name=field_name,
             )
             for item in obj
         ]
     if not isinstance(obj, dict):
-        return format_number(obj)
+        return format_number_for_key(field_name, obj)
 
     source_key = MEASURE_TO_SERIES_KEY.get(measure or "")
     if source_key and any(key in obj for key in ALL_SERIES_KEYS):
@@ -176,6 +178,7 @@ def _clean_dict_recursive(
                 measure,
                 source,
                 format_derived_inputs=format_derived_inputs,
+                field_name=str(key),
             )
             for key, value in obj.items()
             if key not in ALL_SERIES_KEYS and not str(key).endswith(DISPLAY_KEY_SUFFIXES)
@@ -185,6 +188,7 @@ def _clean_dict_recursive(
             measure,
             source,
             format_derived_inputs=format_derived_inputs,
+            field_name="value_series",
         )
         return _frontend_entry_aliases(_anomaly_aliases(cleaned))
 
@@ -199,6 +203,7 @@ def _clean_dict_recursive(
             measure,
             source,
             format_derived_inputs=format_derived_inputs,
+            field_name=str(key),
         )
         for key, value in obj.items()
         if not str(key).endswith(DISPLAY_KEY_SUFFIXES)
