@@ -1,0 +1,107 @@
+{
+  "result": {
+    "resolution": {
+      "canonical_brand": "리바로"
+    },
+    "tool_calls": [
+      {
+        "tool": "get_brand_metric",
+        "source": "UBIST",
+        "render_data": {
+          "brand": "리바로",
+          "metric": "series",
+          "source_label": "UBIST",
+          "brand_value_series_10pt": [
+            {
+              "period": "2026-03",
+              "value_krw": 8711248139.54
+            },
+            {
+              "period": "2026-04",
+              "value_krw": 8493234217.11
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "cases": {
+    "market_only": {
+      "question": "리바로 매출 추이",
+      "charts": [
+        {
+          "type": "line",
+          "title": "시장 매출 추이",
+          "labels": ["2026-03", "2026-04"],
+          "datasets": [
+            {
+              "label": "시장 매출",
+              "data": [228838670570.0, 225677368890.0]
+            }
+          ]
+        },
+        {
+          "type": "line",
+          "title": "리바로 매출 추이",
+          "labels": ["2026-03", "2026-04"],
+          "datasets": [
+            {
+              "label": "리바로 매출",
+              "data": [8711248139.54, 8493234217.11]
+            }
+          ]
+        }
+      ],
+      "expected_titles": ["리바로 매출 추이"]
+    },
+    "live_combined": {
+      "question": "리바로 매출 추이",
+      "charts": [
+        {
+          "type": "line",
+          "title": "리바로와 시장 매출 추이",
+          "labels": ["2026-03", "2026-04"],
+          "datasets": [
+            {
+              "label": "리바로 매출",
+              "data": [8711248139.54, 8493234217.11]
+            },
+            {
+              "label": "시장 매출",
+              "data": [228838670570.0, 225677368890.0]
+            }
+          ]
+        },
+        {
+          "type": "line",
+          "title": "리바로 매출 추이",
+          "labels": ["2026-03", "2026-04"],
+          "datasets": [
+            {
+              "label": "리바로 매출",
+              "data": [8711248139.54, 8493234217.11]
+            }
+          ]
+        }
+      ],
+      "expected_titles": ["리바로와 시장 매출 추이", "리바로 매출 추이"]
+    },
+    "explicit_comovement": {
+      "question": "리바로 매출 하락이 시장 영향인지 알려줘",
+      "charts": [
+        {
+          "type": "line",
+          "title": "시장 매출 추이",
+          "labels": ["2026-03", "2026-04"],
+          "datasets": [
+            {
+              "label": "시장 매출",
+              "data": [228838670570.0, 225677368890.0]
+            }
+          ]
+        }
+      ],
+      "expected_titles": ["시장 매출 추이"]
+    }
+  }
+}
