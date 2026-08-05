@@ -158,6 +158,17 @@ def test_row_iterator_closes_read_only_workbook_when_consumer_stops_early(monkey
     assert workbook.closed is True
 
 
+def test_row_iterator_rejects_non_numeric_metric_instead_of_converting_to_null(tmp_path):
+    workbook_path = _workbook(tmp_path / "invalid-metric.xlsx", ["2025-07"])
+    workbook = openpyxl.load_workbook(workbook_path)
+    workbook.active.cell(3, 2).value = "not-a-number"
+    workbook.save(workbook_path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="non-numeric UBIST metric"):
+        list(iter_xlsx_rows(workbook_path))
+
+
 def _write_partition(target: Path, period: str, rows: list[dict[str, object]]) -> None:
     year, month = period.split("-")
     path = target / f"year={year}" / f"month={month}" / "data.parquet"

@@ -96,6 +96,35 @@ def test_keyword_reader_preserves_full_duplicate_rows_and_redacts_text(tmp_path:
     assert len(str(redacted["keyword_text_sha256"])) == 64
 
 
+def test_keyword_reader_discovers_sheet_by_headers_not_sheet_name(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "renamed.xlsx"
+    _save_keyword_fixture(workbook_path)
+    workbook = openpyxl.load_workbook(workbook_path)
+    workbook["Keywords"].title = "데이터"
+    workbook.save(workbook_path)
+    workbook.close()
+
+    events = read_keyword_events(workbook_path)
+
+    assert len(events) == 2
+    assert {event.source_sheet for event in events} == {"데이터"}
+
+
+def test_keyword_reader_rejects_period_only_row(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "period-only.xlsx"
+    _save_keyword_fixture(workbook_path)
+    workbook = openpyxl.load_workbook(workbook_path)
+    sheet = workbook["Keywords"]
+    header_width = sheet.max_column
+    for column in range(2, header_width + 1):
+        sheet.cell(2, column).value = None
+    workbook.save(workbook_path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="missing required Keyword values"):
+        read_keyword_events(workbook_path)
+
+
 def test_keyword_stage_ddl_excludes_meeting_table() -> None:
     # Given / When: keyword stage DDL is generated for the isolated schema.
     ddl = stage_ddl("jw_brand_activity_stage").lower()

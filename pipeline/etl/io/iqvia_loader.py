@@ -295,6 +295,24 @@ def clean_value(value: Any) -> Any:
     return value
 
 
+def parse_nsa_metric(value: Any, metric: str) -> float | int | None:
+    """Parse source numeric values without silently retaining invalid text."""
+    cleaned = clean_value(value)
+    if cleaned is None:
+        return None
+    if isinstance(cleaned, bool):
+        raise ValueError(f"non-numeric IQVIA NSA metric {metric}: {value!r}")
+    if isinstance(cleaned, (int, float, Decimal)):
+        return float(cleaned) if isinstance(cleaned, Decimal) else cleaned
+    text = str(cleaned).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ValueError(f"non-numeric IQVIA NSA metric {metric}: {value!r}") from exc
+
+
 def dedupe_keys(keys: list[str]) -> list[str]:
     counts: dict[str, int] = defaultdict(int)
     result: list[str] = []
@@ -582,7 +600,7 @@ def long_format_period_record(path: Path, sheet_name: str, source_row_no: int, r
     quarter = quarter_from_month(int(month))
     if quarter is None:
         return None
-    period_values = {metric: clean_value(raw.get(metric)) for metric in NSA_PARQUET_METRICS}
+    period_values = {metric: parse_nsa_metric(raw.get(metric), metric) for metric in NSA_PARQUET_METRICS}
     if all(value is None for value in period_values.values()):
         return None
     static = {key: raw.get(key) for key in static_cols}
@@ -767,7 +785,10 @@ def iter_nsa_csv(
                     yield record
                 continue
             for period, metric_cols in periods.items():
-                period_values = {metric: clean_value(raw.get(col)) for metric, col in metric_cols.items()}
+                period_values = {
+                    metric: parse_nsa_metric(raw.get(col), metric)
+                    for metric, col in metric_cols.items()
+                }
                 if all(v is None for v in period_values.values()):
                     continue
                 year, month = period.split("-")

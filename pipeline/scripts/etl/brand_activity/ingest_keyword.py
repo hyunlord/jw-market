@@ -39,6 +39,34 @@ KEYWORD_HEADERS: tuple[str, ...] = (
     "WHAT OTHER MATERIALS",
     "OTHER COMMENTS",
 )
+KEYWORD_REQUIRED_VALUES: tuple[str, ...] = (
+    "VISIT LOCATION",
+    "SPECIALTY NAME",
+    "REP# CO",
+    "PRODUCT NAME",
+    "THERAPEUTIC CLASS",
+    "KEYWORDS",
+    "INTEREST",
+)
+
+
+def _keyword_sheet(workbook):
+    matches = []
+    for sheet in workbook.worksheets:
+        try:
+            headers = read_header_row(sheet, max_col=40)
+        except StopIteration:
+            continue
+        try:
+            indexes = header_index(headers, KEYWORD_HEADERS)
+        except ValueError:
+            continue
+        matches.append((sheet, headers, indexes))
+    if len(matches) != 1:
+        raise ValueError(
+            f"Keyword workbook missing canonical headers or has multiple matches; found {len(matches)}"
+        )
+    return matches[0]
 
 
 def _cell(values: tuple[CellValue, ...], index: int) -> str:
@@ -50,9 +78,7 @@ def read_keyword_events(workbook_path: Path) -> list[KeywordEvent]:
     """Read `Keywords` rows exactly once each, preserving duplicate events."""
     workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
     try:
-        sheet = workbook["Keywords"]
-        headers = read_header_row(sheet, max_col=40)
-        indexes = header_index(headers, KEYWORD_HEADERS)
+        sheet, headers, indexes = _keyword_sheet(workbook)
         workbook_hash = source_sha256(workbook_path)
         rows: list[KeywordEvent] = []
         for source_row_no, values in enumerate(
@@ -61,6 +87,11 @@ def read_keyword_events(workbook_path: Path) -> list[KeywordEvent]:
         ):
             if row_is_empty(values):
                 continue
+            missing = [header for header in KEYWORD_REQUIRED_VALUES if not _cell(values, indexes[header])]
+            if missing:
+                raise ValueError(
+                    f"missing required Keyword values at row {source_row_no}: {missing}"
+                )
             rows.append(
                 KeywordEvent(
                     period_ym=parse_period_ym(values[indexes["Related date"]]),
@@ -81,7 +112,7 @@ def read_keyword_events(workbook_path: Path) -> list[KeywordEvent]:
                     what_other_materials=_cell(values, indexes["WHAT OTHER MATERIALS"]),
                     other_comments=_cell(values, indexes["OTHER COMMENTS"]),
                     source_file=workbook_path.name,
-                    source_sheet="Keywords",
+                    source_sheet=sheet.title,
                     source_row_no=source_row_no,
                     source_file_sha256=workbook_hash,
                 )

@@ -98,6 +98,12 @@ def normalize_text(value: object) -> str:
 
 def parse_period_ym(value: object) -> str:
     text = normalize_text(value)
+    iso_match = re.fullmatch(r"(\d{4})-(\d{1,2})", text)
+    if iso_match is not None:
+        month = int(iso_match.group(2))
+        if not 1 <= month <= 12:
+            raise ValueError(f"unparseable CSD month: {value!r}")
+        return f"{int(iso_match.group(1)):04d}-{month:02d}"
     match = re.fullmatch(r"([A-Za-z]+)\.?\s*(\d{2}|\d{4})", text)
     if match is None:
         raise ValueError(f"unparseable CSD period: {value!r}")
@@ -132,6 +138,30 @@ def select_market_sheets(sheet_names: list[str] | tuple[str, ...]) -> tuple[str,
     return tuple(selected)
 
 
+def discover_market_sheets(workbook_path: Path) -> tuple[str, ...]:
+    """Find CSD data sheets from row-7 headers, independent of sheet names."""
+    workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        selected: list[str] = []
+        for sheet in workbook.worksheets:
+            header = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True), ())
+            try:
+                _header_index(header)
+            except ValueError:
+                continue
+            selected.append(sheet.title)
+        return tuple(selected)
+    finally:
+        workbook.close()
+
+
+def _required_csd_value(values: tuple[object, ...], indexes: dict[str, int], header: str) -> str:
+    value = normalize_text(values[indexes[header]])
+    if not value:
+        raise ValueError(f"missing required CSD values: {header}")
+    return value
+
+
 def source_month_key(source_file: str) -> tuple[int, int, str]:
     match = re.search(r"(Jan|Feb|Mar|Apr|May|Jun|June|Jul|July|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s*(\d{2}|\d{4})", source_file, re.IGNORECASE)
     if match is None:
@@ -162,16 +192,19 @@ def iter_market_rows(workbook_path: Path, sheet_name: str) -> list[CsdRow]:
                 continue
             if not is_total_region(values[indexes["Region"]]):
                 continue
+            channel = _required_csd_value(values, indexes, "JW Channel")
+            if channel not in JW_CHANNELS:
+                raise ValueError(f"invalid CSD JW Channel: {channel!r}")
             rows.append(
                 CsdRow(
                     source_file=workbook_path.name,
                     source_sheet=sheet_name,
                     source_row_no=source_row_no,
                     period_ym=parse_period_ym(values[indexes["Related date"]]),
-                    market=normalize_text(values[indexes["Market"]]),
-                    jw_channel=normalize_text(values[indexes["JW Channel"]]),
-                    master_product=normalize_text(values[indexes["Master product"]]),
-                    representing_company=normalize_text(values[indexes["Representing Company"]]),
+                    market=_required_csd_value(values, indexes, "Market"),
+                    jw_channel=channel,
+                    master_product=_required_csd_value(values, indexes, "Master product"),
+                    representing_company=_required_csd_value(values, indexes, "Representing Company"),
                     product_details=parse_product_details(values[indexes["Product Details"]]),
                 )
             )

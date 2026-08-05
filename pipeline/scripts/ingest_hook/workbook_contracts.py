@@ -29,27 +29,22 @@ def summarize(category: str, path: Path, epoch: str) -> WorkbookSummary:
 def _nsa(path: Path, _epoch: str) -> WorkbookSummary:
     from pipeline.etl.io.iqvia_loader import iter_nsa_xlsx
 
-    rows = list(iter_nsa_xlsx(path))
-    if not rows:
+    row_count = 0
+    periods: set[str] = set()
+    for row in iter_nsa_xlsx(path):
+        row_count += 1
+        periods.add(f"{int(row['period_yyyy']):04d}-Q{int(row['period_quarter'])}")
+    if row_count == 0:
         raise ValueError("IQVIA NSA workbook has no parseable metric rows")
-    periods = frozenset(
-        f"{int(row['period_yyyy']):04d}-Q{int(row['period_quarter'])}" for row in rows
-    )
-    return WorkbookSummary(len(rows), periods, "iqvia_loader.iter_nsa_xlsx")
+    return WorkbookSummary(row_count, frozenset(periods), "iqvia_loader.iter_nsa_xlsx")
 
 
 def _csd(path: Path, _epoch: str) -> WorkbookSummary:
-    from pipeline.scripts.etl.brand_activity.csd_core import iter_market_rows, select_market_sheets
+    from pipeline.scripts.etl.brand_activity.csd_core import discover_market_sheets, iter_market_rows
 
-    import openpyxl
-
-    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    try:
-        sheets = select_market_sheets(tuple(workbook.sheetnames))
-    finally:
-        workbook.close()
+    sheets = discover_market_sheets(path)
     if not sheets:
-        raise ValueError("CSD workbook has no canonical '* Market' sheet")
+        raise ValueError("CSD workbook has no sheet with canonical headers")
     rows = [row for sheet in sheets for row in iter_market_rows(path, sheet)]
     if not rows:
         raise ValueError("CSD workbook has no TOTAL-region rows")

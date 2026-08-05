@@ -8,7 +8,7 @@ from typing import Any, Sequence
 import openpyxl
 
 from pipeline.scripts.analysis.brand_activity.recheck.inventory import FileRecord
-from pipeline.scripts.etl.brand_activity.csd_core import normalize_text, select_market_sheets
+from pipeline.scripts.etl.brand_activity.csd_core import discover_market_sheets, normalize_text
 
 
 JsonObject = dict[str, Any]
@@ -36,7 +36,7 @@ def csd_header_summary(records: Sequence[FileRecord]) -> JsonObject:
             continue
         workbook = openpyxl.load_workbook(record.path, read_only=True, data_only=True)
         try:
-            market_sheets = select_market_sheets(tuple(workbook.sheetnames))
+            market_sheets = discover_market_sheets(record.path)
             sheet_counts[record.file_name] = len(market_sheets)
             market2[record.file_name] = [name for name in workbook.sheetnames if name.endswith("Market2")]
             for sheet_name in market_sheets:

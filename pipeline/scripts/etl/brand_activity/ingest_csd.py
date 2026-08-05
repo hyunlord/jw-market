@@ -13,8 +13,6 @@ import re
 import sys
 from typing import Final
 
-import openpyxl
-
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
@@ -22,8 +20,8 @@ from pipeline.scripts.etl.brand_activity.csd_core import (
     CsdRow,
     MarketSheetScan,
     deduplicate_rows,
+    discover_market_sheets,
     scan_market_sheet,
-    select_market_sheets,
     source_month_key,
 )
 from pipeline.scripts.etl.brand_activity.csd_validation import build_validation
@@ -112,11 +110,7 @@ def load_csd_rows(workbooks: list[Path]) -> tuple[list[CsdRow], list[MarketSheet
     scans: list[MarketSheetScan] = []
     sheet_map: dict[str, list[str]] = {}
     for workbook_path in workbooks:
-        workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
-        try:
-            market_sheets = select_market_sheets(tuple(workbook.sheetnames))
-        finally:
-            workbook.close()
+        market_sheets = discover_market_sheets(workbook_path)
         sheet_map[workbook_path.name] = list(market_sheets)
         for sheet_name in market_sheets:
             sheet_rows, scan = scan_market_sheet(workbook_path, sheet_name)

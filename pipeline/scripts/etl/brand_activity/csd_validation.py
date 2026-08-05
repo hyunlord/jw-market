@@ -14,7 +14,7 @@ from pipeline.scripts.etl.brand_activity.csd_core import (
     normalize_text,
     parse_period_ym,
     parse_product_details,
-    select_market_sheets,
+    discover_market_sheets,
 )
 
 
@@ -108,7 +108,7 @@ def hierarchy_samples(workbooks: list[Path], limit: int = 10) -> list[dict[str, 
     for workbook_path in workbooks:
         workbook = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
         try:
-            for sheet_name in select_market_sheets(tuple(workbook.sheetnames)):
+            for sheet_name in discover_market_sheets(workbook_path):
                 samples.extend(_hierarchy_sheet_samples(workbook_path, workbook[sheet_name], limit - len(samples)))
                 if len(samples) >= limit:
                     return samples

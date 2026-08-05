@@ -147,6 +147,25 @@ def test_nsa_header_order_does_not_change_record(tmp_path: Path) -> None:
     assert json.loads(record["payload"])["period_values"]["Values LC"] == 7_152_613
 
 
+def test_nsa_loader_rejects_non_numeric_metric_value(tmp_path: Path) -> None:
+    row = _row()
+    row[CANONICAL_HEADERS.index("Values LC")] = "not-a-number"
+    path = _write_workbook(tmp_path / "invalid-metric.xlsx", CANONICAL_HEADERS, [row])
+
+    with pytest.raises(ValueError, match="non-numeric IQVIA NSA metric"):
+        list(iter_nsa_xlsx(path))
+
+
+def test_nsa_loader_accepts_comma_formatted_numeric_metric(tmp_path: Path) -> None:
+    row = _row()
+    row[CANONICAL_HEADERS.index("Values LC")] = "1,234"
+    path = _write_workbook(tmp_path / "numeric-string.xlsx", CANONICAL_HEADERS, [row])
+
+    [record] = list(iter_nsa_xlsx(path))
+
+    assert json.loads(record["payload"])["period_values"]["Values LC"] == 1234.0
+
+
 def test_nsa_quarter_filter_matches_full_read_subset(tmp_path: Path) -> None:
     q1 = _row(values_lc=100)
     q1[0] = "2026-03-01 00:00:00"

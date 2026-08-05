@@ -42,8 +42,8 @@ if str(ROOT) not in sys.path:
 
 from pipeline.scripts.etl.brand_activity.csd_core import (  # noqa: E402
     EXPECTED_HEADERS,
+    discover_market_sheets,
     normalize_text,
-    select_market_sheets,
 )
 
 DEFAULT_BUCKET: Final = "jw-market-raw-iqvia"
@@ -187,9 +187,15 @@ def validate_csd_workbook(path: Path) -> tuple[bool, str]:
     except Exception as exc:  # noqa: BLE001 - any unreadable workbook fails the gate
         return False, f"unreadable workbook: {exc}"
     try:
-        market_sheets = select_market_sheets(tuple(workbook.sheetnames))
+        market_sheets = discover_market_sheets(path)
         if not market_sheets:
-            return False, f"no market sheets among {list(workbook.sheetnames)[:8]}"
+            missing_by_sheet = []
+            for sheet in workbook.worksheets:
+                header = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True), ())
+                normalized = {normalize_text(value) for value in header}
+                missing = [column for column in EXPECTED_HEADERS if column not in normalized]
+                missing_by_sheet.append(f"{sheet.title}: {missing}")
+            return False, f"no header-matched market sheets ({'; '.join(missing_by_sheet[:8])})"
         for sheet_name in market_sheets:
             sheet = workbook[sheet_name]
             header = next(sheet.iter_rows(min_row=7, max_row=7, values_only=True), ())

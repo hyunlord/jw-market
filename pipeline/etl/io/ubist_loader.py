@@ -218,8 +218,8 @@ def to_number_or_none(value: object) -> float | None:
         return None
     try:
         return float(text)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ValueError(f"non-numeric UBIST metric: {value!r}") from exc
 
 
 def parse_period(value: object) -> str:

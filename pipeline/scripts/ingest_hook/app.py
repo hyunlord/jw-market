@@ -21,6 +21,7 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import sleep as _sleep
 
 from fastapi import FastAPI, HTTPException, Request
@@ -30,6 +31,10 @@ from pydantic import BaseModel
 from pipeline.scripts.ingest_hook import config, job_launcher, job_runner, stage_logs
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
 from pipeline.scripts.ingest_hook.contract import ContractError, load_manifest, parse_manifest_bytes
+from pipeline.scripts.ingest_hook.workbook_source_validation import (
+    SourceValidationError,
+    detect_workbook_source,
+)
 from pipeline.scripts.ingest_hook.ledger import (
     STATUS_AWAITING_APPROVAL,
     STATUS_COMPLETE,
@@ -50,6 +55,9 @@ PORTAL_QUEUE_CATEGORIES = frozenset(
         "iqvia_csd_keyword",
         "mi_master",
     }
+)
+CONTENT_CLASSIFIED_CATEGORIES = frozenset(
+    {"ubist", "iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword"}
 )
 
 
@@ -654,6 +662,52 @@ class IngestService:
             raise HTTPException(status_code=400, detail="manifest_path escapes the input root")
         return load_manifest(path), str(path)
 
+    def _validate_before_queue(self, manifest) -> None:
+        """Reject a workbook whose headers contradict the selected source."""
+        def validate_root(root: Path) -> None:
+            workbook_entries = [
+                entry for entry in manifest.files if Path(entry.path).suffix.lower() == ".xlsx"
+            ]
+            # Portal sources are workbooks. Legacy CSV webhook fixtures retain
+            # their existing in-Job G3 behavior and are not content-classified.
+            if not workbook_entries:
+                return
+            if manifest.category in CONTENT_CLASSIFIED_CATEGORIES:
+                detected: set[str] = set()
+                for entry in workbook_entries:
+                    path = (root / entry.path).resolve()
+                    try:
+                        detected.add(detect_workbook_source(path))
+                    except SourceValidationError as exc:
+                        raise HTTPException(
+                            status_code=422,
+                            detail={
+                                "code": "source_unrecognized",
+                                "selected_category": manifest.category,
+                                "detected_category": None,
+                                "message": f"파일 내용으로 소스를 판별할 수 없습니다: {exc}",
+                            },
+                        ) from exc
+                if detected and detected != {manifest.category}:
+                    detected_label = ",".join(sorted(detected))
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "source_category_mismatch",
+                            "selected_category": manifest.category,
+                            "detected_category": detected_label,
+                            "message": "선택한 소스와 파일 내용이 일치하지 않습니다.",
+                        },
+                    )
+        if self.s3 is None:
+            if self.input_root is None:
+                raise HTTPException(status_code=500, detail="ingest input root is not configured")
+            validate_root(self.input_root)
+            return
+        with TemporaryDirectory(prefix="ingest-prequeue-") as temp_root:
+            root = self.s3.materialize([entry.path for entry in manifest.files], Path(temp_root))
+            validate_root(root)
+
     def receive_webhook(self, manifest_path: str) -> dict:
         try:
             manifest, stored_path = self._read_manifest(manifest_path)
@@ -667,6 +721,8 @@ class IngestService:
             # Reject retired/unknown categories before they can create new
             # ledger history. Existing rows remain queryable through status().
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        self._validate_before_queue(manifest)
 
         decision = self.ledger.receive(
             manifest.epoch,

@@ -6,8 +6,14 @@ import json
 from pathlib import Path
 
 import openpyxl
+import pytest
 
-from pipeline.scripts.etl.brand_activity.csd_core import EXPECTED_HEADERS
+from pipeline.scripts.etl.brand_activity.csd_core import (
+    EXPECTED_HEADERS,
+    discover_market_sheets,
+    iter_market_rows,
+    parse_period_ym,
+)
 from pipeline.scripts.etl.brand_activity.minio_csd_sensor import (
     ObjectInfo,
     is_candidate,
@@ -76,6 +82,13 @@ def test_candidate_filter_excludes_mac_debris_and_small_files():
     assert not is_candidate(_obj(size=4096))  # too small to be a real report
 
 
+def test_parse_period_ym_rejects_out_of_range_iso_month():
+    # Given: an ISO-shaped period whose month is outside the calendar range.
+    # When / Then: parsing rejects it instead of normalizing an invalid epoch.
+    with pytest.raises(ValueError, match="unparseable CSD month"):
+        parse_period_ym("2026-13")
+
+
 def test_valid_workbook_triggers_run_job(tmp_path):
     decisions, marker_path, calls = _run(tmp_path, [_obj()], lambda p: _make_workbook(p))
 
@@ -99,11 +112,11 @@ def test_structurally_broken_workbook_is_blocked(tmp_path):
     assert marker[GOOD_KEY]["status"] == "validation_failed"
 
 
-def test_workbook_without_market_sheets_is_blocked(tmp_path):
+def test_sheet_name_does_not_control_csd_validation(tmp_path):
     decisions, _, calls = _run(tmp_path, [_obj()], lambda p: _make_workbook(p, sheets=("Summary",)))
 
-    assert decisions[0]["action"] == "blocked_validation_failed"
-    assert calls == []
+    assert decisions[0]["action"] == "triggered:created"
+    assert len(calls) == 1
 
 
 def test_duplicate_object_is_noop(tmp_path):
@@ -136,3 +149,33 @@ def test_validate_rejects_empty_data(tmp_path):
 
     assert not ok
     assert "no data rows" in detail
+
+
+def test_market_sheets_are_discovered_by_headers_not_sheet_name(tmp_path):
+    path = _make_workbook(tmp_path / "renamed.xlsx", sheets=("데이터",))
+
+    assert discover_market_sheets(path) == ("데이터",)
+    assert len(iter_market_rows(path, "데이터")) == 2
+
+
+def test_csd_reader_rejects_invalid_channel(tmp_path):
+    path = _make_workbook(tmp_path / "invalid-channel.xlsx")
+    workbook = openpyxl.load_workbook(path)
+    workbook.active.cell(row=8, column=3, value="UNKNOWN")
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="invalid CSD JW Channel"):
+        iter_market_rows(path, "LIVALO Market")
+
+
+@pytest.mark.parametrize("column", (2, 5, 7))
+def test_csd_reader_rejects_blank_core_key(tmp_path, column):
+    path = _make_workbook(tmp_path / f"blank-{column}.xlsx")
+    workbook = openpyxl.load_workbook(path)
+    workbook.active.cell(row=8, column=column).value = None
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="missing required CSD values"):
+        iter_market_rows(path, "LIVALO Market")
