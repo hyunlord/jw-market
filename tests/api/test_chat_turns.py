@@ -48,6 +48,7 @@ class FakeChatTurnsRepository:
                     "input_tokens": 120,
                     "output_tokens": 240,
                     "total_tokens": 360,
+                    "question_text": "질문",
                 },
             ),
             next_cursor=encode_chat_turn_cursor(
@@ -147,7 +148,7 @@ def test_chat_turns_rejects_oversized_range_page_and_tampered_cursor() -> None:
     assert mixed_page_cursor.status_code == 422
 
 
-def test_chat_turn_items_are_metadata_only_and_never_expose_unlinked_or_raw_fields() -> None:
+def test_chat_turn_items_expose_question_only_and_never_expose_answer_or_raw_fields() -> None:
     response = _client(FakeChatTurnsRepository()).get(
         "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03"
     )
@@ -178,9 +179,11 @@ def test_chat_turn_items_are_metadata_only_and_never_expose_unlinked_or_raw_fiel
         "input_tokens",
         "output_tokens",
         "total_tokens",
+        "question_text",
     }
     serialized = response.text.lower()
-    for forbidden in ("question", "answer", "email", "actor_uid", "request_params", "jti"):
+    assert payload["items"][0]["question_text"] == "질문"
+    for forbidden in ("answer", "email", "actor_uid", "request_params", "jti"):
         assert forbidden not in serialized
 
 
@@ -214,7 +217,8 @@ def test_chat_turn_query_is_sanitized_linked_and_keyset_ordered() -> None:
     assert "as source" in normalized
     assert "as source_turn_id" in normalized
     assert "order by c.created_at desc, source desc, source_turn_id desc" in normalized
-    for forbidden in ("question", "answer", "email", "actor_uid", "request_params", "jti"):
+    assert "question_text" in normalized
+    for forbidden in ("answer_text", "email", "actor_uid", "request_params", "jti"):
         assert forbidden not in normalized
 
 
@@ -344,6 +348,72 @@ def test_chat_turn_repository_pages_past_nullable_market_identity() -> None:
     cursor = decode_chat_turn_cursor(page.next_cursor or "")
     assert cursor.source == "rnd"
     assert cursor.source_turn_id == f"{49:064x}"
+
+
+def test_chat_turn_repository_returns_ordered_rnd_session_stages() -> None:
+    rows = [
+        {
+            "detail_key": "trace-1",
+            "turn_index": 1,
+            "created_at": datetime(2026, 8, 3, 9, 30),
+            "question_text": "first question",
+            "answer_text": "first answer",
+        },
+        {
+            "detail_key": "trace-2",
+            "turn_index": 2,
+            "created_at": datetime(2026, 8, 3, 9, 31),
+            "question_text": "second question",
+            "answer_text": "final answer",
+        },
+    ]
+
+    class Cursor:
+        executed: list[tuple[str, tuple[str]]] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params):
+            self.executed.append((sql, params))
+
+        def fetchall(self):
+            return rows
+
+    class Connection:
+        def __init__(self):
+            self.db_cursor = Cursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.db_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    config = SimpleNamespace(
+        dashboard_db_host="db",
+        dashboard_db_port=3306,
+        dashboard_db_user="reader",
+        dashboard_db_password="not-recorded",
+        dashboard_db_name="audit",
+    )
+    repository = MariaDBUsageRepository(config, connect=lambda **_kwargs: connection)
+
+    detail = repository.fetch_chat_turn("rnd-session:session-1")
+
+    assert detail is not None
+    assert detail.item["source"] == "rnd"
+    assert detail.item["recorded_stage_count"] == 2
+    assert detail.item["question_text"] == "first question"
+    assert detail.item["answer_text"] == "final answer"
+    assert [stage["turn_index"] for stage in detail.item["stages"]] == [1, 2]
+    assert connection.db_cursor.executed[0][1] == ("session-1",)
+    assert connection.closed is True
 
 
 def test_chat_turns_maps_unexpected_repository_failure_to_json() -> None:

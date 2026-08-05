@@ -325,11 +325,13 @@ CHAT_TURNS_SQL: Final = f"""
            c.portal_user_id AS user_id, u.name AS user_name, u.department,
            c.conversation_id, c.turn_index, c.contract_status, c.quality_label,
            c.elapsed_ms, c.input_tokens, c.output_tokens, c.total_tokens,
-           c.trace_id, {_CHAT_TURN_SOURCE_SQL} AS source,
+           c.trace_id, d.question_text, {_CHAT_TURN_SOURCE_SQL} AS source,
            COALESCE(c.trace_id, CONCAT('conversation-log:', c.conversation_log_id)) AS detail_key,
            {_CHAT_TURN_ID_SQL} AS source_turn_id
     FROM dashboard_chat_usage_v c
     JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
+    LEFT JOIN dashboard_chat_turn_detail_v d
+      ON d.detail_key=COALESCE(c.trace_id, CONCAT('conversation-log:', c.conversation_log_id))
     WHERE c.created_at >= %s AND c.created_at < %s
       AND c.portal_user_id IS NOT NULL
       AND c.service_id IN (61, 91, 94)
@@ -343,6 +345,17 @@ CHAT_TURN_DETAIL_SQL: Final = """
     SELECT detail_key, question_text, answer_text
     FROM dashboard_chat_turn_detail_v
     WHERE detail_key = %s
+"""
+
+CHAT_RND_SESSION_DETAIL_SQL: Final = """
+    SELECT c.trace_id AS detail_key, c.turn_index, c.created_at,
+           d.question_text, d.answer_text
+    FROM dashboard_chat_usage_v c
+    LEFT JOIN dashboard_chat_turn_detail_v d ON d.detail_key=c.trace_id
+    WHERE c.conversation_log_id IS NULL
+      AND c.service_id=61
+      AND c.conversation_id=%s
+    ORDER BY c.turn_index ASC, c.created_at ASC, c.trace_id ASC
 """
 
 CHAT_TURNS_COUNT_SQL: Final = f"""
@@ -913,20 +926,38 @@ class MariaDBUsageRepository:
         connection = self._connect(**self._connect_args)
         try:
             with connection.cursor() as cursor:
-                cursor.execute(CHAT_TURN_DETAIL_SQL, (detail_key,))
-                row = cursor.fetchone()
+                if detail_key.startswith("rnd-session:"):
+                    cursor.execute(CHAT_RND_SESSION_DETAIL_SQL, (detail_key[12:],))
+                    rows = cursor.fetchall()
+                    row = rows[0] if rows else None
+                else:
+                    cursor.execute(CHAT_TURN_DETAIL_SQL, (detail_key,))
+                    row = cursor.fetchone()
+                    rows = [row] if row else []
         except Exception as exc:
             raise DashboardQueryError("chat_turn_detail") from exc
         finally:
             connection.close()
         if row is None:
             return None
-        normalized = _normalize_row(row)
+        normalized_rows = [_normalize_row(item) for item in rows]
+        normalized = normalized_rows[0]
         return ChatTurnDetail(
             item={
-                "turn_id": encode_chat_turn_id(str(normalized["detail_key"])),
+                "turn_id": encode_chat_turn_id(detail_key),
                 "question_text": normalized.get("question_text"),
-                "answer_text": normalized.get("answer_text"),
+                "answer_text": normalized_rows[-1].get("answer_text"),
+                "source": "rnd" if detail_key.startswith("rnd-session:") else "market",
+                "recorded_stage_count": len(normalized_rows),
+                "stages": [
+                    {
+                        "turn_index": item.get("turn_index"),
+                        "created_at": item.get("created_at"),
+                        "question_text": item.get("question_text"),
+                        "answer_text": item.get("answer_text"),
+                    }
+                    for item in normalized_rows
+                ],
             }
         )
 
@@ -1210,7 +1241,11 @@ def build_usage_comparison(
 
 
 def _chat_turn_item(row: dict[str, Any]) -> dict[str, Any]:
-    detail_key = row.get("detail_key") or row.get("trace_id")
+    detail_key = (
+        f"rnd-session:{row['conversation_id']}"
+        if row.get("source") == "rnd" and row.get("conversation_id")
+        else row.get("detail_key") or row.get("trace_id")
+    )
     if not detail_key and row.get("conversation_log_id") is not None:
         detail_key = f"conversation-log:{row['conversation_log_id']}"
     if not detail_key:
@@ -1230,6 +1265,7 @@ def _chat_turn_item(row: dict[str, Any]) -> dict[str, Any]:
         "input_tokens": row.get("input_tokens"),
         "output_tokens": row.get("output_tokens"),
         "total_tokens": row.get("total_tokens"),
+        "question_text": row.get("question_text"),
     }
 
 
