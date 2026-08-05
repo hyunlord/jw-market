@@ -9,6 +9,7 @@ from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Final, Literal, Protocol
 
@@ -64,7 +65,7 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         WHERE a.called_at >= %s AND a.called_at < %s
         {user_filter}
         GROUP BY u.id, u.name, u.department
-        ORDER BY calls DESC, u.id LIMIT 100
+        ORDER BY calls DESC, u.id LIMIT 200
     """,
     "api_department": """
         SELECT COALESCE(NULLIF(u.department, ''), '미지정') AS department,
@@ -139,6 +140,26 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
             GROUP BY history.user_id
         ) audience
     """,
+    "auth_user": """
+        SELECT u.id AS user_id, u.name AS user_name, u.department,
+               COUNT(*) AS events
+        FROM dashboard_auth_event_v a
+        JOIN dashboard_user_directory_v u ON u.id=a.user_id
+        WHERE a.reg_date >= %s AND a.reg_date < %s
+        {user_filter}
+        GROUP BY u.id, u.name, u.department
+        ORDER BY events DESC, u.id LIMIT 200
+    """,
+    "auth_department": """
+        SELECT COALESCE(NULLIF(u.department, ''), '미지정') AS department,
+               COUNT(*) AS events, COUNT(DISTINCT u.id) AS unique_users
+        FROM dashboard_auth_event_v a
+        JOIN dashboard_user_directory_v u ON u.id=a.user_id
+        WHERE a.reg_date >= %s AND a.reg_date < %s
+        {user_filter}
+        GROUP BY COALESCE(NULLIF(u.department, ''), '미지정')
+        ORDER BY events DESC, department
+    """,
     "credit_trend": """
         SELECT {period} AS period, COUNT(*) AS events,
                SUM(c.user_id IS NOT NULL) AS attributed_events,
@@ -160,7 +181,7 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         WHERE c.reg_date >= %s AND c.reg_date < %s AND c.applied=1
         {user_filter}
         GROUP BY u.id, u.name, u.department
-        ORDER BY credits DESC, u.id LIMIT 100
+        ORDER BY credits DESC, u.id LIMIT 200
     """,
     "credit_department": """
         SELECT COALESCE(NULLIF(u.department, ''), '미지정') AS department,
@@ -193,6 +214,29 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         {user_filter}
         GROUP BY report_type, completion_stage
         ORDER BY attempts DESC, report_type, completion_stage
+    """,
+    "report_user": """
+        SELECT u.id AS user_id, u.name AS user_name, u.department,
+               COUNT(*) AS attempts, SUM(r.success=1) AS successful_downloads
+        FROM dashboard_report_download_v r
+        JOIN dashboard_user_directory_v u
+          ON r.actor_uid = CONCAT('genos-user:', u.id)
+        WHERE r.completed_at >= %s AND r.completed_at < %s
+        {user_filter}
+        GROUP BY u.id, u.name, u.department
+        ORDER BY attempts DESC, u.id LIMIT 200
+    """,
+    "report_department": """
+        SELECT COALESCE(NULLIF(u.department, ''), '미지정') AS department,
+               COUNT(*) AS attempts, SUM(r.success=1) AS successful_downloads,
+               COUNT(DISTINCT u.id) AS unique_users
+        FROM dashboard_report_download_v r
+        JOIN dashboard_user_directory_v u
+          ON r.actor_uid = CONCAT('genos-user:', u.id)
+        WHERE r.completed_at >= %s AND r.completed_at < %s
+        {user_filter}
+        GROUP BY COALESCE(NULLIF(u.department, ''), '미지정')
+        ORDER BY attempts DESC, department
     """,
     "filter_options": """
         SELECT id AS user_id, name AS user_name, department
@@ -242,7 +286,7 @@ COMPARISON_SQL: Final[dict[str, str]] = {
 }
 
 USAGE_LOGS_SQL: Final = """
-    SELECT a.id, a.called_at, a.endpoint, a.http_status, a.actor_type,
+    SELECT a.id, a.called_at, a.endpoint, a.request_options, a.http_status, a.actor_type,
            CASE WHEN a.actor_type='user' THEN u.id ELSE NULL END AS user_id,
            CASE WHEN a.actor_type='user' THEN u.name ELSE NULL END AS user_name,
            CASE WHEN a.actor_type='user' THEN u.department ELSE NULL END AS department
@@ -253,6 +297,16 @@ USAGE_LOGS_SQL: Final = """
     {filters}
     ORDER BY a.called_at DESC, a.id DESC
     LIMIT %s
+    {offset}
+"""
+
+USAGE_LOGS_COUNT_SQL: Final = """
+    SELECT COUNT(*) AS total_count
+    FROM dashboard_api_usage_v a
+    LEFT JOIN dashboard_user_directory_v u
+      ON a.actor_type='user' AND a.actor_uid=CONCAT('genos-user:', u.id)
+    WHERE a.called_at >= %s AND a.called_at < %s
+    {filters}
 """
 
 _CHAT_TURN_SOURCE_SQL: Final = (
@@ -281,7 +335,59 @@ CHAT_TURNS_SQL: Final = f"""
     {{filters}}
     ORDER BY c.created_at DESC, source DESC, source_turn_id DESC
     LIMIT %s
+    {{offset}}
 """
+
+CHAT_TURNS_COUNT_SQL: Final = f"""
+    SELECT COUNT(*) AS total_count
+    FROM dashboard_chat_usage_v c
+    JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
+    WHERE c.created_at >= %s AND c.created_at < %s
+      AND c.portal_user_id IS NOT NULL
+      AND c.service_id IN (61, 91, 94)
+    {{filters}}
+"""
+
+ENDPOINT_LABELS_PATH: Final = Path(__file__).with_name("usage_endpoint_labels.json")
+UNKNOWN_ENDPOINT_LABEL: Final = "기타 기능"
+_ENDPOINT_LABELS: Final[dict[str, str]] = json.loads(
+    ENDPOINT_LABELS_PATH.read_text(encoding="utf-8")
+)
+_REQUEST_OPTIONS_ALLOWED: Final[dict[str, tuple[str, ...]]] = {
+    "path": ("brand_name",),
+    "query": (
+        "market_id",
+        "view",
+        "source",
+        "measure",
+        "brand",
+        "brand_name",
+        "atc4_codes",
+    ),
+    "body": (
+        "view",
+        "source",
+        "measure",
+        "selected_brand",
+        "period",
+        "period_start",
+        "period_end",
+        "csd_channel",
+        "mode",
+        "specialty",
+        "visit_location",
+        "top_n",
+    ),
+    "body.filters": (
+        "analysis_level",
+        "atc",
+        "atc4",
+        "channel",
+        "focus_brand_key",
+        "view_kind",
+    ),
+    "body.options": ("period_range",),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +430,7 @@ class UsageLogFilters:
     http_status: int | None = None
     page_size: int = DEFAULT_USAGE_LOG_PAGE_SIZE
     cursor: UsageLogCursor | None = None
+    page: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +438,10 @@ class UsageLogPage:
     items: tuple[dict[str, Any], ...]
     next_cursor: str | None
     has_more: bool
+    page: int
+    total_count: int
+    total_pages: int
+    page_size: int
 
 
 class InvalidUsageLogCursor(ValueError):
@@ -354,6 +465,7 @@ class ChatTurnFilters:
     department: str | None = None
     page_size: int = DEFAULT_USAGE_LOG_PAGE_SIZE
     cursor: ChatTurnCursor | None = None
+    page: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +473,10 @@ class ChatTurnPage:
     items: tuple[dict[str, Any], ...]
     next_cursor: str | None
     has_more: bool
+    page: int
+    total_count: int
+    total_pages: int
+    page_size: int
 
 
 class InvalidChatTurnCursor(ValueError):
@@ -596,13 +712,20 @@ class MariaDBUsageRepository:
                 "by_type": rows["auth_type"],
                 "by_hour": rows["auth_hour"],
                 "audience": (rows["auth_audience"] or [{"new_users": 0, "returning_users": 0}])[0],
+                "by_user": rows["auth_user"],
+                "by_department": rows["auth_department"],
             },
             "credit": {
                 "trend": rows["credit_trend"],
                 "by_user": rows["credit_user"],
                 "by_department": rows["credit_department"],
             },
-            "reports": {"trend": rows["report_trend"], "by_type": rows["report_type"]},
+            "reports": {
+                "trend": rows["report_trend"],
+                "by_type": rows["report_type"],
+                "by_user": rows["report_user"],
+                "by_department": rows["report_department"],
+            },
             "filter_options": {
                 "users": options,
                 "departments": sorted(
@@ -620,38 +743,16 @@ class MariaDBUsageRepository:
         return result
 
     def fetch_logs(self, filters: UsageLogFilters) -> UsageLogPage:
-        clauses: list[str] = []
-        params: list[Any] = [
-            filters.date_from.isoformat(),
-            (filters.date_to + timedelta(days=1)).isoformat(),
-        ]
-        if filters.user_id is not None:
-            clauses.append("u.id=%s")
-            params.append(filters.user_id)
-        if filters.user_ids:
-            clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
-            params.extend(filters.user_ids)
-        clauses.append("(u.id IS NULL OR LOWER(u.user_id) NOT LIKE '%%test%%')")
-        if filters.excluded_user_ids:
-            clauses.append(f"(u.id IS NULL OR u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))}))")
-            params.extend(filters.excluded_user_ids)
-        if filters.department:
-            clauses.append("u.department=%s")
-            params.append(filters.department)
-        if filters.endpoint:
-            clauses.append("a.endpoint=%s")
-            params.append(filters.endpoint)
-        if filters.http_status is not None:
-            clauses.append("a.http_status=%s")
-            params.append(filters.http_status)
-        if filters.cursor is not None:
-            clauses.append("(a.called_at < %s OR (a.called_at = %s AND a.id < %s))")
-            params.extend(
-                (filters.cursor.called_at, filters.cursor.called_at, filters.cursor.id)
-            )
+        clauses, base_params = _usage_log_query_parts(filters)
+        params = list(base_params)
         params.append(filters.page_size + 1)
+        offset_sql = ""
+        if filters.cursor is None and filters.page > 1:
+            offset_sql = "OFFSET %s"
+            params.append((filters.page - 1) * filters.page_size)
         sql = USAGE_LOGS_SQL.format(
-            filters=(" AND " + " AND ".join(clauses)) if clauses else ""
+            filters=_and_clauses(clauses),
+            offset=offset_sql,
         )
 
         connection = self._connect(**self._connect_args)
@@ -659,6 +760,11 @@ class MariaDBUsageRepository:
             with connection.cursor() as cursor:
                 cursor.execute(sql, tuple(params))
                 rows = [_normalize_row(row) for row in cursor.fetchall()]
+                cursor.execute(
+                    USAGE_LOGS_COUNT_SQL.format(filters=_and_clauses(clauses)),
+                    base_params,
+                )
+                total_count = _total_count(cursor.fetchone())
         finally:
             connection.close()
 
@@ -673,10 +779,12 @@ class MariaDBUsageRepository:
                     "called_at": row["called_at"],
                     "method": method,
                     "path": path,
+                    "endpoint_label": endpoint_feature_label(method, path),
                     "http_status": row["http_status"],
                     "actor_type": row["actor_type"],
                     "user_name": row.get("user_name"),
                     "department": row.get("department"),
+                    "request_options": _request_options(row.get("request_options")),
                 }
             )
         next_cursor = None
@@ -685,7 +793,15 @@ class MariaDBUsageRepository:
             next_cursor = encode_usage_log_cursor(
                 UsageLogCursor(called_at=last["called_at"], id=int(last["id"]))
             )
-        return UsageLogPage(items=tuple(items), next_cursor=next_cursor, has_more=has_more)
+        return UsageLogPage(
+            items=tuple(items),
+            next_cursor=next_cursor,
+            has_more=has_more,
+            page=filters.page,
+            total_count=total_count,
+            total_pages=_total_pages(total_count, filters.page_size),
+            page_size=filters.page_size,
+        )
 
     def fetch_chat_turns(self, filters: ChatTurnFilters) -> ChatTurnPage:
         try:
@@ -694,42 +810,16 @@ class MariaDBUsageRepository:
             raise DashboardQueryError("chat_materialization_state") from exc
         validate_materialization_state(state, filters)
 
-        clauses: list[str] = []
-        params: list[Any] = [
-            filters.date_from.isoformat(),
-            (filters.date_to + timedelta(days=1)).isoformat(),
-        ]
-        if filters.user_id is not None:
-            clauses.append("u.id=%s")
-            params.append(filters.user_id)
-        if filters.user_ids:
-            clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
-            params.extend(filters.user_ids)
-        clauses.append("LOWER(u.user_id) NOT LIKE '%%test%%'")
-        if filters.excluded_user_ids:
-            clauses.append(f"u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))})")
-            params.extend(filters.excluded_user_ids)
-        if filters.department:
-            clauses.append("u.department=%s")
-            params.append(filters.department)
-        if filters.cursor is not None:
-            clauses.append(
-                "(c.created_at < %s OR "
-                f"(c.created_at = %s AND ({_CHAT_TURN_SOURCE_SQL} < %s OR "
-                f"({_CHAT_TURN_SOURCE_SQL} = %s AND {_CHAT_TURN_ID_SQL} < %s))))"
-            )
-            params.extend(
-                (
-                    filters.cursor.created_at,
-                    filters.cursor.created_at,
-                    filters.cursor.source,
-                    filters.cursor.source,
-                    filters.cursor.source_turn_id,
-                )
-            )
+        clauses, base_params = _chat_turn_query_parts(filters)
+        params = list(base_params)
         params.append(filters.page_size + 1)
+        offset_sql = ""
+        if filters.cursor is None and filters.page > 1:
+            offset_sql = "OFFSET %s"
+            params.append((filters.page - 1) * filters.page_size)
         sql = CHAT_TURNS_SQL.format(
-            filters=(" AND " + " AND ".join(clauses)) if clauses else ""
+            filters=_and_clauses(clauses),
+            offset=offset_sql,
         )
 
         connection = self._connect(**self._connect_args)
@@ -737,6 +827,11 @@ class MariaDBUsageRepository:
             with connection.cursor() as cursor:
                 cursor.execute(sql, tuple(params))
                 rows = [_normalize_row(row) for row in cursor.fetchall()]
+                cursor.execute(
+                    CHAT_TURNS_COUNT_SQL.format(filters=_and_clauses(clauses)),
+                    base_params,
+                )
+                total_count = _total_count(cursor.fetchone())
         except Exception as exc:
             raise DashboardQueryError("chat_turns") from exc
         finally:
@@ -758,7 +853,15 @@ class MariaDBUsageRepository:
                 )
         except (KeyError, TypeError, ValueError) as exc:
             raise ChatTurnDataContractError("invalid chat turn cursor identity") from exc
-        return ChatTurnPage(items=items, next_cursor=next_cursor, has_more=has_more)
+        return ChatTurnPage(
+            items=items,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            page=filters.page,
+            total_count=total_count,
+            total_pages=_total_pages(total_count, filters.page_size),
+            page_size=filters.page_size,
+        )
 
     def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:
         start = filters.date_from.isoformat()
@@ -942,6 +1045,9 @@ class UsageStatsService:
             row["service_category"] = self.service_category(row.get("service_id"))
         for row in result["auth"]["trend"] + result["auth"]["by_type"]:
             row["label"] = self.AUTH_LABELS.get(str(row.get("type_code")), "기타 인증 이벤트")
+        for row in result["api"]["by_endpoint"]:
+            method, path = split_usage_endpoint(str(row.get("endpoint") or ""))
+            row["endpoint_label"] = endpoint_feature_label(method, path)
         serialized_filters = asdict(filters)
         if not filters.user_ids:
             serialized_filters.pop("user_ids")
@@ -1115,6 +1221,10 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def endpoint_feature_label(method: str, path: str) -> str:
+    return _ENDPOINT_LABELS.get(f"{method.upper()} {path}", UNKNOWN_ENDPOINT_LABEL)
+
+
 def split_usage_endpoint(endpoint: str) -> tuple[str, str]:
     method, separator, path = endpoint.partition(" ")
     if not separator or not method or not path:
@@ -1122,11 +1232,158 @@ def split_usage_endpoint(endpoint: str) -> tuple[str, str]:
     return method, path
 
 
-def _data_quality(result: dict[str, Any]) -> dict[str, int]:
+def _usage_log_query_parts(filters: UsageLogFilters) -> tuple[list[str], tuple[Any, ...]]:
+    clauses: list[str] = []
+    params: list[Any] = [
+        filters.date_from.isoformat(),
+        (filters.date_to + timedelta(days=1)).isoformat(),
+    ]
+    if filters.user_id is not None:
+        clauses.append("u.id=%s")
+        params.append(filters.user_id)
+    if filters.user_ids:
+        clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
+        params.extend(filters.user_ids)
+    clauses.append("(u.id IS NULL OR LOWER(u.user_id) NOT LIKE '%%test%%')")
+    if filters.excluded_user_ids:
+        clauses.append(
+            f"(u.id IS NULL OR u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))}))"
+        )
+        params.extend(filters.excluded_user_ids)
+    if filters.department:
+        clauses.append("u.department=%s")
+        params.append(filters.department)
+    if filters.endpoint:
+        clauses.append("a.endpoint=%s")
+        params.append(filters.endpoint)
+    if filters.http_status is not None:
+        clauses.append("a.http_status=%s")
+        params.append(filters.http_status)
+    if filters.cursor is not None:
+        clauses.append("(a.called_at < %s OR (a.called_at = %s AND a.id < %s))")
+        params.extend((filters.cursor.called_at, filters.cursor.called_at, filters.cursor.id))
+    return clauses, tuple(params)
+
+
+def _chat_turn_query_parts(filters: ChatTurnFilters) -> tuple[list[str], tuple[Any, ...]]:
+    clauses: list[str] = []
+    params: list[Any] = [
+        filters.date_from.isoformat(),
+        (filters.date_to + timedelta(days=1)).isoformat(),
+    ]
+    if filters.user_id is not None:
+        clauses.append("u.id=%s")
+        params.append(filters.user_id)
+    if filters.user_ids:
+        clauses.append(f"u.id IN ({','.join(['%s'] * len(filters.user_ids))})")
+        params.extend(filters.user_ids)
+    clauses.append("LOWER(u.user_id) NOT LIKE '%%test%%'")
+    if filters.excluded_user_ids:
+        clauses.append(f"u.id NOT IN ({','.join(['%s'] * len(filters.excluded_user_ids))})")
+        params.extend(filters.excluded_user_ids)
+    if filters.department:
+        clauses.append("u.department=%s")
+        params.append(filters.department)
+    if filters.cursor is not None:
+        clauses.append(
+            "(c.created_at < %s OR "
+            f"(c.created_at = %s AND ({_CHAT_TURN_SOURCE_SQL} < %s OR "
+            f"({_CHAT_TURN_SOURCE_SQL} = %s AND {_CHAT_TURN_ID_SQL} < %s))))"
+        )
+        params.extend(
+            (
+                filters.cursor.created_at,
+                filters.cursor.created_at,
+                filters.cursor.source,
+                filters.cursor.source,
+                filters.cursor.source_turn_id,
+            )
+        )
+    return clauses, tuple(params)
+
+
+def _and_clauses(clauses: list[str]) -> str:
+    return (" AND " + " AND ".join(clauses)) if clauses else ""
+
+
+def _request_options(value: Any) -> dict[str, Any]:
+    raw = _request_options_raw(value)
+    if not raw:
+        return {}
+    sanitized: dict[str, Any] = {}
+    path = _allowed_child_options(raw.get("path"), _REQUEST_OPTIONS_ALLOWED["path"])
+    if path:
+        sanitized["path"] = path
+    query = _allowed_child_options(raw.get("query"), _REQUEST_OPTIONS_ALLOWED["query"])
+    if query:
+        sanitized["query"] = query
+    body = _allowed_child_options(raw.get("body"), _REQUEST_OPTIONS_ALLOWED["body"])
+    raw_body = raw.get("body")
+    if isinstance(raw_body, dict):
+        filters = _allowed_child_options(
+            raw_body.get("filters"),
+            _REQUEST_OPTIONS_ALLOWED["body.filters"],
+        )
+        if filters:
+            body["filters"] = filters
+        options = _allowed_child_options(
+            raw_body.get("options"),
+            _REQUEST_OPTIONS_ALLOWED["body.options"],
+        )
+        if options:
+            body["options"] = options
+    if body:
+        sanitized["body"] = body
+    return sanitized
+
+
+def _request_options_raw(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _allowed_child_options(value: Any, allowed_keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: child
+        for key in allowed_keys
+        if (child := value.get(key)) not in (None, {}, [])
+    }
+
+
+def _total_count(row: dict[str, Any] | None) -> int:
+    if not row:
+        return 0
+    return int(row.get("total_count") or 0)
+
+
+def _total_pages(total_count: int, page_size: int) -> int:
+    if total_count == 0:
+        return 0
+    return (total_count + page_size - 1) // page_size
+
+
+def _data_quality(result: dict[str, Any]) -> dict[str, int | float]:
     api_total = sum(int(row.get("total_calls") or 0) for row in result["api"]["trend"])
     api_attributed = sum(int(row.get("attributed_calls") or 0) for row in result["api"]["trend"])
     chat_total = sum(int(row.get("turns") or 0) for row in result["chat"]["trend"])
     chat_attributed = sum(int(row.get("attributed_turns") or 0) for row in result["chat"]["trend"])
+    chat_elapsed_available = sum(
+        int(row.get("elapsed_available_turns") or 0) for row in result["chat"]["trend"]
+    )
+    chat_token_available = sum(
+        int(row.get("token_usage_available_turns") or 0)
+        for row in result["chat"]["trend"]
+    )
     chat_service_linked = sum(
         int(row.get("turns") or 0)
         for row in result["chat"]["trend"]
@@ -1137,12 +1394,16 @@ def _data_quality(result: dict[str, Any]) -> dict[str, int]:
         int(row.get("attributed_events") or 0) for row in result["credit"]["trend"]
     )
     return {
+        "api_total_calls": api_total,
         "api_attributed_calls": api_attributed,
         "api_unknown_calls": max(api_total - api_attributed, 0),
+        "api_attribution_rate": round(api_attributed / api_total, 4) if api_total else 0,
         "chat_attributed_turns": chat_attributed,
         "chat_unknown_turns": max(chat_total - chat_attributed, 0),
         "chat_service_linked_turns": chat_service_linked,
         "chat_service_linkage_missing_turns": max(chat_total - chat_service_linked, 0),
+        "chat_elapsed_available_turns": chat_elapsed_available,
+        "chat_token_usage_available_turns": chat_token_available,
         "credit_attributed_events": credit_attributed,
         "credit_unknown_events": max(credit_total - credit_attributed, 0),
     }

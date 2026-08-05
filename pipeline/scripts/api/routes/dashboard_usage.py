@@ -154,6 +154,7 @@ def create_usage_logs_router(repository: UsageHistoryRepository) -> APIRouter:
         http_status: int | None = Query(default=None, ge=100, le=599),
         page_size: int = Query(default=50, ge=1, le=MAX_USAGE_LOG_PAGE_SIZE),
         cursor: str | None = Query(default=None, min_length=1, max_length=512),
+        page: int | None = Query(default=None, ge=1),
     ) -> dict:
         if date_from > date_to:
             raise HTTPException(status_code=422, detail="시작일은 종료일보다 늦을 수 없습니다.")
@@ -170,6 +171,8 @@ def create_usage_logs_router(repository: UsageHistoryRepository) -> APIRouter:
             user < 1 for user in resolved_excluded_user_ids
         ):
             raise HTTPException(status_code=422, detail="제외 사용자 목록이 올바르지 않습니다.")
+        if cursor is not None and page is not None:
+            raise HTTPException(status_code=422, detail="page와 cursor는 함께 사용할 수 없습니다.")
         try:
             decoded_cursor = decode_usage_log_cursor(cursor) if cursor else None
         except InvalidUsageLogCursor as exc:
@@ -186,12 +189,17 @@ def create_usage_logs_router(repository: UsageHistoryRepository) -> APIRouter:
                 http_status=http_status,
                 page_size=page_size,
                 cursor=decoded_cursor,
+                page=page or 1,
             )
         )
         return {
             "items": list(page.items),
             "next_cursor": page.next_cursor,
             "has_more": page.has_more,
+            "page": page.page,
+            "total_count": page.total_count,
+            "total_pages": page.total_pages,
+            "page_size": page.page_size,
         }
 
     router.include_router(create_chat_turns_router(repository))
@@ -211,6 +219,7 @@ def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
         department: str | None = Query(default=None, min_length=1, max_length=100),
         page_size: int = Query(default=50, ge=1, le=MAX_USAGE_LOG_PAGE_SIZE),
         cursor: str | None = Query(default=None, min_length=1, max_length=512),
+        page: int | None = Query(default=None, ge=1),
     ) -> dict:
         if date_from > date_to:
             raise HTTPException(status_code=422, detail="시작일은 종료일보다 늦을 수 없습니다.")
@@ -227,6 +236,8 @@ def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
             user < 1 for user in resolved_excluded_user_ids
         ):
             raise HTTPException(status_code=422, detail="제외 사용자 목록이 올바르지 않습니다.")
+        if cursor is not None and page is not None:
+            raise HTTPException(status_code=422, detail="page와 cursor는 함께 사용할 수 없습니다.")
         try:
             decoded_cursor = decode_chat_turn_cursor(cursor) if cursor else None
         except InvalidChatTurnCursor as exc:
@@ -242,6 +253,7 @@ def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
                     department=department.strip() if department else None,
                     page_size=page_size,
                     cursor=decoded_cursor,
+                    page=page or 1,
                 )
             )
         except ChatMaterializationUnavailable as error:
@@ -280,6 +292,10 @@ def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
             "items": list(page.items),
             "next_cursor": page.next_cursor,
             "has_more": page.has_more,
+            "page": page.page,
+            "total_count": page.total_count,
+            "total_pages": page.total_pages,
+            "page_size": page.page_size,
         }
 
     return router

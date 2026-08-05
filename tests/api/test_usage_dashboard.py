@@ -50,7 +50,7 @@ class FakeRepository:
             "chat": {"trend": [], "by_user": [], "by_user_service": []},
             "auth": {"trend": [], "by_type": [], "by_hour": [], "audience": []},
             "credit": {"trend": [], "by_user": [], "by_department": []},
-            "reports": {"trend": [], "by_type": []},
+            "reports": {"trend": [], "by_type": [], "by_user": [], "by_department": []},
             "filter_options": {"users": [], "departments": []},
         }
 
@@ -488,6 +488,8 @@ def test_service_reports_chat_service_linkage_quality_without_rewriting_trend() 
                     "turns": 4,
                     "sessions": 2,
                     "attributed_turns": 3,
+                    "elapsed_available_turns": 4,
+                    "token_usage_available_turns": 2,
                     "total_tokens": 40,
                 },
                 {
@@ -496,6 +498,8 @@ def test_service_reports_chat_service_linkage_quality_without_rewriting_trend() 
                     "turns": 6,
                     "sessions": 3,
                     "attributed_turns": 1,
+                    "elapsed_available_turns": 5,
+                    "token_usage_available_turns": 0,
                     "total_tokens": 60,
                 },
                 {
@@ -504,6 +508,8 @@ def test_service_reports_chat_service_linkage_quality_without_rewriting_trend() 
                     "turns": 6,
                     "sessions": 2,
                     "attributed_turns": 6,
+                    "elapsed_available_turns": 6,
+                    "token_usage_available_turns": 6,
                     "total_tokens": 80,
                 },
             ]
@@ -515,8 +521,36 @@ def test_service_reports_chat_service_linkage_quality_without_rewriting_trend() 
 
     assert payload["data_quality"]["chat_service_linked_turns"] == 10
     assert payload["data_quality"]["chat_service_linkage_missing_turns"] == 6
+    assert payload["data_quality"]["chat_elapsed_available_turns"] == 15
+    assert payload["data_quality"]["chat_token_usage_available_turns"] == 8
     assert payload["chat"]["trend"][1]["service_id"] is None
     assert payload["chat"]["trend"][1]["turns"] == 6
+
+
+def test_service_exposes_api_denominators_and_endpoint_labels() -> None:
+    class ApiQualityRepository(FakeRepository):
+        def fetch(self, filters: UsageFilters) -> dict:
+            result = super().fetch(filters)
+            result["api"]["trend"] = [
+                {"period": "2026-07-01", "total_calls": 8, "attributed_calls": 6},
+                {"period": "2026-07-02", "total_calls": 2, "attributed_calls": 1},
+            ]
+            result["api"]["by_endpoint"] = [
+                {"endpoint": "GET /api/brands", "calls": 4},
+                {"endpoint": "GET /api/private-debug", "calls": 1},
+            ]
+            return result
+
+    payload = UsageStatsService(
+        ApiQualityRepository(), cache=DashboardCache(ttl_seconds=60)
+    ).get(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert payload["data_quality"]["api_total_calls"] == 10
+    assert payload["data_quality"]["api_attribution_rate"] == 0.7
+    assert payload["api"]["by_endpoint"] == [
+        {"endpoint": "GET /api/brands", "calls": 4, "endpoint_label": "브랜드 목록 조회"},
+        {"endpoint": "GET /api/private-debug", "calls": 1, "endpoint_label": "기타 기능"},
+    ]
 
 
 def test_service_adds_chat_service_share_excluding_unknown_from_denominator() -> None:
@@ -551,12 +585,18 @@ def test_dashboard_sql_exposes_supported_multidimensional_statistics() -> None:
         "chat_user_service",
         "auth_hour",
         "auth_audience",
+        "auth_user",
+        "auth_department",
         "credit_department",
+        "report_user",
+        "report_department",
     }.issubset(DASHBOARD_SQL)
     assert "http_status" in DASHBOARD_SQL["api_status"]
     assert "HOUR(" in DASHBOARD_SQL["api_weekday_hour"]
     assert "service_id" in DASHBOARD_SQL["chat_user_service"]
     assert "AT0001" in DASHBOARD_SQL["auth_audience"]
+    assert "LIMIT 200" in DASHBOARD_SQL["auth_user"]
+    assert "LIMIT 200" in DASHBOARD_SQL["report_user"]
 
 
 def test_auth_audience_deduplicates_active_users_before_history_join() -> None:
@@ -635,7 +675,7 @@ def test_parallel_repository_bounds_process_wide_query_concurrency() -> None:
         results = list(callers.map(repository.fetch, (filters, filters)))
 
     assert 1 < repository.max_active_queries <= 4
-    assert len(repository.completed_queries) == 48
+    assert len(repository.completed_queries) == 56
     assert results[0] == results[1]
 
 

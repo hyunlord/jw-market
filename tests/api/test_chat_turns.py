@@ -50,6 +50,10 @@ class FakeChatTurnsRepository:
                 ChatTurnCursor(datetime(2026, 8, 3, 9, 30), "market", "a" * 64)
             ),
             has_more=True,
+            page=1,
+            total_count=51,
+            total_pages=2,
+            page_size=50,
         )
 
 
@@ -92,6 +96,7 @@ def test_chat_turns_forwards_bounded_filters_and_opaque_cursor() -> None:
             department="Market",
             page_size=100,
             cursor=ChatTurnCursor(datetime(2026, 8, 3, 8, 0), "rnd", "b" * 64),
+            page=1,
         )
     ]
     assert decode_chat_turn_cursor(response.json()["next_cursor"]) == ChatTurnCursor(
@@ -108,13 +113,23 @@ def test_chat_turns_rejects_oversized_range_page_and_tampered_cursor() -> None:
     oversized_page = client.get(
         "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03&page_size=101"
     )
+    legacy_page_size = client.get(
+        "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03&page_size=25"
+    )
     bad_cursor = client.get(
         "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03&cursor=bad"
+    )
+    mixed_page_cursor = client.get(
+        "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03&page=2"
+        "&cursor="
+        + encode_chat_turn_cursor(ChatTurnCursor(datetime(2026, 8, 3, 8, 0), "rnd", "b" * 64))
     )
 
     assert oversized_range.status_code == 422
     assert oversized_page.status_code == 422
+    assert legacy_page_size.status_code == 200
     assert bad_cursor.status_code == 400
+    assert mixed_page_cursor.status_code == 422
 
 
 def test_chat_turn_items_are_metadata_only_and_never_expose_unlinked_or_raw_fields() -> None:
@@ -124,7 +139,15 @@ def test_chat_turn_items_are_metadata_only_and_never_expose_unlinked_or_raw_fiel
     payload = response.json()
 
     assert response.status_code == 200
-    assert set(payload) == {"items", "next_cursor", "has_more"}
+    assert set(payload) == {
+        "items",
+        "next_cursor",
+        "has_more",
+        "page",
+        "total_count",
+        "total_pages",
+        "page_size",
+    }
     assert set(payload["items"][0]) == {
         "user_id",
         "user_name",
@@ -187,6 +210,20 @@ def test_chat_turns_maps_coverage_failure_to_structured_503() -> None:
     assert response.json()["limits"] == {"max_days": 31, "cache_ttl_seconds": 60}
 
 
+def test_chat_turns_accepts_numbered_pagination_metadata() -> None:
+    repository = FakeChatTurnsRepository()
+    response = _client(repository).get(
+        "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03"
+        "&page=3&page_size=10"
+    )
+
+    assert response.status_code == 200
+    assert repository.calls[-1].page == 3
+    assert repository.calls[-1].page_size == 10
+    assert response.json()["page"] == 1
+    assert response.json()["total_pages"] == 2
+
+
 def test_chat_turn_repository_pages_past_nullable_market_identity() -> None:
     base = datetime(2026, 8, 3, 12, 0)
     rows = []
@@ -215,6 +252,8 @@ def test_chat_turn_repository_pages_past_nullable_market_identity() -> None:
         )
 
     class Cursor:
+        executed: list[tuple[str, tuple]] = []
+
         def __enter__(self):
             return self
 
@@ -222,10 +261,13 @@ def test_chat_turn_repository_pages_past_nullable_market_identity() -> None:
             return None
 
         def execute(self, sql, params):
-            self.executed = (sql, params)
+            self.executed.append((sql, params))
 
         def fetchall(self):
             return rows
+
+        def fetchone(self):
+            return {"total_count": len(rows)}
 
     class Connection:
         def __init__(self):
@@ -260,6 +302,8 @@ def test_chat_turn_repository_pages_past_nullable_market_identity() -> None:
 
     assert page.has_more is True
     assert len(page.items) == 50
+    assert page.total_count == 51
+    assert page.total_pages == 2
     assert connection.closed is True
     cursor = decode_chat_turn_cursor(page.next_cursor or "")
     assert cursor.source == "rnd"

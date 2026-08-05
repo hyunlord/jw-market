@@ -18,7 +18,46 @@ CREATE TABLE IF NOT EXISTS `jw_market_audit_stage`.`report_download_event` (
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW
     `jw_market_audit_stage`.`dashboard_api_usage_v` AS
 SELECT
-    `id`, `actor_uid`, `actor_type`, `called_at`, `endpoint`, `http_status`
+    `id`, `actor_uid`, `actor_type`, `called_at`, `endpoint`, `http_status`,
+    JSON_OBJECT(
+        'path', JSON_OBJECT(
+            'brand_name', JSON_EXTRACT(`request_params`, '$.path.brand_name')
+        ),
+        'query', JSON_OBJECT(
+            'market_id', JSON_EXTRACT(`request_params`, '$.query.market_id'),
+            'view', JSON_EXTRACT(`request_params`, '$.query.view'),
+            'source', JSON_EXTRACT(`request_params`, '$.query.source'),
+            'measure', JSON_EXTRACT(`request_params`, '$.query.measure'),
+            'brand', JSON_EXTRACT(`request_params`, '$.query.brand'),
+            'brand_name', JSON_EXTRACT(`request_params`, '$.query.brand_name'),
+            'atc4_codes', JSON_EXTRACT(`request_params`, '$.query.atc4_codes')
+        ),
+        'body', JSON_OBJECT(
+            'view', JSON_EXTRACT(`request_params`, '$.body.view'),
+            'source', JSON_EXTRACT(`request_params`, '$.body.source'),
+            'measure', JSON_EXTRACT(`request_params`, '$.body.measure'),
+            'selected_brand', JSON_EXTRACT(`request_params`, '$.body.selected_brand'),
+            'period', JSON_EXTRACT(`request_params`, '$.body.period'),
+            'period_start', JSON_EXTRACT(`request_params`, '$.body.period_start'),
+            'period_end', JSON_EXTRACT(`request_params`, '$.body.period_end'),
+            'csd_channel', JSON_EXTRACT(`request_params`, '$.body.csd_channel'),
+            'mode', JSON_EXTRACT(`request_params`, '$.body.mode'),
+            'specialty', JSON_EXTRACT(`request_params`, '$.body.specialty'),
+            'visit_location', JSON_EXTRACT(`request_params`, '$.body.visit_location'),
+            'top_n', JSON_EXTRACT(`request_params`, '$.body.top_n'),
+            'filters', JSON_OBJECT(
+                'analysis_level', JSON_EXTRACT(`request_params`, '$.body.filters.analysis_level'),
+                'atc', JSON_EXTRACT(`request_params`, '$.body.filters.atc'),
+                'atc4', JSON_EXTRACT(`request_params`, '$.body.filters.atc4'),
+                'channel', JSON_EXTRACT(`request_params`, '$.body.filters.channel'),
+                'focus_brand_key', JSON_EXTRACT(`request_params`, '$.body.filters.focus_brand_key'),
+                'view_kind', JSON_EXTRACT(`request_params`, '$.body.filters.view_kind')
+            ),
+            'options', JSON_OBJECT(
+                'period_range', JSON_EXTRACT(`request_params`, '$.body.options.period_range')
+            )
+        )
+    ) AS `request_options`
 FROM `jw_market_audit_stage`.`audit_api_call_log`;
 
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW
