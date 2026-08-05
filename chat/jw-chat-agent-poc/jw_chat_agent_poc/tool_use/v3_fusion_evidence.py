@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
+import hashlib
 import json
 import re
 
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
+    ClinicalTrialFact,
+    RegulatoryRuleFact,
     ToolFailureRecord,
     V3EvidenceBundle,
     V3EvidenceFact,
@@ -48,6 +51,9 @@ _STRUCTURAL_NUMERIC_KEYS = frozenset(
 _SYSTEM_PROMPT = """You produce a Korean evidence-bound answer as one JSON object.
 The only allowed shape is {"claims":[{"text":str,"evidence_ids":[str]}],"limitations":[str]}.
 Every claim must cite one or more supplied evidence_id values.
+evidence_id는 supplied evidence 목록의 값을 그대로 복사하고 새로 만들지 않는다.
+한글 필드명, 결과 순번, NCT 식별자를 evidence_id로 조합하지 않는다.
+인용할 supplied evidence_id가 없으면 claim을 만들지 말고 limitations에 남긴다.
 Copy numeric literals exactly from allowed_numeric_literals of the cited evidence; never calculate, estimate, round, interpolate, or convert units.
 Copy periods from allowed_periods exactly, or use their direct Korean year/month/quarter notation.
 Use only supplied evidence values. Write natural Korean around them without changing values.
@@ -62,7 +68,7 @@ def build_fusion_messages(
     question: str,
     bundle: V3EvidenceBundle,
 ) -> list[dict[str, str]]:
-    evidence = [fusion_fact_payload(fact) for fact in bundle.facts]
+    evidence = [fusion_fact_payload(fact) for fact in fusion_citation_facts(bundle.facts)]
     failures = [
         {
             "reason_code": reason_code,
@@ -115,7 +121,7 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
         if key in values and values.get(key) is not None
     }
     arguments = prompt_value(fact.arguments)
-    raw_result = prompt_value(fact.raw_result)
+    raw_result = prompt_value(_without_nested_evidence(fact.raw_result))
     return {
         "evidence_id": fact.evidence_id,
         "fact_type": fact.fact_type,
@@ -127,6 +133,68 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
         "allowed_numeric_literals": sorted(fact_numeric_literals(fact)),
         "allowed_periods": sorted(fact_period_literals(fact)),
     }
+
+
+def fusion_citation_facts(
+    facts: Sequence[V3EvidenceFact],
+) -> tuple[V3EvidenceFact, ...]:
+    expanded: list[V3EvidenceFact] = []
+    for fact in facts:
+        expanded.append(fact)
+        for item in _nested_evidence_items(fact.raw_result):
+            expanded.append(_citation_item_fact(fact, item))
+    return tuple(expanded)
+
+
+def _nested_evidence_items(raw_result: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(raw_result, Mapping):
+        return ()
+    evidence = raw_result.get("evidence")
+    if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in evidence if isinstance(item, Mapping))
+
+
+def _citation_item_fact(
+    parent: V3EvidenceFact,
+    item: Mapping[str, object],
+) -> V3EvidenceFact:
+    public_item = {
+        str(key): value
+        for key, value in item.items()
+        if str(key) not in {"fact_id", "raw_ref"}
+    }
+    identity = json.dumps(
+        {
+            "parent_evidence_id": parent.evidence_id,
+            "item": prompt_value(item),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    evidence_id = (
+        f"v3-shadow:{parent.tool_name}:"
+        f"{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+    )
+    common = {
+        "evidence_id": evidence_id,
+        "raw_result": public_item,
+        "missing_required_fields": (),
+        "projection_sources": (),
+        "projection_missing_reasons": (),
+    }
+    if isinstance(parent, ClinicalTrialFact):
+        return replace(parent, status=None, last_update_posted=None, **common)
+    if isinstance(parent, RegulatoryRuleFact):
+        return replace(parent, effective_date=None, last_checked=None, **common)
+    return replace(parent, **common)
+
+
+def _without_nested_evidence(raw_result: object) -> object:
+    if not isinstance(raw_result, Mapping) or not isinstance(raw_result.get("evidence"), list):
+        return raw_result
+    return {key: value for key, value in raw_result.items() if key != "evidence"}
 
 
 def numeric_literals(text: str) -> tuple[str, ...]:
@@ -266,6 +334,7 @@ __all__ = [
     "canonical_numeric_literal",
     "fact_numeric_literals",
     "fact_period_literals",
+    "fusion_citation_facts",
     "fusion_fact_payload",
     "message_numeric_literals",
     "numeric_literal_spans",

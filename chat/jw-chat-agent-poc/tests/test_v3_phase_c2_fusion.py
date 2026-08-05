@@ -7,9 +7,11 @@ from dataclasses import replace
 import pytest
 
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
+    ClinicalTrialFact,
     MarketMetricFact,
     ToolFailureRecord,
     V3EvidenceBundle,
+    V3EvidenceFact,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion import (
     V3FusionEngine,
@@ -59,7 +61,7 @@ def _fact(
 
 
 def _bundle(
-    *facts: MarketMetricFact,
+    *facts: V3EvidenceFact,
     failures: tuple[ToolFailureRecord, ...] = (),
 ) -> V3EvidenceBundle:
     return V3EvidenceBundle(
@@ -71,6 +73,48 @@ def _bundle(
         original_call_count=len(facts) + len(failures),
         executed_call_count=len(facts) + len(failures),
         deduplicated_call_count=0,
+    )
+
+
+def _clinical_list_fact() -> ClinicalTrialFact:
+    return ClinicalTrialFact(
+        evidence_id="v3-shadow:clinicaltrials_v2_search:203e3d6e29478d89",
+        tool_name="clinicaltrials_v2_search",
+        arguments={"query.condition": "cerebral infarction"},
+        raw_result={
+            "ok": True,
+            "evidence": [
+                {
+                    "fact_id": "clinicaltrials_v2_search:1",
+                    "metric": "글로벌 임상시험",
+                    "period": None,
+                    "raw_ref": "clinicaltrials_v2_search:1",
+                    "source_locator": "NCT06715007 · 첫 번째 시험",
+                    "source_name": "ClinicalTrials.gov 임상시험 정보",
+                    "subject": "cerebral infarction",
+                    "unit": None,
+                    "value": None,
+                },
+                {
+                    "fact_id": "clinicaltrials_v2_search:원천_제공_총_건수",
+                    "metric": "원천 제공 총 건수",
+                    "period": None,
+                    "raw_ref": "clinicaltrials_v2_search:원천_제공_총_건수",
+                    "source_locator": "upstream totalCount",
+                    "source_name": "ClinicalTrials.gov 임상시험 정보",
+                    "subject": "cerebral infarction",
+                    "unit": "건",
+                    "value": "1048",
+                },
+            ],
+            "raw": {
+                "render_data": {
+                    "payload": {"totalCount": 1048},
+                }
+            },
+        },
+        missing_required_fields=(),
+        status="RECRUITING",
     )
 
 
@@ -522,6 +566,72 @@ def test_prompt_contains_fact_values_and_safe_failure_language_only() -> None:
         }
     ]
     assert "formula parity" not in messages[1]["content"]
+
+
+def test_external_list_items_receive_deterministic_v3_shadow_evidence_ids() -> None:
+    fact = _clinical_list_fact()
+
+    first_messages = build_fusion_messages("뇌경색 임상시험", _bundle(fact))
+    second_messages = build_fusion_messages("뇌경색 임상시험", _bundle(fact))
+    first_evidence = json.loads(first_messages[1]["content"])["evidence"]
+    second_evidence = json.loads(second_messages[1]["content"])["evidence"]
+
+    assert first_evidence == second_evidence
+    assert len(first_evidence) == 3
+    parent, trial_item, count_item = first_evidence
+    assert parent["evidence_id"] == fact.evidence_id
+    assert "evidence" not in parent["raw_result"]
+    assert trial_item["evidence_id"].startswith(
+        "v3-shadow:clinicaltrials_v2_search:"
+    )
+    assert count_item["evidence_id"].startswith(
+        "v3-shadow:clinicaltrials_v2_search:"
+    )
+    assert len(trial_item["evidence_id"].rsplit(":", 1)[1]) == 16
+    assert len(count_item["evidence_id"].rsplit(":", 1)[1]) == 16
+    assert trial_item["evidence_id"] != count_item["evidence_id"]
+    assert "1048" not in trial_item["allowed_numeric_literals"]
+    assert "1048" in count_item["allowed_numeric_literals"]
+    assert "fact_id" not in trial_item["raw_result"]
+    assert "raw_ref" not in trial_item["raw_result"]
+
+
+def test_external_item_id_is_strictly_validated_without_accepting_legacy_id() -> None:
+    fact = _clinical_list_fact()
+    payload = json.loads(
+        build_fusion_messages("뇌경색 임상시험", _bundle(fact))[1]["content"]
+    )
+    count_id = payload["evidence"][2]["evidence_id"]
+    generated = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="원천 제공 총 건수는 1048건입니다.",
+                evidence_ids=(count_id,),
+            ),
+            GeneratedFusionClaim(
+                text="원천 제공 총 건수는 1048건입니다.",
+                evidence_ids=("clinicaltrials_v2_search:원천_제공_총_건수",),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(generated, _bundle(fact))
+
+    assert [claim.evidence_ids for claim in result.answer.claims] == [(count_id,)]
+    assert result.audit.rejected_claims[0].reason == "unknown_evidence_reference"
+
+
+def test_prompt_requires_exact_supplied_ids_and_forbids_constructed_ids() -> None:
+    system_prompt = build_fusion_messages(
+        "뇌경색 임상시험", _bundle(_clinical_list_fact())
+    )[0]["content"]
+
+    assert "그대로 복사" in system_prompt
+    assert "새로 만들지" in system_prompt
+    assert "한글 필드명" in system_prompt
+    assert "순번" in system_prompt
+    assert "NCT" in system_prompt
+    assert "limitations" in system_prompt
 
 
 def test_engine_preserves_raw_provider_response_and_validates_before_return() -> None:

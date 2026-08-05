@@ -19,6 +19,7 @@ from jw_chat_agent_poc.tool_use.v3_fusion_evidence import (
     build_fusion_messages,
     canonical_numeric_literal,
     fact_numeric_literals,
+    fusion_citation_facts,
     message_numeric_literals,
     numeric_literal_spans,
     numeric_literals,
@@ -90,7 +91,8 @@ def validate_fusion_answer(
     generated: GeneratedFusionAnswer,
     bundle: V3EvidenceBundle,
 ) -> ValidatedFusionAnswer:
-    facts = {fact.evidence_id: fact for fact in bundle.facts}
+    citation_facts = fusion_citation_facts(bundle.facts)
+    facts = {fact.evidence_id: fact for fact in citation_facts}
     accepted: list[FusionClaim] = []
     rejected: list[RejectedFusionClaim] = []
     ungrounded: list[str] = []
@@ -154,7 +156,7 @@ def validate_fusion_answer(
         accepted.append(FusionClaim(text=claim.text, evidence_ids=claim.evidence_ids))
 
     all_grounded_numbers = set().union(
-        *(fact_numeric_literals(fact) for fact in bundle.facts),
+        *(fact_numeric_literals(fact) for fact in citation_facts),
         *(message_numeric_literals(failure) for failure in bundle.failures),
     )
     limitations: list[str] = []
