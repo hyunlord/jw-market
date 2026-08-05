@@ -51,7 +51,9 @@ def test_v9_non_2xx_retries_with_exponential_backoff():
     calls = []
     sleeps = []
 
-    def opener(request, timeout):
+    def opener(request, data=None, timeout=None):
+        assert data is None
+        assert timeout == 15
         calls.append(json.loads(request.data))
         return Response(503 if len(calls) < 4 else 204)
 
@@ -63,7 +65,9 @@ def test_v9_non_2xx_retries_with_exponential_backoff():
 
 
 def test_v10_final_webhook_failure_is_reported_not_raised():
-    def opener(_request, _timeout):
+    def opener(_request, data=None, timeout=None):
+        assert data is None
+        assert timeout == 15
         raise OSError("receiver down")
 
     result = publish(_signal(), endpoint="https://receiver.invalid/events", attempts=3, opener=opener, sleeper=lambda _: None)

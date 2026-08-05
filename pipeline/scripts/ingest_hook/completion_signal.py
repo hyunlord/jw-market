@@ -55,7 +55,7 @@ def publish(
     for index in range(attempts):
         request = urllib.request.Request(endpoint, data=body, method="POST", headers={"Content-Type": "application/json"})
         try:
-            with opener(request, 15) as response:
+            with opener(request, timeout=15) as response:
                 status = int(getattr(response, "status", 0))
             if 200 <= status < 300:
                 return PublishResult("published", index + 1)
