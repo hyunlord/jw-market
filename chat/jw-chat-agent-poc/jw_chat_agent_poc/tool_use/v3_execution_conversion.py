@@ -7,6 +7,7 @@ from jw_chat_agent_poc.tool_use.contracts import ToolEnvelope
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
     FileCellFact,
+    InsightFact,
     MarketDefinitionFact,
     MarketMetricFact,
     RegulatoryRuleFact,
@@ -80,7 +81,7 @@ def convert_execution(
             evidence_id=evidence_id,
             tool_name=record.tool_name,
             arguments=record.arguments,
-            raw_result=record.raw_result,
+            raw_result=_without_insight(record.raw_result),
             missing_required_fields=projection.missing(
                 ("entity", "metric", "period", "unit", "view", "market")
             ),
@@ -144,6 +145,23 @@ def convert_execution(
     ), None, None
 
 
+def convert_execution_facts(
+    record: ToolExecutionRecord,
+    domain: str,
+) -> tuple[
+    tuple[V3EvidenceFact, ...],
+    ToolFailureRecord | None,
+    ToolDeferredRecord | None,
+]:
+    fact, failure, deferred = convert_execution(record, domain)
+    facts: list[V3EvidenceFact] = [] if fact is None else [fact]
+    if record.tool_name == "market.get_deep_analysis":
+        insight = _insight_fact(record)
+        if insight is not None:
+            facts.append(insight)
+    return tuple(facts), failure, deferred
+
+
 def tool_domain(name: str) -> str:
     if name.startswith("market."):
         return "market"
@@ -173,6 +191,52 @@ def failure_sort_key(record: ToolFailureRecord) -> tuple[str, str, str]:
 
 def _raw_payload(raw_result: object) -> object:
     return raw_result.raw if isinstance(raw_result, ToolEnvelope) else raw_result
+
+
+def _without_insight(raw_result: object) -> object:
+    raw = _raw_payload(raw_result)
+    if not isinstance(raw, Mapping) or "insight" not in raw:
+        return raw_result
+    return {key: value for key, value in raw.items() if key != "insight"}
+
+
+def _insight_fact(record: ToolExecutionRecord) -> InsightFact | None:
+    raw = _raw_payload(record.raw_result)
+    if not isinstance(raw, Mapping):
+        return None
+    value = raw.get("insight")
+    if not isinstance(value, Mapping):
+        return None
+    required = (
+        "raw_text",
+        "generated_by",
+        "fetched_at_utc",
+        "target_market",
+        "target_brand",
+        "api_response_location",
+    )
+    projected = {key: str(value.get(key) or "") for key in required}
+    missing = tuple(key for key in required if not projected[key])
+    if "raw_text" in missing:
+        return None
+    identity = repr(
+        (
+            canonical_argument_key(record.tool_name, record.arguments),
+            projected["api_response_location"],
+        )
+    ).encode()
+    evidence_id = (
+        f"v3-shadow:{record.tool_name}:"
+        f"{hashlib.sha256(identity).hexdigest()[:16]}"
+    )
+    return InsightFact(
+        evidence_id=evidence_id,
+        tool_name=record.tool_name,
+        arguments=record.arguments,
+        raw_result=dict(value),
+        missing_required_fields=missing,
+        **projected,
+    )
 
 
 def _evidence_id(tool_name: str, arguments: Mapping[str, object]) -> str:

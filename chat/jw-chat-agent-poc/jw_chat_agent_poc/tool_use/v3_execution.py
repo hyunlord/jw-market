@@ -6,6 +6,7 @@ from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
     ExecutableTool,
     FileCellFact,
+    InsightFact,
     MarketMetricFact,
     MarketDefinitionFact,
     RegulatoryRuleFact,
@@ -17,7 +18,7 @@ from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
 )
 from jw_chat_agent_poc.tool_use.v3_execution_conversion import (
     bundle_status,
-    convert_execution,
+    convert_execution_facts,
     failure_sort_key,
 )
 from jw_chat_agent_poc.tool_use.v3_execution_normalization import (
@@ -127,12 +128,11 @@ class V3ShadowToolExecutor:
         failures: list[ToolFailureRecord] = []
         deferred: list[ToolDeferredRecord] = []
         for record in executions:
-            fact, failure, deferred_record = convert_execution(
+            converted_facts, failure, deferred_record = convert_execution_facts(
                 record,
                 self._tools[record.tool_name].domain,
             )
-            if fact is not None:
-                facts.append(fact)
+            facts.extend(converted_facts)
             if failure is not None:
                 failures.append(failure)
             if deferred_record is not None:
@@ -152,6 +152,7 @@ __all__ = [
     "ClinicalTrialFact",
     "ExecutableTool",
     "FileCellFact",
+    "InsightFact",
     "MarketMetricFact",
     "MarketDefinitionFact",
     "RegulatoryRuleFact",

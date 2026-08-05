@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 import os
 
 import requests
@@ -86,15 +87,21 @@ def project_deep_analysis_response(
         if item.get("period") not in (None, "")
     )
     dashboard_tables = _deep_analysis_tables(evidence)
+    insight = _insight_payload(
+        data.get("ai_analysis"),
+        brand=brand,
+        market_id=market_id,
+    )
     return {
         "source": source.upper(),
         "tool": "market.get_deep_analysis",
         "summary_text": f"{brand} 심층분석의 사전 계산 결과를 조회했습니다.",
         "evidence": evidence,
-        "model_insight_status": "withheld_model_generated",
-        "limitations": (
-            "AI 인사이트는 LLM 생성 텍스트이므로 사실 근거로 공급하지 않았습니다.",
+        "model_insight_status": (
+            "available_model_generated" if insight is not None else "unavailable"
         ),
+        "insight": insight,
+        "limitations": (),
         "render_data": {
             "brand": brand,
             "metric": "deep_analysis",
@@ -109,6 +116,24 @@ def project_deep_analysis_response(
             "dashboard_tables": dashboard_tables,
             "generated_at": generated_at,
         },
+    }
+
+
+def _insight_payload(
+    value: object,
+    *,
+    brand: str,
+    market_id: str,
+) -> dict[str, object] | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return {
+        "raw_text": value,
+        "generated_by": "deep-analysis-api-llm",
+        "fetched_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "target_market": market_id,
+        "target_brand": brand,
+        "api_response_location": "data.ai_analysis",
     }
 
 

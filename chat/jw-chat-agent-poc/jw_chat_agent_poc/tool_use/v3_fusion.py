@@ -6,6 +6,7 @@ import re
 from typing import Protocol
 
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
+    InsightFact,
     V3EvidenceBundle,
     WebSourceFact,
 )
@@ -140,8 +141,35 @@ def validate_fusion_answer(
             fact for fact in cited_facts if isinstance(fact, WebSourceFact)
         )
         internal_facts = tuple(
-            fact for fact in cited_facts if not isinstance(fact, WebSourceFact)
+            fact
+            for fact in cited_facts
+            if not isinstance(fact, WebSourceFact | InsightFact)
         )
+        insight_facts = tuple(
+            fact for fact in cited_facts if isinstance(fact, InsightFact)
+        )
+        if insight_facts and "시스템 AI 인사이트에 따르면" not in claim.text:
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="insight_source_missing",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
+        if insight_facts and any(
+            fact.raw_text not in claim.text for fact in insight_facts
+        ):
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="insight_text_not_verbatim",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
         if web_facts and any(fact.url not in claim.text for fact in web_facts):
             rejected.append(
                 RejectedFusionClaim(
@@ -170,6 +198,27 @@ def validate_fusion_answer(
             for fact in web_facts
             for value in web_source_numeric_literals(fact)
         }
+        insight_numbers = {
+            canonical_numeric_literal(value)
+            for fact in insight_facts
+            for value in numeric_literals(fact.raw_text)
+        }
+        promoted_insight_numbers = tuple(
+            literal
+            for literal in observed_numbers
+            if canonical_numeric_literal(literal) in insight_numbers
+            and canonical_numeric_literal(literal) not in internal_numbers | web_numbers
+        )
+        if promoted_insight_numbers:
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="insight_numeric_promoted",
+                    numeric_literals=promoted_insight_numbers,
+                )
+            )
+            continue
         if _web_only_number_lacks_external_label(
             claim.text,
             observed_number_spans,

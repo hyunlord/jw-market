@@ -8,6 +8,7 @@ import re
 
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
+    InsightFact,
     MarketDefinitionFact,
     RegulatoryRuleFact,
     ToolFailureRecord,
@@ -76,6 +77,8 @@ Every HHI claim must state its supplied period. Do not combine market size and H
 Values marked system_forecast must be described as 시스템 예측, and values marked system_simulation must be described as 시스템 시뮬레이션. Never combine observed and forecast values in one claim.
 For web_source evidence, quote only the supplied excerpt, visibly include its exact URL in the claim, and describe it as an external source rather than internal data.
 Web numeric literals come only from web_quoted_numeric_literals and remain supplementary; they are never internal calculated values.
+For insight evidence, copy raw_text verbatim and visibly prefix it with "시스템 AI 인사이트에 따르면". Never summarize or reconstruct insight text.
+Insight evidence never authorizes numeric literals. If raw_text contains a number, do not create an insight claim from it.
 When web evidence declares conflicts_with_evidence_ids, cite both the web and internal evidence, state both values without averaging, and add a limitation that identifies the difference.
 When dashboard_tables are supplied and the question asks for analysis or a table, render each table as GitHub-flavored Markdown inside a cited claim; every table value remains subject to the same evidence and numeric checks.
 When some evidence is unavailable, keep claims supported by successful evidence and include every supplied failure limitation.
@@ -150,6 +153,11 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
             "source_grade",
             "search_stage",
             "conflicts_with_evidence_ids",
+            "raw_text",
+            "generated_by",
+            "target_market",
+            "target_brand",
+            "api_response_location",
         )
         if key in values and values.get(key) is not None
     }
@@ -171,7 +179,9 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
         "raw_result": raw_result,
         "missing_required_fields": list(fact.missing_required_fields),
         "allowed_numeric_literals": (
-            [] if isinstance(fact, WebSourceFact) else sorted(fact_numeric_literals(fact))
+            []
+            if isinstance(fact, WebSourceFact | InsightFact)
+            else sorted(fact_numeric_literals(fact))
         ),
         "web_quoted_numeric_literals": (
             sorted(web_source_numeric_literals(fact))
@@ -348,7 +358,7 @@ def canonical_numeric_literal(value: str) -> str:
 
 
 def fact_numeric_literals(fact: V3EvidenceFact) -> frozenset[str]:
-    if isinstance(fact, WebSourceFact):
+    if isinstance(fact, WebSourceFact | InsightFact):
         return frozenset()
     values: set[str] = set()
     _collect_semantic_numeric_values(fact.raw_result, values)
@@ -366,6 +376,8 @@ def fusion_web_excerpt(fact: WebSourceFact) -> str:
 
 
 def fact_period_literals(fact: V3EvidenceFact) -> frozenset[str]:
+    if isinstance(fact, InsightFact):
+        return frozenset()
     values: set[str] = set()
     for field in ("period", "effective_date", "last_checked", "last_update_posted"):
         _collect_period_values(getattr(fact, field, None), values)

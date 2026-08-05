@@ -297,5 +297,13 @@ def test_deep_analysis_projection_keeps_api_values_and_withholds_ai_prose() -> N
     )
     assert observed_table["rows"][0][4] == 120.0
     assert forecast_table["rows"][0][4] == 130.0
-    assert result["model_insight_status"] == "withheld_model_generated"
-    assert "매출이 성장" not in repr(result)
+    assert result["model_insight_status"] == "available_model_generated"
+    assert result["insight"] == {
+        "raw_text": "매출이 성장할 것입니다.",
+        "generated_by": "deep-analysis-api-llm",
+        "target_market": "C10A1",
+        "target_brand": "리바로",
+        "api_response_location": "data.ai_analysis",
+        "fetched_at_utc": result["insight"]["fetched_at_utc"],
+    }
+    assert str(result["insight"]["fetched_at_utc"]).endswith("Z")

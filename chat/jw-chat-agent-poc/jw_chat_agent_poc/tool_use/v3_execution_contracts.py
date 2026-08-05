@@ -134,6 +134,22 @@ class WebSourceFact:
     conflicts_with_evidence_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class InsightFact:
+    fact_type: ClassVar[str] = "insight"
+    evidence_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    raw_result: object
+    missing_required_fields: tuple[str, ...]
+    raw_text: str
+    generated_by: str
+    fetched_at_utc: str
+    target_market: str
+    target_brand: str
+    api_response_location: str
+
+
 V3EvidenceFact: TypeAlias = (
     MarketMetricFact
     | MarketDefinitionFact
@@ -141,6 +157,7 @@ V3EvidenceFact: TypeAlias = (
     | ClinicalTrialFact
     | FileCellFact
     | WebSourceFact
+    | InsightFact
 )
 
 
