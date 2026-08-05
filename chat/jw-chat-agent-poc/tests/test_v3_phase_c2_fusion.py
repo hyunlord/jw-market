@@ -9,6 +9,7 @@ import pytest
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
     MarketMetricFact,
+    RegulatoryRuleFact,
     ToolFailureRecord,
     V3EvidenceBundle,
     V3EvidenceFact,
@@ -146,6 +147,44 @@ def _population_fact(evidence_id: str = "fact-population") -> MarketMetricFact:
         unit="brand",
         view="general_view",
         market="S01P0",
+    )
+
+
+def _period_fact(
+    evidence_id: str,
+    *,
+    periods: tuple[str, ...],
+    value: object = 51.38,
+    metric: str = "share",
+) -> MarketMetricFact:
+    return MarketMetricFact(
+        evidence_id=evidence_id,
+        tool_name="market.get_timeseries",
+        arguments={"brand": "아일리아", "metric": metric},
+        raw_result={
+            "series": tuple(
+                {"period": period, "value": value} for period in periods
+            )
+        },
+        missing_required_fields=(),
+        entity="아일리아",
+        metric=metric,
+        period=periods[-1],
+        unit="%",
+        view="general_view",
+        market="S01P0",
+    )
+
+
+def _regulatory_date_fact(effective_date: str = "2019-06-07") -> RegulatoryRuleFact:
+    return RegulatoryRuleFact(
+        evidence_id="fact-regulatory-date",
+        tool_name="hira_reimbursement_criteria",
+        arguments={"query": "보험 인정기준"},
+        raw_result={"effective_date": effective_date, "product_count": 5},
+        missing_required_fields=(),
+        effective_date=effective_date,
+        last_checked="2026-08-05",
     )
 
 
@@ -445,7 +484,7 @@ def test_allowed_value_relabelled_to_another_korean_month_is_rejected() -> None:
 
     assert result.answer.claims == ()
     assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
-    assert result.audit.ungrounded_numeric_literals == ("2026", "04")
+    assert result.audit.ungrounded_numeric_literals == ("04",)
 
 
 def test_market_size_and_hhi_with_different_korean_months_remain_rejected() -> None:
@@ -488,6 +527,454 @@ def test_period_quarter_digit_cannot_supply_rank_evidence() -> None:
     assert result.answer.claims == ()
     assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
     assert result.audit.ungrounded_numeric_literals == ("1",)
+
+
+@pytest.mark.parametrize(
+    ("periods", "text"),
+    (
+        (("2026-05",), "2026년 기준 점유율은 51.38%입니다."),
+        (("2026-Q1",), "2026년 기준 점유율은 51.38%입니다."),
+    ),
+)
+def test_evidence_period_derives_korean_year_axis(
+    periods: tuple[str, ...],
+    text: str,
+) -> None:
+    fact = _period_fact("fact-derived-year", periods=periods)
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+@pytest.mark.parametrize(
+    "date_text",
+    ("2019년 6월 7일", "2019년 6월", "2019년"),
+)
+def test_effective_date_derives_korean_date_month_and_year(date_text: str) -> None:
+    fact = _regulatory_date_fact()
+    text = f"{date_text} 기준 적용 대상은 5개 품목입니다."
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_unique_bare_month_is_derived_from_evidence_periods() -> None:
+    fact = _period_fact("fact-unique-month", periods=("2023-07",))
+    text = "07월 점유율은 51.38%입니다."
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_ambiguous_bare_month_is_rejected_with_candidate_count() -> None:
+    fact = _period_fact(
+        "fact-ambiguous-month",
+        periods=("2023-07", "2024-07", "2025-07"),
+    )
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="07월 점유율은 51.38%입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == (
+        "ambiguous_period_month_candidates_3"
+    )
+
+
+def test_multiple_ambiguous_bare_months_preserve_all_candidate_counts() -> None:
+    fact = _period_fact(
+        "fact-multiple-ambiguous-months",
+        periods=("2023-07", "2024-07", "2025-07", "2023-08", "2024-08"),
+    )
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="07월과 08월 점유율은 51.38%입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == (
+        "ambiguous_period_month_candidates_2_3"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "2019년 점유율은 51.38%입니다.",
+        "2019년 6월 7일 점유율은 51.38%입니다.",
+    ),
+)
+def test_period_not_derived_from_evidence_remains_rejected(text: str) -> None:
+    fact = _period_fact("fact-other-period", periods=("2023-07", "2026-05"))
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
+
+
+def test_derived_year_cannot_supply_rank_evidence() -> None:
+    fact = _period_fact("fact-year-rank", periods=("2023-07",))
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="2023년: 아일리아 매출은 3위이고 점유율은 51.38%입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.ungrounded_numeric_literals == ("3",)
+
+
+def test_derived_full_date_cannot_supply_item_count_evidence() -> None:
+    fact = _regulatory_date_fact()
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="2019년 6월 7일 기준 적용 대상은 7개 품목입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.ungrounded_numeric_literals == ("7",)
+
+
+def test_hhi_annual_series_accepts_evidence_derived_year_labels() -> None:
+    fact = _period_fact(
+        "fact-hhi-series",
+        periods=("2023", "2024", "2025"),
+        value=262.4174,
+        metric="hhi",
+    )
+    fact = replace(
+        fact,
+        raw_result={
+            "render_data": {
+                "hhi_recent": 262.4174,
+                "hhi_period": "2025",
+                "hhi_series_5y": (
+                    {"period": "2023", "hhi": 281.4508},
+                    {"period": "2024", "hhi": 271.1722},
+                    {"period": "2025", "hhi": 262.4174},
+                ),
+            }
+        },
+    )
+    text = (
+        "연도별 HHI는 2023년 281.4508, 2024년 271.1722, "
+        "2025년 262.4174입니다."
+    )
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_hhi_annual_series_rejects_value_without_its_period_label() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-series-missing-period",
+            periods=("2023", "2024"),
+            value=271.1722,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 271.1722,
+                "hhi_period": "2024",
+                "hhi_series_5y": (
+                    {"period": "2023", "hhi": 281.4508},
+                    {"period": "2024", "hhi": 271.1722},
+                ),
+            }
+        },
+    )
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="HHI는 2023년 281.4508, 이어서 271.1722입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "hhi_period_missing"
+
+
+def test_hhi_annual_series_rejects_values_swapped_between_period_labels() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-series-swapped",
+            periods=("2023", "2024"),
+            value=271.1722,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 271.1722,
+                "hhi_period": "2024",
+                "hhi_series_5y": (
+                    {"period": "2023", "hhi": 281.4508},
+                    {"period": "2024", "hhi": 271.1722},
+                ),
+            }
+        },
+    )
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="HHI는 2023년 271.1722, 2024년 281.4508입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "hhi_period_missing"
+
+
+def test_hhi_annual_series_accepts_duplicate_value_bound_to_explicit_period() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-series-duplicate-value",
+            periods=("2023", "2024"),
+            value=271.1722,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 271.1722,
+                "hhi_period": "2024",
+                "hhi_series_5y": (
+                    {"period": "2023", "hhi": 271.1722},
+                    {"period": "2024", "hhi": 271.1722},
+                ),
+            }
+        },
+    )
+    text = "2024년 HHI는 271.1722입니다."
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_hhi_annual_series_rejects_one_value_claimed_for_mismatched_periods() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-series-grouped-wrong",
+            periods=("2023", "2024"),
+            value=271.1722,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 271.1722,
+                "hhi_period": "2024",
+                "hhi_series_5y": (
+                    {"period": "2023", "hhi": 281.4508},
+                    {"period": "2024", "hhi": 271.1722},
+                ),
+            }
+        },
+    )
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="2023년과 2024년 HHI는 271.1722입니다.",
+                    evidence_ids=(fact.evidence_id,),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "hhi_period_missing"
+
+
+def test_hhi_annual_series_accepts_respectively_ordered_period_value_lists() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-series-respectively",
+            periods=("2023", "2024"),
+            value=271.1722,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 271.1722,
+                "hhi_period": "2024",
+                "hhi_series_5y": (
+                    {"period": "2023", "hhi": 281.4508},
+                    {"period": "2024", "hhi": 271.1722},
+                ),
+            }
+        },
+    )
+    text = "2023년과 2024년 HHI는 각각 281.4508과 271.1722입니다."
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_hhi_monthly_series_prefers_specific_month_spans_over_shared_year() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-monthly-respectively",
+            periods=("2026-04", "2026-05"),
+            value=263.6207,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 263.6207,
+                "hhi_period": "2026-05",
+                "hhi_series_5y": (
+                    {"period": "2026-04", "hhi": 253.6207},
+                    {"period": "2026-05", "hhi": 263.6207},
+                ),
+            }
+        },
+    )
+    text = "2026년 04월과 2026년 05월 HHI는 각각 253.6207과 263.6207입니다."
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
+
+
+def test_hhi_monthly_series_accepts_uniquely_resolved_bare_month() -> None:
+    fact = replace(
+        _period_fact(
+            "fact-hhi-monthly-bare-month",
+            periods=("2026-04", "2026-05"),
+            value=263.6207,
+            metric="hhi",
+        ),
+        raw_result={
+            "render_data": {
+                "hhi_recent": 263.6207,
+                "hhi_period": "2026-05",
+                "hhi_series_5y": (
+                    {"period": "2026-04", "hhi": 253.6207},
+                    {"period": "2026-05", "hhi": 263.6207},
+                ),
+            }
+        },
+    )
+    text = "2026년 04월과 05월 HHI는 각각 253.6207과 263.6207입니다."
+
+    result = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(text=text, evidence_ids=(fact.evidence_id,)),
+            )
+        ),
+        _bundle(fact),
+    )
+
+    assert [claim.text for claim in result.answer.claims] == [text]
 
 
 def test_active_member_count_cannot_be_labeled_as_full_population() -> None:

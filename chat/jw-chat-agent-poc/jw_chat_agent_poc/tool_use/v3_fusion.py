@@ -33,6 +33,7 @@ from jw_chat_agent_poc.tool_use.v3_fusion_semantics import (
     claim_semantic_rejection,
     ordered_unique,
     period_numeric_spans,
+    period_span_resolution,
 )
 
 
@@ -134,19 +135,43 @@ def validate_fusion_answer(
         allowed = set().union(
             *(fact_numeric_literals(facts[evidence_id]) for evidence_id in claim.evidence_ids)
         )
-        period_spans = period_numeric_spans(claim.text, cited_facts)
-        unsupported = tuple(
-            literal
+        period_resolution = period_span_resolution(claim.text, cited_facts)
+        unsupported_spans = tuple(
+            (literal, start, end)
             for literal, start, end in observed_number_spans
-            if not any(span_start <= start and end <= span_end for span_start, span_end in period_spans)
+            if not any(
+                span_start <= start and end <= span_end
+                for span_start, span_end in period_resolution.spans
+            )
             and canonical_numeric_literal(literal) not in allowed
         )
+        unsupported = tuple(literal for literal, _, _ in unsupported_spans)
         if unsupported:
+            ambiguity_reasons = tuple(
+                reason
+                for _, start, end in unsupported_spans
+                if (reason := period_resolution.ambiguity_reason_for(start, end))
+                is not None
+            )
+            if ambiguity_reasons and len(ambiguity_reasons) == len(unsupported_spans):
+                candidate_counts = sorted(
+                    {
+                        reason.rsplit("_", 1)[-1]
+                        for reason in ambiguity_reasons
+                    },
+                    key=int,
+                )
+                rejection_reason = (
+                    "ambiguous_period_month_candidates_"
+                    + "_".join(candidate_counts)
+                )
+            else:
+                rejection_reason = "ungrounded_numeric_literal"
             rejected.append(
                 RejectedFusionClaim(
                     text=claim.text,
                     evidence_ids=claim.evidence_ids,
-                    reason="ungrounded_numeric_literal",
+                    reason=rejection_reason,
                     numeric_literals=unsupported,
                 )
             )
