@@ -97,6 +97,23 @@ LEFT JOIN (
 ) s ON s.`uid` = o.`session_id`;
 
 CREATE OR REPLACE SQL SECURITY DEFINER VIEW
+    `jw_market_audit_stage`.`dashboard_chat_turn_detail_v` AS
+SELECT
+    COALESCE(o.`trace_id`, CONCAT('conversation-log:', c.`id`)) AS `detail_key`,
+    c.`question_text`,
+    c.`answer_text`
+FROM `jw_mart`.`jw_chat_agent_conversation_log` c
+LEFT JOIN `jw_mart`.`jw_chat_agent_history_projection_outbox` o
+    ON o.`source_log_id` = c.`id` AND o.`projection_version` = 1
+UNION ALL
+SELECT
+    r.`trace_id` AS `detail_key`,
+    r.`question_text`,
+    r.`answer_text`
+FROM `jw_mart`.`rnd_trace_conversation_log` r
+WHERE r.`source_system` = 'genos_monitoring' AND r.`service_id` = 61;
+
+CREATE OR REPLACE SQL SECURITY DEFINER VIEW
     `jw_market_audit_stage`.`dashboard_user_directory_v` AS
 SELECT `id`, `user_id`, `name`, `department`, `group_name`
 FROM `llmops`.`user_tb`
@@ -121,6 +138,8 @@ GRANT SELECT ON `jw_market_audit_stage`.`dashboard_api_usage_v`
 GRANT SELECT ON `jw_market_audit_stage`.`dashboard_report_download_v`
     TO 'jw_market_audit_reader_stage'@'10.%';
 GRANT SELECT ON `jw_market_audit_stage`.`dashboard_chat_usage_v`
+    TO 'jw_market_audit_reader_stage'@'10.%';
+GRANT SELECT ON `jw_market_audit_stage`.`dashboard_chat_turn_detail_v`
     TO 'jw_market_audit_reader_stage'@'10.%';
 GRANT SELECT ON `jw_market_audit_stage`.`dashboard_auth_event_v`
     TO 'jw_market_audit_reader_stage'@'10.%';
