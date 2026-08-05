@@ -67,8 +67,8 @@ def test_selector_exposes_all_catalog_tools_and_only_reorders_candidates() -> No
     result = selector.select("리바로 최근 매출 추이")
 
     expected_names = tuple(record.name for record in TOOL_DESCRIPTION_CATALOG)
-    assert len(expected_names) == 33
-    assert len(result.candidate_names) == 33
+    assert len(expected_names) == 34
+    assert len(result.candidate_names) == 34
     assert set(result.candidate_names) == set(expected_names)
     assert result.candidate_names[0].startswith("market.")
     assert len(provider.calls) == 1
@@ -459,4 +459,4 @@ def test_shadow_event_is_json_serializable() -> None:
     selector = V3ToolSelector(provider=_CapturingProvider(()))
     payload = run_v3_selection_shadow_once("도구가 필요한가?", selector=selector)
 
-    assert json.loads(json.dumps(payload, ensure_ascii=False))["candidate_count"] == 33
+    assert json.loads(json.dumps(payload, ensure_ascii=False))["candidate_count"] == 34

@@ -18,6 +18,10 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
         MarketScopeCatalogBackend,
         ScopeResolver,
     )
+    from jw_chat_agent_poc.tool_use.market_definition_registry import (
+        MariaDbMarketDefinitionCatalogReader,
+        MarketDefinitionRegistry,
+    )
     from jw_chat_agent_poc.tool_use.registry import ExternalToolRegistry
     from jw_chat_agent_poc.service.general_view_routing import GeneralViewService
     from jw_chat_agent_poc.tools.general_view_backend import GeneralViewBackend
@@ -63,6 +67,9 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
             dependencies.query_layer,
             scope_resolver,
             general_backend,
+        ),
+        definition_registry=MarketDefinitionRegistry(
+            MariaDbMarketDefinitionCatalogReader()
         ),
     )
     return V3ShadowToolExecutor(

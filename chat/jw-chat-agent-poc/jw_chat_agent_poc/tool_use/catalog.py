@@ -313,6 +313,15 @@ INTERNAL_TOOL_DESCRIPTION_CATALOG: tuple[ToolDescriptionRecord, ...] = (
         selection_enabled=False,
     ),
     _record(
+        "market.get_definition",
+        "기존 시장 카탈로그에서 일반뷰 또는 전략뷰의 정의와 브랜드 포함 조건을 조회한다. when to use: ATC4 일반뷰 정의, market_landscape·competitive_dynamics 전략뷰 구성, 브랜드가 정의 조건에 포함되는지 확인, 사유 질문에서 기록된 정의와 선정 사유 부재를 구분. when NOT to use: 시장 선정 사유나 의사결정 배경 추론.",
+        not_for=("시장 선정 사유 추론", "정의 변경의 조직적 의사결정 배경"),
+        constraints=("일반뷰는 ATC4 단일 코드 기준이며 market_landscape와 competitive_dynamics는 모두 전략뷰임", "런타임 카탈로그에 실제 기록된 조건만 반환함"),
+        does_not_return=("시장 선정 사유", "의사결정 배경", "기록되지 않은 분류 이유"),
+        examples=("악템라 시장은 어떻게 정의돼?", "competitive_dynamics는 market_landscape에서 무엇이 달라?", "왜 전략시장을 골랐나? 선정 사유 미기록 여부 확인"),
+        selection_enabled=False,
+    ),
+    _record(
         "file.get_schema",
         "세션 업로드 파일의 스키마 조회. when to use: 시트·컬럼 구조를 먼저 확인. when NOT to use: 셀 값이나 집계 결과 조회.",
         not_for=("셀 값 조회", "집계 결과 조회"),

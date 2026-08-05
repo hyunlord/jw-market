@@ -14,7 +14,7 @@ from jw_chat_agent_poc.tool_use.internal_adapters import (
 
 
 EXTERNAL_TOOL_COUNT = 23
-INTERNAL_TOOL_NAMES = {
+LEGACY_INTERNAL_TOOL_NAMES = {
     "market.get_brand_metric",
     "market.get_market_size",
     "market.get_market_members",
@@ -26,6 +26,7 @@ INTERNAL_TOOL_NAMES = {
     "file.get_schema",
     "file.query",
 }
+INTERNAL_TOOL_NAMES = LEGACY_INTERNAL_TOOL_NAMES | {"market.get_definition"}
 ACTIVE_DESCRIPTION_SHA256 = "0549804803f1b6667592d08a1b8921bbcac24d3c3df42d44f5682ca43ea991f3"
 
 
@@ -210,7 +211,7 @@ def test_internal_adapters_delegate_to_existing_implementations_without_transfor
 
     results = {
         name: registry.execute(name, arguments)
-        for name in sorted(INTERNAL_TOOL_NAMES)
+        for name in sorted(LEGACY_INTERNAL_TOOL_NAMES)
     }
 
     assert registry.names() == tuple(sorted(INTERNAL_TOOL_NAMES))

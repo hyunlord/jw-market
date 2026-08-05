@@ -83,6 +83,14 @@ class MarketComparisonInput(_MarketSelectionInput):
     metric: str = "series"
 
 
+class MarketDefinitionInput(_SelectionInput):
+    market_id: str | None = None
+    brand: str | None = None
+    atc4: str | None = None
+    view: Literal["general", "market_landscape", "competitive_dynamics"] | None = None
+    scope: MarketScopeSpecInput | None = None
+
+
 class FileSourceInput(_SelectionInput):
     logical_name: str
     file_name: str
@@ -180,6 +188,7 @@ _INTERNAL_INPUT_MODELS: dict[str, type[BaseModel]] = {
     "market.get_hhi": MarketDerivedMetricInput,
     "market.get_growth_contribution": MarketDerivedMetricInput,
     "market.compare_brands": MarketComparisonInput,
+    "market.get_definition": MarketDefinitionInput,
     "file.get_schema": FileSchemaInput,
     "file.query": FileQueryInput,
 }

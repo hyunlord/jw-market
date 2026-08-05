@@ -11,6 +11,9 @@ from jw_chat_agent_poc.service.file_sql_query import (
     query_uploaded_sql,
 )
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
+from jw_chat_agent_poc.tool_use.market_definition_registry import (
+    MarketDefinitionRegistry,
+)
 
 
 CatalogToolResult: TypeAlias = dict[str, Any] | tuple[str, ...] | SqlQueryOutcome
@@ -99,9 +102,11 @@ class InternalToolAdapterRegistry:
         self,
         *,
         market_layer: MarketCatalogBackend | StrategicQueryLayer,
+        definition_registry: MarketDefinitionRegistry | None = None,
         file_backend: FileCatalogBackend | None = None,
     ) -> None:
         self._market = market_layer
+        self._definitions = definition_registry
         self._files = file_backend or ExistingFileCatalogBackend()
         self._adapters = {
             adapter.name: adapter
@@ -117,6 +122,7 @@ class InternalToolAdapterRegistry:
                     self._growth_contribution,
                 ),
                 InternalToolAdapter("market.compare_brands", self._compare_brands),
+                InternalToolAdapter("market.get_definition", self._market_definition),
                 InternalToolAdapter("file.get_schema", self._file_schema),
                 InternalToolAdapter("file.query", self._file_query),
             )
@@ -126,6 +132,8 @@ class InternalToolAdapterRegistry:
         return tuple(sorted(self._adapters))
 
     def execute(self, name: str, arguments: CatalogArguments) -> CatalogToolResult:
+        if name == "market.get_definition":
+            return self._adapters[name].execute(arguments)
         scoped_execute = getattr(self._market, "execute_catalog_tool", None)
         if name.startswith("market.") and callable(scoped_execute):
             return cast(CatalogToolResult, scoped_execute(name, arguments))
@@ -205,6 +213,11 @@ class InternalToolAdapterRegistry:
             market=_optional_text(arguments, "market"),
             metric=_text(arguments, "metric", "series"),
         )
+
+    def _market_definition(self, arguments: CatalogArguments) -> dict[str, Any]:
+        if self._definitions is None:
+            raise RuntimeError("market definition registry is not configured")
+        return self._definitions.get_definition(arguments)
 
     def _file_schema(self, arguments: CatalogArguments) -> tuple[str, ...]:
         return self._files.get_schema(

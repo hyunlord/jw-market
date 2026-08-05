@@ -7,6 +7,7 @@ from jw_chat_agent_poc.tool_use.contracts import ToolEnvelope
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
     FileCellFact,
+    MarketDefinitionFact,
     MarketMetricFact,
     RegulatoryRuleFact,
     ToolExecutionRecord,
@@ -44,6 +45,35 @@ def convert_execution(
 
     evidence_id = _evidence_id(record.tool_name, record.arguments)
     raw = _raw_payload(record.raw_result)
+    if record.tool_name == "market.get_definition":
+        payload = raw if isinstance(raw, Mapping) else {}
+        market_id = payload.get("market_identifier")
+        view = payload.get("view_name")
+        statements = payload.get("definition_statements")
+        definition_statements = (
+            tuple(str(item) for item in statements)
+            if isinstance(statements, Sequence) and not isinstance(statements, (str, bytes))
+            else ()
+        )
+        missing = tuple(
+            field
+            for field, value in (
+                ("market_id", market_id),
+                ("view", view),
+                ("definition_statements", definition_statements),
+            )
+            if value in (None, "", ())
+        )
+        return MarketDefinitionFact(
+            evidence_id=evidence_id,
+            tool_name=record.tool_name,
+            arguments=record.arguments,
+            raw_result=record.raw_result,
+            missing_required_fields=missing,
+            market_id=market_id,
+            view=view,
+            definition_statements=definition_statements,
+        ), None, None
     if domain == "market":
         projection = project_market_fact(record.tool_name, record.arguments, raw)
         return MarketMetricFact(

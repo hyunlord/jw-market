@@ -8,6 +8,7 @@ import re
 
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
+    MarketDefinitionFact,
     RegulatoryRuleFact,
     ToolFailureRecord,
     V3EvidenceBundle,
@@ -68,6 +69,8 @@ evidence_id는 supplied evidence 목록의 값을 그대로 복사하고 새로 
 Copy numeric literals exactly from allowed_numeric_literals of the cited evidence; never calculate, estimate, round, interpolate, or convert units.
 Copy periods from allowed_periods exactly, or use their direct Korean year/month/quarter notation.
 Use only supplied evidence values. Write natural Korean around them without changing values.
+For market_definition evidence, copy definition_statements without summarizing or reconstructing their meaning.
+Definition facts describe what is recorded; never turn them into a reason for market selection, classification, or an undocumented decision.
 Keep member_population (the full mart-observed universe), active_members (positive value in a named period), and display_members (the UI projection) distinct. State the layer whenever describing brand counts or lists.
 Every HHI claim must state its supplied period. Do not combine market size and HHI from different periods in one claim.
 For web_source evidence, quote only the supplied excerpt, visibly include its exact URL in the claim, and describe it as an external source rather than internal data.
@@ -126,6 +129,8 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
             "unit",
             "view",
             "market",
+            "market_id",
+            "definition_statements",
             "effective_date",
             "last_checked",
             "status",
@@ -239,6 +244,12 @@ def _without_nested_evidence(raw_result: object) -> object:
 
 def _fusion_prompt_raw_result(fact: V3EvidenceFact) -> object:
     raw_result = _without_nested_evidence(fact.raw_result)
+    if isinstance(fact, MarketDefinitionFact):
+        if not isinstance(raw_result, Mapping):
+            return {}
+        return {
+            "selection_rationale": raw_result.get("selection_rationale"),
+        }
     if fact.tool_name not in _REDUNDANT_MARKET_RENDER_TOOLS:
         return raw_result
     if not isinstance(raw_result, Mapping):

@@ -59,6 +59,19 @@ class MarketMetricFact:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketDefinitionFact:
+    fact_type: ClassVar[str] = "market_definition"
+    evidence_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    raw_result: object
+    missing_required_fields: tuple[str, ...]
+    market_id: object | None = None
+    view: object | None = None
+    definition_statements: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RegulatoryRuleFact:
     fact_type: ClassVar[str] = "regulatory_rule"
     evidence_id: str
@@ -123,6 +136,7 @@ class WebSourceFact:
 
 V3EvidenceFact: TypeAlias = (
     MarketMetricFact
+    | MarketDefinitionFact
     | RegulatoryRuleFact
     | ClinicalTrialFact
     | FileCellFact
