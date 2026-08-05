@@ -52,6 +52,19 @@ def claim_semantic_rejection(
     market_facts = tuple(
         fact for fact in cited_facts if isinstance(fact, MarketMetricFact)
     )
+    value_kinds = {
+        kind
+        for fact in market_facts
+        for kind in _value_kinds(fact.raw_result)
+    }
+    if "observed" in value_kinds and "system_forecast" in value_kinds:
+        return "observed_forecast_mixed_claim"
+    if "system_forecast" in value_kinds and "시스템 예측" not in text:
+        return "forecast_label_missing"
+    if "system_simulation" in value_kinds and not any(
+        label in text for label in ("시스템 시뮬레이션", "사전 계산 시뮬레이션")
+    ):
+        return "simulation_label_missing"
     hhi_periods = ordered_unique(
         period
         for fact in market_facts
@@ -447,6 +460,21 @@ def _object_mapping(value: object) -> Mapping[str, object]:
         dumped = value.model_dump()
         return dumped if isinstance(dumped, Mapping) else {}
     return value if isinstance(value, Mapping) else {}
+
+
+def _value_kinds(value: object) -> tuple[str, ...]:
+    if isinstance(value, Mapping):
+        kinds = (
+            (str(value["value_kind"]),)
+            if isinstance(value.get("value_kind"), str)
+            else ()
+        )
+        return kinds + tuple(
+            kind for item in value.values() for kind in _value_kinds(item)
+        )
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        return tuple(kind for item in value for kind in _value_kinds(item))
+    return ()
 
 
 __all__ = [

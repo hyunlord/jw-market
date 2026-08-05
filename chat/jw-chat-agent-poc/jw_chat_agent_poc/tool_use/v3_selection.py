@@ -91,6 +91,13 @@ class MarketDefinitionInput(_SelectionInput):
     scope: MarketScopeSpecInput | None = None
 
 
+class MarketDeepAnalysisInput(_MarketSelectionInput):
+    brand: str
+    view_kind: Literal["general", "strategic_ml", "strategic_cd"]
+    market_id: str
+    source: Literal["ubist", "iqvia"]
+
+
 class FileSourceInput(_SelectionInput):
     logical_name: str
     file_name: str
@@ -189,6 +196,7 @@ _INTERNAL_INPUT_MODELS: dict[str, type[BaseModel]] = {
     "market.get_growth_contribution": MarketDerivedMetricInput,
     "market.compare_brands": MarketComparisonInput,
     "market.get_definition": MarketDefinitionInput,
+    "market.get_deep_analysis": MarketDeepAnalysisInput,
     "file.get_schema": FileSchemaInput,
     "file.query": FileQueryInput,
 }

@@ -26,7 +26,10 @@ LEGACY_INTERNAL_TOOL_NAMES = {
     "file.get_schema",
     "file.query",
 }
-INTERNAL_TOOL_NAMES = LEGACY_INTERNAL_TOOL_NAMES | {"market.get_definition"}
+INTERNAL_TOOL_NAMES = LEGACY_INTERNAL_TOOL_NAMES | {
+    "market.get_definition",
+    "market.get_deep_analysis",
+}
 ACTIVE_DESCRIPTION_SHA256 = "0549804803f1b6667592d08a1b8921bbcac24d3c3df42d44f5682ca43ea991f3"
 
 

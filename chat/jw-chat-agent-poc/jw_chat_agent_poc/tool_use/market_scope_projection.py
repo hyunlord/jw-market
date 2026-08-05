@@ -213,7 +213,15 @@ def _general_base(
         "market_basis": market.market_basis,
         "atc4_codes": atc4_codes,
         "scope_filters": market.scope_filters,
-        "dashboard_tables": market.dashboard_tables,
+        "dashboard_tables": (*market.dashboard_tables, *_series_dashboard_tables(market)),
+        "market_growth_series": market.market_growth_series,
+        "hhi_series_5y": tuple(
+            {"period": period, "hhi": rounded_hhi(value)}
+            for period, value in market.hhi_series
+        ),
+        "brand_ranking_stacked": market.market_share_trajectory,
+        "company_ranking_stacked": market.company_ranking_series,
+        "target_customer_competition_by_channel": market.customer_competition_trend,
         "source_label": market.source,
         "selected_data_path": market.selected_data_path,
         "scope_trace": trace,
@@ -241,3 +249,115 @@ def _general_unit(market: GeneralMarket, metric: str) -> str:
     if normalized == "hhi":
         return "index"
     return market.unit
+
+
+def _series_dashboard_tables(market: GeneralMarket) -> tuple[dict[str, object], ...]:
+    tables: list[dict[str, object]] = []
+    growth_by_period = {
+        str(row.get("period")): _first_present(
+            row,
+            "yoy_growth_pct",
+            "growth_pct",
+        )
+        for row in market.market_growth_series
+        if row.get("period") is not None
+    }
+    if market.market_size_series:
+        tables.append(
+            {
+                "name": "시장 규모 및 성장 추이",
+                "columns": ("기간", "시장 규모", "성장률(%)", "단위"),
+                "rows": tuple(
+                    (period, value, growth_by_period.get(period), market.unit)
+                    for period, value in market.market_size_series
+                ),
+            }
+        )
+    if market.hhi_series:
+        tables.append(
+            {
+                "name": "HHI 추이",
+                "columns": ("기간", "HHI"),
+                "rows": tuple(
+                    (period, rounded_hhi(value)) for period, value in market.hhi_series
+                ),
+            }
+        )
+    if market.market_share_trajectory:
+        tables.append(
+            {
+                "name": "브랜드 점유율 및 순위 추이",
+                "columns": ("기간", "브랜드", "점유율(%)", "순위"),
+                "rows": tuple(
+                    (
+                        row.get("period"),
+                        row.get("brand") or row.get("brand_name"),
+                        _first_present(row, "ms", "share_pct"),
+                        row.get("rank"),
+                    )
+                    for row in market.market_share_trajectory
+                ),
+            }
+        )
+    if market.company_ranking_series:
+        tables.append(
+            {
+                "name": "회사 경쟁 순위 추이",
+                "columns": ("기간", "회사", "점유율(%)", "순위"),
+                "rows": tuple(
+                    (
+                        row.get("period"),
+                        row.get("company") or row.get("company_name"),
+                        _first_present(row, "ms", "share_pct"),
+                        row.get("rank"),
+                    )
+                    for row in market.company_ranking_series
+                ),
+            }
+        )
+    customer_rows = _customer_trend_rows(market.customer_competition_trend)
+    if customer_rows:
+        tables.append(
+            {
+                "name": "Top5 고객 경쟁 추이",
+                "columns": ("고객군", "기간", "브랜드", "값", "점유율(%)", "순위"),
+                "rows": customer_rows,
+            }
+        )
+    return tuple(tables)
+
+
+def _first_present(row: dict[str, object], *keys: str) -> object | None:
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+    return None
+
+
+def _customer_trend_rows(value: dict[str, object] | None) -> tuple[tuple[object, ...], ...]:
+    if value is None or not isinstance(value.get("views"), list):
+        return ()
+    rows: list[tuple[object, ...]] = []
+    for view in value["views"]:
+        if not isinstance(view, dict):
+            continue
+        periods = view.get("periods") if isinstance(view.get("periods"), list) else []
+        brands = view.get("trend_brands") if isinstance(view.get("trend_brands"), list) else []
+        for brand in brands:
+            if not isinstance(brand, dict):
+                continue
+            values = brand.get("value_series") if isinstance(brand.get("value_series"), list) else []
+            shares = brand.get("ms_series") if isinstance(brand.get("ms_series"), list) else []
+            ranks = brand.get("rank_series") if isinstance(brand.get("rank_series"), list) else []
+            rows.extend(
+                (
+                    view.get("target_name"),
+                    period,
+                    brand.get("brand"),
+                    values[index] if index < len(values) else None,
+                    shares[index] if index < len(shares) else None,
+                    ranks[index] if index < len(ranks) else None,
+                )
+                for index, period in enumerate(periods)
+            )
+    return tuple(rows)

@@ -102,7 +102,7 @@ def _registry() -> MarketDefinitionRegistry:
 def test_catalog_adds_one_real_definition_tool_with_rationale_boundary() -> None:
     records = {record.name: record for record in TOOL_DESCRIPTION_CATALOG}
 
-    assert len(records) == 34
+    assert len(records) == 35
     definition = records["market.get_definition"]
     assert definition.selection_enabled is False
     assert definition.examples

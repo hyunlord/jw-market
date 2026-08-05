@@ -32,6 +32,7 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
     from jw_chat_agent_poc.tools.general_view_membership import (
         shared_general_membership_cache,
     )
+    from jw_chat_agent_poc.tools.deep_analysis_backend import DeepAnalysisBackend
 
     dependencies = build_agent_loop_dependencies(external_mode="live")
     if dependencies.query_layer is None:
@@ -71,6 +72,7 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
         definition_registry=MarketDefinitionRegistry(
             MariaDbMarketDefinitionCatalogReader()
         ),
+        deep_analysis_backend=DeepAnalysisBackend(),
     )
     return V3ShadowToolExecutor(
         tools=(

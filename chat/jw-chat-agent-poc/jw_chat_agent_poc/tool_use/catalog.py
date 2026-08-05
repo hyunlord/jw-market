@@ -322,6 +322,15 @@ INTERNAL_TOOL_DESCRIPTION_CATALOG: tuple[ToolDescriptionRecord, ...] = (
         selection_enabled=False,
     ),
     _record(
+        "market.get_deep_analysis",
+        "기존 심층분석 API의 시스템 예측·시뮬레이션·브랜드 프로파일을 조회한다. when to use: 브랜드 매출/처방량 예측, 사전 계산된 시뮬레이션, 브랜드 프로파일링. when NOT to use: 실적 조회, 임의 추세 외삽, 일반 복합시장 분석.",
+        not_for=("과거 실적 단독 조회", "LLM의 임의 추세 외삽", "general_composite scope"),
+        constraints=("general·strategic_ml·strategic_cd 중 하나와 해당 market_id·source가 필요함", "예측·시뮬레이션 값은 시스템 예측으로 명시해야 함"),
+        does_not_return=("의사결정 배경", "모델 예측의 근거·가정", "AI 인사이트를 사실로 확정한 결과"),
+        examples=("리바로 시스템 예측 매출", "아일리아 사전 계산 시뮬레이션", "리바로 브랜드 프로파일링"),
+        selection_enabled=False,
+    ),
+    _record(
         "file.get_schema",
         "세션 업로드 파일의 스키마 조회. when to use: 시트·컬럼 구조를 먼저 확인. when NOT to use: 셀 값이나 집계 결과 조회.",
         not_for=("셀 값 조회", "집계 결과 조회"),

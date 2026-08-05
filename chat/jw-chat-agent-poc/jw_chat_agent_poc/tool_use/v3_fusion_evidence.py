@@ -73,6 +73,7 @@ For market_definition evidence, copy definition_statements without summarizing o
 Definition facts describe what is recorded; never turn them into a reason for market selection, classification, or an undocumented decision.
 Keep member_population (the full mart-observed universe), active_members (positive value in a named period), and display_members (the UI projection) distinct. State the layer whenever describing brand counts or lists.
 Every HHI claim must state its supplied period. Do not combine market size and HHI from different periods in one claim.
+Values marked system_forecast must be described as 시스템 예측, and values marked system_simulation must be described as 시스템 시뮬레이션. Never combine observed and forecast values in one claim.
 For web_source evidence, quote only the supplied excerpt, visibly include its exact URL in the claim, and describe it as an external source rather than internal data.
 Web numeric literals come only from web_quoted_numeric_literals and remain supplementary; they are never internal calculated values.
 When web evidence declares conflicts_with_evidence_ids, cite both the web and internal evidence, state both values without averaging, and add a limitation that identifies the difference.

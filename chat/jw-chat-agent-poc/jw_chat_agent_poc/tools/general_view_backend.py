@@ -73,6 +73,11 @@ class GeneralMarket:
     scope_filters: tuple[tuple[str, tuple[str, ...]], ...] = ()
     dashboard_tables: tuple[dict[str, object], ...] = ()
     growth_contribution: dict[str, object] | None = None
+    market_growth_series: tuple[dict[str, object], ...] = ()
+    hhi_series: tuple[tuple[str, float], ...] = ()
+    market_share_trajectory: tuple[dict[str, object], ...] = ()
+    company_ranking_series: tuple[dict[str, object], ...] = ()
+    customer_competition_trend: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -280,6 +285,7 @@ def parse_general_market_response(
     elif isinstance(series, dict) and series:
         period = sorted(str(value) for value in series)[-1]
     hhi_recent = _hhi_for_period(data.get("hhi_series_5y"), period)
+    hhi_series = _period_value_series(data.get("hhi_series_5y"), "hhi")
 
     matrix = data.get("ei_ms_matrix") if isinstance(data.get("ei_ms_matrix"), dict) else {}
     current_rows = matrix.get("data")
@@ -323,6 +329,21 @@ def parse_general_market_response(
         or market_meta.get("market_name")
         or f"ATC4 {requested_atc4.upper()}"
     )
+    market_growth_series = _mapping_rows(
+        data.get("market_yoy_series")
+        or source_data.get("market_yoy_series")
+        or source_data.get("market_size_series")
+    )
+    market_share_trajectory = _ranking_rows(
+        data.get("brand_ranking_stacked"), label_key="brand"
+    )
+    company_ranking_series = _ranking_rows(
+        data.get("company_ranking_stacked"), label_key="company"
+    )
+    customer_competition = data.get("target_customer_competition_by_channel")
+    customer_competition_trend = (
+        dict(customer_competition) if isinstance(customer_competition, dict) else None
+    )
     return GeneralMarket(
         view_type="general_view",
         market_basis="ATC4",
@@ -356,6 +377,11 @@ def parse_general_market_response(
         hhi_recent=hhi_recent,
         market_size_period=period if period != "latest" else None,
         hhi_period=period if hhi_recent is not None and period != "latest" else None,
+        market_growth_series=market_growth_series,
+        hhi_series=hhi_series,
+        market_share_trajectory=market_share_trajectory,
+        company_ranking_series=company_ranking_series,
+        customer_competition_trend=customer_competition_trend,
     )
 
 
@@ -609,10 +635,67 @@ def _hhi_for_period(value: object, period: str) -> float | None:
     if isinstance(value, dict):
         return _as_float(value.get(period))
     if isinstance(value, list):
-        for row in value:
-            if isinstance(row, dict) and str(row.get("period") or "") == period:
-                return _first_float(row, "hhi", "value")
+        for item in value:
+            if isinstance(item, dict) and str(item.get("period") or "") == period:
+                raw = item.get("hhi") if "hhi" in item else item.get("value")
+                return _as_float(raw)
     return None
+
+
+def _period_value_series(value: object, field: str) -> tuple[tuple[str, float], ...]:
+    if isinstance(value, dict):
+        return tuple(
+            (str(period), float(item))
+            for period, item in value.items()
+            if isinstance(item, int | float)
+        )
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        (str(item["period"]), float(item[field] if field in item else item["value"]))
+        for item in value
+        if isinstance(item, dict)
+        and item.get("period") is not None
+        and isinstance(item.get(field) if field in item else item.get("value"), int | float)
+    )
+
+
+def _mapping_rows(value: object) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(dict(item) for item in value if isinstance(item, dict))
+
+
+def _ranking_rows(
+    value: object,
+    *,
+    label_key: str,
+) -> tuple[dict[str, object], ...]:
+    if isinstance(value, list):
+        return _mapping_rows(value)
+    if not isinstance(value, dict) or not isinstance(value.get("yearly"), list):
+        return ()
+    rows: list[dict[str, object]] = []
+    for yearly in value["yearly"]:
+        if not isinstance(yearly, dict) or not isinstance(yearly.get("rankings"), list):
+            continue
+        period = yearly.get("year")
+        for ranking in yearly["rankings"]:
+            if not isinstance(ranking, dict):
+                continue
+            label = ranking.get(label_key) or ranking.get(f"{label_key}_name")
+            if not label:
+                continue
+            rows.append(
+                {
+                    "period": str(period) if period is not None else None,
+                    label_key: label,
+                    "value": ranking.get("value"),
+                    "ms": ranking.get("ms_pct"),
+                    "rank": ranking.get("rank"),
+                }
+            )
+    return tuple(rows)
 
 
 def _latest_ranked_members(value: object) -> tuple[TopBrand, ...]:

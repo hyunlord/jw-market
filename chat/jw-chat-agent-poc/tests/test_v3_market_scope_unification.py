@@ -263,7 +263,7 @@ def test_scope_failures_remain_typed(
 def test_scope_contract_is_additive_to_all_market_selection_schemas() -> None:
     market_specs = [spec for spec in selection_tool_specs() if spec.name.startswith("market.")]
 
-    assert len(market_specs) == 9
+    assert len(market_specs) == 10
     for spec in market_specs:
         properties = spec.input_model.model_json_schema()["properties"]
         assert "scope" in properties

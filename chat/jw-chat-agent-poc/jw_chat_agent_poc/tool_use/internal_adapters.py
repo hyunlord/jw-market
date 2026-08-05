@@ -69,6 +69,17 @@ class FileCatalogBackend(Protocol):
         sources: Sequence[SqlFileSource],
     ) -> SqlQueryOutcome: ...
 
+
+class DeepAnalysisCatalogBackend(Protocol):
+    def get_analysis(
+        self,
+        *,
+        brand: str,
+        view_kind: str,
+        market_id: str,
+        source: str,
+    ) -> dict[str, object]: ...
+
 class ExistingFileCatalogBackend:
     """Adapt the existing session-scoped read-only file implementation."""
 
@@ -103,10 +114,12 @@ class InternalToolAdapterRegistry:
         *,
         market_layer: MarketCatalogBackend | StrategicQueryLayer,
         definition_registry: MarketDefinitionRegistry | None = None,
+        deep_analysis_backend: DeepAnalysisCatalogBackend | None = None,
         file_backend: FileCatalogBackend | None = None,
     ) -> None:
         self._market = market_layer
         self._definitions = definition_registry
+        self._deep_analysis = deep_analysis_backend
         self._files = file_backend or ExistingFileCatalogBackend()
         self._adapters = {
             adapter.name: adapter
@@ -123,6 +136,7 @@ class InternalToolAdapterRegistry:
                 ),
                 InternalToolAdapter("market.compare_brands", self._compare_brands),
                 InternalToolAdapter("market.get_definition", self._market_definition),
+                InternalToolAdapter("market.get_deep_analysis", self._market_deep_analysis),
                 InternalToolAdapter("file.get_schema", self._file_schema),
                 InternalToolAdapter("file.query", self._file_query),
             )
@@ -132,7 +146,7 @@ class InternalToolAdapterRegistry:
         return tuple(sorted(self._adapters))
 
     def execute(self, name: str, arguments: CatalogArguments) -> CatalogToolResult:
-        if name == "market.get_definition":
+        if name in {"market.get_definition", "market.get_deep_analysis"}:
             return self._adapters[name].execute(arguments)
         scoped_execute = getattr(self._market, "execute_catalog_tool", None)
         if name.startswith("market.") and callable(scoped_execute):
@@ -218,6 +232,16 @@ class InternalToolAdapterRegistry:
         if self._definitions is None:
             raise RuntimeError("market definition registry is not configured")
         return self._definitions.get_definition(arguments)
+
+    def _market_deep_analysis(self, arguments: CatalogArguments) -> dict[str, object]:
+        if self._deep_analysis is None:
+            raise RuntimeError("deep analysis backend is not configured")
+        return self._deep_analysis.get_analysis(
+            brand=_required_text(arguments, "brand"),
+            view_kind=_required_text(arguments, "view_kind"),
+            market_id=_required_text(arguments, "market_id"),
+            source=_required_text(arguments, "source"),
+        )
 
     def _file_schema(self, arguments: CatalogArguments) -> tuple[str, ...]:
         return self._files.get_schema(
