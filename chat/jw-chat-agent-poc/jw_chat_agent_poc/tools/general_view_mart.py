@@ -45,6 +45,14 @@ class GeneralMartReader(Protocol):
 class GeneralBackendFallback(Protocol):
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]: ...
     def market(self, atc4: str, brand: str | None, source: str, measure: str) -> GeneralMarket: ...
+    def composite_market(
+        self,
+        atc4: tuple[str, ...],
+        filters: tuple[tuple[str, tuple[str, ...]], ...],
+        brand: str | None,
+        source: str,
+        measure: str,
+    ) -> GeneralMarket: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +177,16 @@ class GeneralViewMartBackend:
                 selected_data_path="backend_fallback",
                 fallback_reason=exc.reason,
             )
+
+    def composite_market(
+        self,
+        atc4: tuple[str, ...],
+        filters: tuple[tuple[str, tuple[str, ...]], ...],
+        brand: str | None,
+        source: str,
+        measure: str,
+    ) -> GeneralMarket:
+        return self.fallback.composite_market(atc4, filters, brand, source, measure)
 
 
 def _market_from_rows(rows: GeneralMartRows) -> GeneralMarket:

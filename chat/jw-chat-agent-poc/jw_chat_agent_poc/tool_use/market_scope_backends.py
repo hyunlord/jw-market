@@ -17,6 +17,15 @@ class GeneralMarketBackend(Protocol):
         measure: str,
     ) -> GeneralMarket: ...
 
+    def composite_market(
+        self,
+        atc4: tuple[str, ...],
+        filters: tuple[tuple[str, tuple[str, ...]], ...],
+        brand: str | None,
+        source: str,
+        measure: str,
+    ) -> GeneralMarket: ...
+
 
 class StrategicMarketBackend(Protocol):
     def brand_memberships(self) -> Sequence[Mapping[str, str]]: ...

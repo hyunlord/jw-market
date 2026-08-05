@@ -9,6 +9,8 @@ from typing import Any
 
 import requests
 
+from jw_chat_agent_poc.tool_use.market_scope_contract import BrandOutsideCompositeScopeError
+
 
 class GeneralViewBackendError(RuntimeError):
     """Raised when the general-view backend is unavailable or returns an unsafe scope."""
@@ -67,6 +69,10 @@ class GeneralMarket:
     market_size_period: str | None = None
     hhi_period: str | None = None
     brand_metric_series: tuple[BrandMetricPoint, ...] = ()
+    atc4_codes: tuple[str, ...] = ()
+    scope_filters: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    dashboard_tables: tuple[dict[str, object], ...] = ()
+    growth_contribution: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -125,6 +131,48 @@ class GeneralViewBackend:
         value = parse_general_market_response(
             payload,
             requested_atc4=atc4,
+            requested_source=source,
+            requested_measure=measure,
+            requested_brand=brand,
+        )
+        self._put_cached(key, value)
+        return value
+
+    def composite_market(
+        self,
+        atc4: tuple[str, ...],
+        filters: tuple[tuple[str, tuple[str, ...]], ...],
+        brand: str | None,
+        source: str,
+        measure: str,
+    ) -> GeneralMarket:
+        normalized_atc4 = tuple(dict.fromkeys(code.upper() for code in atc4))
+        normalized_filters = tuple(sorted(filters))
+        key = (
+            "composite_market", source.lower(), measure.lower(), normalized_atc4,
+            normalized_filters, brand or "",
+        )
+        cached = self._get_cached(key)
+        if isinstance(cached, GeneralMarket):
+            return cached
+        request_filters: dict[str, object] = {
+            "atc4": list(normalized_atc4),
+            "analysis_level": {
+                source.lower(): {
+                    name: list(values) for name, values in normalized_filters
+                }
+            },
+        }
+        if brand:
+            request_filters["focus_brand_key"] = focus_brand_key(brand)
+        payload = self._post_json(
+            "/api/dynamic-market",
+            json={"view": "general", "filters": request_filters, "source": source, "measure": measure},
+        )
+        value = parse_composite_market_response(
+            payload,
+            requested_atc4=normalized_atc4,
+            requested_filters=normalized_filters,
             requested_source=source,
             requested_measure=measure,
             requested_brand=brand,
@@ -320,6 +368,224 @@ def focus_brand_key(brand: str) -> str:
     """
 
     return re.sub(r"[^0-9a-z가-힣]", "", brand.casefold())
+
+
+def canonical_hhi(values: tuple[float, ...]) -> float | None:
+    total = sum(values)
+    if total <= 0:
+        return None
+    return sum((value / total * 100) ** 2 for value in values)
+
+
+def parse_composite_market_response(
+    payload: dict[str, Any],
+    *,
+    requested_atc4: tuple[str, ...],
+    requested_filters: tuple[tuple[str, tuple[str, ...]], ...],
+    requested_source: str,
+    requested_measure: str,
+    requested_brand: str | None = None,
+) -> GeneralMarket:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise GeneralViewBackendError("composite backend response has no result object")
+    market_meta = result.get("market_meta")
+    echoed = market_meta.get("filters") if isinstance(market_meta, dict) else None
+    if not isinstance(echoed, dict):
+        raise GeneralViewBackendError("composite scope mismatch: missing filter echo")
+    echoed_atc4 = echoed.get("atc4")
+    if isinstance(echoed_atc4, str):
+        echoed_atc4 = [echoed_atc4]
+    if tuple(str(value).upper() for value in echoed_atc4 or ()) != requested_atc4:
+        raise GeneralViewBackendError("composite scope mismatch: ATC4 echo differs")
+    if (
+        str(echoed.get("view") or "").lower() != "general"
+        or _normalize_source(echoed.get("source")) != _normalize_source(requested_source)
+        or str(echoed.get("measure") or "").lower() != requested_measure.lower()
+    ):
+        raise GeneralViewBackendError("composite scope mismatch: response echo differs")
+    _assert_composite_filter_echo(echoed, requested_filters, requested_source)
+
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    calculation = data.get("hhi_calculation_input")
+    if not isinstance(calculation, dict):
+        raise GeneralViewBackendError("composite response has no canonical HHI input")
+    period = str(calculation.get("period") or "")
+    rows = calculation.get("brand_values")
+    if not period or not isinstance(rows, list):
+        raise GeneralViewBackendError("composite HHI input is incomplete")
+    raw_brand_values = tuple(
+        (str(row.get("brand") or ""), _as_float(row.get("value")))
+        for row in rows
+        if isinstance(row, dict) and row.get("brand")
+    )
+    values = tuple(value for _brand, value in raw_brand_values if value is not None)
+    market_total = _as_float(calculation.get("market_total"))
+    if market_total is None or abs(sum(values) - market_total) > 1e-6:
+        raise GeneralViewBackendError("composite HHI input total mismatch")
+    hhi_recent = canonical_hhi(values)
+    supplied_hhi = _as_float(calculation.get("hhi_raw"))
+    if supplied_hhi is not None and (
+        hhi_recent is None or abs(supplied_hhi - hhi_recent) > 1e-9
+    ):
+        raise GeneralViewBackendError("composite HHI input value mismatch")
+    raw_members = tuple(
+        TopBrand(
+            brand=brand,
+            rank=1
+            + sum(
+                1
+                for candidate in values
+                if value is not None and candidate > value
+            ),
+            value=value,
+            share_pct=(
+                value / market_total * 100
+                if value is not None and market_total > 0
+                else None
+            ),
+        )
+        for brand, value in raw_brand_values
+    )
+
+    matrix = data.get("ei_ms_matrix") if isinstance(data.get("ei_ms_matrix"), dict) else {}
+    matrix_rows = matrix.get("data") if isinstance(matrix.get("data"), list) else []
+    display_members = tuple(
+        sorted(
+            (
+                TopBrand(
+                    brand=str(row.get("brand") or row.get("brand_name") or ""),
+                    rank=_first_int(row, "rank", "rank_overall"),
+                    value=_first_float(row, "value_recent", "raw_value"),
+                    share_pct=_first_float(row, "share_pct", "ms_recent_pct", "ms_pct"),
+                )
+                for row in matrix_rows
+                if isinstance(row, dict) and (row.get("brand") or row.get("brand_name"))
+            ),
+            key=lambda row: row.rank if row.rank is not None else 10_000,
+        )
+    )
+    active_members = tuple(row for row in raw_members if (row.value or 0) > 0)
+    member_population = tuple(brand for brand, _value in raw_brand_values)
+    requested_row = None
+    if requested_brand:
+        requested_key = _normalize_brand_name(requested_brand)
+        requested_row = next(
+            (row for row in raw_members if _normalize_brand_name(row.brand) == requested_key),
+            None,
+        )
+        if not any(
+            _normalize_brand_name(value) == requested_key for value in member_population
+        ) or requested_row is None:
+            raise BrandOutsideCompositeScopeError(requested_brand)
+
+    kpi = data.get("kpi") if isinstance(data.get("kpi"), dict) else {}
+    series_raw = data.get("market_size_series")
+    series = tuple(
+        (str(item.get("period")), float(item.get("value")))
+        for item in series_raw or ()
+        if isinstance(item, dict) and item.get("period") and isinstance(item.get("value"), int | float)
+    )
+    growth = data.get("growth_contribution")
+    growth_payload = growth if isinstance(growth, dict) else None
+    market_size = _as_float(kpi.get("market_size_recent"))
+    effective_market_size = market_total if market_size is None else market_size
+    unit = str(result.get("unit_label") or "")
+    kpi_rows: list[tuple[object, ...]] = [
+        ("시장 규모", effective_market_size, unit, period),
+        ("HHI", hhi_recent, "index", period),
+    ]
+    if requested_row is not None:
+        kpi_rows.extend(
+            (
+                (f"{requested_row.brand} 매출", requested_row.value, unit, period),
+                (f"{requested_row.brand} 점유율", requested_row.share_pct, "%", period),
+                (f"{requested_row.brand} 순위", requested_row.rank, "rank", period),
+            )
+        )
+    tables: list[dict[str, object]] = [
+        {
+            "name": "시장 KPI",
+            "columns": ("항목", "값", "단위", "기간"),
+            "rows": tuple(row for row in kpi_rows if row[1] is not None),
+        },
+        {
+            "name": "시장 규모 추이",
+            "columns": ("기간", "시장 규모", "단위"),
+            "rows": tuple((row_period, value, unit) for row_period, value in series),
+        },
+        {
+            "name": "브랜드 순위",
+            "columns": ("순위", "브랜드", "최근 값", "점유율(%)"),
+            "rows": tuple((row.rank, row.brand, row.value, row.share_pct) for row in display_members),
+        }
+    ]
+    contributors = (
+        growth_payload.get("by_brand", {}).get("top_contributors", [])
+        if isinstance(growth_payload, dict) and isinstance(growth_payload.get("by_brand"), dict)
+        else []
+    )
+    if isinstance(contributors, list) and contributors:
+        tables.append(
+            {
+                "name": "성장 기여",
+                "columns": ("브랜드", "성장 기여", "기여율(%)"),
+                "rows": tuple(
+                    (str(row.get("brand") or ""), _as_float(row.get("contribution")), _as_float(row.get("contribution_pct")))
+                    for row in contributors if isinstance(row, dict)
+                ),
+            }
+        )
+    label = str(market_meta.get("market_definition_label") or "ATC4 " + ", ".join(requested_atc4))
+    return GeneralMarket(
+        view_type="general_view",
+        market_basis="ATC4 composite",
+        atc4_code=",".join(requested_atc4),
+        atc4_description=label,
+        source=requested_source.upper(),
+        measure=requested_measure.lower(),
+        unit=unit,
+        period=period,
+        market_size=effective_market_size,
+        brand=requested_row.brand if requested_row else None,
+        brand_value=requested_row.value if requested_row else None,
+        brand_share_pct=requested_row.share_pct if requested_row else None,
+        brand_rank=requested_row.rank if requested_row else None,
+        top_brands=display_members[:5],
+        market_size_series=series,
+        member_brands=raw_members,
+        member_population=member_population,
+        active_members=active_members,
+        display_members=display_members,
+        selected_data_path="dynamic_market_composite",
+        hhi_recent=hhi_recent,
+        market_size_period=period,
+        hhi_period=period,
+        atc4_codes=requested_atc4,
+        scope_filters=requested_filters,
+        dashboard_tables=tuple(tables),
+        growth_contribution=growth_payload,
+    )
+
+
+def _assert_composite_filter_echo(
+    echoed: dict[str, Any],
+    requested_filters: tuple[tuple[str, tuple[str, ...]], ...],
+    source: str,
+) -> None:
+    analysis = echoed.get("analysis_level")
+    channel = echoed.get("channel_axis")
+    analysis = analysis if isinstance(analysis, dict) else {}
+    channel = channel if isinstance(channel, dict) else {}
+    aliases = {"mfr_name_kor": "mfr", "pack_desc": "pack", "nhi_type": "nhi"} if _normalize_source(source) == "iqvia" else {}
+    channel_names = {"audit_code"} if _normalize_source(source) == "iqvia" else {"facility", "specialty"}
+    for name, values in requested_filters:
+        container = channel if name in channel_names else analysis
+        raw = container.get(aliases.get(name, name))
+        if isinstance(raw, str):
+            raw = [raw]
+        if tuple(str(value) for value in raw or ()) != values:
+            raise GeneralViewBackendError(f"composite scope mismatch: filter echo differs for {name}")
 
 
 def _normalize_source(value: object) -> str:

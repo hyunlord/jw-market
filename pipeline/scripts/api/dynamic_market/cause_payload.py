@@ -213,10 +213,49 @@ def build_cause_data(
     }
     if definition.channel_axis and definition.channel_axis.is_active and definition.channel_axis.source == "iqvia_nsa":
         data["iqvia_audit_code_channels"] = _general_iqvia_audit_codes(metrics)
+    if definition.view == "general":
+        data["hhi_calculation_input"] = _canonical_hhi_calculation_input(metrics.all_brands)
     if definition.focus_brand_key and not data["kpi"]:
         data["kpi_reason"] = "focus_not_found"
     normalized = normalize_portal_read_data(data)
     return slim_general_response_data(normalized) if definition.view == "general" else normalized
+
+
+def _canonical_hhi_calculation_input(brands: tuple[BrandMetric, ...]) -> dict[str, Any]:
+    periods = sorted(
+        {str(brand.latest_period) for brand in brands if brand.latest_period}
+    )
+    if not periods:
+        return {
+            "period": None,
+            "market_total": 0.0,
+            "brand_values": [],
+            "hhi_raw": None,
+        }
+    period = periods[-1]
+    brand_values = [
+        {
+            "brand": brand.brand_name,
+            "value": (
+                float(brand.latest_value or 0.0)
+                if brand.latest_period == period
+                else 0.0
+            ),
+        }
+        for brand in sorted(brands, key=lambda item: item.brand_name)
+    ]
+    market_total = sum(item["value"] for item in brand_values)
+    hhi_raw = (
+        sum((item["value"] / market_total * 100) ** 2 for item in brand_values)
+        if market_total > 0
+        else None
+    )
+    return {
+        "period": period,
+        "market_total": market_total,
+        "brand_values": brand_values,
+        "hhi_raw": hhi_raw,
+    }
 
 
 def slim_general_response_data(data: dict[str, Any]) -> dict[str, Any]:

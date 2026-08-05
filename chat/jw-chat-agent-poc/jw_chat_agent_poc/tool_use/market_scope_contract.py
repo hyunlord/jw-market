@@ -68,3 +68,7 @@ class GeneralCompositeUnavailableError(MarketScopeResolutionError):
 
 class GeneralMetricUnavailableError(MarketScopeResolutionError):
     reason_code = "general_metric_unavailable"
+
+
+class BrandOutsideCompositeScopeError(MarketScopeResolutionError):
+    reason_code = "brand_outside_composite_scope"

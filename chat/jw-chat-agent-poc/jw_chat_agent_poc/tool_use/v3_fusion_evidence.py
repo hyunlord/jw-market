@@ -76,6 +76,7 @@ Every HHI claim must state its supplied period. Do not combine market size and H
 For web_source evidence, quote only the supplied excerpt, visibly include its exact URL in the claim, and describe it as an external source rather than internal data.
 Web numeric literals come only from web_quoted_numeric_literals and remain supplementary; they are never internal calculated values.
 When web evidence declares conflicts_with_evidence_ids, cite both the web and internal evidence, state both values without averaging, and add a limitation that identifies the difference.
+When dashboard_tables are supplied and the question asks for analysis or a table, render each table as GitHub-flavored Markdown inside a cited claim; every table value remains subject to the same evidence and numeric checks.
 When some evidence is unavailable, keep claims supported by successful evidence and include every supplied failure limitation.
 When no evidence supports a claim, return no claim for that facet. Do not expose internal errors, implementation details, or hidden reasons.
 Return JSON only."""

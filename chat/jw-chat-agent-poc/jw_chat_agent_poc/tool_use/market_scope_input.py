@@ -14,6 +14,31 @@ from jw_chat_agent_poc.tool_use.market_scope_contract import (
 ATC4_PATTERN = re.compile(r"[A-Z]\d{1,2}[A-Z]\d?", re.IGNORECASE)
 STRATEGIC_MARKET_PATTERN = re.compile(r"ml_\d+", re.IGNORECASE)
 SUPPORTED_SOURCES = frozenset({"", "ubist", "iqvia"})
+COMPOSITE_FILTERS_BY_SOURCE = {
+    "ubist": frozenset(
+        {
+            "facility",
+            "form",
+            "molecule",
+            "molecule_strength",
+            "reimbursement",
+            "route",
+            "seller",
+            "specialty",
+        }
+    ),
+    "iqvia": frozenset(
+        {
+            "audit_code",
+            "mfr_name_kor",
+            "molecule_desc",
+            "molecule_type",
+            "nhi_type",
+            "pack_desc",
+            "strength",
+        }
+    ),
+}
 _VIEW_LABELS = {
     "전략뷰": "strategic",
     "strategic": "strategic",
@@ -65,6 +90,18 @@ def scope_filters(raw: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
             raise InvalidMarketLabelError(f"scope filter {key} must be a list")
         filters.append((str(key), tuple(str(item) for item in value)))
     return tuple(filters)
+
+
+def validate_composite_filters(
+    filters: tuple[tuple[str, tuple[str, ...]], ...],
+    source: str,
+) -> None:
+    allowed = COMPOSITE_FILTERS_BY_SOURCE.get(source, frozenset())
+    invalid = tuple(name for name, _values in filters if name not in allowed)
+    if invalid:
+        raise InvalidMarketLabelError(
+            f"unsupported {source or 'unknown'} composite filters: {','.join(invalid)}"
+        )
 
 
 def raise_unresolved_brand(brand: str) -> None:

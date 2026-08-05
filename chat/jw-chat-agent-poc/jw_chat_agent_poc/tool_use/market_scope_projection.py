@@ -163,12 +163,23 @@ def general_metric_value(market: GeneralMarket, metric: str) -> object:
         return market.brand_rank
     if normalized == "hhi":
         return rounded_hhi(market.hhi_recent)
+    if normalized == "growth_contribution" and market.growth_contribution is not None:
+        return market.growth_contribution
     raise GeneralMetricUnavailableError(metric)
 
 
-def assert_general_scope(market: GeneralMarket, atc4: str, brand: str) -> None:
-    if market.view_type != "general_view" or market.atc4_code.upper() != atc4.upper():
+def assert_general_scope(
+    market: GeneralMarket,
+    atc4: tuple[str, ...],
+    brand: str,
+    *,
+    filters: tuple[tuple[str, tuple[str, ...]], ...] = (),
+) -> None:
+    actual_atc4 = market.atc4_codes or (market.atc4_code.upper(),)
+    if market.view_type != "general_view" or actual_atc4 != tuple(code.upper() for code in atc4):
         raise InvalidMarketLabelError("general backend returned a different scope")
+    if filters and market.scope_filters != filters:
+        raise InvalidMarketLabelError("general backend returned different composite filters")
     if market.brand is not None and market.brand != brand:
         raise UnknownBrandError(f"general backend returned a different brand for {brand}")
 
@@ -191,6 +202,7 @@ def _general_base(
     market: GeneralMarket,
     trace: dict[str, object],
 ) -> dict[str, object]:
+    atc4_codes = market.atc4_codes or (market.atc4_code,)
     return {
         "brand": market.brand,
         "period": market.period,
@@ -199,6 +211,9 @@ def _general_base(
         "market_name": f"ATC4 {market.atc4_code}",
         "view_type": market.view_type,
         "market_basis": market.market_basis,
+        "atc4_codes": atc4_codes,
+        "scope_filters": market.scope_filters,
+        "dashboard_tables": market.dashboard_tables,
         "source_label": market.source,
         "selected_data_path": market.selected_data_path,
         "scope_trace": trace,
@@ -206,7 +221,13 @@ def _general_base(
             "source": market.source,
             "view": "general",
             "market": market.atc4_code,
-            "filters": {"atc4": [market.atc4_code], "brand": market.brand},
+            "filters": {
+                "atc4": list(atc4_codes),
+                "brand": market.brand,
+                "analysis_level": {
+                    name: list(values) for name, values in market.scope_filters
+                },
+            },
         },
     }
 

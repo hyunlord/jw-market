@@ -32,6 +32,7 @@ _ERROR_REASON_CODES = {
     "NoAnchorError": "no_anchor",
     "GeneralCompositeUnavailableError": "general_composite_unavailable",
     "GeneralMetricUnavailableError": "general_metric_unavailable",
+    "BrandOutsideCompositeScopeError": "brand_outside_composite_scope",
 }
 
 
@@ -72,6 +73,8 @@ def failure_limitation(
         return "현재 지원하지 않는 시장 조합입니다."
     if code == "general_metric_unavailable":
         return "해당 일반 시장 지표는 현재 제공되지 않습니다."
+    if code == "brand_outside_composite_scope":
+        return "요청한 브랜드는 지정한 복합 시장 조건에 포함되지 않습니다."
     return "요청한 조회 중 일부를 확인하지 못했습니다."
 
 

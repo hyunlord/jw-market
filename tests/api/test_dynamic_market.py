@@ -2602,6 +2602,62 @@ def test_cause_payload_hhi_recent_uses_complete_calendar_year_not_partial_latest
     assert payload["data"]["kpi"]["hhi_recent"] == 6250.0
 
 
+def test_cause_payload_preserves_canonical_latest_hhi_inputs() -> None:
+    definition = MarketDefinition(
+        view="general",
+        filter_echo={
+            "view": "general",
+            "atc4": ["S01P0"],
+            "source": "iqvia_nsa",
+            "measure": "sales",
+        },
+        source="iqvia_nsa",
+        measure="sales",
+        focus_brand_key="alpha",
+    )
+    brands = tuple(
+        BrandMetric(
+            key,
+            key,
+            "S01P0",
+            value,
+            value,
+            rank,
+            "2026-Q1",
+            value,
+            ({"period": "2026-Q1", "value": value},),
+        )
+        for rank, (key, value) in enumerate(
+            (("alpha", 50.0), ("beta", 30.0), ("zero", 0.0), ("other", 20.0)),
+            start=1,
+        )
+    )
+    metrics = AggregatedMetrics(
+        source="iqvia_nsa",
+        measure="sales",
+        unit_label="KRW",
+        market_size=100.0,
+        hhi=None,
+        cagr=None,
+        monthly_series=({"period": "2026-Q1", "market_size": 100.0},),
+        brands=(),
+        all_brands=brands,
+    )
+
+    payload = build_cause_payload(definition=definition, metrics=metrics)
+
+    calculation = payload["data"]["hhi_calculation_input"]
+    assert calculation["period"] == "2026-Q1"
+    assert calculation["market_total"] == 100.0
+    assert calculation["brand_values"] == [
+        {"brand": "alpha", "value": 50.0},
+        {"brand": "beta", "value": 30.0},
+        {"brand": "other", "value": 20.0},
+        {"brand": "zero", "value": 0.0},
+    ]
+    assert calculation["hhi_raw"] == 3800.0
+
+
 def test_build_dimension_filters_accepts_raw_ubist_molecule() -> None:
     filters = resolvers.build_dimension_filters(
         analysis_level={"ubist": {"molecule": ["PITAVASTATIN / EZETIMIBE"]}},

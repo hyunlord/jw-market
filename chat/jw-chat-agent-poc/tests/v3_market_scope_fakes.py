@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from jw_chat_agent_poc.tool_use.market_scope_execution import (
@@ -152,6 +152,34 @@ class FakeGeneralBackend:
             selected_data_path="direct_mart",
             hhi_recent=3188.040362260885,
             brand_metric_series=series,
+        )
+
+    def composite_market(
+        self,
+        atc4: tuple[str, ...],
+        filters: tuple[tuple[str, tuple[str, ...]], ...],
+        brand: str | None,
+        source: str,
+        measure: str,
+    ) -> GeneralMarket:
+        market = self.market(atc4[0], brand, source, measure)
+        return replace(
+            market,
+            market_basis="ATC4 composite",
+            atc4_code=",".join(atc4),
+            atc4_codes=atc4,
+            scope_filters=filters,
+            selected_data_path="dynamic_market_composite",
+            dashboard_tables=(
+                {
+                    "name": "브랜드 순위",
+                    "columns": ("순위", "브랜드", "최근 값", "점유율(%)"),
+                    "rows": tuple(
+                        (row.rank, row.brand, row.value, row.share_pct)
+                        for row in market.display_members
+                    ),
+                },
+            ),
         )
 
 

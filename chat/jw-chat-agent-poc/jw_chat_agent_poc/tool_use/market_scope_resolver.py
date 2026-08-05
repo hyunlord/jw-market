@@ -5,7 +5,6 @@ from typing import Protocol
 
 from jw_chat_agent_poc.tool_use.market_scope_contract import (
     AmbiguousMarketError,
-    GeneralCompositeUnavailableError,
     InvalidMarketLabelError,
     MarketScope,
     MarketScopeKind,
@@ -24,6 +23,7 @@ from jw_chat_agent_poc.tool_use.market_scope_input import (
     required_text,
     scope_filters,
     text,
+    validate_composite_filters,
 )
 from jw_chat_agent_poc.tools.general_view_backend import AtcCandidate
 
@@ -135,9 +135,15 @@ class ScopeResolver:
         )
         market_id = str(raw_scope.get("market_id") or "").strip() or None
         filters = scope_filters(raw_scope.get("filters"))
-        if filters:
-            raise GeneralCompositeUnavailableError(
-                "scope filters require composite execution"
+        resolved_source = source
+        if kind is MarketScopeKind.GENERAL_COMPOSITE:
+            resolved_source = source or self._general_source_for_brand(
+                required_text(arguments, "brand")
+            )
+            validate_composite_filters(filters, resolved_source)
+        elif filters:
+            raise InvalidMarketLabelError(
+                "scope filters are only valid for general_composite"
             )
         scope = MarketScope(kind, market_id=market_id, atc4=atc4, filters=filters)
         if kind is MarketScopeKind.STRATEGIC:
@@ -151,7 +157,7 @@ class ScopeResolver:
             raise InvalidMarketLabelError("general scope requires valid ATC4")
         if kind is MarketScopeKind.GENERAL_ATC4 and len(atc4) != 1:
             raise InvalidMarketLabelError("general_atc4 requires exactly one ATC4")
-        return ScopeResolution(scope, source, arguments, notes)
+        return ScopeResolution(scope, resolved_source, arguments, notes)
 
     def _strategic_resolution(
         self,

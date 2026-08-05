@@ -11,6 +11,7 @@ from jw_chat_agent_poc.tool_use.market_scope_backends import (
 from jw_chat_agent_poc.tool_use.market_scope_contract import (
     AmbiguousFamilyError,
     AmbiguousMarketError,
+    BrandOutsideCompositeScopeError,
     GeneralCompositeUnavailableError,
     GeneralMetricUnavailableError,
     InvalidMarketLabelError,
@@ -45,6 +46,7 @@ from jw_chat_agent_poc.tool_use.market_scope_resolver import ScopeResolver
 __all__ = (
     "AmbiguousFamilyError",
     "AmbiguousMarketError",
+    "BrandOutsideCompositeScopeError",
     "GeneralCompositeUnavailableError",
     "GeneralMetricUnavailableError",
     "InvalidMarketLabelError",
@@ -83,10 +85,6 @@ class MarketScopeCatalogBackend:
         if resolution.scope.kind is MarketScopeKind.STRATEGIC:
             result = self._execute_strategic(name, resolution.normalized_arguments)
             return attach_normalization_trace(result, resolution)
-        if resolution.scope.kind is MarketScopeKind.GENERAL_COMPOSITE:
-            raise GeneralCompositeUnavailableError(
-                "formula parity was not established for composite execution"
-            )
         return self._execute_general(name, resolution)
 
     def brand_metric(
@@ -215,8 +213,22 @@ class MarketScopeCatalogBackend:
             else "sales"
         )
         atc4 = resolution.scope.atc4[0]
-        market = self._general.market(atc4, brand, resolution.source, measure)
-        assert_general_scope(market, atc4, brand)
+        if resolution.scope.kind is MarketScopeKind.GENERAL_COMPOSITE:
+            market = self._general.composite_market(
+                resolution.scope.atc4,
+                resolution.scope.filters,
+                brand,
+                resolution.source,
+                measure,
+            )
+        else:
+            market = self._general.market(atc4, brand, resolution.source, measure)
+        assert_general_scope(
+            market,
+            resolution.scope.atc4,
+            brand,
+            filters=resolution.scope.filters,
+        )
         if name in {"market.get_market_size", "market.get_market_members"}:
             return general_scope_result(name, market, resolution)
         if name == "market.get_hhi":
@@ -224,21 +236,42 @@ class MarketScopeCatalogBackend:
                 market, "hhi", rounded_hhi(market.hhi_recent), resolution
             )
         if name == "market.get_growth_contribution":
-            raise GeneralMetricUnavailableError(
-                "general ATC4 growth contribution is not materialized"
+            return general_metric_result(
+                market,
+                "growth_contribution",
+                general_metric_value(market, "growth_contribution"),
+                resolution,
             )
         if name == "market.get_channel_breakdown":
-            raise GeneralMetricUnavailableError(
-                "general ATC4 channel breakdown requires composite execution"
+            if resolution.scope.kind is not MarketScopeKind.GENERAL_COMPOSITE:
+                raise GeneralMetricUnavailableError(
+                    "general ATC4 channel breakdown requires composite execution"
+                )
+            return general_metric_result(
+                market, "channel_breakdown", market.dashboard_tables, resolution
             )
         if name == "market.get_timeseries":
             return general_timeseries_result(market, metric, resolution)
         if name == "market.compare_brands":
             comparison = required_text(arguments, "comparison_brand")
-            comparison_market = self._general.market(
-                atc4, comparison, resolution.source, measure
+            if resolution.scope.kind is MarketScopeKind.GENERAL_COMPOSITE:
+                comparison_market = self._general.composite_market(
+                    resolution.scope.atc4,
+                    resolution.scope.filters,
+                    comparison,
+                    resolution.source,
+                    measure,
+                )
+            else:
+                comparison_market = self._general.market(
+                    atc4, comparison, resolution.source, measure
+                )
+            assert_general_scope(
+                comparison_market,
+                resolution.scope.atc4,
+                comparison,
+                filters=resolution.scope.filters,
             )
-            assert_general_scope(comparison_market, atc4, comparison)
             return general_comparison_result(
                 market, comparison_market, metric, resolution
             )

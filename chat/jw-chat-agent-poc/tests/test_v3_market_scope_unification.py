@@ -6,7 +6,6 @@ from jw_chat_agent_poc.tool_use.internal_adapters import InternalToolAdapterRegi
 from jw_chat_agent_poc.tool_use.market_scope_execution import (
     AmbiguousFamilyError,
     AmbiguousMarketError,
-    GeneralCompositeUnavailableError,
     InvalidMarketLabelError,
     MarketScopeKind,
     NoAnchorError,
@@ -178,8 +177,8 @@ def test_unimplemented_scope_filters_fail_closed(scope: dict[str, object]) -> No
     backend, strategic, general = make_backend()
 
     with pytest.raises(
-        GeneralCompositeUnavailableError,
-        match="scope filters require composite execution",
+        InvalidMarketLabelError,
+        match="scope filters are only valid for general_composite",
     ):
         backend.execute_catalog_tool(
             "market.get_brand_metric",
