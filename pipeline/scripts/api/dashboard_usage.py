@@ -326,6 +326,7 @@ CHAT_TURNS_SQL: Final = f"""
            c.conversation_id, c.turn_index, c.contract_status, c.quality_label,
            c.elapsed_ms, c.input_tokens, c.output_tokens, c.total_tokens,
            c.trace_id, {_CHAT_TURN_SOURCE_SQL} AS source,
+           COALESCE(c.trace_id, CONCAT('conversation-log:', c.conversation_log_id)) AS detail_key,
            {_CHAT_TURN_ID_SQL} AS source_turn_id
     FROM dashboard_chat_usage_v c
     JOIN dashboard_user_directory_v u ON u.id=c.portal_user_id
@@ -336,6 +337,12 @@ CHAT_TURNS_SQL: Final = f"""
     ORDER BY c.created_at DESC, source DESC, source_turn_id DESC
     LIMIT %s
     {{offset}}
+"""
+
+CHAT_TURN_DETAIL_SQL: Final = """
+    SELECT detail_key, question_text, answer_text
+    FROM dashboard_chat_turn_detail_v
+    WHERE detail_key = %s
 """
 
 CHAT_TURNS_COUNT_SQL: Final = f"""
@@ -479,12 +486,49 @@ class ChatTurnPage:
     page_size: int
 
 
+@dataclass(frozen=True, slots=True)
+class ChatTurnDetail:
+    item: dict[str, Any]
+
+
 class InvalidChatTurnCursor(ValueError):
     pass
 
 
 class ChatTurnDataContractError(RuntimeError):
     pass
+
+
+def encode_chat_turn_id(detail_key: str) -> str:
+    if not isinstance(detail_key, str) or not detail_key or len(detail_key) > 128:
+        raise ValueError("invalid chat turn id")
+    payload = json.dumps(
+        {"v": 2, "detail_key": detail_key},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "t2_" + base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_chat_turn_id(value: str) -> str:
+    if not value.startswith("t2_"):
+        raise ValueError("invalid chat turn id")
+    try:
+        padding = "=" * (-len(value[3:]) % 4)
+        payload = json.loads(
+            base64.b64decode(value[3:] + padding, altchars=b"-_", validate=True)
+        )
+        detail_key = payload["detail_key"]
+        if (
+            payload.get("v") != 2
+            or not isinstance(detail_key, str)
+            or not detail_key
+            or len(detail_key) > 128
+        ):
+            raise ValueError("invalid chat turn id")
+        return detail_key
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("invalid chat turn id") from exc
 
 
 def encode_usage_log_cursor(cursor: UsageLogCursor) -> str:
@@ -588,6 +632,8 @@ class UsageLogsRepository(Protocol):
 
 class ChatTurnsRepository(Protocol):
     def fetch_chat_turns(self, filters: ChatTurnFilters) -> ChatTurnPage: ...
+
+    def fetch_chat_turn(self, detail_key: str) -> ChatTurnDetail | None: ...
 
 
 class UsageHistoryRepository(UsageLogsRepository, ChatTurnsRepository, Protocol):
@@ -861,6 +907,27 @@ class MariaDBUsageRepository:
             total_count=total_count,
             total_pages=_total_pages(total_count, filters.page_size),
             page_size=filters.page_size,
+        )
+
+    def fetch_chat_turn(self, detail_key: str) -> ChatTurnDetail | None:
+        connection = self._connect(**self._connect_args)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(CHAT_TURN_DETAIL_SQL, (detail_key,))
+                row = cursor.fetchone()
+        except Exception as exc:
+            raise DashboardQueryError("chat_turn_detail") from exc
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        normalized = _normalize_row(row)
+        return ChatTurnDetail(
+            item={
+                "turn_id": encode_chat_turn_id(str(normalized["detail_key"])),
+                "question_text": normalized.get("question_text"),
+                "answer_text": normalized.get("answer_text"),
+            }
         )
 
     def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:
@@ -1143,7 +1210,13 @@ def build_usage_comparison(
 
 
 def _chat_turn_item(row: dict[str, Any]) -> dict[str, Any]:
+    detail_key = row.get("detail_key") or row.get("trace_id")
+    if not detail_key and row.get("conversation_log_id") is not None:
+        detail_key = f"conversation-log:{row['conversation_log_id']}"
+    if not detail_key:
+        raise ValueError("chat turn detail identity is absent")
     return {
+        "turn_id": encode_chat_turn_id(str(detail_key)),
         "user_id": row["user_id"],
         "user_name": row.get("user_name"),
         "department": row.get("department"),

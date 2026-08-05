@@ -11,13 +11,16 @@ from pipeline.scripts.api.chat_usage_materialization import (
     ChatMaterializationUnavailable,
 )
 from pipeline.scripts.api.dashboard_usage import (
+    ChatTurnDetail,
     CHAT_TURNS_SQL,
     ChatTurnCursor,
     ChatTurnFilters,
     ChatTurnPage,
     MariaDBUsageRepository,
     decode_chat_turn_cursor,
+    decode_chat_turn_id,
     encode_chat_turn_cursor,
+    encode_chat_turn_id,
 )
 from pipeline.scripts.api.routes.dashboard_usage import create_chat_turns_router
 
@@ -31,6 +34,7 @@ class FakeChatTurnsRepository:
         return ChatTurnPage(
             items=(
                 {
+                    "turn_id": encode_chat_turn_id("trace-42"),
                     "user_id": 34,
                     "user_name": "display name",
                     "department": "Market",
@@ -54,6 +58,17 @@ class FakeChatTurnsRepository:
             total_count=51,
             total_pages=2,
             page_size=50,
+        )
+
+    def fetch_chat_turn(self, detail_key: str) -> ChatTurnDetail | None:
+        if detail_key != "trace-42":
+            return None
+        return ChatTurnDetail(
+            item={
+                "turn_id": encode_chat_turn_id(detail_key),
+                "question_text": "질문",
+                "answer_text": "# 안전한 답변",
+            }
         )
 
 
@@ -149,6 +164,7 @@ def test_chat_turn_items_are_metadata_only_and_never_expose_unlinked_or_raw_fiel
         "page_size",
     }
     assert set(payload["items"][0]) == {
+        "turn_id",
         "user_id",
         "user_name",
         "department",
@@ -166,6 +182,26 @@ def test_chat_turn_items_are_metadata_only_and_never_expose_unlinked_or_raw_fiel
     serialized = response.text.lower()
     for forbidden in ("question", "answer", "email", "actor_uid", "request_params", "jti"):
         assert forbidden not in serialized
+
+
+def test_chat_turn_detail_is_trace_backed_and_separate_from_list() -> None:
+    turn_id = encode_chat_turn_id("trace-42")
+
+    response = _client(FakeChatTurnsRepository()).get(f"/api/dashboard/chat-turns/{turn_id}")
+    missing = _client(FakeChatTurnsRepository()).get(
+        f"/api/dashboard/chat-turns/{encode_chat_turn_id('trace-missing')}"
+    )
+    invalid = _client(FakeChatTurnsRepository()).get("/api/dashboard/chat-turns/t1_legacy")
+
+    assert decode_chat_turn_id(turn_id) == "trace-42"
+    assert response.status_code == 200
+    assert set(response.json()) == {"turn_id", "question_text", "answer_text"}
+    assert response.json()["answer_text"] == "# 안전한 답변"
+    assert missing.status_code == 404
+    assert invalid.status_code == 400
+    assert "answer_text" not in _client(FakeChatTurnsRepository()).get(
+        "/api/dashboard/chat-turns?date_from=2026-08-01&date_to=2026-08-03"
+    ).text
 
 
 def test_chat_turn_query_is_sanitized_linked_and_keyset_ordered() -> None:

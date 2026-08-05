@@ -24,6 +24,7 @@ from pipeline.scripts.api.dashboard_usage import (
     UsageFilters,
     UsageStatsService,
     decode_chat_turn_cursor,
+    decode_chat_turn_id,
     decode_usage_log_cursor,
 )
 
@@ -297,6 +298,17 @@ def create_chat_turns_router(repository: ChatTurnsRepository) -> APIRouter:
             "total_pages": page.total_pages,
             "page_size": page.page_size,
         }
+
+    @router.get("/api/dashboard/chat-turns/{turn_id}", include_in_schema=False)
+    def chat_turn_detail(turn_id: str) -> dict:
+        try:
+            detail_key = decode_chat_turn_id(turn_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="대화 식별자가 올바르지 않습니다.") from exc
+        result = repository.fetch_chat_turn(detail_key)
+        if result is None:
+            raise HTTPException(status_code=404, detail="대화 이력을 찾을 수 없습니다.")
+        return result.item
 
     return router
 
