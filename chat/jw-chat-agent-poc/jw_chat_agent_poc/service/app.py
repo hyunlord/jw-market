@@ -1372,6 +1372,7 @@ def _answer_question(
             "_qa_anaphora": anaphora_observation(routing_resolution),
             "_sec12_input_policy_decision": input_policy_decision,
         }
+        result = _apply_v3_cutover_if_enabled(effective_question, result)
         if uses_synthetic_market_anchor:
             # extract_conversation_slots reads this, so the stored turn records that its
             # anchor brand came from the rewrite rather than from the user.
@@ -1392,6 +1393,22 @@ def _hydrate_latest_conversation_turn(
     conversation_id: str,
 ) -> None:
     store.conversations.hydrate_latest(conversation_id)
+
+
+def _apply_v3_cutover_if_enabled(
+    question: str,
+    result: dict[str, object],
+) -> dict[str, object]:
+    if os.getenv("JW_CHAT_V3_CUTOVER_ENABLED", "").strip().casefold() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return result
+    from jw_chat_agent_poc.tool_use.v3_cutover import apply_v3_cutover
+
+    return apply_v3_cutover(question, result)
 
 
 def _answer_mixed_parallel(
@@ -3317,6 +3334,36 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if enriched_markdown_response is not result.get("markdown_response"):
         result = {**result, "markdown_response": enriched_markdown_response}
     timing = ensure_timing(result)
+    if result.get("v3_cutover_ready"):
+        record_answer_delivery(
+            result,
+            answer_branch="v3_priority1_cutover",
+            source_notice_attached=False,
+        )
+        timing_payload = finish(timing)
+        answer = cleanup_markdown_answer(str(result.get("answer") or ""))
+        raw_charts = result.get("charts")
+        charts = (
+            [dict(chart) for chart in raw_charts if isinstance(chart, Mapping)]
+            if isinstance(raw_charts, list)
+            else []
+        )
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=charts,
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=charts,
+            timing=timing_payload,
+            trace=trace,
+            sources=tuple(result.get("sources", ())),
+            conversation_id=conversation_id,
+        )
     if result.get("conversation_fallback_ready"):
         record_answer_delivery(
             result,

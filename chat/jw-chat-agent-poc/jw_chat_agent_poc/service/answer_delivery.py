@@ -25,6 +25,7 @@ ANSWER_BRANCHES = frozenset(
         "genos_tool_markdown_request_fallback",
         "genos_tool_markdown_empty_fallback",
         "genos_tool_verified_fallback",
+        "v3_priority1_cutover",
         "genos_external_relay",
         "genos_concentration",
         "genos_top_n",
