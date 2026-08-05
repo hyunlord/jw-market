@@ -1438,7 +1438,7 @@ class Ledger:
         """Atomically rearm an intact failed publish candidate with an audit event."""
         mark = self._mark
         candidate_sql = (
-            "SELECT build_run_id, payload_json FROM ingest_publish_candidate"
+            "SELECT build_run_id, payload_json, expires_at FROM ingest_publish_candidate"
             f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
         )
         if self._dialect == "mysql":
@@ -1459,7 +1459,10 @@ class Ledger:
             if row is None:
                 return False
             values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
-            if str(values_row[0]) != build_run_id:
+            if (
+                str(values_row[0]) != build_run_id
+                or _utc_timestamp(created_at) > _utc_timestamp(values_row[2])
+            ):
                 return False
             payload = json.loads(str(values_row[1]))
             for key, value in (integrity_updates or {}).items():

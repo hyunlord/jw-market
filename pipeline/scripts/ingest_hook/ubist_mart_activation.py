@@ -117,9 +117,12 @@ def inventory_corpus(root: Path) -> CorpusInventory:
     digest = hashlib.sha256()
     count = 0
     total = 0
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    paths = sorted(root.rglob("*"))
+    for path in paths:
         if path.is_symlink():
             raise RuntimeError(f"corpus contains a symlink: {path}")
+        if not path.is_file():
+            continue
         relative = path.relative_to(root).as_posix()
         file_digest = hashlib.sha256()
         size = 0

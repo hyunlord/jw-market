@@ -222,6 +222,17 @@ def test_rearm_rejects_symlinked_corpus_file(sqlite_ledger, tmp_path):
     assert failed.is_dir() and not candidate.exists()
 
 
+def test_rearm_rejects_symlinked_corpus_directory(sqlite_ledger, tmp_path):
+    run_id, failed, candidate, _journal, inventory = _prepared_failed(sqlite_ledger, tmp_path)
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    (outside / "payload").write_bytes(b"outside")
+    (failed / "linked-dir").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(rearm_runner.RearmRejected, match="symlink"):
+        _call(sqlite_ledger, run_id, inventory)
+    assert failed.is_dir() and not candidate.exists()
+
+
 def test_rearm_resumes_after_crash_following_candidate_rename(sqlite_ledger, tmp_path):
     run_id, failed, candidate, journal, inventory = _prepared_failed(sqlite_ledger, tmp_path)
     failed.rename(candidate)
@@ -239,6 +250,24 @@ def test_rearm_compensates_files_when_ledger_transition_fails(sqlite_ledger, tmp
         _call(sqlite_ledger, run_id, inventory)
     assert failed.is_dir() and not candidate.exists()
     assert json.loads(journal.read_text())["phase"] == "recovered"
+
+
+def test_rearm_reconciles_ambiguous_commit_without_compensating_files(
+    sqlite_ledger, tmp_path, monkeypatch
+):
+    run_id, failed, candidate, journal, inventory = _prepared_failed(sqlite_ledger, tmp_path)
+    real_rearm = sqlite_ledger.rearm_failed_candidate
+
+    def commit_then_report_false(*args, **kwargs):
+        assert real_rearm(*args, **kwargs)
+        return False
+
+    monkeypatch.setattr(sqlite_ledger, "rearm_failed_candidate", commit_then_report_false)
+    result = _call(sqlite_ledger, run_id, inventory)
+    assert result.status == "awaiting_approval"
+    assert candidate.is_dir() and not failed.exists()
+    assert sqlite_ledger.status(*IDENTITY).status == "awaiting_approval"
+    assert json.loads(journal.read_text())["phase"] == "awaiting_approval"
 
 
 def test_recovery_finishes_journal_after_ledger_rearm_commit(sqlite_ledger, tmp_path, monkeypatch):

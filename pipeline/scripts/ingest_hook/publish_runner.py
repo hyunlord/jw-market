@@ -22,6 +22,8 @@ from pipeline.scripts.ingest_hook.ubist_mart_activation import (
     MartActivation,
     acquire_writer_lock,
     complete_recovery,
+    fingerprint_build_tables,
+    inventory_corpus,
     promote_candidate_corpus,
     publish_shadow,
     recover_incomplete_activations,
@@ -43,6 +45,50 @@ def _snapshot(payload: list[dict]) -> SourceSnapshot:
             for item in payload
         )
     )
+
+
+def _verify_publish_integrity(
+    payload: dict,
+    corpus: CorpusCandidate,
+    writer_conn,
+    build_db: str,
+) -> None:
+    """Recheck the approved corpus and build schema while holding the writer lock."""
+    recorded_corpus = payload.get("candidate_integrity")
+    if not isinstance(recorded_corpus, dict):
+        raise RuntimeError("publish candidate has no recorded corpus integrity")
+    expected_corpus = (
+        int(recorded_corpus.get("file_count", -1)),
+        int(recorded_corpus.get("total_bytes", -1)),
+        str(recorded_corpus.get("manifest_sha") or ""),
+    )
+    actual_corpus = inventory_corpus(corpus.candidate_root)
+    if (
+        actual_corpus.file_count,
+        actual_corpus.total_bytes,
+        actual_corpus.manifest_sha,
+    ) != expected_corpus:
+        raise RuntimeError("publish candidate corpus integrity changed after approval")
+
+    recorded_build = payload.get("build_table_integrity")
+    if not isinstance(recorded_build, list):
+        raise RuntimeError("publish candidate has no recorded build-table integrity")
+    expected_build = tuple(
+        (
+            str(item.get("table") or ""),
+            int(item.get("row_count", -1)),
+            int(item.get("crc_sum", -1)),
+            int(item.get("crc_xor", -1)),
+        )
+        for item in recorded_build
+        if isinstance(item, dict)
+    )
+    actual_build = tuple(
+        (item.table, item.row_count, item.crc_sum, item.crc_xor)
+        for item in fingerprint_build_tables(writer_conn, build_db)
+    )
+    if actual_build != expected_build:
+        raise RuntimeError("publish build-table integrity changed after approval")
 
 
 def run(
@@ -107,6 +153,7 @@ def run(
         writer_db = activation.target_db if mode == "shadow" else None
         writer_conn = config.open_mart_connection(writer_db)
         acquire_writer_lock(writer_conn, timeout_seconds=0, lock_name=writer_lock_name)
+        _verify_publish_integrity(payload, corpus, writer_conn, activation.build_db)
         expected_manifest_sha = str(payload["baseline_manifest_sha"])
         require_corpus_manifest(corpus.live_root, expected_manifest_sha)
         snapshot_conn = config.open_mart_connection(activation.source_db)

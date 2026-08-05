@@ -2,11 +2,70 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from pipeline.scripts.ingest_hook import publish_runner
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
+from pipeline.scripts.ingest_hook.ubist_mart_activation import (
+    BuildTableFingerprint,
+    CorpusCandidate,
+    CorpusInventory,
+    NUMERIC_TABLES,
+)
 
 
 IDENTITY = ("2026-07", "ubist", "a" * 64)
+
+
+def _integrity_payload() -> dict:
+    return {
+        "candidate_integrity": {
+            "file_count": 2,
+            "total_bytes": 20,
+            "manifest_sha": "c" * 64,
+        },
+        "build_table_integrity": [
+            {"table": table, "row_count": 1, "crc_sum": 2, "crc_xor": 3}
+            for table in NUMERIC_TABLES
+        ],
+    }
+
+
+def test_publish_rejects_changed_candidate_before_promotion(monkeypatch, tmp_path) -> None:
+    payload = _integrity_payload()
+    corpus = CorpusCandidate(tmp_path / "live", tmp_path / "candidate", tmp_path / "backup")
+    monkeypatch.setattr(
+        publish_runner, "inventory_corpus",
+        lambda _root: CorpusInventory(2, 21, "d" * 64),
+    )
+    monkeypatch.setattr(
+        publish_runner, "fingerprint_build_tables",
+        lambda _conn, _schema: tuple(
+            BuildTableFingerprint(table, 1, 2, 3) for table in NUMERIC_TABLES
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="candidate corpus integrity"):
+        publish_runner._verify_publish_integrity(payload, corpus, object(), "build_db")
+
+
+def test_publish_rejects_changed_build_tables_before_promotion(monkeypatch, tmp_path) -> None:
+    payload = _integrity_payload()
+    corpus = CorpusCandidate(tmp_path / "live", tmp_path / "candidate", tmp_path / "backup")
+    monkeypatch.setattr(
+        publish_runner, "inventory_corpus",
+        lambda _root: CorpusInventory(2, 20, "c" * 64),
+    )
+    monkeypatch.setattr(
+        publish_runner, "fingerprint_build_tables",
+        lambda _conn, _schema: tuple(
+            BuildTableFingerprint(table, 9 if index == 0 else 1, 2, 3)
+            for index, table in enumerate(NUMERIC_TABLES)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="build-table integrity"):
+        publish_runner._verify_publish_integrity(payload, corpus, object(), "build_db")
 
 
 def test_publish_failure_recovers_candidate_with_build_run_identity(
@@ -55,6 +114,7 @@ def test_publish_failure_recovers_candidate_with_build_run_identity(
 
     monkeypatch.setattr(publish_runner.config, "open_mart_connection", lambda *_args: Connection())
     monkeypatch.setattr(publish_runner, "acquire_writer_lock", lambda *_args, **_kwargs: calls.append("lock"))
+    monkeypatch.setattr(publish_runner, "_verify_publish_integrity", lambda *_args: None)
     monkeypatch.setattr(
         publish_runner,
         "_release_writer_lock_preserving_primary",
@@ -149,6 +209,7 @@ def test_publish_marks_corpus_promotion_started_before_rename(
     recovered: list[str] = []
     monkeypatch.setattr(publish_runner.config, "open_mart_connection", lambda *_args: Connection())
     monkeypatch.setattr(publish_runner, "acquire_writer_lock", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish_runner, "_verify_publish_integrity", lambda *_args: None)
     monkeypatch.setattr(
         publish_runner,
         "_release_writer_lock_preserving_primary",

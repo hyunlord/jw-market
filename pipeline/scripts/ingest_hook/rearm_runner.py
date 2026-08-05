@@ -12,7 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
-from pipeline.scripts.ingest_hook.ledger import STATUS_FAILED, Ledger, _utc_timestamp
+from pipeline.scripts.ingest_hook.ledger import (
+    STATUS_AWAITING_APPROVAL,
+    STATUS_FAILED,
+    Ledger,
+    _utc_timestamp,
+)
 from pipeline.scripts.ingest_hook.ubist_mart_activation import (
     BuildTableFingerprint,
     CorpusCandidate,
@@ -237,7 +242,20 @@ def rearm(
             *identity, build_run_id=build_run_id, actor=actor, evidence=evidence,
             integrity_updates=integrity_updates,
         ):
-            raise RearmRejected("ledger changed before rearm could be recorded")
+            refreshed_entry = ledger.status(*identity)
+            refreshed_candidate = ledger.prepared_candidate(*identity)
+            committed = bool(
+                refreshed_entry is not None
+                and refreshed_entry.status == STATUS_AWAITING_APPROVAL
+                and refreshed_entry.run_id == build_run_id
+                and refreshed_candidate is not None
+                and refreshed_candidate.build_run_id == build_run_id
+                and refreshed_candidate.publish_job_name is None
+                and corpus.candidate_root.is_dir()
+                and not failed_root.exists()
+            )
+            if not committed:
+                raise RearmRejected("ledger changed before rearm could be recorded")
         ledger_rearmed = True
         update_activation_journal(journal_path, "awaiting_approval")
     except Exception:
