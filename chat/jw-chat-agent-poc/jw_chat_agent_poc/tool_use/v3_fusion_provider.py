@@ -18,7 +18,7 @@ from jw_chat_agent_poc.genos_config import (
 )
 
 
-DEFAULT_FUSION_MAX_TOKENS = 5120
+DEFAULT_FUSION_MAX_TOKENS = 8192
 
 
 class FusionProviderConfigurationError(RuntimeError):

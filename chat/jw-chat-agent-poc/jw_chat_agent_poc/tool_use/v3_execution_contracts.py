@@ -101,8 +101,32 @@ class FileCellFact:
     projection_missing_reasons: tuple[tuple[str, str], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class WebSourceFact:
+    fact_type: ClassVar[str] = "web_source"
+    evidence_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    raw_result: object
+    missing_required_fields: tuple[str, ...]
+    url: str
+    title: str
+    excerpt: str
+    fetched_at_utc: str
+    domain: str
+    search_query: str
+    result_rank: int
+    source_grade: str
+    search_stage: str
+    conflicts_with_evidence_ids: tuple[str, ...] = ()
+
+
 V3EvidenceFact: TypeAlias = (
-    MarketMetricFact | RegulatoryRuleFact | ClinicalTrialFact | FileCellFact
+    MarketMetricFact
+    | RegulatoryRuleFact
+    | ClinicalTrialFact
+    | FileCellFact
+    | WebSourceFact
 )
 
 

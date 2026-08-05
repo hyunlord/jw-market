@@ -1223,7 +1223,7 @@ def test_genos_provider_records_usage_without_exposing_token(monkeypatch: pytest
         },
     }
     assert captured["headers"] == {"Authorization": "Bearer fixture-secret"}
-    assert captured["json"]["max_tokens"] == 5120
+    assert captured["json"]["max_tokens"] == 8192
     assert result.finish_reason == "stop"
     assert "fixture-secret" not in json.dumps(result.raw_response)
     assert result.raw_text == FakeResponse().text

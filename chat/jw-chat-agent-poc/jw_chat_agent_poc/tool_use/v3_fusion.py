@@ -5,7 +5,10 @@ import json
 import re
 from typing import Protocol
 
-from jw_chat_agent_poc.tool_use.v3_execution_contracts import V3EvidenceBundle
+from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
+    V3EvidenceBundle,
+    WebSourceFact,
+)
 from jw_chat_agent_poc.tool_use.v3_fusion_contracts import (
     FusionAnswerModel,
     FusionAudit,
@@ -23,6 +26,7 @@ from jw_chat_agent_poc.tool_use.v3_fusion_evidence import (
     message_numeric_literals,
     numeric_literal_spans,
     numeric_literals,
+    web_source_numeric_literals,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion_limitations import (
     deferred_limitation,
@@ -132,16 +136,89 @@ def validate_fusion_answer(
         observed_numbers = numeric_literals(claim.text)
         observed_number_spans = numeric_literal_spans(claim.text)
         cited_facts = tuple(facts[evidence_id] for evidence_id in claim.evidence_ids)
-        allowed = set().union(
-            *(fact_numeric_literals(facts[evidence_id]) for evidence_id in claim.evidence_ids)
+        web_facts = tuple(
+            fact for fact in cited_facts if isinstance(fact, WebSourceFact)
         )
+        internal_facts = tuple(
+            fact for fact in cited_facts if not isinstance(fact, WebSourceFact)
+        )
+        if web_facts and any(fact.url not in claim.text for fact in web_facts):
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="web_source_attribution_missing",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
+        if web_facts and len(web_facts) == len(cited_facts) and _labels_web_as_internal(claim.text):
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="web_source_mislabeled_internal",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
+        internal_numbers = set().union(
+            *(fact_numeric_literals(fact) for fact in internal_facts)
+        )
+        web_numbers = {
+            value
+            for fact in web_facts
+            for value in web_source_numeric_literals(fact)
+        }
+        if _web_only_number_lacks_external_label(
+            claim.text,
+            observed_number_spans,
+            web_numbers.difference(internal_numbers),
+            has_internal_facts=bool(internal_facts),
+        ):
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="web_source_mislabeled_internal",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
+        conflict_ids = {
+            evidence_id
+            for fact in web_facts
+            for evidence_id in fact.conflicts_with_evidence_ids
+        }
+        if conflict_ids and not conflict_ids.issubset(claim.evidence_ids):
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="web_conflict_missing_internal_evidence",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
+        if conflict_ids and not _has_conflict_disclosure(generated.limitations):
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="web_conflict_not_disclosed",
+                    numeric_literals=observed_numbers,
+                )
+            )
+            continue
+        allowed = internal_numbers | web_numbers
         period_resolution = period_span_resolution(claim.text, cited_facts)
+        url_spans = _web_url_spans(claim.text, web_facts)
         unsupported_spans = tuple(
             (literal, start, end)
             for literal, start, end in observed_number_spans
             if not any(
                 span_start <= start and end <= span_end
-                for span_start, span_end in period_resolution.spans
+                for span_start, span_end in (*period_resolution.spans, *url_spans)
             )
             and canonical_numeric_literal(literal) not in allowed
         )
@@ -246,6 +323,63 @@ def _append_unique(items: list[str], value: str) -> None:
     normalized = value.strip()
     if normalized and normalized not in items:
         items.append(normalized)
+
+
+def _web_url_spans(
+    text: str,
+    facts: tuple[WebSourceFact, ...],
+) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    for fact in facts:
+        start = 0
+        while (found := text.find(fact.url, start)) >= 0:
+            spans.append((found, found + len(fact.url)))
+            start = found + len(fact.url)
+    return tuple(spans)
+
+
+def _labels_web_as_internal(text: str) -> bool:
+    return re.search(r"내부\s*(?:데이터|마트)|마트\s*기준", text) is not None
+
+
+def _web_only_number_lacks_external_label(
+    text: str,
+    numeric_spans: tuple[tuple[str, int, int], ...],
+    web_only_numbers: set[str],
+    *,
+    has_internal_facts: bool,
+) -> bool:
+    external_markers = tuple(re.finditer(r"외부|웹|출처|보도", text))
+    if not external_markers:
+        return bool(web_only_numbers)
+    if not has_internal_facts:
+        return False
+    internal_markers = tuple(
+        re.finditer(r"내부\s*(?:데이터|마트)|마트\s*기준|UBIST|IQVIA", text, re.IGNORECASE)
+    )
+    for literal, start, _end in numeric_spans:
+        if canonical_numeric_literal(literal) not in web_only_numbers:
+            continue
+        latest_external = max(
+            (marker.start() for marker in external_markers if marker.start() < start),
+            default=-1,
+        )
+        latest_internal = max(
+            (marker.start() for marker in internal_markers if marker.start() < start),
+            default=-1,
+        )
+        if latest_external <= latest_internal:
+            return True
+    return False
+
+
+def _has_conflict_disclosure(limitations: tuple[str, ...]) -> bool:
+    return any(
+        re.search(r"차이|불일치|서로\s*다", limitation)
+        and re.search(r"내부|마트|UBIST|IQVIA", limitation, re.IGNORECASE)
+        and re.search(r"외부|웹|출처|보도", limitation)
+        for limitation in limitations
+    )
 
 
 __all__ = [

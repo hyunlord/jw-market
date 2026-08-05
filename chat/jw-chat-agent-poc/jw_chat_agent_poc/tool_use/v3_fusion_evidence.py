@@ -12,6 +12,7 @@ from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ToolFailureRecord,
     V3EvidenceBundle,
     V3EvidenceFact,
+    WebSourceFact,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion_limitations import (
     deferred_limitation,
@@ -27,6 +28,7 @@ _PERIOD_VALUE = re.compile(
     r"^\d{4}(?:-(?:Q[1-4]|\d{1,2})(?:-\d{1,2})?)?$",
     re.IGNORECASE,
 )
+_WEB_EXCERPT_MAX_CHARS = 1200
 _STRUCTURAL_NUMERIC_KEYS = frozenset(
     {
         "arguments",
@@ -59,6 +61,9 @@ Copy periods from allowed_periods exactly, or use their direct Korean year/month
 Use only supplied evidence values. Write natural Korean around them without changing values.
 Keep member_population (the full mart-observed universe), active_members (positive value in a named period), and display_members (the UI projection) distinct. State the layer whenever describing brand counts or lists.
 Every HHI claim must state its supplied period. Do not combine market size and HHI from different periods in one claim.
+For web_source evidence, quote only the supplied excerpt, visibly include its exact URL in the claim, and describe it as an external source rather than internal data.
+Web numeric literals come only from web_quoted_numeric_literals and remain supplementary; they are never internal calculated values.
+When web evidence declares conflicts_with_evidence_ids, cite both the web and internal evidence, state both values without averaging, and add a limitation that identifies the difference.
 When some evidence is unavailable, keep claims supported by successful evidence and include every supplied failure limitation.
 When no evidence supports a claim, return no claim for that facet. Do not expose internal errors, implementation details, or hidden reasons.
 Return JSON only."""
@@ -101,6 +106,8 @@ def build_fusion_messages(
 
 def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
     values = object_mapping(fact)
+    if isinstance(fact, WebSourceFact):
+        values["excerpt"] = fusion_web_excerpt(fact)
     canonical = {
         key: prompt_value(values.get(key))
         for key in (
@@ -117,11 +124,28 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
             "file_id",
             "sheet",
             "range",
+            "url",
+            "title",
+            "excerpt",
+            "fetched_at_utc",
+            "domain",
+            "search_query",
+            "result_rank",
+            "source_grade",
+            "search_stage",
+            "conflicts_with_evidence_ids",
         )
         if key in values and values.get(key) is not None
     }
     arguments = prompt_value(fact.arguments)
-    raw_result = prompt_value(_without_nested_evidence(fact.raw_result))
+    raw_result_value = _without_nested_evidence(fact.raw_result)
+    if isinstance(fact, WebSourceFact):
+        raw_result_value = {
+            key: value
+            for key, value in raw_result_value.items()
+            if key not in {"snippet", "content", "raw_content"}
+        }
+    raw_result = prompt_value(raw_result_value)
     return {
         "evidence_id": fact.evidence_id,
         "fact_type": fact.fact_type,
@@ -130,7 +154,14 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
         "canonical": canonical,
         "raw_result": raw_result,
         "missing_required_fields": list(fact.missing_required_fields),
-        "allowed_numeric_literals": sorted(fact_numeric_literals(fact)),
+        "allowed_numeric_literals": (
+            [] if isinstance(fact, WebSourceFact) else sorted(fact_numeric_literals(fact))
+        ),
+        "web_quoted_numeric_literals": (
+            sorted(web_source_numeric_literals(fact))
+            if isinstance(fact, WebSourceFact)
+            else []
+        ),
         "allowed_periods": sorted(fact_period_literals(fact)),
     }
 
@@ -212,9 +243,21 @@ def canonical_numeric_literal(value: str) -> str:
 
 
 def fact_numeric_literals(fact: V3EvidenceFact) -> frozenset[str]:
+    if isinstance(fact, WebSourceFact):
+        return frozenset()
     values: set[str] = set()
     _collect_semantic_numeric_values(fact.raw_result, values)
     return frozenset(values)
+
+
+def web_source_numeric_literals(fact: WebSourceFact) -> frozenset[str]:
+    return frozenset(
+        canonical_numeric_literal(value) for value in numeric_literals(fusion_web_excerpt(fact))
+    )
+
+
+def fusion_web_excerpt(fact: WebSourceFact) -> str:
+    return fact.excerpt[:_WEB_EXCERPT_MAX_CHARS]
 
 
 def fact_period_literals(fact: V3EvidenceFact) -> frozenset[str]:
