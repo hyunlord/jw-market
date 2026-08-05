@@ -296,6 +296,137 @@ def test_hhi_claim_accepts_equivalent_korean_quarter_period() -> None:
     assert result.audit.rejected_claims == ()
 
 
+@pytest.mark.parametrize("month_text", ("2026년 5월", "2026년 05월"))
+def test_hhi_claim_accepts_equivalent_korean_month_period(month_text: str) -> None:
+    fact = replace(
+        _fact("fact-hhi", value=253.6207, metric="hhi", unit="index"),
+        period="2026-05",
+    )
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text=f"{month_text} 기준 HHI는 253.6207입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert [claim.text for claim in result.answer.claims] == [
+        f"{month_text} 기준 HHI는 253.6207입니다."
+    ]
+    assert result.audit.rejected_claims == ()
+
+
+def test_period_month_digits_cannot_supply_rank_evidence() -> None:
+    fact = replace(_fact("fact-share", value=51.38), period="2026-05")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026년 05월 기준 아일리아는 6위이고 점유율은 51.38%입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
+    assert result.audit.ungrounded_numeric_literals == ("6",)
+
+
+@pytest.mark.parametrize(
+    ("metric", "observed", "injected", "unit"),
+    (
+        ("market_size", 2139.25, "2140.00", "억원"),
+        ("hhi", 253.6207, "253.6208", "index"),
+        ("market_members", 555, "556", "brand"),
+    ),
+)
+def test_unobserved_numeric_injections_are_rejected(
+    metric: str,
+    observed: float,
+    injected: str,
+    unit: str,
+) -> None:
+    fact = replace(_fact(f"fact-{metric}", value=observed, metric=metric, unit=unit), period="2026-05")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text=f"2026년 05월 {metric} 값은 {injected}입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
+    assert injected in result.audit.ungrounded_numeric_literals
+
+
+def test_allowed_numeric_value_in_wrong_population_layer_is_rejected() -> None:
+    fact = _population_fact()
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="이 시장의 전체 mart 관측 브랜드는 9개입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "population_layer_mismatch"
+
+
+def test_allowed_value_relabelled_to_another_korean_month_is_rejected() -> None:
+    fact = replace(_fact("fact-share", value=51.38), period="2026-05")
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026년 04월 아일리아 점유율은 51.38%입니다.",
+                evidence_ids=(fact.evidence_id,),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(fact))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "ungrounded_numeric_literal"
+    assert result.audit.ungrounded_numeric_literals == ("2026", "04")
+
+
+def test_market_size_and_hhi_with_different_korean_months_remain_rejected() -> None:
+    market_size = replace(
+        _fact("fact-size", value=2139.25, metric="market_size", unit="억원"),
+        period="2026-05",
+    )
+    hhi = replace(
+        _fact("fact-hhi", value=253.6207, metric="hhi", unit="index"),
+        period="2026-04",
+    )
+    answer = GeneratedFusionAnswer(
+        claims=(
+            GeneratedFusionClaim(
+                text="2026년 05월 시장 규모는 2139.25억원이고 2026년 04월 HHI는 253.6207입니다.",
+                evidence_ids=(market_size.evidence_id, hhi.evidence_id),
+            ),
+        )
+    )
+
+    result = validate_fusion_answer(answer, _bundle(market_size, hhi))
+
+    assert result.answer.claims == ()
+    assert result.audit.rejected_claims[0].reason == "market_hhi_period_mismatch"
+
+
 def test_period_quarter_digit_cannot_supply_rank_evidence() -> None:
     fact = _fact("fact-share", value=51.38)
     answer = GeneratedFusionAnswer(

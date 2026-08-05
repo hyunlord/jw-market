@@ -81,7 +81,8 @@ def _period_spans(text: str, period: str) -> set[tuple[int, int]]:
     month_match = re.fullmatch(r"(?P<year>\d{4})-(?P<month>\d{1,2})", period)
     if month_match is not None:
         year = re.escape(month_match.group("year"))
-        month = re.escape(str(int(month_match.group("month"))))
+        month_number = int(month_match.group("month"))
+        month = rf"0?{month_number}" if month_number < 10 else str(month_number)
         spans.update(
             (match.start(), match.end())
             for match in re.finditer(rf"{year}\s*년\s*{month}\s*월", text)
@@ -164,14 +165,7 @@ def _mentions_hhi(text: str) -> bool:
 
 
 def _period_mentioned(text: str, period: str) -> bool:
-    if period in text:
-        return True
-    match = _QUARTER_PERIOD.fullmatch(period.strip())
-    if match is None:
-        return False
-    year = re.escape(match.group("year"))
-    quarter = re.escape(match.group("quarter"))
-    return re.search(rf"{year}\s*년\s*{quarter}\s*분기", text) is not None
+    return bool(_period_spans(text, period))
 
 
 def _object_mapping(value: object) -> Mapping[str, object]:
