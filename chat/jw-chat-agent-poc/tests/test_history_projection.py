@@ -477,6 +477,39 @@ def test_latest_turn_restores_slots_from_trace_json(monkeypatch) -> None:
     assert params == ("conversation-1", 600)
 
 
+def test_recent_turns_restores_persisted_questions_in_chronological_order(monkeypatch) -> None:
+    slots = ConversationSlots(anchor_brand="리바로")
+
+    class RecentCursor(_Cursor):
+        def fetchall(self):
+            return (
+                ("세 번째 질문", "세 번째 답변", {"_conversation_slots": conversation_slots_to_dict(slots)}),
+                ("두 번째 질문", "두 번째 답변", {}),
+            )
+
+    connection = _Connection()
+    connection.cursor_instance = RecentCursor()
+    store = MySQLConversationHistoryStore(_DbConfig("db", 3306, "jw_mart", "user", "password"))
+    monkeypatch.setattr(store, "_connect", lambda: connection)
+
+    turns = store.recent_turns("conversation-1", 2)
+
+    assert tuple(turn.question for turn in turns) == ("두 번째 질문", "세 번째 질문")
+    assert turns[-1].slots == slots
+    statement, params = connection.cursor_instance.statements[-1]
+    assert "ORDER BY turn_index DESC, id DESC" in statement
+    assert "LIMIT %s" in statement
+    assert params == ("conversation-1", 600, 2)
+
+
+def test_recent_turns_reports_missing_persistent_store_configuration() -> None:
+    store = MySQLConversationHistoryStore(config=None)
+    store._config = None
+
+    with pytest.raises(RuntimeError, match="not configured"):
+        store.recent_turns("conversation-1", 2)
+
+
 def test_projection_outbox_failure_does_not_rollback_source_log(monkeypatch) -> None:
     connection = _Connection()
     outbox = _OutboxEnqueuer(fail=True)

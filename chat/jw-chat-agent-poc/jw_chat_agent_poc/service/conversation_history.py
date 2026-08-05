@@ -50,6 +50,9 @@ class ConversationHistoryStore(Protocol):
     def latest_turn(self, conversation_id: str) -> ConversationTurn | None:
         """Return the latest completed turn for cross-process follow-ups."""
 
+    def recent_turns(self, conversation_id: str, limit: int) -> tuple[ConversationTurn, ...]:
+        """Return bounded completed turns for cross-process policy observation."""
+
 
 @dataclass(frozen=True, slots=True)
 class _DbConfig:
@@ -213,6 +216,39 @@ class MySQLConversationHistoryStore:
             answer=str(row[1] or ""),
             slots=conversation_slots_from_dict(trace_payload.get(_CONVERSATION_SLOTS_TRACE_KEY)),
         )
+
+    def recent_turns(self, conversation_id: str, limit: int) -> tuple[ConversationTurn, ...]:
+        if not conversation_id.strip() or limit <= 0:
+            return ()
+        if self._config is None:
+            raise RuntimeError("conversation history is not configured")
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT question_text, answer_text, trace_json
+                    FROM {self._table_name}
+                    WHERE conversation_id = %s
+                      AND created_at >= UTC_TIMESTAMP() - INTERVAL %s SECOND
+                    ORDER BY turn_index DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (conversation_id, self._context_ttl_seconds, limit),
+                )
+                rows = cursor.fetchall()
+        turns = []
+        for row in reversed(rows):
+            trace_payload = _json_object(row[2])
+            turns.append(
+                ConversationTurn(
+                    question=str(row[0] or ""),
+                    answer=str(row[1] or ""),
+                    slots=conversation_slots_from_dict(
+                        trace_payload.get(_CONVERSATION_SLOTS_TRACE_KEY)
+                    ),
+                )
+            )
+        return tuple(turns)
 
     def _connect(self):
         assert self._config is not None

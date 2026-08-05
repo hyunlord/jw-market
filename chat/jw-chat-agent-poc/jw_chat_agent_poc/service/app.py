@@ -164,6 +164,7 @@ from jw_chat_agent_poc.service.conversation_context import (
     unresolved_reference_result,
 )
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
+from jw_chat_agent_poc.service.input_guard_shadow import launch_default_input_guard_shadow
 from jw_chat_agent_poc.service.evidence_binding import (
     evidence_facts_from_result,
     expected_entities_from_result,
@@ -1037,6 +1038,11 @@ def _answer_question(
     conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
     store.configure_conversation_repository(conversation_history)
+    launch_default_input_guard_shadow(
+        question=question,
+        conversation_id=conversation_id,
+        history=conversation_history,
+    )
     input_policy_decision = evaluate_input_policy(question)
     if policy_is_enforced(input_policy_decision):
         state = store.conversations.get_or_create(conversation_id)
