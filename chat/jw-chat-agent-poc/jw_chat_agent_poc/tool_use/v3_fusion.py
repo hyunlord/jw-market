@@ -51,6 +51,17 @@ class FusionOutputError(ValueError):
     pass
 
 
+class FusionOutputTruncatedError(FusionOutputError):
+    reason_code = "fusion_output_truncated"
+
+    def __init__(self, provider: FusionProviderResult) -> None:
+        super().__init__("fusion response reached the output token limit")
+        self.provider = provider
+        self.limitations = (
+            "응답이 출력 상한에서 잘려 일부를 확인하지 못했습니다.",
+        )
+
+
 class V3FusionEngine:
     def __init__(self, provider: FusionProvider) -> None:
         self._provider = provider
@@ -63,6 +74,8 @@ class V3FusionEngine:
         provider_result = self._provider.generate(
             messages=build_fusion_messages(question, bundle)
         )
+        if provider_result.finish_reason == "length":
+            raise FusionOutputTruncatedError(provider_result)
         generated = parse_generated_answer(provider_result.content)
         return FusionGenerationResult(
             generated=generated,
@@ -213,6 +226,7 @@ def _append_unique(items: list[str], value: str) -> None:
 __all__ = [
     "FusionGenerationResult",
     "FusionOutputError",
+    "FusionOutputTruncatedError",
     "V3FusionEngine",
     "build_fusion_messages",
     "canonical_numeric_literal",

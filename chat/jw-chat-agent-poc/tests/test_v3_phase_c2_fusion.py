@@ -14,6 +14,7 @@ from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     V3EvidenceFact,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion import (
+    FusionOutputTruncatedError,
     V3FusionEngine,
     build_fusion_messages,
     validate_fusion_answer,
@@ -661,6 +662,7 @@ def test_engine_preserves_raw_provider_response_and_validates_before_return() ->
                 latency_ms=1.0,
                 completed_at_utc="2026-08-05T00:00:00Z",
                 request_body_sha256="a" * 64,
+                finish_reason="stop",
             )
 
     result = V3FusionEngine(FakeProvider()).generate("점유율 알려줘", _bundle(fact))
@@ -692,6 +694,7 @@ def test_genos_provider_records_usage_without_exposing_token(monkeypatch: pytest
                 "model": "genos/514/fixture",
                 "choices": [
                     {
+                        "finish_reason": "stop",
                         "message": {
                             "content": '{"claims":[],"limitations":["확인할 근거가 없습니다."]}'
                         }
@@ -733,9 +736,39 @@ def test_genos_provider_records_usage_without_exposing_token(monkeypatch: pytest
         },
     }
     assert captured["headers"] == {"Authorization": "Bearer fixture-secret"}
-    assert captured["json"]["max_tokens"] == 4096
+    assert captured["json"]["max_tokens"] == 5120
+    assert result.finish_reason == "stop"
     assert "fixture-secret" not in json.dumps(result.raw_response)
     assert result.raw_text == FakeResponse().text
     assert result.raw_bytes_sha256 == hashlib.sha256(
         result.raw_text.encode("utf-8")
     ).hexdigest()
+
+
+def test_engine_reports_length_finish_as_typed_failure_without_partial_recovery() -> None:
+    fact = _fact("fact-share", value=51.38)
+
+    class TruncatedProvider:
+        def generate(self, *, messages: list[dict[str, str]]) -> FusionProviderResult:
+            assert len(messages) == 2
+            return FusionProviderResult(
+                content='{"claims":[{"text":"아일리아 점유율은 51.38%',
+                raw_text='{"choices":[{"finish_reason":"length"}]}',
+                raw_bytes_sha256="b" * 64,
+                raw_response={"choices": [{"finish_reason": "length"}]},
+                usage={"output_tokens": 4092},
+                model="fixture",
+                latency_ms=1.0,
+                completed_at_utc="2026-08-05T00:00:00Z",
+                request_body_sha256="a" * 64,
+                finish_reason="length",
+            )
+
+    with pytest.raises(FusionOutputTruncatedError) as caught:
+        V3FusionEngine(TruncatedProvider()).generate("점유율 알려줘", _bundle(fact))
+
+    assert caught.value.reason_code == "fusion_output_truncated"
+    assert caught.value.limitations == (
+        "응답이 출력 상한에서 잘려 일부를 확인하지 못했습니다.",
+    )
+    assert caught.value.provider.finish_reason == "length"

@@ -18,6 +18,9 @@ from jw_chat_agent_poc.genos_config import (
 )
 
 
+DEFAULT_FUSION_MAX_TOKENS = 5120
+
+
 class FusionProviderConfigurationError(RuntimeError):
     pass
 
@@ -33,6 +36,7 @@ class FusionProviderResult:
     latency_ms: float
     completed_at_utc: str
     request_body_sha256: str
+    finish_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +47,7 @@ class GenosV3FusionProvider:
         default_factory=lambda: os.environ.get("CHAT_V3_FUSION_MODEL")
     )
     timeout_s: float = 60.0
-    max_tokens: int = 4096
+    max_tokens: int = DEFAULT_FUSION_MAX_TOKENS
     temperature: float = 0.0
 
     @classmethod
@@ -98,6 +102,7 @@ class GenosV3FusionProvider:
             latency_ms=latency_ms,
             completed_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             request_body_sha256=hashlib.sha256(encoded).hexdigest(),
+            finish_reason=_completion_finish_reason(raw),
         )
 
 
@@ -113,7 +118,17 @@ def _completion_content(payload: Mapping[str, object]) -> str:
     return content
 
 
+def _completion_finish_reason(payload: Mapping[str, object]) -> str | None:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    finish_reason = first.get("finish_reason") if isinstance(first, Mapping) else None
+    return finish_reason if isinstance(finish_reason, str) else None
+
+
 __all__ = [
+    "DEFAULT_FUSION_MAX_TOKENS",
     "FusionProviderConfigurationError",
     "FusionProviderResult",
     "GenosV3FusionProvider",
