@@ -36,6 +36,7 @@ PROTECTED_TARGETS = frozenset({"jw_mart"})
 SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 COUNT_READBACK_RETRY_LIMIT: Final = 5
 COUNT_READBACK_RETRY_DELAY_SECONDS: Final = 1.0
+PUBLISH_COPY_BATCH_ROWS: Final = 100
 STRATEGIC_BRAND_REQUIRED_COLUMNS = (
     "ml_id",
     "brand_id",
@@ -495,16 +496,18 @@ def _copy_table(
     target_db: str,
     source_table: str,
     target_table: str,
-    batch_size: int = 200,
+    batch_size: int = PUBLISH_COPY_BATCH_ROWS,
 ) -> None:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    effective_batch_size = min(batch_size, 200)
+    effective_batch_size = min(batch_size, PUBLISH_COPY_BATCH_ROWS)
+    conn.commit()
     with conn.cursor() as cur:
         cur.execute(
             f"CREATE TABLE {quote_id(target_db)}.{quote_id(target_table)} "
             f"LIKE {quote_id(source_db)}.{quote_id(source_table)}"
         )
+    conn.commit()
     columns = _ordered_columns(conn, source_db, source_table)
     column_sql = ",".join(quote_id(column) for column in columns)
     if "id" not in columns:
@@ -532,6 +535,7 @@ def _copy_table(
                 "WHERE id BETWEEN %s AND %s ORDER BY id",
                 (lower, upper),
             )
+            conn.commit()
 
 
 def _copy_table_without_id(
@@ -568,6 +572,7 @@ def _copy_table_without_id(
                 f"SELECT {column_sql} FROM {quote_id(source_db)}.{quote_id(source_table)} "
                 f"ORDER BY {order_sql} LIMIT {batch_size} OFFSET {offset}"
             )
+            conn.commit()
 
 
 def _copy_table_by_keyset(
@@ -603,6 +608,7 @@ def _copy_table_by_keyset(
                 f"VALUES ({value_placeholders})",
                 values,
             )
+        conn.commit()
         last_key = tuple(rows[-1][column] for column in key_columns)
 
 

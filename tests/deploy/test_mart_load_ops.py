@@ -173,6 +173,9 @@ def test_copy_table_batches_by_id(monkeypatch) -> None:
         def cursor(self) -> Cursor:
             return Cursor()
 
+        def commit(self) -> None:
+            return None
+
     monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["id", "payload"])
     monkeypatch.setattr(mart_load_ops, "_id_bounds", lambda *args: (1, 5))
 
@@ -181,6 +184,52 @@ def test_copy_table_batches_by_id(monkeypatch) -> None:
     assert "CREATE TABLE" in executed[0][0]
     assert [params for _, params in executed[1:]] == [(1, 2), (3, 4), (5, 6)]
     assert all("WHERE id BETWEEN %s AND %s" in sql for sql, _ in executed[1:])
+
+
+def test_copy_table_commits_create_and_every_id_batch(monkeypatch) -> None:
+    events: list[str] = []
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: object = None) -> None:
+            del params
+            events.append("create" if sql.startswith("CREATE TABLE") else "insert")
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def commit(self) -> None:
+            events.append("commit")
+
+    monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["id", "payload"])
+    monkeypatch.setattr(mart_load_ops, "_id_bounds", lambda *args: (1, 250))
+
+    mart_load_ops._copy_table(
+        Connection(),
+        "build_db",
+        "target_db",
+        "source_table",
+        "target_table",
+        batch_size=100,
+    )
+
+    assert events == [
+        "commit",
+        "create",
+        "commit",
+        "insert",
+        "commit",
+        "insert",
+        "commit",
+        "insert",
+        "commit",
+    ]
 
 
 def test_copy_table_batches_no_id_by_primary_key(monkeypatch) -> None:
@@ -214,6 +263,9 @@ def test_copy_table_batches_no_id_by_primary_key(monkeypatch) -> None:
         def cursor(self) -> Cursor:
             return Cursor()
 
+        def commit(self) -> None:
+            return None
+
     monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["brand", "market_id", "response_json"])
     monkeypatch.setattr(mart_load_ops, "_primary_key_columns", lambda *args: ["brand", "market_id"])
     monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: 5)
@@ -239,9 +291,114 @@ def test_copy_table_batches_no_id_by_primary_key(monkeypatch) -> None:
     assert params[4] == [("c", "m2", None)]
 
 
-def test_copy_table_caps_no_id_batch_size_at_200(monkeypatch) -> None:
+def test_copy_table_commits_every_keyset_batch(monkeypatch) -> None:
+    events: list[str] = []
+    key_batches = [[{"query_key": "a"}], [{"query_key": "b"}], []]
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: object = None) -> None:
+            del params
+            events.append("create" if sql.startswith("CREATE TABLE") else "select")
+
+        def executemany(self, sql: str, params: object = None) -> None:
+            del sql, params
+            events.append("insert")
+
+        def fetchall(self) -> list[dict[str, str]]:
+            return [
+                {"query_key": row["query_key"], "response_json": None}
+                for row in key_batches.pop(0)
+            ]
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def commit(self) -> None:
+            events.append("commit")
+
+    monkeypatch.setattr(
+        mart_load_ops,
+        "_ordered_columns",
+        lambda *args: ["query_key", "response_json"],
+    )
+    monkeypatch.setattr(mart_load_ops, "_primary_key_columns", lambda *args: ["query_key"])
+    monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: 2)
+
+    mart_load_ops._copy_table(
+        Connection(), "build_db", "target_db", "source_table", "target_table"
+    )
+
+    assert events == [
+        "commit",
+        "create",
+        "commit",
+        "select",
+        "insert",
+        "commit",
+        "select",
+        "insert",
+        "commit",
+        "select",
+    ]
+
+
+def test_copy_table_commits_every_offset_batch(monkeypatch) -> None:
+    events: list[str] = []
+
+    class Cursor:
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: object = None) -> None:
+            del params
+            events.append("create" if sql.startswith("CREATE TABLE") else "insert")
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def commit(self) -> None:
+            events.append("commit")
+
+    monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["payload"])
+    monkeypatch.setattr(mart_load_ops, "_primary_key_columns", lambda *args: [])
+    monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: 250)
+
+    mart_load_ops._copy_table(
+        Connection(),
+        "build_db",
+        "target_db",
+        "source_table",
+        "target_table",
+        batch_size=100,
+    )
+
+    assert events == [
+        "commit",
+        "create",
+        "commit",
+        "insert",
+        "commit",
+        "insert",
+        "commit",
+        "insert",
+        "commit",
+    ]
+
+
+def test_copy_table_caps_no_id_batch_size_at_100(monkeypatch) -> None:
     executed: list[tuple[str, object]] = []
-    key_batches = [[{"query_key": str(index)} for index in range(200)], []]
+    key_batches = [[{"query_key": str(index)} for index in range(100)], []]
 
     class Cursor:
         def __enter__(self) -> "Cursor":
@@ -264,6 +421,9 @@ def test_copy_table_caps_no_id_batch_size_at_200(monkeypatch) -> None:
         def cursor(self) -> Cursor:
             return Cursor()
 
+        def commit(self) -> None:
+            return None
+
     monkeypatch.setattr(mart_load_ops, "_ordered_columns", lambda *args: ["query_key", "response_json"])
     monkeypatch.setattr(mart_load_ops, "_primary_key_columns", lambda *args: ["query_key"])
     monkeypatch.setattr(mart_load_ops, "_table_row_count", lambda *args: 450)
@@ -271,9 +431,9 @@ def test_copy_table_caps_no_id_batch_size_at_200(monkeypatch) -> None:
     mart_load_ops._copy_table(Connection(), "build_db", "target_db", "source_table", "target_table", batch_size=500)
 
     statements = [sql for sql, _ in executed]
-    assert statements[1].endswith("ORDER BY `query_key` LIMIT 200")
+    assert statements[1].endswith("ORDER BY `query_key` LIMIT 100")
     assert "INSERT INTO `target_db`.`target_table`" in statements[2]
-    assert statements[3].endswith("WHERE (`query_key` > %s) ORDER BY `query_key` LIMIT 200")
+    assert statements[3].endswith("WHERE (`query_key` > %s) ORDER BY `query_key` LIMIT 100")
 
 
 def test_publish_retries_transient_partial_count_before_atomic_rename(monkeypatch) -> None:
