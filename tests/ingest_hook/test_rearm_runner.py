@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from pipeline.scripts.ingest_hook import rearm_runner, ubist_mart_activation
 
@@ -12,7 +14,10 @@ from pipeline.scripts.ingest_hook import rearm_runner, ubist_mart_activation
 IDENTITY = ("2026-05", "ubist", "a" * 64)
 
 
-def _prepared_failed(sqlite_ledger, tmp_path: Path, *, expires_at: str = "2099-01-01T00:00:00Z"):
+def _prepared_failed(
+    sqlite_ledger, tmp_path: Path, *, expires_at: str = "2099-01-01T00:00:00Z",
+    include_integrity: bool = True,
+):
     run_id = "20260805014118770360"
     live = tmp_path / "ubist"
     failed = tmp_path / f".ubist_failed_{run_id}"
@@ -34,17 +39,23 @@ def _prepared_failed(sqlite_ledger, tmp_path: Path, *, expires_at: str = "2099-0
     sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
     sqlite_ledger.mark_running(*IDENTITY, job_name="build", run_id=run_id)
     inventory = ubist_mart_activation.inventory_corpus(failed)
+    candidate_payload = {
+        "activation_journal": str(journal), "candidate_root": str(candidate),
+        "build_db": "jw_mart_ingest_shadow_build", "target_db": "jw_mart_ingest_shadow_target",
+    }
+    if include_integrity:
+        candidate_payload.update({
+            "candidate_integrity": {"file_count": inventory.file_count,
+                                    "total_bytes": inventory.total_bytes,
+                                    "manifest_sha": inventory.manifest_sha},
+            "build_table_integrity": [
+                {"table": table, "row_count": 1, "crc_sum": 2, "crc_xor": 3}
+                for table in ubist_mart_activation.NUMERIC_TABLES
+            ],
+        })
     sqlite_ledger.mark_awaiting_approval(
         *IDENTITY, run_id=run_id,
-        candidate={"activation_journal": str(journal), "candidate_root": str(candidate),
-                   "build_db": "jw_mart_ingest_shadow_build", "target_db": "jw_mart_ingest_shadow_target",
-                   "candidate_integrity": {"file_count": inventory.file_count,
-                                           "total_bytes": inventory.total_bytes,
-                                           "manifest_sha": inventory.manifest_sha},
-                   "build_table_integrity": [
-                       {"table": table, "row_count": 1, "crc_sum": 2, "crc_xor": 3}
-                       for table in ubist_mart_activation.NUMERIC_TABLES
-                   ]},
+        candidate=candidate_payload,
         prepared_at="2026-08-05T00:00:00Z", expires_at=expires_at,
     )
     sqlite_ledger.mark_publish_running(
@@ -69,6 +80,28 @@ def _call(sqlite_ledger, run_id, inventory, *, actor="operator", **overrides):
     )
     args.update(overrides)
     return rearm_runner.rearm(**args)
+
+
+def _make_legacy_candidate(sqlite_ledger, tmp_path: Path):
+    run_id, failed, candidate, journal, _inventory = _prepared_failed(
+        sqlite_ledger, tmp_path, include_integrity=False
+    )
+    parquet = failed / "year=2026" / "month=05" / "data.parquet"
+    parquet.parent.mkdir(parents=True)
+    (failed / "part.parquet").unlink()
+    pq.write_table(pa.table({"value": [1, 2]}), parquet)
+    (failed / "_manifest.json").write_text(json.dumps({
+        "partitions": [{
+            "period_yyyymm": "2026-05",
+            "path": "year=2026/month=05/data.parquet",
+            "row_count": 2,
+        }],
+    }), encoding="utf-8")
+    (failed / "post_gate_report.json").write_text(json.dumps({
+        "status": "pass", "epoch": IDENTITY[0], "category": IDENTITY[1],
+        "run_id": run_id,
+    }), encoding="utf-8")
+    return run_id, failed, candidate, journal, ubist_mart_activation.inventory_corpus(failed)
 
 
 def test_rearm_exact_identity_restores_candidate_and_records_audit(sqlite_ledger, tmp_path):
@@ -129,6 +162,53 @@ def test_rearm_rejects_changed_build_schema(sqlite_ledger, tmp_path):
     )
     with pytest.raises(rearm_runner.RearmRejected, match="build-table integrity"):
         _call(sqlite_ledger, run_id, inventory, read_build_fingerprints=lambda _name: changed)
+    assert failed.is_dir() and not candidate.exists()
+
+
+def test_rearm_reconstructs_legacy_integrity_inside_audited_transition(sqlite_ledger, tmp_path):
+    run_id, failed, candidate, _journal, inventory = _make_legacy_candidate(
+        sqlite_ledger, tmp_path
+    )
+    result = _call(
+        sqlite_ledger, run_id, inventory,
+        allow_legacy_integrity_reconstruction=True,
+    )
+    assert result.status == "awaiting_approval"
+    assert candidate.is_dir() and not failed.exists()
+    payload = sqlite_ledger.prepared_candidate(*IDENTITY).payload
+    assert payload["candidate_integrity"] == {
+        "file_count": inventory.file_count,
+        "total_bytes": inventory.total_bytes,
+        "manifest_sha": inventory.manifest_sha,
+    }
+    assert len(payload["build_table_integrity"]) == 6
+    transition = sqlite_ledger.status_transitions(*IDENTITY)[-1]
+    assert transition.evidence["integrity_origin"] == "legacy_manifest_reconstruction"
+    assert transition.evidence["legacy_manifest"]["partition_count"] == 1
+
+
+def test_rearm_rejects_legacy_candidate_without_explicit_flag(sqlite_ledger, tmp_path):
+    run_id, failed, candidate, _journal, inventory = _make_legacy_candidate(
+        sqlite_ledger, tmp_path
+    )
+    with pytest.raises(rearm_runner.RearmRejected, match="legacy integrity"):
+        _call(sqlite_ledger, run_id, inventory)
+    assert failed.is_dir() and not candidate.exists()
+
+
+def test_rearm_rejects_legacy_manifest_row_mismatch(sqlite_ledger, tmp_path):
+    run_id, failed, candidate, _journal, inventory = _make_legacy_candidate(
+        sqlite_ledger, tmp_path
+    )
+    manifest = json.loads((failed / "_manifest.json").read_text())
+    manifest["partitions"][0]["row_count"] = 3
+    (failed / "_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    inventory = ubist_mart_activation.inventory_corpus(failed)
+    with pytest.raises(rearm_runner.RearmRejected, match="row count"):
+        _call(
+            sqlite_ledger, run_id, inventory,
+            allow_legacy_integrity_reconstruction=True,
+        )
     assert failed.is_dir() and not candidate.exists()
 
 

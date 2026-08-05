@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -34,6 +35,67 @@ class RearmResult:
     inventory: CorpusInventory
 
 
+def _validate_legacy_corpus_manifest(
+    root: Path, *, epoch: str, category: str, build_run_id: str,
+) -> dict[str, object]:
+    """Cross-check a pre-integrity candidate against its internal build records."""
+    try:
+        import pyarrow.parquet as pq
+
+        manifest_path = root / "_manifest.json"
+        report_path = root / "post_gate_report.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (ImportError, OSError, ValueError) as exc:
+        raise RearmRejected("legacy corpus manifest is unreadable") from exc
+    if (
+        report.get("status") != "pass"
+        or str(report.get("epoch") or "") != epoch
+        or str(report.get("category") or "") != category
+        or str(report.get("run_id") or "") != build_run_id
+    ):
+        raise RearmRejected("legacy post-gate report identity or status mismatch")
+    partitions = manifest.get("partitions")
+    if not isinstance(partitions, list) or not partitions:
+        raise RearmRejected("legacy corpus manifest has no partitions")
+    expected: dict[str, int] = {}
+    for item in partitions:
+        if not isinstance(item, dict):
+            raise RearmRejected("legacy corpus manifest contains an invalid partition")
+        relative = str(item.get("path") or "")
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root.resolve())
+            rows = int(item["row_count"])
+        except (KeyError, TypeError, ValueError):
+            raise RearmRejected("legacy corpus manifest contains an invalid row count")
+        if not relative or path.suffix != ".parquet" or relative in expected or rows < 0:
+            raise RearmRejected("legacy corpus manifest contains an invalid partition path")
+        expected[relative] = rows
+    actual_paths = {
+        item.relative_to(root).as_posix()
+        for item in root.rglob("*.parquet")
+        if item.is_file()
+    }
+    if actual_paths != set(expected):
+        raise RearmRejected("legacy corpus parquet paths do not match its manifest")
+    total_rows = 0
+    for relative, expected_rows in expected.items():
+        actual_rows = int(pq.ParquetFile(root / relative).metadata.num_rows)
+        if actual_rows != expected_rows:
+            raise RearmRejected(
+                f"legacy corpus row count mismatch for {relative}: "
+                f"expected={expected_rows} actual={actual_rows}"
+            )
+        total_rows += actual_rows
+    return {
+        "manifest_file_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "partition_count": len(expected),
+        "parquet_row_count": total_rows,
+        "post_gate_status": "pass",
+    }
+
+
 def _journal(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -46,6 +108,7 @@ def rearm(
     build_run_id: str, actor: str, expected_file_count: int,
     expected_total_bytes: int, expected_manifest_sha: str,
     read_build_fingerprints: Callable[[str], tuple[BuildTableFingerprint, ...]],
+    allow_legacy_integrity_reconstruction: bool = False,
     now: datetime | None = None,
 ) -> RearmResult:
     identity = (epoch, category, manifest_sha)
@@ -97,37 +160,47 @@ def rearm(
         int(expected_file_count), int(expected_total_bytes), expected_manifest_sha,
     )
     recorded_raw = payload.get("candidate_integrity")
-    if not isinstance(recorded_raw, dict):
-        raise RearmRejected("candidate has no recorded corpus integrity")
-    expected = CorpusInventory(
-        int(recorded_raw.get("file_count", -1)),
-        int(recorded_raw.get("total_bytes", -1)),
-        str(recorded_raw.get("manifest_sha") or ""),
-    )
-    if supplied != expected:
-        raise RearmRejected("operator integrity assertion does not match prepared candidate")
-    if actual != expected:
-        raise RearmRejected(f"corpus integrity mismatch: expected={expected} actual={actual}")
+    legacy_evidence: dict[str, object] | None = None
+    if isinstance(recorded_raw, dict):
+        expected = CorpusInventory(
+            int(recorded_raw.get("file_count", -1)),
+            int(recorded_raw.get("total_bytes", -1)),
+            str(recorded_raw.get("manifest_sha") or ""),
+        )
+        if supplied != expected:
+            raise RearmRejected("operator integrity assertion does not match prepared candidate")
+        if actual != expected:
+            raise RearmRejected(f"corpus integrity mismatch: expected={expected} actual={actual}")
+    else:
+        if not allow_legacy_integrity_reconstruction:
+            raise RearmRejected("legacy integrity reconstruction requires explicit opt-in")
+        if supplied != actual:
+            raise RearmRejected("operator integrity assertion does not match legacy corpus")
+        legacy_evidence = _validate_legacy_corpus_manifest(
+            inventory_root, epoch=epoch, category=category, build_run_id=build_run_id,
+        )
     build_db = str(journal.get("build_db") or "")
     if build_db != str(payload.get("build_db") or ""):
         raise RearmRejected("build schema identity mismatch")
-    recorded_build = payload.get("build_table_integrity")
-    if not isinstance(recorded_build, list):
-        raise RearmRejected("candidate has no recorded build-table integrity")
-    expected_build = tuple(
-        (
-            str(item.get("table") or ""), int(item.get("row_count", -1)),
-            int(item.get("crc_sum", -1)), int(item.get("crc_xor", -1)),
-        )
-        for item in recorded_build
-        if isinstance(item, dict)
-    )
+    actual_build_items = read_build_fingerprints(build_db)
     actual_build = tuple(
         (item.table, item.row_count, item.crc_sum, item.crc_xor)
-        for item in read_build_fingerprints(build_db)
+        for item in actual_build_items
     )
-    if actual_build != expected_build:
-        raise RearmRejected("build-table integrity mismatch")
+    recorded_build = payload.get("build_table_integrity")
+    if isinstance(recorded_build, list):
+        expected_build = tuple(
+            (
+                str(item.get("table") or ""), int(item.get("row_count", -1)),
+                int(item.get("crc_sum", -1)), int(item.get("crc_xor", -1)),
+            )
+            for item in recorded_build
+            if isinstance(item, dict)
+        )
+        if actual_build != expected_build:
+            raise RearmRejected("build-table integrity mismatch")
+    elif legacy_evidence is None:
+        raise RearmRejected("candidate has no recorded build-table integrity")
 
     if phase == "recovered":
         update_activation_journal(journal_path, "rearm_started")
@@ -138,9 +211,31 @@ def rearm(
         evidence = {
             "build_run_id": build_run_id, "file_count": actual.file_count,
             "total_bytes": actual.total_bytes, "corpus_manifest_sha": actual.manifest_sha,
+            "integrity_origin": (
+                "legacy_manifest_reconstruction" if legacy_evidence is not None
+                else "prepared_candidate"
+            ),
         }
+        integrity_updates: dict[str, object] = {}
+        if legacy_evidence is not None:
+            evidence["legacy_manifest"] = legacy_evidence
+            integrity_updates = {
+                "candidate_integrity": {
+                    "file_count": actual.file_count,
+                    "total_bytes": actual.total_bytes,
+                    "manifest_sha": actual.manifest_sha,
+                },
+                "build_table_integrity": [
+                    {
+                        "table": item.table, "row_count": item.row_count,
+                        "crc_sum": item.crc_sum, "crc_xor": item.crc_xor,
+                    }
+                    for item in actual_build_items
+                ],
+            }
         if not ledger.rearm_failed_candidate(
-            *identity, build_run_id=build_run_id, actor=actor, evidence=evidence
+            *identity, build_run_id=build_run_id, actor=actor, evidence=evidence,
+            integrity_updates=integrity_updates,
         ):
             raise RearmRejected("ledger changed before rearm could be recorded")
         ledger_rearmed = True
@@ -173,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-file-count", required=True, type=int)
     parser.add_argument("--expected-total-bytes", required=True, type=int)
     parser.add_argument("--expected-manifest-sha", required=True)
+    parser.add_argument("--allow-legacy-integrity-reconstruction", action="store_true")
     args = parser.parse_args(argv)
     try:
         result = rearm(
@@ -182,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_total_bytes=args.expected_total_bytes,
             expected_manifest_sha=args.expected_manifest_sha,
             read_build_fingerprints=_read_build_fingerprints,
+            allow_legacy_integrity_reconstruction=args.allow_legacy_integrity_reconstruction,
         )
     except RearmRejected as exc:
         print(json.dumps({"status": "rejected", "reason": str(exc)}), file=sys.stderr)

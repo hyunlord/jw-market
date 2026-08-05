@@ -1433,18 +1433,19 @@ class Ledger:
         build_run_id: str,
         actor: str,
         evidence: dict,
+        integrity_updates: dict[str, object] | None = None,
     ) -> bool:
         """Atomically rearm an intact failed publish candidate with an audit event."""
         mark = self._mark
         candidate_sql = (
-            "SELECT build_run_id FROM ingest_publish_candidate"
+            "SELECT build_run_id, payload_json FROM ingest_publish_candidate"
             f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
         )
         if self._dialect == "mysql":
             candidate_sql += " FOR UPDATE"
         reset_sql = (
             "UPDATE ingest_publish_candidate SET publish_job_name=NULL,"
-            " approved_at=NULL, approved_by=NULL"
+            f" approved_at=NULL, approved_by=NULL, payload_json={mark}"
             f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
             f" AND build_run_id={mark}"
         )
@@ -1460,9 +1461,17 @@ class Ledger:
             values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
             if str(values_row[0]) != build_run_id:
                 return False
+            payload = json.loads(str(values_row[1]))
+            for key, value in (integrity_updates or {}).items():
+                if key in payload and payload[key] != value:
+                    return False
+                payload[key] = value
             cursor.execute(
                 reset_sql,
-                (epoch, category, manifest_sha, build_run_id),
+                (
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    epoch, category, manifest_sha, build_run_id,
+                ),
             )
             return cursor.rowcount == 1
 
