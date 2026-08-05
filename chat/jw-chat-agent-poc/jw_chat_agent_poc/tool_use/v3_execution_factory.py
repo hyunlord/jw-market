@@ -26,8 +26,7 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
         MariaDbGeneralMartReader,
     )
     from jw_chat_agent_poc.tools.general_view_membership import (
-        MariaDbGeneralMembershipReader,
-        TtlGeneralMembershipCache,
+        shared_general_membership_cache,
     )
 
     dependencies = build_agent_loop_dependencies(external_mode="live")
@@ -43,10 +42,7 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
     }
     for spec in external_registry.list_for_query(""):
         specs.setdefault(spec.name, spec)
-    general_membership = TtlGeneralMembershipCache(
-        MariaDbGeneralMembershipReader(),
-        ttl_seconds=300,
-    )
+    general_membership = shared_general_membership_cache(ttl_seconds=300)
     general_backend = GeneralViewMartBackend(
         MariaDbGeneralMartReader(),
         GeneralViewBackend(),
@@ -75,3 +71,15 @@ def build_default_shadow_executor(question: str) -> V3ShadowToolExecutor:
             *internal_executable_tools(internal_registry),
         )
     )
+
+
+def prewarm_default_shadow_dependencies() -> dict[str, int | float | None]:
+    """Warm the shared read-only membership snapshot before timed SHADOW work."""
+
+    from jw_chat_agent_poc.tools.general_view_membership import (
+        shared_general_membership_cache,
+    )
+
+    cache = shared_general_membership_cache(ttl_seconds=300)
+    cache.prewarm()
+    return cache.observability()

@@ -29,6 +29,15 @@ _PERIOD_VALUE = re.compile(
     re.IGNORECASE,
 )
 _WEB_EXCERPT_MAX_CHARS = 1200
+_REDUNDANT_MARKET_RENDER_TOOLS = frozenset(
+    {
+        "market.compare_brands",
+        "market.get_brand_metric",
+        "market.get_growth_contribution",
+        "market.get_hhi",
+        "market.get_timeseries",
+    }
+)
 _STRUCTURAL_NUMERIC_KEYS = frozenset(
     {
         "arguments",
@@ -138,7 +147,7 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
         if key in values and values.get(key) is not None
     }
     arguments = prompt_value(fact.arguments)
-    raw_result_value = _without_nested_evidence(fact.raw_result)
+    raw_result_value = _fusion_prompt_raw_result(fact)
     if isinstance(fact, WebSourceFact):
         raw_result_value = {
             key: value
@@ -226,6 +235,89 @@ def _without_nested_evidence(raw_result: object) -> object:
     if not isinstance(raw_result, Mapping) or not isinstance(raw_result.get("evidence"), list):
         return raw_result
     return {key: value for key, value in raw_result.items() if key != "evidence"}
+
+
+def _fusion_prompt_raw_result(fact: V3EvidenceFact) -> object:
+    raw_result = _without_nested_evidence(fact.raw_result)
+    if fact.tool_name not in _REDUNDANT_MARKET_RENDER_TOOLS:
+        return raw_result
+    if not isinstance(raw_result, Mapping):
+        return raw_result
+    render_data = raw_result.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return raw_result
+    projected_render = {
+        str(key): _market_render_prompt_value(str(key), value)
+        for key, value in render_data.items()
+    }
+    return {**raw_result, "render_data": projected_render}
+
+
+def _market_render_prompt_value(key: str, value: object) -> object:
+    if key == "level_segments":
+        return _compact_market_rows(value, redundant_keys=frozenset({"name"}))
+    if key != "level_top5_trend_series":
+        return value
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return value
+    return [
+        {
+            str(item_key): (
+                _compact_market_rows(
+                    item_value,
+                    redundant_keys=frozenset({"value"}),
+                )
+                if str(item_key) == "series"
+                else item_value
+            )
+            for item_key, item_value in item.items()
+        }
+        if isinstance(item, Mapping)
+        else item
+        for item in value
+    ]
+
+
+def _compact_market_rows(
+    value: object,
+    *,
+    redundant_keys: frozenset[str],
+) -> object:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return value
+    compact_rows = [
+        {
+            str(item_key): item_value
+            for item_key, item_value in item.items()
+            if str(item_key) not in redundant_keys
+        }
+        if isinstance(item, Mapping)
+        else item
+        for item in value
+    ]
+    if len(compact_rows) < 2 or not all(isinstance(item, Mapping) for item in compact_rows):
+        return compact_rows
+    columns = list(
+        dict.fromkeys(
+            key
+            for item in compact_rows
+            for key in item
+        )
+    )
+    constants = {
+        key: compact_rows[0].get(key)
+        for key in columns
+        if all(item.get(key) == compact_rows[0].get(key) for item in compact_rows[1:])
+    }
+    variable_columns = [key for key in columns if key not in constants]
+    return {
+        "constant_fields": constants,
+        "columns": variable_columns,
+        "rows": [
+            [item.get(key) for key in variable_columns]
+            for item in compact_rows
+        ],
+    }
 
 
 def numeric_literals(text: str) -> tuple[str, ...]:

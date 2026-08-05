@@ -125,6 +125,9 @@ class TtlGeneralMembershipCache:
         self._loaded_at = 0.0
         self._refresh_successes = 0
         self._refresh_failures = 0
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._last_refresh_latency_ms: float | None = None
 
     def candidates(self, brand: str, source: str) -> tuple[AtcCandidate, ...]:
         resolution = self.resolve(brand, source)
@@ -167,21 +170,37 @@ class TtlGeneralMembershipCache:
     def _refresh_if_expired(self) -> None:
         now = time.monotonic()
         if now < self._expires_at:
+            with self._lock:
+                self._cache_hits += 1
             return
         with self._lock:
             now = time.monotonic()
             if now < self._expires_at:
+                self._cache_hits += 1
                 return
+            self._cache_misses += 1
+            started = time.monotonic()
             try:
                 memberships = self._reader.load()
             except Exception:
+                self._last_refresh_latency_ms = round(
+                    (time.monotonic() - started) * 1000,
+                    3,
+                )
                 self._refresh_failures += 1
                 raise
             self._index = _build_index(memberships)
             self._row_count = len(memberships)
             self._loaded_at = now
+            self._last_refresh_latency_ms = round(
+                (time.monotonic() - started) * 1000,
+                3,
+            )
             self._refresh_successes += 1
             self._expires_at = now + self._ttl_seconds
+
+    def prewarm(self) -> None:
+        self._refresh_if_expired()
 
     def observability(self) -> dict[str, int | float | None]:
         with self._lock:
@@ -194,7 +213,30 @@ class TtlGeneralMembershipCache:
                 ),
                 "refresh_successes": self._refresh_successes,
                 "refresh_failures": self._refresh_failures,
+                "cache_hits": self._cache_hits,
+                "cache_misses": self._cache_misses,
+                "last_refresh_latency_ms": self._last_refresh_latency_ms,
             }
+
+
+_SHARED_GENERAL_MEMBERSHIP_LOCK = threading.Lock()
+_SHARED_GENERAL_MEMBERSHIP_CACHES: dict[float, TtlGeneralMembershipCache] = {}
+
+
+def shared_general_membership_cache(
+    ttl_seconds: float = 300,
+) -> TtlGeneralMembershipCache:
+    """Reuse the existing TTL cache across SHADOW executor instances."""
+
+    with _SHARED_GENERAL_MEMBERSHIP_LOCK:
+        cache = _SHARED_GENERAL_MEMBERSHIP_CACHES.get(ttl_seconds)
+        if cache is None:
+            cache = TtlGeneralMembershipCache(
+                MariaDbGeneralMembershipReader(),
+                ttl_seconds=ttl_seconds,
+            )
+            _SHARED_GENERAL_MEMBERSHIP_CACHES[ttl_seconds] = cache
+        return cache
 
 
 def _build_index(memberships: tuple[GeneralBrandMembership, ...]) -> _MembershipIndex:

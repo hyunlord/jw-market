@@ -18,6 +18,7 @@ from jw_chat_agent_poc.tool_use.v3_fusion import (
     FusionOutputTruncatedError,
     V3FusionEngine,
     build_fusion_messages,
+    numeric_literals,
     validate_fusion_answer,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion_contracts import (
@@ -1054,6 +1055,83 @@ def test_prompt_contains_fact_values_and_safe_failure_language_only() -> None:
         }
     ]
     assert "formula parity" not in messages[1]["content"]
+
+
+def test_prompt_projection_compacts_market_render_without_hiding_numeric_context() -> None:
+    fact = MarketMetricFact(
+        evidence_id="fact-brand-metric",
+        tool_name="market.get_brand_metric",
+        arguments={"brand": "리바로", "metric": "sales"},
+        raw_result={
+            "summary_text": "리바로 2026-05 매출은 80.39억원입니다.",
+            "render_data": {
+                "brand": "리바로",
+                "period": "2026-05",
+                "sales_억원": 80.39,
+                "level_segments": [{"brand": "로수젯", "rank": 1}],
+                "level_top5_trend_series": [
+                    {
+                        "brand": "로수젯",
+                        "from_period": "2025-08",
+                        "to_period": "2026-05",
+                        "value_recent_억원": 195.24,
+                        "series": [
+                            {"period": "2025-08", "value_억원": 184.59},
+                            {"period": "2026-05", "value_억원": 195.24},
+                        ],
+                    }
+                ],
+                "brand_value_series_10pt": [
+                    {"period": "2025-08", "value_억원": 79.63},
+                    {"period": "2026-05", "value_억원": 80.39},
+                ],
+                "member_population": ["리바로", "비쥬다인"],
+                "active_members": ["리바로"],
+                "display_members": ["리바로"],
+            },
+        },
+        missing_required_fields=(),
+        entity="리바로",
+        metric="sales",
+        period="2026-05",
+        unit="KRW",
+        view="strategic",
+        market="ml_006",
+    )
+
+    payload = json.loads(build_fusion_messages("리바로 매출 알려줘", _bundle(fact))[1]["content"])
+    projected = payload["evidence"][0]["raw_result"]["render_data"]
+
+    assert projected["level_segments"] == [
+        {
+            "brand": "로수젯",
+            "rank": 1,
+        }
+    ]
+    assert projected["level_top5_trend_series"][0]["series"] == {
+        "constant_fields": {},
+        "columns": ["period", "value_억원"],
+        "rows": [["2025-08", 184.59], ["2026-05", 195.24]],
+    }
+    assert projected["level_top5_trend_series"][0]["value_recent_억원"] == 195.24
+    assert projected["brand_value_series_10pt"] == [
+        {"period": "2025-08", "value_억원": 79.63},
+        {"period": "2026-05", "value_억원": 80.39},
+    ]
+    assert projected["member_population"] == ["리바로", "비쥬다인"]
+    assert projected["active_members"] == ["리바로"]
+    assert projected["display_members"] == ["리바로"]
+    assert "184.59" in payload["evidence"][0]["allowed_numeric_literals"]
+    prompt_numbers = set(
+        numeric_literals(
+            json.dumps(projected, ensure_ascii=False, sort_keys=True)
+        )
+    )
+    assert set(payload["evidence"][0]["allowed_numeric_literals"]) <= prompt_numbers
+    assert fact.raw_result["render_data"]["level_segments"] == [
+        {"brand": "로수젯", "rank": 1}
+    ]
+    assert "series" in fact.raw_result["render_data"]["level_top5_trend_series"][0]
 
 
 def test_external_list_items_receive_deterministic_v3_shadow_evidence_ids() -> None:
