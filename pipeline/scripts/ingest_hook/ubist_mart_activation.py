@@ -25,7 +25,7 @@ from pipeline.scripts.deploy.mart_load_ops import (
     run_s4_general,
     run_s5_strategic,
 )
-from pipeline.scripts.deploy.mart_load_verify import table_exists
+from pipeline.scripts.deploy.mart_load_verify import table_digest, table_exists
 from pipeline.scripts.ingest_hook.publication_provenance import (
     build_publication_provenance,
     record_publication_provenance,
@@ -93,6 +93,66 @@ class CorpusCandidate:
     live_root: Path
     candidate_root: Path
     backup_root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusInventory:
+    file_count: int
+    total_bytes: int
+    manifest_sha: str
+
+
+@dataclass(frozen=True, slots=True)
+class BuildTableFingerprint:
+    table: str
+    row_count: int
+    crc_sum: int
+    crc_xor: int
+
+
+def inventory_corpus(root: Path) -> CorpusInventory:
+    """Return a content-addressed inventory for an immutable corpus tree."""
+    if not root.is_dir():
+        raise RuntimeError(f"corpus is missing: {root}")
+    digest = hashlib.sha256()
+    count = 0
+    total = 0
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        if path.is_symlink():
+            raise RuntimeError(f"corpus contains a symlink: {path}")
+        relative = path.relative_to(root).as_posix()
+        file_digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                file_digest.update(chunk)
+                size += len(chunk)
+        digest.update(relative.encode("utf-8") + b"\0")
+        digest.update(str(size).encode("ascii") + b"\0")
+        digest.update(file_digest.digest())
+        count += 1
+        total += size
+    return CorpusInventory(count, total, digest.hexdigest())
+
+
+def fingerprint_build_tables(conn: Any, schema: str) -> tuple[BuildTableFingerprint, ...]:
+    """Fingerprint the exact six-table build schema before approval."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema=%s AND table_type='BASE TABLE'",
+            (schema,),
+        )
+        table_names = {str(row["table_name"]) for row in cursor.fetchall()}
+    if table_names != set(NUMERIC_TABLES):
+        raise RuntimeError(f"build schema must contain exactly six numeric tables: {schema}")
+    fingerprints = []
+    for table in NUMERIC_TABLES:
+        digest = table_digest(conn, schema, table)
+        fingerprints.append(
+            BuildTableFingerprint(table, digest.row_count, digest.crc_sum, digest.crc_xor)
+        )
+    return tuple(fingerprints)
 
 
 def from_env(*, run_id: str) -> MartActivation:
@@ -689,6 +749,10 @@ def recover_incomplete_activations(
             _journal_child_path(output_root, payload.get("candidate_root")),
             _journal_child_path(output_root, payload.get("backup_root")),
         )
+        if phase == "rearm_started":
+            if status == "awaiting_approval" and corpus.candidate_root.is_dir():
+                update_activation_journal(path, "awaiting_approval")
+            continue
         if phase in {"awaiting_approval", "expired_cleanup_started"}:
             if status == "failed":
                 discard_unpublished_candidate(conn, path)

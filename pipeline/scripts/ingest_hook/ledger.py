@@ -1424,6 +1424,74 @@ class Ledger:
 
         return bool(self._transaction(operation))
 
+    def rearm_failed_candidate(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        build_run_id: str,
+        actor: str,
+        evidence: dict,
+    ) -> bool:
+        """Atomically rearm an intact failed publish candidate with an audit event."""
+        mark = self._mark
+        candidate_sql = (
+            "SELECT build_run_id FROM ingest_publish_candidate"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        if self._dialect == "mysql":
+            candidate_sql += " FOR UPDATE"
+        reset_sql = (
+            "UPDATE ingest_publish_candidate SET publish_job_name=NULL,"
+            " approved_at=NULL, approved_by=NULL"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+            f" AND build_run_id={mark}"
+        )
+        event_id = str(uuid.uuid4())
+        created_at = _now()
+        reason = "audited rearm of intact failed publish candidate"
+
+        def reset_candidate(cursor):
+            cursor.execute(candidate_sql, (epoch, category, manifest_sha))
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            values_row = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            if str(values_row[0]) != build_run_id:
+                return False
+            cursor.execute(
+                reset_sql,
+                (epoch, category, manifest_sha, build_run_id),
+            )
+            return cursor.rowcount == 1
+
+        def operation(cursor):
+            return self._transition_with_cursor(
+                cursor,
+                epoch,
+                category,
+                manifest_sha,
+                status=STATUS_AWAITING_APPROVAL,
+                assignments=(
+                    f"status={mark}, reason={mark}, job_name=NULL, finished_at=NULL"
+                ),
+                values=(STATUS_AWAITING_APPROVAL, reason),
+                actor=actor,
+                source="audited_publish_rearm",
+                reason=reason,
+                evidence_json=json.dumps(
+                    evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ),
+                event_id=event_id,
+                created_at=created_at,
+                expected_status=STATUS_FAILED,
+                expected_run_id=build_run_id,
+                before_update=reset_candidate,
+            )
+
+        return bool(self._transaction(operation))
+
     def mark_publish_candidate_expired(
         self,
         epoch: str,

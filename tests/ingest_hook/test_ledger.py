@@ -183,3 +183,32 @@ def test_prepare_candidate_rolls_back_when_candidate_insert_fails(sqlite_ledger)
 
     assert sqlite_ledger.status(*IDENTITY).status == "running"
     assert sqlite_ledger.prepared_candidate(*IDENTITY) is None
+
+
+def test_rearm_candidate_reset_and_audit_transition_are_atomic(sqlite_ledger) -> None:
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY, run_id="build-run", candidate={"run_id": "build-run"},
+        prepared_at="2026-08-04T00:00:00Z", expires_at="2099-01-01T00:00:00Z",
+    )
+    sqlite_ledger.mark_publish_running(
+        *IDENTITY, build_run_id="build-run", publish_job_name="publish",
+        approved_by="pl", approved_at="2026-08-04T00:01:00Z",
+    )
+    sqlite_ledger.mark_failed(*IDENTITY, reason="1105")
+    sqlite_ledger._conn.execute(
+        "CREATE TRIGGER reject_rearm_audit BEFORE INSERT ON ingest_status_transition "
+        "WHEN NEW.source='audited_publish_rearm' "
+        "BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END"
+    )
+    sqlite_ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected audit failure"):
+        sqlite_ledger.rearm_failed_candidate(
+            *IDENTITY, build_run_id="build-run", actor="operator",
+            evidence={"file_count": 67},
+        )
+
+    assert sqlite_ledger.status(*IDENTITY).status == "failed"
+    assert sqlite_ledger.prepared_candidate(*IDENTITY).publish_job_name == "publish"

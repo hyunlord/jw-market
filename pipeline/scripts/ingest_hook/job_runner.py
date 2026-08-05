@@ -911,6 +911,12 @@ def run(
                     expires_at = prepared_at + timedelta(
                         seconds=_publish_candidate_ttl_seconds()
                     )
+                    candidate_integrity = ubist_mart_activation.inventory_corpus(
+                        corpus_candidate.candidate_root
+                    )
+                    build_table_integrity = ubist_mart_activation.fingerprint_build_tables(
+                        mart_conn, mart_activation.build_db
+                    )
                     candidate_payload = {
                         "epoch": manifest.epoch,
                         "category": manifest.category,
@@ -942,6 +948,20 @@ def run(
                         "rows_loaded": rows_loaded,
                         "row_counts": report.file_rows,
                         "periods": sorted(periods),
+                        "candidate_integrity": {
+                            "file_count": candidate_integrity.file_count,
+                            "total_bytes": candidate_integrity.total_bytes,
+                            "manifest_sha": candidate_integrity.manifest_sha,
+                        },
+                        "build_table_integrity": [
+                            {
+                                "table": item.table,
+                                "row_count": item.row_count,
+                                "crc_sum": item.crc_sum,
+                                "crc_xor": item.crc_xor,
+                            }
+                            for item in build_table_integrity
+                        ],
                     }
                     ledger.mark_awaiting_approval(
                         *identity,
