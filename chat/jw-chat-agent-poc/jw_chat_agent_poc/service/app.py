@@ -164,7 +164,10 @@ from jw_chat_agent_poc.service.conversation_context import (
     unresolved_reference_result,
 )
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
-from jw_chat_agent_poc.service.input_guard_shadow import launch_default_input_guard_shadow
+from jw_chat_agent_poc.service.input_guard_shadow import (
+    apply_limited_input_guard,
+    launch_default_input_guard_shadow,
+)
 from jw_chat_agent_poc.service.evidence_binding import (
     evidence_facts_from_result,
     expected_entities_from_result,
@@ -1038,7 +1041,7 @@ def _answer_question(
     conversation_history: ConversationHistoryStore | None = None,
 ) -> dict:
     store.configure_conversation_repository(conversation_history)
-    launch_default_input_guard_shadow(
+    input_guard_future = launch_default_input_guard_shadow(
         question=question,
         conversation_id=conversation_id,
         history=conversation_history,
@@ -1053,6 +1056,7 @@ def _answer_question(
             "tool_calls": [],
             "_sec12_input_policy_decision": input_policy_decision,
         }
+        result = apply_limited_input_guard(result, input_guard_future, question=question)
         store.conversations.record_exchange(
             state.conversation_id,
             question,
@@ -1382,6 +1386,7 @@ def _answer_question(
             # extract_conversation_slots reads this, so the stored turn records that its
             # anchor brand came from the rewrite rather than from the user.
             result = {**result, "anchor_brand_is_synthetic": True}
+        result = apply_limited_input_guard(result, input_guard_future, question=question)
         with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
             store.conversations.record_exchange(
                 state.conversation_id,

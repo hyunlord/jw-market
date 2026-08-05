@@ -14,6 +14,8 @@ from jw_chat_agent_poc.service.app import SessionStore
 from jw_chat_agent_poc.service.conversation import ConversationTurn
 from jw_chat_agent_poc.service.input_guard_shadow import (
     BoundedInputPreprocessor,
+    LIMITED_ENFORCE_ENV,
+    SEMANTIC_GUARD_BLOCKED_ANSWER,
     GuardDecisionKind,
     GuardInputError,
     GuardModelDecision,
@@ -21,6 +23,7 @@ from jw_chat_agent_poc.service.input_guard_shadow import (
     GenosInputGuardProvider,
     InputGuardConfig,
     InputGuardShadow,
+    apply_limited_input_guard,
     launch_default_input_guard_shadow,
     submit_input_guard_shadow,
 )
@@ -296,6 +299,102 @@ def test_default_shadow_launcher_requires_explicit_opt_in(
     assert future.result() is None
 
 
+def test_limited_enforce_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(LIMITED_ENFORCE_ENV, raising=False)
+    original = {"answer": "original", "tool_calls": [{"name": "read_only"}]}
+    future: Future[object] = Future()
+    future.set_result({"decision": "policy_deny"})
+
+    assert apply_limited_input_guard(original, future) is original
+
+
+def test_limited_enforce_blocks_only_completed_policy_deny(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(LIMITED_ENFORCE_ENV, "true")
+    original = {"answer": "sensitive answer", "tool_calls": [{"name": "read_only"}]}
+    future: Future[object] = Future()
+    future.set_result(
+        {
+            "decision": "policy_deny",
+            "reason_codes": ("semantic_policy_deny",),
+            "input_sha256": "abc",
+            "input_length": 12,
+            "serving_id": "202",
+        }
+    )
+
+    guarded = apply_limited_input_guard(original, future)
+
+    assert guarded["answer"] == SEMANTIC_GUARD_BLOCKED_ANSWER
+    assert "sensitive answer" not in guarded["answer"]
+    assert guarded["tool_calls"] == []
+    assert guarded["sources"] == []
+    assert "policy" not in guarded["answer"].lower()
+    assert "semantic" not in guarded["answer"].lower()
+
+
+@pytest.mark.parametrize("decision", ("allow", "provider_failure_deny"))
+def test_limited_enforce_passes_allow_and_provider_failure_without_byte_change(
+    monkeypatch: pytest.MonkeyPatch,
+    decision: str,
+) -> None:
+    monkeypatch.setenv(LIMITED_ENFORCE_ENV, "true")
+    original = {"answer": "original bytes", "tool_calls": [{"name": "read_only"}]}
+    future: Future[object] = Future()
+    future.set_result({"decision": decision, "reason_codes": ("provider_timeout",)})
+
+    assert apply_limited_input_guard(original, future) is original
+
+
+def test_limited_enforce_never_waits_for_pending_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(LIMITED_ENFORCE_ENV, "true")
+    original = {"answer": "original bytes"}
+    pending: Future[object] = Future()
+    started = time.perf_counter()
+
+    guarded = apply_limited_input_guard(original, pending)
+
+    assert guarded is original
+    assert (time.perf_counter() - started) * 1000 < 50
+
+
+def test_limited_enforce_launcher_implicitly_enables_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CHAT_INPUT_GUARD_SHADOW_ENABLED", raising=False)
+    monkeypatch.setenv(LIMITED_ENFORCE_ENV, "true")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.input_guard_shadow.GenosInputGuardProvider",
+        lambda config: _DenyProvider(),
+    )
+
+    future = launch_default_input_guard_shadow(
+        question="synthetic",
+        conversation_id=None,
+        history=None,
+    )
+
+    observation = future.result(timeout=2)
+    assert observation["decision"] == "policy_deny"
+    assert observation["mode"] == "limited_enforce"
+    assert observation["input_type"] == "market_page"
+    assert "synthetic" not in json.dumps(observation, ensure_ascii=False)
+
+
+def test_judge_prompt_explicitly_covers_prompt_transforms_and_other_user_data() -> None:
+    prompt = service_app.launch_default_input_guard_shadow.__module__
+    assert prompt == "jw_chat_agent_poc.service.input_guard_shadow"
+    from jw_chat_agent_poc.service.input_guard_shadow import JUDGE_SYSTEM_PROMPT
+
+    normalized = JUDGE_SYSTEM_PROMPT.lower()
+    assert "base64" in normalized
+    assert "poem" in normalized
+    assert "translation" in normalized
+    assert "other user" in normalized
+    assert "training data" in normalized
+
+
 def test_answer_bytes_are_unchanged_by_shadow_submission(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -322,6 +421,62 @@ def test_answer_bytes_are_unchanged_by_shadow_submission(monkeypatch: pytest.Mon
             "history": None,
         }
     ]
+
+
+def test_answer_question_consumes_ready_policy_deny_at_final_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(LIMITED_ENFORCE_ENV, "true")
+    future: Future[object] = Future()
+    future.set_result(
+        {
+            "decision": "policy_deny",
+            "reason_codes": ("semantic_policy_deny",),
+            "input_sha256": "abc",
+            "input_length": 12,
+            "serving_id": "202",
+            "latency_ms": 3.0,
+            "degraded": False,
+            "input_type": "market_page",
+        }
+    )
+    monkeypatch.setattr(service_app, "launch_default_input_guard_shadow", lambda **_kwargs: future)
+    question = "합성 의미 정책 거부"
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        question,
+        "fixture",
+        "limited-enforce-policy-deny",
+    )
+    final = service_app.compute_final_answer(question, item["result"], item["conversation_id"])
+
+    assert item["result"]["answer"] == SEMANTIC_GUARD_BLOCKED_ANSWER
+    assert final.text == SEMANTIC_GUARD_BLOCKED_ANSWER
+    assert final.charts == []
+    assert f"fallback:{question}" not in final.text
+
+
+def test_answer_question_does_not_wait_for_pending_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(LIMITED_ENFORCE_ENV, "true")
+    pending: Future[object] = Future()
+    monkeypatch.setattr(service_app, "launch_default_input_guard_shadow", lambda **_kwargs: pending)
+    question = "리바로 매출 알려줘"
+
+    item = service_app._answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        question,
+        "fixture",
+        "limited-enforce-pending",
+    )
+
+    assert item["result"]["answer"] == f"fallback:{question}"
 
 
 def test_genos_provider_accepts_only_exact_binary_token_and_preserves_usage(
