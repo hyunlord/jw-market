@@ -363,11 +363,24 @@ def test_genos_provider_accepts_only_exact_binary_token_and_preserves_usage(
     assert result.total_tokens == 42
     payload = captured["json"]
     assert isinstance(payload, dict)
-    assert payload["max_tokens"] == 128
-    assert payload["messages"][0]["content"].endswith("ALLOW or DENY.")
+    assert payload["max_tokens"] == 256
+    assert payload["stop"] == ["\n"]
+    assert payload["messages"][0]["content"].endswith(
+        "Do not explain. Do not use Markdown or JSON. Emit only ALLOW or DENY."
+    )
 
 
-@pytest.mark.parametrize("content", ('{"decision":"allow"}', "ALLOW because it is safe", ""))
+@pytest.mark.parametrize(
+    "content",
+    (
+        '{"decision":"allow"}',
+        "ALLOW because it is safe",
+        "ALLOW 할 수 없습니다",
+        "DENY 가 아닙니다",
+        "allow? no",
+        "",
+    ),
+)
 def test_genos_provider_rejects_non_binary_output(
     monkeypatch: pytest.MonkeyPatch,
     content: str,
