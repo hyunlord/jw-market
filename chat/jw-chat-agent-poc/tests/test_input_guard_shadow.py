@@ -18,6 +18,7 @@ from jw_chat_agent_poc.service.input_guard_shadow import (
     GuardInputError,
     GuardModelDecision,
     GuardProviderError,
+    GenosInputGuardProvider,
     InputGuardConfig,
     InputGuardShadow,
     launch_default_input_guard_shadow,
@@ -321,3 +322,103 @@ def test_answer_bytes_are_unchanged_by_shadow_submission(monkeypatch: pytest.Mon
             "history": None,
         }
     ]
+
+
+def test_genos_provider_accepts_only_exact_binary_token_and_preserves_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{"message": {"content": "DENY"}}],
+                "usage": {
+                    "prompt_tokens": 41,
+                    "completion_tokens": 1,
+                    "total_tokens": 42,
+                },
+            }
+
+    captured: dict[str, object] = {}
+
+    def post(url: str, **kwargs: object) -> Response:
+        captured.update({"url": url, **kwargs})
+        return Response()
+
+    monkeypatch.setenv("GENOS_BASE_URL", "https://example.test/api/gateway/rep/serving/163")
+    monkeypatch.setenv("CHAT_INPUT_GUARD_BEARER_TOKEN", "secret")
+    monkeypatch.setattr("jw_chat_agent_poc.service.input_guard_shadow.requests.post", post)
+
+    result = GenosInputGuardProvider(_config()).decide(
+        candidates=("synthetic",),
+        authority="market",
+    )
+
+    assert result.decision == "deny"
+    assert result.reason_codes == ("semantic_policy_deny",)
+    assert result.prompt_tokens == 41
+    assert result.completion_tokens == 1
+    assert result.total_tokens == 42
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["max_tokens"] == 128
+    assert payload["messages"][0]["content"].endswith("ALLOW or DENY.")
+
+
+@pytest.mark.parametrize("content", ('{"decision":"allow"}', "ALLOW because it is safe", ""))
+def test_genos_provider_rejects_non_binary_output(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": content}}], "usage": {}}
+
+    monkeypatch.setenv("GENOS_BASE_URL", "https://example.test/api/gateway/rep/serving/163")
+    monkeypatch.setenv("CHAT_INPUT_GUARD_BEARER_TOKEN", "secret")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.input_guard_shadow.requests.post",
+        lambda *args, **kwargs: Response(),
+    )
+
+    with pytest.raises(GuardProviderError) as captured:
+        GenosInputGuardProvider(_config()).decide(candidates=("synthetic",), authority="market")
+
+    assert captured.value.reason_code == "malformed_output"
+
+
+def test_genos_provider_preserves_single_unknown_token_for_fail_closed_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": "MAYBE"}}], "usage": {}}
+
+    monkeypatch.setenv("GENOS_BASE_URL", "https://example.test/api/gateway/rep/serving/163")
+    monkeypatch.setenv("CHAT_INPUT_GUARD_BEARER_TOKEN", "secret")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.input_guard_shadow.requests.post",
+        lambda *args, **kwargs: Response(),
+    )
+
+    model = GenosInputGuardProvider(_config()).decide(
+        candidates=("synthetic",),
+        authority="market",
+    )
+    decision = InputGuardShadow(_config(), _UnknownProvider()).evaluate(
+        question="synthetic",
+        conversation_id=None,
+        history=None,
+    )
+
+    assert model.decision == "maybe"
+    assert decision.kind is GuardDecisionKind.PROVIDER_FAILURE_DENY
+    assert decision.reason_codes == ("unknown_decision",)
