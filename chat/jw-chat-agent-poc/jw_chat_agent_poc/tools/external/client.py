@@ -763,9 +763,36 @@ def _tavily_mcp_web_call(
             elapsed,
         )
     payload = _mcp_payload(result)
-    raw_items = payload.get("results", []) if isinstance(payload, dict) else []
+    raw_items = payload.get("results") if isinstance(payload, dict) else None
+    parser_outcome = "structured_results"
+    if raw_items is None and isinstance(payload, dict) and isinstance(payload.get("text"), str):
+        raw_items = _tavily_text_results(payload["text"])
+        parser_outcome = "parsed_text_results" if raw_items else "parse_failure"
     if not isinstance(raw_items, list):
+        parser_outcome = "parse_failure"
         raw_items = []
+    if parser_outcome == "parse_failure":
+        call = _web_error(
+            TAVILY_MCP_SOURCE,
+            query,
+            McpClientError("Tavily MCP schema parse failure: unsupported response shape"),
+            elapsed,
+        )
+        return ExternalCall(
+            tool=call.tool,
+            source=call.source,
+            status=call.status,
+            summary_text=call.summary_text,
+            render_data={
+                **call.render_data,
+                "error_type": "parse_failure",
+                "parser_outcome": "parse_failure",
+            },
+            safe_url=call.safe_url,
+            elapsed_ms=call.elapsed_ms,
+        )
+    if not raw_items:
+        parser_outcome = "empty_result"
     max_results = _int_or_none(params.get("max_results", ""))
     limit = _bounded_web_results(
         max_results if max_results is not None else WEB_SEARCH_MAX_RESULTS
@@ -780,7 +807,44 @@ def _tavily_mcp_web_call(
         for item in raw_items[:limit]
         if isinstance(item, dict)
     ]
-    return _web_call(TAVILY_MCP_SOURCE, query, items, elapsed)
+    call = _web_call(TAVILY_MCP_SOURCE, query, items, elapsed)
+    return ExternalCall(
+        tool=call.tool,
+        source=call.source,
+        status=call.status,
+        summary_text=call.summary_text,
+        render_data={**call.render_data, "parser_outcome": parser_outcome},
+        safe_url=call.safe_url,
+        elapsed_ms=call.elapsed_ms,
+    )
+
+
+def _tavily_text_results(text: str) -> list[dict[str, Any]]:
+    if "Detailed Results:" not in text:
+        return []
+    items: list[dict[str, Any]] = []
+    blocks = re.split(r"(?m)(?=^Title:\s*)", text)
+    for block in blocks:
+        title_match = re.search(r"(?m)^Title:\s*(.+?)\s*$", block)
+        url_match = re.search(r"(?m)^URL:\s*(https?://\S+)\s*$", block)
+        if title_match is None or url_match is None:
+            continue
+        content_match = re.search(r"(?m)^Content:\s*(.+?)\s*$", block)
+        raw_match = re.search(
+            r"(?ms)^Raw Content:\s*(.+?)(?=\n(?:Score|Title):|\Z)",
+            block,
+        )
+        content = content_match.group(1).strip() if content_match else ""
+        if not content or content.casefold() == "undefined":
+            content = raw_match.group(1).strip() if raw_match else ""
+        items.append(
+            {
+                "title": title_match.group(1).strip(),
+                "url": url_match.group(1).strip(),
+                "content": content,
+            }
+        )
+    return items
 
 
 def _clinicaltrials_failed_call(params: dict[str, str], mcp_tool: str, reason: str, url: str, elapsed: float) -> ExternalCall:

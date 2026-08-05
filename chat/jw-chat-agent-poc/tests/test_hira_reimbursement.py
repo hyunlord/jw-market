@@ -771,6 +771,36 @@ def test_http_client_uses_bounded_hira_search_and_parses_detail() -> None:
     assert search["allow_redirects"] is False
 
 
+def test_http_client_parses_observed_hira_popup_link_and_compound_product_name() -> None:
+    list_html = """
+    <table><tr><td>고시 제2024-235호(약제)</td><td>
+      <a href="#none"
+         onclick="viewInsuAdtCrtr(1, '20241201', '3', '0011', '1'); return false;"
+         title="Aflibercept 주사제(품명: 아일리아주사, 아일리아프리필드시린지 등) 새창으로 열기">
+        Aflibercept 주사제(품명: 아일리아주사, 아일리아프리필드시린지 등)
+      </a>
+    </td><td>2024-12-01</td></tr></table>
+    """
+    detail_html = """
+    <div class="viewCont mt05"><p>아일리아의 공식 보험인정기준 본문입니다.</p></div>
+    """
+    session = _Session(
+        [
+            _Response(list_html, url="https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do"),
+            _Response(detail_html, url="https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrPopup.do?mtgHmeDd=20241201&sno=3&mtgMtrRegSno=0011"),
+        ]
+    )
+
+    result = HiraReimbursementHttpClient(session=session, timeout_s=6.0).fetch("아일리아")
+
+    assert result is not None
+    assert result.notice_number == "고시 제2024-235호"
+    assert session.calls[1]["url"] == (
+        "https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrPopup.do"
+        "?mtgHmeDd=20241201&sno=3&mtgMtrRegSno=0011"
+    )
+
+
 def test_http_client_applies_one_deadline_across_list_and_detail_requests() -> None:
     list_html = """
     <table><tr><td><a href="/detail">아일리아 급여기준</a></td></tr></table>

@@ -14,8 +14,13 @@ _DATE_RE: Final[re.Pattern[str]] = re.compile(
 _NOTICE_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:보건복지부\s*)?고시\s*제?\s*20\d{2}\s*-\s*\d+\s*호"
 )
+_POPUP_CALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"viewInsuAdtCrtr\(\s*\d+\s*,\s*'(?P<date>\d{8})'\s*,\s*"
+    r"'(?P<sno>\d+)'\s*,\s*'(?P<registration>\d+)'\s*,\s*'\d+'\s*\)"
+)
+_COMPOUND_PRODUCT_SUFFIX_RE: Final[str] = r"(?:주(?:사)?|피하주사)"
 _DETAIL_CONTAINER_TOKENS: Final[frozenset[str]] = frozenset(
-    {"bbs_view_cont", "board-view", "board_view", "view-content", "view_cont"}
+    {"bbs_view_cont", "board-view", "board_view", "view-content", "view_cont", "viewcont"}
 )
 
 
@@ -44,7 +49,7 @@ class _LinkTableParser(HTMLParser):
             self._row_text = []
             self._links = []
         elif self._in_row and tag == "a":
-            self._link_href = attributes.get("href")
+            self._link_href = _detail_href(attributes)
             self._link_text = []
 
     def handle_data(self, data: str) -> None:
@@ -105,13 +110,13 @@ def matching_search_row(
     parser = _LinkTableParser()
     parser.feed(html)
     for row_text, links in parser.rows:
-        if not _contains_brand_token(row_text, brand):
+        if not _contains_brand_reference(row_text, brand):
             continue
         link = next(
             (
                 (href, title)
                 for href, title in links
-                if href and title and _contains_brand_token(title, brand)
+                if href and title and _contains_brand_reference(title, brand)
             ),
             None,
         )
@@ -167,6 +172,34 @@ def _contains_brand_token(value: str, brand: str) -> bool:
             flags=re.IGNORECASE,
         )
         is not None
+    )
+
+
+def _contains_brand_reference(value: str, brand: str) -> bool:
+    if _contains_brand_token(value, brand):
+        return True
+    return (
+        re.search(
+            rf"(?<![0-9A-Za-z가-힣]){re.escape(brand)}{_COMPOUND_PRODUCT_SUFFIX_RE}",
+            value,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _detail_href(attributes: dict[str, str]) -> str:
+    href = attributes.get("href", "")
+    if href and href != "#none":
+        return href
+    match = _POPUP_CALL_RE.search(attributes.get("onclick", ""))
+    if match is None:
+        return href
+    return (
+        "/rc/insu/insuadtcrtr/InsuAdtCrtrPopup.do"
+        f"?mtgHmeDd={match.group('date')}"
+        f"&sno={match.group('sno')}"
+        f"&mtgMtrRegSno={match.group('registration')}"
     )
 
 

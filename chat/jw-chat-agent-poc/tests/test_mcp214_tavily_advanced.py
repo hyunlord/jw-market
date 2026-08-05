@@ -157,6 +157,123 @@ def test_tavily_mcp_provider_uses_real_client_contract_and_projects_web_schema(
     ]
 
 
+def test_tavily_mcp_provider_projects_observed_text_response(monkeypatch) -> None:
+    def fake_post(
+        _url: str,
+        *,
+        json: dict[str, Any],
+        **_kwargs: Any,
+    ) -> _McpResponse:
+        assert json["params"]["name"] == "tavily_search"
+        return _McpResponse(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Detailed Results:\n\n"
+                            "Title: HIRA reimbursement notice\n"
+                            "URL: https://example.test/hira-notice\n"
+                            "Content: Current public reimbursement criteria.\n"
+                            "Score: 0.95\n\n"
+                            "Title: Product information\n"
+                            "URL: https://example.test/product\n"
+                            "Content: Public product information.\n"
+                            "Score: 0.82"
+                        ),
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    monkeypatch.setenv("TAVILY_MCP_URL", "http://code-serving-214:8080")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.tools.external.mcp_client.requests.post",
+        fake_post,
+    )
+
+    call = ExternalApiClient(mode="live").web_search("synthetic query")
+
+    assert call.status == "live"
+    assert call.render_data["parser_outcome"] == "parsed_text_results"
+    assert call.render_data["items"] == [
+        {
+            "title": "HIRA reimbursement notice",
+            "url": "https://example.test/hira-notice",
+            "snippet": "Current public reimbursement criteria.",
+            "published_date": None,
+        },
+        {
+            "title": "Product information",
+            "url": "https://example.test/product",
+            "snippet": "Public product information.",
+            "published_date": None,
+        },
+    ]
+
+
+def test_tavily_mcp_unrecognized_text_is_parse_failure_not_empty_result(
+    monkeypatch,
+    caplog,
+) -> None:
+    def fake_post(
+        _url: str,
+        *,
+        json: dict[str, Any],
+        **_kwargs: Any,
+    ) -> _McpResponse:
+        assert json["params"]["name"] == "tavily_search"
+        return _McpResponse(
+            {"content": [{"type": "text", "text": "unrecognized response body"}]}
+        )
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    monkeypatch.setenv("TAVILY_MCP_URL", "http://code-serving-214:8080")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.tools.external.mcp_client.requests.post",
+        fake_post,
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        call = ExternalApiClient(mode="live").web_search("synthetic query")
+
+    assert call.status == "error"
+    assert call.render_data["parser_outcome"] == "parse_failure"
+    assert call.render_data["error_type"] == "parse_failure"
+    assert call.render_data["items"] == []
+    assert "external_source_telemetry" in caplog.text
+    assert '"failure_class":"schema"' in caplog.text
+
+
+def test_tavily_mcp_structured_empty_results_remain_empty_result(monkeypatch) -> None:
+    def fake_post(
+        _url: str,
+        *,
+        json: dict[str, Any],
+        **_kwargs: Any,
+    ) -> _McpResponse:
+        assert json["params"]["name"] == "tavily_search"
+        return _McpResponse(
+            {
+                "content": [],
+                "structuredContent": {"result": {"results": []}},
+            }
+        )
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "tavily_mcp")
+    monkeypatch.setenv("TAVILY_MCP_URL", "http://code-serving-214:8080")
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.tools.external.mcp_client.requests.post",
+        fake_post,
+    )
+
+    call = ExternalApiClient(mode="live").web_search("synthetic query")
+
+    assert call.status == "no_data"
+    assert call.render_data["parser_outcome"] == "empty_result"
+
+
 def test_existing_clinical_trials_mcp_spec_is_unchanged(monkeypatch) -> None:
     monkeypatch.delenv("CLINICAL_TRIALS_MCP_RESOURCE_ID", raising=False)
 
