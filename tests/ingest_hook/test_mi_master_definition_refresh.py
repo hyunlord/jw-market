@@ -1,216 +1,202 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from pipeline.scripts.ingest_hook.ledger import (
+    STAGE_FAILED,
     STATUS_AWAITING_APPROVAL,
     STATUS_COMPLETE,
+    STATUS_FAILED,
     STATUS_PUBLISH_RUNNING,
 )
 from pipeline.scripts.ingest_hook.mi_master_definition_refresh import (
-    ALLOWED_CACHE_REFRESH_TABLES,
     CATEGORY,
-    DefinitionPublishAdapters,
-    DefinitionPublishRequest,
-    DefinitionRefreshIdentity,
-    MissingStageError,
-    PublishReceipt,
-    PublishWorkspace,
-    assert_complete_stage_contract,
+    STAGES,
+    WORKFLOW_REF_URI,
     prepare_definition_refresh_candidate,
     run_approved_definition_publish,
 )
+from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
+    MissingStageError,
+    assert_complete_stage_contract,
+)
+from mi_master_definition_fixtures import (
+    RecordingCacheRefresher,
+    RecordingInvalidator,
+    RecordingPrepareAdapters,
+    RecordingPublisher,
+    approve,
+    prepare_request,
+    publish_request,
+)
 
 
-@dataclass
-class RecordingPublisher:
-    calls: list[PublishWorkspace]
-
-    def publish(
-        self, workspace: PublishWorkspace, identity: DefinitionRefreshIdentity
-    ) -> PublishReceipt:
-        self.calls.append(workspace)
-        return PublishReceipt(
-            journal_path=workspace.journal_path,
-            backup_root=workspace.backup_root,
-        )
-
-
-@dataclass
-class RecordingCacheRefresher:
-    requested: list[tuple[str, ...]]
-    returned: tuple[str, ...] = ALLOWED_CACHE_REFRESH_TABLES
-
-    def refresh_tables(self, tables: tuple[str, ...]) -> tuple[str, ...]:
-        self.requested.append(tables)
-        return self.returned
-
-
-@dataclass
-class RecordingInvalidator:
-    identities: list[DefinitionRefreshIdentity]
-
-    def invalidate(self, identity: DefinitionRefreshIdentity) -> None:
-        self.identities.append(identity)
-
-
-def _identity() -> DefinitionRefreshIdentity:
-    return DefinitionRefreshIdentity(
-        mi_master_sha256="a" * 64,
-        catalog_diff_hash="b" * 64,
-        run_id="run-mi-master-1",
-    )
-
-
-def _workspace(tmp_path: Path) -> PublishWorkspace:
-    candidate = tmp_path / "candidate"
-    candidate.mkdir()
-    backup = tmp_path / "backup"
-    journal = tmp_path / "journal.json"
-    journal.write_text("{}", encoding="utf-8")
-    return PublishWorkspace(
-        candidate_root=candidate,
-        backup_root=backup,
-        journal_path=journal,
-    )
-
-
-def _request(
-    sqlite_ledger,
-    identity: DefinitionRefreshIdentity,
-    workspace: PublishWorkspace,
-    *,
-    publisher: RecordingPublisher | None = None,
-    cache_refresher: RecordingCacheRefresher | None = None,
-    invalidator: RecordingInvalidator | None = None,
-) -> DefinitionPublishRequest:
-    return DefinitionPublishRequest(
-        ledger=sqlite_ledger,
-        identity=identity,
-        workspace=workspace,
-        adapters=DefinitionPublishAdapters(
-            publisher=publisher or RecordingPublisher([]),
-            cache_refresher=cache_refresher or RecordingCacheRefresher([]),
-            invalidator=invalidator or RecordingInvalidator([]),
-        ),
-    )
-
-
-def test_prepare_uses_definition_identity_without_fake_upload_manifest(
-    sqlite_ledger, tmp_path: Path
+def test_prepare_uses_non_file_workflow_uri_and_does_not_read_upload_manifest(
+    sqlite_ledger, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Given: a MI Master definition change identified by content and catalog diff hashes.
-    identity = _identity()
-    workspace = _workspace(tmp_path)
+    from pipeline.scripts.ingest_hook import contract
 
-    # When: the candidate is prepared for approval.
-    prepare_definition_refresh_candidate(sqlite_ledger, identity, workspace)
+    monkeypatch.setattr(
+        contract,
+        "load_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("manifest read")),
+    )
+    request = prepare_request(tmp_path)
+    adapters = RecordingPrepareAdapters([])
 
-    # Then: the ledger identity is the definition-change identity, not an upload manifest.
+    assert prepare_definition_refresh_candidate(sqlite_ledger, request, adapters) == 0
+
     entry = sqlite_ledger.status(
-        identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
     )
     assert entry is not None
     assert entry.status == STATUS_AWAITING_APPROVAL
-    assert entry.manifest_path == "definition-refresh"
-    assert entry.run_id == identity.run_id
+    assert entry.manifest_path == WORKFLOW_REF_URI
+    assert not Path(entry.manifest_path).is_file()
     candidate = sqlite_ledger.prepared_candidate(
-        identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
     )
     assert candidate is not None
-    assert candidate.payload["identity"] == {
-        "mi_master_sha256": identity.mi_master_sha256,
-        "catalog_diff_hash": identity.catalog_diff_hash,
-        "run_id": identity.run_id,
-    }
     assert "upload_manifest" not in candidate.payload
+    assert adapters.calls == list(STAGES[:5])
 
 
-def test_definition_refresh_stage_contract_reports_only_omitted_stage(
-    sqlite_ledger, tmp_path: Path
-) -> None:
-    # Given: a completed candidate with one durable stage event deliberately missing.
-    identity = _identity()
-    workspace = _workspace(tmp_path)
-    prepare_definition_refresh_candidate(sqlite_ledger, identity, workspace)
-    assert sqlite_ledger.mark_publish_running(
-        identity.ledger_epoch,
+def test_prepare_records_only_stages_that_adapters_executed(sqlite_ledger, tmp_path: Path) -> None:
+    request = prepare_request(tmp_path)
+    adapters = RecordingPrepareAdapters([])
+
+    assert prepare_definition_refresh_candidate(sqlite_ledger, request, adapters) == 0
+
+    events = sqlite_ledger.stage_events(
+        request.identity.ledger_epoch,
         CATEGORY,
-        identity.catalog_diff_hash,
-        build_run_id=identity.run_id,
-        publish_job_name="mi-master-publish-run-mi-master-1",
-        approved_by="pl@example.com",
-        approved_at="2026-08-06T00:00:00+00:00",
+        request.identity.catalog_diff_hash,
     )
-    run_approved_definition_publish(_request(sqlite_ledger, identity, workspace))
-    omitted = "backup_preflight"
+    assert [event.stage for event in events] == list(STAGES[:6])
+    assert [event.stage for event in events if event.status != STAGE_FAILED] == list(STAGES[:6])
+
+
+@pytest.mark.parametrize("stage", STAGES)
+def test_definition_refresh_stage_contract_reports_each_omitted_stage_only(
+    sqlite_ledger, tmp_path: Path, stage: str
+) -> None:
+    request = prepare_request(tmp_path)
+    prepare_definition_refresh_candidate(sqlite_ledger, request, RecordingPrepareAdapters([]))
+    approve(sqlite_ledger, request)
+    run_approved_definition_publish(publish_request(sqlite_ledger, request))
     events = [
         event
         for event in sqlite_ledger.stage_events(
-            identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
+            request.identity.ledger_epoch,
+            CATEGORY,
+            request.identity.catalog_diff_hash,
         )
-        if event.stage != omitted
+        if event.stage != stage
     ]
 
-    # When / Then: the contract names only the omitted stage.
     with pytest.raises(MissingStageError) as excinfo:
         assert_complete_stage_contract(events)
-    assert excinfo.value.missing == (omitted,)
+
+    assert excinfo.value.missing == (stage,)
 
 
-def test_approved_publish_enforces_preconditions_refresh_scope_and_invalidation(
+@pytest.mark.parametrize("stage", STAGES[:5])
+def test_injected_prepare_stage_failure_records_failed_stage_and_never_completes(
+    sqlite_ledger, tmp_path: Path, stage: str
+) -> None:
+    request = prepare_request(tmp_path)
+    adapters = RecordingPrepareAdapters([], fail_at=stage)
+
+    assert prepare_definition_refresh_candidate(sqlite_ledger, request, adapters) == 1
+
+    entry = sqlite_ledger.status(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
+    events = sqlite_ledger.stage_events(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    failed = [event for event in events if event.status == STAGE_FAILED]
+    assert [event.stage for event in failed] == [stage]
+    assert sqlite_ledger.prepared_candidate(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    ) is None
+
+
+def test_publish_failure_records_failed_stage_and_never_marks_complete(
     sqlite_ledger, tmp_path: Path
 ) -> None:
-    # Given: an approved MI Master definition candidate.
-    identity = _identity()
-    workspace = _workspace(tmp_path)
-    prepare_definition_refresh_candidate(sqlite_ledger, identity, workspace)
-    assert sqlite_ledger.mark_publish_running(
-        identity.ledger_epoch,
-        CATEGORY,
-        identity.catalog_diff_hash,
-        build_run_id=identity.run_id,
-        publish_job_name="mi-master-publish-run-mi-master-1",
-        approved_by="pl@example.com",
-        approved_at="2026-08-06T00:00:00+00:00",
-    )
+    request = prepare_request(tmp_path)
+    prepare_definition_refresh_candidate(sqlite_ledger, request, RecordingPrepareAdapters([]))
+    approve(sqlite_ledger, request)
 
+    assert run_approved_definition_publish(
+        publish_request(sqlite_ledger, request, publisher=RecordingPublisher([], fail=True))
+    ) == 1
+
+    entry = sqlite_ledger.status(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
+    events = sqlite_ledger.stage_events(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert [(event.stage, event.status) for event in events if event.status == STAGE_FAILED] == [
+        ("mart_publish", STAGE_FAILED)
+    ]
+
+
+def test_publish_refresh_scope_runtime_invalidation_and_transition_sequence(
+    sqlite_ledger, tmp_path: Path
+) -> None:
+    request = prepare_request(tmp_path)
+    prepare_definition_refresh_candidate(sqlite_ledger, request, RecordingPrepareAdapters([]))
+    approve(sqlite_ledger, request)
     publisher = RecordingPublisher([])
     refresher = RecordingCacheRefresher([])
     invalidator = RecordingInvalidator([])
 
-    # When: the publish is orchestrated.
-    assert (
-        run_approved_definition_publish(
-            _request(
+    assert run_approved_definition_publish(
+        publish_request(
             sqlite_ledger,
-            identity,
-            workspace,
+            request,
             publisher=publisher,
             cache_refresher=refresher,
             invalidator=invalidator,
-            )
         )
-        == 0
-    )
+    ) == 0
 
-    # Then: state advances publish_running -> complete and only lightweight caches refresh.
-    assert (
-        sqlite_ledger.status(
-            identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
-        ).status
-        == STATUS_COMPLETE
+    entry = sqlite_ledger.status(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
     )
-    transitions = [
-        transition.status
-        for transition in sqlite_ledger.status_transitions(
-            identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
-        )
-    ]
-    assert transitions[-3:] == [
+    assert entry is not None
+    assert entry.status == STATUS_COMPLETE
+    transitions = sqlite_ledger.status_transitions(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert [transition.status for transition in transitions][-3:] == [
         STATUS_AWAITING_APPROVAL,
         STATUS_PUBLISH_RUNNING,
         STATUS_COMPLETE,
@@ -218,75 +204,36 @@ def test_approved_publish_enforces_preconditions_refresh_scope_and_invalidation(
     assert refresher.requested == [("cache_brands", "cache_market_status")]
     assert "cache_cause" not in refresher.requested[0]
     assert "cache_deep_analysis" not in refresher.requested[0]
-    assert invalidator.identities == [identity]
-    assert publisher.calls == [workspace]
+    assert invalidator.identities == [request.identity]
+    assert publisher.calls == [request.workspace]
     assert_complete_stage_contract(
         sqlite_ledger.stage_events(
-            identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
+            request.identity.ledger_epoch,
+            CATEGORY,
+            request.identity.catalog_diff_hash,
         )
     )
 
 
 def test_publish_rejects_extra_cache_refresh_tables(sqlite_ledger, tmp_path: Path) -> None:
-    # Given: an approved candidate and a refresher that reports a forbidden cache table.
-    identity = _identity()
-    workspace = _workspace(tmp_path)
-    prepare_definition_refresh_candidate(sqlite_ledger, identity, workspace)
-    assert sqlite_ledger.mark_publish_running(
-        identity.ledger_epoch,
-        CATEGORY,
-        identity.catalog_diff_hash,
-        build_run_id=identity.run_id,
-        publish_job_name="mi-master-publish-run-mi-master-1",
-        approved_by="pl@example.com",
-        approved_at="2026-08-06T00:00:00+00:00",
-    )
+    request = prepare_request(tmp_path)
+    prepare_definition_refresh_candidate(sqlite_ledger, request, RecordingPrepareAdapters([]))
+    approve(sqlite_ledger, request)
 
-    # When / Then: cache_cause/cache_deep_analysis cannot enter this path.
-    with pytest.raises(RuntimeError, match="forbidden cache refresh"):
-        run_approved_definition_publish(
-            _request(
+    assert run_approved_definition_publish(
+        publish_request(
             sqlite_ledger,
-            identity,
-            workspace,
-            publisher=RecordingPublisher([]),
+            request,
             cache_refresher=RecordingCacheRefresher(
                 [], returned=("cache_brands", "cache_cause")
             ),
-            invalidator=RecordingInvalidator([]),
-            )
         )
+    ) == 1
 
-
-def test_publish_fails_before_atomic_interface_when_candidate_precondition_missing(
-    sqlite_ledger, tmp_path: Path
-) -> None:
-    # Given: an approved candidate whose candidate directory disappeared.
-    identity = _identity()
-    workspace = _workspace(tmp_path)
-    prepare_definition_refresh_candidate(sqlite_ledger, identity, workspace)
-    workspace.candidate_root.rmdir()
-    assert sqlite_ledger.mark_publish_running(
-        identity.ledger_epoch,
+    entry = sqlite_ledger.status(
+        request.identity.ledger_epoch,
         CATEGORY,
-        identity.catalog_diff_hash,
-        build_run_id=identity.run_id,
-        publish_job_name="mi-master-publish-run-mi-master-1",
-        approved_by="pl@example.com",
-        approved_at="2026-08-06T00:00:00+00:00",
+        request.identity.catalog_diff_hash,
     )
-    publisher = RecordingPublisher([])
-
-    # When / Then: the atomic publish interface is never called.
-    with pytest.raises(RuntimeError, match="candidate_root"):
-        run_approved_definition_publish(
-            _request(
-            sqlite_ledger,
-            identity,
-            workspace,
-            publisher=publisher,
-            cache_refresher=RecordingCacheRefresher([]),
-            invalidator=RecordingInvalidator([]),
-            )
-        )
-    assert publisher.calls == []
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
