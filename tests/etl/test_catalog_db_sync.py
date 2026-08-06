@@ -182,6 +182,44 @@ def test_replacement_sync_rejects_unapproved_removal_before_dml(
     assert conn.rollbacks == 0
 
 
+def test_replacement_sync_allows_ungrounded_report_when_nothing_removed(
+    tmp_path: Path,
+) -> None:
+    # Given: candidate and serving IDs are identical, so no deletion policy is needed.
+    ml_candidate = _ml_row("ml_keep")
+    cd_candidate = _cd_row("cd_keep")
+    brand_candidate = _brand_row(1)
+    _write_parquet(tmp_path, "ml_market", [ml_candidate])
+    _write_parquet(tmp_path, "cd_market", [cd_candidate])
+    _write_parquet(tmp_path, "strategic_brand", [brand_candidate])
+    conn = ReplacementConnection(
+        current_ids={
+            "catalog_ml_market": ("ml_keep",),
+            "catalog_cd_market": ("cd_keep",),
+            "catalog_strategic_brand": ("brand_0001",),
+        },
+        parity_rows={
+            "catalog_ml_market": [ml_candidate],
+            "catalog_cd_market": [cd_candidate],
+            "catalog_strategic_brand": [brand_candidate],
+        },
+    )
+
+    # When: replacement mode runs with the default empty report.
+    db_sync.sync_catalog_tables(
+        conn,
+        target_db="scratch",
+        catalog_root=tmp_path,
+        replacement=db_sync.CatalogReplacementApproval(removed_ids_by_table={}),
+        reference_report=db_sync.CatalogReplacementReferenceReport(),
+    )
+
+    # Then: compatibility is preserved because there are no removals to approve.
+    assert not any(statement.startswith("DELETE FROM") for statement in conn.statements)
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+
+
 def test_replacement_sync_rolls_back_when_post_write_parity_mismatches(
     tmp_path: Path,
 ) -> None:
@@ -207,7 +245,7 @@ def test_replacement_sync_rolls_back_when_post_write_parity_mismatches(
             replacement=db_sync.CatalogReplacementApproval(
                 removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
             ),
-            reference_report=db_sync.CatalogReplacementReferenceReport(),
+            reference_report=db_sync.CatalogReplacementReferenceReport(grounded=True),
         )
 
     assert any(statement.startswith("DELETE FROM") for statement in conn.statements)
@@ -236,13 +274,72 @@ def test_replacement_sync_rejects_referenced_removal_without_inactive_decision(
                 removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
             ),
             reference_report=db_sync.CatalogReplacementReferenceReport(
-                referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+                referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
+                grounded=True,
             ),
         )
 
     assert not any(statement.startswith("DELETE FROM") for statement in conn.statements)
     assert conn.batches == []
     assert conn.commits == 0
+
+
+def test_replacement_sync_rejects_ungrounded_empty_reference_report(
+    tmp_path: Path,
+) -> None:
+    # Given: removal approval exists but references were not built from DB state.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_keep")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_keep")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(1)])
+    conn = ReplacementConnection(
+        current_ids={"catalog_ml_market": ("ml_keep", "ml_remove")}
+    )
+
+    # When / Then: caller-supplied empty references cannot authorize deletion.
+    with pytest.raises(ValueError, match="DB-grounded reference report"):
+        db_sync.sync_catalog_tables(
+            conn,
+            target_db="scratch",
+            catalog_root=tmp_path,
+            replacement=db_sync.CatalogReplacementApproval(
+                removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+            ),
+            reference_report=db_sync.CatalogReplacementReferenceReport(),
+        )
+
+    assert not any(statement.startswith("DELETE FROM") for statement in conn.statements)
+    assert conn.batches == []
+    assert conn.commits == 0
+
+
+def test_db_reference_report_builder_marks_existing_references_grounded() -> None:
+    # Given: mart/cache/saved-filter tables exist and reference one removed ML ID.
+    conn = ReferenceReportConnection(
+        existing={
+            ("scratch", "mart_strategic_ml_brand_metric", "ml_id"),
+            ("scratch", "cache_brands", "response_json"),
+            ("scratch", "saved_filters", "filter_json"),
+        },
+        matches={
+            ("mart_strategic_ml_brand_metric", "ml_id", "ml_remove"),
+            ("cache_brands", "response_json", "ml_remove"),
+            ("saved_filters", "filter_json", "ml_remove"),
+        },
+    )
+
+    # When: the replacement reference report is built from DB metadata and rows.
+    report = db_sync.build_catalog_replacement_reference_report(
+        conn,
+        target_db="scratch",
+        removed_ids_by_table={"catalog_ml_market": ("ml_remove",)},
+    )
+
+    # Then: it is DB-grounded and records all existing reference families.
+    assert report.grounded is True
+    assert report.referenced_ids_by_table == {"catalog_ml_market": ("ml_remove",)}
+    assert ("mart_strategic_ml_brand_metric", "ml_id", "ml_remove") in conn.probes
+    assert ("cache_brands", "response_json", "ml_remove") in conn.probes
+    assert ("saved_filters", "filter_json", "ml_remove") in conn.probes
 
 
 def test_replacement_sync_deletes_approved_ids_and_passes_parity(tmp_path: Path) -> None:
@@ -277,6 +374,7 @@ def test_replacement_sync_deletes_approved_ids_and_passes_parity(tmp_path: Path)
         reference_report=db_sync.CatalogReplacementReferenceReport(
             referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
             inactive_decisions_by_table={"catalog_ml_market": ("ml_remove",)},
+            grounded=True,
         ),
     )
 
@@ -369,6 +467,57 @@ class ReplacementConnection:
 
     def rollback(self) -> None:
         self.rollbacks += 1
+
+
+@dataclass
+class ReferenceReportCursor:
+    conn: "ReferenceReportConnection"
+    sql: str = ""
+    params: tuple[object, ...] | None = None
+
+    def __enter__(self) -> "ReferenceReportCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+        self.sql = sql
+        self.params = params
+        if "SELECT 1 FROM" in sql:
+            self.conn.probes.add((*self._table_column(), str((params or ("",))[0])))
+
+    def fetchone(self) -> dict[str, int] | None:
+        if "information_schema.COLUMNS" in self.sql:
+            assert self.params is not None
+            schema, table, column = (str(item) for item in self.params)
+            return {"exists": 1} if (schema, table, column) in self.conn.existing else None
+        if "SELECT 1 FROM" in self.sql:
+            assert self.params is not None
+            table, column = self._table_column()
+            key = (table, column, str(self.params[0]))
+            return {"exists": 1} if key in self.conn.matches else None
+        return None
+
+    def _table_column(self) -> tuple[str, str]:
+        for table, column in (
+            ("mart_strategic_ml_brand_metric", "ml_id"),
+            ("cache_brands", "response_json"),
+            ("saved_filters", "filter_json"),
+        ):
+            if f"`{table}`" in self.sql and f"`{column}`" in self.sql:
+                return table, column
+        raise AssertionError(f"unexpected SQL: {self.sql}")
+
+
+@dataclass
+class ReferenceReportConnection:
+    existing: set[tuple[str, str, str]]
+    matches: set[tuple[str, str, str]]
+    probes: set[tuple[str, str, str]] = field(default_factory=set)
+
+    def cursor(self) -> ReferenceReportCursor:
+        return ReferenceReportCursor(self)
 
 
 def _write_parquet(root: Path, name: str, rows: list[dict[str, object]]) -> None:

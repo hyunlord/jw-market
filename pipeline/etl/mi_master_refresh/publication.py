@@ -33,6 +33,7 @@ def validate_refresh_publish_plan(plan: RefreshPublishPlan) -> None:
 
 
 def atomic_publish_candidate(plan: RefreshPublishPlan) -> RefreshPublishResult:
+    recover_incomplete_publish(plan)
     validate_refresh_publish_plan(plan)
     if not plan.candidate_dir.is_dir():
         raise ValueError(f"candidate_dir is not a directory: {plan.candidate_dir}")
@@ -54,14 +55,20 @@ def atomic_publish_candidate(plan: RefreshPublishPlan) -> RefreshPublishResult:
     if temporary_live.exists():
         shutil.rmtree(temporary_live)
     shutil.copytree(plan.candidate_dir, temporary_live)
-    old_live = plan.live_dir.parent / f".{plan.live_dir.name}.{plan.candidate.candidate_id}.old"
+    old_live = _old_live_path(plan)
     if old_live.exists():
         shutil.rmtree(old_live)
+    _append_journal(
+        plan.journal_path,
+        "publish_swap_started",
+        plan.candidate,
+        {"old_live": str(old_live), "temporary_live": str(temporary_live)},
+    )
     os.replace(plan.live_dir, old_live)
     try:
         os.replace(temporary_live, plan.live_dir)
-    except OSError:
-        os.replace(old_live, plan.live_dir)
+    except BaseException:
+        _restore_old_live(plan, old_live)
         raise
     shutil.rmtree(old_live)
     _append_journal(
@@ -73,11 +80,34 @@ def atomic_publish_candidate(plan: RefreshPublishPlan) -> RefreshPublishResult:
     return RefreshPublishResult(plan.live_dir, backup_target, plan.journal_path)
 
 
+def recover_incomplete_publish(plan: RefreshPublishPlan) -> None:
+    old_live = _old_live_path(plan)
+    if plan.live_dir.exists() or not old_live.exists():
+        return
+    _restore_old_live(plan, old_live)
+
+
+def _restore_old_live(plan: RefreshPublishPlan, old_live: Path) -> None:
+    if plan.live_dir.exists():
+        return
+    os.replace(old_live, plan.live_dir)
+    _append_journal(
+        plan.journal_path,
+        "publish_recovered",
+        plan.candidate,
+        {"live_dir": str(plan.live_dir)},
+    )
+
+
 def _temporary_live_path(plan: RefreshPublishPlan) -> Path:
     return (
         plan.live_dir.parent
         / f".{plan.live_dir.name}.{plan.candidate.candidate_id}.tmp"
     )
+
+
+def _old_live_path(plan: RefreshPublishPlan) -> Path:
+    return plan.live_dir.parent / f".{plan.live_dir.name}.{plan.candidate.candidate_id}.old"
 
 
 def _append_journal(

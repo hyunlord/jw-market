@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.etl.io.catalog import db_sync
+from pipeline.etl.mi_master_refresh import publication
 from pipeline.etl.mi_master_definition_refresh import (
     AffectedDefinition,
     CatalogTableSnapshot,
@@ -234,9 +235,81 @@ def test_atomic_publish_writes_journal_backup_and_candidate_manifest(
     assert (live / "manifest.json").read_text(encoding="utf-8") == '{"version": 2}'
     assert (result.backup_dir / "manifest.json").read_text(encoding="utf-8") == '{"version": 1}'
     events = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
-    assert [event["event"] for event in events] == ["backup_created", "candidate_published"]
+    assert [event["event"] for event in events] == [
+        "backup_created",
+        "publish_swap_started",
+        "candidate_published",
+    ]
     assert events[-1]["candidate_id"] == "mi-refresh-20260806"
     assert events[-1]["mi_master_sha256"] == "e" * 64
+
+
+def test_atomic_publish_restores_live_when_candidate_swap_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a staged candidate and a live tree.
+    live = tmp_path / "live"
+    candidate = tmp_path / "candidate"
+    backup_corpus = tmp_path / "backup-corpus"
+    journal = tmp_path / "journal.jsonl"
+    for directory, version in (
+        (live, "1"),
+        (candidate, "2"),
+        (backup_corpus, "1"),
+    ):
+        directory.mkdir()
+        (directory / "manifest.json").write_text(f'{{"version": {version}}}', encoding="utf-8")
+    journal.write_text("", encoding="utf-8")
+    plan = _publish_plan(tmp_path, live, candidate, backup_corpus, journal)
+    real_replace = publication.os.replace
+    calls = 0
+
+    def fail_second_replace(source: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("candidate swap failed")
+        real_replace(source, target)
+
+    monkeypatch.setattr(publication.os, "replace", fail_second_replace)
+
+    # When / Then: the failed publish restores the original live tree.
+    with pytest.raises(OSError, match="candidate swap failed"):
+        atomic_publish_candidate(plan)
+    assert (live / "manifest.json").read_text(encoding="utf-8") == '{"version": 1}'
+    assert any(
+        json.loads(line)["event"] == "publish_recovered"
+        for line in journal.read_text(encoding="utf-8").splitlines()
+    )
+
+
+def test_atomic_publish_recovers_interrupted_swap_before_next_publish(
+    tmp_path: Path,
+) -> None:
+    # Given: a prior publish crashed after moving live aside.
+    live = tmp_path / "live"
+    old_live = tmp_path / ".live.mi-refresh-20260806.old"
+    candidate = tmp_path / "candidate"
+    backup_corpus = tmp_path / "backup-corpus"
+    journal = tmp_path / "journal.jsonl"
+    for directory, version in (
+        (old_live, "1"),
+        (candidate, "2"),
+        (backup_corpus, "1"),
+    ):
+        directory.mkdir()
+        (directory / "manifest.json").write_text(f'{{"version": {version}}}', encoding="utf-8")
+    journal.write_text("", encoding="utf-8")
+
+    # When: recovery runs before validation of live_dir.
+    publication.recover_incomplete_publish(
+        _publish_plan(tmp_path, live, candidate, backup_corpus, journal)
+    )
+
+    # Then: live is restored from the old tree.
+    assert (live / "manifest.json").read_text(encoding="utf-8") == '{"version": 1}'
+    assert not old_live.exists()
 
 
 def test_refresh_boundary_never_promotes_cause_or_deep_analysis_caches() -> None:
@@ -260,10 +333,12 @@ def test_mi_master_sha256_ddl_artifact_is_present_but_not_executed() -> None:
     sql = sql_path.read_text(encoding="utf-8")
 
     # Then: the artifact covers all catalog tables and contains no destructive DDL.
+    assert "{{APPROVED_CATALOG_SCHEMA}}" in sql
     assert "`catalog_ml_market`" in sql
     assert "`catalog_cd_market`" in sql
     assert "`catalog_strategic_brand`" in sql
-    assert sql.count("ADD COLUMN `mi_master_sha256` CHAR(64) NULL") == 3
+    assert sql.count("ADD COLUMN IF NOT EXISTS `mi_master_sha256` CHAR(64) NULL") == 3
+    assert sql.count("`{{APPROVED_CATALOG_SCHEMA}}`.`catalog_") == 3
     assert "DROP " not in sql.upper()
 
 
@@ -504,3 +579,30 @@ def test_publish_plan_requires_corpora_journal_and_approval_identity(
                 approval_identity=None,
             )
         )
+
+
+def _publish_plan(
+    tmp_path: Path,
+    live: Path,
+    candidate: Path,
+    backup_corpus: Path,
+    journal: Path,
+) -> RefreshPublishPlan:
+    return RefreshPublishPlan(
+        candidate=MiMasterRefreshCandidate(
+            candidate_id="mi-refresh-20260806",
+            mi_master_sha256="e" * 64,
+            manifest_sha256="f" * 64,
+            allowed_cache_tables=("cache_brands", "cache_market_status"),
+        ),
+        candidate_dir=candidate,
+        live_dir=live,
+        backup_dir=tmp_path / "backup",
+        journal_path=journal,
+        corpus=RefreshCorpus(candidate, backup_corpus),
+        approval_identity=DefinitionApprovalIdentity(
+            mi_master_sha256="e" * 64,
+            catalog_diff_hash="f" * 64,
+            run_id="mi-refresh-20260806",
+        ),
+    )

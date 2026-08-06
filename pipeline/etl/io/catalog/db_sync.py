@@ -11,6 +11,9 @@ from pipeline.etl.io.catalog.db_sync_rows import (
     load_catalog_rows as _load_catalog_rows,
     quote_id,
 )
+from pipeline.etl.io.catalog.db_sync_references import (
+    build_catalog_replacement_reference_report,
+)
 from pipeline.etl.io.catalog.db_sync_types import (
     CATALOG_TABLE_BATCH_LIMIT,
     CATALOG_TABLES,
@@ -85,6 +88,7 @@ __all__ = [
     "CatalogTableSpec",
     "ServingCatalogExport",
     "_load_catalog_rows",
+    "build_catalog_replacement_reference_report",
     "catalog_table_specs",
     "compare_catalog_to_serving",
     "export_serving_catalog_tables",

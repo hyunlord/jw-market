@@ -73,6 +73,7 @@ class CatalogReplacementApproval:
 class CatalogReplacementReferenceReport:
     referenced_ids_by_table: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     inactive_decisions_by_table: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    grounded: bool = False
 
 
 CATALOG_ML_MARKET = CatalogTableSpec(
