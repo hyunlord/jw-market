@@ -296,6 +296,18 @@ def _utc_timestamp(value: object) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _mysql_datetime(value: object | None) -> datetime | None:
+    """Bind a UTC instant to a plain MySQL DATETIME column.
+
+    The operating ledger columns are DATETIME without fractional precision or
+    timezone storage. Convert aware inputs to UTC first, then remove the offset
+    and microseconds explicitly instead of relying on driver string coercion.
+    """
+    if value is None:
+        return None
+    return _utc_timestamp(value).replace(tzinfo=None, microsecond=0)
+
+
 @dataclass(frozen=True)
 class LedgerEntry:
     epoch: str
@@ -415,6 +427,11 @@ class Ledger:
                 # and no .ping(); run directly (still serialized for uniformity).
                 return self._run(statement, params)
             return self._execute_resilient(statement, params)
+
+    def _database_datetime(self, value: object | None) -> object | None:
+        if self._dialect == "mysql":
+            return _mysql_datetime(value)
+        return value
 
     def _run(self, statement: str, params: tuple):
         cursor = self._conn.cursor()
@@ -1226,6 +1243,8 @@ class Ledger:
             sort_keys=True,
             separators=(",", ":"),
         )
+        prepared_at_db = self._database_datetime(prepared_at)
+        expires_at_db = self._database_datetime(expires_at)
 
         def upsert_candidate(cursor):
             cursor.execute(
@@ -1236,8 +1255,8 @@ class Ledger:
                     manifest_sha,
                     run_id,
                     payload_json,
-                    prepared_at,
-                    expires_at,
+                    prepared_at_db,
+                    expires_at_db,
                 ),
             )
             return True
@@ -1307,6 +1326,7 @@ class Ledger:
             sort_keys=True,
             separators=(",", ":"),
         )
+        approved_at_db = self._database_datetime(approved_at)
 
         def reserve_candidate(cursor):
             cursor.execute(select_candidate_sql, (epoch, category, manifest_sha))
@@ -1325,7 +1345,7 @@ class Ledger:
                 update_candidate_sql,
                 (
                     publish_job_name,
-                    approved_at,
+                    approved_at_db,
                     approved_by,
                     epoch,
                     category,
@@ -1343,7 +1363,7 @@ class Ledger:
                 manifest_sha,
                 status=STATUS_PUBLISH_RUNNING,
                 assignments=f"status={mark}, job_name={mark}, started_at={mark}",
-                values=(STATUS_PUBLISH_RUNNING, publish_job_name, approved_at),
+                values=(STATUS_PUBLISH_RUNNING, publish_job_name, approved_at_db),
                 actor=approved_by,
                 source="publish_approval",
                 reason="exact publish candidate approved",
@@ -1687,6 +1707,8 @@ class Ledger:
         a new run_id and never overwrites a prior attempt's history (S-3).
         """
         try:
+            started_at_db = self._database_datetime(started_at)
+            finished_at_db = self._database_datetime(finished_at)
             existing = self._execute(
                 "SELECT id FROM ingest_stage_event"
                 " WHERE epoch=? AND category=? AND manifest_sha=? AND run_id=? AND seq=?",
@@ -1699,7 +1721,7 @@ class Ledger:
                     "  started_at, finished_at, duration_ms)"
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (epoch, category, manifest_sha, run_id, seq, stage, status, reason,
-                     started_at, finished_at, duration_ms),
+                     started_at_db, finished_at_db, duration_ms),
                 )
             else:
                 self._execute(
@@ -1707,7 +1729,7 @@ class Ledger:
                     " finished_at=COALESCE(?, finished_at), duration_ms=COALESCE(?, duration_ms),"
                     " started_at=COALESCE(started_at, ?)"
                     " WHERE epoch=? AND category=? AND manifest_sha=? AND run_id=? AND seq=?",
-                    (stage, status, reason, finished_at, duration_ms, started_at,
+                    (stage, status, reason, finished_at_db, duration_ms, started_at_db,
                      epoch, category, manifest_sha, run_id, seq),
                 )
         except Exception as exc:  # noqa: BLE001 — observation is best-effort (S-4)
