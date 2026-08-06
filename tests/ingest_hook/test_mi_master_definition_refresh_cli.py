@@ -158,12 +158,12 @@ def _add_publish_plan(payload: dict[str, object], tmp_path: Path) -> dict[str, o
     backup_dir.mkdir()
     payload["workspace"] = {
         "candidate_root": str(candidate_dir),
-        "backup_root": str(backup_dir / "cand-17"),
+        "backup_root": str(backup_dir / str(identity_payload["run_id"])),
         "journal_path": str(workspace_payload["journal_path"]),
     }
     payload["publish_plan"] = {
         "candidate": {
-            "candidate_id": "cand-17",
+            "candidate_id": identity_payload["run_id"],
             "mi_master_sha256": identity_payload["mi_master_sha256"],
             "manifest_sha256": identity_payload["catalog_diff_hash"],
             "allowed_cache_tables": ["cache_brands", "cache_market_status"],
@@ -418,9 +418,9 @@ def test_publisher_from_request_calls_real_atomic_publish_candidate(tmp_path: Pa
 
     receipt = publisher_from_request(parsed).publish(parsed.workspace, parsed.identity)
 
-    assert receipt.backup_root == backup_dir / "cand-17"
+    assert receipt.backup_root == backup_dir / "run-mi-master-1"
     assert (live_dir / "candidate.txt").read_text(encoding="utf-8") == "new"
-    assert (backup_dir / "cand-17" / "live.txt").read_text(encoding="utf-8") == "old"
+    assert (backup_dir / "run-mi-master-1" / "live.txt").read_text(encoding="utf-8") == "old"
 
 
 def test_prepare_candidate_payload_binds_canonical_publish_plan(tmp_path: Path) -> None:
