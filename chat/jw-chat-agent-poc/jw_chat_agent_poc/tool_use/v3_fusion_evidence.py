@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass, replace
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import re
@@ -10,6 +11,7 @@ from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     ClinicalTrialFact,
     InsightFact,
     MarketDefinitionFact,
+    MarketMetricFact,
     RegulatoryRuleFact,
     ToolFailureRecord,
     V3EvidenceBundle,
@@ -68,6 +70,7 @@ evidence_id는 supplied evidence 목록의 값을 그대로 복사하고 새로 
 한글 필드명, 결과 순번, NCT 식별자를 evidence_id로 조합하지 않는다.
 인용할 supplied evidence_id가 없으면 claim을 만들지 말고 limitations에 남긴다.
 Copy numeric literals exactly from allowed_numeric_literals of the cited evidence; never calculate, estimate, round, interpolate, or convert units.
+Numeric values in raw_result are already projected at the display boundary. Copy them exactly and do not round them again.
 Copy periods from allowed_periods exactly, or use their direct Korean year/month/quarter notation.
 Use only supplied evidence values. Write natural Korean around them without changing values.
 For market_definition evidence, copy definition_statements without summarizing or reconstructing their meaning.
@@ -163,6 +166,8 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
     }
     arguments = prompt_value(fact.arguments)
     raw_result_value = _fusion_prompt_raw_result(fact)
+    if isinstance(fact, MarketMetricFact):
+        raw_result_value = _display_prompt_value(raw_result_value, path=())
     if isinstance(fact, WebSourceFact):
         raw_result_value = {
             key: value
@@ -170,6 +175,10 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
             if key not in {"snippet", "content", "raw_content"}
         }
     raw_result = prompt_value(raw_result_value)
+    allowed_numeric_literals = set(fact_numeric_literals(fact))
+    allowed_numeric_literals.difference_update(
+        unformatted_display_numeric_literals(fact)
+    )
     return {
         "evidence_id": fact.evidence_id,
         "fact_type": fact.fact_type,
@@ -181,7 +190,7 @@ def fusion_fact_payload(fact: V3EvidenceFact) -> dict[str, object]:
         "allowed_numeric_literals": (
             []
             if isinstance(fact, WebSourceFact | InsightFact)
-            else sorted(fact_numeric_literals(fact))
+            else sorted(allowed_numeric_literals)
         ),
         "web_quoted_numeric_literals": (
             sorted(web_source_numeric_literals(fact))
@@ -362,7 +371,99 @@ def fact_numeric_literals(fact: V3EvidenceFact) -> frozenset[str]:
         return frozenset()
     values: set[str] = set()
     _collect_semantic_numeric_values(fact.raw_result, values)
+    values.update(
+        canonical_numeric_literal(str(item["display_value"]))
+        for item in display_numeric_literals(fact)
+    )
     return frozenset(values)
+
+
+def display_numeric_literals(fact: V3EvidenceFact) -> tuple[dict[str, object], ...]:
+    if not isinstance(fact, MarketMetricFact):
+        return ()
+    values: list[dict[str, object]] = []
+    _collect_display_numeric_values(fact.raw_result, values, path=())
+    return tuple(sorted(values, key=lambda item: str(item["field_path"])))
+
+
+def unformatted_display_numeric_literals(fact: V3EvidenceFact) -> frozenset[str]:
+    return frozenset(
+        canonical_numeric_literal(str(item["raw_value"]))
+        for item in display_numeric_literals(fact)
+        if str(item["raw_value"]) != str(item["display_value"])
+    )
+
+
+def _collect_display_numeric_values(
+    value: object,
+    output: list[dict[str, object]],
+    *,
+    path: tuple[str, ...],
+) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _collect_display_numeric_values(item, output, path=(*path, str(key)))
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, item in enumerate(value):
+            _collect_display_numeric_values(item, output, path=(*path, str(index)))
+        return
+    if isinstance(value, bool) or not isinstance(value, int | float) or not path:
+        return
+    digits = _display_digits(path)
+    if digits is None:
+        return
+    quantizer = Decimal(1).scaleb(-digits)
+    display_value = format(
+        Decimal(str(value)).quantize(quantizer, rounding=ROUND_HALF_UP),
+        f".{digits}f",
+    )
+    output.append(
+        {
+            "field_path": ".".join(path),
+            "raw_value": value,
+            "display_value": display_value,
+            "decimal_places": digits,
+        }
+    )
+
+
+def _display_digits(path: tuple[str, ...]) -> int | None:
+    field_name = path[-1].casefold()
+    semantic_path = ".".join(path).casefold()
+    if "hhi" in semantic_path:
+        return 4
+    if field_name == "target_share_pct" or "cagr" in semantic_path:
+        return 2
+    if field_name.endswith(("_pct", "_pctp")) or any(
+        token in semantic_path
+        for token in ("growth", "contribution", "share", "yoy", "mom", "qoq")
+    ):
+        return 1
+    return None
+
+
+def _display_prompt_value(value: object, *, path: tuple[str, ...]) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _display_prompt_value(item, path=(*path, str(key)))
+            for key, item in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [
+            _display_prompt_value(item, path=(*path, str(index)))
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, bool) or not isinstance(value, int | float) or not path:
+        return value
+    digits = _display_digits(path)
+    if digits is None:
+        return value
+    quantizer = Decimal(1).scaleb(-digits)
+    return format(
+        Decimal(str(value)).quantize(quantizer, rounding=ROUND_HALF_UP),
+        f".{digits}f",
+    )
 
 
 def web_source_numeric_literals(fact: WebSourceFact) -> frozenset[str]:
@@ -499,4 +600,5 @@ __all__ = [
     "message_numeric_literals",
     "numeric_literal_spans",
     "numeric_literals",
+    "unformatted_display_numeric_literals",
 ]

@@ -184,6 +184,41 @@ def test_market_landscape_and_competitive_dynamics_are_both_strategic() -> None:
     assert "조건 본문은 현재 런타임 카탈로그에서 조회되지 않습니다." in competitive["narrowing_rule"]["message"]
 
 
+def test_definition_statements_use_public_market_names_instead_of_internal_ids() -> None:
+    landscape = _registry().get_definition(
+        {"market_id": "ml_008", "view": "market_landscape"}
+    )
+    competitive = _registry().get_definition(
+        {"market_id": "cd_014", "view": "competitive_dynamics"}
+    )
+
+    landscape_text = "\n".join(landscape["definition_statements"])
+    competitive_text = "\n".join(competitive["definition_statements"])
+    assert "리바로하이 리바로브이" in landscape_text
+    assert "리바로하이, 리바로브이" in landscape_text
+    assert "악템라" in competitive_text
+    assert "ml_" not in landscape_text
+    assert "cd_" not in landscape_text
+    assert "ml_" not in competitive_text
+    assert "cd_" not in competitive_text
+    assert "—" not in landscape_text
+    assert "—" not in competitive_text
+
+
+def test_definition_without_public_market_name_fails_instead_of_using_placeholder() -> None:
+    reader = StaticMarketDefinitionCatalogReader(
+        market_landscape_rows=({**ML_ROWS[0], "name": None},),
+        competitive_dynamics_rows=(),
+        strategic_brand_rows=(),
+        atc4_rows=(),
+    )
+
+    with pytest.raises(LookupError, match="공개 시장명"):
+        MarketDefinitionRegistry(reader).get_definition(
+            {"market_id": "ml_008", "view": "market_landscape"}
+        )
+
+
 def test_definition_is_projected_to_user_language_without_internal_field_names() -> None:
     result = _registry().get_definition(
         {"market_id": "ml_011", "view": "market_landscape", "brand": "악템라"}

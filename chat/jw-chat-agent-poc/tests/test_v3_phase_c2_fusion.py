@@ -79,6 +79,82 @@ def _bundle(
     )
 
 
+def test_fusion_payload_adds_portal_display_values_without_removing_raw_values() -> None:
+    fact = _fact("fact-display", value=80.39, metric="sales", unit="억원")
+    fact = replace(
+        fact,
+        raw_result={
+            "render_data": {
+                "target_share_pct": 3.7644,
+                "brand_yoy_pct": -0.6759773411944114,
+                "brand_mom_pct": -5.352912823057643,
+                "market_growth_pct": 4.859967973215973,
+                "excess_growth_pctp": -4.534784805615599,
+                "growth_contribution_pct": -0.5518,
+                "brand_cagr_5y_pct": 4.859967973215973,
+                "ms_pct": 3.7644,
+                "hhi_recent": 3188.040362260885,
+                "hhi_series_5y": [
+                    {"period": "2025", "value": 3015.4124533412323},
+                ],
+                "market_yoy_series": [
+                    {"period": "2025", "value": 4.859967973215973},
+                ],
+            }
+        },
+    )
+
+    payload = json.loads(build_fusion_messages("원인분석", _bundle(fact))[1]["content"])
+    evidence = payload["evidence"][0]
+    projected = evidence["raw_result"]["render_data"]
+
+    assert projected == {
+        "brand_mom_pct": "-5.4",
+        "brand_yoy_pct": "-0.7",
+        "brand_cagr_5y_pct": "4.86",
+        "excess_growth_pctp": "-4.5",
+        "growth_contribution_pct": "-0.6",
+        "hhi_recent": "3188.0404",
+        "hhi_series_5y": [{"period": "2025", "value": "3015.4125"}],
+        "market_growth_pct": "4.9",
+        "market_yoy_series": [{"period": "2025", "value": "4.9"}],
+        "ms_pct": "3.8",
+        "target_share_pct": "3.76",
+    }
+    allowed = set(evidence["allowed_numeric_literals"])
+    assert {"-0.7", "3188.0404"} <= allowed
+    assert "-0.6759773411944114" not in allowed
+    assert "3188.040362260885" not in allowed
+    assert fact.raw_result["render_data"]["brand_yoy_pct"] == -0.6759773411944114
+
+    accepted = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="시장 성장률은 4.9%입니다.",
+                    evidence_ids=("fact-display",),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+    assert accepted.answer.claims[0].text == "시장 성장률은 4.9%입니다."
+
+    rejected = validate_fusion_answer(
+        GeneratedFusionAnswer(
+            claims=(
+                GeneratedFusionClaim(
+                    text="시장 성장률은 4.859967973215973%입니다.",
+                    evidence_ids=("fact-display",),
+                ),
+            )
+        ),
+        _bundle(fact),
+    )
+    assert rejected.answer.claims == ()
+    assert rejected.audit.rejected_claims[0].reason == "unformatted_display_numeric_literal"
+
+
 def _clinical_list_fact() -> ClinicalTrialFact:
     return ClinicalTrialFact(
         evidence_id="v3-shadow:clinicaltrials_v2_search:203e3d6e29478d89",

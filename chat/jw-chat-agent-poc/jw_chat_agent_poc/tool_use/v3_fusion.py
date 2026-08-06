@@ -27,6 +27,7 @@ from jw_chat_agent_poc.tool_use.v3_fusion_evidence import (
     message_numeric_literals,
     numeric_literal_spans,
     numeric_literals,
+    unformatted_display_numeric_literals,
     web_source_numeric_literals,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion_limitations import (
@@ -203,6 +204,24 @@ def validate_fusion_answer(
             for fact in insight_facts
             for value in numeric_literals(fact.raw_text)
         }
+        unformatted_display_numbers = set().union(
+            *(unformatted_display_numeric_literals(fact) for fact in internal_facts)
+        )
+        observed_unformatted = tuple(
+            literal
+            for literal in observed_numbers
+            if canonical_numeric_literal(literal) in unformatted_display_numbers
+        )
+        if observed_unformatted:
+            rejected.append(
+                RejectedFusionClaim(
+                    text=claim.text,
+                    evidence_ids=claim.evidence_ids,
+                    reason="unformatted_display_numeric_literal",
+                    numeric_literals=observed_unformatted,
+                )
+            )
+            continue
         promoted_insight_numbers = tuple(
             literal
             for literal in observed_numbers
