@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from pipeline.etl.mi_master_registry import (
@@ -252,36 +254,88 @@ def _excel_column_name(column_id: int) -> str:
     return name
 
 
+def _product_identity_parts(value: Any) -> tuple[str, ...]:
+    text = unicodedata.normalize("NFKC", str(value or "")).lower()
+    text = text.replace("에이플러스", "a+")
+    text = re.sub(r"\s+\+\s+", "/", text)
+    return tuple(
+        compact
+        for token in re.split(r"[\s/,·&]+", text)
+        if (compact := re.sub(r"[^0-9a-z가-힣+]+", "", token))
+    )
+
+
+def _identity_differences(
+    topology: dict[str, Any],
+    business: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    differences: dict[str, dict[str, Any]] = {}
+    expected_parent = str(business["strategic_market_id"])
+    actual_parent = str(topology["strategic_market_id"])
+    if expected_parent != actual_parent:
+        differences["strategic_market_id"] = {
+            "expected": expected_parent,
+            "actual": actual_parent,
+        }
+
+    expected_columns = tuple(int(value) for value in business["column_ids"])
+    actual_columns = tuple(int(value) for value in topology["column_ids"])
+    if expected_columns != actual_columns:
+        differences["column_ids"] = {
+            "expected": expected_columns,
+            "actual": actual_columns,
+        }
+
+    expected_product = str(business["product_name_kor"])
+    actual_product = str(topology["name"])
+    if _product_identity_parts(expected_product) != _product_identity_parts(
+        actual_product
+    ):
+        differences["product_name_kor"] = {
+            "expected": expected_product,
+            "actual": actual_product,
+        }
+    return differences
+
+
 def build_cd_specs(
     registry: MiMasterRegistry | None = None,
+    *,
+    business_specs: tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     active_registry = registry or default_mi_master_registry()
+    active_business_specs = (
+        _CD_BUSINESS_SPECS if business_specs is None else business_specs
+    )
     business_by_id = {
         str(spec["competitive_dynamics_id"]): spec
-        for spec in _CD_BUSINESS_SPECS
+        for spec in active_business_specs
     }
     specs: list[dict[str, Any]] = []
     for topology in active_registry.cd_specs:
         cd_id = str(topology["cd_id"])
         column_ids = tuple(int(value) for value in topology["column_ids"])
-        business = business_by_id.get(
-            cd_id,
-            {
-                "cd_definition_type": "ml_equals_cd_by_empty",
-                "cd_definition_brand_class": "default_sheet_all",
-                "cd_filter_expression": "sheet 전체",
-                "filter_kind": "sheet_all",
-            },
-        )
+        business = business_by_id.get(cd_id)
+        if business is None:
+            raise ValueError(
+                "CD business spec rejected: "
+                f"cd_id={cd_id!r}, reason=missing_explicit_spec, actual_identity={{"
+                f"'strategic_market_id': {topology['strategic_market_id']!r}, "
+                f"'column_ids': {column_ids!r}, "
+                f"'product_name_kor': {topology['name']!r}}}"
+            )
+        differences = _identity_differences(topology, business)
+        if differences:
+            raise ValueError(
+                "CD business spec identity_mismatch: "
+                f"cd_id={cd_id!r}, differences={differences!r}"
+            )
         specs.append(
             {
                 **business,
                 "competitive_dynamics_id": cd_id,
                 "strategic_market_id": str(topology["strategic_market_id"]),
-                "product_name_kor": business.get(
-                    "product_name_kor",
-                    topology["name"],
-                ),
+                "product_name_kor": business["product_name_kor"],
                 "col_in_master_excel": "+".join(
                     _excel_column_name(column_id)
                     for column_id in column_ids

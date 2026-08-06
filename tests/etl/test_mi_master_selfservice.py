@@ -23,6 +23,7 @@ from pipeline.etl.io.catalog.dim.market_competitive_dynamics_schema import (
     competitive_dynamics_contract,
 )
 from pipeline.etl.io.catalog.dim.market_competitive_dynamics_specs import (
+    _CD_BUSINESS_SPECS,
     build_cd_specs,
 )
 from pipeline.etl.io.catalog.dim.market_landscape_schema import (
@@ -146,7 +147,21 @@ def test_temporary_seventeenth_market_reaches_catalog_and_api_registries(
     jw_products = build_jw_product_specs(registry)
     market_ids, market_count = market_landscape_contract(registry)
     cd_ids, cd_count = competitive_dynamics_contract(registry)
-    cd_catalog_specs = build_cd_specs(registry)
+    new_cd_business_spec = {
+        "competitive_dynamics_id": "cd_020",
+        "strategic_market_id": "strategy_017",
+        "product_name_kor": "신규시장",
+        "col_in_master_excel": "W",
+        "column_ids": (23,),
+        "cd_definition_type": "ml_equals_cd_exact",
+        "cd_definition_brand_class": "default",
+        "cd_filter_expression": "sheet 전체",
+        "filter_kind": "sheet_all",
+    }
+    cd_catalog_specs = build_cd_specs(
+        registry,
+        business_specs=(*_CD_BUSINESS_SPECS, new_cd_business_spec),
+    )
     strategic_market_count, canonical_brand_count = strategic_brand_contract(
         registry
     )
@@ -170,17 +185,7 @@ def test_temporary_seventeenth_market_reaches_catalog_and_api_registries(
     assert market_count == 17
     assert cd_ids[-1] == "cd_020"
     assert cd_count == 20
-    assert cd_catalog_specs[-1] == {
-        "cd_definition_type": "ml_equals_cd_by_empty",
-        "cd_definition_brand_class": "default_sheet_all",
-        "cd_filter_expression": "sheet 전체",
-        "filter_kind": "sheet_all",
-        "competitive_dynamics_id": "cd_020",
-        "strategic_market_id": "strategy_017",
-        "product_name_kor": "신규시장",
-        "col_in_master_excel": "W",
-        "column_ids": (23,),
-    }
+    assert cd_catalog_specs[-1] == new_cd_business_spec
     assert strategic_market_count == 17
     assert canonical_brand_count == 26
 

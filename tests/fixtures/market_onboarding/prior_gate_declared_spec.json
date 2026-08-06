@@ -1,0 +1,18 @@
+{
+  "checks": {
+    "all_cd_specs_bound_to_expected_identity": true,
+    "api_registry_exposed": true,
+    "catalog_count_plus_one": true,
+    "existing_cd_ids_unchanged": true,
+    "existing_ml_ids_unchanged": true,
+    "new_cd_spec_explicit": true
+  },
+  "new_cd_id": "cd_020",
+  "passed": true,
+  "spec_binding_mismatches": [
+    {
+      "cd_id": "cd_020",
+      "reason": "missing_explicit_spec"
+    }
+  ]
+}
