@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import queue
@@ -164,6 +165,29 @@ from jw_chat_agent_poc.service.conversation_context import (
     unresolved_reference_result,
 )
 from jw_chat_agent_poc.service.conversation_history import ConversationHistoryStore, MySQLConversationHistoryStore
+
+try:
+    from jw_chat_agent_poc.service.input_guard_shadow import (
+        apply_limited_input_guard,
+        launch_default_input_guard_shadow,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "jw_chat_agent_poc.service.input_guard_shadow":
+        raise
+    SEMANTIC_GUARD_AVAILABLE = False
+
+    def launch_default_input_guard_shadow(**_kwargs: Any) -> None:
+        return None
+
+    def apply_limited_input_guard(
+        result: dict,
+        _future: object | None,
+        *,
+        question: str = "",
+    ) -> dict:
+        return result
+else:
+    SEMANTIC_GUARD_AVAILABLE = True
 from jw_chat_agent_poc.service.evidence_binding import (
     evidence_facts_from_result,
     expected_entities_from_result,
@@ -279,6 +303,15 @@ from jw_chat_agent_poc.tools.metrics.market_scope import (
 
 AgentFactory = Callable[..., ChatAgent]
 LOGGER = logging.getLogger(__name__)
+
+
+def warn_semantic_guard_configuration(*, guard_available: bool = SEMANTIC_GUARD_AVAILABLE) -> None:
+    limited_enforce = os.environ.get("CHAT_INPUT_GUARD_LIMITED_ENFORCE", "").strip().casefold()
+    if limited_enforce in {"1", "true", "yes", "on"} and not guard_available:
+        LOGGER.warning(
+            "semantic_guard_configuration_mismatch limited_enforce=true "
+            "guard_available=false fail_open=true"
+        )
 QUEUE_PROGRESS_THRESHOLD_S = 2.0
 QUEUE_PROGRESS_INTERVAL_S = 2.5
 
@@ -733,6 +766,7 @@ def create_app(
 
     @app.on_event("startup")
     def start_history_projection_worker() -> None:
+        warn_semantic_guard_configuration()
         projection.start()
         warmup.start()
 
@@ -1039,6 +1073,13 @@ def _answer_question(
     store.configure_conversation_repository(conversation_history)
     input_policy_decision = evaluate_input_policy(question)
     if policy_is_enforced(input_policy_decision):
+        LOGGER.info(
+            "input_security_decision layer=sec12_regex decision=policy_deny "
+            "reason_codes=%s input_sha256=%s input_length=%s input_type=market_page",
+            input_policy_decision.get("reason_codes"),
+            hashlib.sha256(question.encode("utf-8")).hexdigest(),
+            len(question.encode("utf-8")),
+        )
         state = store.conversations.get_or_create(conversation_id)
         result = {
             "answer": SEC12_BLOCKED_ANSWER,
@@ -1055,6 +1096,11 @@ def _answer_question(
             slots=extract_conversation_slots(result),
         )
         return {"question": question, "result": result, "conversation_id": state.conversation_id}
+    input_guard_future = launch_default_input_guard_shadow(
+        question=question,
+        conversation_id=conversation_id,
+        history=conversation_history,
+    )
     _observe_query_spec(question, market_scope_resolver)
     sink_context = stage_event_sink(timing_sink) if timing_sink is not None else nullcontext()
     with sink_context:
@@ -1377,6 +1423,7 @@ def _answer_question(
             # extract_conversation_slots reads this, so the stored turn records that its
             # anchor brand came from the rewrite rather than from the user.
             result = {**result, "anchor_brand_is_synthetic": True}
+        result = apply_limited_input_guard(result, input_guard_future, question=question)
         with trace_span("conversation_state_persist", "persist resolved turn slots in request state"):
             store.conversations.record_exchange(
                 state.conversation_id,
