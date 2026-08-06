@@ -1,8 +1,10 @@
 """MI Master definition-refresh orchestration interfaces."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
+from pipeline.scripts.ingest_hook.ledger import Ledger
 from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
     DefinitionRefreshIdentity,
     DefinitionRefreshRequest,
@@ -28,4 +30,22 @@ class CacheRefresher(Protocol):
 
 
 class RuntimeCatalogInvalidator(Protocol):
+    def preflight(self, identity: DefinitionRefreshIdentity) -> None: ...
     def invalidate(self, identity: DefinitionRefreshIdentity) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionPublishAdapters:
+    publisher: AtomicPublishOrchestrator
+    cache_refresher: CacheRefresher
+    invalidator: RuntimeCatalogInvalidator
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionPublishRequest:
+    ledger: Ledger
+    identity: DefinitionRefreshIdentity
+    workspace: PublishWorkspace
+    adapters: DefinitionPublishAdapters
+    market_ordinal: int | None = None
+    definition_request: DefinitionRefreshRequest | None = None

@@ -27,8 +27,15 @@ from pipeline.scripts.ingest_hook.mi_master_definition_refresh import (
     CATEGORY,
     load_definition_request,
     main,
+    prepare_definition_refresh_candidate,
 )
-from mi_master_definition_fixtures import identity, prepare_request, workspace
+from mi_master_definition_fixtures import (
+    RecordingPrepareAdapters,
+    approve,
+    identity,
+    prepare_request,
+    workspace,
+)
 from ingest_fixtures import write_submission
 
 
@@ -136,6 +143,38 @@ def _full_pipeline_payload(tmp_path: Path) -> dict[str, object]:
             "cache_refresh": {"target_tables": ["cache_brands", "cache_market_status"]},
         }
     )
+    return payload
+
+
+def _add_publish_plan(payload: dict[str, object], tmp_path: Path) -> dict[str, object]:
+    workspace_payload = payload["workspace"]
+    identity_payload = payload["identity"]
+    assert isinstance(workspace_payload, dict)
+    assert isinstance(identity_payload, dict)
+    candidate_dir = Path(str(workspace_payload["candidate_root"]))
+    live_dir = tmp_path / "live"
+    backup_dir = tmp_path / "publish-backups"
+    live_dir.mkdir()
+    backup_dir.mkdir()
+    payload["workspace"] = {
+        "candidate_root": str(candidate_dir),
+        "backup_root": str(backup_dir / "cand-17"),
+        "journal_path": str(workspace_payload["journal_path"]),
+    }
+    payload["publish_plan"] = {
+        "candidate": {
+            "candidate_id": "cand-17",
+            "mi_master_sha256": identity_payload["mi_master_sha256"],
+            "manifest_sha256": identity_payload["catalog_diff_hash"],
+            "allowed_cache_tables": ["cache_brands", "cache_market_status"],
+        },
+        "candidate_dir": str(candidate_dir),
+        "live_dir": str(live_dir),
+        "backup_dir": str(backup_dir),
+        "journal_path": str(workspace_payload["journal_path"]),
+        "corpus": {"candidate_dir": str(candidate_dir), "backup_dir": str(backup_dir)},
+        "approval_identity": identity_payload,
+    }
     return payload
 
 
@@ -363,37 +402,16 @@ def test_sigma_adapter_propagates_real_validation_failure(tmp_path: Path) -> Non
 
 
 def test_publisher_from_request_calls_real_atomic_publish_candidate(tmp_path: Path) -> None:
-    payload = _full_pipeline_payload(tmp_path)
+    payload = _add_publish_plan(_full_pipeline_payload(tmp_path), tmp_path)
     workspace_payload = payload["workspace"]
-    identity_payload = payload["identity"]
     assert isinstance(workspace_payload, dict)
-    assert isinstance(identity_payload, dict)
-    live_dir = tmp_path / "live"
     candidate_dir = Path(str(workspace_payload["candidate_root"]))
-    backup_dir = tmp_path / "publish-backups"
-    live_dir.mkdir()
-    backup_dir.mkdir()
+    publish_plan = payload["publish_plan"]
+    assert isinstance(publish_plan, dict)
+    live_dir = Path(str(publish_plan["live_dir"]))
+    backup_dir = Path(str(publish_plan["backup_dir"]))
     (live_dir / "live.txt").write_text("old", encoding="utf-8")
     (candidate_dir / "candidate.txt").write_text("new", encoding="utf-8")
-    payload["workspace"] = {
-        "candidate_root": str(candidate_dir),
-        "backup_root": str(backup_dir / "cand-17"),
-        "journal_path": str(workspace_payload["journal_path"]),
-    }
-    payload["publish_plan"] = {
-        "candidate": {
-            "candidate_id": "cand-17",
-            "mi_master_sha256": identity_payload["mi_master_sha256"],
-            "manifest_sha256": identity_payload["catalog_diff_hash"],
-            "allowed_cache_tables": ["cache_brands", "cache_market_status"],
-        },
-        "candidate_dir": str(candidate_dir),
-        "live_dir": str(live_dir),
-        "backup_dir": str(backup_dir),
-        "journal_path": str(workspace_payload["journal_path"]),
-        "corpus": {"candidate_dir": str(candidate_dir), "backup_dir": str(backup_dir)},
-        "approval_identity": identity_payload,
-    }
     request_path = tmp_path / "definition-request.json"
     _write_request(request_path, payload)
     parsed = load_definition_request(request_path)
@@ -403,6 +421,75 @@ def test_publisher_from_request_calls_real_atomic_publish_candidate(tmp_path: Pa
     assert receipt.backup_root == backup_dir / "cand-17"
     assert (live_dir / "candidate.txt").read_text(encoding="utf-8") == "new"
     assert (backup_dir / "cand-17" / "live.txt").read_text(encoding="utf-8") == "old"
+
+
+def test_prepare_candidate_payload_binds_canonical_publish_plan(tmp_path: Path) -> None:
+    payload = _add_publish_plan(_full_pipeline_payload(tmp_path), tmp_path)
+    request_path = tmp_path / "definition-request.json"
+    ledger_path = tmp_path / "ledger.db"
+    _write_request(request_path, payload)
+    request = load_definition_request(request_path)
+    ledger = open_sqlite_ledger(ledger_path)
+
+    assert prepare_definition_refresh_candidate(ledger, request, RecordingPrepareAdapters([])) == 0
+
+    candidate = ledger.prepared_candidate(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert candidate is not None
+    assert candidate.payload["publish_plan"] == payload["publish_plan"]
+
+
+def test_prepare_rejects_publish_plan_that_does_not_match_workspace(tmp_path: Path) -> None:
+    payload = _add_publish_plan(_full_pipeline_payload(tmp_path), tmp_path)
+    workspace_payload = payload["workspace"]
+    assert isinstance(workspace_payload, dict)
+    workspace_payload["backup_root"] = str(tmp_path / "wrong-backup")
+    request_path = tmp_path / "definition-request.json"
+    ledger_path = tmp_path / "ledger.db"
+    _write_request(request_path, payload)
+    request = load_definition_request(request_path)
+
+    assert prepare_definition_refresh_candidate(
+        open_sqlite_ledger(ledger_path),
+        request,
+        RecordingPrepareAdapters([]),
+    ) == 1
+
+
+def test_default_approved_publish_cli_preflights_invalidator_before_publish_side_effects(
+    tmp_path: Path,
+) -> None:
+    payload = _add_publish_plan(_full_pipeline_payload(tmp_path), tmp_path)
+    publish_plan = payload["publish_plan"]
+    assert isinstance(publish_plan, dict)
+    live_dir = Path(str(publish_plan["live_dir"]))
+    backup_dir = Path(str(publish_plan["backup_dir"]))
+    (live_dir / "live.txt").write_text("old", encoding="utf-8")
+    request_path = tmp_path / "definition-request.json"
+    ledger_path = tmp_path / "ledger.db"
+    _write_request(request_path, payload)
+    request = load_definition_request(request_path)
+    ledger = open_sqlite_ledger(ledger_path)
+    assert prepare_definition_refresh_candidate(ledger, request, RecordingPrepareAdapters([])) == 0
+    approve(ledger, request)
+
+    assert main(
+        ["approved-publish", "--request-json", str(request_path), "--ledger-sqlite", str(ledger_path)]
+    ) == 1
+
+    entry = ledger.status(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
+    assert "NOT_IMPLEMENTED: catalog_invalidate" in (entry.reason or "")
+    assert (live_dir / "live.txt").read_text(encoding="utf-8") == "old"
+    assert not (backup_dir / "cand-17").exists()
 
 
 def test_runtime_catalog_invalidation_remains_final_fail_closed_without_checked_in_hook(

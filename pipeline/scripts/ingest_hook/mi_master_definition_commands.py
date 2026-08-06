@@ -201,6 +201,10 @@ class PipelineRuntimeCatalogInvalidator:
     def from_request(cls, _request: DefinitionRefreshRequest) -> "PipelineRuntimeCatalogInvalidator":
         return cls()
 
+    def preflight(self, identity: DefinitionRefreshIdentity) -> None:
+        if self.invalidate_fn is None:
+            _not_implemented("catalog_invalidate")
+
     def invalidate(self, identity: DefinitionRefreshIdentity) -> None:
         if self.invalidate_fn is None:
             _not_implemented("catalog_invalidate")

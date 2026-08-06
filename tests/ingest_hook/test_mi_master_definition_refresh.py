@@ -18,6 +18,9 @@ from pipeline.scripts.ingest_hook.mi_master_definition_refresh import (
     prepare_definition_refresh_candidate,
     run_approved_definition_publish,
 )
+from pipeline.scripts.ingest_hook.mi_master_definition_commands import (
+    PipelineRuntimeCatalogInvalidator,
+)
 from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
     MissingStageError,
     assert_complete_stage_contract,
@@ -164,6 +167,37 @@ def test_publish_failure_records_failed_stage_and_never_marks_complete(
     ]
 
 
+def test_unbound_runtime_invalidator_preflight_blocks_publish_and_cache(
+    sqlite_ledger, tmp_path: Path
+) -> None:
+    request = prepare_request(tmp_path)
+    prepare_definition_refresh_candidate(sqlite_ledger, request, RecordingPrepareAdapters([]))
+    approve(sqlite_ledger, request)
+    publisher = RecordingPublisher([])
+    refresher = RecordingCacheRefresher([])
+
+    assert run_approved_definition_publish(
+        publish_request(
+            sqlite_ledger,
+            request,
+            publisher=publisher,
+            cache_refresher=refresher,
+            invalidator=PipelineRuntimeCatalogInvalidator(),
+        )
+    ) == 1
+
+    entry = sqlite_ledger.status(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
+    assert publisher.calls == []
+    assert refresher.requested == []
+    assert not request.workspace.backup_root.exists()
+
+
 def test_publish_refresh_scope_runtime_invalidation_and_transition_sequence(
     sqlite_ledger, tmp_path: Path
 ) -> None:
@@ -172,7 +206,7 @@ def test_publish_refresh_scope_runtime_invalidation_and_transition_sequence(
     approve(sqlite_ledger, request)
     publisher = RecordingPublisher([])
     refresher = RecordingCacheRefresher([])
-    invalidator = RecordingInvalidator([])
+    invalidator = RecordingInvalidator([], [])
 
     assert run_approved_definition_publish(
         publish_request(
@@ -205,6 +239,7 @@ def test_publish_refresh_scope_runtime_invalidation_and_transition_sequence(
     assert "cache_cause" not in refresher.requested[0]
     assert "cache_deep_analysis" not in refresher.requested[0]
     assert invalidator.identities == [request.identity]
+    assert invalidator.preflight_identities == [request.identity]
     assert publisher.calls == [request.workspace]
     assert_complete_stage_contract(
         sqlite_ledger.stage_events(
@@ -237,3 +272,38 @@ def test_publish_rejects_extra_cache_refresh_tables(sqlite_ledger, tmp_path: Pat
     )
     assert entry is not None
     assert entry.status == STATUS_FAILED
+
+
+def test_complete_requires_durable_stage_contract_even_if_stage_write_is_dropped(
+    sqlite_ledger, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = prepare_request(tmp_path)
+    prepare_definition_refresh_candidate(sqlite_ledger, request, RecordingPrepareAdapters([]))
+    approve(sqlite_ledger, request)
+    original_record_stage = sqlite_ledger.record_stage
+
+    def drop_catalog_invalidate_complete(*args, **kwargs) -> None:
+        if kwargs.get("stage") == "catalog_invalidate" and kwargs.get("status") == "complete":
+            return
+        original_record_stage(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite_ledger, "record_stage", drop_catalog_invalidate_complete)
+
+    assert run_approved_definition_publish(
+        publish_request(
+            sqlite_ledger,
+            request,
+            publisher=RecordingPublisher([]),
+            cache_refresher=RecordingCacheRefresher([]),
+            invalidator=RecordingInvalidator([], []),
+        )
+    ) == 1
+
+    entry = sqlite_ledger.status(
+        request.identity.ledger_epoch,
+        CATEGORY,
+        request.identity.catalog_diff_hash,
+    )
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
+    assert "missing MI Master definition refresh stages: catalog_invalidate" in (entry.reason or "")

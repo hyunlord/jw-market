@@ -1,10 +1,8 @@
-"""Executable MI Master definition-refresh ledger orchestration."""
 from __future__ import annotations
 
 import argparse
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, assert_never
@@ -17,6 +15,7 @@ from pipeline.scripts.ingest_hook.ledger import (
     Ledger,
     open_sqlite_ledger,
 )
+from pipeline.scripts.ingest_hook.mi_master_definition_candidate import candidate_payload
 from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
     ALLOWED_CACHE_REFRESH_TABLES,
     CATEGORY,
@@ -25,6 +24,7 @@ from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
     DefinitionRefreshIdentity,
     DefinitionRefreshRequest,
     PublishWorkspace,
+    assert_complete_stage_contract,
     load_definition_request,
 )
 from pipeline.scripts.ingest_hook.mi_master_definition_commands import (
@@ -34,28 +34,10 @@ from pipeline.scripts.ingest_hook.mi_master_definition_commands import (
     publisher_from_request,
 )
 from pipeline.scripts.ingest_hook.mi_master_definition_interfaces import (
-    AtomicPublishOrchestrator,
-    CacheRefresher,
+    DefinitionPublishAdapters,
+    DefinitionPublishRequest,
     PrepareAdapters,
-    RuntimeCatalogInvalidator,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class DefinitionPublishAdapters:
-    publisher: AtomicPublishOrchestrator
-    cache_refresher: CacheRefresher
-    invalidator: RuntimeCatalogInvalidator
-
-
-@dataclass(frozen=True, slots=True)
-class DefinitionPublishRequest:
-    ledger: Ledger
-    identity: DefinitionRefreshIdentity
-    workspace: PublishWorkspace
-    adapters: DefinitionPublishAdapters
-    market_ordinal: int | None = None
-    definition_request: DefinitionRefreshRequest | None = None
 
 
 def _validate_workspace(workspace: PublishWorkspace) -> None:
@@ -92,20 +74,6 @@ def _mark_failure(ledger: Ledger, identity: DefinitionRefreshIdentity, reason: s
     ledger.mark_failed(identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash, reason=reason)
 
 
-def _candidate_payload(request: DefinitionRefreshRequest) -> dict[str, object]:
-    return {
-        "identity": request.identity.as_dict(),
-        "candidate_root": str(request.workspace.candidate_root),
-        "backup_root": str(request.workspace.backup_root),
-        "journal_path": str(request.workspace.journal_path),
-        "cache_refresh_tables": list(ALLOWED_CACHE_REFRESH_TABLES),
-        "market_ordinal": request.market_ordinal,
-        "catalog_sync": None if request.catalog_sync is None else request.catalog_sync.as_dict(),
-        "runtime_catalog_invalidation": "required",
-        "workflow_ref": WORKFLOW_REF_URI,
-    }
-
-
 def _run_prepare_stage(
     ledger: Ledger,
     request: DefinitionRefreshRequest,
@@ -130,6 +98,18 @@ def prepare_definition_refresh_candidate(
 ) -> int:
     request.identity.validate()
     _validate_workspace(request.workspace)
+    try:
+        payload = candidate_payload(request)
+    except (RuntimeError, ValueError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        ledger.receive(
+            request.identity.ledger_epoch,
+            CATEGORY,
+            request.identity.catalog_diff_hash,
+            manifest_path=WORKFLOW_REF_URI,
+        )
+        _mark_failure(ledger, request.identity, reason)
+        return 1
     ledger.receive(
         request.identity.ledger_epoch,
         CATEGORY,
@@ -159,7 +139,7 @@ def prepare_definition_refresh_candidate(
         CATEGORY,
         request.identity.catalog_diff_hash,
         run_id=request.identity.run_id,
-        candidate=_candidate_payload(request),
+        candidate=payload,
         prepared_at=prepared_at.isoformat(),
         expires_at=(prepared_at + timedelta(days=1)).isoformat(),
     )
@@ -186,14 +166,12 @@ def _assert_candidate_matches(
     )
     if candidate is None or candidate.build_run_id != identity.run_id:
         raise RuntimeError("definition refresh candidate identity mismatch")
-    for key, value in _candidate_payload(candidate_request).items():
+    for key, value in candidate_payload(candidate_request).items():
         if candidate.payload.get(key) != value:
             raise RuntimeError(f"definition refresh candidate {key} changed after approval")
 
 
-def _fail_publish(
-    request: DefinitionPublishRequest, stage_index: int, exc: RuntimeError | ValueError
-) -> int:
+def _fail_publish(request: DefinitionPublishRequest, stage_index: int, exc: RuntimeError | ValueError) -> int:
     reason = f"{type(exc).__name__}: {exc}"
     _record_stage(request.ledger, request.identity, stage_index, STAGE_FAILED, reason)
     _mark_failure(request.ledger, request.identity, reason)
@@ -205,6 +183,13 @@ def run_approved_definition_publish(request: DefinitionPublishRequest) -> int:
         request.identity.validate()
         _assert_candidate_matches(request.ledger, request)
         _validate_workspace(request.workspace)
+    except (RuntimeError, ValueError) as exc:
+        return _fail_publish(request, 6, exc)
+    try:
+        request.adapters.invalidator.preflight(request.identity)
+    except (RuntimeError, ValueError) as exc:
+        return _fail_publish(request, 8, exc)
+    try:
         receipt = request.adapters.publisher.publish(request.workspace, request.identity)
         if (
             receipt.journal_path != request.workspace.journal_path
@@ -226,6 +211,13 @@ def run_approved_definition_publish(request: DefinitionPublishRequest) -> int:
     except (RuntimeError, ValueError) as exc:
         return _fail_publish(request, 8, exc)
     _record_stage(request.ledger, request.identity, 8, STAGE_COMPLETE)
+    try:
+        events = request.ledger.stage_events(
+            request.identity.ledger_epoch, CATEGORY, request.identity.catalog_diff_hash
+        )
+        assert_complete_stage_contract(events)
+    except RuntimeError as exc:
+        return _fail_publish(request, 8, exc)
     request.ledger.mark_complete(
         request.identity.ledger_epoch,
         CATEGORY,

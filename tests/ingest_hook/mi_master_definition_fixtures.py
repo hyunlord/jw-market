@@ -74,6 +74,11 @@ class RecordingCacheRefresher:
 @dataclass
 class RecordingInvalidator:
     identities: list[DefinitionRefreshIdentity]
+    preflight_identities: list[DefinitionRefreshIdentity] | None = None
+
+    def preflight(self, identity: DefinitionRefreshIdentity) -> None:
+        if self.preflight_identities is not None:
+            self.preflight_identities.append(identity)
 
     def invalidate(self, identity: DefinitionRefreshIdentity) -> None:
         self.identities.append(identity)
