@@ -563,7 +563,7 @@ def run(
         ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
 
     tracker = _StageTracker(ledger, identity, run_id)
-    mode = "staging" if rehearsal_root is not None else str(config.load_mode())
+    mode = "staging" if rehearsal_root is not None else "generic"
     rows_before = 0
     rows_after = 0
     rows_loaded = 0
@@ -585,6 +585,12 @@ def run(
     primary_failure_reason = None
     try:
         spec = resolve_category(manifest.category)
+        if spec.key == "mi_master_definition":
+            raise RuntimeError(
+                "mi_master_definition requires the typed definition-refresh CLI; "
+                "generic upload runner dispatch is disabled"
+            )
+        mode = "staging" if rehearsal_root is not None else str(config.load_mode())
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
 
         # 1) G3 — always first; a failure here has zero DB effect.

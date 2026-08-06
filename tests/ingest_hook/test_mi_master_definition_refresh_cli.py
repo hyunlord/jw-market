@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 from pipeline.scripts.ingest_hook.category_map import resolve_category
+from pipeline.scripts.ingest_hook import job_runner
 from pipeline.scripts.ingest_hook.job_runner import _StageTracker, expected_stages
-from pipeline.scripts.ingest_hook.ledger import STATUS_FAILED, open_sqlite_ledger
+from pipeline.scripts.ingest_hook.ledger import STATUS_COMPLETE, STATUS_FAILED, open_sqlite_ledger
 from pipeline.scripts.ingest_hook.mi_master_definition_commands import (
     PipelineCacheRefresher,
     PipelineCatalogSync,
@@ -28,6 +29,7 @@ from pipeline.scripts.ingest_hook.mi_master_definition_refresh import (
     main,
 )
 from mi_master_definition_fixtures import identity, prepare_request, workspace
+from ingest_fixtures import write_submission
 
 
 SHA = "c" * 64
@@ -470,7 +472,7 @@ def test_ubist_expected_stages_remain_structurally_unchanged() -> None:
 def test_mi_definition_category_uses_source_specific_expected_stages() -> None:
     spec = resolve_category(CATEGORY)
 
-    assert spec.production_load_supported is True
+    assert spec.production_load_supported is False
     assert expected_stages(spec) == [
         {"stage": stage, "seq": seq, "applicable": True}
         for seq, stage in enumerate(
@@ -488,3 +490,30 @@ def test_mi_definition_category_uses_source_specific_expected_stages() -> None:
             start=1,
         )
     ]
+
+
+def test_generic_job_runner_cannot_green_mi_definition_submission(
+    sqlite_ledger, tmp_path: Path
+) -> None:
+    manifest_path = write_submission(tmp_path, category=CATEGORY)
+
+    rc = job_runner.run(
+        manifest_path,
+        input_root=tmp_path,
+        ledger=sqlite_ledger,
+        rehearsal_root=None,
+        run_id="generic-mi-definition-run",
+    )
+
+    entry = sqlite_ledger.status("2026-07", CATEGORY, _sha(manifest_path))
+    assert rc == 1
+    assert entry is not None
+    assert entry.status == STATUS_FAILED
+    assert entry.status != STATUS_COMPLETE
+    assert "typed definition-refresh CLI" in (entry.reason or "")
+
+
+def _sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()

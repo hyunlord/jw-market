@@ -146,6 +146,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         period_column=None,
         load_argv=(),
         refresh_argv=(),
+        production_load_supported=False,
     ),
     CategorySpec(
         key="skeleton",
