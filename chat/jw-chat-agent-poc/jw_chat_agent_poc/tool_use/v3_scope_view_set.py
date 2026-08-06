@@ -564,6 +564,20 @@ def _view_limitations(
             or name in unrendered_names
         )
     )
+
+
+def reconcile_view_limitations(
+    limitations: tuple[str, ...],
+    rendered_view_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Remove a generated failure message only when that view rendered."""
+    resolved = {
+        f"{view_name} 데이터는 확인하지 못했습니다."
+        for view_name in rendered_view_names
+    }
+    return tuple(item for item in limitations if item not in resolved)
+
+
 def _scope_anchor(
     selected: Sequence[MultiToolChoice],
 ) -> tuple[str, dict[str, object]] | None:
