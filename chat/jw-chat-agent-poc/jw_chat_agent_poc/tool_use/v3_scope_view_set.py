@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import os
 
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     MarketMetricFact,
@@ -17,6 +18,8 @@ from jw_chat_agent_poc.tool_use.v3_selection import MultiToolChoice
 
 
 _SUPPORTED_CHART_TYPES = frozenset({"line", "bar", "doughnut"})
+_RECENT_POINTS_ENV = "JW_CHAT_SCOPE_VIEW_RECENT_POINTS"
+_DEFAULT_RECENT_POINTS = 12
 _VIEW_TOOLS = (
     "market.get_brand_metric",
     "market.get_hhi",
@@ -41,6 +44,15 @@ class ScopeViewSet:
     limitations: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     view_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ViewSection:
+    name: str
+    period: str
+    body: str
+    chart_title: str | None = None
+    fallback_body: str | None = None
 
 
 def scope_view_choices(
@@ -122,7 +134,7 @@ def build_scope_view_set(
             limitations=_view_limitations(bundle, (), ()),
         )
 
-    sections: list[tuple[str, str, str]] = []
+    sections: list[_ViewSection] = []
     charts: list[Mapping[str, object]] = []
     used_ids: list[str] = []
 
@@ -170,11 +182,7 @@ def build_scope_view_set(
             for row in size_rows
             if row.get("period") is not None and row.get("value") is not None
         ]
-        expected_width = 4 if size_rows and size_rows[0].get("unit") else 3 if has_growth else 2
-        rows = [
-            (*row, source.get("unit")) if source.get("unit") else row
-            for row, source in zip(rows, size_rows, strict=True)
-        ]
+        expected_width = 3 if has_growth else 2
         rows = [
             row
             for row in rows
@@ -182,17 +190,23 @@ def build_scope_view_set(
         ]
         if rows:
             period = str(rows[-1][0])
+            axis = _period_axis(size_rows)
+            chart_title = f"시장 규모 추이 ({axis} 기준)"
+            recent_limit = _recent_point_limit()
             sections.append(
-                (
+                _ViewSection(
                     "시장 규모 및 성장률 추이",
                     period,
-                    _table(
-                        ("기간", "시장 규모", "성장률(%)", "단위")
-                        if expected_width == 4
-                        else ("기간", "시장 규모", "성장률(%)")
-                        if expected_width == 3
-                        else ("기간", "시장 규모"),
-                        rows,
+                    f"기간 축: {axis}\n\n시계열은 차트로 표시했습니다.",
+                    chart_title=chart_title,
+                    fallback_body=(
+                        f"{_recent_range_label(axis, recent_limit)}\n\n"
+                        + _table(
+                            ("기간", "시장 규모", "성장률(%)")
+                            if expected_width == 3
+                            else ("기간", "시장 규모"),
+                            rows[-recent_limit:],
+                        )
                     ),
                 )
             )
@@ -202,7 +216,7 @@ def build_scope_view_set(
             charts.append(
                 _chart(
                     "line",
-                    "시장 규모 추이",
+                    chart_title,
                     [row.get("period") for row in size_rows],
                     "시장 규모",
                     chart_values,
@@ -224,14 +238,28 @@ def build_scope_view_set(
             and row.get("hhi", row.get("value")) is not None
         ]
         if rows:
-            sections.append(("HHI 추이", str(rows[-1][0]), _table(("기간", "HHI"), rows)))
+            axis = _period_axis(hhi_rows)
+            chart_title = f"HHI 추이 ({axis} 기준)"
+            recent_limit = _recent_point_limit()
+            sections.append(
+                _ViewSection(
+                    "HHI 추이",
+                    str(rows[-1][0]),
+                    f"기간 축: {axis}\n\n시계열은 차트로 표시했습니다.",
+                    chart_title=chart_title,
+                    fallback_body=(
+                        f"최근 {recent_limit}개 기간\n\n"
+                        + _table(("기간", "HHI"), rows[-recent_limit:])
+                    ),
+                )
+            )
             chart_values = [row.get("hhi", row.get("value")) for row in hhi_rows]
             if chart_numeric_override is not None:
                 chart_values[-1] = chart_numeric_override
             charts.append(
                 _chart(
                     "line",
-                    "HHI 추이",
+                    chart_title,
                     [row.get("period") for row in hhi_rows],
                     "HHI",
                     chart_values,
@@ -263,7 +291,7 @@ def build_scope_view_set(
             ]
             if rows:
                 sections.append(
-                    (
+                    _ViewSection(
                         "브랜드 순위",
                         latest,
                         _table(("순위", "브랜드", "점유율(%)"), rows),
@@ -299,7 +327,7 @@ def build_scope_view_set(
             period = _text(raw.get("period")) or _text(brand_fact.period)
             if displayed_sales is not None:
                 sections.append(
-                    (
+                    _ViewSection(
                         f"{brand} 매출·점유율·순위",
                         period,
                         _table(
@@ -330,7 +358,11 @@ def build_scope_view_set(
             if rows:
                 period = _text(raw.get("period")) or _text(growth_fact.period)
                 sections.append(
-                    ("시장 성장 기여도", period, _table(("지표", "값"), rows))
+                    _ViewSection(
+                        "시장 성장 기여도",
+                        period,
+                        _table(("지표", "값"), rows),
+                    )
                 )
                 used_ids.append(growth_fact.evidence_id)
 
@@ -355,7 +387,7 @@ def build_scope_view_set(
             ]
             if rows:
                 sections.append(
-                    (
+                    _ViewSection(
                         "채널별 구성",
                         latest,
                         _table(("채널", "브랜드", "값", "점유율(%)", "순위"), rows),
@@ -394,7 +426,7 @@ def build_scope_view_set(
     charts = [chart for chart in charts if chart["type"] in _SUPPORTED_CHART_TYPES]
     charts = list(_grounded_charts(charts, facts))
 
-    view_names = tuple(section[0] for section in sections)
+    view_names = tuple(section.name for section in sections)
     unrendered_names = {
         name
         for name, fact in (
@@ -409,9 +441,11 @@ def build_scope_view_set(
     limitations = _view_limitations(bundle, view_names, unrendered_names)
     if len(charts) != candidate_chart_count:
         limitations = (*limitations, "근거와 결속되지 않은 차트는 제외했습니다.")
+    grounded_titles = {str(chart.get("title") or "") for chart in charts}
     markdown = "---\n\n## 시장 기본 뷰\n\n" + "\n\n".join(
-        f"### {name}\n\n기준 기간: {period}\n\n{table}"
-        for name, period, table in sections
+        f"### {section.name}\n\n기준 기간: {section.period}\n\n"
+        f"{_section_body(section, grounded_titles)}"
+        for section in sections
     )
     return ScopeViewSet(
         attached=True,
@@ -601,10 +635,19 @@ def _display(fact: MarketMetricFact, value: object, semantic: str) -> str:
         rendered = str(matching[0]["display_value"])
         if not _numeric_literal_is_grounded(fact, rendered):
             raise LookupError(f"ungrounded display value for {semantic}")
-        return rendered
+        return _with_money_unit(rendered, semantic)
     if not _numeric_literal_is_grounded(fact, canonical):
         raise LookupError(f"ungrounded display value for {semantic}")
     digits = _semantic_digits(semantic)
+    if _is_money_semantic(semantic):
+        amount = Decimal(str(value))
+        if abs(amount) >= Decimal("100000000"):
+            amount /= Decimal("100000000")
+        rendered = format(
+            amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            ".2f",
+        )
+        return f"{rendered}억원"
     if digits is None:
         return str(value)
     quantizer = Decimal(1).scaleb(-digits)
@@ -626,6 +669,45 @@ def _semantic_digits(semantic: str) -> int | None:
     ):
         return 1
     return None
+
+
+def _is_money_semantic(semantic: str) -> bool:
+    normalized = semantic.casefold()
+    return normalized in {"sales", "market_size_series", "value_series"}
+
+
+def _with_money_unit(rendered: str, semantic: str) -> str:
+    if not _is_money_semantic(semantic) or "억원" in rendered:
+        return rendered
+    return f"{rendered}억원"
+
+
+def _recent_point_limit() -> int:
+    try:
+        configured = int(os.getenv(_RECENT_POINTS_ENV, str(_DEFAULT_RECENT_POINTS)))
+    except ValueError:
+        configured = _DEFAULT_RECENT_POINTS
+    return max(1, min(configured, _DEFAULT_RECENT_POINTS))
+
+
+def _period_axis(rows: Sequence[Mapping[str, object]]) -> str:
+    periods = [str(row.get("period") or "") for row in rows if row.get("period")]
+    if periods and all(len(period) == 4 and period.isdigit() for period in periods):
+        return "연도"
+    if periods and all("Q" in period.upper() for period in periods):
+        return "분기"
+    return "월"
+
+
+def _recent_range_label(axis: str, count: int) -> str:
+    suffix = {"월": "개월", "분기": "개 분기", "연도": "개년"}.get(axis, "개 기간")
+    return f"최근 {count}{suffix}"
+
+
+def _section_body(section: _ViewSection, grounded_titles: set[str]) -> str:
+    if not section.chart_title or section.chart_title in grounded_titles:
+        return section.body
+    return section.fallback_body or section.body
 
 
 def _display_or_none(

@@ -263,3 +263,38 @@ def test_v3_chart_is_emitted_by_existing_sse_presenter() -> None:
 
     assert "event: charts" in events
     assert json.dumps([chart], ensure_ascii=False, separators=(",", ":")) in events
+
+
+def test_chart_merge_deduplicates_equal_data_even_when_titles_differ() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import _dedupe_charts_by_data
+
+    charts = (
+        {
+            "type": "line",
+            "title": "시장 매출 추이",
+            "labels": ["2026-04", "2026-05"],
+            "datasets": [{"label": "시장 매출", "data": [100.0, 104.0]}],
+            "evidence_refs": ["v3-shadow:market.get_brand_metric:a"],
+        },
+        {
+            "type": "line",
+            "title": "시장 규모 추이",
+            "labels": ["2026-04", "2026-05"],
+            "datasets": [{"label": "시장 규모", "data": [100.0, 104.0]}],
+            "evidence_refs": ["v3-shadow:market.get_brand_metric:b"],
+        },
+        {
+            "type": "line",
+            "title": "리바로 매출 추이",
+            "labels": ["2026-04", "2026-05"],
+            "datasets": [{"label": "리바로 매출", "data": [70.0, 71.0]}],
+            "evidence_refs": ["v3-shadow:market.get_brand_metric:c"],
+        },
+    )
+
+    result = _dedupe_charts_by_data(charts)
+
+    assert [chart["title"] for chart in result] == [
+        "시장 매출 추이",
+        "리바로 매출 추이",
+    ]

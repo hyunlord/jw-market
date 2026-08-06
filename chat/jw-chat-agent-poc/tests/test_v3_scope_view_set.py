@@ -174,10 +174,12 @@ def test_complete_grounded_bundle_renders_six_views_and_supported_charts() -> No
         "채널별 구성",
     )
     assert result.markdown.startswith("---\n\n## 시장 기본 뷰")
-    assert "| 기간 | 시장 규모 | 성장률(%) |" in result.markdown
-    assert "3188.0404" in result.markdown
+    assert "| 기간 | 시장 규모 | 성장률(%) |" not in result.markdown
+    assert "| 기간 | HHI |" not in result.markdown
+    assert "시계열은 차트로 표시했습니다." in result.markdown
     assert "4.9" in result.markdown
     assert "3.76" in result.markdown
+    assert "80.39억원" in result.markdown
     assert "3015.4124533412323" not in result.markdown
     assert {chart["type"] for chart in result.charts} <= {"line", "bar", "doughnut"}
     assert len(result.charts) >= 3
@@ -232,8 +234,46 @@ def test_dashboard_table_series_shape_renders_without_top_level_market_size() ->
 
     assert result.attached is True
     assert result.view_names == ("시장 규모 및 성장률 추이",)
-    assert "| 2026-Q1 | 104.85996797321597 | 4.9 | 억원 |" in result.markdown
+    assert "| 기간 | 시장 규모 | 성장률(%) |" not in result.markdown
+    assert "104.85996797321597" not in result.markdown
     assert result.charts[0]["labels"] == ["2025-Q1", "2026-Q1"]
+
+
+def test_ungrounded_series_chart_falls_back_to_at_most_twelve_formatted_rows() -> None:
+    from jw_chat_agent_poc.tool_use.v3_scope_view_set import build_scope_view_set
+
+    series = tuple(
+        {
+            "period": f"2025-{month:02d}",
+            "value": 14_391_478_628.907 + month,
+            "yoy_growth_pct": 4.859967973215973,
+        }
+        for month in range(1, 13)
+    ) + tuple(
+        {
+            "period": f"2026-{month:02d}",
+            "value": 14_469_561_923.530005 + month,
+            "yoy_growth_pct": 4.859967973215973,
+        }
+        for month in range(1, 13)
+    )
+    fact = _fact(
+        "v3-shadow:market.get_brand_metric:fallback",
+        "market.get_brand_metric",
+        {"brand": "리바로", "period": "2026-12", "market_size_series": series},
+    )
+
+    result = build_scope_view_set(
+        _bundle(fact),
+        scope_confirmed=True,
+        chart_numeric_override=999_999_999_999.0,
+    )
+
+    table_rows = [line for line in result.markdown.splitlines() if line.startswith("| 2026-")]
+    assert len(table_rows) == 12
+    assert "최근 12개월" in result.markdown
+    assert "억원" in result.markdown
+    assert ".530005" not in result.markdown
 
 
 def test_ungrounded_section_is_skipped_without_discarding_other_views() -> None:
@@ -299,7 +339,7 @@ def test_failed_or_ungrounded_bundle_never_attaches_a_view() -> None:
     )
     assert grounded_table_only.attached is True
     assert grounded_table_only.charts == ()
-    assert "| 2026-Q1 | 100.0 |" in grounded_table_only.markdown
+    assert "| 2026-Q1 | 100.00억원 |" in grounded_table_only.markdown
     assert "근거와 결속되지 않은 차트는 제외했습니다." in grounded_table_only.limitations
 
 

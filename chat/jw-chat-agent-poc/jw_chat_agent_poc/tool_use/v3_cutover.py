@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
+import json
 import logging
 import os
 import time
@@ -139,6 +140,40 @@ def grounded_chart_specs(
         if values <= allowed and chart_labels <= allowed_labels:
             grounded.append(chart)
     return tuple(grounded)
+
+
+def _dedupe_charts_by_data(
+    charts: Sequence[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    seen: set[str] = set()
+    unique: list[Mapping[str, object]] = []
+    for chart in charts:
+        datasets = chart.get("datasets")
+        series = (
+            [
+                dataset.get("data")
+                for dataset in datasets
+                if isinstance(dataset, Mapping)
+            ]
+            if isinstance(datasets, Sequence)
+            and not isinstance(datasets, (str, bytes))
+            else []
+        )
+        signature = json.dumps(
+            {
+                "type": chart.get("type"),
+                "labels": chart.get("labels"),
+                "series": series,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        unique.append(chart)
+    return tuple(unique)
 
 
 class _DefaultV3ServingPipeline:
@@ -280,7 +315,9 @@ class _DefaultV3ServingPipeline:
             }
             for chart in candidates
         ]
-        charts = grounded_chart_specs((*candidates, *view_set.charts), fact_results)
+        charts = _dedupe_charts_by_data(
+            grounded_chart_specs((*candidates, *view_set.charts), fact_results)
+        )
         return V3ServingResult(
             domain=domain,
             answer=answer,
