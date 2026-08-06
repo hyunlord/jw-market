@@ -427,6 +427,15 @@ def test_s2_definition_refresh_passes_replacement_gate_inputs(
         return ()
 
     monkeypatch.setattr(s2_catalog, "connect", lambda _target_db: Connection())
+    monkeypatch.setattr(
+        s2_catalog,
+        "build_catalog_replacement_reference_report",
+        lambda _conn, **kwargs: s2_catalog.CatalogReplacementReferenceReport(
+            referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
+            inactive_decisions_by_table=kwargs["inactive_decisions_by_table"],
+            grounded=True,
+        ),
+    )
     monkeypatch.setattr(s2_catalog, "sync_catalog_tables", fake_sync)
 
     rc = s2_catalog.run(
@@ -455,6 +464,145 @@ def test_s2_definition_refresh_passes_replacement_gate_inputs(
     assert reference_report.inactive_decisions_by_table == {
         "catalog_ml_market": ("ml_remove",)
     }
+    assert reference_report.grounded is True
+
+
+def test_s2_definition_refresh_builds_db_grounded_references_for_removals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pipeline.etl.stages import s2_catalog
+
+    output_root = tmp_path / "work"
+    mi_master = tmp_path / "mi-master.xlsx"
+    mi_master.write_bytes(b"mi-master-v4")
+    build_root = build_catalog_root(output_root)
+    artifact = _result(build_root, "ml_market", b"ml")
+    monkeypatch.setattr(s2_catalog, "run_master_extracts", lambda **_: [artifact])
+    monkeypatch.setattr(s2_catalog, "run_base_dimensions", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_target_priority", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_market_catalog", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_brand_product_catalog", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_postfix", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "S2_REQUIRED_CATALOGS", frozenset({"ml_market"}))
+    seen: dict[str, object] = {}
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_reference_report(
+        conn: Connection,
+        *,
+        target_db: str,
+        removed_ids_by_table: dict[str, tuple[str, ...]],
+        inactive_decisions_by_table: dict[str, tuple[str, ...]],
+    ) -> s2_catalog.CatalogReplacementReferenceReport:
+        seen["builder_conn"] = conn
+        seen["builder_target_db"] = target_db
+        seen["builder_removed"] = removed_ids_by_table
+        return s2_catalog.CatalogReplacementReferenceReport(
+            referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
+            inactive_decisions_by_table=inactive_decisions_by_table,
+            grounded=True,
+        )
+
+    def fake_sync(conn, *, reference_report, **_kwargs):  # type: ignore[no-untyped-def]
+        seen["sync_conn"] = conn
+        seen["reference_report"] = reference_report
+        return ()
+
+    monkeypatch.setattr(s2_catalog, "connect", lambda _target_db: Connection())
+    monkeypatch.setattr(
+        s2_catalog,
+        "build_catalog_replacement_reference_report",
+        fake_reference_report,
+    )
+    monkeypatch.setattr(s2_catalog, "sync_catalog_tables", fake_sync)
+
+    rc = s2_catalog.run(
+        {
+            "target_dir": output_root,
+            "input_file": mi_master,
+            "catalog_root": output_root / "canonical",
+            "sync_catalog_db": True,
+            "target_db": "jw_mart_rehearsal_test",
+            "dry_run": True,
+            "definition_refresh_replacement": True,
+            "replacement_removed_ids_by_table": {"catalog_ml_market": ("ml_remove",)},
+            "replacement_referenced_ids_by_table": {},
+            "replacement_inactive_decisions_by_table": {"catalog_ml_market": ("ml_remove",)},
+        }
+    )
+
+    report = seen["reference_report"]
+    assert rc == 0
+    assert seen["builder_conn"] is seen["sync_conn"]
+    assert seen["builder_target_db"] == "jw_mart_rehearsal_test"
+    assert seen["builder_removed"] == {"catalog_ml_market": ("ml_remove",)}
+    assert report.grounded is True
+    assert report.referenced_ids_by_table == {"catalog_ml_market": ("ml_remove",)}
+
+
+def test_s2_definition_refresh_preserves_no_removal_reference_compatibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pipeline.etl.stages import s2_catalog
+
+    output_root = tmp_path / "work"
+    mi_master = tmp_path / "mi-master.xlsx"
+    mi_master.write_bytes(b"mi-master-v5")
+    build_root = build_catalog_root(output_root)
+    artifact = _result(build_root, "ml_market", b"ml")
+    monkeypatch.setattr(s2_catalog, "run_master_extracts", lambda **_: [artifact])
+    monkeypatch.setattr(s2_catalog, "run_base_dimensions", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_target_priority", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_market_catalog", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_brand_product_catalog", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_postfix", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "S2_REQUIRED_CATALOGS", frozenset({"ml_market"}))
+    seen: dict[str, object] = {}
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_sync(_conn, *, reference_report, **_kwargs):  # type: ignore[no-untyped-def]
+        seen["reference_report"] = reference_report
+        return ()
+
+    monkeypatch.setattr(s2_catalog, "connect", lambda _target_db: Connection())
+    monkeypatch.setattr(
+        s2_catalog,
+        "build_catalog_replacement_reference_report",
+        lambda *_args, **_kwargs: pytest.fail("no-removal replacement must not probe DB references"),
+    )
+    monkeypatch.setattr(s2_catalog, "sync_catalog_tables", fake_sync)
+
+    rc = s2_catalog.run(
+        {
+            "target_dir": output_root,
+            "input_file": mi_master,
+            "catalog_root": output_root / "canonical",
+            "sync_catalog_db": True,
+            "target_db": "jw_mart_rehearsal_test",
+            "dry_run": True,
+            "definition_refresh_replacement": True,
+            "replacement_removed_ids_by_table": {},
+        }
+    )
+
+    report = seen["reference_report"]
+    assert rc == 0
+    assert report.grounded is False
+    assert report.referenced_ids_by_table == {}
 
 
 def test_s2_does_not_sync_when_a_reported_build_artifact_is_missing(

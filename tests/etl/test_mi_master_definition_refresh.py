@@ -173,12 +173,12 @@ def test_candidate_seed_validation_and_definition_approval_identity_are_exact(
             "approved": True,
             "mi_master_sha256": "c" * 64,
             "catalog_diff_hash": "d" * 64,
-            "run_id": "run-20260806",
+            "run_id": "mi-refresh-20260806",
         },
         expected=DefinitionApprovalIdentity(
             mi_master_sha256="c" * 64,
             catalog_diff_hash="d" * 64,
-            run_id="run-20260806",
+            run_id="mi-refresh-20260806",
         ),
     )
 
@@ -552,7 +552,7 @@ def test_publish_plan_requires_corpora_journal_and_approval_identity(
     )
     plan = RefreshPublishPlan(
         candidate=MiMasterRefreshCandidate(
-            candidate_id="legacy",
+            candidate_id="run-1",
             mi_master_sha256="a" * 64,
             manifest_sha256="b" * 64,
             allowed_cache_tables=("cache_brands", "cache_market_status"),
@@ -578,6 +578,102 @@ def test_publish_plan_requires_corpora_journal_and_approval_identity(
                 corpus=RefreshCorpus(candidate_dir, backup_dir),
                 approval_identity=None,
             )
+        )
+
+
+def test_publish_plan_rejects_approval_identity_not_bound_to_candidate(
+    tmp_path: Path,
+) -> None:
+    # Given: a publish plan whose approval names the wrong manifest diff.
+    candidate_dir = tmp_path / "candidate"
+    backup_dir = tmp_path / "backup"
+    live_dir = tmp_path / "live"
+    journal = tmp_path / "journal.jsonl"
+    for directory in (candidate_dir, backup_dir, live_dir):
+        directory.mkdir()
+        (directory / "manifest.json").write_text("{}", encoding="utf-8")
+    journal.write_text("", encoding="utf-8")
+    candidate = MiMasterRefreshCandidate(
+        candidate_id="run-1",
+        mi_master_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        allowed_cache_tables=("cache_brands", "cache_market_status"),
+    )
+
+    # When / Then: catalog diff and run identity must both bind to the candidate.
+    with pytest.raises(ValueError, match="catalog_diff_hash"):
+        validate_refresh_publish_plan(
+            RefreshPublishPlan(
+                candidate=candidate,
+                candidate_dir=candidate_dir,
+                live_dir=live_dir,
+                backup_dir=backup_dir,
+                journal_path=journal,
+                corpus=RefreshCorpus(candidate_dir, backup_dir),
+                approval_identity=DefinitionApprovalIdentity(
+                    mi_master_sha256="a" * 64,
+                    catalog_diff_hash="c" * 64,
+                    run_id="run-1",
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="run_id"):
+        validate_refresh_publish_plan(
+            RefreshPublishPlan(
+                candidate=candidate,
+                candidate_dir=candidate_dir,
+                live_dir=live_dir,
+                backup_dir=backup_dir,
+                journal_path=journal,
+                corpus=RefreshCorpus(candidate_dir, backup_dir),
+                approval_identity=DefinitionApprovalIdentity(
+                    mi_master_sha256="a" * 64,
+                    catalog_diff_hash="b" * 64,
+                    run_id="run-2",
+                ),
+            )
+        )
+
+
+def test_definition_approval_rejects_identity_not_bound_to_candidate() -> None:
+    # Given: payload and expected identity agree, but the identity is not this candidate.
+    candidate = MiMasterRefreshCandidate(
+        candidate_id="run-1",
+        mi_master_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        allowed_cache_tables=("cache_brands", "cache_market_status"),
+    )
+
+    # When / Then: validation fails on candidate binding, not just payload equality.
+    with pytest.raises(ValueError, match="catalog_diff_hash"):
+        validate_definition_approval(
+            candidate,
+            {
+                "approved": True,
+                "mi_master_sha256": "a" * 64,
+                "catalog_diff_hash": "c" * 64,
+                "run_id": "run-1",
+            },
+            expected=DefinitionApprovalIdentity(
+                mi_master_sha256="a" * 64,
+                catalog_diff_hash="c" * 64,
+                run_id="run-1",
+            ),
+        )
+    with pytest.raises(ValueError, match="run_id"):
+        validate_definition_approval(
+            candidate,
+            {
+                "approved": True,
+                "mi_master_sha256": "a" * 64,
+                "catalog_diff_hash": "b" * 64,
+                "run_id": "run-2",
+            },
+            expected=DefinitionApprovalIdentity(
+                mi_master_sha256="a" * 64,
+                catalog_diff_hash="b" * 64,
+                run_id="run-2",
+            ),
         )
 
 

@@ -10,6 +10,7 @@ from pipeline.etl.io.catalog.brand.brand_product_catalog import run_brand_produc
 from pipeline.etl.io.catalog.db_sync import (
     CatalogReplacementApproval,
     CatalogReplacementReferenceReport,
+    build_catalog_replacement_reference_report,
     sync_catalog_tables,
 )
 from pipeline.etl.io.catalog.postfix.catalog_postfix import run_postfix
@@ -66,6 +67,10 @@ def _reference_report(params: dict[str, Any]) -> CatalogReplacementReferenceRepo
             for table, ids in dict(inactive).items()
         },
     )
+
+
+def _replacement_has_removals(replacement: CatalogReplacementApproval | None) -> bool:
+    return replacement is not None and any(replacement.removed_ids_by_table.values())
 
 
 def _copy_if_needed(source_dir: Path | None, output_root: Path, relative: str) -> None:
@@ -167,6 +172,22 @@ def run(params: dict[str, Any]) -> int:
                 )
             else:
                 with connect(target_db) as conn:
+                    sync_reference_report = reference_report
+                    if _replacement_has_removals(replacement):
+                        sync_reference_report = build_catalog_replacement_reference_report(
+                            conn,
+                            target_db=target_db,
+                            removed_ids_by_table=(
+                                replacement.removed_ids_by_table
+                                if replacement is not None
+                                else {}
+                            ),
+                            inactive_decisions_by_table=(
+                                reference_report.inactive_decisions_by_table
+                                if reference_report is not None
+                                else {}
+                            ),
+                        )
                     catalog_sync_results = list(
                         sync_catalog_tables(
                             conn,
@@ -176,7 +197,7 @@ def run(params: dict[str, Any]) -> int:
                             dry_run=dry_run,
                             mi_master_sha256=mi_master_hash,
                             replacement=replacement,
-                            reference_report=reference_report,
+                            reference_report=sync_reference_report,
                         )
                     )
     except Exception as exc:

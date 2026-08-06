@@ -13,7 +13,10 @@ from pipeline.etl.mi_master_refresh.contracts import (
     RefreshPublishPlan,
     RefreshPublishResult,
 )
-from pipeline.etl.mi_master_refresh.provenance import validate_candidate_seed
+from pipeline.etl.mi_master_refresh.provenance import (
+    validate_candidate_approval_identity,
+    validate_candidate_seed,
+)
 
 
 def validate_refresh_publish_plan(plan: RefreshPublishPlan) -> None:
@@ -22,14 +25,13 @@ def validate_refresh_publish_plan(plan: RefreshPublishPlan) -> None:
         raise ValueError("publish plan requires candidate and backup corpus")
     if plan.approval_identity is None:
         raise ValueError("publish plan requires approval identity")
+    validate_candidate_approval_identity(plan.candidate, plan.approval_identity)
     if not plan.corpus.candidate_dir.is_dir() or not plan.corpus.backup_dir.is_dir():
         raise ValueError("publish plan corpus paths must exist")
     if plan.corpus.candidate_dir != plan.candidate_dir:
         raise ValueError("publish plan candidate corpus does not match candidate_dir")
     if not plan.journal_path.is_file():
         raise ValueError("publish plan requires pre-created journal")
-    if plan.approval_identity.mi_master_sha256 != plan.candidate.mi_master_sha256:
-        raise ValueError("publish plan approval identity does not match candidate")
 
 
 def atomic_publish_candidate(plan: RefreshPublishPlan) -> RefreshPublishResult:
