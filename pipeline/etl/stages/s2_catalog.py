@@ -7,7 +7,11 @@ from typing import Any
 
 from pipeline.etl.io.catalog.dim.base_dimensions import run_base_dimensions
 from pipeline.etl.io.catalog.brand.brand_product_catalog import run_brand_product_catalog
-from pipeline.etl.io.catalog.db_sync import sync_catalog_tables
+from pipeline.etl.io.catalog.db_sync import (
+    CatalogReplacementApproval,
+    CatalogReplacementReferenceReport,
+    sync_catalog_tables,
+)
 from pipeline.etl.io.catalog.postfix.catalog_postfix import run_postfix
 from pipeline.etl.io.catalog.master.extracts import run_master_extracts
 from pipeline.etl.io.catalog.market.catalog import run_market_catalog
@@ -35,6 +39,35 @@ def _str_param(params: dict[str, Any], key: str) -> str | None:
     return str(value) if value else None
 
 
+def _replacement_approval(params: dict[str, Any]) -> CatalogReplacementApproval | None:
+    if not params.get("definition_refresh_replacement"):
+        return None
+    removed = params.get("replacement_removed_ids_by_table") or {}
+    return CatalogReplacementApproval(
+        removed_ids_by_table={
+            str(table): tuple(str(item) for item in ids)
+            for table, ids in dict(removed).items()
+        }
+    )
+
+
+def _reference_report(params: dict[str, Any]) -> CatalogReplacementReferenceReport | None:
+    if not params.get("definition_refresh_replacement"):
+        return None
+    references = params.get("replacement_referenced_ids_by_table") or {}
+    inactive = params.get("replacement_inactive_decisions_by_table") or {}
+    return CatalogReplacementReferenceReport(
+        referenced_ids_by_table={
+            str(table): tuple(str(item) for item in ids)
+            for table, ids in dict(references).items()
+        },
+        inactive_decisions_by_table={
+            str(table): tuple(str(item) for item in ids)
+            for table, ids in dict(inactive).items()
+        },
+    )
+
+
 def _copy_if_needed(source_dir: Path | None, output_root: Path, relative: str) -> None:
     if source_dir is None:
         return
@@ -60,6 +93,8 @@ def run(params: dict[str, Any]) -> int:
     catalog_root = resolve_catalog_root(output_root, _path_param(params, "catalog_root"))
     ingested_at = _str_param(params, "ingested_at")
     sync_catalog_db = bool(params.get("sync_catalog_db"))
+    replacement = _replacement_approval(params)
+    reference_report = _reference_report(params)
     target_db = _str_param(params, "target_db")
     dry_run = bool(params.get("dry_run"))
     batch_size = int(params.get("batch_size") or 200)
@@ -126,6 +161,8 @@ def run(params: dict[str, Any]) -> int:
                         batch_size=batch_size,
                         dry_run=True,
                         mi_master_sha256=mi_master_hash,
+                        replacement=replacement,
+                        reference_report=reference_report,
                     )
                 )
             else:
@@ -138,6 +175,8 @@ def run(params: dict[str, Any]) -> int:
                             batch_size=batch_size,
                             dry_run=False,
                             mi_master_sha256=mi_master_hash,
+                            replacement=replacement,
+                            reference_report=reference_report,
                         )
                     )
     except Exception as exc:

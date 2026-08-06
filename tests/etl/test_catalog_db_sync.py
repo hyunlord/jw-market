@@ -154,6 +154,223 @@ def test_catalog_parity_uses_full_pk_order_and_reports_changed_keys(
     assert all("ORDER BY" in query for query in queries)
 
 
+def test_replacement_sync_rejects_unapproved_removal_before_dml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: serving has an ID absent from the candidate catalog.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_keep")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_keep")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(1)])
+    conn = ReplacementConnection(
+        current_ids={"catalog_ml_market": ("ml_keep", "ml_remove")}
+    )
+
+    # When / Then: replacement sync fails before DELETE/UPSERT/COMMIT.
+    with pytest.raises(ValueError, match="removed catalog IDs require exact approval"):
+        db_sync.sync_catalog_tables(
+            conn,
+            target_db="scratch",
+            catalog_root=tmp_path,
+            replacement=db_sync.CatalogReplacementApproval(removed_ids_by_table={}),
+            reference_report=db_sync.CatalogReplacementReferenceReport(),
+        )
+
+    assert not any(statement.startswith("DELETE FROM") for statement in conn.statements)
+    assert conn.batches == []
+    assert conn.commits == 0
+    assert conn.rollbacks == 0
+
+
+def test_replacement_sync_rolls_back_when_post_write_parity_mismatches(
+    tmp_path: Path,
+) -> None:
+    # Given: replacement has exact approval but serving parity stays mismatched.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_keep")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_keep")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(1)])
+    conn = ReplacementConnection(
+        current_ids={"catalog_ml_market": ("ml_keep", "ml_remove")},
+        parity_rows={
+            "catalog_ml_market": [_ml_row("ml_keep"), _ml_row("ml_remove")],
+            "catalog_cd_market": [_cd_row("cd_keep")],
+            "catalog_strategic_brand": [_brand_row(1)],
+        },
+    )
+
+    # When / Then: the transaction is rolled back after parity rejects the write.
+    with pytest.raises(RuntimeError, match="catalog replacement parity failed"):
+        db_sync.sync_catalog_tables(
+            conn,
+            target_db="scratch",
+            catalog_root=tmp_path,
+            replacement=db_sync.CatalogReplacementApproval(
+                removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+            ),
+            reference_report=db_sync.CatalogReplacementReferenceReport(),
+        )
+
+    assert any(statement.startswith("DELETE FROM") for statement in conn.statements)
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+
+
+def test_replacement_sync_rejects_referenced_removal_without_inactive_decision(
+    tmp_path: Path,
+) -> None:
+    # Given: removed ID approval exists but the ID is still referenced.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_keep")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_keep")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(1)])
+    conn = ReplacementConnection(
+        current_ids={"catalog_ml_market": ("ml_keep", "ml_remove")}
+    )
+
+    # When / Then: referenced removals still require an inactive decision before DML.
+    with pytest.raises(ValueError, match="referenced catalog removals"):
+        db_sync.sync_catalog_tables(
+            conn,
+            target_db="scratch",
+            catalog_root=tmp_path,
+            replacement=db_sync.CatalogReplacementApproval(
+                removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+            ),
+            reference_report=db_sync.CatalogReplacementReferenceReport(
+                referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+            ),
+        )
+
+    assert not any(statement.startswith("DELETE FROM") for statement in conn.statements)
+    assert conn.batches == []
+    assert conn.commits == 0
+
+
+def test_replacement_sync_deletes_approved_ids_and_passes_parity(tmp_path: Path) -> None:
+    # Given: replacement approval exactly names removed IDs and references are inactive.
+    ml_candidate = _ml_row("ml_keep")
+    cd_candidate = _cd_row("cd_keep")
+    brand_candidate = _brand_row(1)
+    _write_parquet(tmp_path, "ml_market", [ml_candidate])
+    _write_parquet(tmp_path, "cd_market", [cd_candidate])
+    _write_parquet(tmp_path, "strategic_brand", [brand_candidate])
+    conn = ReplacementConnection(
+        current_ids={
+            "catalog_ml_market": ("ml_keep", "ml_remove"),
+            "catalog_cd_market": ("cd_keep",),
+            "catalog_strategic_brand": ("brand_0001",),
+        },
+        parity_rows={
+            "catalog_ml_market": [ml_candidate],
+            "catalog_cd_market": [cd_candidate],
+            "catalog_strategic_brand": [brand_candidate],
+        },
+    )
+
+    # When: an explicit replacement sync is approved.
+    results = db_sync.sync_catalog_tables(
+        conn,
+        target_db="scratch",
+        catalog_root=tmp_path,
+        replacement=db_sync.CatalogReplacementApproval(
+            removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+        ),
+        reference_report=db_sync.CatalogReplacementReferenceReport(
+            referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
+            inactive_decisions_by_table={"catalog_ml_market": ("ml_remove",)},
+        ),
+    )
+
+    # Then: only the approved missing ID is deleted and the replacement commits once.
+    delete_statements = [
+        statement for statement in conn.statements if statement.startswith("DELETE FROM")
+    ]
+    assert delete_statements == [
+        "DELETE FROM `scratch`.`catalog_ml_market` WHERE `ml_id` IN (%s)"
+    ]
+    assert conn.delete_values == [("ml_remove",)]
+    assert [result.table_name for result in results] == [
+        "catalog_ml_market",
+        "catalog_cd_market",
+        "catalog_strategic_brand",
+    ]
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+
+
+@dataclass
+class ReplacementCursor:
+    conn: "ReplacementConnection"
+    sql: str = ""
+
+    def __enter__(self) -> "ReplacementCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, values: tuple[object, ...] | None = None) -> None:
+        self.sql = sql
+        self.conn.statements.append(sql)
+        if sql.startswith("DELETE FROM"):
+            self.conn.delete_values.append(tuple(values or ()))
+
+    def executemany(self, sql: str, values: list[tuple[object, ...]]) -> None:
+        self.conn.statements.append(sql)
+        self.conn.batches.append(len(values))
+
+    def fetchall(self) -> list[dict[str, object]]:
+        table = self._table_name()
+        if self._selects_only_primary_key():
+            return [
+                self._pk_row(value)
+                for value in self.conn.current_ids.get(table, ())
+            ]
+        return list(self.conn.parity_rows.get(table, ()))
+
+    def _selects_only_primary_key(self) -> bool:
+        table = self._table_name()
+        primary_key = {
+            "catalog_ml_market": "ml_id",
+            "catalog_cd_market": "cd_id",
+            "catalog_strategic_brand": "brand_id",
+        }[table]
+        return self.sql.startswith(f"SELECT `{primary_key}` FROM")
+
+    def _table_name(self) -> str:
+        for table in ("catalog_ml_market", "catalog_cd_market", "catalog_strategic_brand"):
+            if f"`{table}`" in self.sql:
+                return table
+        raise AssertionError(f"unknown table in SQL: {self.sql}")
+
+    def _pk_row(self, value: str) -> dict[str, object]:
+        table = self._table_name()
+        if table == "catalog_ml_market":
+            return {"ml_id": value}
+        if table == "catalog_cd_market":
+            return {"cd_id": value}
+        return {"brand_id": value}
+
+
+@dataclass
+class ReplacementConnection:
+    current_ids: dict[str, tuple[str, ...]]
+    parity_rows: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    statements: list[str] = field(default_factory=list)
+    batches: list[int] = field(default_factory=list)
+    delete_values: list[tuple[object, ...]] = field(default_factory=list)
+    commits: int = 0
+    rollbacks: int = 0
+
+    def cursor(self) -> ReplacementCursor:
+        return ReplacementCursor(self)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
 def _write_parquet(root: Path, name: str, rows: list[dict[str, object]]) -> None:
     directory = root / name
     directory.mkdir(parents=True)
