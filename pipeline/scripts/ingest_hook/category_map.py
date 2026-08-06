@@ -140,6 +140,14 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_batch_files=True, production_load_supported=False,
     ),
     CategorySpec(
+        key="mi_master_definition",
+        description="MI Master definition-refresh approval workflow",
+        required_columns=(),
+        period_column=None,
+        load_argv=(),
+        refresh_argv=(),
+    ),
+    CategorySpec(
         key="skeleton",
         description="Target-priority skeleton refresh (downstream refresh only)",
         required_columns=(),

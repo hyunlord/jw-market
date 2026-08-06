@@ -146,6 +146,13 @@ class _StageTracker:
 
 def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
     """Return the deterministic stage skeleton for one category."""
+    if spec.key == "mi_master_definition":
+        from pipeline.scripts.ingest_hook.mi_master_definition_contract import STAGES
+
+        return [
+            {"stage": stage, "seq": seq, "applicable": True}
+            for seq, stage in enumerate(STAGES, start=1)
+        ]
     supports_mart = spec.key == "ubist" and spec.production_load_supported
     applicability = {
         "g3": True,

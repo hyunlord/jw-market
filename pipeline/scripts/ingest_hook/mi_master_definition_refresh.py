@@ -22,20 +22,22 @@ from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
     CATEGORY,
     STAGES,
     WORKFLOW_REF_URI,
-    AtomicPublishOrchestrator,
-    CacheRefresher,
     DefinitionRefreshIdentity,
     DefinitionRefreshRequest,
-    PrepareAdapters,
     PublishWorkspace,
-    RuntimeCatalogInvalidator,
     load_definition_request,
 )
 from pipeline.scripts.ingest_hook.mi_master_definition_commands import (
-    PipelineCacheRefresher,
-    PipelinePublisher,
     PipelineRuntimeCatalogInvalidator,
+    cache_refresher_from_request,
     prepare_adapters_from_request,
+    publisher_from_request,
+)
+from pipeline.scripts.ingest_hook.mi_master_definition_interfaces import (
+    AtomicPublishOrchestrator,
+    CacheRefresher,
+    PrepareAdapters,
+    RuntimeCatalogInvalidator,
 )
 
 
@@ -53,6 +55,7 @@ class DefinitionPublishRequest:
     workspace: PublishWorkspace
     adapters: DefinitionPublishAdapters
     market_ordinal: int | None = None
+    definition_request: DefinitionRefreshRequest | None = None
 
 
 def _validate_workspace(workspace: PublishWorkspace) -> None:
@@ -111,7 +114,7 @@ def _run_prepare_stage(
 ) -> bool:
     try:
         action(request)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         reason = f"{type(exc).__name__}: {exc}"
         _record_stage(ledger, request.identity, stage_index, STAGE_FAILED, reason)
         _mark_failure(ledger, request.identity, reason)
@@ -176,7 +179,7 @@ def _assert_candidate_matches(
     candidate = ledger.prepared_candidate(
         identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash
     )
-    candidate_request = DefinitionRefreshRequest(
+    candidate_request = request.definition_request or DefinitionRefreshRequest(
         identity=identity,
         workspace=request.workspace,
         market_ordinal=request.market_ordinal,
@@ -188,7 +191,9 @@ def _assert_candidate_matches(
             raise RuntimeError(f"definition refresh candidate {key} changed after approval")
 
 
-def _fail_publish(request: DefinitionPublishRequest, stage_index: int, exc: RuntimeError) -> int:
+def _fail_publish(
+    request: DefinitionPublishRequest, stage_index: int, exc: RuntimeError | ValueError
+) -> int:
     reason = f"{type(exc).__name__}: {exc}"
     _record_stage(request.ledger, request.identity, stage_index, STAGE_FAILED, reason)
     _mark_failure(request.ledger, request.identity, reason)
@@ -206,19 +211,19 @@ def run_approved_definition_publish(request: DefinitionPublishRequest) -> int:
             or receipt.backup_root != request.workspace.backup_root
         ):
             raise RuntimeError("atomic publish receipt does not match candidate workspace")
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         return _fail_publish(request, 6, exc)
     _record_stage(request.ledger, request.identity, 6, STAGE_COMPLETE)
     try:
         refreshed = request.adapters.cache_refresher.refresh_tables(ALLOWED_CACHE_REFRESH_TABLES)
         if tuple(refreshed) != ALLOWED_CACHE_REFRESH_TABLES:
             raise RuntimeError(f"forbidden cache refresh table: {tuple(refreshed)}")
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         return _fail_publish(request, 7, exc)
     _record_stage(request.ledger, request.identity, 7, STAGE_COMPLETE)
     try:
         request.adapters.invalidator.invalidate(request.identity)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         return _fail_publish(request, 8, exc)
     _record_stage(request.ledger, request.identity, 8, STAGE_COMPLETE)
     request.ledger.mark_complete(
@@ -235,9 +240,7 @@ def _open_ledger(sqlite_path: str | None) -> Ledger:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="python -m pipeline.scripts.ingest_hook.mi_master_definition_refresh"
-    )
+    parser = argparse.ArgumentParser(prog="python -m pipeline.scripts.ingest_hook.mi_master_definition_refresh")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("prepare", "approved-publish"):
         sub = subparsers.add_parser(command)
@@ -263,10 +266,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     identity=request.identity,
                     workspace=request.workspace,
                     market_ordinal=request.market_ordinal,
+                    definition_request=request,
                     adapters=DefinitionPublishAdapters(
-                        PipelinePublisher(),
-                        PipelineCacheRefresher(),
-                        PipelineRuntimeCatalogInvalidator(),
+                        publisher_from_request(request),
+                        cache_refresher_from_request(request),
+                        PipelineRuntimeCatalogInvalidator.from_request(request),
                     ),
                 )
             )
