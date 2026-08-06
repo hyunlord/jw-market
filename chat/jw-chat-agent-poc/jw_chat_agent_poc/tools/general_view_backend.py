@@ -78,6 +78,14 @@ class GeneralMarket:
     market_share_trajectory: tuple[dict[str, object], ...] = ()
     company_ranking_series: tuple[dict[str, object], ...] = ()
     customer_competition_trend: dict[str, object] | None = None
+    market_cagr_5y_pct: float | None = None
+    market_cagr_3y_pct: float | None = None
+    brand_cagr_5y_pct: float | None = None
+    brand_cagr_3y_pct: float | None = None
+    analysis_levels: dict[str, object] | None = None
+    analysis_level_market_status: dict[str, object] | None = None
+    level_top5_trend: dict[str, object] | None = None
+    brand_trajectory: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(slots=True)
@@ -344,6 +352,7 @@ def parse_general_market_response(
     customer_competition_trend = (
         dict(customer_competition) if isinstance(customer_competition, dict) else None
     )
+    growth = data.get("growth_contribution")
     return GeneralMarket(
         view_type="general_view",
         market_basis="ATC4",
@@ -382,6 +391,20 @@ def parse_general_market_response(
         market_share_trajectory=market_share_trajectory,
         company_ranking_series=company_ranking_series,
         customer_competition_trend=customer_competition_trend,
+        growth_contribution=_growth_contribution(
+            growth,
+            brand=requested_row.brand if requested_row else requested_brand,
+        ),
+        market_cagr_5y_pct=_as_float(kpi.get("market_cagr_5y_pct")),
+        market_cagr_3y_pct=_as_float(kpi.get("market_cagr_3y_pct")),
+        brand_cagr_5y_pct=_as_float(kpi.get("brand_cagr_5y_pct")),
+        brand_cagr_3y_pct=_as_float(kpi.get("brand_cagr_3y_pct")),
+        analysis_levels=_optional_dict(data.get("analysis_levels")),
+        analysis_level_market_status=_optional_dict(
+            data.get("analysis_level_market_status")
+        ),
+        level_top5_trend=_optional_dict(data.get("level_top5_trend")),
+        brand_trajectory=_trajectory_rows(data.get("ei_ms_matrix")),
     )
 
 
@@ -513,7 +536,10 @@ def parse_composite_market_response(
         if isinstance(item, dict) and item.get("period") and isinstance(item.get("value"), int | float)
     )
     growth = data.get("growth_contribution")
-    growth_payload = growth if isinstance(growth, dict) else None
+    growth_payload = _growth_contribution(
+        growth,
+        brand=requested_row.brand if requested_row else requested_brand,
+    )
     market_size = _as_float(kpi.get("market_size_recent"))
     effective_market_size = market_total if market_size is None else market_size
     unit = str(result.get("unit_label") or "")
@@ -591,6 +617,16 @@ def parse_composite_market_response(
         scope_filters=requested_filters,
         dashboard_tables=tuple(tables),
         growth_contribution=growth_payload,
+        market_cagr_5y_pct=_as_float(kpi.get("market_cagr_5y_pct")),
+        market_cagr_3y_pct=_as_float(kpi.get("market_cagr_3y_pct")),
+        brand_cagr_5y_pct=_as_float(kpi.get("brand_cagr_5y_pct")),
+        brand_cagr_3y_pct=_as_float(kpi.get("brand_cagr_3y_pct")),
+        analysis_levels=_optional_dict(data.get("analysis_levels")),
+        analysis_level_market_status=_optional_dict(
+            data.get("analysis_level_market_status")
+        ),
+        level_top5_trend=_optional_dict(data.get("level_top5_trend")),
+        brand_trajectory=_trajectory_rows(data.get("ei_ms_matrix")),
     )
 
 
@@ -664,6 +700,86 @@ def _mapping_rows(value: object) -> tuple[dict[str, object], ...]:
     if not isinstance(value, list):
         return ()
     return tuple(dict(item) for item in value if isinstance(item, dict))
+
+
+def _optional_dict(value: object) -> dict[str, object] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _growth_contribution(
+    value: object,
+    *,
+    brand: str | None,
+) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    payload: dict[str, object] = dict(value)
+    by_brand = value.get("by_brand")
+    contributors = (
+        by_brand.get("top_contributors") if isinstance(by_brand, dict) else None
+    )
+    if not isinstance(contributors, list):
+        return payload
+    normalized_brand = _normalize_brand_name(brand or "")
+    target = next(
+        (
+            item
+            for item in contributors
+            if isinstance(item, dict)
+            and (
+                item.get("is_target") is True
+                or (
+                    normalized_brand
+                    and _normalize_brand_name(str(item.get("brand") or ""))
+                    == normalized_brand
+                )
+            )
+        ),
+        None,
+    )
+    if target is None:
+        return payload
+    contribution = _as_float(target.get("contribution"))
+    contribution_pct = _as_float(target.get("contribution_pct"))
+    if contribution is not None:
+        payload["growth_contribution_value"] = contribution
+    if contribution_pct is not None:
+        payload["growth_contribution_pct"] = contribution_pct
+    return payload
+
+
+def _trajectory_rows(value: object, *, limit: int = 20) -> tuple[dict[str, object], ...]:
+    matrix = value.get("data") if isinstance(value, dict) else None
+    if not isinstance(matrix, list):
+        return ()
+    keys = (
+        "brand",
+        "brand_key",
+        "company",
+        "is_target",
+        "is_jw",
+        "rank",
+        "value_recent",
+        "share_pct",
+        "ei",
+        "ei_5y",
+        "cagr_5y_pct",
+        "brand_cagr_pct",
+        "market_cagr_pct",
+        "momentum_score",
+        "ei_basis",
+        "period_years",
+        "ei_period_years",
+        "brand_start_period",
+        "brand_end_period",
+        "market_start_period",
+        "market_end_period",
+    )
+    return tuple(
+        {key: item[key] for key in keys if key in item}
+        for item in matrix[:limit]
+        if isinstance(item, dict) and not item.get("is_others") and item.get("brand")
+    )
 
 
 def _ranking_rows(

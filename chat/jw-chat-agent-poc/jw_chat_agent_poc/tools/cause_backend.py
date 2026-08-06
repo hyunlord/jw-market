@@ -163,6 +163,13 @@ class CauseMarket:
     hhi_series: tuple[dict[str, Any], ...]
     brand_rows: tuple[CauseBrandRow, ...]
     trace: CauseBackendTrace
+    market_cagr_3y_pct: float | None = None
+    brand_cagr_3y_pct: float | None = None
+    analysis_levels: dict[str, Any] | None = None
+    analysis_level_market_status: dict[str, Any] | None = None
+    level_top5_trend: dict[str, Any] | None = None
+    brand_trajectory: tuple[dict[str, Any], ...] = ()
+    growth_contribution: dict[str, Any] | None = None
 
     def render_market_scope(self, *, limit: int = 10) -> dict[str, Any]:
         bounded_limit = max(1, min(int(limit), 20))
@@ -190,12 +197,20 @@ class CauseMarket:
             "market_size_recent_krw": self.market_size,
             "market_size_억원": _eok(self.market_size),
             "market_cagr_5y_pct": self.market_cagr_pct,
+            "market_cagr_3y_pct": self.market_cagr_3y_pct,
             "top3_share_pct": self.top3_share_pct,
             "hhi_recent": self.hhi_recent,
             "direct_competition_count": self.direct_competition_count,
             "brand_sales_krw": self.brand_value,
             "ms_recent_pct": self.brand_share_pct,
             "rank": self.brand_rank,
+            "brand_cagr_5y_pct": self.brand_cagr_pct,
+            "brand_cagr_3y_pct": self.brand_cagr_3y_pct,
+            "analysis_levels": self.analysis_levels,
+            "analysis_level_market_status": self.analysis_level_market_status,
+            "level_top5_trend": self.level_top5_trend,
+            "brand_trajectory": list(self.brand_trajectory),
+            "growth_contribution": self.growth_contribution,
             "level_segments": [row.segment() for row in selected],
             "level_top5_trend_series": [row.trend() for row in trend_rows],
             "market_size_series": list(self.market_series),
@@ -460,11 +475,22 @@ def parse_cause_market_response(payload: Mapping[str, Any], *, trace: CauseBacke
         brand_value=_number(kpi.get("brand_value_recent")),
         brand_share_pct=_first_number(kpi, "target_share_pct", "brand_share_pct"),
         brand_rank=_integer(kpi.get("target_rank")),
-        brand_cagr_pct=_number(kpi.get("brand_cagr_pct")),
+        brand_cagr_pct=_first_number(kpi, "brand_cagr_5y_pct", "brand_cagr_pct"),
         market_series=tuple(market_series),
         hhi_series=tuple(_hhi_series(data)),
         brand_rows=tuple(brand_rows),
         trace=resolved_trace,
+        market_cagr_3y_pct=_number(kpi.get("market_cagr_3y_pct")),
+        brand_cagr_3y_pct=_number(kpi.get("brand_cagr_3y_pct")),
+        analysis_levels=_optional_mapping(data.get("analysis_levels")),
+        analysis_level_market_status=_optional_mapping(
+            data.get("analysis_level_market_status")
+        ),
+        level_top5_trend=_optional_mapping(data.get("level_top5_trend")),
+        brand_trajectory=_trajectory_rows(data.get("ei_ms_matrix")),
+        growth_contribution=_growth_contribution(
+            data.get("growth_contribution"), brand=brand
+        ),
     )
 
 
@@ -589,6 +615,77 @@ def _mapping(value: object, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise LookupError(f"{name} is missing")
     return value
+
+
+def _optional_mapping(value: object) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _growth_contribution(value: object, *, brand: str) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    payload = dict(value)
+    by_brand = value.get("by_brand")
+    contributors = (
+        by_brand.get("top_contributors") if isinstance(by_brand, Mapping) else None
+    )
+    if not isinstance(contributors, list):
+        return payload
+    target = next(
+        (
+            item
+            for item in contributors
+            if isinstance(item, Mapping)
+            and (
+                item.get("is_target") is True
+                or _text(item.get("brand")) == brand
+            )
+        ),
+        None,
+    )
+    if target is None:
+        return payload
+    contribution = _number(target.get("contribution"))
+    contribution_pct = _number(target.get("contribution_pct"))
+    if contribution is not None:
+        payload["growth_contribution_value"] = contribution
+    if contribution_pct is not None:
+        payload["growth_contribution_pct"] = contribution_pct
+    return payload
+
+
+def _trajectory_rows(value: object, *, limit: int = 20) -> tuple[dict[str, Any], ...]:
+    matrix = value.get("data") if isinstance(value, Mapping) else None
+    if not isinstance(matrix, list):
+        return ()
+    keys = (
+        "brand",
+        "brand_key",
+        "company",
+        "is_target",
+        "is_jw",
+        "rank",
+        "value_recent",
+        "share_pct",
+        "ei",
+        "ei_5y",
+        "cagr_5y_pct",
+        "brand_cagr_pct",
+        "market_cagr_pct",
+        "momentum_score",
+        "ei_basis",
+        "period_years",
+        "ei_period_years",
+        "brand_start_period",
+        "brand_end_period",
+        "market_start_period",
+        "market_end_period",
+    )
+    return tuple(
+        {key: item[key] for key in keys if key in item}
+        for item in matrix[:limit]
+        if isinstance(item, Mapping) and not item.get("is_others") and item.get("brand")
+    )
 
 
 def _latest_period(rows: list[dict[str, Any]]) -> str:
