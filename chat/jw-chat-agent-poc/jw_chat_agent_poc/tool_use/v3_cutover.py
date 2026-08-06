@@ -168,9 +168,15 @@ class _DefaultV3ServingPipeline:
         from jw_chat_agent_poc.tool_use.v3_selection_provider import (
             GenosV3ToolChoiceProvider,
         )
+        from jw_chat_agent_poc.tool_use.v3_scope_view_set import (
+            build_scope_view_set,
+            merge_evidence_bundles,
+            scope_view_choices,
+        )
         from jw_chat_agent_poc.tool_use.v3_web_augmentation import (
             V3WebAugmenter,
         )
+        from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
 
         started = time.monotonic()
         selection_provider = replace(
@@ -190,7 +196,22 @@ class _DefaultV3ServingPipeline:
         if not _domain_enabled(domain, self._config.domains):
             return V3ServingResult(domain, "", (), (), (), {"skipped": "domain"}, ())
 
-        bundle = build_default_shadow_executor(question).execute(selection.choices)
+        executor = build_default_shadow_executor(question)
+        bundle = executor.execute(selection.choices)
+        market_scope_resolver = MarketScopeResolver()
+        scope_confirmed = (
+            market_scope_resolver.has_explicit_anchor(question)
+            or market_scope_resolver.has_explicit_named_market(question)
+        )
+        supplemental_choices = scope_view_choices(
+            selection.choices,
+            scope_confirmed=scope_confirmed,
+        )
+        supplemental = executor.execute(supplemental_choices)
+        view_set = build_scope_view_set(
+            merge_evidence_bundles(bundle, supplemental),
+            scope_confirmed=scope_confirmed,
+        )
         external = default_external_client("live")
         augmented = V3WebAugmenter(
             search=lambda query, **kwargs: _web_search(
@@ -199,6 +220,7 @@ class _DefaultV3ServingPipeline:
                 topic=str(kwargs.get("topic") or "general"),
             )
         ).augment(question, bundle)
+        combined = merge_evidence_bundles(augmented.bundle, supplemental)
         elapsed = time.monotonic() - started
         remaining = self._config.overall_timeout_s - elapsed - 0.5
         if remaining <= 1.0:
@@ -209,7 +231,7 @@ class _DefaultV3ServingPipeline:
                 (),
                 (),
                 {"reason_code": "v3_cutover_deadline_exhausted"},
-                _legacy_tool_calls(augmented.bundle.executions),
+                _legacy_tool_calls(combined.executions),
             )
         provider = GenosV3FusionProvider.from_env()
         provider = replace(provider, timeout_s=min(provider.timeout_s, remaining))
@@ -220,19 +242,21 @@ class _DefaultV3ServingPipeline:
                 domain,
                 "",
                 tuple(exc.limitations),
-                _source_labels(augmented.bundle.facts),
+                _source_labels(combined.facts),
                 (),
                 {
                     "reason_code": exc.reason_code,
                     "partial_recovery_attempted": False,
                     "finish_reason": exc.provider.finish_reason,
                 },
-                _legacy_tool_calls(augmented.bundle.executions),
+                _legacy_tool_calls(combined.executions),
             )
 
         answer_model = fusion.validated.answer
         answer = "\n\n".join(claim.text for claim in answer_model.claims)
-        tool_calls = _legacy_tool_calls(augmented.bundle.executions)
+        if view_set.attached:
+            answer = "\n\n".join(part for part in (answer, view_set.markdown) if part)
+        tool_calls = _legacy_tool_calls(combined.executions)
         provisional = {"tool_calls": list(tool_calls)}
         authorization = issue_render_authorization(
             provisional,
@@ -247,27 +271,32 @@ class _DefaultV3ServingPipeline:
             answer=answer,
         )
         fact_results = {
-            fact.evidence_id: fact.raw_result for fact in augmented.bundle.facts
+            fact.evidence_id: fact.raw_result for fact in combined.facts
         }
         candidates = [
             {
                 **chart,
-                "evidence_refs": _chart_evidence_refs(chart, augmented.bundle.facts),
+                "evidence_refs": _chart_evidence_refs(chart, combined.facts),
             }
             for chart in candidates
         ]
-        charts = grounded_chart_specs(candidates, fact_results)
+        charts = grounded_chart_specs((*candidates, *view_set.charts), fact_results)
         return V3ServingResult(
             domain=domain,
             answer=answer,
-            limitations=tuple(answer_model.limitations),
-            sources=_source_labels(augmented.bundle.facts),
+            limitations=(*answer_model.limitations, *view_set.limitations),
+            sources=_source_labels(combined.facts),
             charts=charts,
             trace={
                 "selected_tools": [choice.name for choice in selection.choices],
                 "accepted_claim_count": len(answer_model.claims),
                 "rejected_claim_count": len(fusion.validated.audit.rejected_claims),
-                "evidence_fact_count": len(augmented.bundle.facts),
+                "evidence_fact_count": len(combined.facts),
+                "scope_view_set_attached": view_set.attached,
+                "scope_view_names": list(view_set.view_names),
+                "scope_view_supplemental_tools": [
+                    choice.name for choice in supplemental_choices
+                ],
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
                 "finish_reason": fusion.provider.finish_reason,
             },
