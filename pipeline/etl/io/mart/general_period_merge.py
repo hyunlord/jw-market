@@ -211,8 +211,8 @@ def merge_scoped_row(
         raise ValueError(f"unsupported period-scoped source: {source!r}")
 
     periods = set(source_periods or ())
-    if not periods:
-        periods = _periods_in(existing) | _periods_in(candidate)
+    periods.update(_periods_in(existing))
+    periods.update(_periods_in(candidate))
     periods.update(targets)
     display = rolling_period_scope(periods, source=source)
     calculation = calculation_period_scope(periods, source=source)

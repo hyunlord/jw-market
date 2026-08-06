@@ -142,6 +142,73 @@ def test_sparse_brand_uses_source_period_universe_for_contract_boundary() -> Non
     assert merged["metric_history"][target] == candidate["metric_history"][target]
 
 
+def test_missing_corpus_period_preserves_existing_history_inside_window() -> None:
+    periods = _months(66)
+    missing = periods[-2]
+    target = periods[-1]
+    source_periods = tuple(period for period in periods if period != missing)
+    existing = _brand_row(periods[:-1], multiplier=1.0)
+    candidate = _brand_row((target,), multiplier=2.0)
+
+    merged = merge_scoped_row(
+        existing,
+        candidate,
+        period_scope=(target,),
+        source_periods=source_periods,
+    )
+
+    assert missing in merged["metric_history"]
+    assert merged["metric_history"][missing] == existing["metric_history"][missing]
+    assert missing in merged["raw_value_history"]
+    assert merged["raw_value_history"][missing] == existing["raw_value_history"][missing]
+    assert merged["metric_history"][target] == candidate["metric_history"][target]
+    assert merged["payload"]["period_count"] == 60
+    assert merged["payload"]["calculation_period_count"] == 61
+
+
+def test_complete_corpus_merge_retains_existing_contract_output() -> None:
+    periods = _months(66)
+    target = periods[-1]
+    existing = _brand_row(periods[:-1], multiplier=1.0)
+    candidate = _brand_row((target,), multiplier=2.0)
+
+    merged = merge_scoped_row(
+        existing,
+        candidate,
+        period_scope=(target,),
+        source_periods=periods,
+    )
+
+    assert tuple(merged["metric_history"]) == periods[-60:]
+    assert tuple(merged["raw_value_history"]) == periods[-61:]
+    assert merged["metric_history"][periods[-2]] == existing["metric_history"][periods[-2]]
+    assert merged["metric_history"][target] == candidate["metric_history"][target]
+
+
+def test_missing_corpus_period_preserves_existing_market_history_inside_window() -> None:
+    periods = _months(66)
+    missing = periods[-2]
+    target = periods[-1]
+    source_periods = tuple(period for period in periods if period != missing)
+    existing = _market_row(periods[:-1], multiplier=1.0)
+    candidate = _market_row((target,), multiplier=2.0)
+
+    merged = merge_scoped_row(
+        existing,
+        candidate,
+        period_scope=(target,),
+        source_periods=source_periods,
+    )
+
+    assert missing in merged["market_size_series"]
+    assert merged["market_size_series"][missing] == existing["market_size_series"][missing]
+    assert missing in merged["hhi_series"]
+    assert merged["hhi_series"][missing] == existing["hhi_series"][missing]
+    assert missing in merged["brand_ranking"]
+    assert merged["brand_ranking"][missing] == existing["brand_ranking"][missing]
+    assert merged["market_size_series"][target] == candidate["market_size_series"][target]
+
+
 def test_scoped_market_merge_preserves_every_outside_period_byte_for_byte() -> None:
     periods = _months()
     target = periods[-1]
