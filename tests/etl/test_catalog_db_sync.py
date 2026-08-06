@@ -207,7 +207,7 @@ def test_replacement_sync_rolls_back_when_post_write_parity_mismatches(
             replacement=db_sync.CatalogReplacementApproval(
                 removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
             ),
-            reference_report=db_sync.CatalogReplacementReferenceReport(),
+            reference_report=db_sync.CatalogReplacementReferenceReport(grounded=True),
         )
 
     assert any(statement.startswith("DELETE FROM") for statement in conn.statements)
@@ -236,7 +236,39 @@ def test_replacement_sync_rejects_referenced_removal_without_inactive_decision(
                 removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
             ),
             reference_report=db_sync.CatalogReplacementReferenceReport(
-                referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+                referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
+                grounded=True,
+            ),
+        )
+
+    assert not any(statement.startswith("DELETE FROM") for statement in conn.statements)
+    assert conn.batches == []
+    assert conn.commits == 0
+
+
+def test_replacement_sync_rejects_ungrounded_removal_reference_report(
+    tmp_path: Path,
+) -> None:
+    # Given: removed ID approval exists but the reference report was not DB-grounded.
+    _write_parquet(tmp_path, "ml_market", [_ml_row("ml_keep")])
+    _write_parquet(tmp_path, "cd_market", [_cd_row("cd_keep")])
+    _write_parquet(tmp_path, "strategic_brand", [_brand_row(1)])
+    conn = ReplacementConnection(
+        current_ids={"catalog_ml_market": ("ml_keep", "ml_remove")}
+    )
+
+    # When / Then: hand-authored reference data cannot authorize removals.
+    with pytest.raises(ValueError, match="DB-grounded reference report"):
+        db_sync.sync_catalog_tables(
+            conn,
+            target_db="scratch",
+            catalog_root=tmp_path,
+            replacement=db_sync.CatalogReplacementApproval(
+                removed_ids_by_table={"catalog_ml_market": ("ml_remove",)}
+            ),
+            reference_report=db_sync.CatalogReplacementReferenceReport(
+                referenced_ids_by_table={},
+                inactive_decisions_by_table={},
             ),
         )
 
@@ -277,6 +309,7 @@ def test_replacement_sync_deletes_approved_ids_and_passes_parity(tmp_path: Path)
         reference_report=db_sync.CatalogReplacementReferenceReport(
             referenced_ids_by_table={"catalog_ml_market": ("ml_remove",)},
             inactive_decisions_by_table={"catalog_ml_market": ("ml_remove",)},
+            grounded=True,
         ),
     )
 

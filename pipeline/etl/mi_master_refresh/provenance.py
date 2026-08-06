@@ -59,12 +59,23 @@ def validate_definition_approval(
     *,
     expected: DefinitionApprovalIdentity,
 ) -> None:
-    if expected.mi_master_sha256 != candidate.mi_master_sha256:
-        raise ValueError("definition approval identity does not match candidate")
+    validate_candidate_approval_identity(candidate, expected)
     required: dict[str, object] = {"approved": True, **expected.as_dict()}
     for field, value in required.items():
         if payload.get(field) != value:
             raise ValueError(f"definition approval {field} does not match")
+
+
+def validate_candidate_approval_identity(
+    candidate: MiMasterRefreshCandidate,
+    identity: DefinitionApprovalIdentity,
+) -> None:
+    if identity.mi_master_sha256 != candidate.mi_master_sha256:
+        raise ValueError("definition approval mi_master_sha256 does not match candidate")
+    if identity.catalog_diff_hash != candidate.manifest_sha256:
+        raise ValueError("definition approval catalog_diff_hash does not match candidate")
+    if identity.run_id != candidate.candidate_id:
+        raise ValueError("definition approval run_id does not match candidate")
 
 
 def validate_manifest_equality(

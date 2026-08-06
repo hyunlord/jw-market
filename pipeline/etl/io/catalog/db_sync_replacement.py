@@ -136,6 +136,8 @@ def _validate_approval(
     }
     if actual != expected:
         raise ValueError("removed catalog IDs require exact approval")
+    if expected and not report.grounded:
+        raise ValueError("removed catalog IDs require DB-grounded reference report")
     blocked = []
     for table, removed_ids in expected.items():
         referenced = set(report.referenced_ids_by_table.get(table, ()))
