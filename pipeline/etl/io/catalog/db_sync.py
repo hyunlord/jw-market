@@ -38,6 +38,7 @@ class CatalogSyncResult:
     rows: int
     source_file_versions: tuple[str, ...]
     source_checksum: str
+    mi_master_sha256: str | None
     batch_size: int
     dry_run: bool
 
@@ -68,6 +69,7 @@ class ServingCatalogExport:
     rows: int
     source_file_versions: tuple[str, ...]
     manifest_hash: str
+    mi_master_sha256: str | None
 
 
 CATALOG_ML_MARKET = CatalogTableSpec(
@@ -94,6 +96,7 @@ CATALOG_ML_MARKET = CatalogTableSpec(
         CatalogColumn("target_ubist_3", "VARCHAR(255)"),
         CatalogColumn("target_ubist_4", "VARCHAR(255)"),
         CatalogColumn("source_file_version", "VARCHAR(512)"),
+        CatalogColumn("mi_master_sha256", "CHAR(64)"),
         CatalogColumn("ingested_at", "DATETIME(6)"),
         CatalogColumn("catalog_manifest_hash", "CHAR(64)"),
     ),
@@ -124,6 +127,7 @@ CATALOG_CD_MARKET = CatalogTableSpec(
         CatalogColumn("target_ubist_3", "VARCHAR(255)"),
         CatalogColumn("target_ubist_4", "VARCHAR(255)"),
         CatalogColumn("source_file_version", "VARCHAR(512)"),
+        CatalogColumn("mi_master_sha256", "CHAR(64)"),
         CatalogColumn("ingested_at", "DATETIME(6)"),
         CatalogColumn("catalog_manifest_hash", "CHAR(64)"),
     ),
@@ -154,6 +158,7 @@ CATALOG_STRATEGIC_BRAND = CatalogTableSpec(
         CatalogColumn("판매사", "VARCHAR(255)"),
         CatalogColumn("제조사", "VARCHAR(255)"),
         CatalogColumn("source_file_version", "VARCHAR(512)"),
+        CatalogColumn("mi_master_sha256", "CHAR(64)"),
         CatalogColumn("ingested_at", "DATETIME(6)"),
         CatalogColumn("is_jw", "TINYINT(1)"),
         CatalogColumn("is_target", "TINYINT(1)"),
@@ -178,6 +183,7 @@ def sync_catalog_tables(
     catalog_root: Path,
     batch_size: int = CATALOG_TABLE_BATCH_LIMIT,
     dry_run: bool = False,
+    mi_master_sha256: str | None = None,
 ) -> tuple[CatalogSyncResult, ...]:
     """Upsert finalized output/catalog parquet files into catalog DB tables."""
     if not dry_run and conn is None:
@@ -185,7 +191,11 @@ def sync_catalog_tables(
     effective_batch_size = _catalog_batch_size(batch_size)
     results: list[CatalogSyncResult] = []
     for spec in CATALOG_TABLES:
-        rows, parquet_path, source_checksum = _load_catalog_rows(catalog_root, spec)
+        rows, parquet_path, source_checksum = _load_catalog_rows(
+            catalog_root,
+            spec,
+            mi_master_sha256=mi_master_sha256,
+        )
         versions = _source_file_versions(rows)
         if not dry_run:
             assert conn is not None
@@ -198,6 +208,7 @@ def sync_catalog_tables(
                 rows=len(rows),
                 source_file_versions=versions,
                 source_checksum=source_checksum,
+                mi_master_sha256=_single_provenance(rows),
                 batch_size=effective_batch_size,
                 dry_run=dry_run,
             )
@@ -245,9 +256,20 @@ def export_serving_catalog_tables(
                 f"ORDER BY {quote_id('catalog_manifest_hash')}"
             )
             hashes = tuple(str(row["value"]) for row in cursor.fetchall())
+            cursor.execute(
+                f"SELECT DISTINCT {quote_id('mi_master_sha256')} AS value "
+                f"FROM {quote_id(target_db)}.{quote_id(spec.table_name)} "
+                f"WHERE {quote_id('mi_master_sha256')} IS NOT NULL "
+                f"ORDER BY {quote_id('mi_master_sha256')}"
+            )
+            mi_master_hashes = tuple(str(row["value"]) for row in cursor.fetchall())
         if len(hashes) != 1 or len(hashes[0]) != 64:
             raise RuntimeError(
                 f"{spec.table_name} serving manifest hash is not singular: {hashes}"
+            )
+        if len(mi_master_hashes) > 1:
+            raise RuntimeError(
+                f"{spec.table_name} MI Master hash is not singular: {mi_master_hashes}"
             )
         bool_fields = {
             field.name for field in template.schema if pa.types.is_boolean(field.type)
@@ -268,6 +290,7 @@ def export_serving_catalog_tables(
                 rows=anchored.num_rows,
                 source_file_versions=versions,
                 manifest_hash=hashes[0],
+                mi_master_sha256=mi_master_hashes[0] if mi_master_hashes else None,
             )
         )
     return tuple(exports)
@@ -344,22 +367,38 @@ def _catalog_path(catalog_root: Path, parquet_name: str) -> Path:
     return catalog_file(catalog_root, parquet_name)
 
 
-def _load_catalog_rows(catalog_root: Path, spec: CatalogTableSpec) -> tuple[list[dict[str, object]], Path, str]:
+def _load_catalog_rows(
+    catalog_root: Path,
+    spec: CatalogTableSpec,
+    *,
+    mi_master_sha256: str | None = None,
+) -> tuple[list[dict[str, object]], Path, str]:
     parquet_path = _catalog_path(catalog_root, spec.parquet_name)
     if not parquet_path.exists():
         raise FileNotFoundError(f"catalog parquet not found: {parquet_path}")
     table = pq.read_table(parquet_path)
     raw_rows = table.to_pylist()
     manifest_hash = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
-    rows = [_row_for_spec(raw_row, spec, manifest_hash) for raw_row in raw_rows]
+    rows = [
+        _row_for_spec(raw_row, spec, manifest_hash, mi_master_sha256)
+        for raw_row in raw_rows
+    ]
     return rows, parquet_path, _records_checksum(rows, spec)
 
 
-def _row_for_spec(raw_row: dict[str, object], spec: CatalogTableSpec, manifest_hash: str) -> dict[str, object]:
+def _row_for_spec(
+    raw_row: dict[str, object],
+    spec: CatalogTableSpec,
+    manifest_hash: str,
+    mi_master_sha256: str | None,
+) -> dict[str, object]:
     row: dict[str, object] = {}
     for column in spec.columns:
         if column.name == "catalog_manifest_hash":
             row[column.name] = manifest_hash
+            continue
+        if column.name == "mi_master_sha256" and column.name not in raw_row:
+            row[column.name] = mi_master_sha256
             continue
         row[column.name] = _db_value(raw_row.get(column.name))
     return row
@@ -380,13 +419,31 @@ def _source_file_versions(rows: Sequence[dict[str, object]]) -> tuple[str, ...]:
     return tuple(sorted(versions))
 
 
+def _single_provenance(rows: Sequence[dict[str, object]]) -> str | None:
+    hashes = {
+        str(row["mi_master_sha256"])
+        for row in rows
+        if row.get("mi_master_sha256")
+    }
+    if len(hashes) > 1:
+        raise RuntimeError(f"catalog rows contain multiple MI Master hashes: {sorted(hashes)}")
+    return next(iter(hashes), None)
+
+
 def _records_checksum(rows: Sequence[dict[str, object]], spec: CatalogTableSpec) -> str:
     names = tuple(column.name for column in spec.columns)
     payload = [
         {name: _json_value(row.get(name)) for name in names}
         for row in sorted(rows, key=lambda item: str(item.get(spec.primary_key) or ""))
     ]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 def _json_value(value: object) -> object:
@@ -402,7 +459,11 @@ def _business_row(
     return tuple(_json_value(row.get(column)) for column in columns)
 
 
-def _create_catalog_table(conn: pymysql.connections.Connection, target_db: str, spec: CatalogTableSpec) -> None:
+def _create_catalog_table(
+    conn: pymysql.connections.Connection,
+    target_db: str,
+    spec: CatalogTableSpec,
+) -> None:
     column_sql = ",\n  ".join(_column_definition(column) for column in spec.columns)
     sql = (
         f"CREATE TABLE IF NOT EXISTS {quote_id(target_db)}.{quote_id(spec.table_name)} (\n"
