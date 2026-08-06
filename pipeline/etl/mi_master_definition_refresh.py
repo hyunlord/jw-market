@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
@@ -14,6 +14,17 @@ from typing import Literal, Mapping, Sequence
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SUPPORTED_REFRESH_CACHE_TABLES = ("cache_brands", "cache_market_status")
+LIVE_CATALOG_TABLES = (
+    "catalog_ml_market",
+    "catalog_cd_market",
+    "catalog_strategic_brand",
+)
+STRATEGIC_REFRESH_TABLES = (
+    "mart_strategic_ml_brand_metric",
+    "mart_strategic_ml_market_metric",
+    "mart_strategic_cd_brand_metric",
+    "mart_strategic_cd_market_metric",
+)
 
 
 class ReplacementReferencePolicy:
@@ -31,10 +42,16 @@ class MiMasterRefreshCandidate:
 
 @dataclass(frozen=True, slots=True)
 class DefinitionApprovalIdentity:
-    candidate_id: str
     mi_master_sha256: str
-    manifest_sha256: str
-    approver: str
+    catalog_diff_hash: str
+    run_id: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "mi_master_sha256": self.mi_master_sha256,
+            "catalog_diff_hash": self.catalog_diff_hash,
+            "run_id": self.run_id,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +70,24 @@ class ReplacementDiff:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplacementTableParity:
+    table_name: str
+    row_count_before: int
+    row_count_after: int
+    row_count_expected: int
+    removed_ids: tuple[str, ...]
+    added_ids: tuple[str, ...]
+    changed_ids: tuple[str, ...]
+    before_parquet_sha256: str
+    after_parquet_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class AffectedDefinition:
     market_id: str
     atc4_codes: tuple[str, ...]
     cache_tables: tuple[str, ...]
+    cd_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +95,10 @@ class AffectedScopePlan:
     market_ids: tuple[str, ...]
     cache_tables: tuple[str, ...]
     general_rebuild_atc4: tuple[str, ...]
+    affected_ml_ids: tuple[str, ...] = ()
+    affected_cd_ids: tuple[str, ...] = ()
+    unchanged_ml_ids: tuple[str, ...] = ()
+    unchanged_cd_ids: tuple[str, ...] = ()
 
     @property
     def general_rebuild_count(self) -> int:
@@ -77,6 +112,8 @@ class RefreshPublishPlan:
     live_dir: Path
     backup_dir: Path
     journal_path: Path
+    corpus: RefreshCorpus | None = None
+    approval_identity: DefinitionApprovalIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +121,50 @@ class RefreshPublishResult:
     live_dir: Path
     backup_dir: Path
     journal_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogTableSnapshot:
+    table_name: str
+    row_count: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSeedContract:
+    live_catalog: tuple[CatalogTableSnapshot, ...]
+    strategic_tables: tuple[CatalogTableSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceReport:
+    mart_references: Mapping[str, tuple[str, ...]]
+    cache_references: Mapping[str, tuple[str, ...]]
+    saved_filter_references: Mapping[str, tuple[str, ...]]
+    inactive_decisions: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StrategicMarketValidationInput:
+    unchanged_market_hash_before: Mapping[str, str]
+    unchanged_market_hash_after: Mapping[str, str]
+    ml_members: Mapping[str, tuple[str, ...]]
+    cd_members: Mapping[str, tuple[str, ...]]
+    cd_parent_ml: Mapping[str, str]
+    sigma_before: Mapping[str, int]
+    sigma_after: Mapping[str, int]
+
+    def with_overrides(
+        self,
+        **changes: Mapping[str, str] | Mapping[str, int] | Mapping[str, tuple[str, ...]],
+    ) -> "StrategicMarketValidationInput":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshCorpus:
+    candidate_dir: Path
+    backup_dir: Path
 
 
 def mi_master_sha256(path: Path) -> str:
@@ -124,19 +205,9 @@ def validate_definition_approval(
     *,
     expected: DefinitionApprovalIdentity,
 ) -> None:
-    required: dict[str, object] = {
-        "approved": True,
-        "candidate_id": candidate.candidate_id,
-        "mi_master_sha256": candidate.mi_master_sha256,
-        "manifest_sha256": candidate.manifest_sha256,
-        "approver": expected.approver,
-    }
-    if (
-        expected.candidate_id != candidate.candidate_id
-        or expected.mi_master_sha256 != candidate.mi_master_sha256
-        or expected.manifest_sha256 != candidate.manifest_sha256
-    ):
+    if expected.mi_master_sha256 != candidate.mi_master_sha256:
         raise ValueError("definition approval identity does not match candidate")
+    required: dict[str, object] = {"approved": True, **expected.as_dict()}
     for field, value in required.items():
         if payload.get(field) != value:
             raise ValueError(f"definition approval {field} does not match")
@@ -172,6 +243,89 @@ def build_replacement_diff(
     )
 
 
+def build_catalog_diff_hash(
+    prior_by_table: Mapping[str, Mapping[str, str]],
+    new_by_table: Mapping[str, Mapping[str, str]],
+) -> str:
+    parity = build_replacement_parity(
+        before_by_table=prior_by_table,
+        after_by_table=new_by_table,
+        before_parquet_hashes={table: "" for table in prior_by_table},
+        after_parquet_hashes={table: "" for table in new_by_table},
+        expected_after_counts={
+            table: len(rows)
+            for table, rows in new_by_table.items()
+        },
+    )
+    payload = [
+        {
+            "table_name": row.table_name,
+            "row_count_before": row.row_count_before,
+            "row_count_after": row.row_count_after,
+            "removed_ids": row.removed_ids,
+            "added_ids": row.added_ids,
+            "changed_ids": row.changed_ids,
+        }
+        for row in parity
+    ]
+    return _sha256_json(payload)
+
+
+def build_replacement_parity(
+    *,
+    before_by_table: Mapping[str, Mapping[str, str]],
+    after_by_table: Mapping[str, Mapping[str, str]],
+    before_parquet_hashes: Mapping[str, str],
+    after_parquet_hashes: Mapping[str, str],
+    expected_after_counts: Mapping[str, int],
+) -> tuple[ReplacementTableParity, ...]:
+    rows: list[ReplacementTableParity] = []
+    for table in sorted(set(before_by_table) | set(after_by_table)):
+        before = dict(before_by_table.get(table, {}))
+        after = dict(after_by_table.get(table, {}))
+        before_ids = set(before)
+        after_ids = set(after)
+        shared = before_ids & after_ids
+        rows.append(
+            ReplacementTableParity(
+                table_name=table,
+                row_count_before=len(before),
+                row_count_after=len(after),
+                row_count_expected=int(expected_after_counts.get(table, len(after))),
+                removed_ids=tuple(sorted(before_ids - after_ids)),
+                added_ids=tuple(sorted(after_ids - before_ids)),
+                changed_ids=tuple(
+                    sorted(key for key in shared if before[key] != after[key])
+                ),
+                before_parquet_sha256=str(before_parquet_hashes.get(table, "")),
+                after_parquet_sha256=str(after_parquet_hashes.get(table, "")),
+            )
+        )
+    return tuple(rows)
+
+
+def validate_replacement_parity(
+    parity: Sequence[ReplacementTableParity],
+) -> None:
+    errors: list[str] = []
+    for row in parity:
+        if row.row_count_after != row.row_count_expected:
+            errors.append(
+                f"{row.table_name} row_count_after={row.row_count_after} "
+                f"expected={row.row_count_expected}"
+            )
+        if row.changed_ids:
+            errors.append(f"{row.table_name} changed_ids={row.changed_ids}")
+        for field, value in (
+            ("before_parquet_sha256", row.before_parquet_sha256),
+            ("after_parquet_sha256", row.after_parquet_sha256),
+        ):
+            if value and not SHA256_RE.fullmatch(value):
+                errors.append(f"{row.table_name} invalid {field}")
+    if errors:
+        raise ValueError("replacement parity mismatch: " + "; ".join(errors))
+
+
 def validate_replacement_diff(
     diff: ReplacementDiff,
     *,
@@ -196,13 +350,38 @@ def validate_replacement_diff(
             raise ValueError(f"unsupported replacement reference policy: {unreachable}")
 
 
+def validate_removed_id_references(
+    removed_ids: Sequence[str],
+    report: ReferenceReport,
+) -> None:
+    inactive = set(report.inactive_decisions)
+    blocked: list[str] = []
+    for removed_id in sorted(set(removed_ids)):
+        references = (
+            tuple(report.mart_references.get(removed_id, ()))
+            + tuple(report.cache_references.get(removed_id, ()))
+            + tuple(report.saved_filter_references.get(removed_id, ()))
+        )
+        if references and removed_id not in inactive:
+            blocked.append(f"{removed_id}: {references}")
+    if blocked:
+        raise ValueError(
+            "referenced removals require inactive decision: " + "; ".join(blocked)
+        )
+
+
 def plan_affected_scope(
     *,
     affected_definitions: Sequence[AffectedDefinition],
     existing_general_atc4: Sequence[str],
+    all_ml_ids: Sequence[str] = (),
+    all_cd_ids: Sequence[str] = (),
 ) -> AffectedScopePlan:
     existing = set(existing_general_atc4)
-    market_ids = tuple(sorted({item.market_id for item in affected_definitions}))
+    affected_ml_ids = tuple(sorted({item.market_id for item in affected_definitions}))
+    affected_cd_ids = tuple(
+        sorted({cd_id for item in affected_definitions for cd_id in item.cd_ids})
+    )
     cache_tables = tuple(
         table
         for table in SUPPORTED_REFRESH_CACHE_TABLES
@@ -218,11 +397,77 @@ def plan_affected_scope(
             }
         )
     )
-    return AffectedScopePlan(market_ids, cache_tables, general_rebuild)
+    unchanged_ml_ids = tuple(sorted(set(all_ml_ids) - set(affected_ml_ids)))
+    unchanged_cd_ids = tuple(sorted(set(all_cd_ids) - set(affected_cd_ids)))
+    return AffectedScopePlan(
+        affected_ml_ids,
+        cache_tables,
+        general_rebuild,
+        affected_ml_ids=affected_ml_ids,
+        affected_cd_ids=affected_cd_ids,
+        unchanged_ml_ids=unchanged_ml_ids,
+        unchanged_cd_ids=unchanged_cd_ids,
+    )
+
+
+def validate_strategic_market_refresh(
+    payload: StrategicMarketValidationInput,
+) -> None:
+    changed_unchanged = [
+        market_id
+        for market_id, before_hash in payload.unchanged_market_hash_before.items()
+        if payload.unchanged_market_hash_after.get(market_id) != before_hash
+    ]
+    if changed_unchanged:
+        raise ValueError(
+            "unchanged market hash changed: " + ", ".join(sorted(changed_unchanged))
+        )
+    for cd_id, members in payload.cd_members.items():
+        parent = payload.cd_parent_ml.get(cd_id)
+        if parent is None:
+            raise ValueError(f"CD membership is not a subset of parent ML: {cd_id}")
+        if not set(members) <= set(payload.ml_members.get(parent, ())):
+            raise ValueError(f"CD membership is not a subset of parent ML: {cd_id}")
+    sigma_mismatches = [
+        market_id
+        for market_id, before_value in payload.sigma_before.items()
+        if payload.sigma_after.get(market_id) != before_value
+    ]
+    if sigma_mismatches:
+        raise ValueError("sigma mismatch: " + ", ".join(sorted(sigma_mismatches)))
+
+
+def validate_candidate_seed_contract(contract: CandidateSeedContract) -> None:
+    _validate_snapshot_group(
+        contract.live_catalog,
+        required=LIVE_CATALOG_TABLES,
+        label="live catalog",
+    )
+    _validate_snapshot_group(
+        contract.strategic_tables,
+        required=STRATEGIC_REFRESH_TABLES,
+        label="strategic tables",
+    )
+
+
+def validate_refresh_publish_plan(plan: RefreshPublishPlan) -> None:
+    validate_candidate_seed(plan.candidate)
+    if plan.corpus is None:
+        raise ValueError("publish plan requires candidate and backup corpus")
+    if plan.approval_identity is None:
+        raise ValueError("publish plan requires approval identity")
+    if not plan.corpus.candidate_dir.is_dir() or not plan.corpus.backup_dir.is_dir():
+        raise ValueError("publish plan corpus paths must exist")
+    if plan.corpus.candidate_dir != plan.candidate_dir:
+        raise ValueError("publish plan candidate corpus does not match candidate_dir")
+    if not plan.journal_path.is_file():
+        raise ValueError("publish plan requires pre-created journal")
+    if plan.approval_identity.mi_master_sha256 != plan.candidate.mi_master_sha256:
+        raise ValueError("publish plan approval identity does not match candidate")
 
 
 def atomic_publish_candidate(plan: RefreshPublishPlan) -> RefreshPublishResult:
-    validate_candidate_seed(plan.candidate)
+    validate_refresh_publish_plan(plan)
     if not plan.candidate_dir.is_dir():
         raise ValueError(f"candidate_dir is not a directory: {plan.candidate_dir}")
     if not plan.live_dir.is_dir():
@@ -285,3 +530,31 @@ def _append_journal(
 def _require_sha256(value: str, field: str) -> None:
     if not SHA256_RE.fullmatch(value):
         raise ValueError(f"{field} must be a lowercase sha256 hex digest")
+
+
+def _validate_snapshot_group(
+    snapshots: Sequence[CatalogTableSnapshot],
+    *,
+    required: Sequence[str],
+    label: str,
+) -> None:
+    by_table = {snapshot.table_name: snapshot for snapshot in snapshots}
+    missing = [table for table in required if table not in by_table]
+    if missing:
+        raise ValueError(f"{label} missing snapshots: {', '.join(missing)}")
+    for table in required:
+        snapshot = by_table[table]
+        if snapshot.row_count < 0:
+            raise ValueError(f"{table} row_count must be non-negative")
+        _require_sha256(snapshot.sha256, f"{table}.sha256")
+
+
+def _sha256_json(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
