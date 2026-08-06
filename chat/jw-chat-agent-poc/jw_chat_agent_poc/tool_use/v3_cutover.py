@@ -206,6 +206,7 @@ class _DefaultV3ServingPipeline:
         from jw_chat_agent_poc.tool_use.v3_scope_view_set import (
             build_scope_view_set,
             merge_evidence_bundles,
+            reconcile_view_limitations,
             scope_view_choices,
         )
         from jw_chat_agent_poc.tool_use.v3_web_augmentation import (
@@ -318,10 +319,14 @@ class _DefaultV3ServingPipeline:
         charts = _dedupe_charts_by_data(
             grounded_chart_specs((*candidates, *view_set.charts), fact_results)
         )
+        model_limitations = reconcile_view_limitations(
+            answer_model.limitations,
+            view_set.view_names,
+        )
         return V3ServingResult(
             domain=domain,
             answer=answer,
-            limitations=(*answer_model.limitations, *view_set.limitations),
+            limitations=(*model_limitations, *view_set.limitations),
             sources=_source_labels(combined.facts),
             charts=charts,
             trace={

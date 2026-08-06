@@ -351,6 +351,29 @@ def test_unconfirmed_scope_never_renders_selector_primary_evidence() -> None:
     assert result.attached is False
 
 
+def test_successful_view_removes_only_its_stale_failure_limitation() -> None:
+    from jw_chat_agent_poc.tool_use.v3_scope_view_set import reconcile_view_limitations
+
+    limitations = (
+        "시장 성장 기여도 데이터는 확인하지 못했습니다.",
+        "채널별 구성 데이터는 확인하지 못했습니다.",
+        "외부 근거의 기간이 다릅니다.",
+    )
+
+    assert reconcile_view_limitations(limitations, ("시장 성장 기여도",)) == (
+        "채널별 구성 데이터는 확인하지 못했습니다.",
+        "외부 근거의 기간이 다릅니다.",
+    )
+
+
+def test_failed_view_keeps_its_failure_limitation() -> None:
+    from jw_chat_agent_poc.tool_use.v3_scope_view_set import reconcile_view_limitations
+
+    limitation = "시장 성장 기여도 데이터는 확인하지 못했습니다."
+
+    assert reconcile_view_limitations((limitation,), ()) == (limitation,)
+
+
 def test_six_iqvia_market_hhi_display_values_use_rounding() -> None:
     observed = {
         "S01P0": (3188.040362260885, 3188.0404),
