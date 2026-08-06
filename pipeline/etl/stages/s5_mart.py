@@ -206,6 +206,7 @@ def _print_cd_stats(stats: dict[str, Any]) -> None:
 def run(params: dict[str, Any]) -> int:
     target_db = str(params.get("target_db") or "").strip()
     source_db = str(params.get("source_db") or "jw_mart").strip()
+    general_source_db = str(params.get("general_source_db") or source_db).strip()
     if not target_db:
         print(f"[{STAGE}] 실패: --target-db is required for isolated mart writes")
         return 2
@@ -223,7 +224,7 @@ def run(params: dict[str, Any]) -> int:
             )
         else:
             _ensure_isolated_schema(target_db, source_db)
-        _configure_mart_env(target_db, source_db)
+        _configure_mart_env(target_db, general_source_db)
         from pipeline.etl.io.mart.strategic_cd import compute_strategic_cd
         from pipeline.etl.io.mart.strategic_ml import compute_strategic_ml
 
@@ -242,5 +243,8 @@ def run(params: dict[str, Any]) -> int:
     except Exception as exc:
         print(f"[{STAGE}] 실패: {exc}")
         return 1
-    print(f"[{STAGE}] 완료 target_db={target_db} source_db={source_db}")
+    print(
+        f"[{STAGE}] 완료 target_db={target_db} source_db={source_db} "
+        f"general_source_db={general_source_db}"
+    )
     return 0
