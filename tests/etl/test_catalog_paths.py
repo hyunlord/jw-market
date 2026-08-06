@@ -413,11 +413,20 @@ def test_s2_definition_refresh_passes_replacement_gate_inputs(
     monkeypatch.setattr(s2_catalog, "S2_REQUIRED_CATALOGS", frozenset({"ml_market"}))
     seen: dict[str, object] = {}
 
-    def fake_sync(_conn, *, replacement, reference_report, **_kwargs):  # type: ignore[no-untyped-def]
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_sync(conn, *, replacement, reference_report, **_kwargs):  # type: ignore[no-untyped-def]
+        seen["conn"] = conn
         seen["replacement"] = replacement
         seen["reference_report"] = reference_report
         return ()
 
+    monkeypatch.setattr(s2_catalog, "connect", lambda _target_db: Connection())
     monkeypatch.setattr(s2_catalog, "sync_catalog_tables", fake_sync)
 
     rc = s2_catalog.run(
@@ -438,6 +447,7 @@ def test_s2_definition_refresh_passes_replacement_gate_inputs(
     replacement = seen["replacement"]
     reference_report = seen["reference_report"]
     assert rc == 0
+    assert isinstance(seen["conn"], Connection)
     assert replacement.removed_ids_by_table == {"catalog_ml_market": ("ml_remove",)}
     assert reference_report.referenced_ids_by_table == {
         "catalog_ml_market": ("ml_remove",)

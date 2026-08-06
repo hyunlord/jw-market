@@ -152,7 +152,7 @@ def run(params: dict[str, Any]) -> int:
         if sync_catalog_db:
             if not target_db:
                 raise ValueError("--target-db is required with --sync-catalog-db")
-            if dry_run:
+            if dry_run and replacement is None:
                 catalog_sync_results = list(
                     sync_catalog_tables(
                         None,
@@ -173,7 +173,7 @@ def run(params: dict[str, Any]) -> int:
                             target_db=target_db,
                             catalog_root=catalog_root,
                             batch_size=batch_size,
-                            dry_run=False,
+                            dry_run=dry_run,
                             mi_master_sha256=mi_master_hash,
                             replacement=replacement,
                             reference_report=reference_report,
