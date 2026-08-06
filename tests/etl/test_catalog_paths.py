@@ -292,6 +292,9 @@ def test_s2_publishes_postfixed_catalog_before_db_sync(
     from pipeline.etl.stages import s2_catalog
 
     output_root = tmp_path / "work"
+    mi_master = tmp_path / "mi-master.xlsx"
+    mi_master.write_bytes(b"mi-master-v1")
+    expected_mi_master_sha256 = sha256_file(mi_master)
     build_root = build_catalog_root(output_root)
     catalog_root = output_root / "canonical"
     artifacts = [
@@ -308,8 +311,9 @@ def test_s2_publishes_postfixed_catalog_before_db_sync(
     monkeypatch.setattr(s2_catalog, "S2_REQUIRED_CATALOGS", frozenset(item.name for item in artifacts))
     calls: list[Path] = []
 
-    def fake_sync(_conn, *, catalog_root: Path, **_kwargs):  # type: ignore[no-untyped-def]
+    def fake_sync(_conn, *, catalog_root: Path, mi_master_sha256: str, **_kwargs):  # type: ignore[no-untyped-def]
         calls.append(catalog_root)
+        assert mi_master_sha256 == expected_mi_master_sha256
         assert pq.read_table(
             catalog_root / "ml_market" / "ml_market.parquet"
         ).column("payload").to_pylist() == [b"ml"]
@@ -326,6 +330,7 @@ def test_s2_publishes_postfixed_catalog_before_db_sync(
     rc = s2_catalog.run(
         {
             "target_dir": output_root,
+            "input_file": mi_master,
             "catalog_root": catalog_root,
             "sync_catalog_db": True,
             "target_db": "jw_mart_rehearsal_test",
@@ -335,6 +340,57 @@ def test_s2_publishes_postfixed_catalog_before_db_sync(
 
     assert rc == 0
     assert calls == [catalog_root]
+
+
+def test_s2_write_sync_passes_mi_master_hash_to_catalog_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pipeline.etl.stages import s2_catalog
+
+    output_root = tmp_path / "work"
+    mi_master = tmp_path / "mi-master.xlsx"
+    mi_master.write_bytes(b"mi-master-v2")
+    build_root = build_catalog_root(output_root)
+    artifact = _result(build_root, "ml_market", b"ml")
+    monkeypatch.setattr(s2_catalog, "run_master_extracts", lambda **_: [artifact])
+    monkeypatch.setattr(s2_catalog, "run_base_dimensions", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_target_priority", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_market_catalog", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_brand_product_catalog", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "run_postfix", lambda **_: [])
+    monkeypatch.setattr(s2_catalog, "S2_REQUIRED_CATALOGS", frozenset({"ml_market"}))
+    seen: dict[str, object] = {}
+
+    class Connection:
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_sync(conn: Connection, *, mi_master_sha256: str, **_kwargs):  # type: ignore[no-untyped-def]
+        seen["conn"] = conn
+        seen["mi_master_sha256"] = mi_master_sha256
+        return ()
+
+    monkeypatch.setattr(s2_catalog, "connect", lambda _target_db: Connection())
+    monkeypatch.setattr(s2_catalog, "sync_catalog_tables", fake_sync)
+
+    rc = s2_catalog.run(
+        {
+            "target_dir": output_root,
+            "input_file": mi_master,
+            "catalog_root": output_root / "canonical",
+            "sync_catalog_db": True,
+            "target_db": "jw_mart_rehearsal_test",
+            "dry_run": False,
+        }
+    )
+
+    assert rc == 0
+    assert isinstance(seen["conn"], Connection)
+    assert seen["mi_master_sha256"] == sha256_file(mi_master)
 
 
 def test_s2_does_not_sync_when_a_reported_build_artifact_is_missing(

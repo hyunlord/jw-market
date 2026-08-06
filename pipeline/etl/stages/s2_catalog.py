@@ -64,6 +64,7 @@ def run(params: dict[str, Any]) -> int:
     dry_run = bool(params.get("dry_run"))
     batch_size = int(params.get("batch_size") or 200)
     try:
+        mi_master_hash = sha256_file(effective_input_file)
         _copy_if_needed(
             cache_dir,
             output_root,
@@ -110,7 +111,7 @@ def run(params: dict[str, Any]) -> int:
             build_root=build_catalog_root(output_root),
             catalog_root=catalog_root,
             required_names=S2_REQUIRED_CATALOGS,
-            source_fingerprints={"mi_master_sha256": sha256_file(effective_input_file)},
+            source_fingerprints={"mi_master_sha256": mi_master_hash},
         )
         catalog_sync_results = []
         if sync_catalog_db:
@@ -124,6 +125,7 @@ def run(params: dict[str, Any]) -> int:
                         catalog_root=catalog_root,
                         batch_size=batch_size,
                         dry_run=True,
+                        mi_master_sha256=mi_master_hash,
                     )
                 )
             else:
@@ -135,6 +137,7 @@ def run(params: dict[str, Any]) -> int:
                             catalog_root=catalog_root,
                             batch_size=batch_size,
                             dry_run=False,
+                            mi_master_sha256=mi_master_hash,
                         )
                     )
     except Exception as exc:
