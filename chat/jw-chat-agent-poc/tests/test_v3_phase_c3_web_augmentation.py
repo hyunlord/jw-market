@@ -15,6 +15,7 @@ from jw_chat_agent_poc.tool_use.v3_fusion_contracts import (
     GeneratedFusionClaim,
 )
 from jw_chat_agent_poc.tool_use.v3_fusion_evidence import fusion_fact_payload
+from jw_chat_agent_poc.tool_use.v3_fusion_limitations import failure_limitation
 from jw_chat_agent_poc.tool_use.v3_web_augmentation import (
     V3WebAugmenter,
     WebSearchResult,
@@ -335,7 +336,7 @@ def test_web_results_preserve_required_raw_fields() -> None:
 def test_web_augmentation_preserves_all_results_but_projects_top_three_facts() -> None:
     items = tuple(
         {
-            "title": f"검색 결과 {rank}",
+            "title": f"리바로 검색 결과 {rank}",
             "url": f"https://news.example.com/{rank}",
             "snippet": f"원문 발췌 {rank}",
         }
@@ -355,6 +356,112 @@ def test_web_augmentation_preserves_all_results_but_projects_top_three_facts() -
 
     assert len(augmented.search_log[0].items) == 5
     assert [fact.result_rank for fact in augmented.bundle.facts] == [1, 2, 3]
+
+
+def test_web_augmentation_excludes_results_without_catalog_subject_match() -> None:
+    result = WebSearchResult(
+        provider="fixture",
+        query="리바로 관련 최근 이슈 제약 뉴스",
+        items=(
+            {
+                "title": "천만 관객 돌파 영화",
+                "url": "https://example.org/movie",
+                "snippet": "국무총리 국무회의 대통령 선거 관련 문서",
+            },
+            {
+                "title": "리바로 계열 신제품 출시",
+                "url": "https://example.org/livalo",
+                "snippet": "리바로 관련 제약 업계 소식",
+            },
+            {
+                "title": "Pitavastatin market update",
+                "url": "https://example.org/pitavastatin",
+                "snippet": "A new pitavastatin formulation was launched.",
+            },
+        ),
+        latency_ms=8.5,
+    )
+
+    augmented = V3WebAugmenter(
+        search=lambda *_args, **_kwargs: result,
+        now=lambda: NOW,
+    ).augment("리바로 관련 최근 이슈 뭐 있어?", _bundle())
+
+    assert [fact.title for fact in augmented.bundle.facts] == [
+        "리바로 계열 신제품 출시",
+        "Pitavastatin market update",
+    ]
+    assert len(augmented.search_log[0].items) == 3
+    assert len(augmented.exclusions) == 1
+    assert augmented.exclusions[0].reason_code == "web_subject_not_matched"
+    raw_result = augmented.bundle.executions[0].raw_result
+    assert [item["title"] for item in raw_result["items"]] == [
+        "리바로 계열 신제품 출시",
+        "Pitavastatin market update",
+    ]
+    assert raw_result["excluded_items"] == [
+        {
+            "rank": 1,
+            "url": "https://example.org/movie",
+            "title": "천만 관객 돌파 영화",
+            "reason_code": "web_subject_not_matched",
+        }
+    ]
+
+
+def test_web_augmentation_all_excluded_adds_specific_limitation_failure() -> None:
+    result = WebSearchResult(
+        provider="fixture",
+        query="리바로 관련 최근 이슈 제약 뉴스",
+        items=(
+            {
+                "title": "코스피 지수",
+                "url": "https://example.org/kospi",
+                "snippet": "주식 시장 동향",
+            },
+        ),
+        latency_ms=8.5,
+    )
+
+    augmented = V3WebAugmenter(
+        search=lambda *_args, **_kwargs: result,
+        now=lambda: NOW,
+    ).augment("리바로 관련 최근 이슈 뭐 있어?", _bundle())
+
+    assert augmented.bundle.facts == ()
+    assert len(augmented.bundle.failures) == 1
+    assert augmented.bundle.failures[0].error_type == "WebRelevanceEmptyError"
+    assert augmented.bundle.failures[0].message.startswith("web_relevance_empty:")
+    assert failure_limitation(augmented.bundle.failures[0]) == (
+        "질의 대상과 관련된 웹 이슈를 찾지 못했습니다. "
+        "관련성 낮은 검색 결과는 제외했습니다."
+    )
+    assert len(augmented.exclusions) == 1
+
+
+def test_web_augmentation_all_excluded_preserves_internal_facts_as_partial() -> None:
+    result = WebSearchResult(
+        provider="fixture",
+        query="리바로 관련 최근 이슈 제약 뉴스",
+        items=(
+            {
+                "title": "코스피 지수",
+                "url": "https://example.org/kospi",
+                "snippet": "주식 시장 동향",
+            },
+        ),
+        latency_ms=8.5,
+    )
+    market = _market_fact()
+
+    augmented = V3WebAugmenter(
+        search=lambda *_args, **_kwargs: result,
+        now=lambda: NOW,
+    ).augment("리바로 관련 최근 이슈 뭐 있어?", _bundle(facts=(market,)))
+
+    assert augmented.bundle.status == "partial"
+    assert augmented.bundle.facts == (market,)
+    assert augmented.bundle.failures[-1].message.startswith("web_relevance_empty:")
 
 
 def test_web_result_marks_a_conflicting_internal_metric() -> None:

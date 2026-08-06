@@ -20,6 +20,7 @@ _KNOWN_REASON_CODES = frozenset(
         "no_anchor",
         "general_composite_unavailable",
         "general_metric_unavailable",
+        "web_relevance_empty",
     }
 )
 _ERROR_REASON_CODES = {
@@ -75,6 +76,8 @@ def failure_limitation(
         return "해당 일반 시장 지표는 현재 제공되지 않습니다."
     if code == "brand_outside_composite_scope":
         return "요청한 브랜드는 지정한 복합 시장 조건에 포함되지 않습니다."
+    if code == "web_relevance_empty":
+        return "질의 대상과 관련된 웹 이슈를 찾지 못했습니다. 관련성 낮은 검색 결과는 제외했습니다."
     return "요청한 조회 중 일부를 확인하지 못했습니다."
 
 

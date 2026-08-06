@@ -328,6 +328,56 @@ def test_public_web_section_allows_explicit_news_request_with_unverified_disclos
     assert "공식 통계가 아닙니다" in section
 
 
+def test_public_web_section_filters_unrelated_results_and_discloses_exclusions() -> None:
+    section = web_search_mi_section_from_calls(
+        (
+            _web_call(
+                {
+                    "title": "천만 관객 돌파 영화",
+                    "url": "https://example.org/movie",
+                    "snippet": "국무총리 국무회의 대통령 선거 관련 문서",
+                },
+                {
+                    "title": "코스피",
+                    "url": "https://example.org/kospi",
+                    "snippet": "주식 시장 동향",
+                },
+                {
+                    "title": "리바로젯 신제품 출시",
+                    "url": "https://example.org/livalozet",
+                    "snippet": "리바로 계열의 최근 제약 업계 소식",
+                },
+            ),
+        ),
+        question="리바로 관련 최근 이슈 뭐 있어?",
+    )
+
+    assert "리바로젯 신제품 출시" in section
+    assert "천만 관객" not in section
+    assert "코스피" not in section
+    assert "검색 결과 2건을 제외했습니다" in section
+    assert "reason_code=web_subject_not_matched" in section
+
+
+def test_public_web_section_reports_limitation_when_all_results_are_unrelated() -> None:
+    section = web_search_mi_section_from_calls(
+        (
+            _web_call(
+                {
+                    "title": "화장품 모델 발탁",
+                    "url": "https://example.org/cosmetics",
+                    "snippet": "연예계 소식",
+                }
+            ),
+        ),
+        question="리바로 관련 최근 이슈 뭐 있어?",
+    )
+
+    assert section.startswith("확인 제한:")
+    assert "관련된 웹 이슈를 찾지 못했습니다" in section
+    assert "1건을 제외했습니다" in section
+
+
 def test_public_web_section_does_not_mix_web_into_partial_authoritative_result() -> None:
     section = web_search_mi_section_from_calls(
         (

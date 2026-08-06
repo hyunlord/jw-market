@@ -13,9 +13,14 @@ from jw_chat_agent_poc.orchestrator.source_grading import (
     is_official_web_url,
     official_web_domains,
 )
+from jw_chat_agent_poc.service.web_relevance import (
+    WebRelevanceExclusion,
+    filter_web_results,
+)
 from jw_chat_agent_poc.tool_use.v3_execution_contracts import (
     MarketMetricFact,
     ToolExecutionRecord,
+    ToolFailureRecord,
     V3EvidenceBundle,
     WebSourceFact,
 )
@@ -88,6 +93,7 @@ class V3WebAugmentationResult:
     eligibility: WebAugmentationEligibility
     search_log: tuple[WebSearchLogEntry, ...]
     expanded_to_general: bool
+    exclusions: tuple[WebRelevanceExclusion, ...] = ()
 
 
 WebSearch = Callable[..., WebSearchResult]
@@ -147,6 +153,13 @@ class V3WebAugmenter:
             logs.append(_log_entry("general", eligibility.source_domain, general, fetched_at))
             results = tuple(general.items)
 
+        decision = filter_web_results(
+            question,
+            results,
+            identity_values=_bundle_identity_values(bundle),
+        )
+        accepted_results = decision.accepted
+        exclusions = decision.exclusions
         projected_facts = tuple(
             _web_fact(
                 item,
@@ -155,7 +168,7 @@ class V3WebAugmenter:
                 stage=logs[-1].stage,
                 fetched_at_utc=fetched_at,
             )
-            for rank, item in enumerate(results[:_MAX_WEB_FACTS], start=1)
+            for rank, item in accepted_results[:_MAX_WEB_FACTS]
             if _usable_item(item)
         )
         facts = tuple(
@@ -175,7 +188,23 @@ class V3WebAugmenter:
                 raw_result={
                     "provider": entry.provider,
                     "query": entry.query,
-                    "items": [dict(item) for item in entry.items],
+                    "items": [
+                        dict(item)
+                        for _, item in accepted_results
+                        if entry is logs[-1]
+                    ],
+                    "raw_items": [dict(item) for item in entry.items],
+                    "excluded_items": [
+                        {
+                            "rank": exclusion.rank,
+                            "url": exclusion.url,
+                            "title": exclusion.title,
+                            "reason_code": exclusion.reason_code,
+                        }
+                        for exclusion in exclusions
+                        if entry is logs[-1]
+                    ],
+                    "relevance_subject_terms": list(decision.subject_terms),
                     "status": entry.status,
                     "error": entry.error,
                     "fetched_at_utc": entry.fetched_at_utc,
@@ -185,15 +214,37 @@ class V3WebAugmenter:
             )
             for entry in logs
         )
+        failures = bundle.failures
+        if results and not facts and exclusions and len(exclusions) == len(results):
+            failures = (
+                *failures,
+                ToolFailureRecord(
+                    tool_name="web_search",
+                    arguments={"query": logs[-1].query},
+                    stage="relevance_filter",
+                    error_type="WebRelevanceEmptyError",
+                    message=(
+                        "web_relevance_empty: 질의 대상과 일치하지 않는 웹 결과 "
+                        f"{len(exclusions)}건을 제외해 관련 이슈를 찾지 못했습니다."
+                    ),
+                ),
+            )
         augmented = replace(
             bundle,
-            status=("partial" if bundle.failures else "complete") if facts else bundle.status,
+            status=_augmented_status(bundle, facts=facts, failures=failures),
             facts=(*bundle.facts, *facts),
+            failures=failures,
             executions=(*bundle.executions, *executions),
             original_call_count=bundle.original_call_count + len(logs),
             executed_call_count=bundle.executed_call_count + len(logs),
         )
-        return V3WebAugmentationResult(augmented, eligibility, tuple(logs), expanded)
+        return V3WebAugmentationResult(
+            augmented,
+            eligibility,
+            tuple(logs),
+            expanded,
+            exclusions,
+        )
 
 
 def web_augmentation_eligibility(
@@ -301,6 +352,55 @@ def _usable_item(item: Mapping[str, object]) -> bool:
     return url.startswith("https://") and bool(title) and bool(excerpt)
 
 
+def _bundle_identity_values(bundle: V3EvidenceBundle) -> tuple[object, ...]:
+    values: list[object] = []
+    identity_keys = {
+        "brand",
+        "entity",
+        "ingredient",
+        "market",
+        "market_name",
+        "molecule",
+        "product",
+        "target_brand",
+        "target_market",
+    }
+    for fact in bundle.facts:
+        for attribute in ("entity", "market", "target_brand", "target_market"):
+            values.append(getattr(fact, attribute, None))
+        _append_identity_values(values, getattr(fact, "arguments", None), identity_keys)
+        _append_identity_values(values, getattr(fact, "raw_result", None), identity_keys)
+    for failure in bundle.failures:
+        _append_identity_values(values, failure.arguments, identity_keys)
+    return tuple(value for value in values if value not in (None, "", (), []))
+
+
+def _augmented_status(
+    bundle: V3EvidenceBundle,
+    *,
+    facts: Sequence[WebSourceFact],
+    failures: Sequence[ToolFailureRecord],
+) -> str:
+    if bundle.facts or facts:
+        return "partial" if failures else "complete"
+    if failures:
+        return "failed"
+    return bundle.status
+
+
+def _append_identity_values(
+    values: list[object],
+    value: object,
+    identity_keys: set[str],
+) -> None:
+    if not isinstance(value, Mapping):
+        return
+    for key, item in value.items():
+        if str(key).strip().casefold() not in identity_keys:
+            continue
+        values.append(item)
+
+
 def _conflicting_internal_ids(
     web_fact: WebSourceFact,
     bundle: V3EvidenceBundle,
@@ -364,6 +464,7 @@ __all__ = [
     "WebAugmentationEligibility",
     "WebSearchLogEntry",
     "WebSearchResult",
+    "WebRelevanceExclusion",
     "rewrite_web_query",
     "web_augmentation_eligibility",
 ]

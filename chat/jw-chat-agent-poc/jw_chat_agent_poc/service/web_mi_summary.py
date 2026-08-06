@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from jw_chat_agent_poc.orchestrator.markdown_formatting import table
 from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade, grade_web_url
 from jw_chat_agent_poc.service.web_presentation_policy import web_presentation_policy
+from jw_chat_agent_poc.service.web_relevance import filter_web_results
 
 
 TODAY: date = date(2026, 7, 3)
@@ -96,6 +97,19 @@ def web_search_mi_section_from_calls(
             accepted_urls = set(decision.accepted_urls)
             rows = [row for row in rows if str(row.get("url") or "").strip() in accepted_urls]
         disclosure = decision.disclosure
+        relevance = filter_web_results(question, rows)
+        rows = [item for _, item in relevance.accepted]
+        if relevance.exclusions:
+            exclusion_notice = (
+                f"질의 대상과 일치하지 않는 웹 검색 결과 {len(relevance.exclusions)}건을 "
+                "제외했습니다(reason_code=web_subject_not_matched)."
+            )
+            disclosure = " ".join(part for part in (disclosure, exclusion_notice) if part)
+        if not rows and relevance.exclusions:
+            return (
+                "확인 제한:\n- 질의 대상과 관련된 웹 이슈를 찾지 못했습니다. "
+                f"관련성 낮은 검색 결과 {len(relevance.exclusions)}건을 제외했습니다."
+            )
     section = web_search_mi_section(rows[:5])
     if not section or not disclosure:
         return section
