@@ -216,6 +216,8 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
             ),
         )
     tool = str(call.get("tool") or "")
+    if tool == "bq_analysis":
+        return _bq_analysis_axis_facts(data)
     if tool == "agent_calculation":
         return _agent_calculation_axis_facts(data)
     if tool == "portfolio_decline_analysis":
@@ -231,6 +233,128 @@ def _axis_facts_for_call(call: dict[str, Any]) -> tuple[AxisFact, ...]:
     if _is_hira_procedure_call(call):
         return tuple(AxisFact(RequiredAxis.PATIENT_VOLUME, label, content) for label, content in _required_hira_procedure_rows(data))
     return ()
+
+
+def _bq_analysis_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
+    contract_id = str(data.get("contract_id") or "")
+    if contract_id == "A1":
+        facts: list[AxisFact] = []
+        for summary in data.get("source_summaries", ()):
+            if not isinstance(summary, dict) or summary.get("growth_rate_pct") is None:
+                continue
+            source = str(summary.get("source") or "")
+            period = "~".join(
+                str(value)
+                for value in (summary.get("start_period"), summary.get("end_period"))
+                if value
+            )
+            facts.append(
+                AxisFact(
+                    RequiredAxis.SALES_TREND,
+                    f"{source} CAGR",
+                    f"{period} CAGR {pct_value(summary.get('growth_rate_pct'))} "
+                    f"(산출 기간 {number_value(summary.get('growth_basis_years'))}년)",
+                )
+            )
+        channel_shares = data.get("channel_shares_pct")
+        if isinstance(channel_shares, dict) and channel_shares:
+            rendered = ", ".join(
+                f"{name} {pct_value(value)}" for name, value in channel_shares.items()
+            )
+            facts.append(
+                AxisFact(RequiredAxis.MARKET_STRUCTURE, "채널 구성", f"채널 구성 {rendered}")
+            )
+        return tuple(facts)
+    if contract_id == "B1":
+        facts = []
+        rows = data.get("source_results")
+        if not isinstance(rows, list) or not rows:
+            rows = [data]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source = str(row.get("source") or _first_source_label(data))
+            components = [source, str(row.get("period") or data.get("period") or "")]
+            if row.get("share_of_growth_pct") is not None:
+                components.append(
+                    "시장 성장분 중 브랜드 몫(share-of-growth) "
+                    f"{pct_value(row.get('share_of_growth_pct'))}"
+                )
+            if row.get("share_delta_pctp") is not None:
+                components.append(f"점유율 변화 {_pct_point_delta(row.get('share_delta_pctp'))}")
+            if row.get("excess_growth_pctp") is not None:
+                components.append(
+                    "성장 분해(시장 팽창 대비 점유 획득 효과) "
+                    f"{_pct_point_delta(row.get('excess_growth_pctp'))}"
+                )
+            facts.append(
+                AxisFact(
+                    RequiredAxis.MARKET_STRUCTURE,
+                    "경쟁 구도 변화",
+                    " · ".join(part for part in components if part),
+                )
+            )
+            gain_loss = row.get("gain_loss")
+            if isinstance(gain_loss, list) and gain_loss:
+                entries = [
+                    f"{item.get('brand')} {_pct_point_delta(item.get('share_delta_pctp'))}"
+                    for item in gain_loss
+                    if isinstance(item, dict)
+                    and item.get("brand")
+                    and item.get("share_delta_pctp") is not None
+                ]
+                if entries:
+                    facts.append(
+                        AxisFact(
+                            RequiredAxis.MARKET_STRUCTURE,
+                            "gain-loss",
+                            f"gain-loss {' / '.join(entries)}",
+                        )
+                    )
+        return tuple(facts)
+    if contract_id == "C1":
+        facts = []
+        rows = data.get("source_results")
+        if not isinstance(rows, list) or not rows:
+            rows = [data]
+        for row in rows:
+            if not isinstance(row, dict) or row.get("growth_gap_pctp") is None:
+                continue
+            source = str(row.get("source") or _first_source_label(data))
+            period = str(row.get("period") or data.get("period") or "")
+            if row.get("brand_growth_pct") is not None:
+                facts.append(
+                    AxisFact(
+                        RequiredAxis.SALES_TREND,
+                        f"{source} 브랜드 성장률",
+                        f"{period} 브랜드 성장률 {pct_value(row.get('brand_growth_pct'))}",
+                    )
+                )
+            if row.get("market_growth_pct") is not None:
+                facts.append(
+                    AxisFact(
+                        RequiredAxis.SALES_TREND,
+                        f"{source} 시장 성장률",
+                        f"{period} 시장 성장률 {pct_value(row.get('market_growth_pct'))}",
+                    )
+                )
+            facts.append(
+                AxisFact(
+                    RequiredAxis.SALES_TREND,
+                    f"{source} 시장 대비 성장 격차",
+                    f"{period} 시장 대비 성장 격차 "
+                    f"{_pct_point_delta(row.get('growth_gap_pctp'))}",
+                )
+            )
+        return tuple(facts)
+    return ()
+
+
+def _first_source_label(data: RenderData) -> str:
+    labels = data.get("source_labels")
+    if not isinstance(labels, (list, tuple)):
+        return ""
+    return str(next((label for label in labels if label), ""))
 
 
 def _csd_activity_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:

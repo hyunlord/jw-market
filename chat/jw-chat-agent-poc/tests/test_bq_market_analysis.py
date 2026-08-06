@@ -53,6 +53,31 @@ def test_b1_computes_share_of_growth_decomposition_and_gain_loss() -> None:
     assert data["chart_payloads"][0]["chart_type"] == "waterfall"
 
 
+def test_b1_analysis_values_are_mandatory_answer_facts() -> None:
+    call = build_bq_analysis_call("B1", [_series_call("ubist"), _top_call()])
+
+    assert call is not None
+    fact_md = answer_fact_markdown([call], ["UBIST"])
+
+    assert "시장 성장분 중 브랜드 몫(share-of-growth) 20.00%" in fact_md
+    assert "점유율 변화 0.91%p" in fact_md
+    assert "성장 분해(시장 팽창 대비 점유 획득 효과) 10.00%p" in fact_md
+    assert "gain-loss" in fact_md
+
+
+def test_a1_and_c1_analysis_values_are_mandatory_answer_facts() -> None:
+    a1 = build_bq_analysis_call("A1", [_series_call("ubist"), _dimension_call("channel")])
+    c1 = build_bq_analysis_call("C1", [_series_call("ubist")])
+
+    assert a1 is not None
+    assert c1 is not None
+    fact_md = answer_fact_markdown([a1, c1], ["UBIST"])
+
+    assert "CAGR 20.00% (산출 기간 1년)" in fact_md
+    assert "채널 구성 의원 70.00%, 종병 30.00%" in fact_md
+    assert "시장 대비 성장 격차 10.00%p" in fact_md
+
+
 def test_b1_ledger_binds_waterfall_to_top5_trend_rows() -> None:
     call = build_bq_analysis_call("B1", [_series_call("ubist"), _top_call()])
 
@@ -110,6 +135,8 @@ def test_c1_compares_brand_growth_with_market_growth() -> None:
 
     assert call is not None
     data = call["render_data"]
+    assert data["brand_growth_pct"] == pytest.approx(20.0)
+    assert data["market_growth_pct"] == pytest.approx(10.0)
     assert data["growth_gap_pctp"] == pytest.approx(10.0)
     assert data["trend_slope_krw_per_period"] == pytest.approx(2_000_000_000.0)
 

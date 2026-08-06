@@ -159,6 +159,7 @@ from jw_chat_agent_poc.service.conversation_repository import (
 from jw_chat_agent_poc.service.conversation_context import (
     anaphora_observation,
     extract_conversation_slots,
+    requires_contextual_anchor,
     requires_previous_turn,
     resolve_anaphora,
     reused_context_result,
@@ -1109,10 +1110,11 @@ def _answer_question(
         known_brand = getattr(market_scope_resolver, "has_explicit_brand_anchor", None)
         with trace_span("conversation_state_load", "in-memory conversation state lookup"):
             state = store.conversations.get_or_create(conversation_id)
-        if conversation_id and not state.turns and requires_previous_turn(
+        needs_persisted_turn = requires_previous_turn(
             effective_question,
             known_brand=known_brand,
-        ):
+        ) or requires_contextual_anchor(effective_question)
+        if conversation_id and not state.turns and needs_persisted_turn:
             _hydrate_latest_conversation_turn(store, state.conversation_id)
             with trace_span("conversation_state_reload", "state lookup after persisted history hydration"):
                 state = store.conversations.get_or_create(state.conversation_id)
@@ -1138,6 +1140,7 @@ def _answer_question(
                 effective_question,
                 previous_turn,
                 known_brand=known_brand,
+                allow_contextual_anchor=conversation_id is not None,
             )
         routing_question = routing_resolution.resolved_question
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
@@ -1418,7 +1421,12 @@ def _answer_question(
             "_qa_anaphora": anaphora_observation(routing_resolution),
             "_sec12_input_policy_decision": input_policy_decision,
         }
-        result = _apply_v3_cutover_if_enabled(effective_question, result)
+        if routing_resolution.interpretation_notice and not result.get("conversation_interpretation"):
+            result = {
+                **result,
+                "conversation_interpretation": routing_resolution.interpretation_notice,
+            }
+        result = _apply_v3_cutover_if_enabled(routing_question, result)
         if uses_synthetic_market_anchor:
             # extract_conversation_slots reads this, so the stored turn records that its
             # anchor brand came from the rewrite rather than from the user.

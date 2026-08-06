@@ -219,6 +219,8 @@ def _brand_gap_result(series_call: Call) -> dict[str, Any] | None:
     source = _source_label(series_call)
     return {
         "source": source, "period": f"{start_period}~{end_period}",
+        "brand_growth_pct": _percent(brand_rate),
+        "market_growth_pct": _percent(market_rate),
         "growth_gap_pctp": _percent(gap), "trend_slope_krw_per_period": _float(slope),
         "insight": (
             f"{source} {start_period}~{end_period} 브랜드 성장률 {_pct(brand_rate)}, "

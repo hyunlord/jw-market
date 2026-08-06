@@ -8,6 +8,7 @@ from jw_chat_agent_poc.agent_loop.loop import ToolUseAgent
 from jw_chat_agent_poc.agent_loop.requested_source import source_domain_note
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.resolver.catalog_membership import (
     StaticCatalogMembershipReader,
@@ -49,6 +50,50 @@ def test_bq_plan_executes_both_market_sources_without_llm() -> None:
     assert analysis["qa_trace"]["status"] == "ok"
     assert analysis["qa_trace"]["row_count"] > 0
     assert "합산하지" in result["answer"]
+
+
+def test_coverage_questions_surface_existing_analysis_through_actual_planner() -> None:
+    expected = (
+        (
+            "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+            "BQ:A1",
+            ("CAGR",),
+        ),
+        (
+            "리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?",
+            "BQ:B1",
+            ("share-of-growth", "점유율 변화", "성장 분해", "gain-loss"),
+        ),
+        (
+            "리바로 최근 매출 처방 추이 어때?",
+            "BQ:C1",
+            ("브랜드 성장률", "시장 성장률", "시장 대비 성장 격차"),
+        ),
+    )
+
+    for question, plan_kind, required_text in expected:
+        layer = _layer()
+        agent = ToolUseAgent(
+            metrics=MetricsTool(mode="fixture", query_layer=layer),
+            resolver=BrandResolver(mode="fixture"),
+            query_layer=layer,
+        )
+
+        result = agent.answer(question)
+        fact_markdown = answer_fact_markdown(result["tool_calls"], result["sources"])
+
+        assert result["agent_loop_metrics"]["deterministic_plan_kind"] == plan_kind
+        assert result["agent_loop_metrics"]["llm_plan_calls"] == 0
+        assert any(call.get("tool") == "bq_analysis" for call in result["tool_calls"])
+        assert all(text in fact_markdown for text in required_text)
+        if plan_kind == "BQ:A1":
+            series = [
+                call["render_data"]
+                for call in result["tool_calls"]
+                if call.get("render_data", {}).get("metric") == "series"
+            ]
+            assert series
+            assert {item.get("history_points") for item in series} == {60}
 
 
 def test_multiple_brand_bq_preflight_asks_for_one_brand_instead_of_narrowing() -> None:

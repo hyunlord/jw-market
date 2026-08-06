@@ -94,6 +94,17 @@ _ISSUE_CAUSE_FOLLOWUP_RE = re.compile(
     r"|무슨\s*일\s*(?:있|생겼|이야|인가)|어째서\s*(?:이렇|그렇)"
     r"|(?:원인|이유)(?:가|는|이|을|를)?\s*(?:뭐|무엇|무슨|어떻게|어디))"
 )
+_CONTEXTUAL_BRAND_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:"
+    r"신규.*(?:진입|위협).*브랜드.*"
+    r"|어느.*(?:채널|진료과).*팔.*"
+    r"|(?=.*IQVIA)(?=.*UBIST).*(?:다른|차이).*"
+    r"|영업\s*활동.*매출.*영향.*"
+    r"|경쟁사\s*영업\s*활동.*(?:변화|추이).*"
+    r"|왜\s*(?:이렇게|그렇게|이래|그래).*"
+    r")\s*$",
+    re.IGNORECASE,
+)
 _NEWS_OBSERVATION_TOOLS: frozenset[str] = frozenset({"search_news", "web_search"})
 _ISSUE_OBSERVATION_LIMIT = 5
 _INHERITABLE_INTENTS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -145,6 +156,7 @@ class ReferenceRecogniser(StrEnum):
     BARE_BRAND_SWITCH = "bare_brand_switch"
     CONTRAST = "contrast"
     IMPLICIT_BRAND = "implicit_brand"
+    CONTEXTUAL_BRAND = "contextual_brand"
     GENERIC = "generic"
     FIRST_RANK = "first_rank"
     ANCHOR_BRAND = "anchor_brand"
@@ -194,6 +206,7 @@ def _resolved(
     brand: str | None = None,
     reusable_ranked: RankedBrandSlot | None = None,
     interpretation_notice: str | None = None,
+    inherited_issue_observation: tuple[str, ...] = (),
 ) -> AnaphoraResolution:
     return AnaphoraResolution(
         resolved_question=resolved_question,
@@ -203,6 +216,7 @@ def _resolved(
         reference_status=ReferenceStatus.RESOLVED,
         recogniser=recogniser,
         candidate_shape=_bare_followup_shape(question),
+        inherited_issue_observation=inherited_issue_observation,
     )
 
 
@@ -428,6 +442,7 @@ def resolve_anaphora(
     previous_turn: ConversationTurn | None,
     *,
     known_brand: Callable[[str], bool] | None = None,
+    allow_contextual_anchor: bool = True,
 ) -> AnaphoraResolution:
     metric_followup = _METRIC_ONLY_FOLLOWUP_RE.match(question)
     if metric_followup is not None:
@@ -586,6 +601,32 @@ def resolve_anaphora(
             brand=brand,
             interpretation_notice=f"{brand}의 {intent} 요청으로 이해했어요.",
         )
+    if (
+        allow_contextual_anchor
+        and _CONTEXTUAL_BRAND_FOLLOWUP_RE.fullmatch(question)
+        and not (known_brand is not None and known_brand(question))
+    ):
+        recogniser = ReferenceRecogniser.CONTEXTUAL_BRAND
+        if previous_turn is None or previous_turn.slots.anchor_brand_is_synthetic:
+            return _unresolved(question, recogniser)
+        brand = previous_turn.slots.anchor_brand
+        market = previous_turn.slots.market_definition or previous_turn.slots.market
+        if not brand and not market:
+            return _unresolved(question, recogniser)
+        anchor = brand or market
+        assert anchor is not None
+        notice_anchor = (
+            anchor if not is_internal_market_identifier(anchor) else "직전 시장"
+        )
+        issue_observation = _inherited_issue_observation(question, previous_turn)
+        return _resolved(
+            f"{anchor} {question.strip()}",
+            ReferenceRecogniser.ISSUE_CAUSE if issue_observation else recogniser,
+            question,
+            brand=brand,
+            interpretation_notice=f"{notice_anchor} 기준으로 답합니다.",
+            inherited_issue_observation=issue_observation,
+        )
     if _GENERIC_REFERENCE_RE.match(question):
         return _unresolved(question, ReferenceRecogniser.GENERIC)
     in_sentence = next(
@@ -677,6 +718,12 @@ def requires_previous_turn(
         or _implicit_brand_followup(question)
         or any(pattern.search(question) for pattern in _REFERENCE_RES)
     )
+
+
+def requires_contextual_anchor(question: str) -> bool:
+    """Whether a business follow-up needs the bounded latest persisted turn."""
+
+    return _CONTEXTUAL_BRAND_FOLLOWUP_RE.fullmatch(question) is not None
 
 
 def _resolve_relative_period(expression: str, grounded_period: str) -> str | None:

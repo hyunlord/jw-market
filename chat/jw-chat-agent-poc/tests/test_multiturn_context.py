@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
     ConversationTurn,
@@ -13,6 +15,7 @@ from jw_chat_agent_poc.service.conversation_context import (
     anaphora_observation,
     ReferenceRecogniser,
     extract_conversation_slots,
+    requires_contextual_anchor,
     requires_previous_turn,
     resolve_anaphora,
     reused_context_result,
@@ -860,6 +863,165 @@ def test_implicit_brand_followup_fails_closed_without_anchor() -> None:
     assert resolved.resolved_question == "효능효과"
     assert resolved.brand is None
     assert resolved.unresolved_reference is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "신규 진입자/위협 브랜드 있어?",
+        "어느 채널/진료과에서 잘 팔려?",
+        "IQVIA랑 UBIST 수치가 다른데 왜?",
+        "영업활동이 매출에 영향 줬어?",
+        "경쟁사 영업활동 변화 있어?",
+        "왜 이렇게 됐어?",
+    ),
+)
+def test_contextual_business_followup_inherits_verified_brand(question: str) -> None:
+    previous = ConversationTurn(
+        question="리바로 매출 알려줘",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006"),
+    )
+
+    assert requires_contextual_anchor(question) is True
+
+    resolved = resolve_anaphora(question, previous)
+
+    assert resolved.resolved_question == f"리바로 {question}"
+    assert resolved.brand == "리바로"
+    assert resolved.interpretation_notice == "리바로 기준으로 답합니다."
+    assert resolved.unresolved_reference is False
+
+
+def test_contextual_business_followup_inherits_verified_market_without_brand() -> None:
+    question = "어느 채널/진료과에서 잘 팔려?"
+    previous = ConversationTurn(
+        question="고지혈증 시장 규모 알려줘",
+        answer="시장 규모를 확인했습니다.",
+        slots=ConversationSlots(market="ml_006", market_definition="고지혈증 시장"),
+    )
+
+    assert requires_contextual_anchor(question) is True
+    resolved = resolve_anaphora(question, previous)
+    assert resolved.resolved_question == f"고지혈증 시장 {question}"
+    assert resolved.interpretation_notice == "고지혈증 시장 기준으로 답합니다."
+    assert resolved.unresolved_reference is False
+
+
+def test_contextual_business_followup_fails_closed_without_verified_anchor() -> None:
+    question = "어느 채널/진료과에서 잘 팔려?"
+
+    assert resolve_anaphora(question, None).unresolved_reference is True
+    synthetic = ConversationTurn(
+        question="시장 상위 브랜드",
+        answer="상위 브랜드를 확인했습니다.",
+        slots=ConversationSlots(
+            anchor_brand="리바로",
+            anchor_brand_is_synthetic=True,
+            market="ml_006",
+        ),
+    )
+    assert resolve_anaphora(question, synthetic).unresolved_reference is True
+
+
+def test_bare_cause_followup_inherits_verified_brand_and_issue_observation() -> None:
+    resolution = resolve_anaphora("왜 이렇게 됐어?", _news_turn())
+
+    assert resolution.resolved_question == "리바로 왜 이렇게 됐어?"
+    assert resolution.brand == "리바로"
+    assert resolution.interpretation_notice == "리바로 기준으로 답합니다."
+    assert resolution.recogniser == ReferenceRecogniser.ISSUE_CAUSE
+    assert resolution.inherited_issue_observation == (
+        "피타바스타틴 제네릭 대량 진입",
+        "고지혈증 치료제 약가 인하 고시",
+    )
+
+
+def test_explicit_unknown_brand_is_never_replaced_by_previous_brand() -> None:
+    question = "존재하지않는브랜드XYZ987654 어느 채널에서 잘 팔려?"
+    previous = ConversationTurn(
+        question="리바로 매출 알려줘",
+        answer="리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006"),
+    )
+
+    resolved = resolve_anaphora(question, previous)
+
+    assert resolved.resolved_question == question
+    assert resolved.brand is None
+    assert resolved.interpretation_notice is None
+
+
+def test_contextual_brand_reaches_serving_cutover_and_discloses_basis(monkeypatch) -> None:
+    store = SessionStore()
+    session = "contextual-business-followup"
+    store.conversations.record_exchange(
+        session,
+        "리바로 매출 알려줘",
+        "리바로 매출을 확인했습니다.",
+        slots=ConversationSlots(anchor_brand="리바로", market="ml_006"),
+    )
+    captured: list[str] = []
+
+    monkeypatch.setattr(
+        "jw_chat_agent_poc.service.app._answer_without_pending",
+        lambda *_args, **_kwargs: {"answer": "확인된 답변", "sources": [], "tool_calls": []},
+    )
+
+    def capture_cutover(question: str, result: dict) -> dict:
+        captured.append(question)
+        return result
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._apply_v3_cutover_if_enabled", capture_cutover)
+
+    item = _answer_question(
+        store,
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "어느 채널/진료과에서 잘 팔려?",
+        "live",
+        session,
+        use_direct_agent_loop=True,
+    )
+
+    assert captured == ["리바로 어느 채널/진료과에서 잘 팔려?"]
+    assert item["result"]["conversation_interpretation"] == "리바로 기준으로 답합니다."
+
+
+def test_contextual_business_followup_hydrates_cross_pod_anchor(monkeypatch) -> None:
+    class SharedHistory:
+        def latest_turn(self, conversation_id: str):
+            assert conversation_id == "cross-pod-contextual-business"
+            return ConversationTurn(
+                question="리바로 매출 알려줘",
+                answer="리바로 매출을 확인했습니다.",
+                slots=ConversationSlots(anchor_brand="리바로", market="ml_006"),
+            )
+
+    captured: list[str] = []
+
+    def capture_answer(_resolver, _factory, _conversation_id, question, *_args, **_kwargs):
+        captured.append(question)
+        return {"answer": "확인된 답변", "sources": ["UBIST"], "tool_calls": []}
+
+    monkeypatch.setattr("jw_chat_agent_poc.service.app._answer_without_pending", capture_answer)
+
+    item = _answer_question(
+        SessionStore(),
+        _market_scope_resolver(),
+        _fake_agent_factory,
+        "경쟁사 영업활동 변화 있어?",
+        "live",
+        "cross-pod-contextual-business",
+        use_direct_agent_loop=True,
+        conversation_history=SharedHistory(),
+    )
+
+    assert captured == ["리바로 경쟁사 영업활동 변화 있어?"]
+    assert item["result"]["conversation_interpretation"] == "리바로 기준으로 답합니다."
+    span_names = [span["name"] for span in item["result"]["_qa_spans"]]
+    assert "conversation_history_fetch" in span_names
+    assert "conversation_history_replay" in span_names
 
 
 def test_independent_market_question_never_inherits_previous_brand() -> None:
