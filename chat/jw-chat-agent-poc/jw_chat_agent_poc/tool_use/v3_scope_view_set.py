@@ -366,6 +366,99 @@ def build_scope_view_set(
                 )
                 used_ids.append(growth_fact.evidence_id)
 
+    cagr_fact = next(
+        (
+            fact
+            for fact in facts
+            if any(
+                _render_data(fact).get(key) is not None
+                for key in (
+                    "brand_cagr_5y_pct",
+                    "brand_cagr_3y_pct",
+                    "market_cagr_5y_pct",
+                    "market_cagr_3y_pct",
+                )
+            )
+        ),
+        None,
+    )
+    if cagr_fact is not None:
+        raw = _render_data(cagr_fact)
+        rows = [
+            (label, rendered)
+            for key, label in (
+                ("brand_cagr_5y_pct", "브랜드 5년 CAGR(%)"),
+                ("brand_cagr_3y_pct", "브랜드 3년 CAGR(%)"),
+                ("market_cagr_5y_pct", "시장 5년 CAGR(%)"),
+                ("market_cagr_3y_pct", "시장 3년 CAGR(%)"),
+            )
+            if raw.get(key) is not None
+            for rendered in (_display_or_none(cagr_fact, raw.get(key), key),)
+            if rendered is not None
+        ]
+        if rows:
+            sections.append(
+                _ViewSection(
+                    "CAGR",
+                    _text(raw.get("period")) or _text(cagr_fact.period),
+                    _table(("지표", "값"), rows),
+                )
+            )
+            used_ids.append(cagr_fact.evidence_id)
+
+    trajectory_fact = _first_fact_with(facts, "brand_trajectory")
+    if trajectory_fact is not None:
+        raw = _render_data(trajectory_fact)
+        rows = _trajectory_table_rows(
+            trajectory_fact,
+            _mapping_rows(raw.get("brand_trajectory")),
+        )
+        if rows:
+            sections.append(
+                _ViewSection(
+                    "Brand Trajectory",
+                    _text(raw.get("period")) or _text(trajectory_fact.period),
+                    _table(
+                        ("브랜드", "점유율(%)", "EI", "CAGR(%)", "Momentum", "산출 기준"),
+                        rows,
+                    ),
+                )
+            )
+            used_ids.append(trajectory_fact.evidence_id)
+
+    for key, name in (
+        ("analysis_levels", "전체 시장 analysis level"),
+        ("analysis_level_market_status", "고객 analysis level"),
+    ):
+        analysis_fact = _first_fact_with(facts, key)
+        if analysis_fact is None:
+            continue
+        raw = _render_data(analysis_fact)
+        rows = _analysis_level_rows(analysis_fact, raw.get(key))
+        if rows:
+            sections.append(
+                _ViewSection(
+                    name,
+                    _analysis_period(raw.get(key), analysis_fact.period),
+                    _table(("레벨", "채널", "구분", "값", "점유율(%)"), rows),
+                )
+            )
+            used_ids.append(analysis_fact.evidence_id)
+
+    top5_fact = _first_fact_with(facts, "level_top5_trend")
+    if top5_fact is not None:
+        raw = _render_data(top5_fact)
+        rows = _top5_rows(top5_fact, raw.get("level_top5_trend"))
+        if rows:
+            sections.append(
+                _ViewSection(
+                    "analysis-level Top5",
+                    _top5_period(raw.get("level_top5_trend"), top5_fact.period),
+                    _table(("레벨", "구분", "브랜드", "값", "점유율(%)", "순위"), rows),
+                )
+            )
+            used_ids.append(top5_fact.evidence_id)
+
     channel_fact = _first_fact_with(facts, "target_customer_competition_by_channel")
     if channel_fact is not None:
         channel_rows = _channel_rows(
@@ -621,6 +714,126 @@ def _channel_rows(value: object) -> list[tuple[object, ...]]:
     return rows
 
 
+def _trajectory_table_rows(
+    fact: MarketMetricFact,
+    rows: Sequence[Mapping[str, object]],
+) -> list[tuple[object, ...]]:
+    projected: list[tuple[object, ...]] = []
+    for row in rows:
+        brand = _text(row.get("brand"))
+        share = _display_or_none(fact, row.get("share_pct"), "share_pct")
+        evolution = _display_or_none(fact, row.get("ei"), "ei")
+        cagr = _display_or_none(
+            fact,
+            row.get("brand_cagr_pct", row.get("cagr_5y_pct")),
+            "cagr",
+        )
+        momentum = _display_or_none(
+            fact,
+            row.get("momentum_score"),
+            "momentum_score",
+        )
+        basis = _text(row.get("ei_basis", row.get("cagr_basis")))
+        if brand and all(value is not None for value in (share, evolution, cagr, momentum)) and basis:
+            projected.append((brand, share, evolution, cagr, momentum, basis))
+    return projected[:10]
+
+
+def _analysis_level_rows(
+    fact: MarketMetricFact,
+    value: object,
+) -> list[tuple[object, ...]]:
+    if not isinstance(value, Mapping):
+        return []
+    data = value.get("data")
+    if not isinstance(data, Mapping):
+        return []
+    rows: list[tuple[object, ...]] = []
+    for level, level_data in data.items():
+        if not isinstance(level_data, Mapping):
+            continue
+        by_channel = level_data.get("by_channel")
+        if isinstance(by_channel, Mapping):
+            for channel, items in by_channel.items():
+                for item in _mapping_rows(items):
+                    values = list(item.get("value_series") or ())
+                    shares = list(item.get("series_pct") or ())
+                    raw_value = values[-1] if values else item.get("value_recent")
+                    raw_share = item.get("recent_share_pct")
+                    if raw_share is None and shares:
+                        raw_share = shares[-1]
+                    rendered_value = _display_or_none(fact, raw_value, "value_series")
+                    rendered_share = _display_or_none(fact, raw_share, "share")
+                    name = _text(item.get("name"))
+                    if name and rendered_value is not None and rendered_share is not None:
+                        rows.append((level, channel, name, rendered_value, rendered_share))
+        for item in _mapping_rows(level_data.get("segments")):
+            raw_value = item.get("sales", item.get("value"))
+            rendered_value = _display_or_none(fact, raw_value, "sales")
+            name = _text(item.get("name"))
+            if name and rendered_value is not None:
+                rows.append((level, "전체", name, rendered_value, "해당 없음"))
+    return rows[:10]
+
+
+def _analysis_period(value: object, fallback: object) -> str:
+    if not isinstance(value, Mapping):
+        return _text(fallback)
+    periods = list(value.get("periods_monthly") or value.get("periods_quarterly") or ())
+    return _text(periods[-1]) if periods else _text(fallback)
+
+
+def _top5_rows(
+    fact: MarketMetricFact,
+    value: object,
+) -> list[tuple[object, ...]]:
+    if not isinstance(value, Mapping):
+        return []
+    by_level = value.get("by_level")
+    if not isinstance(by_level, Mapping):
+        return []
+    rows: list[tuple[object, ...]] = []
+    for level, level_data in by_level.items():
+        if not isinstance(level_data, Mapping):
+            continue
+        for segment in _mapping_rows(level_data.get("values")):
+            segment_name = _text(segment.get("name", segment.get("value")))
+            brands = _mapping_rows(segment.get("brands_in_value"))
+            if brands:
+                for brand in brands[:5]:
+                    value_series = list(brand.get("value_series_10pt") or ())
+                    share_series = list(brand.get("ms_series_10pt") or ())
+                    raw_value = value_series[-1] if value_series else brand.get("value_recent_100m")
+                    raw_share = share_series[-1] if share_series else brand.get("ms_recent_pct")
+                    rendered_value = _display_or_none(fact, raw_value, "value_series")
+                    rendered_share = _display_or_none(fact, raw_share, "ms_series")
+                    brand_name = _text(brand.get("brand"))
+                    rank = brand.get("rank")
+                    if brand_name and rendered_value is not None and rendered_share is not None:
+                        rows.append((level, segment_name, brand_name, rendered_value, rendered_share, rank or "해당 없음"))
+                continue
+            sales = list(segment.get("sales") or ())
+            raw_value = sales[-1] if sales else segment.get("value")
+            rendered_value = _display_or_none(fact, raw_value, "sales")
+            if segment_name and rendered_value is not None:
+                rows.append((level, segment_name, "전체", rendered_value, "해당 없음", "해당 없음"))
+    return rows[:10]
+
+
+def _top5_period(value: object, fallback: object) -> str:
+    if not isinstance(value, Mapping):
+        return _text(fallback)
+    by_level = value.get("by_level")
+    if isinstance(by_level, Mapping):
+        for level_data in by_level.values():
+            if not isinstance(level_data, Mapping):
+                continue
+            periods = list(level_data.get("periods_10pt") or ())
+            if periods:
+                return _text(periods[-1])
+    return _text(fallback)
+
+
 def _display(fact: MarketMetricFact, value: object, semantic: str) -> str:
     if value is None:
         raise LookupError(f"missing display value for {semantic}")
@@ -663,6 +876,10 @@ def _semantic_digits(semantic: str) -> int | None:
         return 4
     if normalized == "target_share_pct" or "cagr" in normalized:
         return 2
+    if normalized == "ei":
+        return 1
+    if "momentum" in normalized:
+        return 4
     if any(
         token in normalized
         for token in ("growth", "contribution", "share", "yoy", "mom", "qoq", "ms_")
@@ -673,7 +890,7 @@ def _semantic_digits(semantic: str) -> int | None:
 
 def _is_money_semantic(semantic: str) -> bool:
     normalized = semantic.casefold()
-    return normalized in {"sales", "market_size_series", "value_series"}
+    return normalized in {"sales", "market_size_series", "value_series", "value_recent"}
 
 
 def _with_money_unit(rendered: str, semantic: str) -> str:
