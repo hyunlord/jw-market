@@ -8,6 +8,13 @@ import pymysql
 
 from pipeline.etl.isolation import validate_mart_schema_pair
 from pipeline.etl.lib.ops_utils import find_project_root, first_existing
+from pipeline.etl.stages.s5_mart_scoped import (
+    STRATEGIC_TABLES,
+    delete_affected_rows as _delete_affected_rows,
+    ensure_scoped_schema,
+    scoped_refresh_ids,
+    unaffected_strategic_signatures as _unaffected_strategic_signatures,
+)
 
 STAGE = "s5 mart"
 PROJECT_ROOT = find_project_root(Path(__file__).resolve())
@@ -137,10 +144,30 @@ def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
         with conn.cursor() as cur:
             cur.execute(f"CREATE DATABASE IF NOT EXISTS `{target_db}` DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
             cur.execute(f"USE `{target_db}`")
-            for table in ("mart_strategic_ml_brand_metric", "mart_strategic_ml_market_metric", "mart_strategic_cd_brand_metric", "mart_strategic_cd_market_metric"):
-                cur.execute(f"DROP TABLE IF EXISTS {table}")
+            for table in STRATEGIC_TABLES:
+                cur.execute(f"DROP TABLE IF EXISTS {table.name}")
             for ddl in (STRATEGIC_ML_BRAND_DDL, STRATEGIC_ML_MARKET_DDL, STRATEGIC_CD_BRAND_DDL, STRATEGIC_CD_MARKET_DDL):
                 cur.execute(ddl)
+    finally:
+        conn.close()
+
+
+def _ensure_scoped_schema(
+    target_db: str,
+    source_db: str,
+    affected_ml_ids: tuple[str, ...],
+    affected_cd_ids: tuple[str, ...],
+) -> None:
+    _validate_schema_pair(target_db, source_db)
+    conn = _admin_connect(_env())
+    try:
+        ensure_scoped_schema(
+            conn,
+            target_db,
+            source_db,
+            affected_ml_ids,
+            affected_cd_ids,
+        )
     finally:
         conn.close()
 
@@ -161,35 +188,59 @@ def _configure_mart_env(target_db: str, source_db: str) -> None:
         os.environ.setdefault("MARIADB_PORT", env["MARIADB_PORT"])
 
 
+def _print_ml_stats(stats: dict[str, Any]) -> None:
+    print(
+        f"[{STAGE}] ml: brand_rows={stats['brand_rows']} "
+        f"market_rows={stats['market_rows']} ml_count={stats['ml_count']}"
+    )
+
+
+def _print_cd_stats(stats: dict[str, Any]) -> None:
+    print(
+        f"[{STAGE}] cd: brand_rows={stats['brand_rows']} "
+        f"market_rows={stats['market_rows']} "
+        f"cd_market_count={stats['cd_market_count']}"
+    )
+
+
 def run(params: dict[str, Any]) -> int:
     target_db = str(params.get("target_db") or "").strip()
     source_db = str(params.get("source_db") or "jw_mart").strip()
-    general_source_db = str(params.get("general_source_db") or source_db).strip()
     if not target_db:
         print(f"[{STAGE}] 실패: --target-db is required for isolated mart writes")
         return 2
     try:
         if params.get("catalog_root"):
             os.environ["S5_CATALOG_DIR"] = str(params["catalog_root"])
-        _ensure_isolated_schema(target_db, source_db)
-        _configure_mart_env(target_db, general_source_db)
+        affected_ml_ids, affected_cd_ids = scoped_refresh_ids(params)
+        scoped = bool(affected_ml_ids or affected_cd_ids)
+        if scoped:
+            _ensure_scoped_schema(
+                target_db,
+                source_db,
+                affected_ml_ids,
+                affected_cd_ids,
+            )
+        else:
+            _ensure_isolated_schema(target_db, source_db)
+        _configure_mart_env(target_db, source_db)
         from pipeline.etl.io.mart.strategic_cd import compute_strategic_cd
         from pipeline.etl.io.mart.strategic_ml import compute_strategic_ml
 
-        market_id = str(params.get("ml_id") or "").strip()
-        run_ml = not market_id or market_id.startswith("ml_")
-        run_cd = not market_id or market_id.startswith("cd_")
-        if run_ml:
-            _, _, ml_stats = compute_strategic_ml(False, True, Path("/tmp"), ml=market_id or None)
-            print(f"[{STAGE}] ml: brand_rows={ml_stats['brand_rows']} market_rows={ml_stats['market_rows']} ml_count={ml_stats['ml_count']}")
-        if run_cd:
-            _, _, cd_stats = compute_strategic_cd(False, True, Path("/tmp"), cd_market=market_id or None)
-            print(f"[{STAGE}] cd: brand_rows={cd_stats['brand_rows']} market_rows={cd_stats['market_rows']} cd_market_count={cd_stats['cd_market_count']}")
+        if scoped:
+            for ml_id in affected_ml_ids:
+                _, _, ml_stats = compute_strategic_ml(False, True, Path("/tmp"), ml=ml_id)
+                _print_ml_stats(ml_stats)
+            for cd_id in affected_cd_ids:
+                _, _, cd_stats = compute_strategic_cd(False, True, Path("/tmp"), cd_market=cd_id)
+                _print_cd_stats(cd_stats)
+        else:
+            _, _, ml_stats = compute_strategic_ml(False, True, Path("/tmp"), ml=None)
+            _print_ml_stats(ml_stats)
+            _, _, cd_stats = compute_strategic_cd(False, True, Path("/tmp"), cd_market=None)
+            _print_cd_stats(cd_stats)
     except Exception as exc:
         print(f"[{STAGE}] 실패: {exc}")
         return 1
-    print(
-        f"[{STAGE}] 완료 target_db={target_db} source_db={source_db} "
-        f"general_source_db={general_source_db}"
-    )
+    print(f"[{STAGE}] 완료 target_db={target_db} source_db={source_db}")
     return 0
