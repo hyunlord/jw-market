@@ -32,10 +32,10 @@ from pipeline.scripts.ingest_hook.mi_master_definition_contract import (
     load_definition_request,
 )
 from pipeline.scripts.ingest_hook.mi_master_definition_commands import (
-    LocalCacheRefresher,
-    LocalPrepareAdapters,
-    LocalPublisher,
-    LocalRuntimeCatalogInvalidator,
+    PipelineCacheRefresher,
+    PipelinePublisher,
+    PipelineRuntimeCatalogInvalidator,
+    prepare_adapters_from_request,
 )
 
 
@@ -86,12 +86,7 @@ def _record_stage(
 
 
 def _mark_failure(ledger: Ledger, identity: DefinitionRefreshIdentity, reason: str) -> None:
-    ledger.mark_failed(
-        identity.ledger_epoch,
-        CATEGORY,
-        identity.catalog_diff_hash,
-        reason=reason,
-    )
+    ledger.mark_failed(identity.ledger_epoch, CATEGORY, identity.catalog_diff_hash, reason=reason)
 
 
 def _candidate_payload(request: DefinitionRefreshRequest) -> dict[str, object]:
@@ -102,6 +97,7 @@ def _candidate_payload(request: DefinitionRefreshRequest) -> dict[str, object]:
         "journal_path": str(request.workspace.journal_path),
         "cache_refresh_tables": list(ALLOWED_CACHE_REFRESH_TABLES),
         "market_ordinal": request.market_ordinal,
+        "catalog_sync": None if request.catalog_sync is None else request.catalog_sync.as_dict(),
         "runtime_catalog_invalidation": "required",
         "workflow_ref": WORKFLOW_REF_URI,
     }
@@ -235,9 +231,7 @@ def run_approved_definition_publish(request: DefinitionPublishRequest) -> int:
 
 
 def _open_ledger(sqlite_path: str | None) -> Ledger:
-    if sqlite_path:
-        return open_sqlite_ledger(Path(sqlite_path))
-    return config.open_configured_ledger()
+    return open_sqlite_ledger(Path(sqlite_path)) if sqlite_path else config.open_configured_ledger()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -259,7 +253,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ledger = _open_ledger(args.ledger_sqlite)
     match args.command:
         case "prepare":
-            return prepare_definition_refresh_candidate(ledger, request, LocalPrepareAdapters())
+            return prepare_definition_refresh_candidate(
+                ledger, request, prepare_adapters_from_request(request)
+            )
         case "approved-publish":
             return run_approved_definition_publish(
                 DefinitionPublishRequest(
@@ -268,9 +264,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     workspace=request.workspace,
                     market_ordinal=request.market_ordinal,
                     adapters=DefinitionPublishAdapters(
-                        LocalPublisher(),
-                        LocalCacheRefresher(request.workspace.candidate_root),
-                        LocalRuntimeCatalogInvalidator(request.workspace.candidate_root),
+                        PipelinePublisher(),
+                        PipelineCacheRefresher(),
+                        PipelineRuntimeCatalogInvalidator(),
                     ),
                 )
             )

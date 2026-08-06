@@ -79,10 +79,35 @@ class PublishWorkspace:
 
 
 @dataclass(frozen=True, slots=True)
+class PipelineCatalogSync:
+    output_root: Path
+    input_file: Path
+    catalog_root: Path
+    cache_dir: Path | None = None
+    inputs_dir: Path | None = None
+    ubist_dir: Path | None = None
+    iqvia_nsa_dir: Path | None = None
+    ingested_at: str | None = None
+
+    def as_dict(self) -> dict[str, str]:
+        payload = {
+            "output_root": str(self.output_root),
+            "input_file": str(self.input_file),
+            "catalog_root": str(self.catalog_root),
+        }
+        for key in ("cache_dir", "inputs_dir", "ubist_dir", "iqvia_nsa_dir", "ingested_at"):
+            value = getattr(self, key)
+            if value is not None:
+                payload[key] = str(value)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class DefinitionRefreshRequest:
     identity: DefinitionRefreshIdentity
     workspace: PublishWorkspace
     market_ordinal: int | None = None
+    catalog_sync: PipelineCatalogSync | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -91,6 +116,8 @@ class DefinitionRefreshRequest:
         }
         if self.market_ordinal is not None:
             payload["market_ordinal"] = self.market_ordinal
+        if self.catalog_sync is not None:
+            payload["catalog_sync"] = self.catalog_sync.as_dict()
         return payload
 
 
@@ -129,6 +156,28 @@ def _parse_path(payload: dict[str, object], key: str) -> Path:
     return Path(value)
 
 
+def _parse_optional_path(payload: dict[str, object], key: str) -> Path | None:
+    value = str(payload.get(key) or "").strip()
+    return Path(value) if value else None
+
+
+def _parse_catalog_sync(payload: object) -> PipelineCatalogSync | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise RuntimeError("definition request catalog_sync must be an object")
+    return PipelineCatalogSync(
+        output_root=_parse_path(payload, "output_root"),
+        input_file=_parse_path(payload, "input_file"),
+        catalog_root=_parse_path(payload, "catalog_root"),
+        cache_dir=_parse_optional_path(payload, "cache_dir"),
+        inputs_dir=_parse_optional_path(payload, "inputs_dir"),
+        ubist_dir=_parse_optional_path(payload, "ubist_dir"),
+        iqvia_nsa_dir=_parse_optional_path(payload, "iqvia_nsa_dir"),
+        ingested_at=str(payload.get("ingested_at") or "") or None,
+    )
+
+
 def load_definition_request(path: Path) -> DefinitionRefreshRequest:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -155,6 +204,7 @@ def load_definition_request(path: Path) -> DefinitionRefreshRequest:
             journal_path=_parse_path(workspace_payload, "journal_path"),
         ),
         market_ordinal=market_ordinal,
+        catalog_sync=_parse_catalog_sync(payload.get("catalog_sync")),
     )
     request.identity.validate()
     return request
