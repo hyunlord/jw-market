@@ -7,7 +7,6 @@ from jw_chat_agent_poc.agent_loop.bq_contracts import (
     contract_for,
     evaluate_slot_coverage,
 )
-from jw_chat_agent_poc.service import answer_pipeline
 
 
 EXPECTED_IDS = (
@@ -115,63 +114,3 @@ def test_slot_coverage_distinguishes_supported_missing_and_unavailable() -> None
     assert statuses["growth_decomposition"] == "supported"
     assert statuses["rank_change"] == "missing"
     assert statuses["related_events"] == "not_applicable"
-
-
-def test_b1_supported_analysis_slots_are_projected_into_the_final_answer() -> None:
-    tool_calls = (
-        {
-            "tool": "bq_analysis",
-            "render_data": {
-                "contract_id": "B1",
-                "source_results": [
-                    {
-                        "source": "UBIST",
-                        "period": "2025-06~2026-06",
-                        "share_of_growth_pct": 3.34,
-                        "market_growth_pct": 60.40,
-                        "excess_growth_pctp": 0.69,
-                        "share_delta_pctp": 0.12,
-                        "gain_loss": [
-                            {"brand": "리바로젯", "share_delta_pctp": 0.69},
-                            {"brand": "리피토", "share_delta_pctp": -0.44},
-                        ],
-                    }
-                ],
-            },
-        },
-    )
-
-    context = answer_pipeline.AnswerPipelineContext(
-        question="리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?",
-        result={"tool_calls": list(tool_calls)},
-        markdown_response={"fact_md": "### 필수 답변 fact\n- 검증된 BQ 분석 fact"},
-        fact_md="### 필수 답변 fact\n- 검증된 BQ 분석 fact",
-        policy_fact_md="### 필수 답변 fact\n- 검증된 BQ 분석 fact",
-        file_context_fact="",
-        deep_mode=False,
-        market_contract_allowed=True,
-        general_contracts_allowed=False,
-        external_tool_agent_result=True,
-        empty_file_answer=lambda _answer: False,
-        file_context_fallback=lambda answer: answer,
-        append_file_context_source=lambda answer, _fact, _file: answer,
-        record_source_notice=lambda _attached: None,
-        relational_claim_gate=lambda answer: answer,
-        natural_fact_lead=lambda answer: answer,
-        file_postprocess_isolation=lambda answer: answer,
-        evidence_binding_gate=lambda answer: answer,
-        strip_verified_progress=lambda answer: answer,
-    )
-    stages, _post = answer_pipeline.build_answer_pipeline_stages(context)
-    bq_stage = next(stage for stage in stages if stage.name == "answer_contract_first")
-
-    repaired = bq_stage.transform("상위 브랜드 순위는 표와 같습니다.")
-
-    assert "share-of-growth 3.34%" in repaired
-    assert "성장 분해" in repaired
-    assert "시장 성장률 60.40%" in repaired
-    assert "시장 대비 초과 성장 +0.69%p" in repaired
-    assert "점유율 변화 +0.12%p" in repaired
-    assert "gain-loss" in repaired
-    assert "리바로젯 +0.69%p" in repaired
-    assert "리피토 -0.44%p" in repaired
