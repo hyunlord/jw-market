@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -10,6 +10,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import enforce_answer_contra
 from jw_chat_agent_poc.orchestrator.claim_policy import apply_claim_policy
 from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
+from jw_chat_agent_poc.orchestrator.markdown_formatting import pct_value
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.service.answer_safety import (
@@ -222,6 +223,53 @@ def pipeline_dedup_enabled() -> bool:
     }
 
 
+def enforce_bq_slot_contract(answer: str, tool_calls: Sequence[Mapping[str, Any]]) -> str:
+    """Surface supported B1 slots even when generic contracts are disabled."""
+
+    if "### 필수 경쟁 변화 분석" in answer:
+        return answer
+    for call in tool_calls:
+        data = call.get("render_data")
+        if call.get("tool") != "bq_analysis" or not isinstance(data, Mapping) or data.get("contract_id") != "B1":
+            continue
+        source_results = data.get("source_results")
+        rows = source_results if isinstance(source_results, list) and source_results else [data]
+        lines = tuple(line for row in rows if isinstance(row, Mapping) if (line := _b1_slot_line(row)))
+        if lines:
+            return "\n\n".join((answer.rstrip(), "\n".join(("### 필수 경쟁 변화 분석", *lines))))
+    return answer
+
+
+def _b1_slot_line(row: Mapping[str, Any]) -> str:
+    parts = [str(value).strip() for value in (row.get("source"), row.get("period")) if value]
+    if row.get("share_of_growth_pct") is not None:
+        parts.append(f"share-of-growth {pct_value(row.get('share_of_growth_pct'))}")
+    if row.get("market_growth_pct") is not None:
+        parts.append(f"성장 분해 시장 성장률 {pct_value(row.get('market_growth_pct'))}")
+    if row.get("excess_growth_pctp") is not None:
+        parts.append(f"시장 대비 초과 성장 {_signed_pct_point(row.get('excess_growth_pctp'))}")
+    if row.get("share_delta_pctp") is not None:
+        parts.append(f"점유율 변화 {_signed_pct_point(row.get('share_delta_pctp'))}")
+    gain_loss = row.get("gain_loss")
+    if isinstance(gain_loss, list):
+        entries = tuple(
+            f"{item.get('brand')} {_signed_pct_point(item.get('share_delta_pctp'))}"
+            for item in gain_loss
+            if isinstance(item, Mapping) and item.get("brand") and item.get("share_delta_pctp") is not None
+        )
+        if entries:
+            parts.append(f"gain-loss {' / '.join(entries)}")
+    return f"- {' · '.join(parts)}" if len(parts) > 2 else ""
+
+
+def _signed_pct_point(value: Any) -> str:
+    rendered = pct_value(value).removesuffix("%")
+    if not rendered:
+        return ""
+    prefix = "+" if isinstance(value, int | float) and value > 0 else ""
+    return f"{prefix}{rendered}%p"
+
+
 def run_answer_pipeline(answer: str, stages: Sequence[AnswerPipelineStage]) -> str:
     for pipeline_stage in stages:
         answer = pipeline_stage.transform(answer)
@@ -247,6 +295,10 @@ def build_answer_pipeline_stages(
     file_context = str(result.get("file_context") or "")
 
     def answer_contract(answer: str) -> str:
+        answer = enforce_bq_slot_contract(
+            answer,
+            tuple(result.get("tool_calls") or ()),
+        )
         if (
             context.file_context_fact
             or not context.market_contract_allowed
