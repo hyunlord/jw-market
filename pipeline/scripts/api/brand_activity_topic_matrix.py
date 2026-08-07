@@ -566,7 +566,8 @@ def _fetch_sliced_topic_rows(
     schema = quote_identifier(config.brand_activity_db_name)
     sql = f"""
         WITH scoped_rows AS (
-            SELECT DISTINCT k.id AS row_id
+            SELECT DISTINCT k.id AS row_id,
+                            k.stage_row_sha256 AS stage_row_sha256
             FROM {schema}.`km_keyword_event_stage` k
             JOIN {schema}.`mart_brand_activity_topics` topic_scope
               ON JSON_CONTAINS(topic_scope.atc4_values, JSON_QUOTE(k.therapeutic_class), '$')
@@ -582,9 +583,15 @@ def _fetch_sliced_topic_rows(
                ROUND(COUNT(DISTINCT a.row_id) * 100.0 / NULLIF(denominator.brand_total_rows, 0), 2) AS share_pct
         FROM {schema}.`row_topic_assignment` a
         JOIN scoped_rows ON scoped_rows.row_id = a.row_id
+        JOIN {schema}.`row_topic_assignment_status` status
+          ON status.topic_set_version = a.topic_set_version
+         AND status.scope_id = a.scope_id
+         AND status.row_id = a.row_id
         JOIN denominator
         WHERE a.scope_id = %s
           AND a.topic_set_version = %s
+          AND status.status = 'classified'
+          AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
         GROUP BY a.topic_id, denominator.brand_total_rows
         HAVING denominator.brand_total_rows > 0
         ORDER BY share_pct DESC, topic_id

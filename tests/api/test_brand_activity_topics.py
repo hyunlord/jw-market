@@ -367,6 +367,38 @@ def test_topic_period_bounds_reads_indexable_month_extrema(monkeypatch) -> None:
     assert captured["params"] is None
 
 
+def test_sliced_topic_rows_require_classified_matching_stage_hash(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_all(sql: str, params=None) -> list[dict[str, Any]]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    result = topic_matrix._fetch_sliced_topic_rows(
+        scope_id="atc4:C10A1",
+        topic_set_version="topic-version",
+        product_codes=("LIVALO",),
+        visit_locations=(),
+        specialties=(),
+        interests=(),
+        prescription_evolutions=(),
+        period_start="2025-06",
+        period_end="2026-05",
+    )
+
+    assert result == []
+    sql = captured["sql"]
+    assert "row_topic_assignment_status" in sql
+    assert "status.topic_set_version = a.topic_set_version" in sql
+    assert "status.scope_id = a.scope_id" in sql
+    assert "status.row_id = a.row_id" in sql
+    assert "status.status = 'classified'" in sql
+    assert "status.stage_row_sha256 = scoped_rows.stage_row_sha256" in sql
+
+
 def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
