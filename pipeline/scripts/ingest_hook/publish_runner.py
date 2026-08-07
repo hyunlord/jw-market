@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
@@ -148,6 +149,7 @@ def run(
     primary_failure_reason = None
     activation_mutated = False
     ledger_completed = False
+    published_at = None
     try:
         tracker.enter("mart_publish")
         writer_db = activation.target_db if mode == "shadow" else None
@@ -179,6 +181,7 @@ def run(
             activation_journal=activation_journal,
             require_ledger_gate=mode != "shadow",
         )
+        published_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         update_activation_journal(activation_journal, "mart_promoted")
         tracker.done()
         tracker.enter("refresh")
@@ -214,6 +217,13 @@ def run(
             periods={str(period) for period in payload.get("periods") or []},
             started_at=candidate.prepared_at,
             failure_reason=None,
+            target_schema=activation.target_db,
+            published_at=published_at,
+            affected_scope=(
+                dict(payload["affected_scope"])
+                if isinstance(payload.get("affected_scope"), dict)
+                else None
+            ),
         )
         update_activation_journal(activation_journal, "signal_complete")
         update_activation_journal(activation_journal, "complete")
@@ -268,6 +278,13 @@ def run(
                 periods={str(period) for period in payload.get("periods") or []},
                 started_at=candidate.prepared_at,
                 failure_reason=primary_failure_reason,
+                target_schema=activation.target_db,
+                published_at=published_at,
+                affected_scope=(
+                    dict(payload["affected_scope"])
+                    if isinstance(payload.get("affected_scope"), dict)
+                    else None
+                ),
             )
         except Exception as signal_exc:
             print(

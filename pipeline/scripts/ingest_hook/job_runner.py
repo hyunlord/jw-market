@@ -130,6 +130,19 @@ class _StageTracker:
         self._record(name, "skipped", reason=reason, started=stamp, finished=stamp, duration_ms=0)
         print(f"[stage] {name} skipped reason={reason}")
 
+    def record_failure(self, name: str, reason: str) -> None:
+        """Record a helper-owned stage failure even when it is not in flight."""
+        stamp = _stamp()
+        self._record(
+            name,
+            "failed",
+            reason=reason,
+            started=stamp,
+            finished=stamp,
+            duration_ms=0,
+        )
+        print(f"[stage] {name} end rc=1 reason={reason}")
+
     def fail(self, reason: str) -> None:
         """Mark the in-flight stage failed (called from run()'s except handlers)."""
         if self._current is None:
@@ -448,6 +461,9 @@ def _emit_completion_signal(
     run_id: str, event: str, mode: str, rows_before: int, rows_after: int,
     rows_loaded: int,
     periods: set[str], started_at: str, failure_reason: str | None,
+    target_schema: str | None = None,
+    published_at: str | None = None,
+    affected_scope: dict[str, object] | None = None,
 ) -> None:
     """Best-effort delivery and durable observation; never changes ingest result."""
     from urllib.parse import urlencode
@@ -471,14 +487,54 @@ def _emit_completion_signal(
         except (KeyError, TypeError, ValueError) as exc:
             print(f"[signal] prior payload invalid (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
     query = urlencode({"epoch": epoch, "category": category, "manifest_sha": manifest_sha})
-    signal = CompletionSignal(
-        event=event, mode=mode, category=category, epoch=epoch,
-        manifest_sha=manifest_sha, rows_before=rows_before, rows_after=rows_after,
-        rows_loaded=rows_loaded, period_from=min(periods) if periods else None,
-        period_to=max(periods) if periods else None, started_at=started_at,
-        finished_at=datetime.now(timezone.utc).isoformat(), failure_reason=failure_reason,
-        log_ref=f"/ingest/status?{query}",
-    )
+    occurred_at = _stamp()
+    try:
+        signal = CompletionSignal(
+            event=event, mode=mode, source=category, epoch=epoch,
+            manifest_sha=manifest_sha, run_id=run_id,
+            target_schema=(
+                target_schema
+                or os.environ.get("MARIADB_DATABASE")
+                or os.environ.get("DB_NAME")
+            ),
+            published_at=published_at,
+            occurred_at=occurred_at,
+            rows_before=rows_before, rows_after=rows_after,
+            rows_loaded=rows_loaded, period_from=min(periods) if periods else None,
+            period_to=max(periods) if periods else None, started_at=started_at,
+            finished_at=occurred_at, failure_reason=failure_reason,
+            log_ref=f"/ingest/status?{query}",
+            affected_scope=affected_scope,
+        )
+    except ValueError as exc:
+        reason = f"completion contract rejected: {exc}"
+        ledger.record_signal(
+            *identity, run_id=run_id, event=event, mode=mode,
+            rows_loaded=rows_loaded, delivery_status="failed", attempts=0,
+            reason=reason,
+            payload={
+                "event": event,
+                "run_id": run_id,
+                "source": category,
+                "period": epoch,
+                "outbound": False,
+            },
+        )
+        tracker.record_failure("signal", reason)
+        print(f"[signal] {reason}; outbound delivery suppressed", file=sys.stderr)
+        return
+    payload = signal.as_dict()
+    try:
+        ledger.record_signal(
+            *identity, run_id=run_id, event=event, mode=mode,
+            rows_loaded=rows_loaded, delivery_status="pending",
+            attempts=0, reason=None, payload=payload,
+        )
+    except Exception as exc:
+        reason = f"ledger pending record failed: {type(exc).__name__}: {exc}"
+        tracker.record_failure("signal", reason)
+        print(f"[signal] {reason}; outbound delivery suppressed", file=sys.stderr)
+        return
     try:
         endpoint, attempts = config.completion_webhook()
         result = publish(signal, endpoint=endpoint, attempts=attempts)
@@ -488,10 +544,15 @@ def _emit_completion_signal(
         ledger.record_signal(
             *identity, run_id=run_id, event=event, mode=mode,
             rows_loaded=rows_loaded, delivery_status=result.status,
-            attempts=result.attempts, reason=result.reason, payload=signal.as_dict(),
+            attempts=result.attempts, reason=result.reason, payload=payload,
         )
-    except Exception as exc:  # signal observation cannot break a successful load
-        print(f"[signal] ledger record failed (ignored): {type(exc).__name__}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        result = PublishResult(
+            "failed",
+            result.attempts,
+            f"ledger terminal record failed: {type(exc).__name__}: {exc}",
+        )
+        print(f"[signal] {result.reason}", file=sys.stderr)
     drain_result = PublishResult("disabled", 0, "queue drain endpoint is not configured")
     try:
         drain_endpoint, drain_attempts = config.queue_drain_webhook()
@@ -503,15 +564,15 @@ def _emit_completion_signal(
             )
     except Exception as exc:  # queue drain callback is recoverable by reconciliation
         drain_result = PublishResult("failed", 0, f"{type(exc).__name__}: {exc}")
-    # Stage observation is also best-effort (record_stage swallows DB errors).
-    tracker.complete(
-        "signal",
-        reason=(
-            f"delivery={result.status}; attempts={result.attempts}; "
-            f"queue_drain={drain_result.status}; "
-            f"queue_drain_attempts={drain_result.attempts}"
-        ),
+    stage_reason = (
+        f"delivery={result.status}; attempts={result.attempts}; "
+        f"queue_drain={drain_result.status}; "
+        f"queue_drain_attempts={drain_result.attempts}"
     )
+    if result.status == "published":
+        tracker.complete("signal", reason=stage_reason)
+    else:
+        tracker.record_failure("signal", stage_reason)
     print(
         f"signal event={event} mode={mode} delivery={result.status} "
         f"attempts={result.attempts} queue_drain={drain_result.status} "
@@ -561,6 +622,7 @@ def run(
     rows_after = 0
     rows_loaded = 0
     periods: set[str] = set()
+    atc4_scope: tuple[str, ...] = ()
     writer_conn = None
     mart_conn = None
     corpus_candidate = None
@@ -948,6 +1010,11 @@ def run(
                         "rows_loaded": rows_loaded,
                         "row_counts": report.file_rows,
                         "periods": sorted(periods),
+                        "affected_scope": {
+                            "dimension": "atc4",
+                            "count": len(atc4_scope),
+                            "values": list(atc4_scope),
+                        },
                         "candidate_integrity": {
                             "file_count": candidate_integrity.file_count,
                             "total_bytes": candidate_integrity.total_bytes,
@@ -973,13 +1040,24 @@ def run(
                     tracker.skip("mart_publish", "awaiting explicit publish approval")
                     tracker.skip("refresh", "awaiting explicit publish approval")
                     awaiting_approval_prepared = True
-                    _emit_completion_signal(
-                        ledger=ledger, tracker=tracker, identity=identity, run_id=run_id,
-                        event="prepared", mode=mode, rows_before=rows_before,
-                        rows_after=rows_after, rows_loaded=rows_loaded,
-                        periods=periods, started_at=started_at, failure_reason=None,
+                    ledger.record_signal(
+                        *identity,
+                        run_id=run_id,
+                        event="prepared",
+                        mode=mode,
+                        rows_loaded=rows_loaded,
+                        delivery_status="suppressed",
+                        attempts=0,
+                        reason="prepared event is internal-only",
+                        payload={
+                            "event": "prepared",
+                            "run_id": run_id,
+                            "source": manifest.category,
+                            "period": manifest.epoch,
+                            "outbound": False,
+                        },
                     )
-                    completion_signal_emitted = True
+                    tracker.skip("signal", "prepared event is not outbound")
                     print(
                         "result=awaiting_approval "
                         f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"

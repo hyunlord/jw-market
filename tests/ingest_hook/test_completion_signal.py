@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -26,9 +27,13 @@ def _signal(rows: int = 7) -> CompletionSignal:
     return CompletionSignal(
         event="complete",
         mode="staging",
-        category="iqvia_csd_keyword",
+        source="iqvia_csd_keyword",
         epoch="2026-03",
         manifest_sha="a" * 64,
+        run_id="run-1",
+        target_schema="jw_brand_activity_stage",
+        published_at="2026-07-22 00:01:00",
+        occurred_at="2026-07-22 00:01:00",
         rows_before=10,
         rows_after=17,
         rows_loaded=rows,
@@ -38,13 +43,60 @@ def _signal(rows: int = 7) -> CompletionSignal:
         finished_at="2026-07-22T00:01:00Z",
         failure_reason=None,
         log_ref="/ingest/status?x=1",
+        affected_scope={"dimension": "atc4", "count": 1, "values": ["M1A1"]},
     )
 
 
 def test_v5_complete_payload_has_frozen_identity_and_counts():
     payload = _signal().as_dict()
-    assert payload["idempotency_key"] == ["2026-03", "iqvia_csd_keyword", "a" * 64]
+    assert payload["schema_version"] == "1"
+    assert payload["source"] == "iqvia_csd_keyword"
+    assert "category" not in payload
+    assert "source_family" not in payload
+    assert payload["period"] == "2026-03"
+    assert payload["period_range"] == {"from": "2026-01", "to": "2026-03"}
+    assert payload["event_id"]
+    assert payload["affected_scope"] == {
+        "dimension": "atc4",
+        "count": 1,
+        "values": ["M1A1"],
+    }
     assert payload["rows_after"] - payload["rows_before"] == payload["rows_loaded"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["ubist", "iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword"],
+)
+def test_v1_source_preserves_internal_category_key_without_mapping(source):
+    payload = replace(_signal(), source=source).as_dict()
+
+    assert payload["source"] == source
+
+
+def test_v1_rejects_unknown_source_without_silently_mapping_it():
+    with pytest.raises(ValueError, match="unsupported completion source"):
+        replace(_signal(), source="CSD")
+
+
+def test_v1_rejects_prepared_outbound_event():
+    with pytest.raises(ValueError, match="unsupported completion event"):
+        replace(_signal(), event="prepared")
+
+
+def test_v1_failed_allows_null_published_at():
+    payload = replace(_signal(), event="failed", published_at=None).as_dict()
+
+    assert payload["published_at"] is None
+
+
+def test_v1_event_id_is_stable_for_same_event_and_differs_for_another_run():
+    first = _signal().as_dict()["event_id"]
+    repeated = _signal().as_dict()["event_id"]
+    another_run = replace(_signal(), run_id="run-2").as_dict()["event_id"]
+
+    assert first == repeated
+    assert first != another_run
 
 
 def test_v9_non_2xx_retries_with_exponential_backoff():
@@ -62,6 +114,7 @@ def test_v9_non_2xx_retries_with_exponential_backoff():
     assert result.attempts == 4
     assert sleeps == [1.0, 2.0, 4.0]
     assert all(payload["rows_loaded"] == 7 for payload in calls)
+    assert len({payload["event_id"] for payload in calls}) == 1
 
 
 def test_v10_final_webhook_failure_is_reported_not_raised():
@@ -114,6 +167,53 @@ def test_v10_delivery_failure_does_not_break_success(monkeypatch, sqlite_ledger,
     signal = sqlite_ledger.signal_events(manifest.epoch, manifest.category, manifest.manifest_sha)[0]
     assert signal.delivery_status == "failed"
     assert signal.reason == "receiver down"
+    stage = sqlite_ledger.stage_events(manifest.epoch, manifest.category, manifest.manifest_sha)[-1]
+    assert stage.stage == "signal"
+    assert stage.status == "failed"
+
+
+def test_signal_delivery_is_recorded_pending_before_send_then_final(
+    monkeypatch, sqlite_ledger
+):
+    identity = ("2026-03", "iqvia_csd_keyword", "b" * 64)
+    writes: list[str] = []
+    original = sqlite_ledger.record_signal
+
+    def record(*args, **kwargs):
+        writes.append(kwargs["delivery_status"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite_ledger, "record_signal", record)
+    monkeypatch.setattr(
+        "pipeline.scripts.ingest_hook.completion_signal.publish",
+        lambda *_args, **_kwargs: PublishResult("failed", 3, "receiver down"),
+    )
+    tracker = type(
+        "Tracker",
+        (),
+        {
+            "complete": lambda *_args, **_kwargs: None,
+            "skip": lambda *_args, **_kwargs: None,
+            "record_failure": lambda *_args, **_kwargs: None,
+        },
+    )()
+
+    job_runner._emit_completion_signal(
+        ledger=sqlite_ledger,
+        tracker=tracker,
+        identity=identity,
+        run_id="run-1",
+        event="failed",
+        mode="staging",
+        rows_before=20,
+        rows_after=7,
+        rows_loaded=7,
+        periods={"2026-03"},
+        started_at="2026-07-22T00:00:00Z",
+        failure_reason="broken",
+    )
+
+    assert writes == ["pending", "failed"]
 
 
 def test_v7_unexpected_load_failure_emits_failed_signal(

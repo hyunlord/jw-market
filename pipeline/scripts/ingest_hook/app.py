@@ -82,10 +82,19 @@ class ForceStopPayload(BaseModel):
 
 class TerminalPayload(BaseModel):
     event: str
-    category: str
+    source: str | None = None
+    category: str | None = None
     epoch: str
     manifest_sha: str
     mode: str = "unknown"
+    schema_version: str | None = None
+    event_id: str | None = None
+    run_id: str | None = None
+    target_schema: str | None = None
+    published_at: str | None = None
+    occurred_at: str | None = None
+    period: str | dict | None = None
+    rows_loaded: int | None = None
 
 
 class PublishApprovalPayload(BaseModel):
@@ -105,6 +114,7 @@ class IngestService:
         s3=None,
         inspect_transport=None,
         delete_transport=None,
+        list_transport=None,
         now=None,
         timestamp=None,
         sleep=None,
@@ -116,6 +126,7 @@ class IngestService:
         self.s3 = s3
         self.inspect_transport = inspect_transport
         self.delete_transport = delete_transport
+        self.list_transport = list_transport
         self.now = now or (lambda: datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"))
         self.timestamp = timestamp or (lambda: datetime.now(timezone.utc).isoformat())
         self.sleep = sleep or _sleep
@@ -1154,6 +1165,50 @@ def create_app(service: IngestService) -> FastAPI:
 
     @app.post("/ingest/terminal")
     def terminal(payload: TerminalPayload) -> dict:
+        category = payload.source or payload.category
+        if category is None:
+            raise HTTPException(status_code=422, detail="source is required")
+        if payload.source is not None and payload.category not in {None, payload.source}:
+            raise HTTPException(
+                status_code=422,
+                detail="source and legacy category must match",
+            )
+        if category not in {
+            "ubist",
+            "iqvia_nsa",
+            "iqvia_csd_channel",
+            "iqvia_csd_keyword",
+        }:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported completion source {category!r}",
+            )
+        if payload.schema_version not in {None, "1"}:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported completion schema_version {payload.schema_version!r}",
+            )
+        if payload.schema_version == "1":
+            required_v1 = {
+                "event_id": payload.event_id,
+                "run_id": payload.run_id,
+                "occurred_at": payload.occurred_at,
+                "period": payload.period,
+                "rows_loaded": payload.rows_loaded,
+            }
+            missing = sorted(
+                name for name, value in required_v1.items() if value is None or value == ""
+            )
+            if payload.event == "complete":
+                if not payload.target_schema:
+                    missing.append("target_schema")
+                if not payload.published_at:
+                    missing.append("published_at")
+            if missing:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"missing completion v1 fields: {', '.join(sorted(missing))}",
+                )
         expected_status_by_event = {
             "complete": STATUS_COMPLETE,
             "failed": STATUS_FAILED,
@@ -1167,7 +1222,7 @@ def create_app(service: IngestService) -> FastAPI:
             )
         entry = service.ledger.status(
             payload.epoch,
-            payload.category,
+            category,
             payload.manifest_sha,
         )
         if entry is None:
@@ -1187,20 +1242,24 @@ def create_app(service: IngestService) -> FastAPI:
             try:
                 agent_job_name = job_launcher.submit_agent_refresh_job(
                     epoch=payload.epoch,
-                    category=payload.category,
+                    category=category,
                     manifest_sha=payload.manifest_sha,
                     ingest_run_id=entry.run_id,
                     transport=service.transport,
                     inspect_transport=service.inspect_transport,
+                    list_transport=service.list_transport,
                 )
                 agent_trigger_status = "submitted"
+            except job_launcher.AgentRefreshCapacityError as exc:
+                agent_trigger_status = "deferred_capacity"
+                agent_trigger_reason = str(exc)
             except Exception as exc:  # agent work is a separate failure domain
                 agent_trigger_status = "failed"
                 agent_trigger_reason = type(exc).__name__
-        promoted = service.promote(payload.category)
+        promoted = service.promote(category)
         return {
             "accepted": True,
-            "category": payload.category,
+            "category": category,
             "terminal_status": entry.status,
             "promoted_job_name": promoted,
             "agent_job_name": agent_job_name,

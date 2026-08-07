@@ -4,17 +4,35 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
-from dataclasses import asdict, dataclass
+import uuid
+from dataclasses import dataclass
 from typing import Callable
+
+
+SCHEMA_VERSION = "1"
+SUPPORTED_EVENTS = frozenset({"complete", "failed", "gate_failed"})
+SUPPORTED_SOURCES = frozenset(
+    {"ubist", "iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword"}
+)
+_EVENT_NAMESPACE = uuid.UUID("ef08daf5-54bf-41de-9a32-c90814817845")
+
+
+def _event_id(*, source: str, epoch: str, manifest_sha: str, run_id: str, event: str) -> str:
+    identity = "\x1f".join((SCHEMA_VERSION, source, epoch, manifest_sha, run_id, event))
+    return str(uuid.uuid5(_EVENT_NAMESPACE, identity))
 
 
 @dataclass(frozen=True)
 class CompletionSignal:
     event: str
     mode: str
-    category: str
+    source: str
     epoch: str
     manifest_sha: str
+    run_id: str
+    target_schema: str | None
+    published_at: str | None
+    occurred_at: str
     rows_before: int
     rows_after: int
     rows_loaded: int
@@ -24,11 +42,62 @@ class CompletionSignal:
     finished_at: str
     failure_reason: str | None
     log_ref: str
+    affected_scope: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        required_identity = {
+            "run_id": self.run_id,
+            "source": self.source,
+            "epoch": self.epoch,
+            "manifest_sha": self.manifest_sha,
+            "occurred_at": self.occurred_at,
+        }
+        missing = sorted(name for name, value in required_identity.items() if not value)
+        if missing:
+            raise ValueError(f"missing completion fields: {', '.join(missing)}")
+        if self.event not in SUPPORTED_EVENTS:
+            raise ValueError(f"unsupported completion event: {self.event!r}")
+        if self.source not in SUPPORTED_SOURCES:
+            raise ValueError(f"unsupported completion source: {self.source!r}")
+
+    @property
+    def category(self) -> str:
+        """Internal compatibility alias; outbound v1 carries only ``source``."""
+        return self.source
 
     def as_dict(self) -> dict[str, object]:
-        payload = asdict(self)
-        payload["idempotency_key"] = [self.epoch, self.category, self.manifest_sha]
-        payload["period"] = {"from": payload.pop("period_from"), "to": payload.pop("period_to")}
+        payload: dict[str, object] = {
+            "schema_version": SCHEMA_VERSION,
+            "event_id": _event_id(
+                source=self.source,
+                epoch=self.epoch,
+                manifest_sha=self.manifest_sha,
+                run_id=self.run_id,
+                event=self.event,
+            ),
+            "run_id": self.run_id,
+            "event": self.event,
+            "mode": self.mode,
+            "source": self.source,
+            "epoch": self.epoch,
+            "period": self.epoch,
+            "period_range": {"from": self.period_from, "to": self.period_to},
+            "target_schema": self.target_schema,
+            "published_at": self.published_at,
+            "occurred_at": self.occurred_at,
+            "manifest_sha": self.manifest_sha,
+            "rows_before": self.rows_before,
+            "rows_after": self.rows_after,
+            "rows_loaded": self.rows_loaded,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "failure_reason": self.failure_reason,
+            "log_ref": self.log_ref,
+            # Retained for additive compatibility with existing consumers.
+            "idempotency_key": [self.epoch, self.source, self.manifest_sha],
+        }
+        if self.affected_scope is not None:
+            payload["affected_scope"] = self.affected_scope
         return payload
 
 

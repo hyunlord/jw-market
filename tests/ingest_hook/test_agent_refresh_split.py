@@ -21,6 +21,13 @@ def _terminal_payload(*, event: str = "complete", mode: str = "production") -> d
         "finished_at": "2026-07-30T00:01:00+00:00",
         "failure_reason": None,
         "log_ref": "/ingest/status",
+        "event_id": "7d77770d-7a77-5777-8777-777777777777",
+        "run_id": "run-1",
+        "schema_version": "1",
+        "source": "ubist",
+        "target_schema": "jw_mart_d2_stage_20260630_r2",
+        "published_at": "2026-07-30 00:01:00",
+        "occurred_at": "2026-07-30 00:01:00",
     }
 
 
@@ -79,6 +86,156 @@ def test_complete_terminal_launches_agent_job_after_ingest_is_complete(
     assert len(fake_transport.submitted) == 1
     submitted = fake_transport.submitted[0][1]
     assert submitted["metadata"]["labels"]["app"] == "jw-agent-refresh"
+
+
+def test_terminal_accepts_v1_source_without_legacy_category(
+    sqlite_ledger, fake_transport
+) -> None:
+    identity = ("2026-05", "ubist", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
+    sqlite_ledger.mark_complete(*identity, row_counts={"input.xlsx": 1})
+    payload = _terminal_payload()
+    payload.pop("category")
+
+    response = TestClient(
+        create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
+    ).post("/ingest/terminal", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["category"] == "ubist"
+
+
+def test_terminal_rejects_source_and_legacy_category_mismatch(sqlite_ledger) -> None:
+    payload = _terminal_payload()
+    payload["category"] = "iqvia_nsa"
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).post(
+        "/ingest/terminal", json=payload
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "source and legacy category must match"
+
+
+def test_terminal_rejects_v1_payload_with_missing_required_field(sqlite_ledger) -> None:
+    payload = _terminal_payload()
+    payload.pop("category")
+    payload.pop("event_id")
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).post(
+        "/ingest/terminal", json=payload
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "missing completion v1 fields: event_id"
+
+
+def test_terminal_rejects_complete_v1_payload_without_published_at(sqlite_ledger) -> None:
+    payload = _terminal_payload()
+    payload.pop("published_at")
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).post(
+        "/ingest/terminal", json=payload
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "missing completion v1 fields: published_at"
+
+
+def test_terminal_accepts_failed_v1_payload_with_null_publish_fields(sqlite_ledger) -> None:
+    identity = ("2026-05", "ubist", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
+    sqlite_ledger.mark_failed(*identity, reason="injected")
+    payload = _terminal_payload(event="failed")
+    payload["target_schema"] = None
+    payload["published_at"] = None
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).post(
+        "/ingest/terminal", json=payload
+    )
+
+    assert response.status_code == 200
+    assert response.json()["terminal_status"] == "failed"
+
+
+def test_terminal_rejects_unknown_completion_schema_version(sqlite_ledger) -> None:
+    payload = _terminal_payload()
+    payload["schema_version"] = "2"
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).post(
+        "/ingest/terminal", json=payload
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "unsupported completion schema_version '2'"
+
+
+def test_global_agent_refresh_cap_blocks_a_second_active_job(sqlite_ledger) -> None:
+    identity = ("2026-05", "ubist", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
+    sqlite_ledger.mark_complete(*identity, row_counts={"input.xlsx": 1})
+    submitted: list[dict] = []
+
+    def transport(_url_path: str, body: dict) -> dict:
+        submitted.append(body)
+        return {"status": "created"}
+
+    def list_transport(_namespace: str, _label_selector: str) -> dict:
+        return {
+            "items": [
+                {
+                    "metadata": {"name": "jw-agent-refresh-other"},
+                    "status": {"active": 1},
+                }
+            ]
+        }
+
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=transport,
+                list_transport=list_transport,
+            )
+        )
+    )
+
+    response = client.post("/ingest/terminal", json=_terminal_payload())
+
+    assert response.status_code == 200
+    assert response.json()["agent_trigger_status"] == "deferred_capacity"
+    assert response.json()["agent_trigger_reason"] == "global agent refresh cap reached (1/1)"
+    assert submitted == []
+
+
+def test_non_complete_terminal_never_submits_agent_job(sqlite_ledger) -> None:
+    identity = ("2026-05", "ubist", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
+    sqlite_ledger.mark_failed(*identity, reason="injected")
+    submitted: list[dict] = []
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=lambda _path, body: submitted.append(body) or {},
+            )
+        )
+    )
+
+    response = client.post(
+        "/ingest/terminal",
+        json=_terminal_payload(event="failed"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agent_trigger_status"] == "not_applicable"
+    assert submitted == []
 
 
 def test_agent_submission_failure_never_reopens_or_fails_completed_ingest(

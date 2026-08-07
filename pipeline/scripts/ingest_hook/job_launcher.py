@@ -14,6 +14,7 @@ import json
 import os
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -140,6 +141,7 @@ def _job_env() -> list[dict]:
 Transport = Callable[[str, dict], dict]
 InspectTransport = Callable[[str, str], dict]
 DeleteTransport = Callable[[str, dict], dict]
+ListTransport = Callable[[str, str], dict]
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,10 @@ class JobSubmissionConflict(RuntimeError):
             f"job_name={job_name} existing_status={existing_status} "
             f"created_at={created_at or 'unknown'}{inspection_detail}"
         )
+
+
+class AgentRefreshCapacityError(RuntimeError):
+    pass
 
 
 def job_name(category: str, manifest_sha: str, run_id: str | None = None) -> str:
@@ -484,6 +490,20 @@ def _in_cluster_inspect(namespace: str, name: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _in_cluster_list(namespace: str, label_selector: str) -> dict:
+    token = (_SA_DIR / "token").read_text().strip()
+    context = ssl.create_default_context(cafile=str(_SA_DIR / "ca.crt"))
+    selector = urllib.parse.quote(label_selector, safe="=,!")
+    request = urllib.request.Request(
+        "https://kubernetes.default.svc/apis/batch/v1/namespaces/"
+        f"{namespace}/jobs?labelSelector={selector}",
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, context=context, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _in_cluster_delete(url_path: str, body: dict) -> dict:
     token = (_SA_DIR / "token").read_text().strip()
     context = ssl.create_default_context(cafile=str(_SA_DIR / "ca.crt"))
@@ -666,6 +686,7 @@ def submit_agent_refresh_job(
     transport: Transport | None = None,
     namespace: str | None = None,
     inspect_transport: InspectTransport | None = None,
+    list_transport: ListTransport | None = None,
 ) -> str:
     body = render_agent_refresh_job(
         epoch=epoch,
@@ -675,6 +696,20 @@ def submit_agent_refresh_job(
         namespace=namespace,
     )
     send = transport or _in_cluster_transport
+    resolved_namespace = str(body["metadata"]["namespace"])
+    # Injectable submissions used by unit tests remain isolated unless they
+    # explicitly provide a list transport. In-cluster execution always checks.
+    list_jobs = list_transport or (_in_cluster_list if transport is None else None)
+    if list_jobs is not None:
+        listing = list_jobs(resolved_namespace, "app=jw-agent-refresh")
+        active_names = {
+            str((item.get("metadata") or {}).get("name") or "")
+            for item in listing.get("items") or []
+            if _job_status(item) in {"Pending", "Running"}
+        }
+        active_names.discard(body["metadata"]["name"])
+        if active_names:
+            raise AgentRefreshCapacityError("global agent refresh cap reached (1/1)")
     try:
         send(f"/apis/batch/v1/namespaces/{body['metadata']['namespace']}/jobs", body)
     except urllib.error.HTTPError as exc:
