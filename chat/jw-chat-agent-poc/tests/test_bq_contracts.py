@@ -3,7 +3,9 @@ from __future__ import annotations
 from jw_chat_agent_poc.agent_loop.bq_contracts import (
     BQ_CONTRACTS,
     BQ_CONTRACT_IDS,
+    SlotTier,
     contract_for,
+    evaluate_slot_coverage,
 )
 
 
@@ -38,6 +40,12 @@ def test_every_bq_contract_declares_execution_and_safety_policy() -> None:
         assert contract.calculations
         assert contract.safety_rules
         assert contract.chart_kinds
+        assert contract.analysis_slots
+        assert {slot.tier for slot in contract.analysis_slots} == {
+            SlotTier.REQUIRED,
+            SlotTier.BUSINESS_REQUIRED,
+            SlotTier.OPTIONAL,
+        }
 
 
 def test_source_separation_rules_are_explicit_for_cross_source_contracts() -> None:
@@ -54,3 +62,55 @@ def test_contract_lookup_is_exact_and_does_not_guess() -> None:
     assert contract_for("A1") is BQ_CONTRACTS[0]
     assert contract_for("a1") is None
     assert contract_for("unknown") is None
+
+
+def test_b1_contract_declares_the_approved_analysis_requirements() -> None:
+    contract = contract_for("B1")
+    by_tier = {
+        tier: {slot.slot_id for slot in contract.analysis_slots if slot.tier is tier}
+        for tier in SlotTier
+    }
+
+    assert by_tier[SlotTier.REQUIRED] == {
+        "comparison_periods",
+        "top_brand_share_delta_pctp",
+        "rank_change",
+        "own_share_rank_change",
+        "share_of_growth",
+        "growth_decomposition",
+    }
+    assert by_tier[SlotTier.BUSINESS_REQUIRED] == {
+        "concentration_change",
+        "competition_verdict",
+    }
+    assert by_tier[SlotTier.OPTIONAL] == {
+        "related_events",
+        "channel_competition_change",
+    }
+    assert contract.forbidden_outputs == (
+        "single_period_snapshot_only",
+        "irrelevant_source_failure",
+    )
+
+
+def test_slot_coverage_distinguishes_supported_missing_and_unavailable() -> None:
+    coverage = evaluate_slot_coverage(
+        "B1",
+        {
+            "render_data": {
+                "period": "2026-04~2026-05",
+                "share_of_growth_pct": 3.34,
+                "share_delta_pctp": 0.1,
+                "market_growth_pct": 1.2,
+                "excess_growth_pctp": -0.2,
+            }
+        },
+        missing_sources=("iqvia_nsa",),
+    )
+    statuses = {item.slot_id: item.status.value for item in coverage}
+
+    assert statuses["comparison_periods"] == "supported"
+    assert statuses["share_of_growth"] == "supported"
+    assert statuses["growth_decomposition"] == "supported"
+    assert statuses["rank_change"] == "missing"
+    assert statuses["related_events"] == "not_applicable"

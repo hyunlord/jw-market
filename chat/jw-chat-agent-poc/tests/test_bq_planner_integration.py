@@ -272,6 +272,63 @@ def test_missing_required_bq_source_fails_closed() -> None:
     assert "IQVIA NSA" in result["answer"]
 
 
+def test_b1_keeps_supported_analysis_when_one_market_source_is_unavailable() -> None:
+    layer = _layer(("ubist",))
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?")
+
+    analysis = next(call for call in result["tool_calls"] if call.get("tool") == "bq_analysis")
+    data = analysis["render_data"]
+    coverage = {item["slot_id"]: item["status"] for item in data["slot_coverage"]}
+    assert data["share_of_growth_pct"] is not None
+    assert coverage["share_of_growth"] == "supported"
+    assert result["agent_loop_metrics"]["bq_missing_sources"] == ["iqvia_nsa"]
+    assert result["agent_loop_metrics"]["bq_analysis_validation"] == "passed"
+
+
+def test_b1_requeries_only_the_failed_tool_source_for_missing_slots(monkeypatch) -> None:
+    from jw_chat_agent_poc.agent_loop import loop as loop_module
+
+    layer = _layer()
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+    original_execute = loop_module._execute_grounded
+    attempts: list[tuple[str, str]] = []
+
+    def execute(facade, plan):
+        source = str(plan.arguments.get("source") or "")
+        attempts.append((plan.name, source))
+        if plan.name == "get_brand_series" and source == "ubist" and attempts.count((plan.name, source)) == 1:
+            return ToolExecution(
+                "query_failed",
+                "temporary failure",
+                {
+                    "tool": "get_brand_metric",
+                    "source": "UBIST",
+                    "status": "query_failed",
+                    "render_data": {"status": "query_failed", "query_spec": {"source": "ubist"}},
+                },
+                plan.arguments,
+            )
+        return original_execute(facade, plan)
+
+    monkeypatch.setattr(loop_module, "_execute_grounded", execute)
+    result = agent.answer("리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?")
+
+    analysis = next(call for call in result["tool_calls"] if call.get("tool") == "bq_analysis")
+    assert attempts.count(("get_brand_series", "ubist")) == 2
+    assert attempts.count(("get_brand_series", "iqvia_nsa")) == 1
+    assert analysis["render_data"]["targeted_requery_tools"] == ["get_brand_series"]
+
+
 def test_missing_bq_source_basis_notice_survives_market_contract() -> None:
     layer = _layer(("ubist",))
     agent = ToolUseAgent(

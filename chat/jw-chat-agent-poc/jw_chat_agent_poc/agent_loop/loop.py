@@ -8,6 +8,10 @@ import math
 from typing import Any, Final
 
 from jw_chat_agent_poc.agent_loop.bq_planner import BqCardinalityStop, plan_bq_question
+from jw_chat_agent_poc.agent_loop.bq_contracts import (
+    evaluate_slot_coverage,
+    missing_slot_tools,
+)
 from jw_chat_agent_poc.agent_loop.bq_slots import requested_prescription_metric
 from jw_chat_agent_poc.agent_loop.models import AgentDecision, AgentObservation, AgentTraceStep, ToolCallPlan, ToolPlanner
 from jw_chat_agent_poc.agent_loop.parallel_execution import (
@@ -647,10 +651,9 @@ class ToolUseAgent:
         if deterministic_plan_kind and deterministic_plan_kind.startswith("BQ:"):
             with stage(timing, "bq_analysis", "deterministic cross-source calculations"):
                 bq_started_at = qa_trace_started_at()
-                analysis_call = None
+                contract_id = deterministic_plan_kind.removeprefix("BQ:")
+                analysis_call = build_bq_analysis_call(contract_id, calls)
                 if bq_missing_sources:
-                    status = "source_unavailable"
-                    bq_analysis_validation = "SOURCE_UNAVAILABLE"
                     labels = ", ".join(_bq_source_label(source) for source in bq_missing_sources)
                     notices.append(f"요청한 분석에 필요한 출처({labels})를 현재 조회할 수 없습니다.")
                     # The line above is left exactly as it was: it is the existing
@@ -659,13 +662,78 @@ class ToolUseAgent:
                     domain_note = _source_domain_note(tuple(bq_missing_sources))
                     if domain_note is not None:
                         notices.append(domain_note)
+
+                initial_coverage = evaluate_slot_coverage(
+                    contract_id,
+                    analysis_call,
+                    missing_sources=bq_missing_sources,
+                )
+                retry_tools = set(missing_slot_tools(initial_coverage))
+                successful_tool_sources = {
+                    (
+                        item.tool_name,
+                        normalize_source(item.arguments.get("source")) or "",
+                    )
+                    for item in observations
+                    if item.status == "ok"
+                }
+                retry_plans = tuple(
+                    plan
+                    for plan in (bq_plan.decision.tool_calls if bq_plan is not None else ())
+                    if plan.name in retry_tools
+                    and (
+                        plan.name,
+                        normalize_source(plan.arguments.get("source")) or "",
+                    ) not in successful_tool_sources
+                )
+                for plan in retry_plans:
+                    retry_started_at = qa_trace_started_at()
+                    execution = _execute_grounded(facade, plan)
+                    attach_tool_qa_trace(
+                        execution.call,
+                        started_at=retry_started_at,
+                        status=execution.status,
+                        row_count=1 if execution.status == "ok" else 0,
+                        cache_hit=False,
+                    )
+                    observation = AgentObservation(
+                        len(trace) + 1,
+                        plan.name,
+                        execution.arguments,
+                        execution.status,
+                        execution.preview,
+                        execution.call,
+                    )
+                    observations.append(observation)
+                    calls.append(execution.call)
+                if retry_plans:
+                    analysis_call = build_bq_analysis_call(contract_id, calls)
+
+                coverage = evaluate_slot_coverage(
+                    contract_id,
+                    analysis_call,
+                    missing_sources=bq_missing_sources,
+                )
+                if analysis_call is None:
+                    if bq_missing_sources:
+                        status = "source_unavailable"
+                        bq_analysis_validation = "SOURCE_UNAVAILABLE"
+                    else:
+                        status = "verification_failed"
+                        bq_analysis_validation = "MISSING_EVIDENCE"
+                        notices.append("분석에 필요한 근거가 완결되지 않아 해당 해석은 표시하지 않았습니다.")
                 else:
-                    analysis_call = build_bq_analysis_call(deterministic_plan_kind.removeprefix("BQ:"), calls)
-                if not bq_missing_sources and analysis_call is None:
-                    status = "verification_failed"
-                    bq_analysis_validation = "MISSING_EVIDENCE"
-                    notices.append("분석에 필요한 근거가 완결되지 않아 해당 해석은 표시하지 않았습니다.")
-                elif analysis_call is not None:
+                    render_data = analysis_call.get("render_data")
+                    if isinstance(render_data, dict):
+                        render_data["slot_coverage"] = [
+                            {
+                                "slot_id": item.slot_id,
+                                "tier": item.tier.value,
+                                "status": item.status.value,
+                            }
+                            for item in coverage
+                        ]
+                        render_data["targeted_requery_tools"] = [plan.name for plan in retry_plans]
                     try:
                         validate_bq_analysis_call(analysis_call)
                     except BQAnalysisValidationError as exc:
