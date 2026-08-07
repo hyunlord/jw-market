@@ -90,7 +90,7 @@ def apply_v3_cutover(
     active = config or V3CutoverConfig.from_env()
     if not active.enabled or "uncovered" not in active.question_types:
         return legacy_result
-    if not is_uncovered_legacy_result(legacy_result):
+    if not is_uncovered_legacy_result(legacy_result, question=question):
         return legacy_result
 
     factory = pipeline_factory or (lambda: _DefaultV3ServingPipeline(active))
@@ -162,7 +162,13 @@ def apply_v3_cutover(
     }
 
 
-def is_uncovered_legacy_result(result: Mapping[str, object]) -> bool:
+def is_uncovered_legacy_result(
+    result: Mapping[str, object],
+    *,
+    question: str = "",
+) -> bool:
+    if _is_scope_confirmed_bq_view_set(question, result):
+        return True
     if str(result.get("answer") or "").strip() != _GENERAL_HELP:
         return False
     calls = result.get("tool_calls")
@@ -177,6 +183,24 @@ def is_uncovered_legacy_result(result: Mapping[str, object]) -> bool:
     proposal = v4.get("proposed_routing_signature")
     decision = proposal.get("routing_decision") if isinstance(proposal, Mapping) else None
     return isinstance(decision, Mapping) and decision.get("route_outcome") == "NO_TOOL"
+
+
+def _is_scope_confirmed_bq_view_set(
+    question: str,
+    result: Mapping[str, object],
+) -> bool:
+    metrics = result.get("agent_loop_metrics")
+    if not isinstance(metrics, Mapping) or metrics.get("deterministic_plan_kind") not in {
+        "BQ:A1",
+        "BQ:C1",
+    }:
+        return False
+    from jw_chat_agent_poc.tools.metrics.market_scope import MarketScopeResolver
+
+    resolver = MarketScopeResolver()
+    return resolver.has_explicit_anchor(question) or resolver.has_explicit_named_market(
+        question
+    )
 
 
 def grounded_chart_specs(
