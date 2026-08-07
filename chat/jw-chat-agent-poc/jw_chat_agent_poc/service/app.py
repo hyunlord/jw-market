@@ -130,6 +130,7 @@ from jw_chat_agent_poc.service.answer_delivery import (
     record_answer_delivery,
     record_source_notice_attachment,
 )
+from jw_chat_agent_poc.service.markdown_cleanup import finalize_display_markdown
 from jw_chat_agent_poc.service.answer_pipeline import (
     AnswerPipelineContext,
     build_answer_pipeline_stages,
@@ -3303,8 +3304,9 @@ def compute_final_answer(
             tool_calls=tool_calls,
             sources=final_answer.sources,
         )
-        output_policy_decision = evaluate_output_leakage(format_result.answer)
-        user_answer = enforced_answer(format_result.answer, output_policy_decision)
+        display_answer = finalize_display_markdown(format_result.answer)
+        output_policy_decision = evaluate_output_leakage(display_answer)
+        user_answer = enforced_answer(display_answer, output_policy_decision)
         if query_spec is not None:
             try:
                 observe_surface_coverage(

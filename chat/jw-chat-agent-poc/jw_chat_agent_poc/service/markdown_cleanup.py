@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import unescape
 from typing import Final
 
@@ -122,6 +123,17 @@ _EXECUTABLE_DATA_MEDIA_TYPES: Final[tuple[str, ...]] = (
     "data:application/xhtml+xml",
     "data:image/svg+xml",
 )
+_DISPLAY_DECIMAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?P<value>[+-]?\d+(?:,\d{3})*\.\d{3,})(?P<unit>억원|%p|%)"
+)
+_BARE_DISPLAY_DECIMAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9_./:=?&#])(?P<value>[+-]?\d+(?:,\d{3})*\.\d{5,})"
+    r"(?![A-Za-z0-9_./?&#]|억원|%p|%)"
+)
+_HHI_VALUE_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])HHI(?![A-Za-z0-9_])[^.!?\n]{0,32}$"
+)
+_MISSING_VALUE_NOTICE: Final[str] = "- 일부 항목은 근거에서 값을 확인하지 못했습니다."
 
 
 def scrub_internal_terminology(text: str) -> str:
@@ -212,6 +224,67 @@ def cleanup_markdown_answer(markdown: str) -> str:
     text = _remove_duplicate_top_brand_rank_prose(text)
     text = "\n".join(_separate_adjacent_tables_with_different_widths(text.splitlines()))
     return _sanitize_executable_markup(scrub_internal_terminology(text))
+
+
+def finalize_display_markdown(markdown: str) -> str:
+    """Apply user-facing value formatting after internal answer decisions finish."""
+    return _move_missing_placeholders_to_limitations(_format_display_decimals(markdown))
+
+
+def _format_display_decimals(text: str) -> str:
+    def render(
+        value_text: str,
+        decimal_places: int,
+        *,
+        use_grouping: bool = True,
+    ) -> str | None:
+        try:
+            value = Decimal(value_text.replace(",", ""))
+        except InvalidOperation:
+            return None
+        quantum = Decimal(1).scaleb(-decimal_places)
+        grouping = "," if use_grouping else ""
+        return f"{value.quantize(quantum, rounding=ROUND_HALF_UP):{grouping}.{decimal_places}f}"
+
+    def replace_unit_value(match: re.Match[str]) -> str:
+        rendered = render(match.group("value"), 2)
+        return match.group(0) if rendered is None else f"{rendered}{match.group('unit')}"
+
+    with_units = _DISPLAY_DECIMAL_RE.sub(replace_unit_value, text)
+
+    def replace_bare_value(match: re.Match[str]) -> str:
+        line_start = with_units.rfind("\n", 0, match.start()) + 1
+        context = with_units[line_start : match.start()]
+        is_hhi = _HHI_VALUE_CONTEXT_RE.search(context) is not None
+        decimal_places = 4 if is_hhi else 2
+        rendered = render(match.group("value"), decimal_places, use_grouping=not is_hhi)
+        return match.group(0) if rendered is None else rendered
+
+    return _BARE_DISPLAY_DECIMAL_RE.sub(replace_bare_value, with_units)
+
+
+def _move_missing_placeholders_to_limitations(text: str) -> str:
+    if "—" not in text:
+        return text
+    placeholder = re.compile(r"(?m)(?:\|\s*—\s*\||:\s*—\s*$|^\s*—\s*$)")
+    inline_placeholder = re.compile(r"(?m)(?<=[,:])[ \t]*—(?=[ \t]*(?:[,.;]|$))")
+    has_placeholder = (
+        placeholder.search(text) is not None or inline_placeholder.search(text) is not None
+    )
+    cleaned = re.sub(r"(?<=\|)\s*—\s*(?=\|)", " 확인 불가 ", text)
+    cleaned = re.sub(r"(?m)(?<=:)\s*—\s*$", " 확인 불가", cleaned)
+    cleaned = re.sub(r"(?m)^\s*—\s*$", "확인 불가", cleaned)
+    cleaned = inline_placeholder.sub(" 확인 불가", cleaned)
+    cleaned = re.sub(r"[ \t]*—[ \t]*", " - ", cleaned)
+    if not has_placeholder or _MISSING_VALUE_NOTICE in cleaned:
+        return cleaned
+    limitation = f"### 제한사항\n{_MISSING_VALUE_NOTICE}"
+    source = re.search(r"(?m)^## 출처\s*$", cleaned)
+    if source is None:
+        return f"{cleaned.rstrip()}\n\n{limitation}"
+    before = cleaned[: source.start()].rstrip()
+    after = cleaned[source.start() :].lstrip()
+    return f"{before}\n\n{limitation}\n\n{after}"
 
 
 def _normalize_korean_particles(text: str) -> str:

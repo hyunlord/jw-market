@@ -576,7 +576,8 @@ def test_mixed_scope_is_composed_without_synthesis_llm(monkeypatch) -> None:
     )
 
     assert "## 시장 데이터" in final.text
-    assert "## 첨부 문서 — report.pdf" in final.text
+    assert "## 첨부 문서 - report.pdf" in final.text
+    assert "—" not in final.text
     assert "83.18억원" in final.text
     assert "1,200억원" in final.text
     assert "직접 비교" in final.text

@@ -104,6 +104,8 @@ def test_code_present_but_zero_statistics_answer_is_byte_unchanged() -> None:
         ("hira_disease_hospitalization_outpatient_stats", "no_data"),
     ]
     assert hashlib.sha256(final.text.encode()).hexdigest() == (
-        "f4dda7910404f93f8cd9a114a010d510cb9ea2ca297af8b0560598787d494fe2"
+        "e7acb67ad0c6ce353bd73c53687ce9112c22509d96874fbb84d465dcc2e98325"
     )
+    assert "—" not in final.text
+    assert "### 제한사항" in final.text
     assert "DISEASE_CODE_ABSENT" not in str(result)

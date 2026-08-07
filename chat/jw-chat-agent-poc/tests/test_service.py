@@ -2376,7 +2376,8 @@ def test_chat_answer_attaches_file_context_as_document_source(monkeypatch) -> No
     assert response.status_code == 200
     body = response.json()
     assert "CodexA=123.45" in body["text"]
-    assert "| 업로드 파일(sample.xlsx) | \u2014 | 파일 | \u2014 | \u2014 | 전체 | \u2014 |" in body["text"]
+    assert "| 업로드 파일(sample.xlsx) | 확인 불가 | 파일 | 확인 불가 | 확인 불가 | 전체 | 확인 불가 |" in body["text"]
+    assert "—" not in body["text"]
     result = captured["result"]
     assert isinstance(result, dict)
     assert result["file_context"] == "파일: sample.xlsx\nCodexA=123.45"

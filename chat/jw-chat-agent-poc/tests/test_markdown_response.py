@@ -16,7 +16,7 @@ from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.markdown_renderers import _safe_table, drug_info_md
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
 from jw_chat_agent_poc.router.llm_bq_router import GenosBQDecomposer
-from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer
+from jw_chat_agent_poc.service.markdown_cleanup import cleanup_markdown_answer, finalize_display_markdown
 from jw_chat_agent_poc.service.answer_safety import (
     GENERATION_ATTEMPTS,
     append_competitor_patent_coverage_block,
@@ -2998,7 +2998,7 @@ def test_cleanup_renumbers_orphaned_section_headings() -> None:
 점유율 재상승 여부를 확인해야 합니다.
 """
 
-    cleaned = cleanup_markdown_answer(raw)
+    cleaned = finalize_display_markdown(cleanup_markdown_answer(raw))
 
     assert "**1. 시사점 및 한계**" in cleaned
     assert "### 2. 후속 관찰" in cleaned
@@ -3242,6 +3242,80 @@ def test_cleanup_markdown_answer_repairs_common_itneun_typo_only() -> None:
     assert "성장하고 있는" in answer
     assert "정체되고 있는" in answer
     assert "있은" not in answer
+
+
+def test_cleanup_markdown_answer_moves_missing_dash_to_limitations() -> None:
+    raw = """시장정의: —
+
+## 출처
+| 출처 | 기준기간 | 단위 |
+| --- | --- | --- |
+| UBIST | — | 억원 |"""
+
+    cleaned = finalize_display_markdown(cleanup_markdown_answer(raw))
+
+    assert "—" not in cleaned
+    assert "시장정의: 확인 불가" in cleaned
+    assert "| UBIST | 확인 불가 | 억원 |" in cleaned
+    assert "### 제한사항" in cleaned
+    assert "근거에서 값을 확인하지 못했습니다" in cleaned
+    assert cleaned.index("### 제한사항") < cleaned.index("## 출처")
+
+
+def test_cleanup_markdown_answer_rounds_unit_values_half_up_at_display_boundary() -> None:
+    cleaned = finalize_display_markdown(
+        cleanup_markdown_answer(
+            "2024 리바로 매출은 964.836665억원이고 비교값은 79.055216억원입니다. "
+            "HHI는 3188.0404입니다."
+        )
+    )
+
+    assert "964.84억원" in cleaned
+    assert "79.06억원" in cleaned
+    assert "964.836665" not in cleaned
+    assert "79.055216" not in cleaned
+    assert "3188.0404" in cleaned
+
+
+def test_finalize_display_markdown_rounds_bare_values_and_preserves_hhi_precision() -> None:
+    cleaned = finalize_display_markdown(
+        "성장 지표는 9.126493992011786입니다. HHI는 1234.56789입니다."
+    )
+
+    assert "9.13입니다" in cleaned
+    assert "1234.5679입니다" in cleaned
+    assert "9.126493992011786" not in cleaned
+    assert "1234.56789" not in cleaned
+
+
+def test_finalize_display_markdown_reports_source_only_missing_value() -> None:
+    cleaned = finalize_display_markdown(
+        "결과 본문입니다.\n\n## 출처\n| 출처 | 기준기간 |\n| --- | --- |\n| UBIST | — |"
+    )
+
+    assert "—" not in cleaned
+    assert "| UBIST | 확인 불가 |" in cleaned
+    assert "### 제한사항" in cleaned
+    assert cleaned.index("### 제한사항") < cleaned.index("## 출처")
+
+
+def test_finalize_display_markdown_does_not_treat_prose_dash_as_missing_value() -> None:
+    cleaned = finalize_display_markdown("리바로—시장 변화 요약")
+
+    assert cleaned == "리바로 - 시장 변화 요약"
+    assert "확인 불가" not in cleaned
+    assert "### 제한사항" not in cleaned
+
+
+def test_finalize_display_markdown_moves_inline_missing_list_to_limitations() -> None:
+    cleaned = finalize_display_markdown(
+        "질병통계: —, —, 전체, 명, —\n외부 HIRA — D69.3"
+    )
+
+    assert "—" not in cleaned
+    assert "질병통계: 확인 불가, 확인 불가, 전체, 명, 확인 불가" in cleaned
+    assert "외부 HIRA - D69.3" in cleaned
+    assert "### 제한사항" in cleaned
 
 
 def test_cleanup_markdown_answer_preserves_article_titles_verbatim() -> None:
