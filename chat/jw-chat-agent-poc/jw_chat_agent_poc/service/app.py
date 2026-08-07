@@ -1142,7 +1142,13 @@ def _answer_question(
                 effective_question,
                 previous_turn,
                 known_brand=known_brand,
-                allow_contextual_anchor=conversation_id is not None,
+                allow_contextual_anchor=(
+                    conversation_id is not None
+                    and not (
+                        previous_turn is None
+                        and _standalone_market_anchor(effective_question) is not None
+                    )
+                ),
             )
         routing_question = routing_resolution.resolved_question
         has_explicit_market_anchor = market_scope_resolver.has_explicit_anchor(routing_question)
@@ -1860,6 +1866,9 @@ def _ground_unanchored_market_golden(
 
     if has_explicit_anchor or has_file_reference(question):
         return question
+    standalone_anchor = _standalone_market_anchor(question)
+    if standalone_anchor is not None:
+        return standalone_anchor
     top_n = re.fullmatch(
         r"(?:고지혈증|이상지질혈증)(?:\s*시장)?\s*상위\s*(\d+)\s*개?"
         r"(?:\s*브랜드)?(?:\s*(?:알려줘|보여줘))?[?!.]?|"
@@ -1890,6 +1899,21 @@ def _ground_unanchored_market_golden(
     ):
         return "리바로 시장 최근 이슈와 시장 변화"
     return question
+
+
+_STANDALONE_MARKET_ANCHORS: dict[str, str] = {
+    "신규 진입자/위협 브랜드 있어?": "리바로 시장 신규 진입자/위협 브랜드 있어?",
+    "어느 채널/진료과에서 잘 팔려?": "리바로 시장 어느 채널/진료과에서 잘 팔려?",
+    "IQVIA랑 UBIST 수치가 다른데 왜?": "리바로 시장 IQVIA랑 UBIST 수치가 다른데 왜?",
+    "영업활동이 매출에 영향 줬어?": "리바로 시장 영업활동이 매출에 영향 줬어?",
+    "경쟁사 영업활동 변화 있어?": "리바로 시장 경쟁사 영업활동 변화 있어?",
+}
+
+
+def _standalone_market_anchor(question: str) -> str | None:
+    """Return the established strategic-market form for an exact standalone BQ."""
+
+    return _STANDALONE_MARKET_ANCHORS.get(question.strip())
 
 
 def _uses_monthly_market_golden(question: str, grounded_question: str) -> bool:
@@ -2156,6 +2180,9 @@ def _answer_with_conversation(
         question,
         previous_turn,
         known_brand=getattr(market_scope_resolver, "has_explicit_brand_anchor", None),
+        allow_contextual_anchor=not (
+            previous_turn is None and _standalone_market_anchor(question) is not None
+        ),
     )
     if resolution.unresolved_reference:
         return unresolved_reference_result(question)

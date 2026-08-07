@@ -1150,6 +1150,26 @@ def test_direct_agent_loop_returns_typed_brand_ambiguity_before_tools(monkeypatc
             "고지혈증 시장 최근 이슈와 시장 변화",
             "리바로 시장 최근 이슈와 시장 변화",
         ),
+        (
+            "신규 진입자/위협 브랜드 있어?",
+            "리바로 시장 신규 진입자/위협 브랜드 있어?",
+        ),
+        (
+            "어느 채널/진료과에서 잘 팔려?",
+            "리바로 시장 어느 채널/진료과에서 잘 팔려?",
+        ),
+        (
+            "IQVIA랑 UBIST 수치가 다른데 왜?",
+            "리바로 시장 IQVIA랑 UBIST 수치가 다른데 왜?",
+        ),
+        (
+            "영업활동이 매출에 영향 줬어?",
+            "리바로 시장 영업활동이 매출에 영향 줬어?",
+        ),
+        (
+            "경쟁사 영업활동 변화 있어?",
+            "리바로 시장 경쟁사 영업활동 변화 있어?",
+        ),
     ),
 )
 def test_unanchored_market_goldens_are_grounded_before_direct_execution(
@@ -1164,12 +1184,20 @@ def test_unanchored_market_goldens_are_grounded_before_direct_execution(
         captured.append(value)
         return {"answer": "golden", "sources": ["UBIST"], "tool_calls": []}
 
+    class CapturingAgent:
+        def answer(self, value: str, _documents=None, **_kwargs) -> dict:
+            captured.append(value)
+            return {"answer": "golden", "sources": ["UBIST"], "tool_calls": []}
+
+    def capturing_agent_factory(*, external_mode: str = "live") -> CapturingAgent:
+        return CapturingAgent()
+
     monkeypatch.setattr(service_app, "_answer_direct_agent_loop", direct_loop)
 
     item = service_app._answer_question(
         SessionStore(),
         resolver,
-        _fake_agent_factory,
+        capturing_agent_factory,
         question,
         "live",
         "golden-clean-session",
@@ -1179,6 +1207,20 @@ def test_unanchored_market_goldens_are_grounded_before_direct_execution(
     assert captured == [grounded_question]
     assert item["result"]["effective_question"] == grounded_question
     assert item["result"]["context_scope"] == "MARKET"
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "왜 이렇게 됐어?",
+        "존재하지않는브랜드XYZ987654 신규 진입자/위협 브랜드 있어?",
+    ),
+)
+def test_standalone_market_anchor_does_not_capture_context_or_unknown_brand(question: str) -> None:
+    assert service_app._ground_unanchored_market_golden(
+        question,
+        has_explicit_anchor=False,
+    ) == question
 
 
 def test_b05_unanchored_market_status_uses_established_strategic_anchor() -> None:
