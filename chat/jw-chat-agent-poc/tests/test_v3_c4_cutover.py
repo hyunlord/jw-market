@@ -26,6 +26,18 @@ def _legacy_no_tool() -> dict[str, object]:
     }
 
 
+def _legacy_bq(plan_kind: str) -> dict[str, object]:
+    return {
+        "question": "legacy question",
+        "answer": "legacy answer",
+        "sources": ["UBIST"],
+        "tool_calls": [{"tool": "get_brand_metric", "status": "ok"}],
+        "resolution": {"canonical_brand": "리바로"},
+        "router_diagnostics": {"mode": "agent_loop"},
+        "agent_loop_metrics": {"deterministic_plan_kind": plan_kind},
+    }
+
+
 def test_v3_cutover_module_exists() -> None:
     assert importlib.util.find_spec("jw_chat_agent_poc.tool_use.v3_cutover") is not None
 
@@ -62,6 +74,76 @@ def test_disabled_and_non_target_paths_do_not_build_pipeline(monkeypatch) -> Non
     )
     assert answered["answer"] == "80.39억원"
     assert calls == []
+
+
+def test_scope_confirmed_a1_and_c1_use_v3_view_set_without_widening_other_bq() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        V3ServingResult,
+        apply_v3_cutover,
+    )
+
+    class Pipeline:
+        def run(self, question: str) -> V3ServingResult:
+            return V3ServingResult(
+                domain="market",
+                answer=f"{question}\n\n---\n\n## 시장 기본 뷰\n\n시계열은 차트로 표시했습니다.",
+                limitations=(),
+                sources=("market.get_brand_metric",),
+                charts=({"type": "line", "title": "시장 규모 추이", "datasets": []},),
+                trace={"scope_view_set_attached": True},
+                tool_calls=(
+                    {
+                        "tool": "market.get_brand_metric",
+                        "status": "ok",
+                        "render_data": {"brand": "리바로"},
+                    },
+                ),
+            )
+
+    config = V3CutoverConfig(enabled=True, domains=frozenset({"market"}))
+    a1 = apply_v3_cutover(
+        "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+        _legacy_bq("BQ:A1"),
+        config=config,
+        pipeline_factory=Pipeline,
+    )
+    c1 = apply_v3_cutover(
+        "리바로 최근 매출/처방 추이 어때?",
+        _legacy_bq("BQ:C1"),
+        config=config,
+        pipeline_factory=Pipeline,
+    )
+    efg = apply_v3_cutover(
+        "리바로 요청을 검증해줘",
+        _legacy_bq("BQ:E1"),
+        config=config,
+        pipeline_factory=lambda: (_ for _ in ()).throw(AssertionError("must not build")),
+    )
+
+    assert a1["v3_cutover_ready"] is True
+    assert c1["v3_cutover_ready"] is True
+    assert "시장 기본 뷰" in str(a1["answer"])
+    assert "시계열은 차트로 표시했습니다" in str(c1["answer"])
+    assert a1["charts"] and c1["charts"]
+    assert efg["answer"] == "legacy answer"
+
+
+def test_a1_c1_view_set_cutover_requires_explicit_market_scope() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        apply_v3_cutover,
+    )
+
+    legacy = _legacy_bq("BQ:C1")
+    result = apply_v3_cutover(
+        "최근 매출 추이 어때?",
+        legacy,
+        config=V3CutoverConfig(enabled=True),
+        pipeline_factory=lambda: (_ for _ in ()).throw(AssertionError("must not build")),
+    )
+
+    assert result is legacy
 
 
 def test_uncovered_result_is_replaced_only_for_enabled_domain() -> None:
