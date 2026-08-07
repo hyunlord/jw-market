@@ -4,8 +4,13 @@ import os
 import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
+from jw_chat_agent_poc.agent_loop.requested_source import (
+    extract_requested_sources,
+    normalize_source,
+)
 from jw_chat_agent_poc.orchestrator.markdown_formatting import NUMBER_RE, normalize_number
 
 from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
@@ -13,6 +18,11 @@ from jw_chat_agent_poc.orchestrator.tool_use_contract import (
     missing_tool_use_requirements,
     tool_call_status,
     tool_use_evidence_complete,
+)
+from jw_chat_agent_poc.resolver.brand_resolver import (
+    AmbiguousBrandError,
+    BrandResolver,
+    UnsupportedBrandError,
 )
 
 _RETIRED_CAUSE_CACHE = "cache" + "_cause"
@@ -359,6 +369,7 @@ def _completed_answer_contract(question: str, answer: str, fact_md: str) -> bool
 
 
 def _has_supported_required_bq_output(
+    question: str,
     answer: str,
     tool_calls: Sequence[Mapping[str, Any]],
 ) -> bool:
@@ -382,7 +393,70 @@ def _has_supported_required_bq_output(
         summary = sanitize_internal_diagnostics(str(call.get("summary_text") or "")).strip()
         if has_supported_required and summary and summary in answer:
             return True
+        if (
+            render_data.get("contract_id") == "B1"
+            and _has_supported_share_of_growth(render_data, answer)
+            and _bq_evidence_matches_question(question, render_data)
+        ):
+            return True
     return False
+
+
+def _has_supported_share_of_growth(render_data: Mapping[str, Any], answer: str) -> bool:
+    coverage = render_data.get("slot_coverage")
+    if not isinstance(coverage, Sequence) or isinstance(coverage, (str, bytes)):
+        return False
+    supported = any(
+        isinstance(item, Mapping)
+        and item.get("slot_id") == "share_of_growth"
+        and item.get("tier") == "required"
+        and item.get("status") == "supported"
+        for item in coverage
+    )
+    if not supported or "share-of-growth" not in answer.casefold():
+        return False
+    if render_data.get("share_of_growth_pct") is not None:
+        return True
+    results = render_data.get("source_results")
+    return isinstance(results, Sequence) and not isinstance(results, (str, bytes)) and any(
+        isinstance(item, Mapping) and item.get("share_of_growth_pct") is not None
+        for item in results
+    )
+
+
+def _bq_evidence_matches_question(question: str, render_data: Mapping[str, Any]) -> bool:
+    requested_sources = frozenset(extract_requested_sources(question))
+    served_sources = frozenset(
+        normalized
+        for label in render_data.get("source_labels", ())
+        if (normalized := normalize_source(label)) is not None
+    )
+    if requested_sources and not requested_sources <= served_sources:
+        return False
+
+    ledger = render_data.get("evidence_ledger")
+    if not isinstance(ledger, Sequence) or isinstance(ledger, (str, bytes)):
+        return False
+    evidence_subjects = {
+        str(item.get("subject") or "").strip()
+        for item in ledger
+        if isinstance(item, Mapping) and str(item.get("subject") or "").strip()
+    }
+    return bool(evidence_subjects & _resolved_question_brands(question))
+
+
+@lru_cache(maxsize=256)
+def _resolved_question_brands(question: str) -> frozenset[str]:
+    try:
+        resolved = _fixture_brand_resolver().resolve_many(question, allow_default=False)
+    except (AmbiguousBrandError, UnsupportedBrandError):
+        return frozenset()
+    return frozenset(item.canonical_brand for item in resolved)
+
+
+@lru_cache(maxsize=1)
+def _fixture_brand_resolver() -> BrandResolver:
+    return BrandResolver(mode="fixture")
 
 
 def _four_stage_unavailable_gate(
@@ -436,6 +510,7 @@ def _four_stage_unavailable_gate(
             return _unverified_answer(f"필요 근거({', '.join(missing)})가 이번 턴에 완성되지 않았습니다")
     if not question_has_unavailable_signal and successful_fact_call:
         if _completed_answer_contract(question, answer, fact_md) or _has_supported_required_bq_output(
+            question,
             answer,
             calls,
         ):

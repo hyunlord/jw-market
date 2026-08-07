@@ -718,6 +718,84 @@ def test_unavailable_gate_surfaces_owned_fact_instead_of_false_absence() -> None
     assert "원천에 없음" not in revised
 
 
+def test_unavailable_gate_preserves_matched_b1_required_facts_without_verbatim_summary() -> None:
+    question = "리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?"
+    answer = "리바로의 시장 성장분 중 브랜드 몫(share-of-growth)은 3.34%입니다. 일부 항목은 확인 불가합니다."
+    fact_md = "리바로 UBIST 지표 fact: share-of-growth 3.34%, 점유율 변화 0.69%p"
+    calls = [
+        {
+            "tool": "bq_analysis",
+            "status": "ok",
+            "summary_text": "요약 문장은 최초 답변과 일치하지 않습니다.",
+            "render_data": {
+                "contract_id": "B1",
+                "source_labels": ["UBIST"],
+                "share_of_growth_pct": 3.34,
+                "slot_coverage": [
+                    {"slot_id": "share_of_growth", "tier": "required", "status": "supported"},
+                ],
+                "evidence_ledger": [
+                    {"source": "UBIST", "kind": "trend", "subject": "리바로"},
+                ],
+            },
+        }
+    ]
+
+    revised = apply_common_unavailable_response(
+        question,
+        answer,
+        {"fact_md": fact_md},
+        tool_calls=calls,
+    )
+
+    assert "share-of-growth" in revised
+    assert "3.34%" in revised
+
+
+@pytest.mark.parametrize(
+    ("question", "subject", "source_labels"),
+    (
+        ("존재하지않는브랜드XYZ987654 시장 경쟁 구도가 최근 어떻게 변하고 있어?", "리바로", ["UBIST"]),
+        ("리바로젯 시장 경쟁 구도가 최근 어떻게 변하고 있어?", "리바로", ["UBIST"]),
+        ("리바로 IQVIA 시장 경쟁 구도가 최근 어떻게 변하고 있어?", "리바로", ["UBIST"]),
+    ),
+)
+def test_unavailable_gate_does_not_preserve_mismatched_b1_facts(
+    question: str,
+    subject: str,
+    source_labels: list[str],
+) -> None:
+    answer = "리바로의 시장 성장분 중 브랜드 몫(share-of-growth)은 3.34%입니다. 일부 항목은 확인 불가합니다."
+    calls = [
+        {
+            "tool": "bq_analysis",
+            "status": "ok",
+            "summary_text": "요약 문장은 최초 답변과 일치하지 않습니다.",
+            "render_data": {
+                "contract_id": "B1",
+                "source_labels": source_labels,
+                "share_of_growth_pct": 3.34,
+                "slot_coverage": [
+                    {"slot_id": "share_of_growth", "tier": "required", "status": "supported"},
+                ],
+                "evidence_ledger": [
+                    {"source": "UBIST", "kind": "trend", "subject": subject},
+                ],
+            },
+        }
+    ]
+
+    revised = apply_common_unavailable_response(
+        question,
+        answer,
+        {"fact_md": "리바로 UBIST 지표 fact: share-of-growth 3.34%"},
+        tool_calls=calls,
+    )
+
+    assert revised != answer
+    assert "share-of-growth" not in revised
+
+
 def test_unavailable_gate_never_surfaces_internal_fact_markdown_for_mixed_tool_results() -> None:
     fact_md = """## 확정 데이터
 
