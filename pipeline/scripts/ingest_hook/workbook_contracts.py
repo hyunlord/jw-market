@@ -14,6 +14,7 @@ class WorkbookSummary:
 
 def summarize(category: str, path: Path, epoch: str) -> WorkbookSummary:
     readers = {
+        "ubist": _ubist,
         "iqvia_nsa": _nsa,
         "iqvia_csd_channel": _csd,
         "iqvia_csd_keyword": _keyword,
@@ -24,6 +25,20 @@ def summarize(category: str, path: Path, epoch: str) -> WorkbookSummary:
     except KeyError as exc:
         raise ValueError(f"no workbook contract for category {category!r}") from exc
     return reader(path, epoch)
+
+
+def _ubist(path: Path, _epoch: str) -> WorkbookSummary:
+    from pipeline.etl.io.ubist_loader import count_source_rows_by_period
+
+    counts = count_source_rows_by_period(path)
+    row_count = sum(counts.values())
+    if row_count == 0:
+        raise ValueError("UBIST workbook has no parseable metric rows")
+    return WorkbookSummary(
+        row_count,
+        frozenset(counts),
+        "ubist_loader.count_source_rows_by_period",
+    )
 
 
 def _nsa(path: Path, _epoch: str) -> WorkbookSummary:

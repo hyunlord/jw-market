@@ -11,6 +11,7 @@ Endpoints (the site's whole contract surface):
   POST /ingest/terminal  (terminal completion signal from an ingest Job)
   GET  /ingest/queue     optional ?category=
   GET  /ingest/status    ?epoch=&category=&manifest_sha=
+  GET  /ingest/history   ?limit=&offset=
   POST /ingest/force-stop (exact active run only)
   POST /ingest/reconcile  (promote queued submissions; sweep/ops helper)
   GET  /healthz
@@ -24,7 +25,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import sleep as _sleep
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -45,6 +46,11 @@ from pipeline.scripts.ingest_hook.ledger import (
     STATUS_RUNNING,
     Ledger,
     LedgerConnectionError,
+)
+from pipeline.scripts.ingest_hook.source_inventory import (
+    DEFAULT_INVENTORY_ROOT,
+    SourceInventoryError,
+    read_inventory_snapshot,
 )
 
 PORTAL_QUEUE_CATEGORIES = frozenset(
@@ -105,6 +111,13 @@ class PublishApprovalPayload(BaseModel):
     requested_by: str
 
 
+class AutomaticPublishPayload(BaseModel):
+    epoch: str
+    category: str
+    manifest_sha: str
+    run_id: str
+
+
 class IngestService:
     def __init__(
         self,
@@ -119,6 +132,7 @@ class IngestService:
         timestamp=None,
         sleep=None,
         deletion_attempts: int = 30,
+        inventory_root: Path | None = None,
     ):
         self.ledger = ledger
         self.input_root = input_root
@@ -131,6 +145,7 @@ class IngestService:
         self.timestamp = timestamp or (lambda: datetime.now(timezone.utc).isoformat())
         self.sleep = sleep or _sleep
         self.deletion_attempts = deletion_attempts
+        self.inventory_root = inventory_root or DEFAULT_INVENTORY_ROOT
         self._promotion_locks: dict[str, threading.Lock] = {}
         self._promotion_locks_guard = threading.Lock()
 
@@ -141,7 +156,25 @@ class IngestService:
     def drain_idle_queues(self) -> dict[str, dict[str, str]]:
         """Make one startup pass over queued categories missed by callbacks."""
         launched: dict[str, str] = {}
+        automatic_publishes: dict[str, str] = {}
         errors: dict[str, str] = {}
+        for candidate in self.ledger.awaiting_publish_candidates():
+            if not isinstance(candidate.payload.get("automatic_publish"), dict):
+                continue
+            try:
+                result = self.publish_automatic(
+                    AutomaticPublishPayload(
+                        epoch=candidate.epoch,
+                        category=candidate.category,
+                        manifest_sha=candidate.manifest_sha,
+                        run_id=candidate.build_run_id,
+                    )
+                )
+                automatic_publishes[candidate.category] = str(
+                    result["publish_job_name"]
+                )
+            except Exception as exc:  # one category must not block startup
+                errors[candidate.category] = f"{type(exc).__name__}: {exc}"
         categories = set(self.ledger.queued_categories())
         categories.update(
             candidate.category for candidate in self.ledger.awaiting_publish_candidates()
@@ -154,7 +187,10 @@ class IngestService:
                 continue
             if job_name is not None:
                 launched[category] = job_name
-        return {"launched": launched, "errors": errors}
+        result = {"launched": launched, "errors": errors}
+        if automatic_publishes:
+            result["automatic_publishes"] = automatic_publishes
+        return result
 
     # -- promotion: one running Job per category, FIFO within a category ----
     def promote(self, category: str) -> str | None:
@@ -970,6 +1006,38 @@ class IngestService:
             "idempotent": False,
         }
 
+    def publish_automatic(self, payload: AutomaticPublishPayload) -> dict:
+        """Publish one exact prepared identity only after every hard gate passed."""
+        candidate = self.ledger.prepared_candidate(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+        )
+        if candidate is None or candidate.build_run_id != payload.run_id:
+            raise HTTPException(status_code=409, detail="automatic publish candidate mismatch")
+        contract = candidate.payload.get("automatic_publish")
+        if not isinstance(contract, dict):
+            raise HTTPException(status_code=409, detail="automatic publish evidence is absent")
+        hard_gates = contract.get("hard_gates")
+        required = {f"PG-{index}" for index in range(1, 6)}
+        if not isinstance(hard_gates, dict) or any(
+            hard_gates.get(gate) != "pass" for gate in required
+        ):
+            raise HTTPException(status_code=409, detail="automatic publish hard gates did not pass")
+        candidate_integrity = candidate.payload.get("candidate_integrity")
+        build_integrity = candidate.payload.get("build_table_integrity")
+        if not isinstance(candidate_integrity, dict) or not isinstance(build_integrity, list) or not build_integrity:
+            raise HTTPException(status_code=409, detail="automatic publish integrity evidence is absent")
+        return self.approve_publish(
+            PublishApprovalPayload(
+                epoch=payload.epoch,
+                category=payload.category,
+                manifest_sha=payload.manifest_sha,
+                run_id=payload.run_id,
+                requested_by="system:full-scan-auto-publish",
+            )
+        )
+
 
 def create_app(service: IngestService) -> FastAPI:
     @asynccontextmanager
@@ -1163,6 +1231,88 @@ def create_app(service: IngestService) -> FastAPI:
             },
         }
 
+    @app.get("/ingest/history")
+    def history(
+        limit: int = Query(default=100, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict:
+        identities, has_more = service.ledger.history_identities(
+            limit=limit, offset=offset
+        )
+        items = []
+        for identity in identities:
+            entry = service.ledger.status(
+                identity.epoch, identity.category, identity.manifest_sha
+            )
+            events = [
+                event
+                for event in service.ledger.stage_events(
+                    identity.epoch, identity.category, identity.manifest_sha
+                )
+                if event.run_id == identity.run_id
+            ]
+            run_entry = entry if entry is not None and entry.run_id == identity.run_id else None
+            items.append(
+                {
+                    "epoch": identity.epoch,
+                    "category": identity.category,
+                    "manifest_sha": identity.manifest_sha,
+                    "run_id": identity.run_id,
+                    "observed_at": identity.observed_at,
+                    "ledger": (
+                        {
+                            "status": run_entry.status,
+                            "reason": run_entry.reason,
+                            "job_name": run_entry.job_name,
+                            "uploaded_by": run_entry.uploaded_by,
+                            "received_at": run_entry.received_at,
+                            "started_at": run_entry.started_at,
+                            "finished_at": run_entry.finished_at,
+                        }
+                        if run_entry is not None
+                        else None
+                    ),
+                    "stages": [
+                        {
+                            "seq": event.seq,
+                            "stage": event.stage,
+                            "status": event.status,
+                            "reason": event.reason,
+                            "started_at": event.started_at,
+                            "finished_at": event.finished_at,
+                            "duration_ms": event.duration_ms,
+                        }
+                        for event in events
+                    ],
+                }
+            )
+        return {
+            "items": items,
+            "next_offset": offset + limit if has_more else None,
+        }
+
+    @app.get("/ingest/inventory")
+    def inventory(
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        run_id: str,
+    ) -> dict:
+        try:
+            return read_inventory_snapshot(
+                service.inventory_root,
+                category=category,
+                epoch=epoch,
+                manifest_sha=manifest_sha,
+                run_id=run_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="inventory snapshot not recorded"
+            ) from exc
+        except SourceInventoryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/ingest/terminal")
     def terminal(payload: TerminalPayload) -> dict:
         category = payload.source or payload.category
@@ -1270,6 +1420,10 @@ def create_app(service: IngestService) -> FastAPI:
     @app.post("/ingest/publish/approve")
     def approve_publish(payload: PublishApprovalPayload) -> dict:
         return service.approve_publish(payload)
+
+    @app.post("/ingest/publish/automatic")
+    def publish_automatic(payload: AutomaticPublishPayload) -> dict:
+        return service.publish_automatic(payload)
 
     @app.get("/ingest/logs")
     def logs(

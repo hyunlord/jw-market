@@ -27,6 +27,8 @@ ENV_COMPLETION_WEBHOOK_ATTEMPTS = "INGEST_COMPLETION_WEBHOOK_ATTEMPTS"
 ENV_QUEUE_DRAIN_WEBHOOK_URL = "INGEST_QUEUE_DRAIN_WEBHOOK_URL"
 ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS = "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS"
 ENV_WEBHOOK_PROMOTE_EXACT = "INGEST_WEBHOOK_PROMOTE_EXACT"
+ENV_FULL_SCAN_ENABLED = "INGEST_FULL_SCAN_ENABLED"
+ENV_AUTOMATIC_PUBLISH_WEBHOOK_URL = "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -51,6 +53,18 @@ def webhook_promote_exact() -> bool:
     if value not in {"0", "1"}:
         raise RuntimeError(f"{ENV_WEBHOOK_PROMOTE_EXACT} must be 0 or 1")
     return value == "1"
+
+
+def full_scan_enabled() -> bool:
+    """Require the source-wide inventory contract for production loading."""
+    value = os.environ.get(ENV_FULL_SCAN_ENABLED, "0").strip()
+    if value not in {"0", "1"}:
+        raise RuntimeError(f"{ENV_FULL_SCAN_ENABLED} must be 0 or 1")
+    return value == "1"
+
+
+def automatic_publish_webhook() -> str:
+    return os.environ.get(ENV_AUTOMATIC_PUBLISH_WEBHOOK_URL, "").strip()
 
 
 def log_root_hint() -> str:

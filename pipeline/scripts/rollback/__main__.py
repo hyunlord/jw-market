@@ -35,8 +35,8 @@ def _retention_parser() -> argparse.ArgumentParser:
     mode.add_argument("--list", action="store_true")
     mode.add_argument("--apply", action="store_true")
     parser.add_argument("--yes", action="store_true")
-    parser.add_argument("--keep-generations", type=int, default=2)
-    parser.add_argument("--keep-backup-runs", type=int, default=3)
+    parser.add_argument("--keep-generations", type=int, default=1)
+    parser.add_argument("--keep-backup-runs", type=int, default=1)
     return parser
 
 

@@ -15,6 +15,13 @@ import pymysql
 
 from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook import ubist_mart_activation
+from pipeline.scripts.ingest_hook.source_inventory import (
+    FileObservation,
+    PeriodGate,
+    PeriodGateResult,
+    ScanOutcome,
+    ScanSnapshot,
+)
 from pipeline.scripts.ingest_hook.category_map import resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
 from pipeline.scripts.ingest_hook.load_verify import (
@@ -198,6 +205,144 @@ def test_real_load_injects_file_and_target(staging_env, bucket, monkeypatch):
     assert seen["argv"][seen["argv"].index("--file") + 1].endswith("data.csv")
     assert result["epoch_rows"] == 7
     assert result["staging_verify"] is True
+
+
+def test_real_load_uses_only_content_classified_full_scan_inputs(
+    staging_env,
+    bucket,
+    monkeypatch,
+    tmp_path,
+):
+    manifest = _manifest(bucket, epoch="2026-03")
+    classified = (tmp_path / "all-a.xlsx", tmp_path / "all-b.xlsx")
+    for path in classified:
+        path.write_bytes(b"xlsx")
+    observed: list[str] = []
+
+    def fake_run(_label, argv):
+        observed.append(argv[argv.index("--file") + 1])
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_load_manifest(target, "2026-03", 7)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    job_runner._real_load(manifest, UBIST, bucket, source_files=classified)
+
+    assert observed == [str(classified[0]), str(classified[1])]
+
+
+def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(
+    staging_env,
+    bucket,
+    monkeypatch,
+    tmp_path,
+):
+    manifest = _manifest(bucket, epoch="2026-03")
+    classified = tmp_path / "operating.xlsx"
+    classified.write_bytes(b"xlsx")
+    calls: list[str] = []
+
+    class Policy:
+        root = tmp_path
+
+    def fake_run_full_scan(policy, **kwargs):
+        calls.append("scan")
+        result = kwargs["rebuild"]((classified,))
+        calls.append("snapshot")
+        return type("Outcome", (), {"rebuild_result": result})()
+
+    monkeypatch.setattr(job_runner, "load_scan_policy", lambda category, required: Policy())
+    monkeypatch.setattr(job_runner, "latest_successful_snapshot", lambda root, category: None)
+    monkeypatch.setattr(job_runner, "run_full_scan", fake_run_full_scan)
+    monkeypatch.setattr(
+        job_runner,
+        "_real_load",
+        lambda *args, source_files=None, **kwargs: (
+            calls.append(f"load:{source_files[0].name}")
+            or {"epoch_rows": 1, "rows_before": 0, "rows_loaded": 1, "staging_verify": True}
+        ),
+    )
+
+    result, outcome = job_runner._load_with_source_inventory(
+        manifest,
+        UBIST,
+        bucket,
+        run_id="scan-run",
+        target_dir_override=None,
+        required=True,
+    )
+
+    assert result["rows_loaded"] == 1
+    assert outcome is not None
+    assert calls == ["scan", "load:operating.xlsx", "snapshot"]
+
+
+def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
+    snapshot = ScanSnapshot(
+        schema_version="1",
+        category="ubist",
+        epoch="2026-06",
+        manifest_sha="a" * 64,
+        run_id="scan-run",
+        observed_at="2026-08-07T00:00:00+00:00",
+        files=(FileObservation("source.xlsx", "b" * 64, 10, "classified", category="ubist"),),
+    )
+    gates = PeriodGateResult(
+        pg4=PeriodGate("PG-4", "pass", (), "continuous"),
+        pg5=PeriodGate("PG-5", "pass", (), "explained"),
+        pg6=PeriodGate("PG-6", "warning", (), "value drift"),
+        pg7=PeriodGate("PG-7", "warning", (), "newest drift"),
+    )
+    outcome = ScanOutcome(snapshot, tmp_path / "snapshot.json", None, gates, {})
+
+    contract = job_runner._automatic_publish_contract(outcome)
+
+    assert contract["hard_gates"] == {
+        "PG-1": "pass",
+        "PG-2": "pass",
+        "PG-3": "pass",
+        "PG-4": "pass",
+        "PG-5": "pass",
+    }
+    assert contract["warnings"] == {"PG-6": "warning", "PG-7": "warning"}
+
+
+def test_automatic_publish_request_uses_exact_identity_and_timeout(monkeypatch):
+    observed: dict[str, object] = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def opener(request, data=None, timeout=0):
+        observed["payload"] = json.loads(request.data)
+        observed["data"] = data
+        observed["timeout"] = timeout
+        return Response()
+
+    result = job_runner._request_automatic_publish(
+        ("2026-06", "ubist", "c" * 64),
+        run_id="build-run",
+        endpoint="http://hook/ingest/publish/automatic",
+        opener=opener,
+    )
+
+    assert result == 200
+    assert observed == {
+        "payload": {
+            "epoch": "2026-06",
+            "category": "ubist",
+            "manifest_sha": "c" * 64,
+            "run_id": "build-run",
+        },
+        "data": None,
+        "timeout": 15,
+    }
 
 
 def test_real_load_keeps_manifest_isolation_in_staging(staging_env, bucket, monkeypatch):
@@ -524,6 +669,44 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
         "_run_commands_with_writer_lock",
         lambda label, argv, **_kwargs: fake_run(label, argv),
     )
+    original_inventory_load = job_runner._load_with_source_inventory
+
+    def load_with_inventory(*args, **kwargs):
+        result, _outcome = original_inventory_load(*args, **kwargs)
+        snapshot = ScanSnapshot(
+            "1",
+            "ubist",
+            "2026-07",
+            manifest.manifest_sha,
+            "inventory-run",
+            "2026-08-07T00:00:00Z",
+            (),
+        )
+        gates = PeriodGateResult(
+            PeriodGate("PG-4", "pass", (), "continuous"),
+            PeriodGate("PG-5", "pass", (), "no unexplained loss"),
+            PeriodGate("PG-6", "warning", (), "row drift"),
+            PeriodGate("PG-7", "warning", ("2026-07",), "newest period changed"),
+        )
+        return result, ScanOutcome(
+            snapshot,
+            tmp_path / "inventory.json",
+            None,
+            gates,
+            result,
+        )
+
+    monkeypatch.setattr(job_runner, "_load_with_source_inventory", load_with_inventory)
+
+    def request_automatic(identity, *, run_id, endpoint):
+        candidate = sqlite_ledger.prepared_candidate(*identity)
+        assert candidate is not None
+        assert candidate.build_run_id == run_id
+        assert candidate.payload["automatic_publish"]["hard_gates"]["PG-5"] == "pass"
+        order.append("automatic_publish")
+        return 200
+
+    monkeypatch.setattr(job_runner, "_request_automatic_publish", request_automatic)
 
     assert job_runner.run(
         manifest_path, input_root=bucket, ledger=sqlite_ledger, rehearsal_root=None
@@ -535,6 +718,7 @@ def test_production_ubist_orders_shadow_gate_publish_then_refresh(
     assert "mart_publish" not in order
     assert "refresh" not in order
     assert "ledger:complete" not in order
+    assert "automatic_publish" in order
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
     assert entry.status == "awaiting_approval"
     candidate = sqlite_ledger.prepared_candidate(

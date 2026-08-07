@@ -9,6 +9,7 @@ import pytest
 from pipeline.scripts.rollback.ledger import PromotionLedger
 from pipeline.scripts.rollback.models import REQUIRED_COMPONENTS, TableBackup
 from pipeline.scripts.rollback.planner import build_retention_plan, build_rollback_plan
+from pipeline.scripts.rollback.__main__ import parse_args
 from pipeline.scripts.rollback.recording import (
     PromotionIdentity,
     identity_from_args,
@@ -332,6 +333,16 @@ def test_retention_never_selects_runtime_serving_db_by_name(serving_db: str) -> 
 
     assert serving_db not in plan.generation_candidates
     assert plan.protected_serving_db == serving_db
+
+
+def test_retention_cli_keeps_one_old_backup_run_by_default() -> None:
+    action, args = parse_args(["retention", "--list", "--target-db", "serving"])
+
+    assert action == "retention"
+    assert args.keep_generations == 1
+    assert args.keep_backup_runs == 1
+    assert args.apply is False
+    assert args.yes is False
 
 
 def test_epoch_reverse_lookup_returns_promoted_generation() -> None:

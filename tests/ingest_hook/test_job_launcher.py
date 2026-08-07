@@ -464,6 +464,37 @@ def test_rendered_job_passes_load_staging_root(monkeypatch):
     assert env["INGEST_COMPLETION_WEBHOOK_ATTEMPTS"]["value"] == "5"
 
 
+def test_rendered_job_passes_full_scan_and_automatic_publish_contract(monkeypatch):
+    policies = (
+        '{"ubist":{"root":"/nfs-root/autoIngestion/ubist",'
+        '"period_unit":"month","excluded_relative_roots":[]}}'
+    )
+    monkeypatch.setenv("INGEST_FULL_SCAN_ENABLED", "1")
+    monkeypatch.setenv("INGEST_SOURCE_SCAN_POLICIES_JSON", policies)
+    monkeypatch.setenv(
+        "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL",
+        "http://jw-ingest-hook.llmops.svc.cluster.local:8080/ingest/publish/automatic",
+    )
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/m.json",
+        namespace="llmops",
+    )
+
+    env = {
+        item["name"]: item["value"]
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+        if "value" in item
+    }
+    assert env["INGEST_FULL_SCAN_ENABLED"] == "1"
+    assert env["INGEST_SOURCE_SCAN_POLICIES_JSON"] == policies
+    assert env["INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL"].endswith(
+        "/ingest/publish/automatic"
+    )
+
+
 def test_rendered_job_passes_production_catalog_inputs(monkeypatch):
     monkeypatch.setenv("JW_MARKET_CATALOG_ROOT", "/market-output/catalog")
     monkeypatch.setenv(

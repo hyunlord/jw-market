@@ -345,6 +345,15 @@ class StageEvent:
 
 
 @dataclass(frozen=True)
+class HistoryIdentity:
+    epoch: str
+    category: str
+    manifest_sha: str
+    run_id: str
+    observed_at: str
+
+
+@dataclass(frozen=True)
 class SignalEvent:
     run_id: str
     event: str
@@ -1586,6 +1595,73 @@ class Ledger:
     def status(self, epoch: str, category: str, manifest_sha: str) -> LedgerEntry | None:
         row = self._fetch_row(epoch, category, manifest_sha)
         return self._entry(row) if row is not None else None
+
+    def history_identities(
+        self, *, limit: int, offset: int = 0
+    ) -> tuple[list[HistoryIdentity], bool]:
+        """Page all observable runs across ledger and stage-event ownership.
+
+        A publish, recovery, or agent run can exist only in ``ingest_stage_event``.
+        A build run whose best-effort stage write failed can survive only in the
+        append-only status-transition evidence after a retry replaces the ledger
+        run ID. Paging identities after the union keeps both cases visible without
+        splitting stage rows across pages.
+        """
+        if limit < 1 or limit > 200:
+            raise ValueError("history limit must be between 1 and 200")
+        if offset < 0:
+            raise ValueError("history offset must be non-negative")
+        if self._dialect == "mysql":
+            transition_run_id = (
+                "COALESCE("
+                "JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.run_id')) ,"
+                "JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.publish_run_id')) ,"
+                "JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.build_run_id')))"
+            )
+        else:
+            transition_run_id = (
+                "COALESCE("
+                "json_extract(evidence_json, '$.run_id'),"
+                "json_extract(evidence_json, '$.publish_run_id'),"
+                "json_extract(evidence_json, '$.build_run_id'))"
+            )
+        cursor = self._execute(
+            "SELECT epoch, category, manifest_sha, run_id, MAX(observed_at)"
+            " FROM ("
+            " SELECT epoch, category, manifest_sha, run_id,"
+            " COALESCE(finished_at, started_at, received_at) AS observed_at"
+            " FROM ingest_ledger WHERE run_id IS NOT NULL AND run_id<>''"
+            " UNION ALL"
+            " SELECT epoch, category, manifest_sha, run_id,"
+            " COALESCE(finished_at, started_at) AS observed_at"
+            " FROM ingest_stage_event WHERE run_id<>''"
+            " UNION ALL"
+            " SELECT epoch, category, manifest_sha,"
+            f" {transition_run_id} AS run_id, created_at AS observed_at"
+            " FROM ingest_status_transition"
+            f" WHERE {transition_run_id} IS NOT NULL"
+            f" AND {transition_run_id}<>''"
+            " ) AS ingest_history_activity"
+            " GROUP BY epoch, category, manifest_sha, run_id"
+            " ORDER BY MAX(observed_at) DESC, run_id DESC"
+            " LIMIT ? OFFSET ?",
+            (limit + 1, offset),
+        )
+        rows = cursor.fetchall()
+        has_more = len(rows) > limit
+        identities: list[HistoryIdentity] = []
+        for row in rows[:limit]:
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            identities.append(
+                HistoryIdentity(
+                    epoch=str(values[0]),
+                    category=str(values[1]),
+                    manifest_sha=str(values[2]),
+                    run_id=str(values[3]),
+                    observed_at=str(values[4]),
+                )
+            )
+        return identities, has_more
 
     def prepared_candidate(
         self, epoch: str, category: str, manifest_sha: str

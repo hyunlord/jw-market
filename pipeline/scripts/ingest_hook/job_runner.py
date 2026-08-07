@@ -55,6 +55,15 @@ from pipeline.scripts.ingest_hook.post_gate import (
     staging_row_count,
 )
 from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_staging
+from pipeline.scripts.ingest_hook.source_inventory import (
+    DEFAULT_INVENTORY_ROOT,
+    ScanOutcome,
+    run_full_scan,
+)
+from pipeline.scripts.ingest_hook.source_inventory_runtime import (
+    latest_successful_snapshot,
+    load_scan_policy,
+)
 
 
 def _run_id() -> str:
@@ -378,7 +387,14 @@ def _epoch_rows(target_dir: Path, epoch: str) -> int:
     )
 
 
-def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | None = None) -> dict:
+def _real_load(
+    manifest,
+    spec,
+    input_root: Path,
+    *,
+    target_dir_override: Path | None = None,
+    source_files: tuple[Path, ...] | None = None,
+) -> dict:
     """Wire the materialized upload into the loader, run it, and prove the epoch
     landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
 
@@ -417,7 +433,11 @@ def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | 
     rows_before = _epoch_rows(target_dir, manifest.epoch)
     _seed_empty_manifest(target_dir, spec.load_verify)
 
-    read_files = [str((input_root / entry.path).resolve()) for entry in manifest.files]
+    read_files = (
+        [str(path.resolve()) for path in source_files]
+        if source_files is not None
+        else [str((input_root / entry.path).resolve()) for entry in manifest.files]
+    )
     source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
     for sources in source_batches:
         argv = list(spec.load_argv)
@@ -454,6 +474,103 @@ def _real_load(manifest, spec, input_root: Path, *, target_dir_override: Path | 
         "rows_loaded": rows_loaded,
         "staging_verify": staging_verify,
     }
+
+
+def _load_with_source_inventory(
+    manifest,
+    spec,
+    input_root: Path,
+    *,
+    run_id: str,
+    target_dir_override: Path | None,
+    required: bool,
+) -> tuple[dict, ScanOutcome | None]:
+    """Run a source-wide scan and publish its immutable anchor after load."""
+    policy = load_scan_policy(manifest.category, required=required)
+    if policy is None:
+        return (
+            _real_load(
+                manifest,
+                spec,
+                input_root,
+                target_dir_override=target_dir_override,
+            ),
+            None,
+        )
+    previous = latest_successful_snapshot(DEFAULT_INVENTORY_ROOT, manifest.category)
+    outcome = run_full_scan(
+        policy,
+        epoch=manifest.epoch,
+        manifest_sha=manifest.manifest_sha,
+        run_id=run_id,
+        output_root=DEFAULT_INVENTORY_ROOT,
+        previous=previous,
+        rebuild=lambda source_files: _real_load(
+            manifest,
+            spec,
+            input_root,
+            target_dir_override=target_dir_override,
+            source_files=source_files,
+        ),
+    )
+    return dict(outcome.rebuild_result), outcome
+
+
+def _automatic_publish_contract(outcome: ScanOutcome) -> dict[str, object]:
+    """Serialize the approved hard-gate and warning contract for the hook."""
+    gates = outcome.gates
+    return {
+        "hard_gates": {
+            "PG-1": "pass",
+            "PG-2": "pass",
+            "PG-3": "pass",
+            "PG-4": gates.pg4.status,
+            "PG-5": gates.pg5.status,
+        },
+        "warnings": {
+            "PG-6": gates.pg6.status,
+            "PG-7": gates.pg7.status,
+        },
+        "inventory_snapshot": str(outcome.snapshot_path),
+    }
+
+
+def _request_automatic_publish(
+    identity: tuple[str, str, str],
+    *,
+    run_id: str,
+    endpoint: str,
+    opener=None,
+) -> int:
+    """Request exact automatic publication after the candidate is durable."""
+    import json
+    import urllib.request
+
+    if not endpoint:
+        raise RuntimeError("automatic publish endpoint is not configured")
+    epoch, category, manifest_sha = identity
+    body = json.dumps(
+        {
+            "epoch": epoch,
+            "category": category,
+            "manifest_sha": manifest_sha,
+            "run_id": run_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    open_request = opener or urllib.request.urlopen
+    with open_request(request, timeout=15) as response:
+        status = int(getattr(response, "status", 0))
+    if not 200 <= status < 300:
+        raise RuntimeError(f"automatic publish request returned HTTP {status}")
+    return status
 
 
 def _emit_completion_signal(
@@ -636,6 +753,7 @@ def run(
     completion_signal_emitted = False
     baseline_live_snapshot = None
     baseline_manifest_sha = None
+    scan_outcome = None
     activation_journal = None
     primary_failure_reason = None
     try:
@@ -815,11 +933,13 @@ def run(
                 )
             # 2) real load — wire the materialized upload in, prove the epoch landed (M-2).
             tracker.enter("load")
-            load_result = _real_load(
+            load_result, scan_outcome = _load_with_source_inventory(
                 manifest,
                 spec,
                 input_root,
+                run_id=run_id,
                 target_dir_override=(corpus_candidate.candidate_root if corpus_candidate else None),
+                required=config.full_scan_enabled(),
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)
@@ -1030,6 +1150,17 @@ def run(
                             for item in build_table_integrity
                         ],
                     }
+                    if scan_outcome is not None:
+                        candidate_payload["automatic_publish"] = _automatic_publish_contract(
+                            scan_outcome
+                        )
+                        candidate_payload["source_inventory"] = {
+                            "snapshot_path": str(scan_outcome.snapshot_path),
+                            "classified_count": scan_outcome.snapshot.classified_count,
+                            "excluded_count": scan_outcome.snapshot.excluded_count,
+                            "rejected_count": scan_outcome.snapshot.rejected_count,
+                            "periods": list(scan_outcome.snapshot.periods),
+                        }
                     ledger.mark_awaiting_approval(
                         *identity,
                         run_id=run_id,
@@ -1062,6 +1193,21 @@ def run(
                         "result=awaiting_approval "
                         f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"
                     )
+                    if scan_outcome is not None:
+                        try:
+                            status = _request_automatic_publish(
+                                identity,
+                                run_id=run_id,
+                                endpoint=config.automatic_publish_webhook(),
+                            )
+                            print(f"result=automatic_publish_requested http_status={status}")
+                        except Exception as exc:
+                            # The durable candidate remains recoverable by hook startup/reconcile.
+                            print(
+                                "result=automatic_publish_deferred "
+                                f"reason={type(exc).__name__}: {exc}",
+                                file=sys.stderr,
+                            )
                     return 0
                 else:
                     tracker.skip("mart_publish", "category has no mart activation")

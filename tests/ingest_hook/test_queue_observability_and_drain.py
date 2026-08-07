@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 import urllib.error
 
+import pytest
 from fastapi.testclient import TestClient
 
 from pipeline.scripts.ingest_hook import job_runner
@@ -270,7 +271,11 @@ def test_status_exposes_awaiting_approval_prepared_signal(sqlite_ledger) -> None
         expires_at="2026-08-05T00:00:00+00:00",
     )
 
-    response = TestClient(create_app(IngestService(sqlite_ledger, None))).get(
+    response = TestClient(create_app(IngestService(
+        sqlite_ledger,
+        None,
+        timestamp=lambda: "2026-08-04T01:00:00+00:00",
+    ))).get(
         "/ingest/status",
         params={
             "epoch": identity[0],
@@ -390,6 +395,125 @@ def test_publish_approval_submits_publish_job_idempotently(sqlite_ledger, fake_t
     assert first.json()["status"] == "publish_running"
     assert len(fake_transport.submitted) == 1
     assert sqlite_ledger.status(*identity).status == "publish_running"
+
+
+def _auto_publish_candidate(identity: tuple[str, str, str], *, pg4: str = "pass", pg5: str = "pass") -> dict:
+    return {
+        "epoch": identity[0],
+        "category": identity[1],
+        "manifest_sha": identity[2],
+        "run_id": "build-run",
+        "activation_journal": "/market-output/.ubist_activation_build_run.json",
+        "candidate_integrity": {"file_count": 65, "total_bytes": 100, "manifest_sha": "c" * 64},
+        "build_table_integrity": [{"table": "mart_general_brand_metric", "row_count": 1}],
+        "automatic_publish": {
+            "hard_gates": {
+                "PG-1": "pass",
+                "PG-2": "pass",
+                "PG-3": "pass",
+                "PG-4": pg4,
+                "PG-5": pg5,
+            },
+            "warnings": {"PG-6": "warning", "PG-7": "warning"},
+        },
+    }
+
+
+def test_post_gate_candidate_auto_queues_publish_without_human_approval(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    identity = _seed(sqlite_ledger, epoch="2026-06", category="ubist", manifest_sha="c" * 64)
+    sqlite_ledger.mark_running(*identity, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate=_auto_publish_candidate(identity),
+        prepared_at="2026-08-07T00:00:00+00:00",
+        expires_at="2026-08-08T00:00:00+00:00",
+    )
+    client = TestClient(create_app(IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        now=lambda: "publish-run",
+        timestamp=lambda: "2026-08-07T01:00:00+00:00",
+    )))
+
+    response = client.post("/ingest/publish/automatic", json={
+        "epoch": identity[0],
+        "category": identity[1],
+        "manifest_sha": identity[2],
+        "run_id": "build-run",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "publish_running"
+    assert len(fake_transport.submitted) == 1
+    assert sqlite_ledger.prepared_candidate(*identity).approved_by == "system:full-scan-auto-publish"
+
+
+def test_startup_drain_recovers_automatic_publish_callback(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    identity = _seed(sqlite_ledger, epoch="2026-06", category="ubist", manifest_sha="e" * 64)
+    sqlite_ledger.mark_running(*identity, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate=_auto_publish_candidate(identity),
+        prepared_at="2026-08-07T00:00:00+00:00",
+        expires_at="2026-08-08T00:00:00+00:00",
+    )
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        now=lambda: "publish-run",
+        timestamp=lambda: "2026-08-07T01:00:00+00:00",
+    )
+
+    result = service.drain_idle_queues()
+
+    assert result["automatic_publishes"]["ubist"].startswith("jw-ingest-publish-")
+    assert result["errors"] == {}
+    assert sqlite_ledger.status(*identity).status == "publish_running"
+
+
+@pytest.mark.parametrize(("pg4", "pg5"), [("fail", "pass"), ("pass", "fail")])
+def test_pg4_or_pg5_failure_cannot_auto_publish(
+    sqlite_ledger,
+    fake_transport,
+    pg4: str,
+    pg5: str,
+) -> None:
+    identity = _seed(sqlite_ledger, epoch="2026-06", category="ubist", manifest_sha="d" * 64)
+    sqlite_ledger.mark_running(*identity, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate=_auto_publish_candidate(identity, pg4=pg4, pg5=pg5),
+        prepared_at="2026-08-07T00:00:00+00:00",
+        expires_at="2026-08-08T00:00:00+00:00",
+    )
+    client = TestClient(create_app(IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        timestamp=lambda: "2026-08-07T01:00:00+00:00",
+    )))
+
+    response = client.post("/ingest/publish/automatic", json={
+        "epoch": identity[0],
+        "category": identity[1],
+        "manifest_sha": identity[2],
+        "run_id": "build-run",
+    })
+
+    assert response.status_code == 409
+    assert fake_transport.submitted == []
+    assert sqlite_ledger.status(*identity).status == "awaiting_approval"
 
 
 def test_publish_approval_rejects_identity_mismatch_and_expired_candidate(
