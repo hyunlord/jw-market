@@ -23,6 +23,13 @@ from jw_chat_agent_poc.service.answer_safety import (
     ensure_multi_file_evidence_coverage,
     replace_internal_fact_dump,
 )
+from jw_chat_agent_poc.service.answer_stage_trace import (
+    ANSWER_STAGE_TRACE_ENV,
+    AnswerAssemblyTrace,
+    answer_stage_trace_enabled,
+    fact_ids_from_markdown_response,
+    traced_transform,
+)
 from jw_chat_agent_poc.service.genos_client import (
     append_blocked_metric_notices_from_markdown_response,
     append_deferred_prescription_notice,
@@ -238,6 +245,28 @@ def ordered_stages(
     )
 
 
+def instrument_answer_pipeline_stages(
+    stages: Sequence[AnswerPipelineStage],
+    *,
+    result: dict[str, Any],
+    markdown_response: Any,
+) -> tuple[AnswerPipelineStage, ...]:
+    if not answer_stage_trace_enabled():
+        return tuple(stages)
+    trace = AnswerAssemblyTrace(
+        result=result,
+        fact_ids=fact_ids_from_markdown_response(markdown_response),
+    )
+    return tuple(
+        AnswerPipelineStage(
+            stage.name,
+            traced_transform(trace, stage.name, stage.transform),
+            stage.engines,
+        )
+        for stage in stages
+    )
+
+
 def build_answer_pipeline_stages(
     context: AnswerPipelineContext,
 ) -> tuple[tuple[AnswerPipelineStage, ...], tuple[AnswerPipelineStage, ...]]:
@@ -371,9 +400,16 @@ def build_answer_pipeline_stages(
         "internal_terminology_scrub": scrub_internal_terminology,
         "verified_progress_strip": context.strip_verified_progress,
     }
+    pre_chart_stages = ordered_stages(transforms, PRE_CHART_STAGE_NAMES)
+    post_chart_stages = ordered_stages(transforms, POST_CHART_STAGE_NAMES)
+    instrumented = instrument_answer_pipeline_stages(
+        (*pre_chart_stages, *post_chart_stages),
+        result=result,
+        markdown_response=markdown_response,
+    )
     return (
-        ordered_stages(transforms, PRE_CHART_STAGE_NAMES),
-        ordered_stages(transforms, POST_CHART_STAGE_NAMES),
+        instrumented[: len(pre_chart_stages)],
+        instrumented[len(pre_chart_stages) :],
     )
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from jw_chat_agent_poc.service import answer_pipeline
@@ -35,6 +37,68 @@ def test_extracted_pipeline_preserves_failure_mode() -> None:
 
     with pytest.raises(RuntimeError, match="gate failed"):
         answer_pipeline.run_answer_pipeline("start", stages)
+
+
+def test_stage_trace_is_absent_when_flag_is_off(monkeypatch) -> None:
+    monkeypatch.setenv(answer_pipeline.ANSWER_STAGE_TRACE_ENV, "0")
+    result = {"_qa_claim_gate": {"pipeline_observability": {"existing": True}}}
+    stages = (
+        answer_pipeline.AnswerPipelineStage("append", lambda answer: f"{answer}\nnew"),
+    )
+
+    wrapped = answer_pipeline.instrument_answer_pipeline_stages(
+        stages,
+        result=result,
+        markdown_response={"evidence": [{"fact_id": "fact-1"}]},
+    )
+    answer_pipeline.run_answer_pipeline("start", wrapped)
+
+    observability = result["_qa_claim_gate"]["pipeline_observability"]
+    assert observability == {"existing": True}
+
+
+def test_stage_trace_records_only_ids_and_preserves_existing_fields(monkeypatch) -> None:
+    monkeypatch.setenv(answer_pipeline.ANSWER_STAGE_TRACE_ENV, "1")
+    result = {
+        "_qa_claim_gate": {
+            "blocked_claim_count": 2,
+            "pipeline_observability": {"existing": True},
+        }
+    }
+    stages = (
+        answer_pipeline.AnswerPipelineStage(
+            "replace",
+            lambda _answer: "replacement confidential sentence",
+        ),
+    )
+
+    wrapped = answer_pipeline.instrument_answer_pipeline_stages(
+        stages,
+        result=result,
+        markdown_response={"evidence": [{"fact_id": "fact-1"}, {"evidence_id": "fact-2"}]},
+    )
+    answer_pipeline.run_answer_pipeline("original confidential sentence", wrapped)
+
+    gate = result["_qa_claim_gate"]
+    trace = gate["pipeline_observability"]["answer_assembly_v1"]
+    assert gate["blocked_claim_count"] == 2
+    assert gate["pipeline_observability"]["existing"] is True
+    assert trace["redaction"] == "ids_only_no_user_text"
+    assert trace["stages"] == [
+        {
+            "seq": 1,
+            "name": "replace",
+            "before": {"fact_ids": ["fact-1", "fact-2"], "claim_ids": ["c0001"]},
+            "after": {"fact_ids": ["fact-1", "fact-2"], "claim_ids": ["c0002"]},
+            "diff": {
+                "fact_ids": {"added": [], "removed": []},
+                "claim_ids": {"added": ["c0002"], "removed": ["c0001"]},
+            },
+        }
+    ]
+    serialized = json.dumps(trace, ensure_ascii=False)
+    assert "original confidential sentence" not in serialized
+    assert "replacement confidential sentence" not in serialized
 
 
 def test_flag_off_does_not_call_extracted_runner(monkeypatch) -> None:
@@ -91,6 +155,32 @@ def test_app_pipeline_emits_exact_declared_stage_order(monkeypatch) -> None:
         *answer_pipeline.PRE_CHART_STAGE_NAMES,
         *answer_pipeline.POST_CHART_STAGE_NAMES,
     ]
+
+
+def test_app_stage_trace_covers_declared_pipeline_without_answer_text(monkeypatch) -> None:
+    monkeypatch.setenv(answer_pipeline.ANSWER_PIPELINE_ENV, "1")
+    monkeypatch.setenv(answer_pipeline.ANSWER_STAGE_TRACE_ENV, "1")
+    monkeypatch.setattr(
+        service_app,
+        "_deterministic_simple_market_answer",
+        lambda *_args: "confidential rendered answer",
+    )
+    payload = {
+        "tool_calls": [],
+        "sources": [],
+        "evidence": [{"fact_id": "fact-app-1"}],
+    }
+
+    service_app._compute_final_answer("confidential user question", payload)
+
+    trace = payload["_qa_claim_gate"]["pipeline_observability"]["answer_assembly_v1"]
+    assert [stage["name"] for stage in trace["stages"]] == [
+        *answer_pipeline.PRE_CHART_STAGE_NAMES,
+        *answer_pipeline.POST_CHART_STAGE_NAMES,
+    ]
+    serialized = json.dumps(trace, ensure_ascii=False)
+    assert "confidential rendered answer" not in serialized
+    assert "confidential user question" not in serialized
 
 
 def test_app_flag_off_never_uses_extracted_runner(monkeypatch) -> None:
