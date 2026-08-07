@@ -9,6 +9,7 @@ from jw_chat_agent_poc.agent_loop.requested_source import source_domain_note
 from jw_chat_agent_poc.agent_loop.tools import AgentToolFacade, ToolExecution
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
+from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
 from jw_chat_agent_poc.resolver import BrandResolver
 from jw_chat_agent_poc.resolver.catalog_membership import (
     StaticCatalogMembershipReader,
@@ -289,6 +290,31 @@ def test_b1_keeps_supported_analysis_when_one_market_source_is_unavailable() -> 
     assert coverage["share_of_growth"] == "supported"
     assert result["agent_loop_metrics"]["bq_missing_sources"] == ["iqvia_nsa"]
     assert result["agent_loop_metrics"]["bq_analysis_validation"] == "passed"
+
+
+def test_b1_surfaces_supported_required_analysis_in_initial_answer() -> None:
+    layer = _layer(("ubist",))
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+
+    result = agent.answer("리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?")
+
+    analysis = next(call for call in result["tool_calls"] if call.get("tool") == "bq_analysis")
+    assert analysis["render_data"]["share_of_growth_pct"] is not None
+    assert "share-of-growth" in result["answer"]
+    assert "시장 성장분 중 브랜드 몫" in result["answer"]
+
+    final_answer = apply_common_unavailable_response(
+        "리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?",
+        result["answer"],
+        result["markdown_response"],
+        tool_calls=result["tool_calls"],
+    )
+    assert "share-of-growth" in final_answer
+    assert "시장 성장분 중 브랜드 몫" in final_answer
 
 
 def test_b1_requeries_only_the_failed_tool_source_for_missing_slots(monkeypatch) -> None:

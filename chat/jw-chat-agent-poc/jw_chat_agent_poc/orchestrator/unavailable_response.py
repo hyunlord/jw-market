@@ -239,6 +239,33 @@ def _completed_answer_contract(question: str, answer: str, fact_md: str) -> bool
     return isinstance(contract, str) and bool(contract) and status.get("status") == "pass"
 
 
+def _has_supported_required_bq_output(
+    answer: str,
+    tool_calls: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Keep validated BQ output when unavailable slots coexist with supported ones."""
+
+    for call in tool_calls:
+        if call.get("tool") != "bq_analysis":
+            continue
+        render_data = call.get("render_data")
+        if not isinstance(render_data, Mapping):
+            continue
+        coverage = render_data.get("slot_coverage")
+        if not isinstance(coverage, Sequence) or isinstance(coverage, (str, bytes)):
+            continue
+        has_supported_required = any(
+            isinstance(item, Mapping)
+            and item.get("tier") == "required"
+            and item.get("status") == "supported"
+            for item in coverage
+        )
+        summary = sanitize_internal_diagnostics(str(call.get("summary_text") or "")).strip()
+        if has_supported_required and summary and summary in answer:
+            return True
+    return False
+
+
 def _four_stage_unavailable_gate(
     question: str,
     answer: str,
@@ -278,7 +305,10 @@ def _four_stage_unavailable_gate(
         if missing:
             return _unverified_answer(f"필요 근거({', '.join(missing)})가 이번 턴에 완성되지 않았습니다")
     if not question_has_unavailable_signal and successful_fact_call:
-        if _completed_answer_contract(question, answer, fact_md):
+        if _completed_answer_contract(question, answer, fact_md) or _has_supported_required_bq_output(
+            answer,
+            calls,
+        ):
             return _cleanup(answer)
         from jw_chat_agent_poc.service.answer_safety import (
             finalized_fallback_fact_answer,

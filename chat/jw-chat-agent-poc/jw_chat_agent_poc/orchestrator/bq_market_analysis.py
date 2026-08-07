@@ -110,7 +110,7 @@ def _competition_result(series_call: Call, calls: list[Call]) -> dict[str, Any] 
         "insight": (
             f"{source} {start_period}~{end_period} 브랜드 성장률 {_pct(brand_rate)}와 "
             f"시장 성장률 {_pct(market_rate)}의 차이는 {_pctp(decomposition.excess_growth)}이며, "
-            f"시장 성장분 중 브랜드 몫은 {_pct(contribution)}입니다."
+            f"시장 성장분 중 브랜드 몫(share-of-growth)은 {_pct(contribution)}입니다."
         ),
         "chart": {
             "chart_type": "waterfall", "title": f"{source} 브랜드별 점유율 변화", "source": source,
