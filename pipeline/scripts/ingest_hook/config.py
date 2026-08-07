@@ -29,6 +29,14 @@ ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS = "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS"
 ENV_WEBHOOK_PROMOTE_EXACT = "INGEST_WEBHOOK_PROMOTE_EXACT"
 ENV_FULL_SCAN_ENABLED = "INGEST_FULL_SCAN_ENABLED"
 ENV_AUTOMATIC_PUBLISH_WEBHOOK_URL = "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL"
+ENV_CSD_CHANNEL_SHADOW_ACTIVATION = "INGEST_CSD_CHANNEL_SHADOW_ACTIVATION"
+ENV_PRODUCTION_LOAD_CATEGORIES = "INGEST_PRODUCTION_LOAD_CATEGORIES"
+ENV_CSD_CHANNEL_RAW_SCHEMA = "INGEST_CSD_CHANNEL_RAW_SCHEMA"
+ENV_CSD_CHANNEL_STAGE_SCHEMA = "INGEST_CSD_CHANNEL_STAGE_SCHEMA"
+ENV_CSD_CHANNEL_DB_HOST = "CSD_CHANNEL_DB_HOST"
+ENV_CSD_CHANNEL_DB_PORT = "CSD_CHANNEL_DB_PORT"
+ENV_CSD_CHANNEL_DB_USER = "CSD_CHANNEL_DB_USER"
+ENV_CSD_CHANNEL_DB_PASSWORD = "CSD_CHANNEL_DB_PASSWORD"
 
 DEFAULT_LOG_ROOT = "/market-output/ingest-logs"     # durable path on llmops-market-output RWX PVC
 MARKET_OUTPUT_ROOT = Path("/market-output")
@@ -39,6 +47,46 @@ DEFAULT_JOB_IMAGE = (
     "asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/"
     "jw-pipeline-orchestrator@sha256:030f81837d05b8789b879fc04ddf0865a7953ddd2cb9d26fc8b707bf394e5e12"
 )
+
+
+def source_activation_enabled(category: str, *, mode: str) -> bool:
+    """Return an explicit source capability without changing category defaults."""
+    if category != "iqvia_csd_channel":
+        return False
+    if mode == "shadow":
+        value = os.environ.get(ENV_CSD_CHANNEL_SHADOW_ACTIVATION, "0").strip()
+        if value not in {"0", "1"}:
+            raise RuntimeError(f"{ENV_CSD_CHANNEL_SHADOW_ACTIVATION} must be 0 or 1")
+        return value == "1"
+    if mode != "production":
+        return False
+    raw = os.environ.get(ENV_PRODUCTION_LOAD_CATEGORIES, "").strip()
+    categories = {item.strip() for item in raw.split(",") if item.strip()}
+    unsupported = categories.difference({"iqvia_csd_channel"})
+    if unsupported:
+        raise RuntimeError(
+            f"unsupported production activation categories: {sorted(unsupported)}"
+        )
+    return category in categories
+
+
+def csd_channel_live_schemas(*, mode: str) -> tuple[str, str]:
+    """Resolve explicit shadow schemas; production uses the canonical pair."""
+    if mode == "production":
+        return "jw_brand_activity_raw_stage", "jw_brand_activity_stage"
+    if mode != "shadow":
+        raise RuntimeError(f"CSD activation does not support mode={mode!r}")
+    raw = os.environ.get(ENV_CSD_CHANNEL_RAW_SCHEMA, "").strip()
+    stage = os.environ.get(ENV_CSD_CHANNEL_STAGE_SCHEMA, "").strip()
+    if not raw.startswith("jw_brand_activity_raw_stage_shadow_"):
+        raise RuntimeError(
+            f"{ENV_CSD_CHANNEL_RAW_SCHEMA} must use jw_brand_activity_raw_stage_shadow_*"
+        )
+    if not stage.startswith("jw_brand_activity_stage_shadow_"):
+        raise RuntimeError(
+            f"{ENV_CSD_CHANNEL_STAGE_SCHEMA} must use jw_brand_activity_stage_shadow_*"
+        )
+    return raw, stage
 
 
 def webhook_promote_exact() -> bool:
@@ -166,6 +214,32 @@ def open_mart_connection(database: str | None = None):
         database=database or resolve_mart_db_name("MARIADB_DATABASE", "DB_NAME"),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+def open_csd_channel_connection():
+    """Open the two-schema activation connection with dedicated credentials."""
+    import pymysql
+
+    user = os.environ.get(ENV_CSD_CHANNEL_DB_USER, "").strip()
+    password = os.environ.get(ENV_CSD_CHANNEL_DB_PASSWORD, "")
+    if not user or not password:
+        raise RuntimeError("dedicated CSD activation credentials are required")
+    return pymysql.connect(
+        host=os.environ.get(ENV_CSD_CHANNEL_DB_HOST)
+        or os.environ.get("MARIADB_HOST")
+        or os.environ.get("DB_HOST", "127.0.0.1"),
+        port=int(
+            os.environ.get(ENV_CSD_CHANNEL_DB_PORT)
+            or os.environ.get("MARIADB_PORT")
+            or os.environ.get("DB_PORT", "3306")
+        ),
+        user=user,
+        password=password,
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+        init_command="SET time_zone = '+00:00'",
     )
 
 

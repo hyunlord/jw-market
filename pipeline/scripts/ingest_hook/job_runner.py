@@ -31,6 +31,7 @@ from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.category_map import (
+    ActivationKind,
     CategorySpec,
     UnknownCategoryError,
     resolve_category,
@@ -168,15 +169,16 @@ class _StageTracker:
 
 def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
     """Return the deterministic stage skeleton for one category."""
-    supports_mart = spec.key == "ubist" and spec.production_load_supported
+    supports_mart = spec.activation_kind is ActivationKind.UBIST_NUMERIC
+    supports_source_activation = spec.activation_kind is ActivationKind.CSD_CHANNEL
     applicability = {
         "g3": True,
         "load": bool(spec.load_argv),
         "load_verify": bool(spec.load_verify),
         "mart_build": supports_mart,
         "sigma": supports_mart and bool(spec.sigma_source),
-        "post_gate": supports_mart and bool(spec.sigma_source),
-        "mart_publish": supports_mart,
+        "post_gate": (supports_mart and bool(spec.sigma_source)) or supports_source_activation,
+        "mart_publish": supports_mart or supports_source_activation,
         "refresh": bool(spec.refresh_argv) and spec.production_load_supported,
         "signal": True,
     }
@@ -415,7 +417,9 @@ def _real_load(
         )
 
     target_root, staging_verify = config.load_output_root()
-    if not staging_verify and not spec.production_load_supported:
+    mode = str(config.load_mode())
+    activation_capability = config.source_activation_enabled(manifest.category, mode=mode)
+    if not staging_verify and not spec.production_load_supported and not activation_capability:
         raise RuntimeError(
             f"category {manifest.category!r} table loader is isolated-staging only; "
             "refusing production completion until a separate production activation gate"
@@ -731,7 +735,17 @@ def run(
         )
         return 0
     if entry.status == STATUS_QUEUED:
-        ledger.mark_running(*identity, job_name=os.environ.get("HOSTNAME", f"local-{run_id}"), run_id=run_id)
+        claimed = ledger.mark_running(
+            *identity,
+            job_name=os.environ.get("HOSTNAME", f"local-{run_id}"),
+            run_id=run_id,
+        )
+        if not claimed:
+            print(
+                "result=noop reason=queued identity was claimed concurrently "
+                f"epoch={manifest.epoch} category={manifest.category}"
+            )
+            return 0
 
     tracker = _StageTracker(ledger, identity, run_id)
     mode = "staging" if rehearsal_root is not None else str(config.load_mode())
@@ -950,6 +964,118 @@ def run(
             else:
                 tracker.skip("load_verify", "category has no load_verify spec")
             staging_verify = load_result["staging_verify"]
+            source_activation_enabled = config.source_activation_enabled(
+                manifest.category, mode=configured_mode
+            )
+            if (
+                spec.activation_kind is ActivationKind.CSD_CHANNEL
+                and source_activation_enabled
+            ):
+                from pipeline.scripts.ingest_hook import csd_channel_activation
+                from pipeline.scripts.ingest_hook.ubist_mart_activation import (
+                    acquire_writer_lock,
+                )
+
+                tracker.skip("mart_build", "CSD channel is not eligible for numeric mart build")
+                tracker.skip("sigma", "CSD channel uses source-specific validation")
+                tracker.enter("post_gate")
+                raw_schema, stage_schema = config.csd_channel_live_schemas(
+                    mode=configured_mode
+                )
+                csd_plan = csd_channel_activation.plan_for_run(
+                    run_id,
+                    raw_schema=raw_schema,
+                    stage_schema=stage_schema,
+                )
+                isolated_db = os.environ.get(config.ENV_LOAD_STAGING_DB, "").strip()
+                if not isolated_db:
+                    raise RuntimeError(
+                        f"{config.ENV_LOAD_STAGING_DB} is required for CSD activation"
+                    )
+                csd_conn = config.open_csd_channel_connection()
+                csd_lock_acquired = False
+                csd_failure_reason = None
+                try:
+                    # GET_LOCK is node-local in Galera. The durable single-writer
+                    # reservation is the ledger queued->running CAS performed by
+                    # this runner; the lock only protects this connection's node.
+                    acquire_writer_lock(
+                        csd_conn,
+                        timeout_seconds=0,
+                        lock_name=csd_channel_activation.WRITER_LOCK_NAME,
+                    )
+                    csd_lock_acquired = True
+                    csd_evidence = csd_channel_activation.prepare_candidate(
+                        csd_conn,
+                        csd_plan,
+                        source_paths=tuple(
+                            (input_root / entry.path).resolve()
+                            for entry in manifest.files
+                        ),
+                    )
+                except Exception as exc:
+                    csd_failure_reason = f"{type(exc).__name__}: {exc}"
+                    raise
+                finally:
+                    if csd_lock_acquired:
+                        _release_writer_lock_preserving_primary(
+                            csd_conn,
+                            lock_name=csd_channel_activation.WRITER_LOCK_NAME,
+                            primary_failure_reason=csd_failure_reason,
+                        )
+                    csd_conn.close()
+                tracker.done()
+                prepared_at = datetime.now(timezone.utc)
+                expires_at = prepared_at + timedelta(
+                    seconds=_publish_candidate_ttl_seconds()
+                )
+                candidate_payload = {
+                    "epoch": manifest.epoch,
+                    "category": manifest.category,
+                    "manifest_sha": manifest.manifest_sha,
+                    "run_id": run_id,
+                    "mode": configured_mode,
+                    "rows_before": rows_before,
+                    "rows_after": csd_evidence.raw.row_count,
+                    "rows_loaded": rows_loaded,
+                    "csd_activation_plan": csd_channel_activation.plan_payload(csd_plan),
+                    "csd_candidate_evidence": csd_channel_activation.evidence_payload(
+                        csd_evidence
+                    ),
+                }
+                ledger.mark_awaiting_approval(
+                    *identity,
+                    run_id=run_id,
+                    candidate=candidate_payload,
+                    prepared_at=prepared_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                )
+                tracker.skip("mart_publish", "awaiting explicit publish approval")
+                tracker.skip(
+                    "refresh",
+                    "CSD channel API reads the activated stage table directly",
+                )
+                awaiting_approval_prepared = True
+                _emit_completion_signal(
+                    ledger=ledger,
+                    tracker=tracker,
+                    identity=identity,
+                    run_id=run_id,
+                    event="prepared",
+                    mode=configured_mode,
+                    rows_before=rows_before,
+                    rows_after=csd_evidence.raw.row_count,
+                    rows_loaded=rows_loaded,
+                    periods=set(csd_evidence.periods.complete_quarters),
+                    started_at=started_at,
+                    failure_reason=None,
+                )
+                completion_signal_emitted = True
+                print(
+                    "result=awaiting_approval "
+                    f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"
+                )
+                return 0
             if staging_verify:
                 # Isolated J5 verification: real loader exercised, zero mart write.
                 tracker.skip("mart_build", "staging-verify (mart untouched)")

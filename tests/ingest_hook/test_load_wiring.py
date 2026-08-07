@@ -54,6 +54,14 @@ def test_open_mart_connection_uses_mapping_cursor(monkeypatch):
     assert captured["cursorclass"] is pymysql.cursors.DictCursor
 
 
+def test_open_csd_channel_connection_requires_dedicated_credentials(monkeypatch):
+    monkeypatch.delenv(config.ENV_CSD_CHANNEL_DB_USER, raising=False)
+    monkeypatch.delenv(config.ENV_CSD_CHANNEL_DB_PASSWORD, raising=False)
+
+    with pytest.raises(RuntimeError, match="dedicated CSD activation credentials"):
+        config.open_csd_channel_connection()
+
+
 def _write_load_manifest(target_dir: Path, epoch: str, rows: int) -> None:
     """Simulate what the real UBIST loader writes to its target dir."""
     year, month = epoch.split("-")

@@ -196,7 +196,10 @@ def _insert_csd(cursor: object, schema: str, rows: list[CsdSourceRow]) -> int:
          product_details, selected_for_stage, dedup_key, source_row_key, row_hash, raw_payload_json)
         VALUES ({", ".join(["%s"] * 20)})
     """
-    cursor.executemany(sql, [_csd_tuple(row) for row in rows])
+    cursor.executemany(
+        sql,
+        [tuple(csd_raw_record(row).values()) for row in rows],
+    )
     return int(cursor.rowcount)
 
 
@@ -215,11 +218,11 @@ def _insert_keyword(cursor: object, schema: str, events: list[KeywordEvent]) -> 
     return int(cursor.rowcount)
 
 
-def _csd_tuple(row: CsdSourceRow) -> DbTuple:
-    """Return the raw CSD DB tuple."""
+def csd_raw_record(row: CsdSourceRow) -> dict[str, DbValue]:
+    """Return the canonical ordered raw CSD record."""
     payload = _payload(row.to_json())
     stage_row = row.to_stage_row()
-    return (
+    values: DbTuple = (
         "csd",
         row.source_file,
         row.source_file_sha256,
@@ -241,6 +244,14 @@ def _csd_tuple(row: CsdSourceRow) -> DbTuple:
         text_sha256(payload),
         payload,
     )
+    columns = (
+        "source_dataset", "source_file", "source_file_sha256", "source_sheet",
+        "source_row_no", "source_period_ym", "period_ym", "market", "jw_channel",
+        "region", "master_product", "manufacturer", "representing_company", "metric",
+        "product_details", "selected_for_stage", "dedup_key", "source_row_key",
+        "row_hash", "raw_payload_json",
+    )
+    return dict(zip(columns, values, strict=True))
 
 
 def _keyword_tuple(event: KeywordEvent) -> DbTuple:

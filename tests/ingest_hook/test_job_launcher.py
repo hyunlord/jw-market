@@ -443,6 +443,42 @@ def test_rendered_job_inherits_env_and_secret_refs(monkeypatch):
     assert by_name["MINIO_SECRET_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "jw-ingest-hook-minio"
 
 
+def test_csd_channel_job_alone_receives_dedicated_activation_credentials(monkeypatch):
+    monkeypatch.setenv("MARIADB_HOST", "db.example")
+    csd = render_job(
+        category="iqvia_csd_channel",
+        manifest_sha=SHA,
+        manifest_path="_manifests/csd.json",
+        namespace="llmops",
+    )
+    ubist = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/ubist.json",
+        namespace="llmops",
+    )
+    csd_env = {
+        item["name"]: item
+        for item in csd["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    ubist_names = {
+        item["name"]
+        for item in ubist["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+
+    assert csd_env["CSD_CHANNEL_DB_HOST"]["value"] == "db.example"
+    assert csd_env["CSD_CHANNEL_DB_USER"]["valueFrom"]["secretKeyRef"] == {
+        "name": "jw-csd-channel-activator",
+        "key": "username",
+    }
+    assert csd_env["CSD_CHANNEL_DB_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "jw-csd-channel-activator",
+        "key": "password",
+    }
+    assert "CSD_CHANNEL_DB_USER" not in ubist_names
+    assert "CSD_CHANNEL_DB_PASSWORD" not in ubist_names
+
+
 def test_rendered_job_env_minimal_without_s3(monkeypatch):
     for name in ("INGEST_S3_BUCKET", "MARIADB_HOST", "INGEST_REHEARSAL_ROOT"):
         monkeypatch.delenv(name, raising=False)

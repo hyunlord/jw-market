@@ -15,11 +15,31 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from enum import StrEnum
 
 PY = sys.executable or "python3"
 
 # Row-count crash floor: current total < floor * previous completed total => G3 fail.
 DEFAULT_ROW_FLOOR_RATIO = 0.5
+
+
+class ActivationKind(StrEnum):
+    """Serving activation family; unsupported sources remain explicitly inert."""
+
+    NONE = "none"
+    UBIST_NUMERIC = "ubist_numeric"
+    CSD_CHANNEL = "csd_channel"
+
+
+CSD_CHANNEL_E2E_STAGES: tuple[tuple[str, str], ...] = (
+    ("g3", "G3"),
+    ("load", "적재"),
+    ("load_verify", "적재 검증"),
+    ("awaiting_approval", "승인 대기"),
+    ("mart_publish", "CSD 원천·스테이지 게시"),
+    ("context_bridge", "컨텍스트 브리지"),
+    ("dashboard", "대시보드"),
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +85,7 @@ class CategorySpec:
     # New table adapters are deliberately staging-only until a separate PL gate
     # provisions production schemas and enables mart refresh.
     production_load_supported: bool = True
+    activation_kind: ActivationKind = ActivationKind.NONE
 
 
 def _etl(*args: str) -> tuple[str, ...]:
@@ -100,6 +121,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         # columns) loaded via --stage s1 (s2 catalog never runs on this path),
         # so G3 must validate the workbook itself using the loader's parser.
         workbook_reader="ubist",
+        activation_kind=ActivationKind.UBIST_NUMERIC,
     ),
     CategorySpec(
         key="iqvia_nsa", description="IQVIA NSA quarterly workbook",
@@ -119,6 +141,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_channel", load_batch_files=True,
         production_load_supported=False,
+        activation_kind=ActivationKind.CSD_CHANNEL,
     ),
     CategorySpec(
         key="iqvia_csd_keyword", description="IQVIA CSD keyword workbook",

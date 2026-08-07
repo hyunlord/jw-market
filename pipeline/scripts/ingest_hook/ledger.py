@@ -1146,8 +1146,8 @@ class Ledger:
         return bool(self._transaction(operation))
 
     # -- state transitions ---------------------------------------------------
-    def mark_running(self, epoch: str, category: str, manifest_sha: str, *, job_name: str, run_id: str) -> None:
-        self._transition(
+    def mark_running(self, epoch: str, category: str, manifest_sha: str, *, job_name: str, run_id: str) -> bool:
+        return self._transition(
             epoch,
             category,
             manifest_sha,
@@ -1157,6 +1157,7 @@ class Ledger:
             actor="ingest_service",
             source="job_submission",
             evidence={"run_id": run_id, "job_name": job_name},
+            expected_status=STATUS_QUEUED,
         )
 
     def mark_complete(self, epoch: str, category: str, manifest_sha: str, *, row_counts: dict[str, int]) -> None:

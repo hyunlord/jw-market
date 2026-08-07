@@ -47,6 +47,22 @@ def test_category_serialisation_counts_only_running(sqlite_ledger):
     assert sqlite_ledger.running_in_category("iqvia") == 0  # other categories parallel
 
 
+def test_mark_running_is_a_queued_to_running_compare_and_set(sqlite_ledger):
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/a.json")
+
+    assert sqlite_ledger.mark_running(
+        *IDENTITY, job_name="job-1", run_id="run-1"
+    ) is True
+    assert sqlite_ledger.mark_running(
+        *IDENTITY, job_name="job-2", run_id="run-2"
+    ) is False
+
+    entry = sqlite_ledger.status(*IDENTITY)
+    assert entry.status == "running"
+    assert entry.job_name == "job-1"
+    assert entry.run_id == "run-1"
+
+
 def test_next_queued_is_fifo(sqlite_ledger):
     sqlite_ledger.receive("2026-06", "ubist", "b" * 64, manifest_path="/x/b.json")
     sqlite_ledger.receive("2026-07", "ubist", "c" * 64, manifest_path="/x/c.json")

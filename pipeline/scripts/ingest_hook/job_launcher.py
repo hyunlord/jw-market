@@ -69,6 +69,7 @@ _FORECAST_RUNTIME_PINS = {
     "NUMEXPR_NUM_THREADS": "1",
 }
 _MART_SECRET = "jw-mart-d2-writer"
+_CSD_CHANNEL_ACTIVATOR_SECRET = "jw-csd-channel-activator"
 _PORTAL_SECRET = "jw-data-portal-secrets"      # bucket name (site-owned)
 _MINIO_READ_SECRET = "jw-ingest-hook-minio"     # hook-owned read-only credentials
 _LOCAL_INPUT_VOLUME = "ingest-input"
@@ -91,7 +92,7 @@ def _positive_int_env(name: str, default: int) -> int:
     return value
 
 
-def _job_env() -> list[dict]:
+def _job_env(category: str) -> list[dict]:
     env: list[dict] = [
         {"name": name, "value": os.environ[name]}
         for name in _PASSTHROUGH_VALUES
@@ -107,6 +108,26 @@ def _job_env() -> list[dict]:
 
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
+    if category == "iqvia_csd_channel":
+        host = os.environ.get(config.ENV_CSD_CHANNEL_DB_HOST) or os.environ.get(
+            "MARIADB_HOST", ""
+        )
+        port = os.environ.get(config.ENV_CSD_CHANNEL_DB_PORT) or os.environ.get(
+            "MARIADB_PORT", "3306"
+        )
+        if host:
+            env.append({"name": config.ENV_CSD_CHANNEL_DB_HOST, "value": host})
+        env.append({"name": config.ENV_CSD_CHANNEL_DB_PORT, "value": port})
+        secret_ref(
+            config.ENV_CSD_CHANNEL_DB_USER,
+            _CSD_CHANNEL_ACTIVATOR_SECRET,
+            "username",
+        )
+        secret_ref(
+            config.ENV_CSD_CHANNEL_DB_PASSWORD,
+            _CSD_CHANNEL_ACTIVATOR_SECRET,
+            "password",
+        )
     # Agent2 still consumes the DB_* family from its pinned YAML configs.
     # Keep these aliases explicit; omitting them silently restores localhost.
     agent2_aliases = {
@@ -220,7 +241,7 @@ def render_job(
 ) -> dict:
     name = job_name(category, manifest_sha, run_id)
     job_env = [
-        *_job_env(),
+        *_job_env(category),
         {"name": config.ENV_LOG_ROOT, "value": config.DEFAULT_LOG_ROOT},
         {
             "name": "JW_PIPELINE_STATE_FILE",

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.scripts.ingest_hook import config
-from pipeline.scripts.ingest_hook.category_map import resolve_category
+from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_category
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
@@ -101,6 +101,17 @@ def run(
     build_run_id: str,
     publish_run_id: str,
 ) -> int:
+    if resolve_category(category).activation_kind is ActivationKind.CSD_CHANNEL:
+        from pipeline.scripts.ingest_hook import csd_channel_publish_runner
+
+        return csd_channel_publish_runner.run(
+            ledger=ledger,
+            epoch=epoch,
+            category=category,
+            manifest_sha=manifest_sha,
+            build_run_id=build_run_id,
+            publish_run_id=publish_run_id,
+        )
     identity = (epoch, category, manifest_sha)
     entry = ledger.status(*identity)
     if entry is None:
