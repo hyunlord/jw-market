@@ -80,6 +80,34 @@ def test_current_value_keeps_requested_scalar_and_source_but_omits_long_series()
     assert markdown_response == before
 
 
+def test_current_value_keeps_requested_source_measurement_basis() -> None:
+    notice = "원외 처방(UBIST) 기준으로 답합니다."
+    answer = f"""{notice}
+
+### 지표
+| 지표 | 수치(단위 포함) |
+| --- | --- |
+| 기간 | 2026-05 |
+| 매출 | 80.39억원 |
+
+**리바로 매출 시계열**
+| 기간 | 매출 | MS |
+| --- | --- | --- |
+| 2026-04 | 84.93억원 | 3.75% |
+| 2026-05 | 80.39억원 | 3.76% |
+
+{SOURCE}"""
+
+    result = apply_final_surface_assembly(
+        "리바로 UBIST 매출 알려줘",
+        answer,
+        _spec(QueryOperation.CURRENT_VALUE, brands=("리바로",), metrics=("sales",)),
+    )
+
+    assert result.answer.startswith("리바로의 2026-05 매출은 80.39억원입니다.")
+    assert notice in result.answer
+
+
 def test_current_value_with_two_metrics_keeps_both_requested_values() -> None:
     answer = f"""## 전략뷰
 

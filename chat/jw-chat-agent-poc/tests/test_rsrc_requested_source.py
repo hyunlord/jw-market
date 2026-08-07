@@ -38,19 +38,21 @@ def test_structured_route_preserves_unavailable_request_and_explains_fallback() 
 
     result = _agent(layer).answer("리바로 IQVIA 매출 알려줘")
 
-    metric_calls = _metric_calls(result)
-    assert metric_calls
+    failed_calls = [
+        call
+        for call in result["tool_calls"]
+        if call.get("tool") == "query_failed"
+    ]
+    assert failed_calls
     assert {
-        call["render_data"]["query_spec"]["source"]
-        for call in metric_calls
-    } == {"ubist"}
+        call["render_data"]["arguments"]["source"]
+        for call in failed_calls
+    } == {"iqvia_nsa"}
     assert result["agent_loop_metrics"]["requested_source"] == "iqvia_nsa"
-    assert result["agent_loop_metrics"]["served_source"] == "ubist"
-    assert "측정 대상이 다른" in result["markdown_response"]["notice_md"]
-    assert all(
-        token not in result["markdown_response"]["notice_md"]
-        for token in ("없습니다", "없음", "없다", "미보유", "존재하지")
-    )
+    assert result["agent_loop_metrics"]["served_source"] is None
+    assert "80.39" not in result["answer"]
+    assert "다른 소스 값으로 대체하지 않습니다" in result["answer"]
+    assert result["router_diagnostics"]["gate_reason"] == "requested_source_unavailable"
 
 
 def test_explicit_ubist_uses_ubist_without_mismatch_notice() -> None:

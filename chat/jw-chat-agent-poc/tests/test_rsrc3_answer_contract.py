@@ -82,7 +82,10 @@ def test_requested_source_variants_reach_same_public_deterministic_branch(
         answer.trace["qa_trace"]["answer_delivery"]["answer_branch"]
         for answer in answers.values()
     }
-    assert branches == {"genos_markdown_deterministic_market"}
+    assert branches == {
+        "genos_markdown_deterministic_market",
+        "typed_terminal",
+    }
     assert len(answers) == 3
 
 
@@ -94,25 +97,151 @@ def test_requested_source_notice_survives_the_deterministic_answer_branch(
     ubist = answers["리바로 UBIST 매출 알려줘"]
     unspecified = answers["리바로 매출 알려줘"]
 
-    assert "요청은 제조사 출하(IQVIA NSA) 기준이며" in iqvia.text
-    assert "이 응답은 원외 처방(UBIST) 기준입니다" in iqvia.text
-    notice_line = next(
-        line.lstrip("- ")
-        for line in iqvia.text.splitlines()
-        if line.lstrip("- ").startswith("요청은 ")
-    )
-    assert all(
-        token not in notice_line
-        for token in ("없습니다", "없음", "없다", "미보유", "존재하지")
-    )
+    assert "현재 지원되지 않아" in iqvia.text
+    assert "다른 소스 값으로 대체하지 않습니다" in iqvia.text
+    assert "80.39" not in iqvia.text
     assert "측정 대상이 다른" not in ubist.text
     assert "측정 대상이 다른" not in unspecified.text
     assert _sha(iqvia.text) != _sha(ubist.text)
     assert _sha(iqvia.text) != _sha(unspecified.text)
-    assert _sha(ubist.text) == _sha(unspecified.text)
-    assert iqvia.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is True
-    assert ubist.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is False
+    assert _sha(ubist.text) != _sha(unspecified.text)
+    assert "원외 처방(UBIST) 기준" in ubist.text
+    assert iqvia.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is False
+    assert ubist.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is True
     assert unspecified.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is False
+
+
+def test_matching_requested_source_is_visible_in_answer_body() -> None:
+    result = {
+        "agent_loop_metrics": {
+            "requested_source": "ubist",
+            "served_source": "ubist",
+        }
+    }
+
+    answer = service_app._prepend_matching_source_basis(
+        "리바로 매출은 80.39억원입니다.",
+        "리바로 UBIST 매출 알려줘",
+        result,
+    )
+
+    assert answer.startswith("원외 처방(UBIST) 기준으로 답합니다.\n\n")
+
+
+def test_matching_requested_source_is_visible_in_deterministic_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = StrategicQueryLayer(
+        reader=StaticStrategicMartReader(
+            (
+                _record("리바로", "ubist", "2026-05", 80.39),
+            )
+        )
+    )
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture", query_layer=layer),
+        resolver=BrandResolver(mode="fixture"),
+        query_layer=layer,
+    )
+    monkeypatch.setattr(genos_module, "served_source_from_calls", lambda _calls: None)
+
+    result = agent.answer("리바로 UBIST 매출 알려줘")
+    result["agent_loop_metrics"]["served_source"] = None
+    result["sources"] = ["cache"]
+    result["markdown_response"]["notice_md"] = ""
+    assert "UBIST" in result["markdown_response"]["sources_md"]
+    answer = "".join(
+        GenosClient(token="fixture-token").stream_answer(
+            "리바로 UBIST 매출 알려줘",
+            result,
+        )
+    )
+
+    notice = "원외 처방(UBIST) 기준으로 답합니다."
+    assert notice in answer
+    assert answer.index(notice) < answer.index("## 출처")
+
+
+def test_source_basis_is_not_added_for_substitution_or_unspecified_request() -> None:
+    answer = "리바로 매출은 80.39억원입니다."
+
+    assert service_app._prepend_matching_source_basis(
+        answer,
+        "리바로 IQVIA 매출 알려줘",
+        {"agent_loop_metrics": {"requested_source": "iqvia_nsa", "served_source": "ubist"}},
+    ) == answer
+    assert service_app._prepend_matching_source_basis(
+        answer,
+        "리바로 매출 알려줘",
+        {"agent_loop_metrics": {"requested_source": None, "served_source": "ubist"}},
+    ) == answer
+
+
+def test_matching_source_basis_falls_back_to_public_result_source() -> None:
+    answer = service_app._prepend_matching_source_basis(
+        "리바로 매출은 80.39억원입니다.",
+        "리바로 UBIST 매출 알려줘",
+        {
+            "sources": ["cache"],
+            "tool_calls": [],
+            "markdown_response": {
+                "sources_md": (
+                    "## 출처\n\n"
+                    "| 출처 | 기준기간 |\n"
+                    "| --- | --- |\n"
+                    "| UBIST | 2026-06 |"
+                )
+            },
+        },
+    )
+
+    assert answer.startswith("원외 처방(UBIST) 기준으로 답합니다.\n\n")
+
+
+def test_matching_source_basis_falls_back_to_rendered_source_table() -> None:
+    answer = service_app._prepend_matching_source_basis(
+        (
+            "리바로의 2026-06 매출은 85.87억원입니다.\n\n"
+            "## 출처\n\n"
+            "| 출처 | 기준기간 |\n"
+            "| --- | --- |\n"
+            "| UBIST | 2026-06 |"
+        ),
+        "리바로 UBIST 매출 알려줘",
+        {"sources": ["cache"], "tool_calls": []},
+    )
+
+    notice = "원외 처방(UBIST) 기준으로 답합니다."
+    assert notice in answer
+    assert answer.index(notice) < answer.index("## 출처")
+
+
+def test_final_display_reapplies_matching_source_basis_after_surface_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notice = "원외 처방(UBIST) 기준으로 답합니다."
+    initial = service_app.FinalAnswer(
+        text=f"{notice}\n\n리바로 매출은 85.87억원입니다.",
+        charts=[],
+        timing={"stages": []},
+        trace={},
+        sources=("UBIST",),
+        conversation_id="rsrc3-final-display",
+    )
+    monkeypatch.setattr(service_app, "_compute_final_answer", lambda *_args: initial)
+    monkeypatch.setattr(
+        service_app,
+        "finalize_display_markdown",
+        lambda answer: answer.replace(f"{notice}\n\n", ""),
+    )
+
+    final = service_app.compute_final_answer(
+        "리바로 UBIST 매출 알려줘",
+        {"sources": ["UBIST"], "tool_calls": []},
+        "rsrc3-final-display",
+    )
+
+    assert final.text.startswith(f"{notice}\n\n")
 
 
 def test_general_view_early_return_mirrors_source_notice_attachment() -> None:
@@ -205,7 +334,7 @@ def test_fulfilled_iqvia_request_keeps_answer_without_notice(
     )
 
     assert "측정 대상이 다른" not in final.text
-    assert final.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is False
+    assert final.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is True
 
 
 def test_dual_source_market_serves_requested_iqvia_without_notice(
@@ -245,7 +374,7 @@ def test_dual_source_market_serves_requested_iqvia_without_notice(
     )
 
     assert "측정 대상이 다른" not in final.text
-    assert final.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is False
+    assert final.trace["qa_trace"]["answer_delivery"]["source_notice_attached"] is True
 
 
 def test_nine_genos_return_sites_record_distinct_public_enums(

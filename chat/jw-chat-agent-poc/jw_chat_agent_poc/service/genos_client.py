@@ -19,6 +19,12 @@ from jw_chat_agent_poc.genos_config import (
     resolve_final_genos_token,
 )
 from jw_chat_agent_poc.agent_loop.factory import PRESCRIPTION_METRIC_UNAVAILABLE_REASON
+from jw_chat_agent_poc.agent_loop.requested_source import (
+    extract_requested_sources,
+    normalize_source,
+    served_source_from_calls,
+    source_basis_notice,
+)
 from jw_chat_agent_poc.common.token_usage import usage_call_from_payload
 from jw_chat_agent_poc.orchestrator.markdown_formatting import CODE_RE, NUMBER_RE
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers as markdown_allowed_numbers
@@ -731,6 +737,102 @@ def append_source_basis_notice(
     return cleanup_markdown_answer(f"{answer}\n\n{notice}"), True
 
 
+def prepend_matching_requested_source_basis(
+    answer: str,
+    question: str,
+    tool_calls: list[dict[str, Any]],
+) -> str:
+    requested_sources = extract_requested_sources(question)
+    if len(requested_sources) != 1:
+        return answer
+    requested_source = requested_sources[0]
+    if served_source_from_calls(tool_calls) != requested_source:
+        return answer
+    notice = source_basis_notice(requested_source)
+    if notice is None or notice in answer:
+        return answer
+    return f"{notice}\n\n{answer}"
+
+
+def _served_source_from_markdown_response(
+    markdown_response: Mapping[str, Any] | None,
+) -> str | None:
+    if not isinstance(markdown_response, Mapping):
+        return None
+    sources: list[str] = []
+    for line in str(markdown_response.get("sources_md") or "").splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        source = normalize_source(cells[0]) if cells else None
+        if source is not None and source not in sources:
+            sources.append(source)
+    return sources[0] if len(sources) == 1 else None
+
+
+def _served_source_from_answer(answer: str) -> str | None:
+    in_sources = False
+    sources: list[str] = []
+    for line in answer.splitlines():
+        stripped = line.strip()
+        if stripped == "## 출처":
+            in_sources = True
+            continue
+        if in_sources and stripped.startswith("## "):
+            break
+        if not in_sources or not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        source = normalize_source(cells[0]) if cells else None
+        if source is not None and source not in sources:
+            sources.append(source)
+    return sources[0] if len(sources) == 1 else None
+
+
+def prepend_matching_requested_source_basis_from_result(
+    answer: str,
+    question: str,
+    agent_result: Mapping[str, Any],
+    tool_calls: list[dict[str, Any]],
+) -> str:
+    requested_sources = extract_requested_sources(question)
+    if len(requested_sources) != 1:
+        return answer
+    metrics = agent_result.get("agent_loop_metrics")
+    served_source = (
+        normalize_source(metrics.get("served_source"))
+        if isinstance(metrics, Mapping)
+        else None
+    )
+    served_source = served_source or served_source_from_calls(tool_calls)
+    if served_source is None:
+        raw_sources = agent_result.get("sources")
+        normalized_sources = tuple(
+            dict.fromkeys(
+                source
+                for value in raw_sources
+                if (source := normalize_source(value)) is not None
+            )
+        ) if isinstance(raw_sources, (list, tuple)) else ()
+        served_source = normalized_sources[0] if len(normalized_sources) == 1 else None
+    served_source = served_source or _served_source_from_markdown_response(
+        agent_result.get("markdown_response")
+    )
+    served_source = served_source or _served_source_from_answer(answer)
+    requested_source = requested_sources[0]
+    if served_source != requested_source:
+        return answer
+    notice = source_basis_notice(requested_source)
+    if notice is None or notice in answer:
+        return answer
+    marker = re.search(r"\n##\s*(?:출처|처리\s*시간)\b", answer)
+    if marker:
+        before = answer[: marker.start()].rstrip()
+        after = answer[marker.start() :].lstrip()
+        return cleanup_markdown_answer(f"{before}\n\n{notice}\n\n{after}")
+    return cleanup_markdown_answer(f"{notice}\n\n{answer}")
+
+
 def _uploaded_file_context(agent_result: dict[str, Any]) -> str:
     value = agent_result.get("file_context")
     return value.strip() if isinstance(value, str) else ""
@@ -984,6 +1086,16 @@ class GenosClient:
         fallback_code = diagnostics.get("fallback_code") if isinstance(diagnostics, dict) else None
         tool_calls = agent_result.get("tool_calls")
         verified_calls = tool_calls if isinstance(tool_calls, list) else []
+
+        def stream_ready(answer: str) -> str:
+            cleaned = cleanup_markdown_answer(answer)
+            cleaned, _ = append_source_basis_notice(cleaned, markdown_response)
+            return prepend_matching_requested_source_basis_from_result(
+                cleaned,
+                question,
+                agent_result,
+                verified_calls,
+            )
         if isinstance(markdown_response, dict):
             raw_sources = agent_result.get("sources")
             source_names = (
@@ -1039,7 +1151,7 @@ class GenosClient:
                     answer = ensure_file_absence_statement(question, answer, file_context)
                     if not file_context:
                         answer = enforce_market_answer_contract(question, answer, verified_calls)
-                yield from chunk_text(cleanup_markdown_answer(answer))
+                yield from chunk_text(stream_ready(answer))
                 return
         if _is_tool_use_agent_result(agent_result):
             verified_answer = _verified_tool_use_agent_answer(agent_result)
@@ -1064,7 +1176,7 @@ class GenosClient:
                     )
                     if deterministic_external_answer:
                         self._record_answer_branch("genos_tool_external")
-                        yield from chunk_text(deterministic_external_answer)
+                        yield from chunk_text(stream_ready(deterministic_external_answer))
                         return
                     markdown_answer = self._markdown_answer(
                         question,
@@ -1081,19 +1193,19 @@ class GenosClient:
                                 "genos_tool_markdown_",
                                 1,
                             )
-                    yield from chunk_text(cleanup_markdown_answer(markdown_answer))
+                    yield from chunk_text(stream_ready(markdown_answer))
                     return
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             verified_answer = ensure_natural_fact_lead(question, verified_answer, fact_md)
             self._record_answer_branch("genos_tool_verified_fallback")
-            yield from chunk_text(verified_answer)
+            yield from chunk_text(stream_ready(verified_answer))
             return
         if self.token and isinstance(markdown_response, dict):
             if self.research_mode != "deep" and _requires_deterministic_external_relay(verified_calls):
                 self._record_answer_branch("genos_external_relay")
                 answer = _deterministic_external_relay_answer(markdown_response)
                 answer = replace_internal_fact_dump(question, answer, markdown_response)
-                yield from chunk_text(cleanup_markdown_answer(answer))
+                yield from chunk_text(stream_ready(answer))
                 return
             fact_md = str(markdown_response.get("fact_md") or markdown_response.get("data_md") or "")
             concentration_answer = (
@@ -1113,7 +1225,7 @@ class GenosClient:
                         concentration_answer,
                         file_context,
                     )
-                yield from chunk_text(cleanup_markdown_answer(answer))
+                yield from chunk_text(stream_ready(answer))
                 return
             fast_answer = (
                 deterministic_top_n_share_answer(question, fact_md, verified_calls)
@@ -1136,10 +1248,10 @@ class GenosClient:
                     answer = ensure_file_absence_statement(question, answer, file_context)
                     if not file_context:
                         answer = enforce_market_answer_contract(question, answer, verified_calls)
-                yield from chunk_text(cleanup_markdown_answer(answer))
+                yield from chunk_text(stream_ready(answer))
                 return
             yield from chunk_text(
-                cleanup_markdown_answer(
+                stream_ready(
                     self._markdown_answer(
                         question,
                         markdown_response,
@@ -1155,7 +1267,7 @@ class GenosClient:
             answer = str(agent_result["answer"])
             if isinstance(markdown_response, dict):
                 answer = replace_internal_fact_dump(question, answer, markdown_response)
-            yield from chunk_text(cleanup_markdown_answer(answer))
+            yield from chunk_text(stream_ready(answer))
             return
         policy_notice = self._policy_notice_block(agent_result)
         self._record_answer_branch("genos_legacy_llm")
@@ -1329,7 +1441,16 @@ class GenosClient:
             if self.research_mode == "deep"
             else _append_web_search_section(answer, tool_calls, question=question)
         )
-        return enforce_news_claim_selection(final_answer, news_selection)
+        final_answer = enforce_news_claim_selection(final_answer, news_selection)
+        final_answer, _source_notice_attached = append_source_basis_notice(
+            final_answer,
+            markdown_response,
+        )
+        return prepend_matching_requested_source_basis(
+            final_answer,
+            question,
+            tool_calls or [],
+        )
 
     def _record_answer_branch(self, answer_branch: str) -> None:
         if answer_branch not in ANSWER_BRANCHES:

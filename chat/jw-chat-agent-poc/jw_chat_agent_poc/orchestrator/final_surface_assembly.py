@@ -322,12 +322,24 @@ def _source_and_notices(answer: str) -> str:
         line.strip()
         for index, line in enumerate(lines)
         if not start <= index < end
-        and _safety_notice_line(line.strip())
+        and (
+            _safety_notice_line(line.strip())
+            or _source_measurement_basis_line(line.strip())
+        )
     )
     return _join_blocks(
         source,
         *safety_sections,
         "\n".join(dict.fromkeys(notices)),
+    )
+
+
+def _source_measurement_basis_line(line: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:원외 처방\(UBIST\)|제조사 출하\(IQVIA NSA\)) 기준으로 답합니다\.",
+            line,
+        )
     )
 
 

@@ -52,20 +52,18 @@ def requested_source_for_query(
     requested_sources: tuple[str, ...],
     available_sources: Iterable[str] | None,
 ) -> str | None:
+    del available_sources
     if len(requested_sources) != 1:
         return None
-    requested = requested_sources[0]
-    if available_sources is None:
-        return requested
-    available = {
-        source
-        for value in available_sources
-        if (source := normalize_source(value)) is not None
-    }
-    return requested if requested in available else None
+    return requested_sources[0]
 
 
 def served_source_from_calls(calls: Iterable[Mapping[str, Any]]) -> str | None:
+    sources = served_sources_from_calls(calls)
+    return sources[0] if len(sources) == 1 else None
+
+
+def served_sources_from_calls(calls: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
     sources: list[str] = []
     for call in calls:
         if str(call.get("status") or "").lower() in {
@@ -84,13 +82,58 @@ def served_source_from_calls(calls: Iterable[Mapping[str, Any]]) -> str | None:
         raw_source = (
             query_spec.get("source")
             if isinstance(query_spec, Mapping)
-            else call.get("source")
+            else None
         )
+        if raw_source is None:
+            arguments = call.get("arguments")
+            raw_source = (
+                arguments.get("source")
+                if isinstance(arguments, Mapping)
+                else call.get("source")
+            )
         source = normalize_source(raw_source)
         if source is not None:
             sources.append(source)
-    unique = tuple(dict.fromkeys(sources))
-    return unique[0] if len(unique) == 1 else None
+    return tuple(dict.fromkeys(sources))
+
+
+def source_substitution(
+    requested_sources: tuple[str, ...],
+    calls: Iterable[Mapping[str, Any]],
+) -> tuple[str, str] | None:
+    if len(requested_sources) != 1:
+        return None
+    requested = requested_sources[0]
+    served_sources = served_sources_from_calls(calls)
+    substituted = next(
+        (source for source in served_sources if source != requested),
+        None,
+    )
+    if substituted is None:
+        return None
+    return requested, substituted
+
+
+def source_substitution_message(requested_source: str, served_source: str) -> str:
+    requested = SOURCE_BASIS_LABEL.get(requested_source, requested_source)
+    served = SOURCE_BASIS_LABEL.get(served_source, served_source)
+    return (
+        f"요청하신 {requested} 기준과 확인된 {served} 기준이 다릅니다. "
+        f"{served} 값으로 대체하지 않습니다."
+    )
+
+
+def requested_source_unavailable_message(requested_source: str) -> str:
+    requested = SOURCE_BASIS_LABEL.get(requested_source, requested_source)
+    return (
+        f"요청하신 {requested} 기준은 현재 지원되지 않아 "
+        "다른 소스 값으로 대체하지 않습니다."
+    )
+
+
+def source_basis_notice(source: str) -> str | None:
+    label = SOURCE_BASIS_LABEL.get(source)
+    return f"{label} 기준으로 답합니다." if label is not None else None
 
 
 def source_domain_note(missing_sources: tuple[str, ...]) -> str | None:

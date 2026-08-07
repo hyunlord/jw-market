@@ -238,6 +238,7 @@ from jw_chat_agent_poc.service.file_sql_query import is_ambiguous_file_analysis_
 from jw_chat_agent_poc.service.genos_client import (
     GenosClient,
     append_source_basis_notice,
+    prepend_matching_requested_source_basis_from_result,
 )
 from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
 from jw_chat_agent_poc.service.history_projection import (
@@ -3307,6 +3308,7 @@ def compute_final_answer(
         display_answer = finalize_display_markdown(format_result.answer)
         output_policy_decision = evaluate_output_leakage(display_answer)
         user_answer = enforced_answer(display_answer, output_policy_decision)
+        user_answer = _prepend_matching_source_basis(user_answer, question, result)
         if query_spec is not None:
             try:
                 observe_surface_coverage(
@@ -3607,6 +3609,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
                 source_notice_attached=False,
             )
             generated_answer = finalized_fallback_fact_answer(active_question, result.get("markdown_response"))
+    generated_answer = _prepend_matching_source_basis(generated_answer, question, result)
     for call in client.token_usage_calls:
         record_token_usage(timing, call)
     with stage(timing, "answer_cleanup", "markdown cleanup"):
@@ -3721,6 +3724,7 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         post_chart_stages,
         legacy=lambda answer: _run_legacy_answer_stages(answer, post_chart_stages),
     )
+    safe_answer = _prepend_matching_source_basis(safe_answer, question, result)
     trace = trace_envelope(
         question=question,
         result=result,
@@ -3737,6 +3741,20 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
         sources=tuple(result.get("sources", ())),
         conversation_id=conversation_id,
         file_sources=_file_source_items(result),
+    )
+
+
+def _prepend_matching_source_basis(
+    answer: str,
+    question: str,
+    result: dict[str, Any],
+) -> str:
+    calls = result.get("tool_calls")
+    return prepend_matching_requested_source_basis_from_result(
+        answer,
+        question,
+        result,
+        calls if isinstance(calls, list) else [],
     )
 
 

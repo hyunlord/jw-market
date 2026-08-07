@@ -21,10 +21,14 @@ from jw_chat_agent_poc.agent_loop.requested_source import (
     SOURCE_BASIS_LABEL as _SOURCE_BASIS_LABEL,
     SOURCE_DOMAIN_NOTE as _SOURCE_DOMAIN_NOTE,
     extract_requested_sources,
+    normalize_source,
     requested_source_for_query,
+    requested_source_unavailable_message,
     served_source_from_calls,
+    source_basis_notice,
     source_domain_note,
-    source_mismatch_notice,
+    source_substitution,
+    source_substitution_message,
 )
 from jw_chat_agent_poc.agent_loop.structured_planner import plan_structured_market_question
 from jw_chat_agent_poc.portfolio_scope import is_portfolio_decline_question
@@ -251,6 +255,7 @@ class ToolUseAgent:
         requested_sources = extract_requested_sources(question)
         requested_source = requested_sources[0] if len(requested_sources) == 1 else None
         selected_requested_source: str | None = None
+        requested_source_available: bool | None = None
         llm_plan_calls = 0
         for step in range(1, self.max_steps + 1):
             allowed_brands = _step_allowed_brands(base_allowed_brands, tuple(observations))
@@ -272,10 +277,17 @@ class ToolUseAgent:
             )
             with stage(timing, self._stage_name("market_snapshot", "deep_research_plan"), "tool catalog and market snapshot"):
                 tool_schemas = facade.schemas(planner_allowed_brands)
+            available_sources = facade.available_sources()
             selected_requested_source = requested_source_for_query(
                 requested_sources,
-                facade.available_sources(),
+                available_sources,
             )
+            if requested_source is not None:
+                requested_source_available = requested_source in {
+                    source
+                    for value in available_sources
+                    if (source := normalize_source(value)) is not None
+                }
             period_detail = ", ".join(period_grounding.pre_resolved_periods) or "latest"
             brand_detail = ", ".join(planner_allowed_brands) or "unresolved"
             bq_result = (
@@ -677,10 +689,96 @@ class ToolUseAgent:
                         calls.append(analysis_call)
         sources = _sources(calls)
         served_source = served_source_from_calls(calls)
-        if requested_source is not None and served_source is not None:
-            mismatch_notice = source_mismatch_notice(requested_source, served_source)
-            if mismatch_notice is not None and mismatch_notice not in notices:
-                notices.append(mismatch_notice)
+        if requested_source is not None and requested_source_available is False:
+            message = requested_source_unavailable_message(requested_source)
+            markdown = {
+                "markdown": message,
+                "summary_md": "",
+                "interpretation_md": message,
+                "data_md": "",
+                "fact_md": "",
+                "evidence_md": "",
+                "sources_md": "",
+                "notice_md": "",
+                "allowed_numbers": (),
+                "evidence": (),
+                "verification": {"status": "pass"},
+            }
+            return {
+                "question": question,
+                "resolution": {"canonical_brand": brand},
+                "decomposition": [
+                    {"intent": "agent_loop", "status": "no_data", "max_steps": self.max_steps}
+                ],
+                "router_diagnostics": {
+                    "mode": "agent_loop",
+                    "deterministic_execution": True,
+                    "gate": "typed_unavailable",
+                    "gate_reason": "requested_source_unavailable",
+                },
+                "agent_trace": [item.to_dict() for item in trace],
+                "agent_loop_metrics": {
+                    "status": "unsupported",
+                    "steps": len(trace),
+                    "tool_calls": len(calls),
+                    "requested_source": requested_source,
+                    "served_source": served_source,
+                    "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
+                },
+                "tool_calls": calls,
+                "answer": message,
+                "markdown_response": markdown,
+                "sources": [],
+                "timing": timing,
+            }
+        substitution = source_substitution(requested_sources, calls)
+        if substitution is not None:
+            requested, served = substitution
+            message = source_substitution_message(requested, served)
+            markdown = {
+                "markdown": message,
+                "summary_md": "",
+                "interpretation_md": message,
+                "data_md": "",
+                "fact_md": "",
+                "evidence_md": "",
+                "sources_md": "",
+                "notice_md": "",
+                "allowed_numbers": (),
+                "evidence": (),
+                "verification": {"status": "pass"},
+            }
+            return {
+                "question": question,
+                "resolution": {"canonical_brand": brand},
+                "decomposition": [
+                    {"intent": "agent_loop", "status": "no_data", "max_steps": self.max_steps}
+                ],
+                "router_diagnostics": {
+                    "mode": "agent_loop",
+                    "deterministic_execution": True,
+                    "gate": "typed_unavailable",
+                    "gate_reason": "source_substituted",
+                },
+                "agent_trace": [item.to_dict() for item in trace],
+                "agent_loop_metrics": {
+                    "status": "unsupported",
+                    "steps": len(trace),
+                    "tool_calls": len(calls),
+                    "requested_source": requested,
+                    "served_source": served,
+                    "selected_tools": list(dict.fromkeys(item.tool_name for item in observations)),
+                },
+                "tool_calls": [],
+                "answer": message,
+                "markdown_response": markdown,
+                "sources": [],
+                "timing": timing,
+            }
+        if requested_source is not None and served_source == requested_source:
+            basis_notice = source_basis_notice(requested_source)
+            if basis_notice is not None and basis_notice not in notices:
+                notices.append(basis_notice)
         selection = _tool_selection(question, calls)
         with stage(timing, self._stage_name("fact_assembly", "deep_research_evidence"), "markdown fact set build"):
             markdown = MarkdownResponseBuilder().build(brand=brand, calls=calls, sources=sources or ["cache"], notices=notices)

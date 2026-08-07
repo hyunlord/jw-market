@@ -9,12 +9,32 @@ import os
 import time
 from typing import Protocol
 
+from jw_chat_agent_poc.agent_loop.requested_source import (
+    extract_requested_sources,
+    normalize_source,
+    requested_source_unavailable_message,
+    served_source_from_calls,
+    source_basis_notice,
+    source_substitution,
+    source_substitution_message,
+)
+
 
 LOGGER = logging.getLogger(__name__)
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _GENERAL_HELP = (
     "시장, 브랜드, 기간, 지표를 포함해 질문하면 확인 가능한 근거를 조회해 답합니다. "
     "필수 정보가 모호하면 부족한 항목만 다시 확인합니다."
+)
+_SOURCE_AWARE_MARKET_TOOLS = frozenset(
+    {
+        "market.get_brand_metric",
+        "market.get_timeseries",
+        "market.get_channel_breakdown",
+        "market.get_hhi",
+        "market.get_growth_contribution",
+        "market.get_deep_analysis",
+    }
 )
 
 
@@ -86,7 +106,50 @@ def apply_v3_cutover(
         LOGGER.warning("v3_cutover_empty_validated_result")
         return legacy_result
 
+    requested_sources = extract_requested_sources(question)
+    substitution = source_substitution(requested_sources, served.tool_calls)
+    if substitution is not None:
+        requested, actual = substitution
+        message = source_substitution_message(requested, actual)
+        return {
+            **legacy_result,
+            "answer": message,
+            "sources": [],
+            "tool_calls": [],
+            "charts": [],
+            "v3_cutover_ready": True,
+            "v3_cutover_domain": served.domain,
+            "v3_cutover_trace": {
+                **dict(served.trace),
+                "reason_code": "source_substituted",
+                "requested_source": requested,
+                "served_source": actual,
+            },
+        }
+
     answer = _render_answer(served.answer, served.limitations)
+    if len(requested_sources) == 1:
+        requested_source = requested_sources[0]
+        served_source = served_source_from_calls(served.tool_calls)
+        if served_source is None:
+            return {
+                **legacy_result,
+                "answer": requested_source_unavailable_message(requested_source),
+                "sources": [],
+                "tool_calls": [],
+                "charts": [],
+                "v3_cutover_ready": True,
+                "v3_cutover_domain": served.domain,
+                "v3_cutover_trace": {
+                    **dict(served.trace),
+                    "reason_code": "requested_source_unavailable",
+                    "requested_source": requested_source,
+                },
+            }
+        if served_source == requested_source:
+            basis_notice = source_basis_notice(requested_source)
+            if basis_notice is not None and basis_notice not in answer:
+                answer = f"{basis_notice}\n\n{answer}"
     return {
         **legacy_result,
         "answer": answer,
@@ -223,24 +286,25 @@ class _DefaultV3ServingPipeline:
         selection = selector.select(question)
         if selection.unknown_tool_names:
             raise RuntimeError("V3 selector returned an unknown tool")
+        choices = _apply_requested_source(question, selection.choices)
         domains_by_tool = {spec.name: spec.domain for spec in selection_tool_specs()}
         domains_by_tool["web_search"] = "web"
         selected_domains = {
-            domains_by_tool.get(choice.name, "general") for choice in selection.choices
+            domains_by_tool.get(choice.name, "general") for choice in choices
         }
         domain = _serving_domain(selected_domains)
         if not _domain_enabled(domain, self._config.domains):
             return V3ServingResult(domain, "", (), (), (), {"skipped": "domain"}, ())
 
         executor = build_default_shadow_executor(question)
-        bundle = executor.execute(selection.choices)
+        bundle = executor.execute(choices)
         market_scope_resolver = MarketScopeResolver()
         scope_confirmed = (
             market_scope_resolver.has_explicit_anchor(question)
             or market_scope_resolver.has_explicit_named_market(question)
         )
         supplemental_choices = scope_view_choices(
-            selection.choices,
+            choices,
             scope_confirmed=scope_confirmed,
         )
         supplemental = executor.execute(supplemental_choices)
@@ -330,7 +394,7 @@ class _DefaultV3ServingPipeline:
             sources=_source_labels(combined.facts),
             charts=charts,
             trace={
-                "selected_tools": [choice.name for choice in selection.choices],
+                "selected_tools": [choice.name for choice in choices],
                 "accepted_claim_count": len(answer_model.claims),
                 "rejected_claim_count": len(fusion.validated.audit.rejected_claims),
                 "evidence_fact_count": len(combined.facts),
@@ -344,6 +408,25 @@ class _DefaultV3ServingPipeline:
             },
             tool_calls=tool_calls,
         )
+
+
+def _apply_requested_source(question: str, choices: Sequence[object]) -> tuple[object, ...]:
+    requested = extract_requested_sources(question)
+    if len(requested) != 1:
+        return tuple(choices)
+    source = normalize_source(requested[0])
+    if source is None:
+        return tuple(choices)
+    executor_source = "iqvia" if source == "iqvia_nsa" else source
+    return tuple(
+        replace(
+            choice,
+            arguments={**dict(choice.arguments), "source": executor_source},
+        )
+        if choice.name in _SOURCE_AWARE_MARKET_TOOLS
+        else choice
+        for choice in choices
+    )
 
 
 def _web_search(client: object, query: str, *, topic: str) -> object:

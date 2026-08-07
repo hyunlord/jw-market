@@ -104,6 +104,151 @@ def test_uncovered_result_is_replaced_only_for_enabled_domain() -> None:
     assert blocked is legacy
 
 
+def test_explicit_iqvia_request_rejects_successful_ubist_substitution() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        V3ServingResult,
+        apply_v3_cutover,
+    )
+
+    class Pipeline:
+        def run(self, question: str) -> V3ServingResult:
+            assert question == "리바로를 IQVIA 기준으로 보여줘"
+            return V3ServingResult(
+                domain="market",
+                answer="리바로 매출은 80.39억원입니다.",
+                limitations=(),
+                sources=("market.get_brand_metric",),
+                charts=({"type": "line", "datasets": [{"data": [80.39]}]},),
+                trace={"selected_tools": ["market.get_brand_metric"]},
+                tool_calls=(
+                    {
+                        "tool": "market.get_brand_metric",
+                        "status": "ok",
+                        "render_data": {
+                            "query_spec": {"source": "ubist"},
+                            "value": 80.39,
+                        },
+                    },
+                ),
+            )
+
+    result = apply_v3_cutover(
+        "리바로를 IQVIA 기준으로 보여줘",
+        _legacy_no_tool(),
+        config=V3CutoverConfig(enabled=True),
+        pipeline_factory=Pipeline,
+    )
+
+    assert result["v3_cutover_ready"] is True
+    assert result["v3_cutover_trace"]["reason_code"] == "source_substituted"
+    assert "80.39" not in result["answer"]
+    assert "원외 처방(UBIST) 값으로 대체하지 않습니다" in result["answer"]
+    assert result["sources"] == []
+    assert result["tool_calls"] == []
+    assert result["charts"] == []
+
+
+def test_explicit_source_rejects_mixed_served_sources() -> None:
+    from jw_chat_agent_poc.agent_loop.requested_source import source_substitution
+
+    calls = (
+        {"tool": "market.get_brand_metric", "arguments": {"source": "iqvia"}},
+        {"tool": "market.get_timeseries", "arguments": {"source": "ubist"}},
+    )
+
+    assert source_substitution(("iqvia_nsa",), calls) == ("iqvia_nsa", "ubist")
+
+
+def test_explicit_matched_source_is_named_in_v3_answer_body() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        V3ServingResult,
+        apply_v3_cutover,
+    )
+
+    class Pipeline:
+        def run(self, question: str) -> V3ServingResult:
+            del question
+            return V3ServingResult(
+                domain="market",
+                answer="리바로 출하액을 확인했습니다.",
+                limitations=(),
+                sources=("market.get_brand_metric",),
+                charts=(),
+                trace={},
+                tool_calls=(
+                    {
+                        "tool": "market.get_brand_metric",
+                        "status": "ok",
+                        "arguments": {"source": "iqvia"},
+                        "render_data": {"value": 1},
+                    },
+                ),
+            )
+
+    result = apply_v3_cutover(
+        "리바로 IQVIA 매출 알려줘",
+        _legacy_no_tool(),
+        config=V3CutoverConfig(enabled=True),
+        pipeline_factory=Pipeline,
+    )
+
+    assert result["answer"].startswith("제조사 출하(IQVIA NSA) 기준으로 답합니다.")
+
+
+def test_explicit_source_without_matching_execution_is_typed_unavailable() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        V3ServingResult,
+        apply_v3_cutover,
+    )
+
+    class Pipeline:
+        def run(self, question: str) -> V3ServingResult:
+            del question
+            return V3ServingResult(
+                domain="market",
+                answer="",
+                limitations=("요청한 조회 중 일부를 확인하지 못했습니다.",),
+                sources=(),
+                charts=(),
+                trace={"selected_tools": ["market.get_brand_metric"]},
+                tool_calls=(),
+            )
+
+    result = apply_v3_cutover(
+        "리바로 IQVIA 매출 알려줘",
+        _legacy_no_tool(),
+        config=V3CutoverConfig(enabled=True),
+        pipeline_factory=Pipeline,
+    )
+
+    assert result["v3_cutover_ready"] is True
+    assert result["v3_cutover_trace"]["reason_code"] == "requested_source_unavailable"
+    assert "제조사 출하(IQVIA NSA) 기준은 현재 지원되지 않아" in result["answer"]
+    assert result["sources"] == []
+    assert result["tool_calls"] == []
+    assert result["charts"] == []
+
+
+def test_explicit_source_is_applied_to_selected_market_tools_only() -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import _apply_requested_source
+    from jw_chat_agent_poc.tool_use.v3_selection import MultiToolChoice
+
+    selected = (
+        MultiToolChoice("market.get_brand_metric", {"brand": "리바로", "metric": "sales"}),
+        MultiToolChoice("market.get_definition", {"brand": "리바로"}),
+        MultiToolChoice("web_search", {"query": "리바로"}),
+    )
+
+    result = _apply_requested_source("리바로를 IQVIA 기준으로 보여줘", selected)
+
+    assert result[0].arguments["source"] == "iqvia"
+    assert "source" not in result[1].arguments
+    assert "source" not in result[2].arguments
+
+
 def test_pipeline_failure_fails_open_and_records_reason(caplog) -> None:
     from jw_chat_agent_poc.tool_use.v3_cutover import V3CutoverConfig, apply_v3_cutover
 
