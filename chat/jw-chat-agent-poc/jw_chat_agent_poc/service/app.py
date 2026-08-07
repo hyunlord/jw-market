@@ -3889,8 +3889,21 @@ def _apply_evidence_binding_gate(question: str, answer: str, result: dict[str, A
             else None
         ),
     }
-    if observability:
-        result["_qa_claim_gate"]["pipeline_observability"] = observability
+    markdown_response = result.get("markdown_response")
+    pending_answer_trace = (
+        markdown_response.pop("_answer_assembly_trace_v2_pending", None)
+        if isinstance(markdown_response, dict)
+        else None
+    )
+    from jw_chat_agent_poc.service.answer_stage_trace import answer_stage_trace_enabled
+
+    if not answer_stage_trace_enabled():
+        pending_answer_trace = None
+    if observability or isinstance(pending_answer_trace, dict):
+        combined_observability = dict(observability)
+        if isinstance(pending_answer_trace, dict):
+            combined_observability["answer_assembly_v2"] = pending_answer_trace
+        result["_qa_claim_gate"]["pipeline_observability"] = combined_observability
     result["_qa_claim_gate"].update(context_observability)
     failure_kind = gate.failure_kind or str(previous_items.get("failure_kind") or "") or None
     if failure_kind:

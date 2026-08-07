@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+
+from jw_chat_agent_poc.orchestrator.markdown_formatting import NUMBER_RE, normalize_number
 
 from jw_chat_agent_poc.orchestrator.provenance_labels import sanitize_internal_provenance_labels
 from jw_chat_agent_poc.orchestrator.tool_use_contract import (
@@ -46,6 +50,112 @@ _GENERIC_UNAVAILABLE = "요청한 일부 지표는 현재 운영 데이터에서
 _FORECAST_TOKENS = ("전망", "forecast", "예측", "향후")
 _ERROR_STATUSES = frozenset({"error", "query_failed", "mapping_failed", "timeout", "failed"})
 _ABSENT_STATUSES = frozenset({"no_data", "unsupported", "missing", "not_found", "incomplete_split"})
+_ANSWER_STAGE_TRACE_ENV = "JW_CHAT_ANSWER_STAGE_TRACE_ENABLED"
+_TRACE_PENDING_KEY = "_answer_assembly_trace_v2_pending"
+
+
+def _trace_enabled() -> bool:
+    return os.getenv(_ANSWER_STAGE_TRACE_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _claim_snapshot(
+    answer: str,
+    markdown_response: Mapping[str, object] | None,
+    *,
+    ids_by_line: dict[str, str] | None = None,
+) -> tuple[dict[str, object], ...]:
+    local_ids = ids_by_line if ids_by_line is not None else {}
+    evidence = markdown_response.get("evidence") if isinstance(markdown_response, Mapping) else None
+    facts = tuple(item for item in evidence or () if isinstance(item, Mapping))
+    snapshots: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_line in answer.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        claim_id = local_ids.get(line)
+        if claim_id is None:
+            claim_id = f"c{len(local_ids) + 1:04d}"
+            local_ids[line] = claim_id
+        if claim_id in seen:
+            continue
+        seen.add(claim_id)
+        claim_numbers = {normalize_number(match.group(0)) for match in NUMBER_RE.finditer(line)}
+        fact_ids: list[str] = []
+        for fact in facts:
+            allowed = fact.get("allowed_numbers") or fact.get("allowed_numeric_literals") or ()
+            allowed_numbers = {
+                normalize_number(str(value))
+                for value in allowed
+                if value is not None
+            }
+            fact_id = fact.get("fact_id") or fact.get("evidence_id")
+            if claim_numbers & allowed_numbers and isinstance(fact_id, str) and fact_id not in fact_ids:
+                fact_ids.append(fact_id)
+        snapshots.append({"claim_id": claim_id, "fact_ids": fact_ids})
+    return tuple(snapshots)
+
+
+def record_initial_answer_trace(
+    markdown_response: Mapping[str, object] | None,
+    answer: str,
+) -> None:
+    if not _trace_enabled() or not isinstance(markdown_response, MutableMapping):
+        return
+    markdown_response[_TRACE_PENDING_KEY] = {
+        "schema_version": 2,
+        "enabled": True,
+        "redaction": "claim_ids_and_fact_ids_only_no_text",
+        "stages": [
+            {
+                "seq": 0,
+                "name": "genos_initial_answer",
+                "claims": list(_claim_snapshot(answer, markdown_response)),
+            }
+        ],
+    }
+
+
+def _record_unavailable_trace(
+    markdown_response: Mapping[str, object] | None,
+    before: str,
+    after: str,
+    reason: str,
+) -> None:
+    if not _trace_enabled() or not isinstance(markdown_response, MutableMapping):
+        return
+    pending = markdown_response.get(_TRACE_PENDING_KEY)
+    if not isinstance(pending, MutableMapping):
+        record_initial_answer_trace(markdown_response, before)
+        pending = markdown_response.get(_TRACE_PENDING_KEY)
+    if not isinstance(pending, MutableMapping):
+        return
+    stages = pending.setdefault("stages", [])
+    if not isinstance(stages, list):
+        return
+    ids_by_line: dict[str, str] = {}
+    before_claims = _claim_snapshot(before, markdown_response, ids_by_line=ids_by_line)
+    after_claims = _claim_snapshot(after, markdown_response, ids_by_line=ids_by_line)
+    after_ids = {str(item["claim_id"]) for item in after_claims}
+    removed = [
+        {
+            "claim_id": str(item["claim_id"]),
+            "fact_ids": list(item["fact_ids"]),
+            "reason": reason,
+        }
+        for item in before_claims
+        if str(item["claim_id"]) not in after_ids
+    ]
+    stages.append(
+        {
+            "seq": len(stages),
+            "name": "common_unavailable_response",
+            "branch": reason,
+            "before": {"claim_ids": [item["claim_id"] for item in before_claims]},
+            "after": {"claim_ids": [item["claim_id"] for item in after_claims]},
+            "removed_claims": removed,
+        }
+    )
 
 
 def file_absence_answer(status: str, *, subject: str = "", period: str = "") -> str:
@@ -189,19 +299,27 @@ def apply_common_unavailable_response(
     tool_calls: Sequence[Mapping[str, Any]] | None = None,
     source_scope: str = "MARKET",
     connected_source_mode: bool = False,
+    trace_target: Mapping[str, object] | None = None,
 ) -> str:
     """Sanitize internal diagnostics and append the common 5-step unavailable block when needed."""
+
+    trace_response = trace_target if trace_target is not None else markdown_response
+
+    def done(value: str, reason: str) -> str:
+        _record_unavailable_trace(trace_response, answer, value, reason)
+        return value
 
     fact_md = _fact_markdown(markdown_response)
     sanitized_answer = sanitize_internal_diagnostics(answer)
     if source_scope == "FILE":
-        return _cleanup(sanitized_answer)
+        return done(_cleanup(sanitized_answer), "outer.file_scope")
     combined = "\n\n".join(part for part in (question, sanitized_answer, sanitize_internal_diagnostics(fact_md)) if part)
     question_has_unavailable_signal = bool(_QUESTION_UNAVAILABLE_RE.search(question))
     if connected_source_mode and _is_generic_guideline_request(question):
         question_has_unavailable_signal = False
     if not _UNAVAILABLE_SIGNAL_RE.search(combined) and not question_has_unavailable_signal:
-        return _cleanup(sanitized_answer)
+        return done(_cleanup(sanitized_answer), "outer.no_unavailable_signal")
+    branch_trace: list[str] = []
     gated = _four_stage_unavailable_gate(
         question,
         sanitized_answer,
@@ -209,17 +327,18 @@ def apply_common_unavailable_response(
         tool_calls,
         question_has_unavailable_signal=question_has_unavailable_signal,
         connected_source_mode=connected_source_mode,
+        branch_trace=branch_trace,
     )
     if gated is not None:
-        return gated
+        return done(gated, branch_trace[-1] if branch_trace else "four_stage.unknown")
     if _has_five_step_block(sanitized_answer):
-        return _cleanup(sanitized_answer)
+        return done(_cleanup(sanitized_answer), "outer.existing_five_step")
     if not question_has_unavailable_signal and _is_positioning_question(question):
-        return _cleanup(sanitized_answer)
+        return done(_cleanup(sanitized_answer), "outer.positioning_preserved")
     if not question_has_unavailable_signal and not _UNAVAILABLE_SIGNAL_RE.search(sanitize_internal_diagnostics(fact_md)):
-        return _cleanup(sanitized_answer)
+        return done(_cleanup(sanitized_answer), "outer.fact_without_unavailable_preserved")
     block = _five_step_block(_plan_for(question, sanitized_answer, fact_md))
-    return _cleanup(_insert_before_source(sanitized_answer, block))
+    return done(_cleanup(_insert_before_source(sanitized_answer, block)), "outer.append_five_step")
 
 
 def _is_generic_guideline_request(question: str) -> bool:
@@ -274,6 +393,7 @@ def _four_stage_unavailable_gate(
     *,
     question_has_unavailable_signal: bool,
     connected_source_mode: bool,
+    branch_trace: list[str] | None = None,
 ) -> str | None:
     """Separate owned facts, source absence, and failed verification.
 
@@ -284,6 +404,8 @@ def _four_stage_unavailable_gate(
     """
 
     if tool_calls is None:
+        if branch_trace is not None:
+            branch_trace.append("four_stage.no_tool_calls")
         return None
     calls = tuple(tool_calls)
     successful_fact_call = _has_positive_fact(fact_md) and _has_successful_fact_call(calls)
@@ -291,6 +413,8 @@ def _four_stage_unavailable_gate(
         answer = _without_five_step_block(answer)
     if connected_source_mode:
         if successful_fact_call:
+            if branch_trace is not None:
+                branch_trace.append("four_stage.connected_successful_fact")
             return _cleanup(answer)
         failed = tuple(
             _public_tool_name(call)
@@ -298,17 +422,25 @@ def _four_stage_unavailable_gate(
             if _tool_status(call) in _ERROR_STATUSES
         )
         if failed:
+            if branch_trace is not None:
+                branch_trace.append("four_stage.connected_failed_tools")
             return _failed_tool_answer(answer, failed)
         if tool_use_evidence_complete(question, calls):
+            if branch_trace is not None:
+                branch_trace.append("four_stage.connected_complete")
             return _cleanup(answer)
         missing = missing_tool_use_requirements(question, calls)
         if missing:
+            if branch_trace is not None:
+                branch_trace.append("four_stage.connected_missing_requirements")
             return _unverified_answer(f"필요 근거({', '.join(missing)})가 이번 턴에 완성되지 않았습니다")
     if not question_has_unavailable_signal and successful_fact_call:
         if _completed_answer_contract(question, answer, fact_md) or _has_supported_required_bq_output(
             answer,
             calls,
         ):
+            if branch_trace is not None:
+                branch_trace.append("four_stage.successful_fact_contract_preserved")
             return _cleanup(answer)
         from jw_chat_agent_poc.service.answer_safety import (
             finalized_fallback_fact_answer,
@@ -321,16 +453,24 @@ def _four_stage_unavailable_gate(
         ):
             activity_answer = replace_internal_fact_dump(question, fact_md, {"fact_md": fact_md})
             if activity_answer != fact_md:
+                if branch_trace is not None:
+                    branch_trace.append("four_stage.successful_fact_csd_replacement")
                 return _cleanup(activity_answer)
         public_answer = replace_internal_fact_dump(question, answer, {"fact_md": fact_md})
         if public_answer != answer:
+            if branch_trace is not None:
+                branch_trace.append("four_stage.successful_fact_public_replacement")
             return _cleanup(public_answer)
+        if branch_trace is not None:
+            branch_trace.append("four_stage.successful_fact_finalized_fallback")
         return _cleanup(finalized_fallback_fact_answer(question, {"fact_md": fact_md}))
 
     required = _required_tools(question)
     attempted = {_public_tool_name(call) for call in calls}
     missing = tuple(tool for tool in required if tool not in attempted)
     if missing:
+        if branch_trace is not None:
+            branch_trace.append("four_stage.required_tools_missing")
         return _unverified_answer(f"필요 도구({', '.join(missing)})가 이번 턴에 실행되지 않았습니다")
 
     failed = tuple(
@@ -339,6 +479,8 @@ def _four_stage_unavailable_gate(
         if _tool_status(call) in _ERROR_STATUSES
     )
     if failed:
+        if branch_trace is not None:
+            branch_trace.append("four_stage.failed_tools")
         return _failed_tool_answer(answer, failed)
 
     absent = tuple(call for call in calls if _tool_status(call) in _ABSENT_STATUSES)
@@ -346,8 +488,14 @@ def _four_stage_unavailable_gate(
         plan = _plan_for(question, answer, fact_md)
         source_absence = f"원천에 없음: {plan.missing}"
         if _has_five_step_block(answer):
+            if branch_trace is not None:
+                branch_trace.append("four_stage.source_absence_existing_five_step")
             return _cleanup("\n\n".join((source_absence, answer)))
+        if branch_trace is not None:
+            branch_trace.append("four_stage.source_absence_append_five_step")
         return _cleanup(_insert_before_source("\n\n".join((source_absence, answer)), _five_step_block(plan)))
+    if branch_trace is not None:
+        branch_trace.append("four_stage.no_decision")
     return None
 
 

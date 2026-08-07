@@ -47,12 +47,28 @@ from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrati
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.source_grading import is_web_search_call
-from jw_chat_agent_poc.orchestrator.unavailable_response import apply_common_unavailable_response
+from jw_chat_agent_poc.orchestrator.unavailable_response import (
+    apply_common_unavailable_response,
+    record_initial_answer_trace,
+)
 from jw_chat_agent_poc.service.claim_guardrails import apply_claim_guardrails
 from jw_chat_agent_poc.service.answer_delivery import ANSWER_BRANCHES
 from jw_chat_agent_poc.tool_use.reimbursement_evidence import (
     is_reimbursement_identity_notice,
 )
+
+_PENDING_ANSWER_TRACE_KEY = "_answer_assembly_trace_v2_pending"
+
+
+def _transfer_pending_answer_trace(
+    source: Mapping[str, object],
+    target: Mapping[str, object] | None,
+) -> None:
+    if not isinstance(target, dict) or target is source:
+        return
+    pending = source.get(_PENDING_ANSWER_TRACE_KEY)
+    if isinstance(pending, dict):
+        target[_PENDING_ANSWER_TRACE_KEY] = pending
 from jw_chat_agent_poc.service.answer_safety import (
     FAIL_CLOSED_TEXT,
     answer_has_only_fact_numbers,
@@ -1139,6 +1155,7 @@ class GenosClient:
                     "verified single-period sales answer rendering",
                 ):
                     answer = _apply_final_claim_controls(question, single_period_sales_answer, fact_md)
+                    record_initial_answer_trace(original_markdown_response, answer)
                     answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
                     if not file_context:
                         answer = apply_common_unavailable_response(
@@ -1146,6 +1163,7 @@ class GenosClient:
                             answer,
                             markdown_response,
                             tool_calls=verified_calls,
+                            trace_target=original_markdown_response,
                         )
                         answer = apply_requested_source_trap_gate(question, answer)
                     answer = ensure_file_absence_statement(question, answer, file_context)
@@ -1185,6 +1203,7 @@ class GenosClient:
                         verified_calls,
                         file_context,
                     )
+                    _transfer_pending_answer_trace(markdown_response, original_markdown_response)
                     if self.answer_branch_events:
                         branch = self.answer_branch_events[-1]
                         if branch.startswith("genos_markdown_"):
@@ -1236,6 +1255,7 @@ class GenosClient:
                 self._record_answer_branch("genos_top_n")
                 with stage(timing, "final_deterministic_fast_path", "verified top-N answer rendering"):
                     answer = _apply_final_claim_controls(question, fast_answer, fact_md)
+                    record_initial_answer_trace(original_markdown_response, answer)
                     answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
                     if not file_context:
                         answer = apply_common_unavailable_response(
@@ -1243,6 +1263,7 @@ class GenosClient:
                             answer,
                             markdown_response,
                             tool_calls=verified_calls,
+                            trace_target=original_markdown_response,
                         )
                         answer = apply_requested_source_trap_gate(question, answer)
                     answer = ensure_file_absence_statement(question, answer, file_context)
@@ -1250,17 +1271,15 @@ class GenosClient:
                         answer = enforce_market_answer_contract(question, answer, verified_calls)
                 yield from chunk_text(stream_ready(answer))
                 return
-            yield from chunk_text(
-                stream_ready(
-                    self._markdown_answer(
-                        question,
-                        markdown_response,
-                        timing,
-                        verified_calls,
-                        file_context,
-                    )
-                )
+            markdown_answer = self._markdown_answer(
+                question,
+                markdown_response,
+                timing,
+                verified_calls,
+                file_context,
             )
+            _transfer_pending_answer_trace(markdown_response, original_markdown_response)
+            yield from chunk_text(stream_ready(markdown_answer))
             return
         if self._is_cache_only(agent_result) or not self.token:
             self._record_answer_branch("genos_cache")
@@ -1430,9 +1449,15 @@ class GenosClient:
         answer = _append_blocked_metric_notices(answer, fact_lookup_md)
         if self.research_mode == "deep":
             answer = _append_web_search_section(answer, tool_calls, question=question)
+        record_initial_answer_trace(markdown_response, answer)
         answer = append_deterministic_source_block(answer, fact_md, file_context=file_context)
         if not file_context:
-            answer = apply_common_unavailable_response(question, answer, markdown_response)
+            answer = apply_common_unavailable_response(
+                question,
+                answer,
+                markdown_response,
+                trace_target=markdown_response,
+            )
             answer = apply_requested_source_trap_gate(question, answer)
         answer = ensure_file_absence_statement(question, answer, file_context)
         _warn_dropped_file_tokens(question, raw_interpretation, answer, file_context)
