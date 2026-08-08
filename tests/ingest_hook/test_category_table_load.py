@@ -85,6 +85,42 @@ def test_batch_sources_reach_one_loader_request(
     assert seen == [sources]
 
 
+def test_nsa_row_count_uses_loader_first_pass_without_reparsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pipeline.etl.io import iqvia_loader
+
+    source = tmp_path / "source.xlsx"
+    source.write_bytes(b"fixture")
+    request = category_table_load.LoadRequest(
+        category="iqvia_nsa",
+        sources=(source,),
+        target_dir=tmp_path / "target",
+        epoch="2026-Q1",
+        target_db="jw_ingest_stage_test",
+    )
+    counts = iter((0, 7))
+    monkeypatch.setattr(category_table_load, "_count_rows", lambda *_args: next(counts))
+    monkeypatch.setattr(
+        iqvia_loader,
+        "load_source",
+        lambda *_args, **_kwargs: iqvia_loader.LoadStats(
+            rows=7, source_rows=9, files=1, sheets=1
+        ),
+    )
+    monkeypatch.setattr(
+        iqvia_loader,
+        "iter_records",
+        lambda _path: pytest.fail("NSA source must not be parsed a second time"),
+    )
+
+    outcome = category_table_load._load_nsa(request)
+
+    assert outcome.primary.rows_loaded == 7
+    assert outcome.primary.source_rows == 9
+    assert outcome.primary.difference_reasons == ("duplicate_or_previously_loaded=2",)
+
+
 def test_non_isolated_database_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

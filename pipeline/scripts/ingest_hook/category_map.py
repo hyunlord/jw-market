@@ -121,6 +121,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         # columns) loaded via --stage s1 (s2 catalog never runs on this path),
         # so G3 must validate the workbook itself using the loader's parser.
         workbook_reader="ubist",
+        load_batch_files=True,
         activation_kind=ActivationKind.UBIST_NUMERIC,
     ),
     CategorySpec(

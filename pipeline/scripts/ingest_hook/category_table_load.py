@@ -97,7 +97,7 @@ def _load_nsa(request: LoadRequest) -> LoadOutcome:
     if stats.errors:
         raise RuntimeError("IQVIA NSA loader failed: " + "; ".join(stats.errors))
     after = _count_rows(request.target_db, iqvia_loader.NSA_TABLE)
-    source_rows = sum(1 for source in request.sources for _ in iqvia_loader.iter_records(source))
+    source_rows = stats.source_rows
     primary = verify_row_counts(
         RowCountEvidence(
             schema=request.target_db,

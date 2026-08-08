@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import zipfile
 
@@ -35,6 +36,134 @@ def _write(root: Path, relative: str, content: bytes = b"xlsx") -> Path:
 
 def _summary(periods: set[str]) -> WorkbookSummary:
     return WorkbookSummary(rows=10, periods=frozenset(periods), detail="fixture")
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_scan_reuses_unchanged_sha_without_reparsing(tmp_path: Path) -> None:
+    source = _write(tmp_path, "source.xlsx", b"unchanged")
+    previous = ScanSnapshot(
+        "1",
+        "ubist",
+        "2026-06",
+        "a" * 64,
+        "previous-run",
+        "2026-08-07T00:00:00+00:00",
+        (
+            FileObservation(
+                "source.xlsx",
+                _file_sha256(source),
+                source.stat().st_size,
+                "classified",
+                category="ubist",
+                rows=123,
+                periods=("2026-06",),
+                reason="previous exact scan",
+                first_observed_at="2026-08-07T00:00:00+00:00",
+                last_observed_at="2026-08-07T00:00:00+00:00",
+            ),
+        ),
+    )
+
+    current = scan_source(
+        SourceScanPolicy("ubist", tmp_path, "month"),
+        epoch="2026-06",
+        manifest_sha="b" * 64,
+        run_id="current-run",
+        previous=previous,
+        classify=lambda _path: pytest.fail("unchanged SHA must not be classified again"),
+        summarize=lambda *_args: pytest.fail("unchanged SHA must not be parsed again"),
+    )
+
+    assert current.files[0].rows == 123
+    assert current.files[0].periods == ("2026-06",)
+    assert current.files[0].reason == "previous exact scan"
+
+
+def test_full_scan_bootstrap_rebuilds_only_manifest_files(tmp_path: Path) -> None:
+    old = _write(tmp_path, "old.xlsx", b"old")
+    current = _write(tmp_path, "current.xlsx", b"current")
+    rebuilt: list[tuple[Path, ...]] = []
+
+    run_full_scan(
+        SourceScanPolicy("ubist", tmp_path, "month"),
+        epoch="2026-06",
+        manifest_sha="c" * 64,
+        run_id="bootstrap-run",
+        output_root=tmp_path / "inventory",
+        classify=lambda _path: "ubist",
+        summarize=lambda _category, path, _epoch: _summary(
+            {"2026-05" if path == old else "2026-06"}
+        ),
+        rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
+        bootstrap_files=(current,),
+    )
+
+    assert rebuilt == [(current.resolve(),)]
+
+
+def test_full_scan_unchanged_sha_never_reaches_rebuild_parser(tmp_path: Path) -> None:
+    source = _write(tmp_path, "source.xlsx", b"already-loaded")
+    previous = ScanSnapshot(
+        "1",
+        "ubist",
+        "2026-06",
+        "a" * 64,
+        "previous-run",
+        "2026-08-07T00:00:00+00:00",
+        (
+            FileObservation(
+                "source.xlsx",
+                _file_sha256(source),
+                source.stat().st_size,
+                "classified",
+                category="ubist",
+                rows=100,
+                periods=("2026-06",),
+                first_observed_at="2026-08-07T00:00:00+00:00",
+                last_observed_at="2026-08-07T00:00:00+00:00",
+            ),
+        ),
+    )
+    rebuilt: list[tuple[Path, ...]] = []
+
+    run_full_scan(
+        SourceScanPolicy("ubist", tmp_path, "month", rebuild_periods=61),
+        epoch="2026-06",
+        manifest_sha="e" * 64,
+        run_id="incremental-run",
+        output_root=tmp_path / "inventory",
+        previous=previous,
+        classify=lambda _path: pytest.fail("unchanged SHA must not be classified"),
+        summarize=lambda *_args: pytest.fail("unchanged SHA must not be parsed"),
+        rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
+    )
+
+    assert rebuilt == [()]
+
+
+def test_full_scan_filters_outside_rebuild_window_before_loader(tmp_path: Path) -> None:
+    old = _write(tmp_path, "old.xlsx", b"old")
+    current = _write(tmp_path, "current.xlsx", b"current")
+    rebuilt: list[tuple[Path, ...]] = []
+
+    run_full_scan(
+        SourceScanPolicy("ubist", tmp_path, "month", rebuild_periods=1),
+        epoch="2026-06",
+        manifest_sha="d" * 64,
+        run_id="window-run",
+        output_root=tmp_path / "inventory",
+        classify=lambda _path: "ubist",
+        summarize=lambda _category, path, _epoch: _summary(
+            {"2025-01" if path == old else "2026-06"}
+        ),
+        rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
+        permissive=True,
+    )
+
+    assert rebuilt == [(current.resolve(),)]
 
 
 def test_scan_classifies_by_content_and_excludes_demo_root(tmp_path: Path) -> None:

@@ -565,6 +565,9 @@ def _load_with_source_inventory(
         run_id=run_id,
         output_root=DEFAULT_INVENTORY_ROOT,
         previous=previous,
+        bootstrap_files=tuple(
+            (input_root / entry.path).resolve() for entry in manifest.files
+        ),
         permissive=config.e2e_commissioning(),
         rebuild=lambda source_files: _real_load(
             manifest,

@@ -18,7 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable, Literal, Mapping
 
-from pipeline.scripts.ingest_hook.workbook_contracts import WorkbookSummary, summarize
+from pipeline.scripts.ingest_hook.workbook_contracts import (
+    WorkbookSummary,
+    summarize_inventory,
+)
 from pipeline.scripts.ingest_hook.workbook_source_validation import (
     SourceValidationError,
     detect_workbook_source,
@@ -45,6 +48,7 @@ class SourceScanPolicy:
     root: Path
     period_unit: PeriodUnit
     excluded_relative_roots: tuple[str, ...] = ()
+    rebuild_periods: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,9 +194,10 @@ def scan_source(
     manifest_sha: str,
     run_id: str,
     classify: Callable[[Path], str] = detect_workbook_source,
-    summarize: Callable[[str, Path, str], WorkbookSummary] = summarize,
+    summarize: Callable[[str, Path, str], WorkbookSummary] = summarize_inventory,
     candidate_files: tuple[tuple[str, Path], ...] | None = None,
     commissioning: bool = False,
+    previous: ScanSnapshot | None = None,
 ) -> ScanSnapshot:
     """Recursively classify one approved source root without filename inference."""
     root = policy.root.resolve()
@@ -204,6 +209,15 @@ def scan_source(
         (path.relative_to(root).as_posix(), path)
         for path in sorted(root.rglob("*"))
         if path.is_file() and path.suffix.lower() == ".xlsx"
+    )
+    previous_by_path = (
+        {
+            item.relative_path: item
+            for item in previous.files
+            if item.state != "removed"
+        }
+        if previous is not None
+        else {}
     )
     for relative_text, path in candidates:
         relative = Path(relative_text.replace("!/", "/"))
@@ -236,6 +250,17 @@ def scan_source(
                     size=size,
                     state="excluded",
                     reason="outside approved operating population",
+                )
+            )
+            continue
+        previous_item = previous_by_path.get(relative_text)
+        if previous_item is not None and previous_item.sha256 == sha256:
+            observations.append(
+                replace(
+                    previous_item,
+                    size=size,
+                    last_observed_at=observed_at,
+                    removed_at=None,
                 )
             )
             continue
@@ -712,8 +737,9 @@ def run_full_scan(
     rebuild: Callable[[tuple[Path, ...]], Mapping[str, object]],
     previous: ScanSnapshot | None = None,
     classify: Callable[[Path], str] = detect_workbook_source,
-    summarize: Callable[[str, Path, str], WorkbookSummary] = summarize,
+    summarize: Callable[[str, Path, str], WorkbookSummary] = summarize_inventory,
     permissive: bool = False,
+    bootstrap_files: tuple[Path, ...] | None = None,
 ) -> ScanOutcome:
     """Scan, gate, rebuild, then publish one immutable successful inventory.
 
@@ -738,6 +764,7 @@ def run_full_scan(
             summarize=summarize,
             candidate_files=tuple(sorted(candidates, key=lambda item: item[0])),
             commissioning=permissive,
+            previous=previous,
         )
         diff = compare_snapshots(previous, current) if previous is not None else None
         gates = enforce_scan_gates(
@@ -748,8 +775,46 @@ def run_full_scan(
             permissive=permissive,
         )
         materialized = dict(archive_candidates)
+        if previous is None and bootstrap_files is not None:
+            bootstrap_resolved = {path.resolve() for path in bootstrap_files}
+            selected_files = tuple(
+                item
+                for item in current.files
+                if item.state == "classified"
+                and (
+                    materialized.get(item.relative_path, root / item.relative_path).resolve()
+                    in bootstrap_resolved
+                )
+            )
+        elif diff is not None:
+            changed_paths = {
+                item.relative_path for item in (*diff.added_files, *diff.changed_files)
+            }
+            selected_files = tuple(
+                item
+                for item in current.files
+                if item.state == "classified" and item.relative_path in changed_paths
+            )
+        else:
+            selected_files = tuple(
+                item for item in current.files if item.state == "classified"
+            )
+        if policy.rebuild_periods is not None:
+            if policy.rebuild_periods < 1:
+                raise SourceInventoryError("rebuild_periods must be positive")
+            newest = _period_index(epoch, policy.period_unit)
+            oldest = newest - policy.rebuild_periods + 1
+            selected_files = tuple(
+                item
+                for item in selected_files
+                if any(
+                    oldest <= _period_index(period, policy.period_unit) <= newest
+                    for period in item.periods
+                )
+            )
+        selected = replace(current, files=selected_files)
         source_paths = classified_source_paths(
-            current,
+            selected,
             policy.root,
             materialized_paths=materialized,
         )

@@ -7,7 +7,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class WorkbookSummary:
-    rows: int
+    rows: int | None
     periods: frozenset[str]
     detail: str
 
@@ -25,6 +25,66 @@ def summarize(category: str, path: Path, epoch: str) -> WorkbookSummary:
     except KeyError as exc:
         raise ValueError(f"no workbook contract for category {category!r}") from exc
     return reader(path, epoch)
+
+
+def summarize_inventory(category: str, path: Path, epoch: str) -> WorkbookSummary:
+    """Read only the headers needed for inventory period selection when possible."""
+    if category == "ubist":
+        from pipeline.etl.io.ubist_loader import summarize_source
+
+        summary = summarize_source(path)
+        if not summary.periods:
+            raise ValueError("UBIST workbook has no parseable metric periods")
+        return WorkbookSummary(
+            None,
+            frozenset(summary.periods),
+            "ubist_loader.summarize_source(header-only)",
+        )
+    if category == "iqvia_nsa":
+        return _nsa_inventory(path, epoch)
+    return summarize(category, path, epoch)
+
+
+def _nsa_inventory(path: Path, epoch: str) -> WorkbookSummary:
+    import openpyxl
+
+    from pipeline.etl.io.iqvia_loader import canonicalize_nsa_headers, nsa_period_columns
+
+    periods: set[str] = set()
+    long_format = False
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        for worksheet in workbook.worksheets:
+            rows = worksheet.iter_rows(values_only=True)
+            try:
+                raw_headers = next(rows)
+            except StopIteration:
+                continue
+            headers = canonicalize_nsa_headers(
+                raw_headers,
+                source=f"{path}:{worksheet.title}",
+            )
+            month_periods = nsa_period_columns(headers)
+            if not month_periods:
+                long_format = True
+                continue
+            for month_period in month_periods:
+                year, month = month_period.split("-", 1)
+                quarter = (int(month) - 1) // 3 + 1
+                periods.add(f"{year}-Q{quarter}")
+    finally:
+        workbook.close()
+    if long_format:
+        # Long-format period values live in rows; retain the exact reader for
+        # that uncommon contract rather than infer periods from filenames.
+        return _nsa(path, epoch)
+    if not periods:
+        raise ValueError("IQVIA NSA workbook has no parseable period headers")
+    return WorkbookSummary(
+        None,
+        frozenset(periods),
+        "iqvia_loader canonical header period scan",
+    )
 
 
 def _ubist(path: Path, _epoch: str) -> WorkbookSummary:

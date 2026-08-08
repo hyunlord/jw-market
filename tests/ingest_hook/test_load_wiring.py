@@ -226,10 +226,12 @@ def test_real_load_uses_only_content_classified_full_scan_inputs(
     classified = (tmp_path / "all-a.xlsx", tmp_path / "all-b.xlsx")
     for path in classified:
         path.write_bytes(b"xlsx")
-    observed: list[str] = []
+    observed: list[list[str]] = []
 
     def fake_run(_label, argv):
-        observed.append(argv[argv.index("--file") + 1])
+        observed.append(
+            [argv[index + 1] for index, value in enumerate(argv) if value == "--file"]
+        )
         target = Path(argv[argv.index("--target-dir") + 1])
         _write_load_manifest(target, "2026-03", 7)
 
@@ -237,7 +239,7 @@ def test_real_load_uses_only_content_classified_full_scan_inputs(
 
     job_runner._real_load(manifest, UBIST, bucket, source_files=classified)
 
-    assert observed == [str(classified[0]), str(classified[1])]
+    assert observed == [[str(classified[0]), str(classified[1])]]
 
 
 def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(

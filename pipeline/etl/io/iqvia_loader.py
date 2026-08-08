@@ -222,6 +222,7 @@ class SourceSheet:
 @dataclass
 class LoadStats:
     rows: int = 0
+    source_rows: int = 0
     files: int = 0
     sheets: int = 0
     errors: list[str] | None = None
@@ -1180,6 +1181,7 @@ def materialize_record_parquet(
     batch_size: int = 10_000,
     overwrite: bool = False,
     repeat_factor: int = 1,
+    source_row_count: list[int] | None = None,
 ) -> dict[str, int]:
     """Materialize DB insert records and deduplicate exact facts per period."""
     if repeat_factor < 1:
@@ -1204,6 +1206,8 @@ def materialize_record_parquet(
         for path in files:
             LOGGER.info("record-parquet materialize NSA %s", path)
             for record in iter_records(path):
+                if source_row_count is not None:
+                    source_row_count[0] += 1
                 period = record_period_key(record)
                 row = normalize_record_for_parquet(record)
                 for _ in range(repeat_factor):
@@ -1373,10 +1377,12 @@ def load_source(
             try:
                 with tempfile.TemporaryDirectory(prefix="iqvia-nsa-records-") as temp_dir:
                     record_dir = Path(temp_dir)
+                    source_row_count = [0]
                     materialize_record_parquet(
                         pending,
                         record_dir,
                         batch_size=batch_size,
+                        source_row_count=source_row_count,
                     )
                     count = batch_insert(
                         conn,
@@ -1385,6 +1391,7 @@ def load_source(
                         batch_size,
                     )
                 stats.rows += count
+                stats.source_rows += source_row_count[0]
                 LOGGER.info("loaded IQVIA NSA files=%s rows=%s", len(pending), f"{count:,}")
             except Exception as exc:  # noqa: BLE001
                 conn.rollback()

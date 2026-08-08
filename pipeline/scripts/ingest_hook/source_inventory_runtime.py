@@ -46,6 +46,7 @@ def load_scan_policy(category: str, *, required: bool) -> SourceScanPolicy | Non
         root=Path(root_value).resolve(),
         period_unit=period_unit,
         excluded_relative_roots=tuple(excluded),
+        rebuild_periods={"ubist": 61, "iqvia_nsa": 24}.get(category),
     )
 
 
