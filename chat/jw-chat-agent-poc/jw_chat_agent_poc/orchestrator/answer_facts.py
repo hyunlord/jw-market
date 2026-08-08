@@ -973,19 +973,22 @@ def _trend_causal_signal(data: dict[str, Any], brand: str, comparison: str) -> s
 def _required_competitive_insight_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     market_delta = eok_value(data.get("market_delta_억원"), data.get("market_delta_krw"))
-    market_growth = pct_value(data.get("market_growth_pct"))
     for signal in data.get("signals", [])[:3]:
         if not isinstance(signal, dict):
             continue
         brand = str(signal.get("brand") or "")
         if not brand:
             continue
+        brand_delta = eok_value(signal.get("value_delta_억원"), signal.get("value_delta_krw"))
+        growth_decomposition = (
+            f"성장분해 브랜드 변화 {brand_delta} / 시장 변화 {market_delta}"
+            if brand_delta and market_delta
+            else ""
+        )
         parts = [
             brand,
             f"share-of-growth {pct_value(signal.get('share_of_growth_pct'))}" if signal.get("share_of_growth_pct") is not None else "",
-            f"성장분해 시장 {market_growth}" if market_growth else "",
-            f"점유 {pct_value(signal.get('share_delta_pctp'))}p" if signal.get("share_delta_pctp") is not None else "",
-            f"시장 변화 {market_delta}" if market_delta else "",
+            growth_decomposition,
             f"cohort z-score {number_value(signal.get('z_score'))}" if signal.get("z_score") is not None else "",
             f"백분위 {pct_value(signal.get('percentile'))}" if signal.get("percentile") is not None else "",
         ]

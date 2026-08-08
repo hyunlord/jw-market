@@ -1776,5 +1776,7 @@ def test_competitive_landscape_adds_deterministic_agent2_insight_signals() -> No
     period = insight_calls[0]["render_data"]["period"]
     assert "인사이트 계산" in result["markdown_response"]["fact_md"]
     assert "share-of-growth" in result["markdown_response"]["fact_md"]
+    assert "성장분해 브랜드 변화 14.93억원 / 시장 변화 1,256.77억원" in result["markdown_response"]["fact_md"]
+    assert "성장분해 시장 125.68% 점유 -3.24%p" not in result["markdown_response"]["fact_md"]
     assert "93.62%" not in result["markdown_response"]["fact_md"]
     assert f"{period} 점유율 변화" in result["markdown_response"]["fact_md"]
