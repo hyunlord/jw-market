@@ -494,6 +494,47 @@ def test_pipeline_failure_fails_open_and_records_reason(caplog) -> None:
     assert "v3_cutover_degraded" in caplog.text
 
 
+def test_pipeline_failure_preserves_validated_bq_analysis() -> None:
+    from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
+    from jw_chat_agent_poc.tool_use.v3_cutover import V3CutoverConfig, apply_v3_cutover
+
+    class BrokenPipeline:
+        def run(self, question: str) -> object:
+            del question
+            raise RuntimeError("provider unavailable")
+
+    question = "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?"
+    legacy = _legacy_bq("BQ:A1")
+    legacy["tool_calls"] = [
+        *legacy["tool_calls"],
+        {
+            "tool": "bq_analysis",
+            "status": "ok",
+            "render_data": {
+                "contract_id": "A1",
+                "source_summaries": [{
+                    "source": "UBIST",
+                    "start_period": "2026-05",
+                    "end_period": "2026-06",
+                    "start_market_size_krw": 100.0,
+                    "end_market_size_krw": 110.0,
+                }],
+            },
+        },
+    ]
+
+    result = apply_v3_cutover(
+        question,
+        legacy,
+        config=V3CutoverConfig(enabled=True),
+        pipeline_factory=BrokenPipeline,
+    )
+    controlled = apply_answer_control_layer(question, result, str(result["answer"]))
+
+    assert [call["tool"] for call in result["tool_calls"]] == ["bq_analysis"]
+    assert controlled.required_slot_coverage == "2/2"
+
+
 def test_mixed_domain_requires_every_selected_domain_to_be_enabled() -> None:
     from jw_chat_agent_poc.tool_use.v3_cutover import (
         V3CutoverConfig,

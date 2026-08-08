@@ -193,7 +193,7 @@ def _degraded_result(
             "완료되지 않아 이번 답변에서는 해당 항목을 제외했습니다."
         ),
         "sources": [],
-        "tool_calls": [],
+        "tool_calls": _validated_bq_analysis_calls(legacy_result),
         "charts": [],
         "v3_cutover_ready": False,
         "v3_cutover_trace": {
