@@ -23,7 +23,7 @@ from pipeline.scripts.ingest_hook.source_inventory import (
     ScanOutcome,
     ScanSnapshot,
 )
-from pipeline.scripts.ingest_hook.category_map import resolve_category
+from pipeline.scripts.ingest_hook.category_map import ActivationKind, resolve_category
 from pipeline.scripts.ingest_hook.contract import load_manifest
 from pipeline.scripts.ingest_hook.load_verify import (
     LoadVerifyError,
@@ -474,6 +474,79 @@ def test_real_load_iqvia_nsa_scopes_target_database_override(
     assert observed == ["jw_ingest_nsa_build_run1"]
     assert config.ENV_LOAD_STAGING_DB not in os.environ
     assert result["rows_loaded"] == 2
+
+
+def test_csd_channel_uses_run_scoped_isolated_load_database() -> None:
+    target = job_runner._isolated_load_target(
+        activation_kind=ActivationKind.CSD_CHANNEL,
+        run_id="20260808121814247547",
+        source_activation_enabled=True,
+        nsa_build_db=None,
+        keyword_candidate_base=None,
+    )
+
+    assert target == "jw_ingest_csd_channel_20260808121814247547"
+
+
+def test_csd_keyword_uses_its_run_scoped_candidate_database() -> None:
+    candidate = "jw_brand_activity_keyword_20260808121816001106"
+
+    target = job_runner._isolated_load_target(
+        activation_kind=ActivationKind.CSD_KEYWORD,
+        run_id="20260808121816001106",
+        source_activation_enabled=True,
+        nsa_build_db=None,
+        keyword_candidate_base=candidate,
+    )
+
+    assert target == candidate
+
+
+@pytest.mark.parametrize(
+    "activation_kind",
+    [ActivationKind.CSD_CHANNEL, ActivationKind.CSD_KEYWORD],
+)
+def test_csd_load_fails_closed_before_target_selection_when_activation_is_disabled(
+    activation_kind: ActivationKind,
+) -> None:
+    with pytest.raises(RuntimeError, match="activation is not enabled"):
+        job_runner._isolated_load_target(
+            activation_kind=activation_kind,
+            run_id="20260808121816001106",
+            source_activation_enabled=False,
+            nsa_build_db=None,
+            keyword_candidate_base=None,
+        )
+
+
+def test_real_load_restores_target_database_override_after_loader_failure(
+    tmp_path, bucket, monkeypatch
+) -> None:
+    manifest = _manifest(
+        bucket,
+        category="iqvia_nsa",
+        epoch="2026-Q1",
+        rows=[("2026-Q1", "Class", "x", 1.0), ("2026-Q1", "전체", "-", 1.0)],
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "production"))
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_DB, "jw_ingest_previous")
+
+    def fail_load(_label, _argv):
+        assert os.environ[config.ENV_LOAD_STAGING_DB] == "jw_ingest_nsa_build_run1"
+        raise RuntimeError("injected loader failure")
+
+    monkeypatch.setattr(job_runner, "_run_commands", fail_load)
+
+    with pytest.raises(RuntimeError, match="injected loader failure"):
+        job_runner._real_load(
+            manifest,
+            resolve_category("iqvia_nsa"),
+            bucket,
+            target_db_override="jw_ingest_nsa_build_run1",
+        )
+
+    assert os.environ[config.ENV_LOAD_STAGING_DB] == "jw_ingest_previous"
 
 
 def test_real_load_skeleton_no_op(staging_env, bucket):

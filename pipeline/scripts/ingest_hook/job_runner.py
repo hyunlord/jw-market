@@ -534,6 +534,31 @@ def _run_post_gates_with_policy(**kwargs):
         return None, warning
 
 
+def _isolated_load_target(
+    *,
+    activation_kind: ActivationKind,
+    run_id: str,
+    source_activation_enabled: bool,
+    nsa_build_db: str | None,
+    keyword_candidate_base: str | None,
+) -> str | None:
+    """Select the isolated database used by the category table adapter."""
+    if activation_kind in {ActivationKind.CSD_CHANNEL, ActivationKind.CSD_KEYWORD}:
+        if not source_activation_enabled:
+            raise RuntimeError(
+                f"{activation_kind.value} activation is not enabled; refusing table load"
+            )
+    match activation_kind:
+        case ActivationKind.IQVIA_NSA:
+            return nsa_build_db
+        case ActivationKind.CSD_CHANNEL:
+            return f"jw_ingest_csd_channel_{run_id}"
+        case ActivationKind.CSD_KEYWORD:
+            return keyword_candidate_base
+        case ActivationKind.NONE | ActivationKind.UBIST_NUMERIC:
+            return None
+
+
 def _load_with_source_inventory(
     manifest,
     spec,
@@ -897,6 +922,9 @@ def run(
             _, configured_staging_verify = config.load_output_root()
             is_shadow = configured_mode == "shadow"
             target_root, _ = config.load_output_root()
+            source_activation_enabled = config.source_activation_enabled(
+                manifest.category, mode=configured_mode
+            )
             if manifest.category == "ubist" and not configured_staging_verify:
                 from pipeline.scripts.ingest_hook import ubist_mart_activation
 
@@ -1045,10 +1073,18 @@ def run(
                 run_id=run_id,
                 target_dir_override=(corpus_candidate.candidate_root if corpus_candidate else None),
                 required=config.full_scan_enabled(),
-                target_db_override=(
-                    nsa_activation.build_db if nsa_activation is not None else None
-                    if keyword_activation is None
-                    else keyword_activation.candidate_base
+                target_db_override=_isolated_load_target(
+                    activation_kind=spec.activation_kind,
+                    run_id=run_id,
+                    source_activation_enabled=source_activation_enabled,
+                    nsa_build_db=(
+                        nsa_activation.build_db if nsa_activation is not None else None
+                    ),
+                    keyword_candidate_base=(
+                        keyword_activation.candidate_base
+                        if keyword_activation is not None
+                        else None
+                    ),
                 ),
             )
             rows_before = int(load_result.get("rows_before") or 0)
@@ -1060,9 +1096,6 @@ def run(
             else:
                 tracker.skip("load_verify", "category has no load_verify spec")
             staging_verify = load_result["staging_verify"]
-            source_activation_enabled = config.source_activation_enabled(
-                manifest.category, mode=configured_mode
-            )
             if (
                 spec.activation_kind is ActivationKind.CSD_CHANNEL
                 and source_activation_enabled
@@ -1083,11 +1116,6 @@ def run(
                     raw_schema=raw_schema,
                     stage_schema=stage_schema,
                 )
-                isolated_db = os.environ.get(config.ENV_LOAD_STAGING_DB, "").strip()
-                if not isolated_db:
-                    raise RuntimeError(
-                        f"{config.ENV_LOAD_STAGING_DB} is required for CSD activation"
-                    )
                 csd_conn = config.open_csd_channel_connection()
                 csd_lock_acquired = False
                 csd_failure_reason = None

@@ -140,6 +140,24 @@ def test_activation_overlay_database_is_accepted(
     assert category_table_load._isolated_target_db() == "jw_mart_ingest_run1"
 
 
+def test_keyword_activation_candidate_database_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "jw_brand_activity_keyword_20260808121816001106"
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_DB, candidate)
+
+    assert category_table_load._isolated_target_db() == candidate
+
+
+def test_keyword_live_database_is_still_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(config.ENV_LOAD_STAGING_DB, "jw_brand_activity_stage")
+
+    with pytest.raises(category_table_load.TableLoaderUnavailableError, match="non-isolated"):
+        category_table_load._isolated_target_db()
+
+
 def test_mi_master_requires_exactly_one_workbook(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
