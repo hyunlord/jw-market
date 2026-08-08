@@ -172,20 +172,6 @@ def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
         conn.close()
 
 
-def _seed_general_tables(target_db: str, source_db: str) -> None:
-    _validate_schema_pair(target_db, source_db)
-    conn = _admin_connect(_env())
-    try:
-        with conn.cursor() as cur:
-            for table in ("mart_general_brand_metric", "mart_general_market_metric"):
-                cur.execute(
-                    f"INSERT INTO `{target_db}`.`{table}` "
-                    f"SELECT * FROM `{source_db}`.`{table}`"
-                )
-    finally:
-        conn.close()
-
-
 def _configure_mart_env(target_db: str, input_db: str) -> None:
     env = _env()
     password = env.get("MARIADB_ROOT_PASSWORD") or env.get("MARIADB_PASSWORD")
@@ -221,8 +207,6 @@ def run(params: dict[str, Any]) -> int:
         if params.get("ubist_dir"):
             os.environ["S4_UBIST_DIR"] = str(params["ubist_dir"])
         _ensure_isolated_schema(target_db, source_db)
-        if params.get("seed_general_from_source"):
-            _seed_general_tables(target_db, source_db)
         _configure_mart_env(target_db, input_db)
         from pipeline.etl.io.mart.layer3_compute_general_v3 import compute_general
 

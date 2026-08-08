@@ -153,7 +153,6 @@ def build_mart(config: NsaMartActivation, *, catalog_root: str | None = None) ->
         ubist_dir=None,
         input_mode="raw",
         sources=("iqvia_nsa",),
-        seed_general_from_source=True,
     )
 
 

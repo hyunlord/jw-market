@@ -166,7 +166,6 @@ def run_s4_general(
     sources: tuple[str, ...] | None = None,
     atc4_scope: tuple[str, ...] | None = None,
     period_scope: tuple[str, ...] | None = None,
-    seed_general_from_source: bool = False,
 ) -> None:
     params: dict[str, Any] = {
         "target_db": build_db,
@@ -180,8 +179,6 @@ def run_s4_general(
     }
     if input_db is not None:
         params["input_db"] = input_db
-    if seed_general_from_source:
-        params["seed_general_from_source"] = True
     rc = s4_mart.run(params)
     if rc != 0:
         raise RuntimeError(f"s4_mart failed rc={rc}")
