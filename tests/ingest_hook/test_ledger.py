@@ -251,3 +251,72 @@ def test_rearm_candidate_rechecks_expiry_inside_transaction(sqlite_ledger) -> No
     assert changed is False
     assert sqlite_ledger.status(*IDENTITY).status == "failed"
     assert sqlite_ledger.prepared_candidate(*IDENTITY).publish_job_name == "publish"
+
+
+def test_rearm_candidate_can_cas_replace_revalidated_integrity(sqlite_ledger) -> None:
+    old = {"live_stage": {"row_count": 8, "crc_sum": 90, "crc_xor": 10}}
+    new = {"live_stage": {"row_count": 8, "crc_sum": 9, "crc_xor": 10}}
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id="build-run",
+        candidate={"run_id": "build-run", "csd_candidate_evidence": old},
+        prepared_at="2026-08-04T00:00:00Z",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+    sqlite_ledger.mark_publish_running(
+        *IDENTITY,
+        build_run_id="build-run",
+        publish_job_name="publish",
+        approved_by="pl",
+        approved_at="2026-08-04T00:01:00Z",
+    )
+    sqlite_ledger.mark_failed(*IDENTITY, reason="fingerprint mismatch")
+
+    changed = sqlite_ledger.rearm_failed_candidate(
+        *IDENTITY,
+        build_run_id="build-run",
+        actor="operator",
+        evidence={"validation": "canonical live fingerprint"},
+        integrity_replacements={"csd_candidate_evidence": (old, new)},
+    )
+
+    assert changed is True
+    assert sqlite_ledger.status(*IDENTITY).status == "awaiting_approval"
+    assert sqlite_ledger.prepared_candidate(*IDENTITY).payload["csd_candidate_evidence"] == new
+
+
+def test_rearm_candidate_rejects_stale_integrity_replacement(sqlite_ledger) -> None:
+    actual = {"live_stage": {"row_count": 8, "crc_sum": 90, "crc_xor": 10}}
+    stale = {"live_stage": {"row_count": 7, "crc_sum": 70, "crc_xor": 7}}
+    replacement = {"live_stage": {"row_count": 8, "crc_sum": 9, "crc_xor": 10}}
+    sqlite_ledger.receive(*IDENTITY, manifest_path="/x/manifest.json")
+    sqlite_ledger.mark_running(*IDENTITY, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *IDENTITY,
+        run_id="build-run",
+        candidate={"run_id": "build-run", "csd_candidate_evidence": actual},
+        prepared_at="2026-08-04T00:00:00Z",
+        expires_at="2099-01-01T00:00:00Z",
+    )
+    sqlite_ledger.mark_publish_running(
+        *IDENTITY,
+        build_run_id="build-run",
+        publish_job_name="publish",
+        approved_by="pl",
+        approved_at="2026-08-04T00:01:00Z",
+    )
+    sqlite_ledger.mark_failed(*IDENTITY, reason="fingerprint mismatch")
+
+    changed = sqlite_ledger.rearm_failed_candidate(
+        *IDENTITY,
+        build_run_id="build-run",
+        actor="operator",
+        evidence={"validation": "canonical live fingerprint"},
+        integrity_replacements={"csd_candidate_evidence": (stale, replacement)},
+    )
+
+    assert changed is False
+    assert sqlite_ledger.status(*IDENTITY).status == "failed"
+    assert sqlite_ledger.prepared_candidate(*IDENTITY).payload["csd_candidate_evidence"] == actual

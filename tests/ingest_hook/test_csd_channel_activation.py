@@ -285,6 +285,24 @@ def _evidence() -> activation.CandidateEvidence:
     )
 
 
+def test_validate_live_uses_wrapper_canonical_fingerprint_action() -> None:
+    connection = _RecordingConnection([[
+        {"candidate_kind": "raw", "row_count": 10, "crc_sum": 11, "crc_xor": 12},
+        {"candidate_kind": "stage", "row_count": 8, "crc_sum": 9, "crc_xor": 10},
+    ]])
+
+    assert activation.validate_live(connection, _plan()) == (
+        activation.TableFingerprint(10, 11, 12),
+        activation.TableFingerprint(8, 9, 10),
+    )
+    assert connection.recording_cursor.calls == [
+        (
+            "CALL `jw_csd_channel_control`.`csd_candidate_load`(%s,%s,%s,%s,%s,%s)",
+            ("20260807010203000000", "validate_live", 0, None, None, None),
+        )
+    ]
+
+
 @pytest.mark.parametrize("state", ["applied", "applied_observed"])
 def test_publish_calls_wrapper_once_with_candidate_and_expected_live_fingerprints(
     state: str,

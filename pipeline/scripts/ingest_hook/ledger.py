@@ -1464,6 +1464,7 @@ class Ledger:
         actor: str,
         evidence: dict,
         integrity_updates: dict[str, object] | None = None,
+        integrity_replacements: dict[str, tuple[object, object]] | None = None,
     ) -> bool:
         """Atomically rearm an intact failed publish candidate with an audit event."""
         mark = self._mark
@@ -1495,6 +1496,10 @@ class Ledger:
             ):
                 return False
             payload = json.loads(str(values_row[1]))
+            for key, (expected, replacement) in (integrity_replacements or {}).items():
+                if payload.get(key) != expected:
+                    return False
+                payload[key] = replacement
             for key, value in (integrity_updates or {}).items():
                 if key in payload and payload[key] != value:
                     return False

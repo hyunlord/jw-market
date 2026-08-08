@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Final, TypeVar
-import zlib
 
 from pipeline.scripts.etl.brand_activity.csd_core import CsdRow, source_month_key
 from pipeline.scripts.etl.brand_activity.km_core import source_sha256
@@ -411,22 +410,6 @@ def _stage_json(rows: Sequence[CsdRow]) -> list[dict[str, object]]:
     return [{**row.to_dict(), "loaded_at": loaded_at} for row in rows]
 
 
-def _stage_fingerprint(rows: Sequence[CsdRow]) -> TableFingerprint:
-    rendered = _stage_json(rows)
-    total = 0
-    xor = 0
-    columns = (
-        "period_ym", "market", "jw_channel", "master_product", "representing_company",
-        "product_details", "source_file", "source_sheet", "source_row_no", "loaded_at",
-    )
-    for row in rendered:
-        payload = chr(31).join(str(row[column]) for column in columns).encode("utf-8")
-        crc = zlib.crc32(payload) & 0xFFFFFFFF
-        total += crc
-        xor ^= crc
-    return TableFingerprint(len(rendered), total, xor)
-
-
 def _gate_stage(rows: Sequence[CsdRow]) -> tuple[PeriodContract, ChannelGateResult]:
     periods = validate_period_contract(row.period_ym for row in rows)
     grouped: dict[tuple[str, str, str, str, str], int] = defaultdict(int)
@@ -458,12 +441,13 @@ def prepare_candidate(
     try:
         _call_rows(conn, "csd_candidate_create", (plan.run_id,))
         created = True
+        live_raw, live_stage = validate_live(conn, plan)
         commits = _seed_live_raw(conn, plan)
         seeded_raw, seeded_stage = _fingerprints_from_validate(_load_action(conn, plan, "validate"))
+        if seeded_raw != live_raw:
+            raise CandidateValidationError("seeded raw fingerprint differs from canonical live raw fingerprint")
         if seeded_stage.row_count != 0:
             raise CandidateValidationError("new stage candidate is not empty")
-        live_stage_rows = _read_stage_source(conn, plan)
-        live_stage = _stage_fingerprint(live_stage_rows)
         for batch in _uploaded_batches(source_paths):
             _load_action(conn, plan, "merge_uploaded_raw", rows=batch)
             commits += 1
@@ -479,7 +463,7 @@ def prepare_candidate(
         raw, stage = _fingerprints_from_validate(_load_action(conn, plan, "validate"))
         if raw.row_count <= 0 or stage.row_count <= 0:
             raise CandidateValidationError(f"candidate row count is empty: raw={raw.row_count} stage={stage.row_count}")
-        return CandidateEvidence(raw, stage, seeded_raw, live_stage, periods, channels, commits)
+        return CandidateEvidence(raw, stage, live_raw, live_stage, periods, channels, commits)
     except Exception:
         if created:
             abandon_candidate(conn, plan)
@@ -489,6 +473,11 @@ def prepare_candidate(
 def validate_candidate(conn: Any, plan: ActivationPlan, recorded: CandidateEvidence) -> CandidateEvidence:
     raw, stage = _fingerprints_from_validate(_load_action(conn, plan, "validate"))
     return CandidateEvidence(raw, stage, recorded.live_raw, recorded.live_stage, recorded.periods, recorded.channels, recorded.commits)
+
+
+def validate_live(conn: Any, plan: ActivationPlan) -> tuple[TableFingerprint, TableFingerprint]:
+    """Read the live pair through the wrapper's publish-canonical SQL expression."""
+    return _fingerprints_from_validate(_load_action(conn, plan, "validate_live"))
 
 
 def publish_candidate(conn: Any, plan: ActivationPlan, evidence: CandidateEvidence) -> SwapVerdict:
