@@ -236,6 +236,8 @@ def _brand_gap_result(series_call: Call) -> dict[str, Any] | None:
     source = _source_label(series_call)
     return {
         "source": source, "period": f"{start_period}~{end_period}",
+        "brand_start_sales_krw": _float(brand_start),
+        "brand_end_sales_krw": _float(brand_end),
         "brand_growth_pct": _percent(brand_rate),
         "market_growth_pct": _percent(market_rate),
         "growth_gap_pctp": _percent(gap), "trend_slope_krw_per_period": _float(slope),
@@ -250,12 +252,15 @@ def _source_summary(call: Call) -> dict[str, Any] | None:
     endpoints = _aligned_endpoints(call)
     if endpoints is None:
         return None
-    start_period, end_period, brand_start, brand_end, _, _, _, _ = endpoints
+    start_period, end_period, brand_start, brand_end, market_start, market_end, _, _ = endpoints
     years = max(Decimal("1"), _year_span(start_period, end_period))
     growth = calculate_cagr(brand_start, brand_end, periods=years)
     return {
         "source": _source_label(call), "start_period": start_period, "end_period": end_period,
         "start_sales_krw": _float(brand_start), "end_sales_krw": _float(brand_end),
+        "start_market_size_krw": _float(market_start),
+        "end_market_size_krw": _float(market_end),
+        "market_growth_rate_pct": _percent(_rate(market_start, market_end)),
         "growth_rate_pct": _percent(growth), "growth_basis_years": _float(years),
     }
 

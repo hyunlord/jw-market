@@ -24,6 +24,9 @@ def test_a1_reports_each_source_separately_with_long_window_growth() -> None:
         row.get("source") and row.get("kind") and row.get("identity")
         for row in data["evidence_ledger"]
     )
+    assert data["source_summaries"][0]["start_market_size_krw"] == 100_000_000_000.0
+    assert data["source_summaries"][0]["end_market_size_krw"] == 110_000_000_000.0
+    assert data["source_summaries"][0]["market_growth_rate_pct"] == pytest.approx(10.0)
 
 
 def test_a1_zero_baseline_is_reported_without_crashing_or_minus_hundred() -> None:
@@ -143,6 +146,8 @@ def test_c1_compares_brand_growth_with_market_growth() -> None:
     assert data["market_growth_pct"] == pytest.approx(10.0)
     assert data["growth_gap_pctp"] == pytest.approx(10.0)
     assert data["trend_slope_krw_per_period"] == pytest.approx(2_000_000_000.0)
+    assert data["brand_start_sales_krw"] == 10_000_000_000.0
+    assert data["brand_end_sales_krw"] == 12_000_000_000.0
 
 
 def test_c1_keeps_each_source_growth_gap_separate() -> None:

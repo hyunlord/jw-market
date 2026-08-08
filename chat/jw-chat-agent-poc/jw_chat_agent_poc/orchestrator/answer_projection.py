@@ -190,13 +190,28 @@ def apply_answer_control_layer(
     spec = question_spec_for(question)
     if result.get("context_scope") == "MIXED":
         return _passthrough_result(spec, fallback_answer)
+    target_intents = frozenset({
+        "MARKET_SIZE_TREND",
+        "BRAND_TREND",
+        "COMPETITOR_POSITION",
+        "CHANNEL_SPECIALTY",
+        "SALES_IMPACT",
+        "MULTI_SOURCE_SNAPSHOT",
+        "EXTERNAL_LOOKUP",
+    })
     contract_id = {
+        "MARKET_SIZE_TREND": "A1",
+        "BRAND_TREND": "C1",
         "MARKET_OUTLOOK": "A2",
         "COMPETITION_CHANGE": "B1",
+        "COMPETITOR_POSITION": "B2",
         "SOURCE_DIFFERENCE": "C3",
+        "CHANNEL_SPECIALTY": "C2",
         "SALES_ACTIVITY_TREND": "D3",
+        "SALES_IMPACT": "D2",
         "NEW_ENTRANT_THREAT": "B3",
         "MULTI_SOURCE_SNAPSHOT": "A3",
+        "EXTERNAL_LOOKUP": "E1",
     }.get(spec.intent.value)
     if spec.intent.value == "SALES_ACTIVITY_TREND" and "경쟁사" not in question:
         contract_id = None
@@ -204,7 +219,17 @@ def apply_answer_control_layer(
         return _passthrough_result(spec, fallback_answer)
     data = _analysis_data(result, contract_id)
     if data is None:
-        if result.get("answer_control_required") is True:
+        metrics = result.get("agent_loop_metrics")
+        attempted_contract = (
+            metrics.get("deterministic_plan_kind")
+            if isinstance(metrics, Mapping)
+            else None
+        )
+        target_requires_control = (
+            spec.intent.value in target_intents
+            and attempted_contract == f"BQ:{contract_id}"
+        )
+        if result.get("answer_control_required") is True or target_requires_control:
             return _controlled_result(spec, ())
         deterministic_fallbacks: dict[str, Mapping[str, Any]] = {
             "SOURCE_DIFFERENCE": {},

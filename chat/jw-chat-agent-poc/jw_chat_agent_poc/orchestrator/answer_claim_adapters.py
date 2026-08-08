@@ -25,12 +25,18 @@ class AnswerClaim:
 
 def claims_for(intent: str, data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
     builders = {
+        "MARKET_SIZE_TREND": _a1_claims,
+        "BRAND_TREND": _c1_claims,
         "MARKET_OUTLOOK": _a2_claims,
         "COMPETITION_CHANGE": _b1_claims,
+        "COMPETITOR_POSITION": _b2_claims,
         "SOURCE_DIFFERENCE": _c3_claims,
+        "CHANNEL_SPECIALTY": _c2_claims,
         "SALES_ACTIVITY_TREND": _d3_claims,
+        "SALES_IMPACT": _d2_claims,
         "NEW_ENTRANT_THREAT": _b3_claims,
         "MULTI_SOURCE_SNAPSHOT": _a3_claims,
+        "EXTERNAL_LOOKUP": _e1_claims,
     }
     builder = builders.get(intent)
     return builder(data) if builder is not None else ()
@@ -66,6 +72,134 @@ def _claim(
 
 def _refs(data: Mapping[str, Any], default: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(str(item) for item in data.get("evidence_refs", ()) if str(item)) or default
+
+
+def _rows(data: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], ...]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        return ()
+    return tuple(row for row in value if isinstance(row, Mapping))
+
+
+def _number(value: Any) -> str:
+    return f"{value:,.0f}" if isinstance(value, (int, float)) else "미확인"
+
+
+def _percent_text(value: Any) -> str:
+    return f"{value:.2f}%" if isinstance(value, (int, float)) else "미확인"
+
+
+def _a1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    refs = _refs(data, ("market.series",))
+    claims: list[AnswerClaim] = []
+    for row in _rows(data, "source_summaries"):
+        source = str(row.get("source") or "market source")
+        start_period = str(row.get("start_period") or "")
+        end_period = str(row.get("end_period") or "")
+        period = f"{start_period}~{end_period}" if start_period and end_period else end_period
+        latest = row.get("end_market_size_krw")
+        if isinstance(latest, (int, float)):
+            claims.append(_claim("latest_market_size", f"{source} {end_period} 시장 규모 {_number(latest)}원", source, refs, period=end_period))
+        start = row.get("start_market_size_krw")
+        if isinstance(start, (int, float)) and isinstance(latest, (int, float)):
+            claims.append(_claim("market_size_trend", f"{source} 시장 규모는 {start_period} {_number(start)}원에서 {end_period} {_number(latest)}원으로 변했습니다.", source, refs, period=period))
+    return tuple(claims)
+
+
+def _c1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    refs = _refs(data, ("market.brand_series",))
+    claims: list[AnswerClaim] = []
+    for row in _rows(data, "source_results"):
+        source = str(row.get("source") or "market source")
+        period = str(row.get("period") or "")
+        start = row.get("brand_start_sales_krw")
+        end = row.get("brand_end_sales_krw")
+        if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+            claims.append(_claim("brand_sales_series", f"{source} {period} 브랜드 매출 {_number(start)}원 → {_number(end)}원", source, refs, period=period))
+        growth = row.get("brand_growth_pct")
+        market_growth = row.get("market_growth_pct")
+        if isinstance(growth, (int, float)):
+            comparison = f", 시장 {_percent_text(market_growth)}" if isinstance(market_growth, (int, float)) else ""
+            claims.append(_claim("brand_trend_conclusion", f"브랜드 성장률은 {_percent_text(growth)}{comparison}입니다.", source, refs, period=period))
+    return tuple(claims)
+
+
+def _b2_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    refs = _refs(data, ("market.cohort",))
+    claims: list[AnswerClaim] = []
+    for row in _rows(data, "source_results"):
+        source = str(row.get("source") or "market source")
+        population = row.get("population")
+        score = row.get("cohort_z_score")
+        basis = str(row.get("competition_basis") or "")
+        if isinstance(population, int) and basis:
+            claims.append(_claim("competitor_definition", f"경쟁군은 동일 시장·출처·기간의 {population}개 브랜드입니다.", source, refs))
+        if isinstance(score, (int, float)):
+            claims.append(_claim("own_position", f"요청 브랜드의 cohort z-score는 {score:.3f}입니다.", source, refs))
+        if isinstance(population, int) and isinstance(score, (int, float)):
+            claims.append(_claim("competitor_comparison", f"{population}개 브랜드 분포에서 평균 대비 위치를 z-score {score:.3f}로 비교했습니다.", source, refs))
+    return tuple(claims)
+
+
+def _distribution_text(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    items = sorted((str(name), share) for name, share in value.items() if isinstance(share, (int, float)))
+    return ", ".join(f"{name} {share:.2f}%" for name, share in items)
+
+
+def _c2_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    distributions = data.get("distributions")
+    if not isinstance(distributions, Mapping):
+        return ()
+    refs = _refs(data, ("UBIST.axis_distribution",))
+    claims: list[AnswerClaim] = []
+    channel = _distribution_text(distributions.get("channel"))
+    specialty = _distribution_text(distributions.get("specialty"))
+    if channel:
+        claims.append(_claim("channel_distribution", f"채널 구성: {channel}", "UBIST", refs))
+    if specialty:
+        claims.append(_claim("specialty_distribution", f"진료과 구성: {specialty}", "UBIST", refs))
+    return tuple(claims)
+
+
+def _d2_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    refs = _refs(data, ("CSD.market_alignment",))
+    claims: list[AnswerClaim] = []
+    for row in _rows(data, "source_results"):
+        source = str(row.get("source") or "market source")
+        period = str(row.get("period") or "")
+        activity = row.get("activity_change_rate_pct")
+        performance = row.get("performance_change_rate_pct")
+        if isinstance(activity, (int, float)):
+            claims.append(_claim("activity_change", f"CSD {period} 활동 변화율은 {_percent_text(activity)}입니다.", "CSD", refs, period=period))
+        if isinstance(performance, (int, float)):
+            claims.append(_claim("performance_change", f"{source} {period} 매출 변화율은 {_percent_text(performance)}입니다.", source, refs, period=period))
+        if isinstance(activity, (int, float)) and isinstance(performance, (int, float)):
+            claims.append(_claim("temporal_alignment", f"두 변화는 {period} 시점 범위에서 나란히 대조했습니다.", f"CSD+{source}", refs, period=period))
+            claims.append(_claim("noncausal_limit", "시점이 겹친다는 관측이며 인과를 단정하지 않습니다.", f"CSD+{source}", refs, period=period, claim_type="limitation"))
+    return tuple(claims)
+
+
+def _e1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    refs = _refs(data, ("NEWS.items",))
+    rows = sorted(
+        _rows(data, "news_refs"),
+        key=lambda row: (str(row.get("date") or ""), str(row.get("title") or ""), str(row.get("url") or "")),
+        reverse=True,
+    )
+    if not rows:
+        return ()
+    source = "NEWS"
+    items = "; ".join(
+        f"{row.get('title')} ({row.get('date')}, {row.get('source')}) {row.get('url')}"
+        for row in rows
+    )
+    return (
+        _claim("capability_level", "현재 확인 가능한 외부 기사 항목을 조회했습니다.", source, refs),
+        _claim("selection_basis", "제목·날짜·매체·URL이 모두 확인된 항목만 포함했습니다.", source, refs),
+        _claim("result_items", items, source, refs),
+    )
 
 
 def _a2_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:

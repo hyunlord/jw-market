@@ -436,3 +436,194 @@ def test_own_sales_activity_without_d3_analysis_preserves_d1_answer() -> None:
 
     assert controlled.applied is False
     assert controlled.answer == "리바로 자체 영업활동 추이입니다."
+
+
+@pytest.mark.parametrize(
+    ("question", "contract_id", "data", "coverage", "expected_text"),
+    (
+        (
+            "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+            "A1",
+            {
+                "source_summaries": [
+                    {
+                        "source": "UBIST",
+                        "start_period": "2025-06",
+                        "end_period": "2026-06",
+                        "start_market_size_krw": 100_000_000_000,
+                        "end_market_size_krw": 110_000_000_000,
+                        "market_growth_rate_pct": 10.0,
+                    }
+                ],
+                "channel_shares_pct": {"의원": 70.0, "종병": 30.0},
+            },
+            "2/2",
+            "2026-06 시장 규모 110,000,000,000원",
+        ),
+        (
+            "리바로 최근 매출/처방 추이 어때?",
+            "C1",
+            {
+                "source_results": [
+                    {
+                        "source": "UBIST",
+                        "period": "2025-06~2026-06",
+                        "brand_start_sales_krw": 10_000_000_000,
+                        "brand_end_sales_krw": 12_000_000_000,
+                        "brand_growth_pct": 20.0,
+                        "market_growth_pct": 10.0,
+                        "growth_gap_pctp": 10.0,
+                    }
+                ]
+            },
+            "2/2",
+            "브랜드 매출 10,000,000,000원 → 12,000,000,000원",
+        ),
+        (
+            "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+            "B2",
+            {
+                "source_results": [
+                    {
+                        "source": "UBIST",
+                        "cohort_z_score": -0.267261,
+                        "population": 3,
+                        "competition_basis": "same market source and period",
+                    }
+                ]
+            },
+            "3/3",
+            "동일 시장·출처·기간의 3개 브랜드",
+        ),
+        (
+            "리바로 어느 채널/진료과에서 잘 팔려?",
+            "C2",
+            {
+                "distributions": {
+                    "channel": {"의원": 70.0, "종병": 30.0},
+                    "specialty": {"순환기": 60.0, "내분비": 40.0},
+                },
+                "axes_are_not_aggregated": True,
+            },
+            "2/2",
+            "채널 구성: 의원 70.00%, 종병 30.00%",
+        ),
+        (
+            "리바로 영업활동이 매출에 영향 줬어?",
+            "D2",
+            {
+                "source_results": [
+                    {
+                        "source": "UBIST",
+                        "period": "2026-01~2026-03",
+                        "activity_change_rate_pct": 208.33,
+                        "performance_change_rate_pct": 5.0,
+                    }
+                ],
+                "temporal_overlap_not_causation": True,
+            },
+            "4/4",
+            "인과를 단정하지 않습니다",
+        ),
+        (
+            "리바로 관련 최근 이슈 뭐 있어?",
+            "E1",
+            {
+                "news_refs": [
+                    {
+                        "title": "리바로 기사",
+                        "date": "2026-05-01",
+                        "source": "약업신문",
+                        "url": "https://news.example/1",
+                    }
+                ]
+            },
+            "3/3",
+            "리바로 기사 (2026-05-01, 약업신문)",
+        ),
+    ),
+)
+def test_remaining_structured_intents_use_entitlement_projection(
+    question: str,
+    contract_id: str,
+    data: dict[str, object],
+    coverage: str,
+    expected_text: str,
+) -> None:
+    controlled = apply_answer_control_layer(
+        question,
+        {
+            "tool_calls": [
+                {
+                    "tool": "bq_analysis",
+                    "render_data": {
+                        "contract_id": contract_id,
+                        "evidence_refs": [f"{contract_id}.deterministic_evidence"],
+                        **data,
+                    },
+                }
+            ]
+        },
+        "질문과 무관한 기존 답변",
+    )
+
+    assert controlled.applied is True
+    assert controlled.degraded is False
+    assert controlled.required_slot_coverage == coverage
+    assert controlled.selected_branch == "answer_projection"
+    assert expected_text in controlled.answer
+    assert "질문과 무관한 기존 답변" not in controlled.answer
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+        "리바로 최근 매출/처방 추이 어때?",
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        "리바로 어느 채널/진료과에서 잘 팔려?",
+        "리바로 영업활동이 매출에 영향 줬어?",
+        "리바로 질병 환자수랑 최근 매출 한번에",
+        "리바로 관련 최근 이슈 뭐 있어?",
+    ),
+)
+def test_remaining_intents_fail_closed_when_structured_evidence_is_missing(question: str) -> None:
+    contract_id = {
+        "MARKET_SIZE_TREND": "A1",
+        "BRAND_TREND": "C1",
+        "COMPETITOR_POSITION": "B2",
+        "CHANNEL_SPECIALTY": "C2",
+        "SALES_IMPACT": "D2",
+        "MULTI_SOURCE_SNAPSHOT": "A3",
+        "EXTERNAL_LOOKUP": "E1",
+    }[question_spec_for(question).intent.value]
+    controlled = apply_answer_control_layer(
+        question,
+        {
+            "tool_calls": [],
+            "agent_loop_metrics": {
+                "deterministic_plan_kind": f"BQ:{contract_id}",
+                "bq_analysis_validation": "MISSING_EVIDENCE",
+            },
+        },
+        "질문과 무관한 기존 답변",
+    )
+
+    assert controlled.applied is True
+    assert controlled.degraded is True
+    assert controlled.required_slot_coverage.startswith("0/")
+    assert controlled.selected_branch == "answer_projection"
+    assert "질문과 무관한 기존 답변" not in controlled.answer
+    assert "현재 근거로 확인하지 못했습니다" in controlled.answer
+
+
+def test_unclassified_general_question_preserves_existing_passthrough() -> None:
+    controlled = apply_answer_control_layer(
+        "복약 방법을 알려줘",
+        {"tool_calls": []},
+        "기존 일반 답변",
+    )
+
+    assert controlled.applied is False
+    assert controlled.selected_branch == "passthrough"
+    assert controlled.answer == "기존 일반 답변"
