@@ -62,6 +62,8 @@ _PASSTHROUGH_VALUES = (
     "INGEST_SOURCE_SCAN_POLICIES_JSON",
     "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL",
     "INGEST_PRODUCTION_LOAD_CATEGORIES",
+    "INGEST_CSD_KEYWORD_RAW_SCHEMA",
+    "INGEST_CSD_KEYWORD_STAGE_SCHEMA",
 )
 _FORECAST_RUNTIME_PINS = {
     "NPY_DISABLE_CPU_FEATURES": "X86_V3,X86_V4",
@@ -119,7 +121,7 @@ def _job_env(category: str) -> list[dict]:
 
     secret_ref("MARIADB_USER", _MART_SECRET, "username")
     secret_ref("MARIADB_PASSWORD", _MART_SECRET, "password")
-    if category == "iqvia_csd_channel":
+    if category in {"iqvia_csd_channel", "iqvia_csd_keyword"}:
         host = os.environ.get(config.ENV_CSD_CHANNEL_DB_HOST) or os.environ.get(
             "MARIADB_HOST", ""
         )

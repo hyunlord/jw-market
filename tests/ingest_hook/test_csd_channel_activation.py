@@ -202,6 +202,46 @@ def test_channel_gate_rejects_mismatch() -> None:
         activation.validate_channel_totals(rows)
 
 
+def test_commissioning_observes_stage_without_enforcing_post_gate() -> None:
+    rows = (
+        activation.CsdRow(
+            source_file="ChannelDynamics Oct. 25.xlsx",
+            source_sheet="Data",
+            source_row_no=2,
+            period_ym="2025-10",
+            market="M",
+            jw_channel="TOTAL",
+            master_product="B",
+            representing_company="JW",
+            product_details=1,
+        ),
+    )
+
+    periods, channels = activation.stage_gate_evidence(rows, enforce=False)
+
+    assert periods == activation.PeriodContract(1, (), ())
+    assert channels == activation.ChannelGateResult(0)
+
+
+def test_production_still_enforces_channel_post_gate() -> None:
+    rows = (
+        activation.CsdRow(
+            source_file="ChannelDynamics Oct. 25.xlsx",
+            source_sheet="Data",
+            source_row_no=2,
+            period_ym="2025-10",
+            market="M",
+            jw_channel="TOTAL",
+            master_product="B",
+            representing_company="JW",
+            product_details=1,
+        ),
+    )
+
+    with pytest.raises(activation.CandidateValidationError, match="continuous 36 months"):
+        activation.stage_gate_evidence(rows, enforce=True)
+
+
 class _RecordingCursor:
     def __init__(self, responses: list[list[dict[str, object]]]) -> None:
         self.responses = responses

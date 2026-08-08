@@ -436,11 +436,22 @@ def _gate_stage(rows: Sequence[CsdRow]) -> tuple[PeriodContract, ChannelGateResu
     return periods, channels
 
 
+def stage_gate_evidence(
+    rows: Sequence[CsdRow], *, enforce: bool
+) -> tuple[PeriodContract, ChannelGateResult]:
+    """Observe candidate coverage while making commissioning post-gates a no-op."""
+    if enforce:
+        return _gate_stage(rows)
+    periods = tuple(sorted({row.period_ym for row in rows}))
+    return PeriodContract(len(periods), (), ()), ChannelGateResult(0)
+
+
 def prepare_candidate(
     conn: Any,
     plan: ActivationPlan,
     *,
     source_paths: Sequence[Path],
+    enforce_post_gate: bool = True,
 ) -> CandidateEvidence:
     """Build and validate a candidate using only wrapper mutations."""
     created = False
@@ -457,7 +468,9 @@ def prepare_candidate(
             _load_action(conn, plan, "merge_uploaded_raw", rows=batch)
             commits += 1
         candidate_rows = _read_stage_source(conn, plan)
-        periods, channels = _gate_stage(candidate_rows)
+        periods, channels = stage_gate_evidence(
+            candidate_rows, enforce=enforce_post_gate
+        )
         for batch in batches(_stage_json(candidate_rows)):
             result = _load_action(conn, plan, "append_stage", rows=batch)
             if int(result[0]["affected_rows"]) != len(batch):

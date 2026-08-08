@@ -959,7 +959,14 @@ def run(
             ):
                 from pipeline.scripts.ingest_hook import csd_keyword_activation
 
-                keyword_activation = csd_keyword_activation.plan_for_run(run_id)
+                keyword_raw_schema, keyword_stage_schema = (
+                    config.csd_keyword_live_schemas()
+                )
+                keyword_activation = csd_keyword_activation.plan_for_run(
+                    run_id,
+                    raw_schema=keyword_raw_schema,
+                    stage_schema=keyword_stage_schema,
+                )
             if spec.sigma_source and not configured_staging_verify:
                 source_db = (
                     mart_activation.source_db
@@ -1111,7 +1118,11 @@ def run(
 
                 tracker.skip("mart_build", "CSD channel is not eligible for numeric mart build")
                 tracker.skip("sigma", "CSD channel uses source-specific validation")
-                tracker.enter("post_gate")
+                commissioning = config.e2e_commissioning()
+                if commissioning:
+                    tracker.skip("post_gate", "commissioning no-op")
+                else:
+                    tracker.enter("post_gate")
                 raw_schema, stage_schema = config.csd_channel_live_schemas(
                     mode=configured_mode
                 )
@@ -1140,6 +1151,7 @@ def run(
                             (input_root / entry.path).resolve()
                             for entry in manifest.files
                         ),
+                        enforce_post_gate=not commissioning,
                     )
                 except Exception as exc:
                     csd_failure_reason = f"{type(exc).__name__}: {exc}"
@@ -1152,7 +1164,8 @@ def run(
                             primary_failure_reason=csd_failure_reason,
                         )
                     csd_conn.close()
-                tracker.done()
+                if not commissioning:
+                    tracker.done()
                 prepared_at = datetime.now(timezone.utc)
                 expires_at = prepared_at + timedelta(
                     seconds=_publish_candidate_ttl_seconds()

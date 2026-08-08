@@ -71,7 +71,12 @@ def run(
         print("result=failed reason=keyword publish candidate payload is incomplete", file=sys.stderr)
         return 1
     try:
-        plan = csd_keyword_activation.plan_from_payload(raw_plan)
+        raw_schema, stage_schema = config.csd_keyword_live_schemas()
+        plan = csd_keyword_activation.plan_from_payload(
+            raw_plan,
+            raw_schema=raw_schema,
+            stage_schema=stage_schema,
+        )
         recorded = csd_keyword_activation.evidence_from_payload(raw_evidence)
         if plan.run_id != build_run_id:
             raise csd_keyword_activation.CandidateValidationError(
@@ -84,25 +89,28 @@ def run(
         return 1
 
     tracker = _StageTracker(ledger, identity, publish_run_id)
-    connection = None
+    writer_connection = None
+    activation_connection = None
     lock_acquired = False
     failure_reason = None
     try:
         tracker.enter("mart_publish")
-        connection = config.open_mart_connection()
+        activation_connection = config.open_csd_channel_connection()
         acquire_writer_lock(
-            connection,
+            activation_connection,
             timeout_seconds=0,
             lock_name=csd_keyword_activation.WRITER_LOCK_NAME,
         )
         lock_acquired = True
-        current = csd_keyword_activation.validate_candidate(connection, plan)
+        writer_connection = config.open_mart_connection()
+        current = csd_keyword_activation.validate_candidate(writer_connection, plan)
         if current != recorded:
             raise csd_keyword_activation.CandidateValidationError(
                 "keyword candidate evidence changed after approval"
             )
-        csd_keyword_activation.require_publish_scope(connection, plan)
-        csd_keyword_activation.publish_candidate(connection, plan)
+        csd_keyword_activation.publish_candidate(
+            activation_connection, plan, current
+        )
         tracker.done()
         _record_downstream(ledger, identity, publish_run_id)
         ledger.mark_complete(
@@ -134,11 +142,13 @@ def run(
         print(f"result=failed reason={failure_reason}", file=sys.stderr)
         return 1
     finally:
-        if connection is not None and lock_acquired:
+        if activation_connection is not None and lock_acquired:
             _release_writer_lock_preserving_primary(
-                connection,
+                activation_connection,
                 lock_name=csd_keyword_activation.WRITER_LOCK_NAME,
                 primary_failure_reason=failure_reason,
             )
-        if connection is not None:
-            connection.close()
+        if writer_connection is not None:
+            writer_connection.close()
+        if activation_connection is not None:
+            activation_connection.close()

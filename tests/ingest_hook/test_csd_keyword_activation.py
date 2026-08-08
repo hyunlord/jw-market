@@ -50,20 +50,44 @@ def test_plan_uses_run_scoped_candidate_and_preserves_live_as_old() -> None:
     assert all(len(ref.schema) <= 64 and len(ref.table) <= 64 for ref in plan.table_refs())
 
 
-def test_publish_is_one_atomic_four_way_rename_and_never_drops() -> None:
+def test_plan_uses_configured_live_schemas() -> None:
+    plan = activation.plan_for_run(
+        "20260808010203000000",
+        raw_schema="jw_brand_activity_raw_stage",
+        stage_schema="jw_brand_activity_stage",
+    )
+
+    assert plan.raw.live.schema == "jw_brand_activity_raw_stage"
+    assert plan.stage.live.schema == "jw_brand_activity_stage"
+
+
+def test_publish_uses_definer_wrapper_instead_of_direct_rename() -> None:
     connection = _Connection()
     plan = activation.plan_for_run("20260808010203000000")
 
-    activation.publish_candidate(connection, plan)
+    evidence = activation.CandidateEvidence(
+        raw_rows=123,
+        stage_rows=45,
+        period_count=36,
+        min_period="2023-06",
+        max_period="2026-05",
+    )
 
-    assert connection.commits == 1
+    activation.publish_candidate(connection, plan, evidence)
+
     assert len(connection.recording_cursor.calls) == 1
     sql, params = connection.recording_cursor.calls[0]
-    assert params == ()
-    assert sql.startswith("RENAME TABLE ")
-    assert "raw_keyword_events` TO `jw_brand_activity_raw_stage`.`raw_keyword_events__old_20260808010203000000`" in sql
-    assert "km_keyword_event_stage` TO `jw_brand_activity_stage`.`km_keyword_event_stage__old_20260808010203000000`" in sql
-    assert "DROP" not in sql.upper()
+    assert sql == "CALL `jw_csd_keyword_control`.`csd_keyword_atomic_publish`(%s,%s,%s,%s,%s,%s,%s,%s)"
+    assert params == (
+        "20260808010203000000",
+        "jw_brand_activity_raw_stage",
+        "jw_brand_activity_stage",
+        123,
+        45,
+        36,
+        "2023-06",
+        "2026-05",
+    )
 
 
 def test_evidence_payload_round_trip_keeps_actual_counts_and_periods() -> None:

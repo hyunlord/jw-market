@@ -34,6 +34,8 @@ ENV_CSD_CHANNEL_SHADOW_ACTIVATION = "INGEST_CSD_CHANNEL_SHADOW_ACTIVATION"
 ENV_PRODUCTION_LOAD_CATEGORIES = "INGEST_PRODUCTION_LOAD_CATEGORIES"
 ENV_CSD_CHANNEL_RAW_SCHEMA = "INGEST_CSD_CHANNEL_RAW_SCHEMA"
 ENV_CSD_CHANNEL_STAGE_SCHEMA = "INGEST_CSD_CHANNEL_STAGE_SCHEMA"
+ENV_CSD_KEYWORD_RAW_SCHEMA = "INGEST_CSD_KEYWORD_RAW_SCHEMA"
+ENV_CSD_KEYWORD_STAGE_SCHEMA = "INGEST_CSD_KEYWORD_STAGE_SCHEMA"
 ENV_CSD_CHANNEL_DB_HOST = "CSD_CHANNEL_DB_HOST"
 ENV_CSD_CHANNEL_DB_PORT = "CSD_CHANNEL_DB_PORT"
 ENV_CSD_CHANNEL_DB_USER = "CSD_CHANNEL_DB_USER"
@@ -88,6 +90,19 @@ def csd_channel_live_schemas(*, mode: str) -> tuple[str, str]:
         raise RuntimeError(
             f"{ENV_CSD_CHANNEL_STAGE_SCHEMA} must use jw_brand_activity_stage_shadow_*"
         )
+    return raw, stage
+
+
+def csd_keyword_live_schemas() -> tuple[str, str]:
+    """Resolve keyword live schemas without embedding deployment topology in code."""
+    raw = os.environ.get(
+        ENV_CSD_KEYWORD_RAW_SCHEMA, "jw_brand_activity_raw_stage"
+    ).strip()
+    stage = os.environ.get(
+        ENV_CSD_KEYWORD_STAGE_SCHEMA, "jw_brand_activity_stage"
+    ).strip()
+    if not raw or not stage:
+        raise RuntimeError("keyword live schemas must not be empty")
     return raw, stage
 
 

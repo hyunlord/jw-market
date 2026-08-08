@@ -11,6 +11,7 @@ RAW_TABLE = "raw_keyword_events"
 STAGE_SCHEMA = "jw_brand_activity_stage"
 STAGE_TABLE = "km_keyword_event_stage"
 WRITER_LOCK_NAME = "jw_ingest_csd_keyword_activation"
+CONTROL_SCHEMA = "jw_csd_keyword_control"
 
 _RUN_ID = re.compile(r"^[0-9]{20}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
@@ -69,21 +70,28 @@ def _run_id(value: str) -> str:
     return value
 
 
-def plan_for_run(run_id: str) -> ActivationPlan:
+def plan_for_run(
+    run_id: str,
+    *,
+    raw_schema: str = RAW_SCHEMA,
+    stage_schema: str = STAGE_SCHEMA,
+) -> ActivationPlan:
     run_id = _run_id(run_id)
+    raw_schema = _identifier(raw_schema)
+    stage_schema = _identifier(stage_schema)
     candidate_base = _identifier(f"jw_brand_activity_keyword_{run_id}")
     return ActivationPlan(
         run_id=run_id,
         candidate_base=candidate_base,
         raw=TablePair(
-            live=TableRef(RAW_SCHEMA, RAW_TABLE),
+            live=TableRef(raw_schema, RAW_TABLE),
             candidate=TableRef(f"{candidate_base}_raw", RAW_TABLE),
-            rollback=TableRef(RAW_SCHEMA, f"{RAW_TABLE}__old_{run_id}"),
+            rollback=TableRef(raw_schema, f"{RAW_TABLE}__old_{run_id}"),
         ),
         stage=TablePair(
-            live=TableRef(STAGE_SCHEMA, STAGE_TABLE),
+            live=TableRef(stage_schema, STAGE_TABLE),
             candidate=TableRef(f"{candidate_base}_stage", STAGE_TABLE),
-            rollback=TableRef(STAGE_SCHEMA, f"{STAGE_TABLE}__old_{run_id}"),
+            rollback=TableRef(stage_schema, f"{STAGE_TABLE}__old_{run_id}"),
         ),
     )
 
@@ -109,8 +117,17 @@ def plan_payload(plan: ActivationPlan) -> dict[str, object]:
     }
 
 
-def plan_from_payload(payload: dict[str, object]) -> ActivationPlan:
-    expected = plan_for_run(str(payload.get("run_id") or ""))
+def plan_from_payload(
+    payload: dict[str, object],
+    *,
+    raw_schema: str = RAW_SCHEMA,
+    stage_schema: str = STAGE_SCHEMA,
+) -> ActivationPlan:
+    expected = plan_for_run(
+        str(payload.get("run_id") or ""),
+        raw_schema=raw_schema,
+        stage_schema=stage_schema,
+    )
     if plan_payload(expected) != payload:
         raise CandidateValidationError("keyword activation plan is not canonical")
     return expected
@@ -197,16 +214,25 @@ def require_publish_scope(conn: Any, plan: ActivationPlan) -> None:
             raise CandidateValidationError(f"rollback table already exists: {ref.schema}.{ref.table}")
 
 
-def publish_candidate(conn: Any, plan: ActivationPlan) -> None:
-    """Atomically preserve both live tables and promote both candidates."""
-    sql = "RENAME TABLE " + ", ".join(
-        (
-            f"{_qualified(plan.raw.live)} TO {_qualified(plan.raw.rollback)}",
-            f"{_qualified(plan.raw.candidate)} TO {_qualified(plan.raw.live)}",
-            f"{_qualified(plan.stage.live)} TO {_qualified(plan.stage.rollback)}",
-            f"{_qualified(plan.stage.candidate)} TO {_qualified(plan.stage.live)}",
-        )
+def publish_candidate(
+    conn: Any, plan: ActivationPlan, evidence: CandidateEvidence
+) -> None:
+    """Promote through the EXECUTE-only definer boundary."""
+    sql = (
+        f"CALL `{CONTROL_SCHEMA}`.`csd_keyword_atomic_publish`"
+        "(%s,%s,%s,%s,%s,%s,%s,%s)"
     )
     with conn.cursor() as cursor:
-        cursor.execute(sql)
-    conn.commit()
+        cursor.execute(
+            sql,
+            (
+                plan.run_id,
+                plan.raw.live.schema,
+                plan.stage.live.schema,
+                evidence.raw_rows,
+                evidence.stage_rows,
+                evidence.period_count,
+                evidence.min_period,
+                evidence.max_period,
+            ),
+        )

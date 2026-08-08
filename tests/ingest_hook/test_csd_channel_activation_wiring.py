@@ -161,3 +161,13 @@ def test_e2e_commissioning_is_explicit_and_fail_closed(monkeypatch) -> None:
     monkeypatch.setenv("INGEST_E2E_COMMISSIONING", "yes")
     with pytest.raises(RuntimeError, match="INGEST_E2E_COMMISSIONING"):
         config.e2e_commissioning()
+
+
+def test_keyword_live_schemas_are_environment_configurable(monkeypatch) -> None:
+    monkeypatch.setenv(config.ENV_CSD_KEYWORD_RAW_SCHEMA, "jw_brand_activity_raw_stage")
+    monkeypatch.setenv(config.ENV_CSD_KEYWORD_STAGE_SCHEMA, "jw_brand_activity_stage")
+
+    assert config.csd_keyword_live_schemas() == (
+        "jw_brand_activity_raw_stage",
+        "jw_brand_activity_stage",
+    )

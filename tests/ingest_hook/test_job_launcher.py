@@ -493,6 +493,28 @@ def test_csd_channel_job_alone_receives_dedicated_activation_credentials(monkeyp
     assert "CSD_CHANNEL_DB_PASSWORD" not in ubist_names
 
 
+def test_csd_keyword_job_receives_dedicated_activation_credentials(monkeypatch):
+    keyword = render_job(
+        category="iqvia_csd_keyword",
+        manifest_sha=SHA,
+        manifest_path="_manifests/keyword.json",
+        namespace="llmops",
+    )
+    by_name = {
+        item["name"]: item
+        for item in keyword["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+
+    assert by_name["CSD_CHANNEL_DB_USER"]["valueFrom"]["secretKeyRef"] == {
+        "name": "jw-csd-channel-activator",
+        "key": "username",
+    }
+    assert by_name["CSD_CHANNEL_DB_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "jw-csd-channel-activator",
+        "key": "password",
+    }
+
+
 def test_rendered_job_env_minimal_without_s3(monkeypatch):
     for name in ("INGEST_S3_BUCKET", "MARIADB_HOST", "INGEST_REHEARSAL_ROOT"):
         monkeypatch.delenv(name, raising=False)
