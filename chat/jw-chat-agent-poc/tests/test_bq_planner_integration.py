@@ -53,6 +53,30 @@ def test_bq_plan_executes_both_market_sources_without_llm() -> None:
     assert "합산하지" in result["answer"]
 
 
+def test_d1_binds_cache_backed_csd_series_to_the_csd_analysis() -> None:
+    agent = ToolUseAgent(
+        metrics=MetricsTool(mode="fixture"),
+        resolver=BrandResolver(mode="fixture"),
+    )
+
+    result = agent.answer("리바로 영업활동 추이와 토픽 분포를 보여줘")
+
+    assert result["agent_loop_metrics"]["deterministic_plan_kind"] == "BQ:D1"
+    assert result["agent_loop_metrics"]["status"] == "ok"
+    analysis = next(call for call in result["tool_calls"] if call.get("tool") == "bq_analysis")
+    data = analysis["render_data"]
+    assert data["activity_change_rate_pct"] > 0
+    assert data["region"] == "TOTAL"
+    assert data["topic_status"] == "unsupported_by_current_csd_tool"
+    coverage = {item["slot_id"]: item["status"] for item in data["slot_coverage"]}
+    assert coverage["activity_trend"] == "supported"
+    assert coverage["period_change"] == "supported"
+    assert coverage["topic_distribution"] == "missing"
+    assert "TOTAL CSD 활동" in result["answer"]
+    assert "토픽/메시지 분류" in result["answer"]
+    assert "분석 근거 검증을 통과하지 못해" not in result["answer"]
+
+
 def test_coverage_questions_surface_existing_analysis_through_actual_planner() -> None:
     expected = (
         (

@@ -404,7 +404,7 @@ def _csd_activity_summary(brand: str, rows: tuple[CsdActivityRow, ...], delta: i
     return (
         f"{brand}의 CSD ChannelDynamics aggregate 콜수/활동량은 "
         f"{first.period_ym} {first.product_details:,}건에서 {latest.period_ym} {latest.product_details:,}건으로 "
-        f"{change}{note} impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다."
+        f"{change}{note} 토픽/메시지 분류·impact level·HCP/의사별·기관별 세부는 이 데이터에 포함되지 않습니다."
     )
 
 
@@ -417,7 +417,16 @@ def _csd_available_fields() -> tuple[str, ...]:
 
 
 def _csd_unsupported_fields() -> tuple[str, ...]:
-    return ("impact level", "HCP/의사별", "기관별", "의사별", "활동일", "처방 lag", "비활동 대조군")
+    return (
+        "토픽/메시지 분류",
+        "impact level",
+        "HCP/의사별",
+        "기관별",
+        "의사별",
+        "활동일",
+        "처방 lag",
+        "비활동 대조군",
+    )
 
 
 def _fixture_csd_activity_reader() -> StaticCsdActivityReader:

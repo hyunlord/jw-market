@@ -165,6 +165,8 @@ def _series_references(source: str, key: str) -> list[str]:
 
 
 def _source(call: Mapping[str, Any], data: Mapping[str, Any]) -> str:
+    if call.get("tool") == "csd_activity_trend":
+        return "CSD"
     spec = _mapping(data.get("query_spec"))
     value = str(spec.get("source") or call.get("source") or call.get("tool") or "UNKNOWN")
     normalized = value.casefold().replace("_", " ")

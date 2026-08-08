@@ -56,7 +56,9 @@ def _activity_analysis(calls: list[Call]) -> Call | None:
         "datasets": [{"label": "CSD 활동(건)", "unit": "건", "data": [float(value) for _, value in known]}],
     }
     return _analysis(
-        "D1", "activity_trend", [insight], activity_delta=float(delta),
+        "D1", "activity_trend", [insight],
+        activity_trend=[{"period": period, "product_details": float(value)} for period, value in known],
+        activity_delta=float(delta),
         activity_change_rate_pct=_percent(rate), region="TOTAL", market2_excluded=True,
         topic_status="unsupported_by_current_csd_tool", chart_payloads=[chart], source_labels=["CSD"],
     )
