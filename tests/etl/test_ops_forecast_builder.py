@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pytest
 
 from pipeline.scripts.etl.ops_forecast_builder import (
+    EXPECTED_BLOCKS,
     RuntimePinError,
     assert_runtime_pins,
     stride_order,
@@ -50,6 +51,13 @@ def _runtime_env() -> dict[str, str]:
         "MKL_NUM_THREADS": "1",
         "NUMEXPR_NUM_THREADS": "1",
     }
+
+
+def test_forecast_block_gate_tracks_the_current_published_mart_contract() -> None:
+    # Given the current published mart exposes 43,790 forecast units
+    # When the static completion gate contract is inspected
+    # Then agent refresh accepts that exact unit count without weakening the gate
+    assert EXPECTED_BLOCKS == 43_790
 
 
 def test_row_cache_id_namespaces_overlapping_ids_by_scope_kind() -> None:
