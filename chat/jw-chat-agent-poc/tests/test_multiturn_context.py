@@ -1443,6 +1443,37 @@ def _news_turn() -> ConversationTurn:
     )
 
 
+def _metric_turn_result() -> dict:
+    return {
+        "resolution": {"canonical_brand": "리바로"},
+        "answer": "리바로 매출 추이를 정리했습니다.",
+        "tool_calls": [
+            {
+                "tool": "get_brand_metric",
+                "source": "UBIST",
+                "render_data": {
+                    "status": "ok",
+                    "brand": "리바로",
+                    "metric": "series",
+                    "period": "2025-08→2026-05",
+                    "brand_value_series_10pt": [
+                        {
+                            "period": "2025-08",
+                            "value_krw": 7_963_000_000,
+                            "ms_pct": 3.93,
+                        },
+                        {
+                            "period": "2026-05",
+                            "value_krw": 8_039_000_000,
+                            "ms_pct": 3.76,
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+
+
 def test_news_turn_records_the_headlines_it_showed() -> None:
     slots = extract_conversation_slots(_news_turn_result())
 
@@ -1450,6 +1481,43 @@ def test_news_turn_records_the_headlines_it_showed() -> None:
         "피타바스타틴 제네릭 대량 진입",
         "고지혈증 치료제 약가 인하 고시",
     )
+
+
+def test_metric_turn_records_the_numeric_observation_it_showed() -> None:
+    slots = extract_conversation_slots(_metric_turn_result())
+
+    assert slots.issue_observation == (
+        "리바로 매출 시계열 2025-08 79.63억원 → 2026-05 80.39억원, MS 3.93% → 3.76%",
+    )
+
+
+def test_cause_followup_after_metric_turn_inherits_that_observation() -> None:
+    turn = ConversationTurn(
+        question="리바로 매출 추이 어때?",
+        answer="리바로 매출 추이를 정리했습니다.",
+        slots=extract_conversation_slots(_metric_turn_result()),
+    )
+
+    resolution = resolve_anaphora("왜 이렇게 됐어?", turn)
+
+    assert resolution.recogniser == ReferenceRecogniser.ISSUE_CAUSE
+    assert resolution.inherited_issue_observation == (
+        "리바로 매출 시계열 2025-08 79.63억원 → 2026-05 80.39억원, MS 3.93% → 3.76%",
+    )
+
+
+def test_failed_metric_call_records_no_observation_to_inherit() -> None:
+    result = _metric_turn_result()
+    result["tool_calls"][0]["render_data"]["status"] = "error"
+
+    assert extract_conversation_slots(result).issue_observation == ()
+
+
+def test_metric_turn_with_missing_endpoint_value_records_no_observation() -> None:
+    result = _metric_turn_result()
+    result["tool_calls"][0]["render_data"]["brand_value_series_10pt"][-1].pop("value_krw")
+
+    assert extract_conversation_slots(result).issue_observation == ()
 
 
 def test_failed_news_call_records_no_observation_to_inherit() -> None:
@@ -1578,6 +1646,39 @@ def test_news_turn_then_cause_question_carries_the_observation_end_to_end(monkey
     ]
     # The agent still receives the words the user typed, not a question rebuilt from
     # the headlines, so contract selection is unaffected by what the articles said.
+    assert [question for question, _mode in FakeAgent.calls] == ["리바로 왜 이렇게 됐어?"]
+    assert follow_up["result"]["_qa_anaphora"]["inherited_issue_observation"] is True
+    assert follow_up["result"]["_qa_anaphora"]["recogniser"] == "issue_cause"
+
+
+def test_metric_turn_then_cause_question_carries_the_observation_end_to_end(monkeypatch) -> None:
+    store = SessionStore()
+    resolver = _market_scope_resolver()
+    monkeypatch.setattr("jw_chat_agent_poc.service.app.has_active_uploaded_file", lambda _cid: False)
+    session = "metric-cause-followup-session"
+    store.conversations.record_exchange(
+        session,
+        "리바로 매출 추이 어때?",
+        "리바로 매출 추이를 정리했습니다.",
+        slots=extract_conversation_slots(_metric_turn_result()),
+    )
+
+    FakeAgent.calls.clear()
+    FakeAgent.issue_contexts.clear()
+
+    follow_up = _answer_question(
+        store,
+        resolver,
+        _fake_agent_factory,
+        "왜 이렇게 됐어?",
+        "live",
+        session,
+        use_direct_agent_loop=False,
+    )
+
+    assert FakeAgent.issue_contexts == [
+        ("리바로 매출 시계열 2025-08 79.63억원 → 2026-05 80.39억원, MS 3.93% → 3.76%",)
+    ]
     assert [question for question, _mode in FakeAgent.calls] == ["리바로 왜 이렇게 됐어?"]
     assert follow_up["result"]["_qa_anaphora"]["inherited_issue_observation"] is True
     assert follow_up["result"]["_qa_anaphora"]["recogniser"] == "issue_cause"

@@ -14,7 +14,8 @@ class BqSlots:
     modifiers: tuple[str, ...]
     axes: tuple[str, ...]
     sources: tuple[str, ...]
-    # Headlines the previous turn showed, when this question asks their cause. Read only
+    # Issue headlines or numeric trends the previous turn showed, when this question asks
+    # their cause. Read only
     # when building tool arguments. The signatures below match on the pattern tuples
     # above, so carrying context here cannot change which contract a question selects.
     issue_context: tuple[str, ...] = ()

@@ -5,6 +5,7 @@ from enum import StrEnum
 import re
 from typing import Any, Callable
 
+from jw_chat_agent_poc.orchestrator.markdown_formatting import eok_value, pct_value
 from jw_chat_agent_poc.orchestrator.provenance_labels import provenance_source_block
 from jw_chat_agent_poc.service.conversation import (
     ConversationSlots,
@@ -411,15 +412,40 @@ def _is_news_observation_call(call: dict[str, Any], data: dict[str, Any]) -> boo
     return _text(data.get("facade_tool")) in _NEWS_OBSERVATION_TOOLS
 
 
-def _issue_observation(result: dict[str, Any]) -> tuple[str, ...]:
-    """Headlines the news tools actually returned for this turn.
+def _metric_issue_observation(data: dict[str, Any]) -> str | None:
+    """A bounded numeric trend that the metric tool actually returned."""
+    series = data.get("brand_value_series_10pt")
+    if not isinstance(series, list):
+        return None
+    points = [item for item in series if isinstance(item, dict) and _text(item.get("period"))]
+    if len(points) < 2:
+        return None
+    first = points[0]
+    last = points[-1]
+    brand = _text(data.get("anchor_brand") or data.get("brand"))
+    first_sales = eok_value(first.get("value_억원"), first.get("value_krw"))
+    last_sales = eok_value(last.get("value_억원"), last.get("value_krw"))
+    if not brand or not first_sales or not last_sales:
+        return None
+    observation = (
+        f"{brand} 매출 시계열 {_text(first.get('period'))} {first_sales}"
+        f" → {_text(last.get('period'))} {last_sales}"
+    )
+    first_share = pct_value(first.get("ms_pct"))
+    last_share = pct_value(last.get("ms_pct"))
+    if first_share and last_share:
+        observation += f", MS {first_share} → {last_share}"
+    return observation
 
-    Only successful news calls count: an errored or empty news search put nothing in
-    front of the user, so inheriting from it would invent an observation. Bounded to
-    the leading few titles because this is stored on every turn and read as context,
-    not replayed as content.
+
+def _issue_observation(result: dict[str, Any]) -> tuple[str, ...]:
+    """Issue headlines and numeric trends actually returned for this turn.
+
+    Only successful calls count: an errored or empty call put nothing in front of the
+    user, so inheriting from it would invent an observation. Bounded because this is
+    stored on every turn and read as context, not replayed as content.
     """
-    titles: list[str] = []
+    observations: list[str] = []
     for call in result.get("tool_calls", []):
         if not isinstance(call, dict):
             continue
@@ -427,14 +453,17 @@ def _issue_observation(result: dict[str, Any]) -> tuple[str, ...]:
         if not isinstance(data, dict) or _text(data.get("status")) == "error":
             continue
         if not _is_news_observation_call(call, data):
+            metric_observation = _metric_issue_observation(data)
+            if metric_observation and metric_observation not in observations:
+                observations.append(metric_observation)
             continue
         for item in data.get("items", []):
             if not isinstance(item, dict):
                 continue
             title = _text(item.get("title"))
-            if title and title not in titles:
-                titles.append(title)
-    return tuple(titles[:_ISSUE_OBSERVATION_LIMIT])
+            if title and title not in observations:
+                observations.append(title)
+    return tuple(observations[:_ISSUE_OBSERVATION_LIMIT])
 
 
 def resolve_anaphora(

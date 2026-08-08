@@ -54,7 +54,7 @@ class ConversationSlots:
     file_measure: str | None = None
     file_manufacturer: str | None = None
     file_sheet: str | None = None
-    # Headlines of the news/issue items this turn actually put in front of the user. A
+    # Headlines or numeric trends this turn actually put in front of the user. A
     # following '왜 이렇게 됐어?' names no subject of its own: what it asks about is
     # whatever was just shown. Nothing about the observation was recorded before, so the
     # cause question could only ever be read as a standalone one.
