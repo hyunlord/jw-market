@@ -29,6 +29,7 @@ from pipeline.scripts.api.dashboard_usage import (
 )
 
 LOGGER = logging.getLogger(__name__)
+ACTOR_SEGMENTATION_TRUSTED_FROM = "2026-08-03"
 
 
 def _today() -> date:
@@ -40,6 +41,10 @@ def _validate_range(date_from: date, date_to: date) -> None:
         raise HTTPException(status_code=422, detail="시작일은 종료일보다 늦을 수 없습니다.")
     if (date_to - date_from).days + 1 > MAX_RANGE_DAYS:
         raise HTTPException(status_code=422, detail=f"조회 기간은 최대 {MAX_RANGE_DAYS}일입니다.")
+
+
+def _with_actor_segmentation_metadata(payload: dict) -> dict:
+    return {**payload, "trusted_from": ACTOR_SEGMENTATION_TRUSTED_FROM}
 
 
 def _materialization_error_detail(error: ChatMaterializationUnavailable) -> dict:
@@ -98,7 +103,7 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
             )
 
         try:
-            return fetch(resolved_from, resolved_to)
+            return _with_actor_segmentation_metadata(fetch(resolved_from, resolved_to))
         except ChatMaterializationUnavailable as error:
             if (
                 error.reason == "coverage"
@@ -118,7 +123,9 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
                     clamped_from != resolved_from or clamped_to != resolved_to
                 ):
                     try:
-                        return fetch(clamped_from, clamped_to)
+                        return _with_actor_segmentation_metadata(
+                            fetch(clamped_from, clamped_to)
+                        )
                     except ChatMaterializationUnavailable as retry_error:
                         error = retry_error
             raise HTTPException(

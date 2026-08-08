@@ -553,6 +553,52 @@ def test_service_exposes_api_denominators_and_endpoint_labels() -> None:
     ]
 
 
+def test_service_exposes_additive_api_actor_segments_without_reclassifying_unknown() -> None:
+    # Given API usage already classified by the append-only actor_type column
+    class ApiActorRepository(FakeRepository):
+        def fetch(self, filters: UsageFilters) -> dict:
+            result = super().fetch(filters)
+            result["api"]["trend"] = [
+                {
+                    "period": "2026-08-03",
+                    "total_calls": 72_169,
+                    "attributed_calls": 65,
+                    "human_calls": 65,
+                    "system_calls": 42_902,
+                    "unidentified_calls": 29_202,
+                }
+            ]
+            return result
+
+    # When the dashboard response is assembled
+    payload = UsageStatsService(
+        ApiActorRepository(), cache=DashboardCache(ttl_seconds=60)
+    ).get(UsageFilters(date(2026, 8, 3), date(2026, 8, 3), "day"))
+
+    # Then existing metrics remain and the three disjoint segments are additive
+    quality = payload["data_quality"]
+    assert quality["api_total_calls"] == 72_169
+    assert quality["api_attributed_calls"] == 65
+    assert quality["api_unknown_calls"] == 72_104
+    assert quality["api_attribution_rate"] == 0.0009
+    assert quality["api_human_calls"] == 65
+    assert quality["api_system_calls"] == 42_902
+    assert quality["api_unidentified_calls"] == 29_202
+    assert quality["api_human_attribution_rate"] == round(65 / (65 + 29202), 4)
+
+
+def test_usage_dashboard_marks_actor_segmentation_trust_boundary() -> None:
+    # Given a normal usage dashboard response
+    client = _client(FakeRepository())
+
+    # When it is returned through the HTTP route
+    response = client.get("/api/dashboard/usage-stats")
+
+    # Then consumers receive the date from which actor segmentation is trusted
+    assert response.status_code == 200
+    assert response.json()["trusted_from"] == "2026-08-03"
+
+
 def test_service_adds_chat_service_share_excluding_unknown_from_denominator() -> None:
     class ChatShareRepository(FakeRepository):
         def fetch(self, filters: UsageFilters) -> dict:
@@ -597,6 +643,20 @@ def test_dashboard_sql_exposes_supported_multidimensional_statistics() -> None:
     assert "AT0001" in DASHBOARD_SQL["auth_audience"]
     assert "LIMIT 200" in DASHBOARD_SQL["auth_user"]
     assert "LIMIT 200" in DASHBOARD_SQL["report_user"]
+
+
+def test_api_dashboard_sql_counts_actor_segments_without_endpoint_heuristics() -> None:
+    # Given the API trend and endpoint aggregation SQL
+    from pipeline.scripts.api.dashboard_usage import DASHBOARD_SQL
+
+    # When the actor segment expressions are inspected
+    sql = "\n".join((DASHBOARD_SQL["api_trend"], DASHBOARD_SQL["api_endpoint"]))
+
+    # Then classification uses only actor_type and preserves unknown separately
+    assert sql.count("SUM(actor_type='user') AS human_calls") == 2
+    assert sql.count("SUM(actor_type='system') AS system_calls") == 2
+    assert sql.count("SUM(actor_type='unknown') AS unidentified_calls") == 2
+    assert "MINUTE(called_at)" not in sql
 
 
 def test_auth_audience_deduplicates_active_users_before_history_join() -> None:

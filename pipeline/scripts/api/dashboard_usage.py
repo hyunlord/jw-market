@@ -42,7 +42,10 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
     "api_trend": """
         SELECT {period} AS period, COUNT(*) AS total_calls,
                SUM(http_status BETWEEN 200 AND 299) AS successful_calls,
-               SUM(actor_type='user') AS attributed_calls
+               SUM(actor_type='user') AS attributed_calls,
+               SUM(actor_type='user') AS human_calls,
+               SUM(actor_type='system') AS system_calls,
+               SUM(actor_type='unknown') AS unidentified_calls
         FROM dashboard_api_usage_v
         WHERE called_at >= %s AND called_at < %s
         {api_filter}
@@ -50,7 +53,10 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
     """,
     "api_endpoint": """
         SELECT endpoint, COUNT(*) AS calls,
-               SUM(http_status BETWEEN 200 AND 299) AS successful_calls
+               SUM(http_status BETWEEN 200 AND 299) AS successful_calls,
+               SUM(actor_type='user') AS human_calls,
+               SUM(actor_type='system') AS system_calls,
+               SUM(actor_type='unknown') AS unidentified_calls
         FROM dashboard_api_usage_v
         WHERE called_at >= %s AND called_at < %s
         {api_filter}
@@ -1484,6 +1490,12 @@ def _total_pages(total_count: int, page_size: int) -> int:
 def _data_quality(result: dict[str, Any]) -> dict[str, int | float]:
     api_total = sum(int(row.get("total_calls") or 0) for row in result["api"]["trend"])
     api_attributed = sum(int(row.get("attributed_calls") or 0) for row in result["api"]["trend"])
+    api_human = sum(int(row.get("human_calls") or 0) for row in result["api"]["trend"])
+    api_system = sum(int(row.get("system_calls") or 0) for row in result["api"]["trend"])
+    api_unidentified = sum(
+        int(row.get("unidentified_calls") or 0) for row in result["api"]["trend"]
+    )
+    api_human_attribution_denominator = api_human + api_unidentified
     chat_total = sum(int(row.get("turns") or 0) for row in result["chat"]["trend"])
     chat_attributed = sum(int(row.get("attributed_turns") or 0) for row in result["chat"]["trend"])
     chat_elapsed_available = sum(
@@ -1507,6 +1519,14 @@ def _data_quality(result: dict[str, Any]) -> dict[str, int | float]:
         "api_attributed_calls": api_attributed,
         "api_unknown_calls": max(api_total - api_attributed, 0),
         "api_attribution_rate": round(api_attributed / api_total, 4) if api_total else 0,
+        "api_human_calls": api_human,
+        "api_system_calls": api_system,
+        "api_unidentified_calls": api_unidentified,
+        "api_human_attribution_rate": (
+            round(api_human / api_human_attribution_denominator, 4)
+            if api_human_attribution_denominator
+            else 0
+        ),
         "chat_attributed_turns": chat_attributed,
         "chat_unknown_turns": max(chat_total - chat_attributed, 0),
         "chat_service_linked_turns": chat_service_linked,
