@@ -2096,7 +2096,8 @@ def _competitive_insight_signals_call(calls: list[dict[str, Any]]) -> dict[str, 
     signals = [signal for signal in raw_signals if signal]
     if not signals:
         return None
-    _add_cohort_relative_signals(signals)
+    period = _trend_period_range(trends)
+    cohort_context = _add_cohort_relative_signals(signals, period=period)
     signals = sorted(signals, key=lambda item: abs(float(item.get("share_delta_pctp") or 0)), reverse=True)
     top_gainer = max(signals, key=lambda item: float(item.get("share_delta_pctp") or 0))
     top_faller = min(signals, key=lambda item: float(item.get("share_delta_pctp") or 0))
@@ -2107,7 +2108,7 @@ def _competitive_insight_signals_call(calls: list[dict[str, Any]]) -> dict[str, 
         "summary_text": "상위 브랜드 시계열에서 share-of-growth, 성장분해, gain-loss, cohort 상대화 신호를 계산했습니다.",
         "render_data": {
             "metric": "competitive_insight_signals",
-            "period": _trend_period_range(trends),
+            "period": period,
             "market_delta_krw": market_delta,
             "market_delta_억원": round(market_delta / 100_000_000, 2) if isinstance(market_delta, int | float) else None,
             "market_growth_pct": market_growth,
@@ -2115,6 +2116,7 @@ def _competitive_insight_signals_call(calls: list[dict[str, Any]]) -> dict[str, 
             "top_gainer": top_gainer if float(top_gainer.get("share_delta_pctp") or 0) > 0 else None,
             "top_faller": top_faller if float(top_faller.get("share_delta_pctp") or 0) < 0 else None,
             "gain_loss_ratio_pct": gain_loss_ratio,
+            "cohort_context": cohort_context,
             "surface_policy": {"gain_loss_ratio_pct": "internal_only"},
             "calculation": "deterministic top-brand trend insight for evidence-based causal analysis",
         },
@@ -2158,10 +2160,10 @@ def _competitive_signal_for_trend(
     }
 
 
-def _add_cohort_relative_signals(signals: list[dict[str, Any]]) -> None:
+def _add_cohort_relative_signals(signals: list[dict[str, Any]], *, period: str) -> dict[str, Any]:
     deltas = [float(item["share_delta_pctp"]) for item in signals if isinstance(item.get("share_delta_pctp"), int | float)]
     if len(deltas) < 2:
-        return
+        return {}
     mean = sum(deltas) / len(deltas)
     variance = sum((value - mean) ** 2 for value in deltas) / len(deltas)
     std = math.sqrt(variance)
@@ -2172,6 +2174,14 @@ def _add_cohort_relative_signals(signals: list[dict[str, Any]]) -> None:
             continue
         item["z_score"] = round((float(delta) - mean) / std, 2) if std else 0.0
         item["percentile"] = round((sum(1 for value in ordered if value <= float(delta)) / len(ordered)) * 100, 2)
+    return {
+        "definition": "동일 시장·출처·분석기간의 비교 브랜드 집합",
+        "population": len(deltas),
+        "metric": "점유율 변화(%p)",
+        "period": period,
+        "z_score_method": "(브랜드 값-코호트 평균)/모표준편차",
+        "percentile_method": "경험적 누적순위(브랜드 값 이하 개수/N)",
+    }
 
 
 def _gain_loss_ratio(gainer: dict[str, Any], faller: dict[str, Any]) -> float | None:

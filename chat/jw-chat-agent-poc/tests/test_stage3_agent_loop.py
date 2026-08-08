@@ -1773,10 +1773,20 @@ def test_competitive_landscape_adds_deterministic_agent2_insight_signals() -> No
     assert all(signal.get("period_to") == "2026-04" for signal in signals)
     assert all(signal.get("comparison_basis") == "analysis_period" for signal in signals)
     assert insight_calls[0]["render_data"].get("surface_policy", {}).get("gain_loss_ratio_pct") == "internal_only"
+    assert insight_calls[0]["render_data"].get("cohort_context") == {
+        "definition": "동일 시장·출처·분석기간의 비교 브랜드 집합",
+        "population": 4,
+        "metric": "점유율 변화(%p)",
+        "period": "2025-01→2026-04",
+        "z_score_method": "(브랜드 값-코호트 평균)/모표준편차",
+        "percentile_method": "경험적 누적순위(브랜드 값 이하 개수/N)",
+    }
     period = insight_calls[0]["render_data"]["period"]
     assert "인사이트 계산" in result["markdown_response"]["fact_md"]
     assert "share-of-growth" in result["markdown_response"]["fact_md"]
     assert "성장분해 브랜드 변화 14.93억원 / 시장 변화 1,256.77억원" in result["markdown_response"]["fact_md"]
     assert "성장분해 시장 125.68% 점유 -3.24%p" not in result["markdown_response"]["fact_md"]
+    assert "cohort 정의 동일 시장·출처·분석기간의 비교 브랜드 집합 N=4" in result["markdown_response"]["fact_md"]
+    assert "백분위 방식 경험적 누적순위(브랜드 값 이하 개수/N)" in result["markdown_response"]["fact_md"]
     assert "93.62%" not in result["markdown_response"]["fact_md"]
     assert f"{period} 점유율 변화" in result["markdown_response"]["fact_md"]

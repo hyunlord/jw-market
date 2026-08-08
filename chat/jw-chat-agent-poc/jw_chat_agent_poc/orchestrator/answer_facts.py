@@ -973,6 +973,19 @@ def _trend_causal_signal(data: dict[str, Any], brand: str, comparison: str) -> s
 def _required_competitive_insight_rows(data: dict[str, Any]) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     market_delta = eok_value(data.get("market_delta_억원"), data.get("market_delta_krw"))
+    cohort = data.get("cohort_context")
+    if isinstance(cohort, dict) and cohort.get("definition") and cohort.get("population"):
+        cohort_description = " ".join(
+            (
+                f"cohort 정의 {cohort['definition']}",
+                f"N={cohort['population']}",
+                f"지표 {cohort.get('metric')}",
+                f"기간 {cohort.get('period')}",
+                f"z-score 방식 {cohort.get('z_score_method')}",
+                f"백분위 방식 {cohort.get('percentile_method')}",
+            )
+        )
+        rows.append(("코호트 정의", cohort_description))
     for signal in data.get("signals", [])[:3]:
         if not isinstance(signal, dict):
             continue
