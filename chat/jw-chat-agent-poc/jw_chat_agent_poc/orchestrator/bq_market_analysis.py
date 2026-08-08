@@ -100,6 +100,17 @@ def _competition_result(series_call: Call, calls: list[Call]) -> dict[str, Any] 
         }
         for row in trend_rows if row.get("brand")
     ]
+    gainers = [row for row in gain_loss if (row.get("share_delta_pctp") or 0) > 0]
+    losers = [row for row in gain_loss if (row.get("share_delta_pctp") or 0) < 0]
+    top = _top_call(calls, _source_key(series_call))
+    current_top_structure = [
+        {"brand": str(row.get("name") or ""), "rank": row.get("rank"), "value": row.get("value")}
+        for row in sorted(
+            _segments(top),
+            key=lambda item: (item.get("rank") is None, item.get("rank") or 0, str(item.get("name") or "")),
+        )
+        if row.get("name")
+    ] if top is not None else []
     source = _source_label(series_call)
     return {
         "source": source, "period": f"{start_period}~{end_period}",
@@ -107,6 +118,12 @@ def _competition_result(series_call: Call, calls: list[Call]) -> dict[str, Any] 
         "excess_growth_pctp": _percent(decomposition.excess_growth),
         "share_of_growth_pct": _percent(contribution), "share_delta_pctp": _float(share_end - share_start),
         "gain_loss": gain_loss,
+        "share_gainers": gainers,
+        "share_losers": losers,
+        "current_top_structure": current_top_structure,
+        "competition_change_conclusion": (
+            f"{start_period}~{end_period} 점유율 상승 {len(gainers)}개, 하락 {len(losers)}개 브랜드로 구도가 재편됐습니다."
+        ),
         "insight": (
             f"{source} {start_period}~{end_period} 브랜드 성장률 {_pct(brand_rate)}와 "
             f"시장 성장률 {_pct(market_rate)}의 차이는 {_pctp(decomposition.excess_growth)}이며, "

@@ -168,10 +168,12 @@ def _forecast_source_result(market: Call) -> dict[str, Any] | None:
 
 def _patient_ratio_call(calls: list[Call]) -> Call | None:
     patient = _patient_count(calls)
+    population_aligned = _same_population_basis(calls)
     results = [
         result
         for market in _sales_market_calls(calls)
-        if patient is not None and (result := _patient_source_result(patient, market))
+        if patient is not None
+        and (result := _patient_source_result(patient, market, population_aligned=population_aligned))
     ]
     if not results:
         return None
@@ -183,24 +185,41 @@ def _patient_ratio_call(calls: list[Call]) -> Call | None:
         source_results=results, source_labels=["HIRA", *market_sources],
         evidence_refs=["HIRA.render_data.items.ptntCnt", *(f"{s}.render_data.brand_value_series_10pt" for s in market_sources)],
         never_aggregate_sources=True,
+        same_population_basis=population_aligned,
     )
 
 
-def _patient_source_result(patient: tuple[str, Decimal], market: Call) -> dict[str, Any] | None:
+def _patient_source_result(
+    patient: tuple[str, Decimal],
+    market: Call,
+    *,
+    population_aligned: bool,
+) -> dict[str, Any] | None:
     period, sales = _period_and_latest(market)
-    ratio = patient_sales_ratio(sales=sales, patients=patient[1])
-    if ratio is None:
-        return None
+    ratio = patient_sales_ratio(sales=sales, patients=patient[1]) if population_aligned else None
     source = _source_label(market)
+    comparison = (
+        f"동일 모집단 근거가 확인되어 환자 1명당 관측비는 {_plain(ratio)}원입니다."
+        if ratio is not None
+        else "모집단 정의가 같다는 근거가 없어 환자당 매출은 계산하지 않습니다."
+    )
     return {
         "source": source, "period": period, "patient_period": patient[0],
         "patient_count": _float(patient[1]), "sales_krw": _float(sales),
         "sales_per_patient_krw": _float(ratio),
         "insight": (
         f"HIRA {patient[0]} 환자수 {_plain(patient[1])}명과 {source} {period} 브랜드 매출 {_eok(sales)}억원을 "
-        f"나란히 보면 관측비는 환자 1명당 {_plain(ratio)}원입니다. 기간·정의가 다른 두 값을 합산한 수치는 아닙니다."
+        f"나란히 표시합니다. {comparison} 기간·정의가 다른 두 값을 합산하지 않습니다."
         ),
     }
+
+
+def _same_population_basis(calls: list[Call]) -> bool:
+    return any(
+        isinstance(call.get("render_data"), dict)
+        and call["render_data"].get("same_population_basis") is True
+        for call in calls
+    )
 
 
 def _seller_axis_call(calls: list[Call]) -> Call | None:

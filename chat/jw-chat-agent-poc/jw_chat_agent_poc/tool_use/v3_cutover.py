@@ -96,15 +96,15 @@ def apply_v3_cutover(
     factory = pipeline_factory or (lambda: _DefaultV3ServingPipeline(active))
     try:
         served = factory().run(question)
-    except Exception:  # noqa: BLE001 - serving cutover must fail open to legacy
-        LOGGER.exception("v3_cutover_failed_open")
-        return legacy_result
+    except Exception:  # noqa: BLE001 - capability failure becomes an explicit partial response
+        LOGGER.exception("v3_cutover_degraded")
+        return _degraded_result(legacy_result, reason_code="pipeline_unavailable")
     if not _domain_enabled(served.domain, active.domains):
         LOGGER.info("v3_cutover_domain_not_enabled domain=%s", served.domain)
-        return legacy_result
+        return _degraded_result(legacy_result, reason_code="domain_unavailable")
     if not served.answer.strip() and not served.limitations:
         LOGGER.warning("v3_cutover_empty_validated_result")
-        return legacy_result
+        return _degraded_result(legacy_result, reason_code="validated_result_empty")
 
     requested_sources = extract_requested_sources(question)
     substitution = source_substitution(requested_sources, served.tool_calls)
@@ -159,6 +159,28 @@ def apply_v3_cutover(
         "v3_cutover_ready": True,
         "v3_cutover_domain": served.domain,
         "v3_cutover_trace": dict(served.trace),
+    }
+
+
+def _degraded_result(
+    legacy_result: Mapping[str, object],
+    *,
+    reason_code: str,
+) -> dict[str, object]:
+    return {
+        **legacy_result,
+        "answer": (
+            "확인 가능한 핵심 항목만 답변하려 했으나 세부 분석 모듈이 응답 시간 내 "
+            "완료되지 않아 이번 답변에서는 해당 항목을 제외했습니다."
+        ),
+        "sources": [],
+        "tool_calls": [],
+        "charts": [],
+        "v3_cutover_ready": False,
+        "v3_cutover_trace": {
+            "reason_code": reason_code,
+            "degraded": True,
+        },
     }
 
 

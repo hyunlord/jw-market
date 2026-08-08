@@ -83,6 +83,7 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     observe_surface_coverage,
     set_current_query_spec,
 )
+from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
 from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     ShadowGate,
     current_shadow_request_id,
@@ -3286,6 +3287,16 @@ def compute_final_answer(
             _compute_final_answer(question, result, conversation_id),
             conversation_slots=extract_conversation_slots(result),
         )
+        controlled = apply_answer_control_layer(question, result, final_answer.text)
+        result["_answer_control_layer"] = {
+            "applied": controlled.applied,
+            "intent": controlled.intent,
+            "required_slot_coverage": controlled.required_slot_coverage,
+            "claim_plan": controlled.claim_plan_hash_input,
+            "degraded": controlled.degraded,
+        }
+        if controlled.applied:
+            final_answer = replace(final_answer, text=controlled.answer)
         notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
         typed_failure = normalize_typed_failure(result)
         if typed_failure is None:

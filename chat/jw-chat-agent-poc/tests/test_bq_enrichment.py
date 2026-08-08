@@ -168,8 +168,9 @@ def test_a3_preserves_patient_and_market_source_identity() -> None:
     assert call is not None
     data = call["render_data"]
     assert data["calculation"] == "patient_sales_ratio"
-    assert data["sales_per_patient_krw"] == 8_000_000.0
+    assert data["sales_per_patient_krw"] is None
     assert data["source_labels"] == ["HIRA", "UBIST"]
+    assert "환자당 매출은 계산하지" in data["insights"][0]
 
 
 def test_a3_computes_patient_ratio_per_market_source() -> None:

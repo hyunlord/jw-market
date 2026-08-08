@@ -669,6 +669,11 @@ class ToolUseAgent:
                     missing_sources=bq_missing_sources,
                 )
                 retry_tools = set(missing_slot_tools(initial_coverage))
+                retry_tools.update(
+                    item.tool_name
+                    for item in observations
+                    if item.status != "ok"
+                )
                 successful_tool_sources = {
                     (
                         item.tool_name,

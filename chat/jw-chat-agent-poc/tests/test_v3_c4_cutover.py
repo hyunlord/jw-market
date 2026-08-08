@@ -183,7 +183,11 @@ def test_uncovered_result_is_replaced_only_for_enabled_domain() -> None:
     assert allowed["v3_cutover_ready"] is True
     assert "근거가 확인된 원인분석입니다." in allowed["answer"]
     assert "영업활동 자료는 확인하지 못했습니다." in allowed["answer"]
-    assert blocked is legacy
+    assert blocked is not legacy
+    assert blocked["v3_cutover_trace"] == {
+        "reason_code": "domain_unavailable",
+        "degraded": True,
+    }
 
 
 def test_explicit_iqvia_request_rejects_successful_ubist_substitution() -> None:
@@ -347,8 +351,12 @@ def test_pipeline_failure_fails_open_and_records_reason(caplog) -> None:
         pipeline_factory=BrokenPipeline,
     )
 
-    assert result is legacy
-    assert "v3_cutover_failed_open" in caplog.text
+    assert result is not legacy
+    assert result["v3_cutover_ready"] is False
+    assert result["v3_cutover_trace"]["reason_code"] == "pipeline_unavailable"
+    assert result["v3_cutover_trace"]["degraded"] is True
+    assert "이번 답변에서는 해당 항목을 제외" in result["answer"]
+    assert "v3_cutover_degraded" in caplog.text
 
 
 def test_mixed_domain_requires_every_selected_domain_to_be_enabled() -> None:
@@ -367,12 +375,16 @@ def test_mixed_domain_requires_every_selected_domain_to_be_enabled() -> None:
 
     legacy = _legacy_no_tool()
 
-    assert apply_v3_cutover(
+    blocked = apply_v3_cutover(
         "질문",
         legacy,
         config=V3CutoverConfig(enabled=True, domains=frozenset({"market"})),
         pipeline_factory=MixedPipeline,
-    ) is legacy
+    )
+    assert blocked["v3_cutover_trace"] == {
+        "reason_code": "domain_unavailable",
+        "degraded": True,
+    }
     assert apply_v3_cutover(
         "질문",
         legacy,

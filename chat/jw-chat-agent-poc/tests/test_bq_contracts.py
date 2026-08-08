@@ -72,18 +72,20 @@ def test_b1_contract_declares_the_approved_analysis_requirements() -> None:
     }
 
     assert by_tier[SlotTier.REQUIRED] == {
-        "comparison_periods",
-        "top_brand_share_delta_pctp",
-        "rank_change",
-        "own_share_rank_change",
-        "share_of_growth",
-        "growth_decomposition",
+        "comparison_period",
+        "current_top_structure",
+        "share_gainers",
+        "share_losers",
+        "competition_change_conclusion",
     }
     assert by_tier[SlotTier.BUSINESS_REQUIRED] == {
-        "concentration_change",
-        "competition_verdict",
+        "own_share_rank_change",
+        "rank_changes",
     }
     assert by_tier[SlotTier.OPTIONAL] == {
+        "share_of_growth",
+        "growth_decomposition",
+        "concentration_change",
         "related_events",
         "channel_competition_change",
     }
@@ -109,8 +111,8 @@ def test_slot_coverage_distinguishes_supported_missing_and_unavailable() -> None
     )
     statuses = {item.slot_id: item.status.value for item in coverage}
 
-    assert statuses["comparison_periods"] == "supported"
+    assert statuses["comparison_period"] == "supported"
     assert statuses["share_of_growth"] == "supported"
     assert statuses["growth_decomposition"] == "supported"
-    assert statuses["rank_change"] == "missing"
+    assert statuses["rank_changes"] == "missing"
     assert statuses["related_events"] == "not_applicable"

@@ -64,18 +64,31 @@ def test_selector_exposes_all_catalog_tools_and_only_reorders_candidates() -> No
     provider = _CapturingProvider(())
     selector = V3ToolSelector(provider=provider)
 
-    result = selector.select("리바로 최근 매출 추이")
+    result = selector.select("뇌경색 관련 임상시험이랑 허가 현황 알려줘")
 
     expected_names = tuple(record.name for record in TOOL_DESCRIPTION_CATALOG)
     assert len(expected_names) == 35
-    assert len(result.candidate_names) == 35
-    assert set(result.candidate_names) == set(expected_names)
-    assert result.candidate_names[0].startswith("market.")
+    assert 0 < len(result.candidate_names) < len(expected_names)
+    assert set(result.candidate_names) < set(expected_names)
     assert len(provider.calls) == 1
     exposed_names = tuple(
         tool["function"]["name"] for tool in provider.calls[0]["tools"]  # type: ignore[index]
     )
     assert exposed_names == result.candidate_names
+
+
+def test_source_difference_fast_path_does_not_call_provider() -> None:
+    provider = _CapturingProvider(())
+    result = V3ToolSelector(provider=provider).select(
+        "리바로 IQVIA랑 UBIST 수치가 다른데 왜?"
+    )
+
+    assert provider.calls == []
+    assert result.selection_mode == "deterministic_fast_path"
+    assert [(choice.name, choice.arguments["source"]) for choice in result.choices] == [
+        ("market.get_timeseries", "ubist"),
+        ("market.get_timeseries", "iqvia"),
+    ]
 
 
 def test_selector_uses_catalog_description_and_allows_multiple_choices() -> None:
@@ -459,4 +472,5 @@ def test_shadow_event_is_json_serializable() -> None:
     selector = V3ToolSelector(provider=_CapturingProvider(()))
     payload = run_v3_selection_shadow_once("도구가 필요한가?", selector=selector)
 
-    assert json.loads(json.dumps(payload, ensure_ascii=False))["candidate_count"] == 35
+    candidate_count = json.loads(json.dumps(payload, ensure_ascii=False))["candidate_count"]
+    assert 0 < candidate_count < 35

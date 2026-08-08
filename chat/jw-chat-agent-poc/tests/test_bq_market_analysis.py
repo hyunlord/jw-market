@@ -50,6 +50,10 @@ def test_b1_computes_share_of_growth_decomposition_and_gain_loss() -> None:
     assert data["excess_growth_pctp"] == pytest.approx(10.0)
     assert data["share_delta_pctp"] == pytest.approx(0.91)
     assert data["gain_loss"][0]["brand"] == "리바로"
+    assert [row["brand"] for row in data["share_gainers"]] == ["리바로"]
+    assert {row["brand"] for row in data["share_losers"]} == {"로수젯", "경쟁A"}
+    assert [row["brand"] for row in data["current_top_structure"]] == ["로수젯", "리바로", "경쟁A"]
+    assert "구도가 재편" in data["competition_change_conclusion"]
     assert data["chart_payloads"][0]["chart_type"] == "waterfall"
 
 

@@ -462,7 +462,7 @@ def _four_stage_unavailable_gate(
                 branch_trace.append("four_stage.successful_fact_public_replacement")
             return _cleanup(public_answer)
         if branch_trace is not None:
-            branch_trace.append("four_stage.successful_fact_finalized_fallback")
+            branch_trace.append("four_stage.successful_fact_branch_adapter")
         return _cleanup(finalized_fallback_fact_answer(question, {"fact_md": fact_md}))
 
     required = _required_tools(question)

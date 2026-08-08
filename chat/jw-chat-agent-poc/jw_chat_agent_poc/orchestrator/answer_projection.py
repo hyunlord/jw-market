@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
+
+from jw_chat_agent_poc.agent_loop.question_contracts import QuestionSpec, question_spec_for
+from jw_chat_agent_poc.orchestrator.answer_claim_adapters import AnswerClaim, claims_for
+
+
+class AnswerGateError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimPlan:
+    slot_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerFailure:
+    code: str
+    subject: str
+    evidence_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerLimitation:
+    code: str
+    slot_id: str
+    display_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedAnswer:
+    answer: str
+    claims: tuple[AnswerClaim, ...]
+    limitations: tuple[AnswerLimitation, ...]
+    degraded: bool
+    selected_branch: str
+
+
+@dataclass(frozen=True, slots=True)
+class ControlLayerResult:
+    answer: str
+    applied: bool
+    degraded: bool
+    intent: str
+    required_slot_coverage: str
+    claim_plan_hash_input: tuple[str, ...]
+
+
+def _missing_limitations(spec: QuestionSpec, filled: frozenset[str]) -> tuple[AnswerLimitation, ...]:
+    return tuple(
+        AnswerLimitation(
+            code="required_slot_unfilled",
+            slot_id=slot_id,
+            display_text=f"요청한 항목 '{slot_id}'은 현재 근거로 확인하지 못했습니다.",
+        )
+        for slot_id in spec.required_slots
+        if slot_id not in filled
+    )
+
+
+def finalize_answer(
+    question_spec: QuestionSpec,
+    claim_plan: ClaimPlan,
+    claims: tuple[AnswerClaim, ...],
+    failures: tuple[AnswerFailure, ...],
+    *,
+    selected_branch: str = "v3",
+    degradation_notice: str | None = None,
+) -> FinalizedAnswer:
+    if not question_spec.anchor_provenance:
+        raise AnswerGateError("anchor_provenance_missing")
+
+    entitled = question_spec.entitled_slots
+    planned = frozenset(claim_plan.slot_ids)
+    for claim in claims:
+        if (
+            claim.slot_id not in entitled
+            or claim.slot_id not in planned
+            or claim.claim_type in question_spec.forbidden_claim_types
+        ):
+            raise AnswerGateError(f"unentitled_claim:{claim.claim_id}")
+        if not claim.evidence_ids or not claim.source:
+            raise AnswerGateError(f"anchor_provenance_missing:{claim.claim_id}")
+
+    evidence_ids = {evidence_id for claim in claims for evidence_id in claim.evidence_ids}
+    if any(failure.evidence_ids and evidence_ids.intersection(failure.evidence_ids) for failure in failures):
+        raise AnswerGateError("fallback_reason_inconsistent")
+
+    filled = frozenset(claim.slot_id for claim in claims)
+    limitations = _missing_limitations(question_spec, filled)
+    degraded = bool(limitations or failures or selected_branch != "v3")
+    if selected_branch != "v3" and not degradation_notice:
+        raise AnswerGateError("silent_degradation")
+
+    return FinalizedAnswer(
+        answer="\n\n".join(claim.display_text for claim in claims),
+        claims=claims,
+        limitations=limitations,
+        degraded=degraded,
+        selected_branch=selected_branch,
+    )
+
+
+def _analysis_data(result: Mapping[str, Any], contract_id: str) -> Mapping[str, Any] | None:
+    calls = result.get("tool_calls")
+    if not isinstance(calls, Sequence) or isinstance(calls, (str, bytes)):
+        return None
+    for call in calls:
+        if not isinstance(call, Mapping) or call.get("tool") != "bq_analysis":
+            continue
+        data = call.get("render_data")
+        if isinstance(data, Mapping) and data.get("contract_id") == contract_id:
+            return data
+    return None
+
+
+def _controlled_result(
+    spec: QuestionSpec,
+    claims: tuple[AnswerClaim, ...],
+) -> ControlLayerResult:
+    plan = ClaimPlan(tuple(claim.slot_id for claim in claims))
+    finalized = finalize_answer(spec, plan, claims, ())
+    limitation_text = "\n".join(item.display_text for item in finalized.limitations)
+    answer = finalized.answer
+    if limitation_text:
+        answer = f"{answer}\n\n### 제한\n{limitation_text}" if answer else f"### 제한\n{limitation_text}"
+    return ControlLayerResult(
+        answer=answer,
+        applied=True,
+        degraded=finalized.degraded,
+        intent=spec.intent.value,
+        required_slot_coverage=f"{len(spec.required_slots) - len(finalized.limitations)}/{len(spec.required_slots)}",
+        claim_plan_hash_input=plan.slot_ids,
+    )
+
+
+def apply_answer_control_layer(
+    question: str,
+    result: Mapping[str, Any],
+    fallback_answer: str,
+) -> ControlLayerResult:
+    spec = question_spec_for(question)
+    if result.get("context_scope") == "MIXED":
+        return ControlLayerResult(fallback_answer, False, False, spec.intent.value, "not_applied", ())
+    contract_id = {
+        "MARKET_OUTLOOK": "A2",
+        "COMPETITION_CHANGE": "B1",
+        "SOURCE_DIFFERENCE": "C3",
+        "SALES_ACTIVITY_TREND": "D3",
+        "NEW_ENTRANT_THREAT": "B3",
+        "MULTI_SOURCE_SNAPSHOT": "A3",
+    }.get(spec.intent.value)
+    if spec.intent.value == "SALES_ACTIVITY_TREND" and "경쟁사" not in question:
+        contract_id = None
+    if contract_id is None:
+        return ControlLayerResult(fallback_answer, False, False, spec.intent.value, "not_applied", ())
+    data = _analysis_data(result, contract_id)
+    if data is None:
+        if result.get("answer_control_required") is True:
+            return _controlled_result(spec, ())
+        return ControlLayerResult(fallback_answer, False, False, spec.intent.value, "analysis_missing", ())
+    return _controlled_result(spec, claims_for(spec.intent.value, data))

@@ -18,6 +18,8 @@ from jw_chat_agent_poc.tool_use.specs import (
     QueryInput,
 )
 from jw_chat_agent_poc.tool_use.v3_intent import IntentFrame, extract_intent_frame
+from jw_chat_agent_poc.agent_loop.question_contracts import AnswerIntent
+from jw_chat_agent_poc.agent_loop.semantic_parser import parse_semantic_question
 
 
 class _SelectionInput(BaseModel):
@@ -159,6 +161,7 @@ class V3SelectionResult:
     choices: tuple[MultiToolChoice, ...]
     unknown_tool_names: tuple[str, ...]
     provider_choice_count: int
+    selection_mode: str = "provider"
 
 
 _EXTERNAL_INPUT_MODELS: dict[str, type[BaseModel]] = {
@@ -231,7 +234,20 @@ class V3ToolSelector:
 
     def select(self, question: str) -> V3SelectionResult:
         intent = extract_intent_frame(question)
-        candidates = _prioritized(self._tools, intent)
+        candidates = _capability_subset(self._tools, intent)
+        fast_choices = _deterministic_choices(question, intent)
+        if fast_choices is not None:
+            known_names = {tool.name for tool in candidates}
+            return V3SelectionResult(
+                intent=intent,
+                candidate_names=tuple(tool.name for tool in candidates),
+                choices=fast_choices[: self._max_calls],
+                unknown_tool_names=tuple(
+                    choice.name for choice in fast_choices if choice.name not in known_names
+                ),
+                provider_choice_count=0,
+                selection_mode="deterministic_fast_path",
+            )
         messages = [
             {
                 "role": "system",
@@ -239,8 +255,7 @@ class V3ToolSelector:
                     "Select zero or more tools that together address the request. "
                     f"Return no more than {self._max_calls} tool calls. "
                     "Tools may be selected in parallel. Do not invent tool names or "
-                    "arguments that are not grounded in the request. IntentFrame only "
-                    "prioritizes tools; every catalog tool remains eligible."
+                    "arguments that are not grounded in the compact semantic request."
                 ),
             },
             {
@@ -265,7 +280,52 @@ class V3ToolSelector:
             choices=choices,
             unknown_tool_names=unknown,
             provider_choice_count=len(proposed),
+            selection_mode="provider",
         )
+
+
+def _capability_subset(
+    tools: tuple[SelectionToolSpec, ...],
+    intent: IntentFrame,
+) -> tuple[SelectionToolSpec, ...]:
+    domains = set(intent.domains)
+    if not domains:
+        domains = {"general"}
+    else:
+        domains.add("general")
+    selected = tuple(tool for tool in tools if tool.domain in domains)
+    return _prioritized(selected, intent)
+
+
+def _deterministic_choices(
+    question: str,
+    intent: IntentFrame,
+) -> tuple[MultiToolChoice, ...] | None:
+    semantic = parse_semantic_question(question)
+    brand = next((entity.value for entity in intent.entities if entity.kind == "brand"), None)
+    if brand is None:
+        return None
+    if semantic.intent is AnswerIntent.SOURCE_DIFFERENCE:
+        return tuple(
+            MultiToolChoice(
+                "market.get_timeseries",
+                {"brand": brand, "metric": "sales", "source": source},
+            )
+            for source in ("ubist", "iqvia")
+        )
+    if semantic.intent is AnswerIntent.COMPETITION_CHANGE:
+        return (
+            MultiToolChoice("market.get_market_members", {"brand": brand}),
+            MultiToolChoice("market.get_timeseries", {"brand": brand, "metric": "sales"}),
+            MultiToolChoice("market.get_hhi", {"brand": brand}),
+        )
+    if semantic.intent is AnswerIntent.NEW_ENTRANT_THREAT:
+        return (
+            MultiToolChoice("market.get_market_members", {"brand": brand}),
+            MultiToolChoice("market.get_timeseries", {"brand": brand, "metric": "sales"}),
+            MultiToolChoice("web_search", {"query": question}),
+        )
+    return None
 
 
 def _prioritized(
