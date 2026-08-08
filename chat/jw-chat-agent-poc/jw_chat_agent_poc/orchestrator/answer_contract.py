@@ -1650,9 +1650,10 @@ def _positioning_rows(fact_md: str) -> tuple[tuple[str, str, str], ...]:
     mandatory = _mandatory_rows(fact_md)
     items = _mandatory_row_items(fact_md)
     rows: list[tuple[str, str, str]] = []
+    positioning = _positioning_fact(fact_md)
+    anchor_brand = positioning.brand if positioning is not None else ""
     ranking = mandatory.get("브랜드 핵심 지표", "")
     if not ranking:
-        positioning = _positioning_fact(fact_md)
         if positioning is not None:
             parts = [positioning.brand]
             if positioning.period:
@@ -1663,18 +1664,35 @@ def _positioning_rows(fact_md: str) -> tuple[tuple[str, str, str], ...]:
             ranking = " ".join(parts)
     if ranking:
         rows.append(("시장 순위/MS", ranking, "보유 rank/MS fact 범위에서만 자사 위치를 표시합니다."))
-    growth = _first_payload_containing(items, ("share-of-growth", "성장분해", "점유"))
+    growth = _first_payload_containing(
+        items,
+        ("share-of-growth", "성장분해", "점유"),
+        exact_brand=anchor_brand,
+    )
     if growth:
         rows.append(("성장성", growth, "share-of-growth 또는 점유 변화 fact 기준의 성장성 신호입니다."))
     pressure = _first_payload_containing(items, ("cohort z-score", "백분위", "top gainer", "top faller", "시장 변화"))
     if pressure:
-        rows.append(("경쟁 압력", pressure, "경쟁 cohort·상승/하락 브랜드 fact 기준의 압력 신호입니다."))
+        rows.append(
+            (
+                "경쟁 압력",
+                pressure,
+                "경쟁 브랜드 fact이며 자사 성장성으로 대체하지 않습니다.",
+            )
+        )
     return tuple(rows)
 
 
-def _first_payload_containing(items: tuple[tuple[str, str], ...], tokens: tuple[str, ...]) -> str:
+def _first_payload_containing(
+    items: tuple[tuple[str, str], ...],
+    tokens: tuple[str, ...],
+    *,
+    exact_brand: str = "",
+) -> str:
     for label, payload in items:
         if label != "인사이트 계산":
+            continue
+        if exact_brand and payload.partition(" ")[0] != exact_brand:
             continue
         if any(token in payload for token in tokens):
             return payload

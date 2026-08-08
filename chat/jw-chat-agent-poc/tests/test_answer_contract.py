@@ -1241,8 +1241,9 @@ def test_positioning_contract_adds_axis_table_and_dedupes_substantive_lines() ->
     assert revised.count("인사이트: 리바로젯 share-of-growth +0.53%p, cohort z-score 1.24입니다.") == 1
     assert "## 포지셔닝 축" in revised
     assert "| 시장 순위/MS |" in revised
-    assert "| 성장성 |" in revised
+    assert "| 성장성 | 리바로젯" not in revised
     assert "| 경쟁 압력 |" in revised
+    assert "자사 성장성으로 대체하지 않습니다" in revised
     assert "자사 위치:" in revised
     assert "84.93억원" in revised
     assert "3.76%" in revised
@@ -1274,6 +1275,19 @@ def test_positioning_contract_requires_competitors_own_position_and_superior_gap
     assert "격차 0.44%p" in revised
     assert status["structural_contract"] == "positioning"
     assert status["status"] == "pass"
+
+
+def test_positioning_growth_does_not_substitute_a_brand_family_signal() -> None:
+    revised = enforce_answer_contract(
+        "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
+        "상위 브랜드는 로수젯, 리피토, 리바로젯, 아토젯, 로수바미브입니다.",
+        {"fact_md": POSITIONING_COMPLETE_FACT_MD},
+    )
+
+    positioning = revised.split("## 포지셔닝 축", 1)[1]
+    assert "| 성장성 | 리바로젯" not in positioning
+    assert "| 경쟁 압력 | 리바로젯" in positioning
+    assert "자사 성장성으로 대체하지 않습니다" in positioning
 
 
 def test_positioning_contract_uses_key_value_rank_when_required_fact_block_is_absent() -> None:
