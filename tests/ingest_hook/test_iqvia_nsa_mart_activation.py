@@ -101,6 +101,56 @@ def test_build_mart_uses_the_production_catalog_root_by_default(
     assert observed["catalog_root"] == catalog_root
 
 
+def test_build_mart_restores_mart_database_after_s4_mutates_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    monkeypatch.setenv("MARIADB_DATABASE", config.target_db)
+
+    def mutate_process_env(**_kwargs: object) -> None:
+        monkeypatch.setenv("MARIADB_DATABASE", config.build_db)
+
+    monkeypatch.setattr(activation, "run_s4_general", mutate_process_env)
+
+    activation.build_mart(config, catalog_root="/market-output/catalog")
+
+    assert activation.os.environ["MARIADB_DATABASE"] == config.target_db
+
+
+def test_build_mart_removes_s4_environment_that_was_previously_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    monkeypatch.delenv("MARIADB_SOURCE_DATABASE", raising=False)
+
+    def mutate_process_env(**_kwargs: object) -> None:
+        monkeypatch.setenv("MARIADB_SOURCE_DATABASE", config.build_db)
+
+    monkeypatch.setattr(activation, "run_s4_general", mutate_process_env)
+
+    activation.build_mart(config, catalog_root="/market-output/catalog")
+
+    assert "MARIADB_SOURCE_DATABASE" not in activation.os.environ
+
+
+def test_build_mart_restores_environment_when_s4_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    monkeypatch.setenv("MARIADB_DATABASE", config.target_db)
+
+    def fail_after_mutation(**_kwargs: object) -> None:
+        monkeypatch.setenv("MARIADB_DATABASE", config.build_db)
+        raise RuntimeError("s4 failed")
+
+    monkeypatch.setattr(activation, "run_s4_general", fail_after_mutation)
+
+    with pytest.raises(RuntimeError, match="s4 failed"):
+        activation.build_mart(config, catalog_root="/market-output/catalog")
+
+    assert activation.os.environ["MARIADB_DATABASE"] == config.target_db
+
+
 def test_nonempty_serving_schema_is_replaced_as_atomic_group(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config()
     observed: dict[str, object] = {}

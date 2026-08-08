@@ -151,15 +151,32 @@ def build_mart(config: NsaMartActivation, *, catalog_root: str | None = None) ->
         if catalog_root is None
         else Path(catalog_root)
     )
-    run_s4_general(
-        build_db=config.build_db,
-        source_db=config.source_db,
-        input_db=config.build_db,
-        catalog_root=resolved_catalog_root,
-        ubist_dir=None,
-        input_mode="raw",
-        sources=("iqvia_nsa",),
+    mutated_env_keys = (
+        "MARIADB_DATABASE",
+        "MARIADB_SOURCE_DATABASE",
+        "MARIADB_USER",
+        "MARIADB_PASSWORD",
+        "MARIADB_HOST",
+        "HOST_PORT",
+        "MARIADB_PORT",
     )
+    previous_env = {key: os.environ.get(key) for key in mutated_env_keys}
+    try:
+        run_s4_general(
+            build_db=config.build_db,
+            source_db=config.source_db,
+            input_db=config.build_db,
+            catalog_root=resolved_catalog_root,
+            ubist_dir=None,
+            input_mode="raw",
+            sources=("iqvia_nsa",),
+        )
+    finally:
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def publish(
