@@ -617,6 +617,21 @@ def test_remaining_intents_fail_closed_when_structured_evidence_is_missing(quest
     assert "현재 근거로 확인하지 못했습니다" in controlled.answer
 
 
+def test_multi_source_snapshot_fail_closed_without_runtime_plan_marker() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 질병 환자수랑 최근 매출 한번에",
+        {"tool_calls": []},
+        "질문과 무관한 기존 답변",
+    )
+
+    assert controlled.applied is True
+    assert controlled.degraded is True
+    assert controlled.intent == "MULTI_SOURCE_SNAPSHOT"
+    assert controlled.required_slot_coverage == "0/3"
+    assert controlled.selected_branch == "answer_projection"
+    assert "질문과 무관한 기존 답변" not in controlled.answer
+
+
 def test_unclassified_general_question_preserves_existing_passthrough() -> None:
     controlled = apply_answer_control_layer(
         "복약 방법을 알려줘",

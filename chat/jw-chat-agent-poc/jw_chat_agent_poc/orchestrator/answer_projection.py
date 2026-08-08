@@ -227,7 +227,10 @@ def apply_answer_control_layer(
         )
         target_requires_control = (
             spec.intent.value in target_intents
-            and attempted_contract == f"BQ:{contract_id}"
+            and (
+                attempted_contract == f"BQ:{contract_id}"
+                or spec.intent.value == "MULTI_SOURCE_SNAPSHOT"
+            )
         )
         if result.get("answer_control_required") is True or target_requires_control:
             return _controlled_result(spec, ())
