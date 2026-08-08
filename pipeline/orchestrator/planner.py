@@ -5,7 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from pipeline.orchestrator.stages import STAGE_BY_KEY, STAGE_ORDER, Command, StageSpec
+from pipeline.orchestrator.stages import (
+    PROFILE_STAGES,
+    STAGE_BY_KEY,
+    STAGE_ORDER,
+    Command,
+    StageSpec,
+)
 from pipeline.orchestrator.state import StateStore
 
 MODES = ("full", "incremental")
@@ -89,10 +95,19 @@ def build_plan(
     brands: tuple[str, ...] = (),
     force: bool = False,
     dry_run: bool = False,
+    profile: str = "all",
 ) -> Plan:
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; valid: {list(MODES)}")
-    selected = resolve_selection(stages_csv, from_stage)
+    if profile not in PROFILE_STAGES:
+        raise ValueError(f"unknown profile {profile!r}; valid: {sorted(PROFILE_STAGES)}")
+    if profile != "all" and (stages_csv or from_stage):
+        raise ValueError("--profile cannot be combined with --stages or --from-stage")
+    selected = (
+        PROFILE_STAGES[profile]
+        if profile != "all"
+        else resolve_selection(stages_csv, from_stage)
+    )
 
     epoch: str | None
     try:

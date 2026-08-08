@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Build general-view deep-analysis forecast cache from mart_general_brand_metric."""
+"""Build general-view deep-analysis forecast cache from mart_general_brand_metric.
+
+★cache_deep_analysis_general is slated for removal, alongside cache_cause and
+cache_deep_analysis. Treat this builder as a stopgap, not a foundation: do not add new
+readers of the table, and retire this script once the general deep-analysis read path
+stops depending on it.
+
+Until then it must run after every numeric publish. Publishing advances
+mart_general_brand_metric.computed_at, and routes/deep_analysis.py rejects any cache row
+whose source_computed_at is older than the mart; the rejected read falls back to a
+single-brand mart payload with no competitors and no simulation. That fallback is
+structurally valid, so a missed rebuild here surfaces as wrong data rather than an error.
+The orchestrator wires this in via PROFILE_STAGES["numeric"] (pipeline/orchestrator/stages.py).
+"""
 
 from __future__ import annotations
 

@@ -167,3 +167,60 @@ def test_selection_validation():
         resolve_selection("nope", None)
     assert resolve_selection(None, "events") == ("events", "elements")
     assert resolve_selection("elements,cache", None) == ("cache", "elements")
+def test_profiles_share_only_the_cache_stage_and_cover_the_full_chain(tmp_path):
+    """The two lanes overlap on exactly one stage, deliberately.
+
+    cache_deep_analysis_general has two independent invalidation triggers: a new
+    published mart epoch (numeric lane) and an agent-lane rebuild. Keeping the lanes
+    fully disjoint is what left the general cache with no publish-time refresh, so
+    "cache" is a member of both profiles. The overlap must stay at exactly that one
+    stage -- no other agent-lane work belongs in a publish.
+    """
+    numeric = build_plan(
+        mode="incremental",
+        run_id="numeric",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        profile="numeric",
+        force=True,
+    )
+    agent = build_plan(
+        mode="incremental",
+        run_id="agent",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        profile="agent",
+        force=True,
+    )
+
+    numeric_keys = {stage.key for stage in numeric.runnable}
+    agent_keys = {stage.key for stage in agent.runnable}
+    assert numeric_keys == {"market_status", "cache"}
+    assert agent_keys == {"cache", "forecast", "strength", "shortlong", "events", "elements"}
+    assert numeric_keys & agent_keys == {"cache"}
+    assert numeric_keys | agent_keys == set(STAGE_ORDER)
+
+
+def test_forced_numeric_publish_rebuilds_general_cache_full_scope(tmp_path):
+    """The publish refresh must rebuild every cached brand, not just new ones.
+
+    ingest_hook.category_map sends `--mode incremental --profile numeric --force` for
+    ubist/iqvia. A publish invalidates cached rows for brands that already exist, so a
+    new-brand-only top-up would repair nothing. Assert the planned command carries no
+    --brand scoping, i.e. a full rebuild.
+    """
+    plan = build_plan(
+        mode="incremental",
+        run_id="publish-refresh",
+        probe=FakeProbe(),  # no new brand_keys, as on a routine re-publish
+        state=_state(tmp_path),
+        profile="numeric",
+        force=True,
+    )
+
+    cache_stage = {stage.key: stage for stage in plan.stages}["cache"]
+    assert cache_stage.action == "run"
+    assert cache_stage.scope_brands == ()
+    argv = " ".join(" ".join(command.argv) for command in cache_stage.commands)
+    assert "build_cache_deep_analysis_general" in argv
+    assert "--brand" not in argv

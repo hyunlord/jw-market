@@ -51,6 +51,7 @@ def test_stages_subcommand_prints_incremental_table(capsys):
     assert [row["stage"] for row in table["stages"]] == list(STAGE_ORDER)
     kinds = {row["stage"]: row["incremental"] for row in table["stages"]}
     assert kinds == {
+        "market_status": "market_epoch",
         "cache": "new_brands",
         "forecast": "market_epoch",
         "strength": "native_hash",
@@ -76,6 +77,66 @@ def test_run_dry_run_via_cli_writes_nothing(tmp_path, monkeypatch, capsys):
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert lines[0]["event"] == "plan"
     assert lines[-1]["event"] == "dry_run_end"
+
+
+def test_numeric_profile_rebuilds_market_status_and_general_cache(tmp_path, monkeypatch, capsys):
+    """A numeric publish must refresh both caches the general read path depends on.
+
+    market_status alone is not enough: publishing advances
+    mart_general_brand_metric.computed_at, which makes every cache_deep_analysis_general
+    row fail the deep-analysis freshness gate and silently degrades the general
+    심층분석 to the selected brand with no competitors and no simulation.
+    """
+    monkeypatch.setattr("pipeline.orchestrator.probe.MartProbe", lambda: FakeProbe())
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--mode",
+            "incremental",
+            "--profile",
+            "numeric",
+            "--dry-run",
+            "--force-plan",
+            "--state-file",
+            str(tmp_path / "s.json"),
+            "--run-id",
+            "numeric-profile",
+        ]
+    )
+
+    assert exit_code == 0
+    plan = json.loads(capsys.readouterr().out.splitlines()[0])
+    selected = [row["stage"] for row in plan["stages"] if row["action"] == "run"]
+    assert selected == ["market_status", "cache"]
+    # No agent-lane stage leaks into the numeric publish path.
+    assert "forecast" not in selected
+    assert "strength" not in selected
+
+
+def test_agent_profile_excludes_numeric_market_status(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("pipeline.orchestrator.probe.MartProbe", lambda: FakeProbe())
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--mode",
+            "incremental",
+            "--profile",
+            "agent",
+            "--dry-run",
+            "--force-plan",
+            "--state-file",
+            str(tmp_path / "s.json"),
+            "--run-id",
+            "agent-profile",
+        ]
+    )
+
+    assert exit_code == 0
+    plan = json.loads(capsys.readouterr().out.splitlines()[0])
+    selected = [row["stage"] for row in plan["stages"] if row["action"] == "run"]
+    assert selected == ["cache", "forecast", "strength", "shortlong", "events", "elements"]
 
 
 def test_run_rejects_conflicting_selection(tmp_path, monkeypatch, capsys):
