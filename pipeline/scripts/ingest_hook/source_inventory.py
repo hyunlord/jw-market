@@ -740,6 +740,7 @@ def run_full_scan(
     summarize: Callable[[str, Path, str], WorkbookSummary] = summarize_inventory,
     permissive: bool = False,
     bootstrap_files: tuple[Path, ...] | None = None,
+    rebuild_all_current: bool = False,
 ) -> ScanOutcome:
     """Scan, gate, rebuild, then publish one immutable successful inventory.
 
@@ -775,7 +776,11 @@ def run_full_scan(
             permissive=permissive,
         )
         materialized = dict(archive_candidates)
-        if previous is None and bootstrap_files is not None:
+        if rebuild_all_current:
+            selected_files = tuple(
+                item for item in current.files if item.state == "classified"
+            )
+        elif previous is None and bootstrap_files is not None:
             bootstrap_resolved = {path.resolve() for path in bootstrap_files}
             selected_files = tuple(
                 item

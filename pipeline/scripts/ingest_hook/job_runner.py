@@ -593,6 +593,9 @@ def _load_with_source_inventory(
         bootstrap_files=tuple(
             (input_root / entry.path).resolve() for entry in manifest.files
         ),
+        # Run-scoped databases start empty. Reuse classification metadata, but
+        # feed every current source file to the loader that populates the new DB.
+        rebuild_all_current=target_db_override is not None,
         permissive=config.e2e_commissioning(),
         rebuild=lambda source_files: _real_load(
             manifest,

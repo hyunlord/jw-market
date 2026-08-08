@@ -288,6 +288,39 @@ def test_full_scan_load_publishes_snapshot_only_after_loader_succeeds(
     assert calls == ["scan", "load:operating.xlsx", "snapshot"]
 
 
+def test_full_scan_load_rebuilds_all_current_files_for_fresh_target_database(
+    staging_env,
+    bucket,
+    monkeypatch,
+    tmp_path,
+):
+    manifest = _manifest(bucket, category="iqvia_csd_channel", epoch="2025-10")
+    observed: dict[str, object] = {}
+
+    class Policy:
+        root = tmp_path
+
+    def fake_run_full_scan(_policy, **kwargs):
+        observed.update(kwargs)
+        return type("Outcome", (), {"rebuild_result": {"epoch_rows": 1}})()
+
+    monkeypatch.setattr(job_runner, "load_scan_policy", lambda category, required: Policy())
+    monkeypatch.setattr(job_runner, "latest_successful_snapshot", lambda root, category: object())
+    monkeypatch.setattr(job_runner, "run_full_scan", fake_run_full_scan)
+
+    job_runner._load_with_source_inventory(
+        manifest,
+        resolve_category("iqvia_csd_channel"),
+        bucket,
+        run_id="fresh-db-run",
+        target_dir_override=None,
+        target_db_override="jw_ingest_csd_channel_fresh_db_run",
+        required=True,
+    )
+
+    assert observed["rebuild_all_current"] is True
+
+
 def test_automatic_publish_contract_carries_pg4_pg5_and_warnings(tmp_path):
     snapshot = ScanSnapshot(
         schema_version="1",

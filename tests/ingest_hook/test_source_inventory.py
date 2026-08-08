@@ -144,6 +144,45 @@ def test_full_scan_unchanged_sha_never_reaches_rebuild_parser(tmp_path: Path) ->
     assert rebuilt == [()]
 
 
+def test_full_scan_rebuilds_unchanged_files_for_fresh_run_database(tmp_path: Path) -> None:
+    source = _write(tmp_path, "source.xlsx", b"already-classified")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_channel",
+        "2025-10",
+        "a" * 64,
+        "previous-run",
+        "2026-08-07T00:00:00+00:00",
+        (
+            FileObservation(
+                "source.xlsx",
+                _file_sha256(source),
+                source.stat().st_size,
+                "classified",
+                category="iqvia_csd_channel",
+                rows=17_014,
+                periods=("2025-10",),
+            ),
+        ),
+    )
+    rebuilt: list[tuple[Path, ...]] = []
+
+    run_full_scan(
+        SourceScanPolicy("iqvia_csd_channel", tmp_path, "month"),
+        epoch="2025-10",
+        manifest_sha="b" * 64,
+        run_id="fresh-db-run",
+        output_root=tmp_path / "inventory",
+        previous=previous,
+        classify=lambda _path: pytest.fail("unchanged SHA must not be classified"),
+        summarize=lambda *_args: pytest.fail("unchanged SHA must not be parsed"),
+        rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
+        rebuild_all_current=True,
+    )
+
+    assert rebuilt == [(source.resolve(),)]
+
+
 def test_full_scan_filters_outside_rebuild_window_before_loader(tmp_path: Path) -> None:
     old = _write(tmp_path, "old.xlsx", b"old")
     current = _write(tmp_path, "current.xlsx", b"current")
