@@ -7,7 +7,7 @@ import json
 import time
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import Lock
@@ -32,6 +32,7 @@ DEFAULT_CACHE_TTL_SECONDS: Final = 60
 DASHBOARD_DB_READ_TIMEOUT_SECONDS: Final = 15
 DEFAULT_DASHBOARD_QUERY_WORKERS: Final = 4
 MAX_DASHBOARD_QUERY_WORKERS: Final = 8
+KST: Final = timezone(timedelta(hours=9), name="KST")
 
 _PERIOD_SQL: Final = {
     "day": "DATE_FORMAT({column}, '%%Y-%%m-%%d')",
@@ -92,13 +93,15 @@ DASHBOARD_SQL: Final[dict[str, str]] = {
         GROUP BY http_status ORDER BY calls DESC, http_status
     """,
     "api_weekday_hour": """
-        SELECT WEEKDAY(called_at) AS weekday, HOUR(called_at) AS hour,
+        SELECT WEEKDAY(CONVERT_TZ(called_at, '+00:00', '+09:00')) AS weekday,
+               HOUR(CONVERT_TZ(called_at, '+00:00', '+09:00')) AS hour,
                COUNT(*) AS calls,
                SUM(http_status NOT BETWEEN 200 AND 299) AS failed_calls
         FROM dashboard_api_usage_v
         WHERE called_at >= %s AND called_at < %s
         {api_filter}
-        GROUP BY WEEKDAY(called_at), HOUR(called_at)
+        GROUP BY WEEKDAY(CONVERT_TZ(called_at, '+00:00', '+09:00')),
+                 HOUR(CONVERT_TZ(called_at, '+00:00', '+09:00'))
         ORDER BY weekday, hour
     """,
     **CHAT_USAGE_SQL,
@@ -841,7 +844,7 @@ class MariaDBUsageRepository:
             items.append(
                 {
                     "user_id": row.get("user_id"),
-                    "called_at": row["called_at"],
+                    "called_at": _utc_aware(row["called_at"]),
                     "method": method,
                     "path": path,
                     "endpoint_label": endpoint_feature_label(method, path),
@@ -968,15 +971,14 @@ class MariaDBUsageRepository:
         )
 
     def _build_queries(self, filters: UsageFilters) -> tuple[DashboardQuery, ...]:
-        start = filters.date_from.isoformat()
-        end_exclusive = (filters.date_to + timedelta(days=1)).isoformat()
         period = _PERIOD_SQL[filters.grain]
         user_filter, user_params = _user_filter(filters)
         api_filter, api_params = _api_filter(filters)
         queries: list[DashboardQuery] = []
         for ordinal, (name, template) in enumerate(DASHBOARD_SQL.items()):
+            start, end_exclusive = _storage_bounds(name, filters.date_from, filters.date_to)
             sql = template.format(
-                period=period.format(column=_time_column(name)),
+                period=period.format(column=_calendar_time_column(name)),
                 user_filter=user_filter,
                 api_filter=api_filter,
             )
@@ -1009,12 +1011,11 @@ class MariaDBUsageRepository:
         *,
         ordinal_offset: int = 0,
     ) -> tuple[DashboardQuery, ...]:
-        start = window[0].isoformat()
-        end_exclusive = (window[1] + timedelta(days=1)).isoformat()
         user_filter, user_params = _user_filter(filters)
         api_filter, api_params = _api_filter(filters)
         queries: list[DashboardQuery] = []
         for ordinal, (name, template) in enumerate(COMPARISON_SQL.items()):
+            start, end_exclusive = _storage_bounds(name, window[0], window[1])
             sql = template.format(user_filter=user_filter, api_filter=api_filter)
             params = (
                 (start, end_exclusive, *api_params)
@@ -1329,11 +1330,52 @@ def _time_column(query_name: str) -> str:
     return "completed_at"
 
 
+def _uses_utc_naive_storage(query_name: str) -> bool:
+    return query_name.startswith("api") or query_name.startswith("report") or query_name in {
+        "successful_downloads",
+    }
+
+
+def _calendar_time_column(query_name: str) -> str:
+    column = _time_column(query_name)
+    if _uses_utc_naive_storage(query_name):
+        return f"CONVERT_TZ({column}, '+00:00', '+09:00')"
+    return column
+
+
+def _kst_calendar_bounds_as_utc_naive(
+    date_from: date,
+    date_to: date,
+) -> tuple[datetime, datetime]:
+    start = datetime.combine(date_from, datetime.min.time(), tzinfo=KST)
+    end = datetime.combine(date_to + timedelta(days=1), datetime.min.time(), tzinfo=KST)
+    return (
+        start.astimezone(UTC).replace(tzinfo=None),
+        end.astimezone(UTC).replace(tzinfo=None),
+    )
+
+
+def _storage_bounds(
+    query_name: str,
+    date_from: date,
+    date_to: date,
+) -> tuple[str | datetime, str | datetime]:
+    if _uses_utc_naive_storage(query_name):
+        return _kst_calendar_bounds_as_utc_naive(date_from, date_to)
+    return date_from.isoformat(), (date_to + timedelta(days=1)).isoformat()
+
+
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         key: float(value) if isinstance(value, Decimal) else value
         for key, value in row.items()
     }
+
+
+def _utc_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def endpoint_feature_label(method: str, path: str) -> str:
@@ -1349,10 +1391,9 @@ def split_usage_endpoint(endpoint: str) -> tuple[str, str]:
 
 def _usage_log_query_parts(filters: UsageLogFilters) -> tuple[list[str], tuple[Any, ...]]:
     clauses: list[str] = []
-    params: list[Any] = [
-        filters.date_from.isoformat(),
-        (filters.date_to + timedelta(days=1)).isoformat(),
-    ]
+    params: list[Any] = list(
+        _kst_calendar_bounds_as_utc_naive(filters.date_from, filters.date_to)
+    )
     if filters.user_id is not None:
         clauses.append("u.id=%s")
         params.append(filters.user_id)

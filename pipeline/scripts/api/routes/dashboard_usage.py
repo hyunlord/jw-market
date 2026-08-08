@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -33,7 +33,7 @@ ACTOR_SEGMENTATION_TRUSTED_FROM = "2026-08-03"
 
 
 def _today() -> date:
-    return datetime.now(UTC).date()
+    return datetime.now(UTC).astimezone(timezone(timedelta(hours=9))).date()
 
 
 def _validate_range(date_from: date, date_to: date) -> None:

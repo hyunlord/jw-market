@@ -20,9 +20,12 @@ from pipeline.scripts.api.dashboard_usage import (
     DashboardQueryError,
     MariaDBUsageRepository,
     UsageFilters,
+    UsageLogFilters,
     UsageStatsService,
     build_usage_comparison,
     comparison_window,
+    _usage_log_query_parts,
+    _utc_aware,
 )
 from pipeline.scripts.api.chat_usage_materialization import (
     ChatMaterializationState,
@@ -798,6 +801,78 @@ def test_period_sql_survives_pymysql_parameter_interpolation() -> None:
     rendered = cursor.mogrify(sql, ("2026-07-01", "2026-08-01"))
 
     assert "DATE_FORMAT(called_at, '%Y-%m-%d')" in rendered
+
+
+def test_dashboard_uses_kst_calendar_for_utc_naive_audit_sources() -> None:
+    repository = MariaDBUsageRepository(_dashboard_config())
+    queries = {
+        query.name: query
+        for query in repository._build_queries(
+            UsageFilters(date(2026, 8, 3), date(2026, 8, 3), "day")
+        )
+    }
+
+    assert queries["api_trend"].params[:2] == (
+        datetime(2026, 8, 2, 15),
+        datetime(2026, 8, 3, 15),
+    )
+    assert "CONVERT_TZ(called_at, '+00:00', '+09:00')" in queries["api_trend"].sql
+    assert "WEEKDAY(CONVERT_TZ(called_at, '+00:00', '+09:00'))" in queries[
+        "api_weekday_hour"
+    ].sql
+
+    assert queries["report_trend"].params[:2] == (
+        datetime(2026, 8, 2, 15),
+        datetime(2026, 8, 3, 15),
+    )
+    assert "CONVERT_TZ(completed_at, '+00:00', '+09:00')" in queries[
+        "report_trend"
+    ].sql
+
+    comparisons = {
+        query.name: query
+        for query in repository._build_comparison_queries(
+            UsageFilters(date(2026, 8, 3), date(2026, 8, 3), "day"),
+            (date(2026, 8, 2), date(2026, 8, 2)),
+        )
+    }
+    expected_bounds = (datetime(2026, 8, 1, 15), datetime(2026, 8, 2, 15))
+    assert comparisons["comparison_api"].params[:2] == expected_bounds
+    assert comparisons["comparison_successful_downloads"].params[:2] == expected_bounds
+
+
+def test_dashboard_preserves_existing_kst_and_date_storage_contracts() -> None:
+    repository = MariaDBUsageRepository(_dashboard_config())
+    queries = {
+        query.name: query
+        for query in repository._build_queries(
+            UsageFilters(date(2026, 8, 3), date(2026, 8, 3), "day")
+        )
+    }
+
+    assert queries["auth_trend"].params[:2] == ("2026-08-03", "2026-08-04")
+    assert "CONVERT_TZ" not in queries["auth_trend"].sql
+    assert queries["credit_trend"].params[:2] == ("2026-08-03", "2026-08-04")
+    assert "CONVERT_TZ" not in queries["credit_trend"].sql
+    assert queries["chat_trend"].params[:2] == ("2026-08-03", "2026-08-04")
+    assert "CONVERT_TZ" not in queries["chat_trend"].sql
+
+
+def test_usage_log_kst_day_maps_to_utc_boundary_pair() -> None:
+    filters = UsageLogFilters(
+        date_from=date(2026, 8, 3),
+        date_to=date(2026, 8, 3),
+    )
+
+    _clauses, params = _usage_log_query_parts(filters)
+
+    assert params[:2] == (datetime(2026, 8, 2, 15), datetime(2026, 8, 3, 15))
+
+
+def test_utc_naive_audit_timestamp_is_serialized_with_utc_offset() -> None:
+    assert _utc_aware(datetime(2026, 8, 2, 16, 40, 4)).isoformat() == (
+        "2026-08-02T16:40:04+00:00"
+    )
 
 
 def test_all_dashboard_queries_bind_for_unfiltered_and_filtered_requests() -> None:
