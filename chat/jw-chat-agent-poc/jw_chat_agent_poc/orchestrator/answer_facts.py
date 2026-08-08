@@ -265,6 +265,42 @@ def _bq_analysis_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
                 AxisFact(RequiredAxis.MARKET_STRUCTURE, "채널 구성", f"채널 구성 {rendered}")
             )
         return tuple(facts)
+    if contract_id == "A3":
+        rows = _a3_source_results(data)
+        if not rows:
+            return ()
+        patient_period = str(rows[0].get("patient_period") or "")
+        patient_count = rows[0].get("patient_count")
+        facts = [
+            AxisFact(
+                RequiredAxis.PATIENT_VOLUME,
+                "HIRA 환자수",
+                f"HIRA {patient_period} 환자수 {number_value(patient_count)}명",
+            )
+        ]
+        for row in rows:
+            source = str(row.get("source") or "")
+            facts.append(
+                AxisFact(
+                    RequiredAxis.SALES_TREND,
+                    f"{source} 매출·환자당 관측비",
+                    f"{source} {row.get('period') or ''} 매출 "
+                    f"{eok_value(None, row.get('sales_krw'))}, 환자 1명당 관측비 "
+                    f"{number_value(row.get('sales_per_patient_krw'))}원",
+                )
+            )
+        market_periods = ", ".join(
+            f"{row.get('source')} {row.get('period')}" for row in rows
+        )
+        facts.append(
+            AxisFact(
+                RequiredAxis.MARKET_STRUCTURE,
+                "기간·정의 정렬",
+                f"HIRA {patient_period}와 {market_periods}는 기간·정의가 다른 값이므로 "
+                "출처별로 나란히 비교하며 합산하지 않습니다.",
+            )
+        )
+        return tuple(facts)
     if contract_id == "B1":
         facts = []
         rows = data.get("source_results")
@@ -1327,11 +1363,42 @@ def _news_facts(data: dict[str, Any]) -> str:
 
 
 def _bq_analysis_facts(data: dict[str, Any]) -> str:
-    blocks = [_generic_facts("bq_analysis", data)]
+    blocks = [
+        _a3_analysis_facts(data)
+        if data.get("contract_id") == "A3"
+        else _generic_facts("bq_analysis", data)
+    ]
     news_refs = data.get("news_refs")
     if isinstance(news_refs, list) and news_refs:
         blocks.append(_news_facts({"items": news_refs}))
     return "\n\n".join(block for block in blocks if block)
+
+
+def _a3_source_results(data: RenderData) -> list[RenderData]:
+    rows = data.get("source_results")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return [data] if data.get("patient_count") is not None else []
+
+
+def _a3_analysis_facts(data: RenderData) -> str:
+    rows = tuple(
+        (
+            row.get("source"),
+            row.get("patient_period"),
+            number_value(row.get("patient_count")),
+            row.get("period"),
+            eok_value(None, row.get("sales_krw")),
+            f"{number_value(row.get('sales_per_patient_krw'))}원/명",
+            "기간·정의가 다른 값을 합산하지 않음",
+        )
+        for row in _a3_source_results(data)
+    )
+    return table(
+        "### 환자수·매출 병렬 비교 fact",
+        ("매출 출처", "환자수 기간", "HIRA 환자수", "매출 기간", "브랜드 매출", "환자당 관측비", "해석 계약"),
+        rows,
+    )
 
 
 def _portfolio_decline_facts(data: dict[str, Any]) -> str:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from jw_chat_agent_poc.orchestrator.answer_facts import answer_fact_markdown
 from jw_chat_agent_poc.orchestrator.bq_enrichment import build_bq_analysis_call
+from jw_chat_agent_poc.orchestrator.markdown_renderers import call_data_md
 
 
 def test_c3_compares_source_values_without_aggregating_them() -> None:
@@ -168,6 +170,58 @@ def test_a3_computes_patient_ratio_per_market_source() -> None:
         "UBIST.render_data.brand_value_series_10pt",
         "IQVIA NSA.render_data.brand_value_series_10pt",
     }
+
+
+def test_a3_uses_sales_calls_once_when_share_calls_are_also_present() -> None:
+    ubist_sales = _market_call("ubist", "2026-05", [80.0])
+    iqvia_sales = _market_call("iqvia_nsa", "2026-05", [90.0])
+    ubist_share = _market_call("ubist", "2026-05", [80.0])
+    iqvia_share = _market_call("iqvia_nsa", "2026-05", [90.0])
+    for call in (ubist_sales, iqvia_sales):
+        call["render_data"]["query_spec"]["metrics"] = ["sales"]
+    for call in (ubist_share, iqvia_share):
+        call["render_data"]["metric"] = "market_share"
+        call["render_data"]["query_spec"]["metrics"] = ["market_share"]
+
+    call = build_bq_analysis_call(
+        "A3",
+        [_hira_call(), ubist_sales, iqvia_sales, ubist_share, iqvia_share],
+    )
+
+    assert call is not None
+    assert [row["source"] for row in call["render_data"]["source_results"]] == [
+        "UBIST",
+        "IQVIA NSA",
+    ]
+    assert len(call["render_data"]["insights"]) == 2
+
+
+def test_a3_fact_markdown_preserves_all_four_answer_elements() -> None:
+    call = build_bq_analysis_call(
+        "A3",
+        [
+            _hira_call(),
+            _market_call("ubist", "2026-05", [80.0]),
+            _market_call("iqvia_nsa", "2026-05", [90.0]),
+        ],
+    )
+
+    assert call is not None
+    fact_md = answer_fact_markdown([call], [])
+    assert "HIRA 환자수" in fact_md
+    assert "UBIST 매출·환자당 관측비" in fact_md
+    assert "IQVIA NSA 매출·환자당 관측비" in fact_md
+    assert "기간·정의 정렬" in fact_md
+    assert "합산하지" in fact_md
+    assert "### 환자수·매출 병렬 비교 fact" in fact_md
+    assert "데이터 없음" not in fact_md
+
+    data_md = call_data_md(call)
+    assert "### 환자수·매출 병렬 비교" in data_md
+    assert "UBIST" in data_md
+    assert "IQVIA NSA" in data_md
+    assert "합산하지 않음" in data_md
+    assert "데이터 없음" not in data_md
 
 
 def test_d3_reports_missing_seller_axis_instead_of_substituting_brand_activity() -> None:

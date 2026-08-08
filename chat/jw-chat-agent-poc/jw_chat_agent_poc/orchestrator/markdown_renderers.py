@@ -32,6 +32,8 @@ def call_data_md(call: dict[str, Any]) -> str:
         return portfolio_decline_md(render_data)
     if tool == "csd_activity_trend":
         return csd_activity_md(render_data)
+    if tool == "bq_analysis" and render_data.get("contract_id") == "A3":
+        return patient_sales_analysis_md(render_data)
     if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
         return metrics_md(tool, render_data)
     if tool == "get_market_members":
@@ -53,6 +55,29 @@ def call_data_md(call: dict[str, Any]) -> str:
     if tool == "document_rag":
         return document_md(render_data)
     return generic_external_md(tool, render_data)
+
+
+def patient_sales_analysis_md(data: dict[str, Any]) -> str:
+    source_results = data.get("source_results")
+    rows = source_results if isinstance(source_results, list) else [data]
+    rendered_rows = tuple(
+        (
+            row.get("source"),
+            row.get("patient_period"),
+            number_value(row.get("patient_count")),
+            row.get("period"),
+            eok_value(None, row.get("sales_krw")),
+            f"{number_value(row.get('sales_per_patient_krw'))}원/명",
+            "기간·정의가 다른 값을 합산하지 않음",
+        )
+        for row in rows
+        if isinstance(row, dict)
+    )
+    return table(
+        "### 환자수·매출 병렬 비교",
+        ("매출 출처", "환자수 기간", "HIRA 환자수", "매출 기간", "브랜드 매출", "환자당 관측비", "해석 계약"),
+        rendered_rows,
+    )
 
 
 def market_members_md(data: dict[str, Any]) -> str:

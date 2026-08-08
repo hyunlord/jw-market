@@ -162,7 +162,7 @@ def _patient_ratio_call(calls: list[Call]) -> Call | None:
     patient = _patient_count(calls)
     results = [
         result
-        for market in _market_calls(calls)
+        for market in _sales_market_calls(calls)
         if patient is not None and (result := _patient_source_result(patient, market))
     ]
     if not results:
@@ -328,6 +328,21 @@ def _market_source(call: Call) -> str:
 
 def _market_calls(calls: list[Call]) -> list[Call]:
     return [call for call in calls if _market_source(call) in {"ubist", "iqvia_nsa"}]
+
+
+def _sales_market_calls(calls: list[Call]) -> list[Call]:
+    return [call for call in _market_calls(calls) if _is_sales_market_call(call)]
+
+
+def _is_sales_market_call(call: Call) -> bool:
+    data = call.get("render_data")
+    if not isinstance(data, dict):
+        return False
+    spec = data.get("query_spec")
+    metrics = spec.get("metrics") if isinstance(spec, dict) else None
+    if isinstance(metrics, list) and metrics:
+        return any(str(metric).lower() in {"sales", "brand_sales"} for metric in metrics)
+    return str(data.get("metric") or "").lower() not in {"market_share", "share", "ms"}
 
 
 def _source_label(call: Call) -> str:
