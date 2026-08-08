@@ -79,6 +79,28 @@ def test_empty_build_schema_is_initialized_for_full_load(monkeypatch: pytest.Mon
     assert observed == [("jw_ingest_nsa_build_run1", "jw_mart_d2")]
 
 
+def test_build_mart_uses_the_production_catalog_root_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    observed: dict[str, object] = {}
+    catalog_root = tmp_path / "catalog"
+    monkeypatch.setattr(
+        activation,
+        "production_catalog_root_from_env",
+        lambda: catalog_root,
+    )
+    monkeypatch.setattr(
+        activation,
+        "run_s4_general",
+        lambda **kwargs: observed.update(kwargs),
+    )
+
+    activation.build_mart(_config())
+
+    assert observed["catalog_root"] == catalog_root
+
+
 def test_nonempty_serving_schema_is_replaced_as_atomic_group(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config()
     observed: dict[str, object] = {}

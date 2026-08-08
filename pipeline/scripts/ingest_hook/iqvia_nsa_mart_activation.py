@@ -23,6 +23,7 @@ from pipeline.scripts.ingest_hook.iqvia_nsa_publication import (
 from pipeline.scripts.ingest_hook.ubist_mart_activation import (
     ENV_PROMOTION_APPROVED,
     GENERAL_TABLES,
+    production_catalog_root_from_env,
 )
 from pipeline.scripts.rollback.recording import (
     PromotionIdentity,
@@ -145,11 +146,16 @@ def trim_raw_retention(conn: Any, config: NsaMartActivation) -> tuple[str, ...]:
 
 
 def build_mart(config: NsaMartActivation, *, catalog_root: str | None = None) -> None:
+    resolved_catalog_root = (
+        production_catalog_root_from_env()
+        if catalog_root is None
+        else Path(catalog_root)
+    )
     run_s4_general(
         build_db=config.build_db,
         source_db=config.source_db,
         input_db=config.build_db,
-        catalog_root=None if catalog_root is None else Path(catalog_root),
+        catalog_root=resolved_catalog_root,
         ubist_dir=None,
         input_mode="raw",
         sources=("iqvia_nsa",),
