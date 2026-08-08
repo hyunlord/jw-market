@@ -399,6 +399,7 @@ def render_agent_refresh_job(
     category: str,
     manifest_sha: str,
     ingest_run_id: str,
+    agent_run_id: str | None = None,
     namespace: str | None = None,
 ) -> dict:
     body = render_job(
@@ -408,7 +409,9 @@ def render_agent_refresh_job(
         namespace=namespace,
         run_id=ingest_run_id,
     )
-    name = agent_refresh_job_name(category, manifest_sha, ingest_run_id)
+    name = agent_refresh_job_name(
+        category, manifest_sha, agent_run_id or ingest_run_id
+    )
     body["metadata"]["name"] = name
     body["metadata"]["labels"] = {
         "app": "jw-agent-refresh",
@@ -436,6 +439,8 @@ def render_agent_refresh_job(
         "--ingest-run-id",
         ingest_run_id,
     ]
+    if agent_run_id is not None:
+        container["command"].extend(["--agent-run-id", agent_run_id])
     container["env"] = [
         item
         for item in container["env"]
@@ -720,6 +725,7 @@ def submit_agent_refresh_job(
     category: str,
     manifest_sha: str,
     ingest_run_id: str,
+    agent_run_id: str | None = None,
     transport: Transport | None = None,
     namespace: str | None = None,
     inspect_transport: InspectTransport | None = None,
@@ -730,6 +736,7 @@ def submit_agent_refresh_job(
         category=category,
         manifest_sha=manifest_sha,
         ingest_run_id=ingest_run_id,
+        agent_run_id=agent_run_id,
         namespace=namespace,
     )
     send = transport or _in_cluster_transport

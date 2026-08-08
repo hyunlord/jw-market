@@ -92,6 +92,25 @@ def test_agent_refresh_job_is_a_separate_profile_and_failure_domain():
     assert container["image"] == config.DEFAULT_JOB_IMAGE
 
 
+def test_agent_refresh_retry_uses_distinct_job_and_stage_run_ids():
+    body = render_agent_refresh_job(
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha=SHA,
+        ingest_run_id="run-1",
+        agent_run_id="run-1:agent-refresh-retry-2",
+        namespace="llmops",
+    )
+
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    assert body["metadata"]["name"].endswith("run-1agent-refresh-retry-2")
+    assert body["metadata"]["labels"]["jw-ingest/parent-run-id"] == "run-1"
+    assert container["command"][-2:] == [
+        "--agent-run-id",
+        "run-1:agent-refresh-retry-2",
+    ]
+
+
 def test_rendered_job_requires_api_node_pool_for_nfs_mounts():
     body = render_job(
         category="ubist",

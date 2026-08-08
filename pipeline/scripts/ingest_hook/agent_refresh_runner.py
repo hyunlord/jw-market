@@ -20,9 +20,10 @@ def run(
     category: str,
     manifest_sha: str,
     ingest_run_id: str,
+    agent_run_id: str | None = None,
 ) -> int:
     ledger = config.open_configured_ledger()
-    run_id = f"{ingest_run_id}:agent-refresh"
+    run_id = agent_run_id or f"{ingest_run_id}:agent-refresh"
     started_at = _now()
     ledger.record_stage(
         epoch,
@@ -77,12 +78,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--category", required=True)
     parser.add_argument("--manifest-sha", required=True)
     parser.add_argument("--ingest-run-id", required=True)
+    parser.add_argument("--agent-run-id")
     args = parser.parse_args(argv)
     return run(
         epoch=args.epoch,
         category=args.category,
         manifest_sha=args.manifest_sha,
         ingest_run_id=args.ingest_run_id,
+        agent_run_id=args.agent_run_id,
     )
 
 

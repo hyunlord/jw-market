@@ -266,7 +266,8 @@ STAGE_ORDER: tuple[str, ...] = tuple(spec.key for spec in STAGES)
 STAGE_BY_KEY: dict[str, StageSpec] = {spec.key: spec for spec in STAGES}
 
 PROFILE_STAGES: dict[str, tuple[str, ...]] = {
-    "numeric": ("market_status",),
+    # Retire this entry together with the table cache_deep_analysis_general.
+    "numeric": ("market_status", "cache"),
     "agent": ("cache", "forecast", "strength", "shortlong", "events", "elements"),
     "all": STAGE_ORDER,
 }

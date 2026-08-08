@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from pipeline.scripts.ingest_hook.app import IngestService, create_app
 from pipeline.scripts.ingest_hook.category_map import resolve_category
+from pipeline.scripts.ingest_hook import agent_refresh_runner
 
 
 def _terminal_payload(*, event: str = "complete", mode: str = "production") -> dict:
@@ -86,6 +87,48 @@ def test_complete_terminal_launches_agent_job_after_ingest_is_complete(
     assert len(fake_transport.submitted) == 1
     submitted = fake_transport.submitted[0][1]
     assert submitted["metadata"]["labels"]["app"] == "jw-agent-refresh"
+
+
+def test_agent_refresh_retry_preserves_failed_attempt(sqlite_ledger, monkeypatch):
+    identity = ("2026-05", "ubist", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity, job_name="jw-ingest-parent", run_id="run-1"
+    )
+    sqlite_ledger.mark_complete(*identity, row_counts={"input.xlsx": 1})
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id="run-1:agent-refresh",
+        seq=1,
+        stage="agent_refresh",
+        status="failed",
+        started_at="2026-07-30T00:01:00+00:00",
+        finished_at="2026-07-30T00:02:00+00:00",
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner.config,
+        "open_configured_ledger",
+        lambda: sqlite_ledger,
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 0})(),
+    )
+
+    assert agent_refresh_runner.run(
+        epoch=identity[0],
+        category=identity[1],
+        manifest_sha=identity[2],
+        ingest_run_id="run-1",
+        agent_run_id="run-1:agent-refresh-retry-2",
+    ) == 0
+
+    rows = sqlite_ledger.stage_events(*identity)
+    assert [(row.run_id, row.status) for row in rows] == [
+        ("run-1:agent-refresh", "failed"),
+        ("run-1:agent-refresh-retry-2", "complete"),
+    ]
 
 
 def test_terminal_accepts_v1_source_without_legacy_category(
