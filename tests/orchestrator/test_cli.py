@@ -79,7 +79,7 @@ def test_run_dry_run_via_cli_writes_nothing(tmp_path, monkeypatch, capsys):
     assert lines[-1]["event"] == "dry_run_end"
 
 
-def test_numeric_profile_refreshes_market_status_and_general_cache(
+def test_numeric_profile_refreshes_market_status_without_general_cache(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setattr("pipeline.orchestrator.probe.MartProbe", lambda: FakeProbe())
@@ -103,7 +103,7 @@ def test_numeric_profile_refreshes_market_status_and_general_cache(
     assert exit_code == 0
     plan = json.loads(capsys.readouterr().out.splitlines()[0])
     selected = [row["stage"] for row in plan["stages"] if row["action"] == "run"]
-    assert selected == ["market_status", "cache"]
+    assert selected == ["market_status"]
 
 
 def test_agent_profile_excludes_numeric_market_status(tmp_path, monkeypatch, capsys):
