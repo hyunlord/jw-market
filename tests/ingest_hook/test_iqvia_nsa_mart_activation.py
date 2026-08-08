@@ -531,3 +531,45 @@ def test_failed_publication_restore_returns_original_names_in_one_atomic_group(
             f"`{config.target_db}`.`{table}` TO "
             f"`{config.target_db}`.`{table}__failed_failed_{failed_run_id}`"
         ) in statement
+
+
+def test_resume_failed_publication_actions_requires_live_and_complete_backup_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    failed_run_id = "20260808182426423756"
+    previous_recovery_run_id = "recovery-1"
+    backups = {
+        activation._recovery_backup_table(table, previous_recovery_run_id)
+        for table in activation.NSA_PUBLISH_TABLES
+    }
+
+    def exists(_conn: object, database: str, table: str) -> bool:
+        return database == config.target_db and (
+            table in activation.NSA_PUBLISH_TABLES or table in backups
+        )
+
+    monkeypatch.setattr(activation, "table_exists", exists)
+    actions = activation.resume_failed_publication_actions(
+        object(),
+        config,
+        failed_run_id=failed_run_id,
+        promoted_recovery_run_id=previous_recovery_run_id,
+    )
+
+    assert tuple(action.table for action in actions) == activation.NSA_PUBLISH_TABLES
+    assert {action.backup_table for action in actions} == backups
+
+    missing = next(iter(backups))
+    monkeypatch.setattr(
+        activation,
+        "table_exists",
+        lambda conn, database, table: exists(conn, database, table) and table != missing,
+    )
+    with pytest.raises(RuntimeError, match="recovery backup table missing"):
+        activation.resume_failed_publication_actions(
+            object(),
+            config,
+            failed_run_id=failed_run_id,
+            promoted_recovery_run_id=previous_recovery_run_id,
+        )

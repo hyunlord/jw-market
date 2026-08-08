@@ -303,6 +303,39 @@ def promote_failed_publication_atomically(
     return tuple(actions)
 
 
+def resume_failed_publication_actions(
+    conn: Any,
+    config: NsaMartActivation,
+    *,
+    failed_run_id: str,
+    promoted_recovery_run_id: str,
+) -> tuple[PublishAction, ...]:
+    """Rebuild restore actions after a recovery Job died post-promotion."""
+
+    actions: list[PublishAction] = []
+    for table in NSA_PUBLISH_TABLES:
+        preserved = _failed_publication_table(table, failed_run_id)
+        backup = _recovery_backup_table(table, promoted_recovery_run_id)
+        if not table_exists(conn, config.target_db, table):
+            raise RuntimeError(f"recovered serving table missing: {table}")
+        if table_exists(conn, config.target_db, preserved):
+            raise RuntimeError(
+                f"preserved failed table unexpectedly exists after promotion: {preserved}"
+            )
+        if not table_exists(conn, config.target_db, backup):
+            raise RuntimeError(f"recovery backup table missing: {backup}")
+        actions.append(
+            PublishAction(
+                table,
+                "recovery_resume_existing_promotion",
+                preserved,
+                backup,
+                0,
+            )
+        )
+    return tuple(actions)
+
+
 def restore_failed_publication_atomically(
     conn: Any,
     config: NsaMartActivation,

@@ -63,6 +63,57 @@ def _validate_failed_run(
         raise RuntimeError("NSA refresh recovery requires a failed refresh stage")
 
 
+def _close_interrupted_refresh_stage(
+    ledger: Ledger,
+    identity: tuple[str, str, str],
+    *,
+    interrupted_run_id: str,
+    superseding_run_id: str,
+) -> None:
+    matches = [
+        event
+        for event in ledger.stage_events(*identity)
+        if event.run_id == interrupted_run_id
+        and event.seq == 8
+        and event.stage == "refresh"
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("exact interrupted refresh stage was not found")
+    interrupted = matches[0]
+    if interrupted.status == "failed" and interrupted.finished_at is not None:
+        return
+    if interrupted.status != "running" or interrupted.finished_at is not None:
+        raise RuntimeError(
+            "interrupted refresh stage is not an open running stage: "
+            f"status={interrupted.status} finished_at={interrupted.finished_at}"
+        )
+
+    reason = f"superseded by recovery run {superseding_run_id}"
+    ledger.record_stage(
+        *identity,
+        run_id=interrupted_run_id,
+        seq=8,
+        stage="refresh",
+        status="failed",
+        reason=reason,
+        finished_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    persisted = [
+        event
+        for event in ledger.stage_events(*identity)
+        if event.run_id == interrupted_run_id
+        and event.seq == 8
+        and event.stage == "refresh"
+    ]
+    if (
+        len(persisted) != 1
+        or persisted[0].status != "failed"
+        or persisted[0].finished_at is None
+        or persisted[0].reason != reason
+    ):
+        raise RuntimeError("interrupted refresh stage did not close")
+
+
 def recover(
     *,
     ledger: Ledger,
@@ -72,6 +123,7 @@ def recover(
     failed_run_id: str,
     recovery_run_id: str,
     refresh_argv: tuple[str, ...],
+    promoted_recovery_run_id: str | None = None,
 ) -> None:
     _validate_failed_run(ledger, identity, failed_run_id=failed_run_id)
     if not refresh_argv:
@@ -90,6 +142,13 @@ def recover(
         raise RuntimeError("rolled-back publication inventory SHA256 mismatch")
     row_counts = _inventory_rows(evidence.inventory_json)
     periods = {evidence.window_start, evidence.window_end}
+    if promoted_recovery_run_id is not None:
+        _close_interrupted_refresh_stage(
+            ledger,
+            identity,
+            interrupted_run_id=promoted_recovery_run_id,
+            superseding_run_id=recovery_run_id,
+        )
     tracker = job_runner._StageTracker(ledger, identity, recovery_run_id)
     lock_name = ubist_activation.WRITER_LOCK_NAME
     actions: tuple[Any, ...] = ()
@@ -104,12 +163,20 @@ def recover(
         )
         lock_acquired = True
         ubist_activation.require_writer_lock_owner(writer_conn, lock_name=lock_name)
-        actions = activation.promote_failed_publication_atomically(
-            writer_conn,
-            activation_config,
-            failed_run_id=failed_run_id,
-            recovery_run_id=recovery_run_id,
-        )
+        if promoted_recovery_run_id is None:
+            actions = activation.promote_failed_publication_atomically(
+                writer_conn,
+                activation_config,
+                failed_run_id=failed_run_id,
+                recovery_run_id=recovery_run_id,
+            )
+        else:
+            actions = activation.resume_failed_publication_actions(
+                writer_conn,
+                activation_config,
+                failed_run_id=failed_run_id,
+                promoted_recovery_run_id=promoted_recovery_run_id,
+            )
         tracker.enter("refresh")
         try:
             job_runner._run_commands_with_writer_lock(
@@ -205,6 +272,10 @@ def main(argv: list[str] | None = None) -> int:
         "--recovery-run-id",
         default=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"),
     )
+    parser.add_argument(
+        "--promoted-recovery-run-id",
+        help="resume refresh after this recovery run already promoted the tables",
+    )
     args = parser.parse_args(argv)
     identity = (args.epoch, args.category, args.manifest_sha)
     ledger = config.open_configured_ledger()
@@ -218,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             identity=identity,
             failed_run_id=args.failed_run_id,
             recovery_run_id=args.recovery_run_id,
+            promoted_recovery_run_id=args.promoted_recovery_run_id,
             refresh_argv=resolve_category("iqvia_nsa").refresh_argv,
         )
     except Exception as exc:
