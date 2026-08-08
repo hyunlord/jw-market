@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -57,8 +58,10 @@ _PASSTHROUGH_VALUES = (
     "INGEST_QUEUE_DRAIN_WEBHOOK_URL",
     "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS",
     "INGEST_FULL_SCAN_ENABLED",
+    "INGEST_E2E_COMMISSIONING",
     "INGEST_SOURCE_SCAN_POLICIES_JSON",
     "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL",
+    "INGEST_PRODUCTION_LOAD_CATEGORIES",
 )
 _FORECAST_RUNTIME_PINS = {
     "NPY_DISABLE_CPU_FEATURES": "X86_V3,X86_V4",
@@ -102,6 +105,14 @@ def _job_env(category: str) -> list[dict]:
         {"name": name, "value": value}
         for name, value in _FORECAST_RUNTIME_PINS.items()
     )
+    image = config.job_image()
+    digest_match = re.search(r"@(sha256:[0-9a-f]{64})$", image)
+    if digest_match is None:
+        raise RuntimeError(
+            "INGEST_JOB_IMAGE must be pinned by digest so publication provenance is reproducible"
+        )
+    env.append({"name": config.ENV_JOB_IMAGE, "value": image})
+    env.append({"name": "INGEST_IMAGE_DIGEST", "value": digest_match.group(1)})
 
     def secret_ref(name, secret, key):
         env.append({"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}})

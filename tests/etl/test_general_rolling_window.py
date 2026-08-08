@@ -65,15 +65,15 @@ def test_ubist_calculation_scope_keeps_exact_five_year_baseline() -> None:
     assert displayed[-1] == "2026-06"
 
 
-def test_iqvia_rolling_scope_keeps_latest_20_quarters() -> None:
+def test_iqvia_window_contract_separates_retention_calculation_and_display() -> None:
     periods = _quarter_labels(2020, 1, 25)
 
-    selected = rolling_period_scope(periods, source="iqvia_nsa")
+    assert rolling_period_scope(periods, source="iqvia_nsa", purpose="retention") == periods[-24:]
+    assert rolling_period_scope(periods, source="iqvia_nsa", purpose="calculation") == periods[-21:]
+    assert rolling_period_scope(periods, source="iqvia_nsa", purpose="display") == periods[-20:]
 
-    assert selected == periods[-20:]
 
-
-def test_iqvia_cache_reader_receives_default_latest_20_quarter_scope(
+def test_iqvia_cache_reader_receives_latest_21_quarter_calculation_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     periods = _quarter_labels(2020, 1, 25)
@@ -106,7 +106,40 @@ def test_iqvia_cache_reader_receives_default_latest_20_quarter_scope(
     frame = general_iqvia.load_iqvia_base_frame()
 
     assert frame.empty
-    assert observed["quarters"] == periods[-20:]
+    assert observed["quarters"] == periods[-21:]
+
+
+def test_iqvia_brand_payload_does_not_expose_calculation_only_quarter() -> None:
+    periods = _quarter_labels(2021, 1, 21)
+    source_rows = [
+        {
+            "brand_key": "livalo",
+            "brand_name": "리바로",
+            "product_name": "리바로정",
+            "product_code": "LIVALO TAB",
+            "atc4_code": "C10A1",
+            "atc4_desc": "Statins",
+            "period_yyyymm": period,
+            "raw_value": float(index + 1),
+            "raw_sales": float(index + 1),
+            "audit_code": "KPA",
+            "channel": "KPA",
+            "specialty": None,
+            "manufacturer": "JW",
+            "company": "JW",
+            "payload_static": {"MFR NAME KOR": "JW"},
+        }
+        for index, period in enumerate(periods)
+    ]
+
+    row = build_brand_rows(
+        "iqvia_nsa", "sales", pd.DataFrame(source_rows), {}
+    )[0]
+
+    assert tuple(row["raw_value_history"]) == periods[-20:]
+    assert tuple(row["metric_history"]) == periods[-20:]
+    assert tuple(row["extended_metric_history"]) == periods[-20:]
+    assert row["payload"]["period_count"] == 20
 
 
 @pytest.mark.parametrize(
@@ -321,9 +354,16 @@ def test_ubist_load_retention_remains_72_months() -> None:
     assert UBIST_LOAD_RETENTION_MONTHS == 72
 
 
-def test_five_year_cqgr_uses_actual_elapsed_span_inside_20_quarter_window() -> None:
+def test_five_year_cqgr_is_absent_inside_20_quarter_display_window() -> None:
     periods = _quarter_labels(2021, 2, 20)
     history = {period: 100.0 + index for index, period in enumerate(periods)}
-    expected = (119.0 / 100.0) ** (1 / (19 / 4)) - 1
+
+    assert cagr_from_history(history, periods[-1], 5) is None
+
+
+def test_five_year_cqgr_uses_exact_baseline_from_21_quarters() -> None:
+    periods = _quarter_labels(2021, 1, 21)
+    history = {period: 100.0 + index for index, period in enumerate(periods)}
+    expected = (120.0 / 100.0) ** (1 / 5) - 1
 
     assert cagr_from_history(history, periods[-1], 5) == pytest.approx(expected)

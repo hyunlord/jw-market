@@ -112,6 +112,17 @@ def run(
             build_run_id=build_run_id,
             publish_run_id=publish_run_id,
         )
+    if resolve_category(category).activation_kind is ActivationKind.CSD_KEYWORD:
+        from pipeline.scripts.ingest_hook import csd_keyword_publish_runner
+
+        return csd_keyword_publish_runner.run(
+            ledger=ledger,
+            epoch=epoch,
+            category=category,
+            manifest_sha=manifest_sha,
+            build_run_id=build_run_id,
+            publish_run_id=publish_run_id,
+        )
     identity = (epoch, category, manifest_sha)
     entry = ledger.status(*identity)
     if entry is None:

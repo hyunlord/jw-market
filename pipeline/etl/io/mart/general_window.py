@@ -5,20 +5,22 @@ from collections.abc import Iterable
 import pandas as pd
 
 from .general_config import (
-    IQVIA_HISTORY_PERIODS,
+    IQVIA_CALCULATION_PERIODS,
+    IQVIA_DISPLAY_PERIODS,
+    IQVIA_RETENTION_PERIODS,
     UBIST_CALCULATION_PERIODS,
     UBIST_HISTORY_PERIODS,
 )
 from .layer3_normalize import parse_period, period_sort_key
 
 
-_WINDOW_PERIODS_BY_SOURCE = {
-    "ubist": UBIST_HISTORY_PERIODS,
-    "iqvia_nsa": IQVIA_HISTORY_PERIODS,
-}
-_CALCULATION_PERIODS_BY_SOURCE = {
-    "ubist": UBIST_CALCULATION_PERIODS,
-    "iqvia_nsa": IQVIA_HISTORY_PERIODS,
+_WINDOW_PERIODS_BY_SOURCE_AND_PURPOSE = {
+    ("ubist", "display"): UBIST_HISTORY_PERIODS,
+    ("ubist", "calculation"): UBIST_CALCULATION_PERIODS,
+    ("ubist", "retention"): UBIST_HISTORY_PERIODS,
+    ("iqvia_nsa", "display"): IQVIA_DISPLAY_PERIODS,
+    ("iqvia_nsa", "calculation"): IQVIA_CALCULATION_PERIODS,
+    ("iqvia_nsa", "retention"): IQVIA_RETENTION_PERIODS,
 }
 
 
@@ -38,11 +40,14 @@ def rolling_period_scope(
     periods: Iterable[object],
     *,
     source: str,
+    purpose: str = "display",
 ) -> tuple[str, ...]:
     try:
-        window_periods = _WINDOW_PERIODS_BY_SOURCE[source]
+        window_periods = _WINDOW_PERIODS_BY_SOURCE_AND_PURPOSE[(source, purpose)]
     except KeyError as exc:
-        raise ValueError(f"unsupported rolling-window source: {source!r}") from exc
+        raise ValueError(
+            f"unsupported rolling-window source/purpose: {source!r}/{purpose!r}"
+        ) from exc
     canonical = {
         canonical_period_label(period)
         for period in periods
@@ -57,17 +62,7 @@ def calculation_period_scope(
     *,
     source: str,
 ) -> tuple[str, ...]:
-    try:
-        calculation_periods = _CALCULATION_PERIODS_BY_SOURCE[source]
-    except KeyError as exc:
-        raise ValueError(f"unsupported calculation-window source: {source!r}") from exc
-    canonical = {
-        canonical_period_label(period)
-        for period in periods
-        if str(period or "").strip()
-    }
-    ordered = tuple(sorted(canonical, key=period_sort_key))
-    return ordered[-calculation_periods:]
+    return rolling_period_scope(periods, source=source, purpose="calculation")
 
 
 def filter_frame_to_rolling_window(

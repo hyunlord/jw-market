@@ -70,26 +70,10 @@ def cagr_from_history(history: dict[str, float], period: str, years: int) -> flo
     periods_per_year = 4 if "-Q" in period else 12
     target_ord = ord_now - periods_per_year * years
     start_period = next((p for p in history if period_sort_key(p) == target_ord), None)
-    elapsed_years: float | int = years
-    if (
-        start_period is None
-        and years == GENERAL_HISTORY_YEARS
-        and periods_per_year == 4
-    ):
-        elapsed_periods = periods_per_year * years - 1
-        start_period = next(
-            (
-                p
-                for p in history
-                if period_sort_key(p) == ord_now - elapsed_periods
-            ),
-            None,
-        )
-        elapsed_years = elapsed_periods / periods_per_year
     return compute_cagr_value(
         history.get(period),
         history.get(start_period) if start_period else None,
-        elapsed_years,
+        years,
     )
 
 def hhi_for_period(part: pd.DataFrame) -> float | None:

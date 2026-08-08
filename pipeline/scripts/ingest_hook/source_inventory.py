@@ -10,7 +10,9 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
+import zipfile
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -165,6 +167,7 @@ class ScanOutcome:
     diff: SnapshotDiff | None
     gates: PeriodGateResult
     rebuild_result: Mapping[str, object]
+    commissioning_warnings: tuple[str, ...] = ()
 
 
 def _sha256(path: Path) -> str:
@@ -188,6 +191,8 @@ def scan_source(
     run_id: str,
     classify: Callable[[Path], str] = detect_workbook_source,
     summarize: Callable[[str, Path, str], WorkbookSummary] = summarize,
+    candidate_files: tuple[tuple[str, Path], ...] | None = None,
+    commissioning: bool = False,
 ) -> ScanSnapshot:
     """Recursively classify one approved source root without filename inference."""
     root = policy.root.resolve()
@@ -195,19 +200,21 @@ def scan_source(
         raise SourceInventoryError(f"source root is not a directory: {root}")
     observations: list[FileObservation] = []
     observed_at = datetime.now(UTC).isoformat()
-    candidates = sorted(
-        path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".xlsx"
+    candidates = candidate_files or tuple(
+        (path.relative_to(root).as_posix(), path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix.lower() == ".xlsx"
     )
-    for path in candidates:
-        relative = path.relative_to(root)
-        relative_text = relative.as_posix()
+    for relative_text, path in candidates:
+        relative = Path(relative_text.replace("!/", "/"))
         resolved_path = path.resolve()
-        try:
-            resolved_path.relative_to(root)
-        except ValueError as exc:
-            raise SourceInventoryError(
-                f"source workbook escapes approved root: {relative_text}"
-            ) from exc
+        if "!/" not in relative_text:
+            try:
+                resolved_path.relative_to(root)
+            except ValueError as exc:
+                raise SourceInventoryError(
+                    f"source workbook escapes approved root: {relative_text}"
+                ) from exc
         size = path.stat().st_size
         sha256 = _sha256(path)
         if any(part.startswith("._") for part in relative.parts):
@@ -221,7 +228,7 @@ def scan_source(
                 )
             )
             continue
-        if _is_excluded(relative, policy.excluded_relative_roots):
+        if not commissioning and _is_excluded(relative, policy.excluded_relative_roots):
             observations.append(
                 FileObservation(
                     relative_path=relative_text,
@@ -452,9 +459,10 @@ def enforce_scan_gates(
     diff: SnapshotDiff | None,
     *,
     period_unit: PeriodUnit | None = None,
+    permissive: bool = False,
 ) -> PeriodGateResult:
     """Apply approved fail-closed deletion and period gates before any load."""
-    if current.rejected_count:
+    if current.rejected_count and not permissive:
         raise SourceInventoryError(
             f"{current.category}: rejected operating workbooks={current.rejected_count}"
         )
@@ -465,14 +473,23 @@ def enforce_scan_gates(
     if previous is not None and previous.category != current.category:
         raise SourceInventoryError("cannot gate snapshots from different categories")
     threshold = mass_deletion_threshold(previous.classified_count) if previous else None
-    if diff is not None and threshold is not None and diff.removed_count >= threshold:
+    if (
+        diff is not None
+        and threshold is not None
+        and diff.removed_count >= threshold
+        and not permissive
+    ):
         raise SourceInventoryError(
             f"{current.category}: mass deletion count {diff.removed_count} "
             f"reaches threshold {threshold}"
         )
     previous_periods = set(previous.periods) if previous is not None else set()
     current_periods = set(current.periods)
-    if previous_periods and max(previous_periods) not in current_periods:
+    if (
+        previous_periods
+        and max(previous_periods) not in current_periods
+        and not permissive
+    ):
         raise SourceInventoryError(
             f"{current.category}: newest previous content period "
             f"{max(previous_periods)} disappeared"
@@ -503,10 +520,76 @@ def enforce_scan_gates(
         ),
     )
     failures = [gate for gate in (result.pg4, result.pg5) if gate.status == "fail"]
-    if failures:
+    if failures and not permissive:
         detail = "; ".join(f"{gate.name}={','.join(gate.periods)}" for gate in failures)
         raise SourceInventoryError(f"{current.category}: source scan gates failed: {detail}")
     return result
+
+
+def _commissioning_warnings(
+    previous: ScanSnapshot | None,
+    current: ScanSnapshot,
+    diff: SnapshotDiff | None,
+    gates: PeriodGateResult,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if current.rejected_count:
+        warnings.append(f"rejected operating workbooks={current.rejected_count}")
+    if previous is not None and diff is not None:
+        threshold = mass_deletion_threshold(previous.classified_count)
+        if diff.removed_count >= threshold:
+            warnings.append(
+                f"mass deletion count {diff.removed_count} reaches threshold {threshold}"
+            )
+        previous_periods = set(previous.periods)
+        current_periods = set(current.periods)
+        if previous_periods and max(previous_periods) not in current_periods:
+            warnings.append(
+                f"newest previous content period {max(previous_periods)} disappeared"
+            )
+    for gate in (gates.pg4, gates.pg5, gates.pg6, gates.pg7):
+        if gate.status != "pass":
+            warnings.append(f"{gate.name}={gate.status}: {gate.reason}")
+    return tuple(warnings)
+
+
+def _zip_candidates(root: Path, extraction_root: Path) -> tuple[tuple[str, Path], ...]:
+    """Safely materialize XLSX members while retaining archive-relative identity."""
+    result: list[tuple[str, Path]] = []
+    archives = tuple(
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix.lower() == ".zip"
+    )
+    total_uncompressed = 0
+    for archive_index, archive in enumerate(archives):
+        archive_relative = archive.relative_to(root).as_posix()
+        with zipfile.ZipFile(archive) as handle:
+            for member in sorted(handle.infolist(), key=lambda item: item.filename):
+                member_path = Path(member.filename)
+                if member.is_dir() or member_path.suffix.lower() != ".xlsx":
+                    continue
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise SourceInventoryError(
+                        f"zip member escapes extraction root: {archive_relative}!/{member.filename}"
+                    )
+                file_type = (member.external_attr >> 16) & 0o170000
+                if file_type == stat.S_IFLNK:
+                    raise SourceInventoryError(
+                        f"zip member is a symbolic link: {archive_relative}!/{member.filename}"
+                    )
+                total_uncompressed += member.file_size
+                if total_uncompressed > 16 * 1024**3:
+                    raise SourceInventoryError("expanded ZIP workbook population exceeds 16 GiB")
+                destination = extraction_root / f"archive-{archive_index}" / member_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with handle.open(member) as source, destination.open("wb") as target:
+                    while chunk := source.read(1024 * 1024):
+                        target.write(chunk)
+                result.append(
+                    (f"{archive_relative}!/{member_path.as_posix()}", destination)
+                )
+    return tuple(result)
 
 
 def write_inventory_snapshot(snapshot: ScanSnapshot, output_root: Path) -> Path:
@@ -586,12 +669,25 @@ def read_scan_snapshot(path: Path) -> ScanSnapshot:
         raise SourceInventoryError(f"invalid inventory snapshot fields {path}: {exc}") from exc
 
 
-def classified_source_paths(snapshot: ScanSnapshot, source_root: Path) -> tuple[Path, ...]:
+def classified_source_paths(
+    snapshot: ScanSnapshot,
+    source_root: Path,
+    *,
+    materialized_paths: Mapping[str, Path] | None = None,
+) -> tuple[Path, ...]:
     """Return only current content-classified inputs for canonical cache rebuilds."""
     root = source_root.resolve()
     result: list[Path] = []
     for item in snapshot.files:
         if item.state != "classified":
+            continue
+        if materialized_paths is not None and item.relative_path in materialized_paths:
+            path = materialized_paths[item.relative_path].resolve()
+            if not path.is_file():
+                raise SourceInventoryError(
+                    f"materialized source file disappeared: {item.relative_path}"
+                )
+            result.append(path)
             continue
         path = (root / item.relative_path).resolve()
         try:
@@ -617,29 +713,47 @@ def run_full_scan(
     previous: ScanSnapshot | None = None,
     classify: Callable[[Path], str] = detect_workbook_source,
     summarize: Callable[[str, Path, str], WorkbookSummary] = summarize,
+    permissive: bool = False,
 ) -> ScanOutcome:
     """Scan, gate, rebuild, then publish one immutable successful inventory.
 
     The snapshot is deliberately written last. A hard-gate or cache-rebuild
     failure cannot become the next successful comparison anchor.
     """
-    current = scan_source(
-        policy,
-        epoch=epoch,
-        manifest_sha=manifest_sha,
-        run_id=run_id,
-        classify=classify,
-        summarize=summarize,
+    root = policy.root.resolve()
+    direct_candidates = tuple(
+        (path.relative_to(root).as_posix(), path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix.lower() == ".xlsx"
     )
-    diff = compare_snapshots(previous, current) if previous is not None else None
-    gates = enforce_scan_gates(
-        previous,
-        current,
-        diff,
-        period_unit=policy.period_unit,
-    )
-    source_paths = classified_source_paths(current, policy.root)
-    rebuild_result = rebuild(source_paths)
+    with tempfile.TemporaryDirectory(prefix=f"jw-ingest-zip-{run_id}-") as temporary:
+        archive_candidates = _zip_candidates(root, Path(temporary))
+        candidates = (*direct_candidates, *archive_candidates)
+        current = scan_source(
+            policy,
+            epoch=epoch,
+            manifest_sha=manifest_sha,
+            run_id=run_id,
+            classify=classify,
+            summarize=summarize,
+            candidate_files=tuple(sorted(candidates, key=lambda item: item[0])),
+            commissioning=permissive,
+        )
+        diff = compare_snapshots(previous, current) if previous is not None else None
+        gates = enforce_scan_gates(
+            previous,
+            current,
+            diff,
+            period_unit=policy.period_unit,
+            permissive=permissive,
+        )
+        materialized = dict(archive_candidates)
+        source_paths = classified_source_paths(
+            current,
+            policy.root,
+            materialized_paths=materialized,
+        )
+        rebuild_result = rebuild(source_paths)
     if not isinstance(rebuild_result, Mapping):
         raise SourceInventoryError("cache rebuild must return a mapping summary")
     if diff is not None and diff.removed_files:
@@ -685,7 +799,12 @@ def run_full_scan(
             ),
         )
     snapshot_path = write_inventory_snapshot(current, output_root)
-    return ScanOutcome(current, snapshot_path, diff, gates, rebuild_result)
+    warnings = (
+        _commissioning_warnings(previous, current, diff, gates)
+        if permissive
+        else ()
+    )
+    return ScanOutcome(current, snapshot_path, diff, gates, rebuild_result, warnings)
 
 
 def inventory_snapshot_path(

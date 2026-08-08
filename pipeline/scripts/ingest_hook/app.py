@@ -1026,7 +1026,24 @@ class IngestService:
             raise HTTPException(status_code=409, detail="automatic publish hard gates did not pass")
         candidate_integrity = candidate.payload.get("candidate_integrity")
         build_integrity = candidate.payload.get("build_table_integrity")
-        if not isinstance(candidate_integrity, dict) or not isinstance(build_integrity, list) or not build_integrity:
+        csd_integrity = candidate.payload.get("csd_candidate_evidence")
+        keyword_integrity = candidate.payload.get("keyword_candidate_evidence")
+        has_ubist_integrity = (
+            isinstance(candidate_integrity, dict)
+            and isinstance(build_integrity, list)
+            and bool(build_integrity)
+        )
+        has_csd_integrity = (
+            isinstance(csd_integrity, dict)
+            and isinstance(csd_integrity.get("raw"), dict)
+            and isinstance(csd_integrity.get("stage"), dict)
+        )
+        has_keyword_integrity = (
+            isinstance(keyword_integrity, dict)
+            and int(keyword_integrity.get("raw_rows", 0)) > 0
+            and int(keyword_integrity.get("stage_rows", 0)) > 0
+        )
+        if not has_ubist_integrity and not has_csd_integrity and not has_keyword_integrity:
             raise HTTPException(status_code=409, detail="automatic publish integrity evidence is absent")
         return self.approve_publish(
             PublishApprovalPayload(

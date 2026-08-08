@@ -28,6 +28,7 @@ ENV_QUEUE_DRAIN_WEBHOOK_URL = "INGEST_QUEUE_DRAIN_WEBHOOK_URL"
 ENV_QUEUE_DRAIN_WEBHOOK_ATTEMPTS = "INGEST_QUEUE_DRAIN_WEBHOOK_ATTEMPTS"
 ENV_WEBHOOK_PROMOTE_EXACT = "INGEST_WEBHOOK_PROMOTE_EXACT"
 ENV_FULL_SCAN_ENABLED = "INGEST_FULL_SCAN_ENABLED"
+ENV_E2E_COMMISSIONING = "INGEST_E2E_COMMISSIONING"
 ENV_AUTOMATIC_PUBLISH_WEBHOOK_URL = "INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL"
 ENV_CSD_CHANNEL_SHADOW_ACTIVATION = "INGEST_CSD_CHANNEL_SHADOW_ACTIVATION"
 ENV_PRODUCTION_LOAD_CATEGORIES = "INGEST_PRODUCTION_LOAD_CATEGORIES"
@@ -51,9 +52,9 @@ DEFAULT_JOB_IMAGE = (
 
 def source_activation_enabled(category: str, *, mode: str) -> bool:
     """Return an explicit source capability without changing category defaults."""
-    if category != "iqvia_csd_channel":
-        return False
     if mode == "shadow":
+        if category != "iqvia_csd_channel":
+            return False
         value = os.environ.get(ENV_CSD_CHANNEL_SHADOW_ACTIVATION, "0").strip()
         if value not in {"0", "1"}:
             raise RuntimeError(f"{ENV_CSD_CHANNEL_SHADOW_ACTIVATION} must be 0 or 1")
@@ -62,12 +63,13 @@ def source_activation_enabled(category: str, *, mode: str) -> bool:
         return False
     raw = os.environ.get(ENV_PRODUCTION_LOAD_CATEGORIES, "").strip()
     categories = {item.strip() for item in raw.split(",") if item.strip()}
-    unsupported = categories.difference({"iqvia_csd_channel"})
+    supported = {"iqvia_csd_channel", "iqvia_csd_keyword"}
+    unsupported = categories.difference(supported)
     if unsupported:
         raise RuntimeError(
             f"unsupported production activation categories: {sorted(unsupported)}"
         )
-    return category in categories
+    return category in supported and category in categories
 
 
 def csd_channel_live_schemas(*, mode: str) -> tuple[str, str]:
@@ -108,6 +110,14 @@ def full_scan_enabled() -> bool:
     value = os.environ.get(ENV_FULL_SCAN_ENABLED, "0").strip()
     if value not in {"0", "1"}:
         raise RuntimeError(f"{ENV_FULL_SCAN_ENABLED} must be 0 or 1")
+    return value == "1"
+
+
+def e2e_commissioning() -> bool:
+    """Enable the explicitly reversible, production E2E commissioning path."""
+    value = os.environ.get(ENV_E2E_COMMISSIONING, "0").strip()
+    if value not in {"0", "1"}:
+        raise RuntimeError(f"{ENV_E2E_COMMISSIONING} must be 0 or 1")
     return value == "1"
 
 

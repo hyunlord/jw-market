@@ -273,8 +273,8 @@ def test_expected_stage_applicability_comes_from_category_spec(client, bucket):
     assert applicability["load_verify"] is True
     assert applicability["mart_build"] is False
     assert applicability["sigma"] is False
-    assert applicability["post_gate"] is False
-    assert applicability["mart_publish"] is False
+    assert applicability["post_gate"] is True
+    assert applicability["mart_publish"] is True
     assert applicability["refresh"] is False
 
 

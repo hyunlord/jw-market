@@ -453,6 +453,116 @@ def test_post_gate_candidate_auto_queues_publish_without_human_approval(
     assert sqlite_ledger.prepared_candidate(*identity).approved_by == "system:full-scan-auto-publish"
 
 
+def test_csd_candidate_auto_queues_publish_with_source_integrity(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-06",
+        category="iqvia_csd_channel",
+        manifest_sha="f" * 64,
+    )
+    sqlite_ledger.mark_running(*identity, job_name="build", run_id="build-run")
+    candidate = {
+        "epoch": identity[0],
+        "category": identity[1],
+        "manifest_sha": identity[2],
+        "run_id": "build-run",
+        "csd_activation_plan": {"run_id": "build-run"},
+        "csd_candidate_evidence": {
+            "raw": {"row_count": 1, "crc_sum": 2, "crc_xor": 2},
+            "stage": {"row_count": 1, "crc_sum": 3, "crc_xor": 3},
+        },
+        "automatic_publish": {
+            "hard_gates": {f"PG-{index}": "pass" for index in range(1, 6)},
+            "warnings": {"PG-6": "warning", "PG-7": "warning"},
+        },
+    }
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate=candidate,
+        prepared_at="2026-08-07T00:00:00+00:00",
+        expires_at="2026-08-08T00:00:00+00:00",
+    )
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=fake_transport,
+                now=lambda: "publish-run",
+                timestamp=lambda: "2026-08-07T01:00:00+00:00",
+            )
+        )
+    )
+
+    response = client.post(
+        "/ingest/publish/automatic",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "publish_running"
+    assert len(fake_transport.submitted) == 1
+
+
+def test_keyword_candidate_auto_queues_publish_with_source_integrity(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    identity = _seed(
+        sqlite_ledger,
+        epoch="2026-05",
+        category="iqvia_csd_keyword",
+        manifest_sha="9" * 64,
+    )
+    sqlite_ledger.mark_running(*identity, job_name="build", run_id="build-run")
+    sqlite_ledger.mark_awaiting_approval(
+        *identity,
+        run_id="build-run",
+        candidate={
+            "keyword_activation_plan": {"run_id": "build-run"},
+            "keyword_candidate_evidence": {"raw_rows": 10, "stage_rows": 8},
+            "automatic_publish": {
+                "hard_gates": {f"PG-{index}": "pass" for index in range(1, 6)}
+            },
+        },
+        prepared_at="2026-08-07T00:00:00+00:00",
+        expires_at="2026-08-08T00:00:00+00:00",
+    )
+    client = TestClient(
+        create_app(
+            IngestService(
+                sqlite_ledger,
+                None,
+                transport=fake_transport,
+                now=lambda: "publish-run",
+                timestamp=lambda: "2026-08-07T01:00:00+00:00",
+            )
+        )
+    )
+
+    response = client.post(
+        "/ingest/publish/automatic",
+        json={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": "build-run",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(fake_transport.submitted) == 1
+
+
 def test_startup_drain_recovers_automatic_publish_callback(
     sqlite_ledger,
     fake_transport,

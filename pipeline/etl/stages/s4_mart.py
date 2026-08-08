@@ -172,14 +172,28 @@ def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
         conn.close()
 
 
-def _configure_mart_env(target_db: str, source_db: str) -> None:
+def _seed_general_tables(target_db: str, source_db: str) -> None:
+    _validate_schema_pair(target_db, source_db)
+    conn = _admin_connect(_env())
+    try:
+        with conn.cursor() as cur:
+            for table in ("mart_general_brand_metric", "mart_general_market_metric"):
+                cur.execute(
+                    f"INSERT INTO `{target_db}`.`{table}` "
+                    f"SELECT * FROM `{source_db}`.`{table}`"
+                )
+    finally:
+        conn.close()
+
+
+def _configure_mart_env(target_db: str, input_db: str) -> None:
     env = _env()
     password = env.get("MARIADB_ROOT_PASSWORD") or env.get("MARIADB_PASSWORD")
     user = "root" if env.get("MARIADB_ROOT_PASSWORD") else env.get("MARIADB_USER", "jwapp")
     if not password:
         raise RuntimeError("MARIADB_ROOT_PASSWORD/MARIADB_PASSWORD is missing")
     os.environ["MARIADB_DATABASE"] = target_db
-    os.environ["MARIADB_SOURCE_DATABASE"] = source_db
+    os.environ["MARIADB_SOURCE_DATABASE"] = input_db
     os.environ["MARIADB_USER"] = user
     os.environ["MARIADB_PASSWORD"] = password
     os.environ.setdefault("MARIADB_HOST", env.get("MARIADB_HOST", "127.0.0.1"))
@@ -191,6 +205,7 @@ def _configure_mart_env(target_db: str, source_db: str) -> None:
 def run(params: dict[str, Any]) -> int:
     target_db = str(params.get("target_db") or "").strip()
     source_db = str(params.get("source_db") or "jw_mart").strip()
+    input_db = str(params.get("input_db") or source_db).strip()
     if not target_db:
         print(f"[{STAGE}] 실패: --target-db is required for isolated mart writes")
         return 2
@@ -206,7 +221,9 @@ def run(params: dict[str, Any]) -> int:
         if params.get("ubist_dir"):
             os.environ["S4_UBIST_DIR"] = str(params["ubist_dir"])
         _ensure_isolated_schema(target_db, source_db)
-        _configure_mart_env(target_db, source_db)
+        if params.get("seed_general_from_source"):
+            _seed_general_tables(target_db, source_db)
+        _configure_mart_env(target_db, input_db)
         from pipeline.etl.io.mart.layer3_compute_general_v3 import compute_general
 
         sources = tuple(params.get("sources") or ("ubist", "iqvia_nsa"))
@@ -234,5 +251,8 @@ def run(params: dict[str, Any]) -> int:
     except Exception as exc:
         print(f"[{STAGE}] 실패: {exc}")
         return 1
-    print(f"[{STAGE}] 완료 target_db={target_db} source_db={source_db}")
+    print(
+        f"[{STAGE}] 완료 target_db={target_db} source_db={source_db} "
+        f"input_db={input_db}"
+    )
     return 0

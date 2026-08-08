@@ -362,6 +362,11 @@ def build_brand_rows(
                 "market_cagr_5y": market_cagr_5y,
                 "warnings": [w for w in (gc_warning, ei_warning) if w],
             }
+        display_history = (
+            {period: history[period] for period in display_periods}
+            if source == "iqvia_nsa"
+            else history
+        )
         first = _representative_row(group)
         catalog_row = catalog_map.get(str(brand_key))
         company = resolve_company(catalog_row, first, source)
@@ -393,7 +398,7 @@ def build_brand_rows(
                 "dimension_data": build_sku_dimension_data(group, display_periods),
                 "dimension_channel_data": build_sku_dimension_channel_data(group, display_periods),
                 "by_dimension": by_dimension,
-                "raw_value_history": history,
+                "raw_value_history": display_history,
                 "payload": {
                     "phase": "16-G-4-Fix-Load",
                     "etl_version": "v3.1",

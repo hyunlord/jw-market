@@ -8,6 +8,7 @@ are tested deterministically with zero external deps.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -441,6 +442,38 @@ def test_real_load_iqvia_nsa_injects_file_target_and_epoch(staging_env, bucket, 
     assert result["rows_loaded"] == 2
 
 
+def test_real_load_iqvia_nsa_scopes_target_database_override(
+    tmp_path, bucket, monkeypatch
+):
+    manifest = _manifest(
+        bucket,
+        category="iqvia_nsa",
+        epoch="2026-Q1",
+        rows=[("2026-Q1", "Class", "x", 1.0), ("2026-Q1", "전체", "-", 1.0)],
+    )
+    monkeypatch.delenv(config.ENV_LOAD_STAGING_ROOT, raising=False)
+    monkeypatch.setenv(config.ENV_LOAD_TARGET_ROOT, str(tmp_path / "production"))
+    observed: list[str | None] = []
+
+    def fake_run(_label, argv):
+        observed.append(os.environ.get(config.ENV_LOAD_STAGING_DB))
+        target = Path(argv[argv.index("--target-dir") + 1])
+        _write_table_manifest(target, "2026-Q1", before=0, after=2, loaded=2)
+
+    monkeypatch.setattr(job_runner, "_run_commands", fake_run)
+
+    result = job_runner._real_load(
+        manifest,
+        resolve_category("iqvia_nsa"),
+        bucket,
+        target_db_override="jw_ingest_nsa_build_run1",
+    )
+
+    assert observed == ["jw_ingest_nsa_build_run1"]
+    assert config.ENV_LOAD_STAGING_DB not in os.environ
+    assert result["rows_loaded"] == 2
+
+
 def test_real_load_skeleton_no_op(staging_env, bucket):
     manifest = _manifest(bucket, category="skeleton", epoch="2026-03")
     result = job_runner._real_load(manifest, resolve_category("skeleton"), bucket)
@@ -538,6 +571,48 @@ def test_run_real_silent_failure_marks_failed(staging_env, bucket, sqlite_ledger
     entry = sqlite_ledger.status(manifest.epoch, "ubist", manifest.manifest_sha)
     assert entry.status == "failed"
     assert "LoadVerifyError" in entry.reason
+
+
+def test_real_load_commissioning_preserves_load_verify_failure_as_warning(
+    staging_env, bucket, monkeypatch
+):
+    manifest_path = write_submission(bucket)
+    manifest = load_manifest(manifest_path)
+    monkeypatch.setenv(config.ENV_E2E_COMMISSIONING, "1")
+    monkeypatch.setattr(job_runner, "_run_commands", lambda label, argv: None)
+
+    result = job_runner._real_load(manifest, resolve_category("ubist"), bucket)
+
+    assert result["epoch_rows"] is None
+    assert result["load_verify_complete"] is True
+    assert result["load_verify_warning"].startswith("LoadVerifyError:")
+
+
+def test_post_gate_policy_is_fail_closed_outside_commissioning(monkeypatch):
+    monkeypatch.delenv(config.ENV_E2E_COMMISSIONING, raising=False)
+    monkeypatch.setattr(
+        job_runner,
+        "run_post_gates",
+        lambda **_kwargs: (_ for _ in ()).throw(job_runner.SigmaGateError("sigma mismatch")),
+    )
+
+    with pytest.raises(job_runner.SigmaGateError, match="sigma mismatch"):
+        job_runner._run_post_gates_with_policy()
+
+
+def test_post_gate_policy_preserves_failure_in_commissioning(monkeypatch, capsys):
+    monkeypatch.setenv(config.ENV_E2E_COMMISSIONING, "1")
+    monkeypatch.setattr(
+        job_runner,
+        "run_post_gates",
+        lambda **_kwargs: (_ for _ in ()).throw(job_runner.SigmaGateError("sigma mismatch")),
+    )
+
+    post, warning = job_runner._run_post_gates_with_policy()
+
+    assert post is None
+    assert warning == "SigmaGateError: sigma mismatch"
+    assert "status=commissioning_nonblocking" in capsys.readouterr().out
 
 
 def test_production_ubist_orders_shadow_gate_publish_then_refresh(

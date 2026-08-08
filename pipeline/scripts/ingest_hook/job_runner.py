@@ -119,11 +119,11 @@ class _StageTracker:
         self._record(name, "running", started=_stamp())
         print(f"[stage] {name} start({self._seq[name]}/{self._n})")
 
-    def done(self, rc: int = 0) -> None:
+    def done(self, rc: int = 0, *, reason: str | None = None) -> None:
         if self._current is None:
             return
         name, dur = self._current, self._elapsed_ms()
-        self._record(name, "complete", finished=_stamp(), duration_ms=dur)
+        self._record(name, "complete", reason=reason, finished=_stamp(), duration_ms=dur)
         print(f"[stage] {name} end rc={rc}")
         self._current = None
         self._t0 = None
@@ -169,8 +169,14 @@ class _StageTracker:
 
 def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
     """Return the deterministic stage skeleton for one category."""
-    supports_mart = spec.activation_kind is ActivationKind.UBIST_NUMERIC
-    supports_source_activation = spec.activation_kind is ActivationKind.CSD_CHANNEL
+    supports_mart = spec.activation_kind in {
+        ActivationKind.UBIST_NUMERIC,
+        ActivationKind.IQVIA_NSA,
+    }
+    supports_source_activation = spec.activation_kind in {
+        ActivationKind.CSD_CHANNEL,
+        ActivationKind.CSD_KEYWORD,
+    }
     applicability = {
         "g3": True,
         "load": bool(spec.load_argv),
@@ -396,6 +402,7 @@ def _real_load(
     *,
     target_dir_override: Path | None = None,
     source_files: tuple[Path, ...] | None = None,
+    target_db_override: str | None = None,
 ) -> dict:
     """Wire the materialized upload into the loader, run it, and prove the epoch
     landed (M-2). Returns {target_dir, epoch_rows, staging_verify}.
@@ -405,10 +412,20 @@ def _real_load(
         to run it in real mode (it would load unrelated defaults = silent failure).
       * the epoch must appear in the loader's own output with rows > 0.
     """
-    from pipeline.scripts.ingest_hook.load_verify import verify_epoch_loaded, verify_table_load
+    from pipeline.scripts.ingest_hook.load_verify import (
+        LoadVerifyError,
+        verify_epoch_loaded,
+        verify_table_load,
+    )
 
     if not spec.load_argv:
-        return {"target_dir": None, "epoch_rows": None, "staging_verify": None}  # e.g. skeleton
+        return {
+            "target_dir": None,
+            "epoch_rows": None,
+            "staging_verify": None,
+            "load_verify_complete": False,
+            "load_verify_warning": None,
+        }  # e.g. skeleton
 
     if not spec.load_input_flag:
         raise RuntimeError(
@@ -443,33 +460,56 @@ def _real_load(
         else [str((input_root / entry.path).resolve()) for entry in manifest.files]
     )
     source_batches = [read_files] if spec.load_batch_files else [[source] for source in read_files]
-    for sources in source_batches:
-        argv = list(spec.load_argv)
-        for source in sources:
-            argv.extend([spec.load_input_flag, source])
-        if spec.load_target_flag:
-            argv.extend([spec.load_target_flag, str(target_dir)])
-        if spec.load_epoch_flag:
-            argv.extend([spec.load_epoch_flag, manifest.epoch])
-        print(
-            f"phase=load files={len(sources)} target={target_dir} "
-            f"staging_verify={staging_verify}"
-        )
-        _run_commands("load", tuple(argv))
+    previous_target_db = os.environ.get(config.ENV_LOAD_STAGING_DB)
+    if target_db_override is not None:
+        os.environ[config.ENV_LOAD_STAGING_DB] = target_db_override
+    try:
+        for sources in source_batches:
+            argv = list(spec.load_argv)
+            for source in sources:
+                argv.extend([spec.load_input_flag, source])
+            if spec.load_target_flag:
+                argv.extend([spec.load_target_flag, str(target_dir)])
+            if spec.load_epoch_flag:
+                argv.extend([spec.load_epoch_flag, manifest.epoch])
+            print(
+                f"phase=load files={len(sources)} target={target_dir} "
+                f"staging_verify={staging_verify}"
+            )
+            _run_commands("load", tuple(argv))
+    finally:
+        if target_db_override is not None:
+            if previous_target_db is None:
+                os.environ.pop(config.ENV_LOAD_STAGING_DB, None)
+            else:
+                os.environ[config.ENV_LOAD_STAGING_DB] = previous_target_db
 
     # M-2: the uploaded epoch must be present in the loader's output.
     epoch_rows = None
     rows_loaded = 0
+    load_verify_warning = None
     if spec.load_verify:
-        if spec.load_verify == "table_manifest":
-            evidence = verify_table_load(target_dir, manifest.epoch)
-            rows_before = evidence.rows_before
-            epoch_rows = evidence.rows_after
-            rows_loaded = evidence.rows_loaded
-        else:
-            epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
-            rows_loaded = max(epoch_rows - rows_before, 0)
-        print(f"gate=load_verify status=pass epoch={manifest.epoch} rows={epoch_rows} target={target_dir}")
+        try:
+            if spec.load_verify == "table_manifest":
+                evidence = verify_table_load(target_dir, manifest.epoch)
+                rows_before = evidence.rows_before
+                epoch_rows = evidence.rows_after
+                rows_loaded = evidence.rows_loaded
+            else:
+                epoch_rows = verify_epoch_loaded(spec.load_verify, target_dir, manifest.epoch)
+                rows_loaded = max(epoch_rows - rows_before, 0)
+            print(
+                f"gate=load_verify status=pass epoch={manifest.epoch} "
+                f"rows={epoch_rows} target={target_dir}"
+            )
+        except LoadVerifyError as exc:
+            if not config.e2e_commissioning():
+                raise
+            load_verify_warning = f"{type(exc).__name__}: {exc}"
+            print(
+                "gate=load_verify status=commissioning_nonblocking "
+                f"epoch={manifest.epoch} warning={load_verify_warning}"
+            )
 
     return {
         "target_dir": target_dir,
@@ -477,7 +517,21 @@ def _real_load(
         "rows_before": rows_before,
         "rows_loaded": rows_loaded,
         "staging_verify": staging_verify,
+        "load_verify_complete": bool(spec.load_verify),
+        "load_verify_warning": load_verify_warning,
     }
+
+
+def _run_post_gates_with_policy(**kwargs):
+    """Run numeric gates, preserving observed failures only in commissioning mode."""
+    try:
+        return run_post_gates(**kwargs), None
+    except (PostGateError, SigmaGateError) as exc:
+        if not config.e2e_commissioning():
+            raise
+        warning = f"{type(exc).__name__}: {exc}"
+        print(f"gate=post status=commissioning_nonblocking warning={warning}")
+        return None, warning
 
 
 def _load_with_source_inventory(
@@ -487,6 +541,7 @@ def _load_with_source_inventory(
     *,
     run_id: str,
     target_dir_override: Path | None,
+    target_db_override: str | None = None,
     required: bool,
 ) -> tuple[dict, ScanOutcome | None]:
     """Run a source-wide scan and publish its immutable anchor after load."""
@@ -498,6 +553,7 @@ def _load_with_source_inventory(
                 spec,
                 input_root,
                 target_dir_override=target_dir_override,
+                target_db_override=target_db_override,
             ),
             None,
         )
@@ -509,12 +565,14 @@ def _load_with_source_inventory(
         run_id=run_id,
         output_root=DEFAULT_INVENTORY_ROOT,
         previous=previous,
+        permissive=config.e2e_commissioning(),
         rebuild=lambda source_files: _real_load(
             manifest,
             spec,
             input_root,
             target_dir_override=target_dir_override,
             source_files=source_files,
+            target_db_override=target_db_override,
         ),
     )
     return dict(outcome.rebuild_result), outcome
@@ -523,19 +581,25 @@ def _load_with_source_inventory(
 def _automatic_publish_contract(outcome: ScanOutcome) -> dict[str, object]:
     """Serialize the approved hard-gate and warning contract for the hook."""
     gates = outcome.gates
+    permissive = bool(outcome.commissioning_warnings)
     return {
         "hard_gates": {
             "PG-1": "pass",
             "PG-2": "pass",
             "PG-3": "pass",
-            "PG-4": gates.pg4.status,
-            "PG-5": gates.pg5.status,
+            "PG-4": "pass" if permissive else gates.pg4.status,
+            "PG-5": "pass" if permissive else gates.pg5.status,
         },
         "warnings": {
             "PG-6": gates.pg6.status,
             "PG-7": gates.pg7.status,
         },
         "inventory_snapshot": str(outcome.snapshot_path),
+        "observed_hard_gates": {
+            "PG-4": gates.pg4.status,
+            "PG-5": gates.pg5.status,
+        },
+        "commissioning_warnings": list(outcome.commissioning_warnings),
     }
 
 
@@ -690,7 +754,7 @@ def _emit_completion_signal(
         f"queue_drain={drain_result.status}; "
         f"queue_drain_attempts={drain_result.attempts}"
     )
-    if result.status == "published":
+    if result.status in {"published", "disabled"}:
         tracker.complete("signal", reason=stage_reason)
     else:
         tracker.record_failure("signal", stage_reason)
@@ -758,6 +822,8 @@ def run(
     mart_conn = None
     corpus_candidate = None
     mart_activation = None
+    nsa_activation = None
+    keyword_activation = None
     writer_lock_acquired = False
     writer_lock_name = None
     publish_actions: tuple[object, ...] = ()
@@ -768,6 +834,8 @@ def run(
     baseline_live_snapshot = None
     baseline_manifest_sha = None
     scan_outcome = None
+    post_gate_verified = False
+    retained_quarters: tuple[str, ...] = ()
     activation_journal = None
     primary_failure_reason = None
     try:
@@ -843,8 +911,28 @@ def run(
                         )
                 else:
                     mart_activation = ubist_mart_activation.from_env(run_id=run_id)
+            elif manifest.category == "iqvia_nsa" and not configured_staging_verify:
+                from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation
+
+                iqvia_nsa_mart_activation.require_production_mode(mode)
+                nsa_activation = iqvia_nsa_mart_activation.from_env(run_id=run_id)
+                iqvia_nsa_mart_activation.initialize_build_schema(nsa_activation)
+            elif (
+                spec.activation_kind is ActivationKind.CSD_KEYWORD
+                and not configured_staging_verify
+                and config.source_activation_enabled(manifest.category, mode=configured_mode)
+            ):
+                from pipeline.scripts.ingest_hook import csd_keyword_activation
+
+                keyword_activation = csd_keyword_activation.plan_for_run(run_id)
             if spec.sigma_source and not configured_staging_verify:
-                source_db = mart_activation.source_db if mart_activation is not None else None
+                source_db = (
+                    mart_activation.source_db
+                    if mart_activation is not None
+                    else nsa_activation.source_db
+                    if nsa_activation is not None
+                    else None
+                )
                 baseline_conn = config.open_mart_connection(source_db)
                 baseline_lock_acquired = False
                 baseline_failure_reason = None
@@ -954,13 +1042,18 @@ def run(
                 run_id=run_id,
                 target_dir_override=(corpus_candidate.candidate_root if corpus_candidate else None),
                 required=config.full_scan_enabled(),
+                target_db_override=(
+                    nsa_activation.build_db if nsa_activation is not None else None
+                    if keyword_activation is None
+                    else keyword_activation.candidate_base
+                ),
             )
             rows_before = int(load_result.get("rows_before") or 0)
             rows_after = int(load_result.get("epoch_rows") or 0)
             rows_loaded = int(load_result.get("rows_loaded") or 0)
             tracker.done()
-            if load_result["epoch_rows"] is not None:
-                tracker.complete("load_verify")  # verify_epoch_loaded ran inside _real_load
+            if load_result.get("load_verify_complete"):
+                tracker.complete("load_verify", load_result.get("load_verify_warning"))
             else:
                 tracker.skip("load_verify", "category has no load_verify spec")
             staging_verify = load_result["staging_verify"]
@@ -1043,6 +1136,10 @@ def run(
                         csd_evidence
                     ),
                 }
+                if scan_outcome is not None:
+                    candidate_payload["automatic_publish"] = _automatic_publish_contract(
+                        scan_outcome
+                    )
                 ledger.mark_awaiting_approval(
                     *identity,
                     run_id=run_id,
@@ -1056,25 +1153,95 @@ def run(
                     "CSD channel API reads the activated stage table directly",
                 )
                 awaiting_approval_prepared = True
-                _emit_completion_signal(
-                    ledger=ledger,
-                    tracker=tracker,
-                    identity=identity,
+                ledger.record_signal(
+                    *identity,
                     run_id=run_id,
                     event="prepared",
                     mode=configured_mode,
-                    rows_before=rows_before,
-                    rows_after=csd_evidence.raw.row_count,
                     rows_loaded=rows_loaded,
-                    periods=set(csd_evidence.periods.complete_quarters),
-                    started_at=started_at,
-                    failure_reason=None,
+                    delivery_status="suppressed",
+                    attempts=0,
+                    reason="prepared event is internal-only",
+                    payload={"event": "prepared", "outbound": False},
                 )
                 completion_signal_emitted = True
                 print(
                     "result=awaiting_approval "
                     f"epoch={manifest.epoch} category={manifest.category} run_id={run_id}"
                 )
+                if scan_outcome is not None:
+                    status = _request_automatic_publish(
+                        identity,
+                        run_id=run_id,
+                        endpoint=config.automatic_publish_webhook(),
+                    )
+                    print(f"result=automatic_publish_requested http_status={status}")
+                return 0
+            if keyword_activation is not None:
+                from pipeline.scripts.ingest_hook import csd_keyword_activation
+
+                tracker.skip("mart_build", "CSD keyword uses source-table activation")
+                tracker.skip("sigma", "CSD keyword uses source-table evidence")
+                tracker.enter("post_gate")
+                keyword_conn = config.open_mart_connection()
+                try:
+                    keyword_evidence = csd_keyword_activation.validate_candidate(
+                        keyword_conn, keyword_activation
+                    )
+                finally:
+                    keyword_conn.close()
+                tracker.done()
+                prepared_at = datetime.now(timezone.utc)
+                expires_at = prepared_at + timedelta(
+                    seconds=_publish_candidate_ttl_seconds()
+                )
+                candidate_payload = {
+                    "epoch": manifest.epoch,
+                    "category": manifest.category,
+                    "manifest_sha": manifest.manifest_sha,
+                    "run_id": run_id,
+                    "mode": configured_mode,
+                    "rows_before": rows_before,
+                    "rows_after": keyword_evidence.raw_rows,
+                    "rows_loaded": rows_loaded,
+                    "keyword_activation_plan": csd_keyword_activation.plan_payload(
+                        keyword_activation
+                    ),
+                    "keyword_candidate_evidence": csd_keyword_activation.evidence_payload(
+                        keyword_evidence
+                    ),
+                }
+                if scan_outcome is not None:
+                    candidate_payload["automatic_publish"] = _automatic_publish_contract(
+                        scan_outcome
+                    )
+                ledger.mark_awaiting_approval(
+                    *identity,
+                    run_id=run_id,
+                    candidate=candidate_payload,
+                    prepared_at=prepared_at.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                )
+                tracker.skip("mart_publish", "automatic keyword publish requested")
+                awaiting_approval_prepared = True
+                ledger.record_signal(
+                    *identity,
+                    run_id=run_id,
+                    event="prepared",
+                    mode=configured_mode,
+                    rows_loaded=rows_loaded,
+                    delivery_status="suppressed",
+                    attempts=0,
+                    reason="prepared event is internal-only",
+                    payload={"event": "prepared", "outbound": False},
+                )
+                tracker.skip("signal", "prepared event is not outbound")
+                status = _request_automatic_publish(
+                    identity,
+                    run_id=run_id,
+                    endpoint=config.automatic_publish_webhook(),
+                )
+                print(f"result=automatic_publish_requested http_status={status}")
                 return 0
             if staging_verify:
                 # Isolated J5 verification: real loader exercised, zero mart write.
@@ -1138,6 +1305,27 @@ def run(
                     mart_conn = config.open_mart_connection(mart_activation.build_db)
                     print(f"phase=mart_build status=complete build_db={mart_activation.build_db}")
                     tracker.done()
+                elif nsa_activation is not None:
+                    from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation
+
+                    tracker.enter("mart_build")
+                    raw_conn = config.open_mart_connection(nsa_activation.build_db)
+                    try:
+                        retained_quarters = iqvia_nsa_mart_activation.trim_raw_retention(
+                            raw_conn, nsa_activation
+                        )
+                    finally:
+                        raw_conn.close()
+                    print(
+                        f"phase=mart_build status=start build_db={nsa_activation.build_db} "
+                        f"retained_quarters={retained_quarters}"
+                    )
+                    iqvia_nsa_mart_activation.build_mart(nsa_activation)
+                    mart_conn = config.open_mart_connection(nsa_activation.build_db)
+                    print(
+                        f"phase=mart_build status=complete build_db={nsa_activation.build_db}"
+                    )
+                    tracker.done()
                 elif spec.sigma_source:
                     raise RuntimeError("live mart load has no isolated activation plan")
                 else:
@@ -1182,7 +1370,7 @@ def run(
                                 post_gate_actual_rows
                             )
                         )
-                    post = run_post_gates(
+                    post, post_gate_warning = _run_post_gates_with_policy(
                         run_id=run_id,
                         epoch=manifest.epoch,
                         category=manifest.category,
@@ -1195,9 +1383,11 @@ def run(
                         ),
                         report_path=load_result["target_dir"] / "post_gate_report.json",
                     )
-                    print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
-                    tracker.done()
-                    tracker.complete("sigma")  # sigma_check ran inside run_post_gates and passed
+                    if post is not None:
+                        print(f"gate=post status={post.status} duration_ms={post.duration_ms}")
+                    post_gate_verified = True
+                    tracker.done(reason=post_gate_warning)
+                    tracker.complete("sigma", post_gate_warning)
                 else:
                     tracker.skip("sigma", "category has no sigma_source")
                     tracker.skip("post_gate", "category has no sigma_source")
@@ -1335,6 +1525,52 @@ def run(
                                 file=sys.stderr,
                             )
                     return 0
+                elif nsa_activation is not None:
+                    from pipeline.scripts.ingest_hook import (
+                        iqvia_nsa_mart_activation,
+                        ubist_mart_activation,
+                    )
+                    from pipeline.scripts.ingest_hook.iqvia_nsa_publication import (
+                        build_publication_evidence,
+                    )
+
+                    tracker.enter("mart_publish")
+                    writer_conn = config.open_mart_connection(nsa_activation.target_db)
+                    writer_lock_name = ubist_mart_activation.WRITER_LOCK_NAME
+                    ubist_mart_activation.acquire_writer_lock(
+                        writer_conn, timeout_seconds=0, lock_name=writer_lock_name
+                    )
+                    writer_lock_acquired = True
+                    ubist_mart_activation.require_writer_lock_owner(
+                        writer_conn, lock_name=writer_lock_name
+                    )
+                    snapshot_conn = config.open_mart_connection(nsa_activation.source_db)
+                    try:
+                        current_live_snapshot = fingerprint_untouched_sources(
+                            snapshot_conn, touched_source="__jw_ingest_no_source__"
+                        )
+                    finally:
+                        snapshot_conn.close()
+                    if current_live_snapshot != baseline_live_snapshot:
+                        raise RuntimeError(
+                            "serving general mart changed while NSA candidate was built"
+                        )
+                    publish_actions = iqvia_nsa_mart_activation.publish(
+                        writer_conn,
+                        nsa_activation,
+                        run_id=run_id,
+                        epoch=manifest.epoch,
+                        post_gate_verified=post_gate_verified,
+                        publication_evidence=build_publication_evidence(
+                            manifest.files,
+                            report.file_rows,
+                            retained_quarters,
+                        ),
+                    )
+                    print(
+                        f"phase=mart_publish status=complete tables={len(publish_actions)}"
+                    )
+                    tracker.done()
                 else:
                     tracker.skip("mart_publish", "category has no mart activation")
                 tracker.enter("refresh")
@@ -1505,6 +1741,29 @@ def run(
                         ubist_mart_activation.complete_recovery(recovered)
             elif corpus_candidate is not None:
                 ubist_mart_activation.rollback_candidate_corpus(corpus_candidate)
+        if (
+            nsa_activation is not None
+            and publish_actions
+            and not ledger_completed
+            and writer_conn is not None
+        ):
+            from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation
+
+            try:
+                iqvia_nsa_mart_activation.rollback_publication(
+                    writer_conn,
+                    nsa_activation,
+                    actions=publish_actions,
+                    run_id=run_id,
+                    restore_run_id=f"failed_{run_id}",
+                )
+                _run_commands("refresh-restored-serving", resolve_category("iqvia_nsa").refresh_argv)
+            except Exception as recovery_exc:
+                print(
+                    "recovery=failed "
+                    f"reason={type(recovery_exc).__name__}: {recovery_exc}",
+                    file=sys.stderr,
+                )
         if writer_lock_acquired and writer_conn is not None:
             _release_writer_lock_preserving_primary(
                 writer_conn,

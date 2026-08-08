@@ -216,6 +216,53 @@ def test_signal_delivery_is_recorded_pending_before_send_then_final(
     assert writes == ["pending", "failed"]
 
 
+def test_disabled_delivery_records_signal_stage_complete(
+    monkeypatch, sqlite_ledger
+):
+    identity = ("2026-03", "iqvia_csd_keyword", "c" * 64)
+    completed: list[tuple[str, str | None]] = []
+    failed: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "pipeline.scripts.ingest_hook.completion_signal.publish",
+        lambda *_args, **_kwargs: PublishResult(
+            "disabled", 0, "completion endpoint is not configured"
+        ),
+    )
+    tracker = type(
+        "Tracker",
+        (),
+        {
+            "complete": lambda _self, stage, reason=None: completed.append(
+                (stage, reason)
+            ),
+            "record_failure": lambda _self, stage, reason: failed.append(
+                (stage, reason)
+            ),
+        },
+    )()
+
+    job_runner._emit_completion_signal(
+        ledger=sqlite_ledger,
+        tracker=tracker,
+        identity=identity,
+        run_id="run-disabled",
+        event="complete",
+        mode="production",
+        rows_before=10,
+        rows_after=12,
+        rows_loaded=2,
+        periods={"2026-03"},
+        started_at="2026-08-08T00:00:00Z",
+        failure_reason=None,
+    )
+
+    assert failed == []
+    assert len(completed) == 1
+    assert completed[0][0] == "signal"
+    assert "delivery=disabled" in (completed[0][1] or "")
+
+
 def test_v7_unexpected_load_failure_emits_failed_signal(
     monkeypatch, sqlite_ledger, bucket, tmp_path
 ):

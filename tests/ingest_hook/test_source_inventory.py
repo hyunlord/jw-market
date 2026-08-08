@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -475,3 +476,60 @@ def test_full_scan_does_not_publish_snapshot_when_rebuild_fails(tmp_path: Path) 
         )
 
     assert not (tmp_path / "inventory").exists()
+
+
+def test_full_scan_expands_nested_xlsx_from_zip_for_rebuild(tmp_path: Path) -> None:
+    archive = tmp_path / "submission.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("nested/source.xlsx", b"real workbook bytes")
+        handle.writestr("nested/ignore.txt", b"not an input")
+    rebuilt: list[tuple[str, bytes]] = []
+
+    outcome = run_full_scan(
+        SourceScanPolicy("iqvia_nsa", tmp_path, "quarter"),
+        epoch="2026-Q2",
+        manifest_sha="a" * 64,
+        run_id="zip-run",
+        output_root=tmp_path / "inventory",
+        classify=lambda _path: "iqvia_nsa",
+        summarize=lambda *_args: _summary({"2026-Q1", "2026-Q2"}),
+        rebuild=lambda paths: rebuilt.extend(
+            (path.name, path.read_bytes()) for path in paths
+        )
+        or {"files": len(paths)},
+    )
+
+    assert rebuilt == [("source.xlsx", b"real workbook bytes")]
+    assert outcome.snapshot.classified_count == 1
+    assert outcome.snapshot.files[0].relative_path == "submission.zip!/nested/source.xlsx"
+
+
+def test_commissioning_scan_records_gate_failures_but_rebuilds_classified_inputs(
+    tmp_path: Path,
+) -> None:
+    good = _write(tmp_path, "good.xlsx", b"good")
+    _write(tmp_path, "broken.xlsx", b"broken")
+    rebuilt: list[tuple[Path, ...]] = []
+
+    def classify(path: Path) -> str:
+        if path.name == "broken.xlsx":
+            raise SourceValidationError("broken fixture")
+        return "iqvia_csd_channel"
+
+    outcome = run_full_scan(
+        SourceScanPolicy("iqvia_csd_channel", tmp_path, "month"),
+        epoch="2026-03",
+        manifest_sha="b" * 64,
+        run_id="commissioning-run",
+        output_root=tmp_path / "inventory",
+        classify=classify,
+        summarize=lambda *_args: _summary({"2026-01", "2026-03"}),
+        rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
+        permissive=True,
+    )
+
+    assert rebuilt == [(good.resolve(),)]
+    assert outcome.gates.pg4.status == "fail"
+    assert outcome.snapshot.rejected_count == 1
+    assert any("rejected operating workbooks=1" in item for item in outcome.commissioning_warnings)
+    assert any("PG-4" in item for item in outcome.commissioning_warnings)

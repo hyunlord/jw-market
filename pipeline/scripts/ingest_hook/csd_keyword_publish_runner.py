@@ -1,9 +1,9 @@
-"""Approval-triggered CSD channel raw+stage publisher."""
+"""Approval-triggered IQVIA CSD keyword raw+stage publisher."""
 from __future__ import annotations
 
 import sys
 
-from pipeline.scripts.ingest_hook import config, csd_channel_activation
+from pipeline.scripts.ingest_hook import config, csd_keyword_activation
 from pipeline.scripts.ingest_hook.job_launcher import publish_job_name
 from pipeline.scripts.ingest_hook.job_runner import (
     _StageTracker,
@@ -24,7 +24,7 @@ def _record_downstream(ledger: Ledger, identity: tuple[str, str, str], run_id: s
             seq=seq,
             stage=stage,
             status="complete",
-            reason="live CSD stage table is queryable after atomic publish",
+            reason="live stage table is queryable after atomic keyword publish",
             started_at=stamp,
             finished_at=stamp,
             duration_ms=0,
@@ -64,70 +64,65 @@ def run(
         return 1
 
     payload = candidate.payload
-    raw_plan = payload.get("csd_activation_plan")
-    raw_evidence = payload.get("csd_candidate_evidence")
+    raw_plan = payload.get("keyword_activation_plan")
+    raw_evidence = payload.get("keyword_candidate_evidence")
     if not isinstance(raw_plan, dict) or not isinstance(raw_evidence, dict):
-        ledger.mark_failed(*identity, reason="CSD publish candidate payload is incomplete")
-        print("result=failed reason=CSD publish candidate payload is incomplete", file=sys.stderr)
+        ledger.mark_failed(*identity, reason="keyword publish candidate payload is incomplete")
+        print("result=failed reason=keyword publish candidate payload is incomplete", file=sys.stderr)
         return 1
     try:
-        plan = csd_channel_activation.plan_from_payload(raw_plan)
-        recorded = csd_channel_activation.evidence_from_payload(raw_evidence)
-        mode = str(payload.get("mode") or "production")
-        raw_schema, stage_schema = config.csd_channel_live_schemas(mode=mode)
-        csd_channel_activation.validate_plan_scope(
-            plan,
-            expected_run_id=build_run_id,
-            raw_schema=raw_schema,
-            stage_schema=stage_schema,
-        )
+        plan = csd_keyword_activation.plan_from_payload(raw_plan)
+        recorded = csd_keyword_activation.evidence_from_payload(raw_evidence)
+        if plan.run_id != build_run_id:
+            raise csd_keyword_activation.CandidateValidationError(
+                "keyword activation run identity mismatch"
+            )
     except Exception as exc:
-        reason = f"CSD publish payload rejected: {type(exc).__name__}: {exc}"
+        reason = f"keyword publish payload rejected: {type(exc).__name__}: {exc}"
         ledger.mark_failed(*identity, reason=reason)
         print(f"result=failed reason={reason}", file=sys.stderr)
         return 1
+
     tracker = _StageTracker(ledger, identity, publish_run_id)
     connection = None
     lock_acquired = False
     failure_reason = None
     try:
         tracker.enter("mart_publish")
-        connection = config.open_csd_channel_connection()
-        # This lock is node-local. Global serialization remains the ledger
-        # awaiting_approval->publish_running CAS checked above.
+        connection = config.open_mart_connection()
         acquire_writer_lock(
             connection,
             timeout_seconds=0,
-            lock_name=csd_channel_activation.WRITER_LOCK_NAME,
+            lock_name=csd_keyword_activation.WRITER_LOCK_NAME,
         )
         lock_acquired = True
-        current = csd_channel_activation.validate_candidate(connection, plan, recorded)
-        if current.raw != recorded.raw or current.stage != recorded.stage:
-            raise csd_channel_activation.CandidateValidationError(
-                "CSD candidate fingerprint changed after approval"
+        current = csd_keyword_activation.validate_candidate(connection, plan)
+        if current != recorded:
+            raise csd_keyword_activation.CandidateValidationError(
+                "keyword candidate evidence changed after approval"
             )
-        verdict = csd_channel_activation.publish_candidate(connection, plan, current)
-        if verdict is not csd_channel_activation.SwapVerdict.APPLIED:
-            raise RuntimeError(f"CSD publish was not applied: {verdict}")
+        csd_keyword_activation.require_publish_scope(connection, plan)
+        csd_keyword_activation.publish_candidate(connection, plan)
         tracker.done()
-        tracker.skip("refresh", "CSD channel API reads the activated stage table directly")
         _record_downstream(ledger, identity, publish_run_id)
-        row_counts = {
-            plan.raw.live.table: current.raw.row_count,
-            plan.stage.live.table: current.stage.row_count,
-        }
-        ledger.mark_complete(*identity, row_counts=row_counts)
+        ledger.mark_complete(
+            *identity,
+            row_counts={
+                plan.raw.live.table: current.raw_rows,
+                plan.stage.live.table: current.stage_rows,
+            },
+        )
         _emit_completion_signal(
             ledger=ledger,
             tracker=tracker,
             identity=identity,
             run_id=publish_run_id,
             event="complete",
-            mode=mode,
+            mode=str(payload.get("mode") or "production"),
             rows_before=int(payload.get("rows_before") or 0),
-            rows_after=current.raw.row_count,
+            rows_after=current.raw_rows,
             rows_loaded=int(payload.get("rows_loaded") or 0),
-            periods=set(current.periods.complete_quarters),
+            periods={current.min_period, current.max_period},
             started_at=candidate.prepared_at,
             failure_reason=None,
         )
@@ -142,7 +137,7 @@ def run(
         if connection is not None and lock_acquired:
             _release_writer_lock_preserving_primary(
                 connection,
-                lock_name=csd_channel_activation.WRITER_LOCK_NAME,
+                lock_name=csd_keyword_activation.WRITER_LOCK_NAME,
                 primary_failure_reason=failure_reason,
             )
         if connection is not None:

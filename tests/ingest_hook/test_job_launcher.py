@@ -48,6 +48,20 @@ def test_rendered_job_pins_orchestrator_image_and_runner():
     assert body["metadata"]["name"] == f"jw-ingest-ubist-{SHA[:8]}"
     assert body["spec"]["backoffLimit"] == 0
     assert body["metadata"]["labels"]["jw-ingest/category"] == "ubist"
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    assert env["INGEST_IMAGE_DIGEST"] == f"sha256:{config.DEFAULT_JOB_IMAGE.rsplit('sha256:', 1)[1]}"
+
+
+def test_rendered_job_rejects_unpinned_image(monkeypatch):
+    monkeypatch.setenv(config.ENV_JOB_IMAGE, "registry.example/jw-pipeline:latest")
+
+    with pytest.raises(RuntimeError, match="pinned by digest"):
+        render_job(
+            category="iqvia_nsa",
+            manifest_sha=SHA,
+            manifest_path="/data/nsa.manifest.json",
+            namespace="llmops",
+        )
 
 
 def test_agent_refresh_job_is_a_separate_profile_and_failure_domain():
@@ -528,6 +542,47 @@ def test_rendered_job_passes_full_scan_and_automatic_publish_contract(monkeypatc
     assert env["INGEST_SOURCE_SCAN_POLICIES_JSON"] == policies
     assert env["INGEST_AUTOMATIC_PUBLISH_WEBHOOK_URL"].endswith(
         "/ingest/publish/automatic"
+    )
+
+
+def test_rendered_job_passes_e2e_commissioning_override(monkeypatch):
+    monkeypatch.setenv("INGEST_E2E_COMMISSIONING", "1")
+
+    body = render_job(
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/m.json",
+        namespace="llmops",
+    )
+
+    env = {
+        item["name"]: item["value"]
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+        if "value" in item
+    }
+    assert env["INGEST_E2E_COMMISSIONING"] == "1"
+
+
+def test_rendered_job_passes_production_activation_categories(monkeypatch):
+    monkeypatch.setenv(
+        "INGEST_PRODUCTION_LOAD_CATEGORIES",
+        "iqvia_csd_channel,iqvia_csd_keyword",
+    )
+
+    body = render_job(
+        category="iqvia_csd_channel",
+        manifest_sha=SHA,
+        manifest_path="_manifests/m.json",
+        namespace="llmops",
+    )
+
+    env = {
+        item["name"]: item["value"]
+        for item in body["spec"]["template"]["spec"]["containers"][0]["env"]
+        if "value" in item
+    }
+    assert env["INGEST_PRODUCTION_LOAD_CATEGORIES"] == (
+        "iqvia_csd_channel,iqvia_csd_keyword"
     )
 
 

@@ -133,7 +133,7 @@ def _available_iqvia_quarters() -> tuple[str, ...]:
                     """
                 ).fetchall()
             )
-    return rolling_period_scope(periods, source="iqvia_nsa")
+    return rolling_period_scope(periods, source="iqvia_nsa", purpose="calculation")
 
 
 def _raw_rows_to_base_frame(rows: Iterable[dict[str, Any]]) -> pd.DataFrame:

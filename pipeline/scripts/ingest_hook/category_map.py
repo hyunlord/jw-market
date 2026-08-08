@@ -28,14 +28,14 @@ class ActivationKind(StrEnum):
 
     NONE = "none"
     UBIST_NUMERIC = "ubist_numeric"
+    IQVIA_NSA = "iqvia_nsa"
     CSD_CHANNEL = "csd_channel"
+    CSD_KEYWORD = "csd_keyword"
 
 
 CSD_CHANNEL_E2E_STAGES: tuple[tuple[str, str], ...] = (
     ("g3", "G3"),
     ("load", "적재"),
-    ("load_verify", "적재 검증"),
-    ("awaiting_approval", "승인 대기"),
     ("mart_publish", "CSD 원천·스테이지 게시"),
     ("context_bridge", "컨텍스트 브리지"),
     ("dashboard", "대시보드"),
@@ -131,7 +131,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         sigma_source="iqvia_nsa", load_input_flag="--file",
         load_target_flag="--target-dir", load_epoch_flag="--epoch",
         load_verify="table_manifest", workbook_reader="iqvia_nsa",
-        load_batch_files=True, production_load_supported=False,
+        load_batch_files=True, production_load_supported=True,
+        activation_kind=ActivationKind.IQVIA_NSA,
     ),
     CategorySpec(
         key="iqvia_csd_channel", description="IQVIA CSD channel dynamics workbook",
@@ -140,7 +141,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_channel", load_batch_files=True,
-        production_load_supported=False,
+        production_load_supported=True,
         activation_kind=ActivationKind.CSD_CHANNEL,
     ),
     CategorySpec(
@@ -150,7 +151,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         load_input_flag="--file", load_target_flag="--target-dir",
         load_epoch_flag="--epoch", load_verify="table_manifest",
         workbook_reader="iqvia_csd_keyword", load_batch_files=True,
-        production_load_supported=False,
+        production_load_supported=True,
+        activation_kind=ActivationKind.CSD_KEYWORD,
     ),
     CategorySpec(
         key="mi_master", description="MI Master workbook resubmission",
