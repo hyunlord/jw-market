@@ -35,6 +35,21 @@ class PublicationEvidence:
     window_end: str
 
 
+@dataclass(frozen=True, slots=True)
+class RolledBackPublication:
+    mart_publication_epoch: int
+    category: str
+    epoch: str
+    run_id: str
+    inventory_sha256: str
+    inventory_json: str
+    builder_commit: str
+    image_ref: str
+    window_start: str
+    window_end: str
+    published_at_utc: str
+
+
 def build_publication_evidence(
     files: object,
     file_rows: dict[str, int],
@@ -216,6 +231,114 @@ def _mark_publication_rolled_back(
             actor="iqvia_nsa_mart_activation",
             reason="publication restored before ingest completion",
         )
+
+
+def read_rolled_back_publication(
+    conn: Any,
+    config: PublicationConfig,
+    *,
+    run_id: str,
+) -> RolledBackPublication:
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            f"SELECT mart_publication_epoch, category, epoch, run_id, "
+            "input_inventory_sha256, input_inventory_json, builder_commit, "
+            "image_digest, window_start, window_end, published_at_utc "
+            f"FROM {quote_id(config.target_db)}.{quote_id(PROVENANCE_TABLE)} "
+            "WHERE run_id=%s AND category='iqvia_nsa' AND status='rolled_back'",
+            (run_id,),
+        )
+        rows = cursor.fetchall()
+        if len(rows) != 1:
+            raise RuntimeError(
+                "rolled-back NSA publication expected exactly 1 row, "
+                f"found {len(rows)}: run_id={run_id}"
+            )
+        row = rows[0]
+        if not isinstance(row, dict):
+            raise RuntimeError("publication recovery requires a dictionary database cursor")
+        return RolledBackPublication(
+            mart_publication_epoch=int(row["mart_publication_epoch"]),
+            category=str(row["category"]),
+            epoch=str(row["epoch"]),
+            run_id=str(row["run_id"]),
+            inventory_sha256=str(row["input_inventory_sha256"]),
+            inventory_json=str(row["input_inventory_json"]),
+            builder_commit=str(row["builder_commit"]),
+            image_ref=str(row["image_digest"]),
+            window_start=str(row["window_start"]),
+            window_end=str(row["window_end"]),
+            published_at_utc=str(row["published_at_utc"]),
+        )
+    finally:
+        cursor.close()
+
+
+def mark_publication_recovered(
+    conn: Any,
+    config: PublicationConfig,
+    *,
+    run_id: str,
+    publication_epoch: int,
+    inventory_sha256: str,
+) -> None:
+    cursor = conn.cursor()
+    try:
+        cursor.execute("START TRANSACTION")
+        cursor.execute(
+            f"UPDATE {quote_id(config.target_db)}.{quote_id(PROVENANCE_TABLE)} "
+            "SET status='published', rolled_back_at_utc=NULL "
+            "WHERE run_id=%s AND category='iqvia_nsa' AND status='rolled_back' "
+            "AND mart_publication_epoch=%s AND input_inventory_sha256=%s",
+            (run_id, publication_epoch, inventory_sha256),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                f"publication recovery CAS matched {cursor.rowcount} rows: run_id={run_id}"
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+def mark_publication_recovery_rolled_back(
+    conn: Any,
+    config: PublicationConfig,
+    *,
+    run_id: str,
+    publication_epoch: int,
+    inventory_sha256: str,
+) -> None:
+    cursor = conn.cursor()
+    try:
+        cursor.execute("START TRANSACTION")
+        cursor.execute(
+            f"UPDATE {quote_id(config.target_db)}.{quote_id(PROVENANCE_TABLE)} "
+            "SET status='rolled_back', rolled_back_at_utc=%s "
+            "WHERE run_id=%s AND category='iqvia_nsa' AND status='published' "
+            "AND mart_publication_epoch=%s AND input_inventory_sha256=%s",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                run_id,
+                publication_epoch,
+                inventory_sha256,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "publication recovery rollback CAS matched "
+                f"{cursor.rowcount} rows: run_id={run_id}"
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
 
 
 def rollback_publication(

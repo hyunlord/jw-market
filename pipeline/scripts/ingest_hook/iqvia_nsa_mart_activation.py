@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,7 @@ from pipeline.scripts.deploy.mart_load_ops import (
     publish_table_group_atomically,
     quote_id,
     run_s4_general,
+    table_exists,
 )
 from pipeline.scripts.ingest_hook.iqvia_nsa_publication import (
     PublicationEvidence,
@@ -38,6 +40,21 @@ ENV_BUILDER_COMMIT = "APP_VERSION"
 ENV_IMAGE_DIGEST = "INGEST_IMAGE_DIGEST"
 ENV_IMAGE_REF = "INGEST_JOB_IMAGE"
 NSA_PUBLISH_TABLES = (iqvia_loader.NSA_TABLE, *GENERAL_TABLES)
+_S4_MUTATED_ENV = (
+    "MARIADB_DATABASE",
+    "MARIADB_SOURCE_DATABASE",
+    "MARIADB_USER",
+    "MARIADB_PASSWORD",
+    "MARIADB_HOST",
+    "MARIADB_PORT",
+    "HOST_PORT",
+    "S4_INPUT_MODE",
+    "S4_ENRICHED_DIR",
+    "S4_CATALOG_DIR",
+    "S4_IQVIA_NSA_DIR",
+    "S4_UBIST_DIR",
+    "S5_CATALOG_DIR",
+)
 _SCHEMA_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -151,16 +168,7 @@ def build_mart(config: NsaMartActivation, *, catalog_root: str | None = None) ->
         if catalog_root is None
         else Path(catalog_root)
     )
-    mutated_env_keys = (
-        "MARIADB_DATABASE",
-        "MARIADB_SOURCE_DATABASE",
-        "MARIADB_USER",
-        "MARIADB_PASSWORD",
-        "MARIADB_HOST",
-        "HOST_PORT",
-        "MARIADB_PORT",
-    )
-    previous_env = {key: os.environ.get(key) for key in mutated_env_keys}
+    previous_env = {key: os.environ.get(key) for key in _S4_MUTATED_ENV}
     try:
         run_s4_general(
             build_db=config.build_db,
@@ -239,3 +247,93 @@ def publish(
         )
         raise
     return actions
+
+
+def _failed_publication_table(table: str, failed_run_id: str) -> str:
+    if not _SCHEMA_RE.fullmatch(failed_run_id):
+        raise RuntimeError(f"failed_run_id is not a safe identifier: {failed_run_id!r}")
+    return f"{table}__failed_failed_{failed_run_id}"
+
+
+def _recovery_backup_table(table: str, recovery_run_id: str) -> str:
+    token = hashlib.sha256(recovery_run_id.encode("utf-8")).hexdigest()[:12]
+    return f"{table}__rr_{token}"
+
+
+def promote_failed_publication_atomically(
+    conn: Any,
+    config: NsaMartActivation,
+    *,
+    failed_run_id: str,
+    recovery_run_id: str,
+) -> tuple[PublishAction, ...]:
+    """Restore a rolled-back NSA publication without rebuilding its tables."""
+
+    actions: list[PublishAction] = []
+    rename_pairs: list[str] = []
+    for table in NSA_PUBLISH_TABLES:
+        preserved = _failed_publication_table(table, failed_run_id)
+        backup = _recovery_backup_table(table, recovery_run_id)
+        if not table_exists(conn, config.target_db, table):
+            raise RuntimeError(f"serving table missing before recovery: {table}")
+        if not table_exists(conn, config.target_db, preserved):
+            raise RuntimeError(f"preserved failed table missing: {preserved}")
+        if table_exists(conn, config.target_db, backup):
+            raise RuntimeError(f"recovery backup table already exists: {backup}")
+        rename_pairs.extend(
+            (
+                f"{quote_id(config.target_db)}.{quote_id(table)} TO "
+                f"{quote_id(config.target_db)}.{quote_id(backup)}",
+                f"{quote_id(config.target_db)}.{quote_id(preserved)} TO "
+                f"{quote_id(config.target_db)}.{quote_id(table)}",
+            )
+        )
+        actions.append(
+            PublishAction(
+                table,
+                "recovery_atomic_group_rename",
+                preserved,
+                backup,
+                0,
+            )
+        )
+
+    with conn.cursor() as cursor:
+        cursor.execute("RENAME TABLE " + ", ".join(rename_pairs))
+    return tuple(actions)
+
+
+def restore_failed_publication_atomically(
+    conn: Any,
+    config: NsaMartActivation,
+    *,
+    actions: tuple[PublishAction, ...],
+    failed_run_id: str,
+) -> None:
+    """Return a recovery attempt to the exact pre-recovery table names."""
+
+    if tuple(action.table for action in actions) != NSA_PUBLISH_TABLES:
+        raise RuntimeError("recovery actions do not cover the complete NSA table group")
+    rename_pairs: list[str] = []
+    for action in actions:
+        preserved = _failed_publication_table(action.table, failed_run_id)
+        backup = action.backup_table
+        if backup is None:
+            raise RuntimeError(f"recovery backup table is missing for {action.table}")
+        if not table_exists(conn, config.target_db, action.table):
+            raise RuntimeError(f"recovered serving table missing: {action.table}")
+        if table_exists(conn, config.target_db, preserved):
+            raise RuntimeError(f"preserved failed table unexpectedly exists: {preserved}")
+        if not table_exists(conn, config.target_db, backup):
+            raise RuntimeError(f"recovery backup table missing: {backup}")
+        rename_pairs.extend(
+            (
+                f"{quote_id(config.target_db)}.{quote_id(action.table)} TO "
+                f"{quote_id(config.target_db)}.{quote_id(preserved)}",
+                f"{quote_id(config.target_db)}.{quote_id(backup)} TO "
+                f"{quote_id(config.target_db)}.{quote_id(action.table)}",
+            )
+        )
+
+    with conn.cursor() as cursor:
+        cursor.execute("RENAME TABLE " + ", ".join(rename_pairs))

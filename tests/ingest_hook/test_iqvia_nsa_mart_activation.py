@@ -133,6 +133,25 @@ def test_build_mart_removes_s4_environment_that_was_previously_absent(
     assert "MARIADB_SOURCE_DATABASE" not in activation.os.environ
 
 
+def test_build_mart_restores_s4_path_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    monkeypatch.setenv("S4_INPUT_MODE", "original-mode")
+    monkeypatch.delenv("S4_IQVIA_NSA_DIR", raising=False)
+
+    def mutate_process_env(**_kwargs: object) -> None:
+        monkeypatch.setenv("S4_INPUT_MODE", "raw")
+        monkeypatch.setenv("S4_IQVIA_NSA_DIR", "/candidate/nsa")
+
+    monkeypatch.setattr(activation, "run_s4_general", mutate_process_env)
+
+    activation.build_mart(config, catalog_root="/market-output/catalog")
+
+    assert activation.os.environ["S4_INPUT_MODE"] == "original-mode"
+    assert "S4_IQVIA_NSA_DIR" not in activation.os.environ
+
+
 def test_build_mart_restores_environment_when_s4_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -379,3 +398,136 @@ def test_retention_keeps_latest_24_of_25_quarters_and_commits() -> None:
     assert retained == tuple(periods[-24:])
     assert cursor.deleted == (periods[0],)
     assert connection.commits == 1
+
+
+class _RenameCursor:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def __enter__(self) -> "_RenameCursor":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, statement: str) -> None:
+        self.statements.append(statement)
+
+
+class _RenameConnection:
+    def __init__(self) -> None:
+        self.cursor_value = _RenameCursor()
+
+    def cursor(self) -> _RenameCursor:
+        return self.cursor_value
+
+
+def test_failed_publication_tables_are_promoted_as_one_atomic_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RenameConnection()
+    config = _config()
+    failed_run_id = "20260808182426423756"
+    existing = {
+        (config.target_db, table)
+        for table in activation.NSA_PUBLISH_TABLES
+    } | {
+        (config.target_db, f"{table}__failed_failed_{failed_run_id}")
+        for table in activation.NSA_PUBLISH_TABLES
+    }
+    monkeypatch.setattr(
+        activation,
+        "table_exists",
+        lambda _conn, database, table: (database, table) in existing,
+        raising=False,
+    )
+
+    actions = activation.promote_failed_publication_atomically(
+        connection,
+        config,
+        failed_run_id=failed_run_id,
+        recovery_run_id="recovery-1",
+    )
+
+    assert len(connection.cursor_value.statements) == 1
+    statement = connection.cursor_value.statements[0]
+    assert statement.startswith("RENAME TABLE ")
+    for table in activation.NSA_PUBLISH_TABLES:
+        assert (
+            f"`{config.target_db}`.`{table}__failed_failed_{failed_run_id}` TO "
+            f"`{config.target_db}`.`{table}`"
+        ) in statement
+    assert tuple(action.table for action in actions) == activation.NSA_PUBLISH_TABLES
+
+
+def test_failed_publication_promotion_rejects_missing_preserved_table_before_rename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RenameConnection()
+    config = _config()
+    existing = {
+        (config.target_db, table)
+        for table in activation.NSA_PUBLISH_TABLES
+    }
+    monkeypatch.setattr(
+        activation,
+        "table_exists",
+        lambda _conn, database, table: (database, table) in existing,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="preserved failed table missing"):
+        activation.promote_failed_publication_atomically(
+            connection,
+            config,
+            failed_run_id="20260808182426423756",
+            recovery_run_id="recovery-1",
+        )
+
+    assert connection.cursor_value.statements == []
+
+
+def test_failed_publication_restore_returns_original_names_in_one_atomic_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _RenameConnection()
+    config = _config()
+    failed_run_id = "20260808182426423756"
+    actions = tuple(
+        activation.PublishAction(
+            table,
+            "recovery_atomic_group_rename",
+            f"{table}__failed_failed_{failed_run_id}",
+            f"{table}__rr_123456789abc",
+            0,
+        )
+        for table in activation.NSA_PUBLISH_TABLES
+    )
+    existing = {
+        (config.target_db, table)
+        for table in activation.NSA_PUBLISH_TABLES
+    } | {
+        (config.target_db, str(action.backup_table))
+        for action in actions
+    }
+    monkeypatch.setattr(
+        activation,
+        "table_exists",
+        lambda _conn, database, table: (database, table) in existing,
+        raising=False,
+    )
+
+    activation.restore_failed_publication_atomically(
+        connection,
+        config,
+        actions=actions,
+        failed_run_id=failed_run_id,
+    )
+
+    assert len(connection.cursor_value.statements) == 1
+    statement = connection.cursor_value.statements[0]
+    for table in activation.NSA_PUBLISH_TABLES:
+        assert (
+            f"`{config.target_db}`.`{table}` TO "
+            f"`{config.target_db}`.`{table}__failed_failed_{failed_run_id}`"
+        ) in statement
