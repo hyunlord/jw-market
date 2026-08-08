@@ -684,16 +684,17 @@ def _emit_completion_signal(
     from pipeline.scripts.ingest_hook.completion_signal import CompletionSignal, PublishResult, publish
 
     epoch, category, manifest_sha = identity
-    # A retry after load may observe the already-materialized staging rows and
-    # otherwise emit zero for the same identity. Freeze the first emitted count
-    # tuple so consumers never see one idempotency key with conflicting values.
+    # A retry of the same event may observe already-materialized staging rows and
+    # otherwise emit zero. Freeze counts for that event only: an earlier failure
+    # before load must not erase a later successful run's actual count.
     try:
         prior_signals = ledger.signal_events(*identity)
     except Exception:  # signal observation is best-effort
         prior_signals = []
-    if prior_signals:
+    prior_for_event = next((signal for signal in prior_signals if signal.event == event), None)
+    if prior_for_event is not None:
         try:
-            prior_payload = prior_signals[0].payload
+            prior_payload = prior_for_event.payload
             rows_before = int(prior_payload["rows_before"])
             rows_after = int(prior_payload["rows_after"])
             rows_loaded = int(prior_payload["rows_loaded"])

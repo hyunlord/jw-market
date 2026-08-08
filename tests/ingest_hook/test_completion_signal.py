@@ -299,28 +299,30 @@ def test_v11_same_identity_rejects_rows_loaded_drift(sqlite_ledger):
         *identity, run_id="r1", event="complete", mode="staging", rows_loaded=7,
         delivery_status="failed", attempts=4, reason="down", payload=payload,
     )
-    with pytest.raises(ValueError, match="count drift"):
+    with pytest.raises(ValueError, match="event count drift"):
         sqlite_ledger.record_signal(
             *identity, run_id="r2", event="complete", mode="staging", rows_loaded=8,
             delivery_status="published", attempts=1, reason=None, payload=payload,
         )
 
 
-def test_v11_same_identity_rejects_rows_loaded_drift_across_event_types(sqlite_ledger):
+def test_v11_retry_allows_count_change_between_failed_and_prepared_events(sqlite_ledger):
     signal = _signal()
     identity = (signal.epoch, signal.category, signal.manifest_sha)
     sqlite_ledger.record_signal(
-        *identity, run_id="r1", event="failed", mode="staging", rows_loaded=7,
+        *identity, run_id="r1", event="failed", mode="staging", rows_loaded=0,
         delivery_status="failed", attempts=4, reason="down", payload=signal.as_dict(),
     )
-    with pytest.raises(ValueError, match="count drift"):
-        sqlite_ledger.record_signal(
-            *identity, run_id="r2", event="complete", mode="staging", rows_loaded=0,
-            delivery_status="published", attempts=1, reason=None, payload=signal.as_dict(),
-        )
+    sqlite_ledger.record_signal(
+        *identity, run_id="r2", event="prepared", mode="staging", rows_loaded=2174,
+        delivery_status="suppressed", attempts=0, reason=None,
+        payload={"event": "prepared", "outbound": False},
+    )
+
+    assert [event.rows_loaded for event in sqlite_ledger.signal_events(*identity)] == [0, 2174]
 
 
-def test_retry_reuses_first_signal_counts_across_failed_then_complete(monkeypatch, sqlite_ledger):
+def test_retry_does_not_reuse_failed_signal_counts_for_complete(monkeypatch, sqlite_ledger):
     signal = _signal()
     identity = (signal.epoch, signal.category, signal.manifest_sha)
     sqlite_ledger.record_signal(
@@ -348,9 +350,9 @@ def test_retry_reuses_first_signal_counts_across_failed_then_complete(monkeypatc
         failure_reason=None,
     )
 
-    assert published[0]["rows_before"] == 10
-    assert published[0]["rows_after"] == 17
-    assert published[0]["rows_loaded"] == 7
+    assert published[0]["rows_before"] == 7
+    assert published[0]["rows_after"] == 7
+    assert published[0]["rows_loaded"] == 0
 
 
 def test_replace_loader_counts_are_emitted_without_delta_recalculation(

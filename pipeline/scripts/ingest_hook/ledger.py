@@ -1891,11 +1891,12 @@ class Ledger:
         event: str, mode: str, rows_loaded: int, delivery_status: str,
         attempts: int, reason: str | None, payload: dict,
     ) -> None:
-        """Persist delivery state without permitting identity/count drift."""
+        """Persist delivery state without permitting same-event count drift."""
         prior_identity = self._execute(
             "SELECT rows_loaded FROM ingest_signal_event"
-            " WHERE epoch=? AND category=? AND manifest_sha=? ORDER BY id LIMIT 1",
-            (epoch, category, manifest_sha),
+            " WHERE epoch=? AND category=? AND manifest_sha=? AND event=?"
+            " ORDER BY id LIMIT 1",
+            (epoch, category, manifest_sha, event),
         ).fetchone()
         if prior_identity is not None:
             prior = int(
@@ -1905,7 +1906,7 @@ class Ledger:
             )
             if prior != rows_loaded:
                 raise ValueError(
-                    f"signal identity count drift: prior rows_loaded={prior}, new={rows_loaded}"
+                    f"signal event count drift: prior rows_loaded={prior}, new={rows_loaded}"
                 )
 
         existing = self._execute(
