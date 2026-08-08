@@ -132,7 +132,9 @@ def _forecast_call(calls: list[Call]) -> Call | None:
         "A2", "conditional_trend_forecast", [str(result.pop("insight")) for result in results],
         **{key: value for key, value in primary.items() if key != "source"},
         source_results=results, source_labels=[result["source"] for result in results],
-        never_aggregate_sources=True, forecast_is_trend_extension=True, forecast_uncertainty=True,
+        never_aggregate_sources=True,
+        forecast_is_trend_extension=True,
+        forecast_uncertainty=True,
     )
 
 
@@ -148,12 +150,18 @@ def _forecast_source_result(market: Call) -> dict[str, Any] | None:
     if rate is None or forecast is None:
         return None
     source = _source_label(market)
+    uncertainty = (
+        "관측 CAGR이 다음 기간에도 동일하게 유지된다는 가정이며, "
+        "신규 진입·약가 변화 등 외부 요인을 반영하지 않아 실제 값은 달라질 수 있습니다."
+    )
     return {
         "source": source, "period": f"{valid[0][0]}~{valid[-1][0]}",
         "trend_rate_pct": _percent(rate), "forecast_krw": _float(forecast),
+        "forecast_label": "예측=추세연장",
+        "forecast_uncertainty_note": uncertainty,
         "insight": (
-        f"{source} {valid[0][0]}~{valid[-1][0]} 관측 성장률 {_pct(rate)}가 유지된다는 단순 추세 연장 시 "
-        f"다음 기간 값은 {_eok(forecast)}억원입니다. 신규 진입·약가 변화 등 외부 요인은 반영하지 않은 조건부 계산입니다."
+        f"{source} 예측=추세연장(단순 추세 연장): {valid[0][0]}~{valid[-1][0]} 관측 CAGR {_pct(rate)}가 "
+        f"다음 기간에도 유지된다고 가정할 때 조건부 값은 {_eok(forecast)}억원입니다. {uncertainty}"
         ),
     }
 

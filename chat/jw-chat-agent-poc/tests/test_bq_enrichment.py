@@ -112,6 +112,38 @@ def test_a2_forecasts_each_market_source_separately() -> None:
     assert [row["source"] for row in data["source_results"]] == ["UBIST", "IQVIA NSA"]
 
 
+def test_a2_fact_markdown_preserves_forecast_basis_and_uncertainty() -> None:
+    call = build_bq_analysis_call(
+        "A2",
+        [
+            _market_call("ubist", "2026-03", [100.0, 110.0, 121.0]),
+            _market_call("iqvia_nsa", "2026-03", [120.0, 126.0, 132.3]),
+        ],
+    )
+
+    assert call is not None
+    fact_md = answer_fact_markdown([call], [])
+    assert "UBIST 추세연장 예측" in fact_md
+    assert "UBIST CAGR 근거" in fact_md
+    assert "UBIST 예측 불확실성" in fact_md
+    assert "IQVIA NSA 추세연장 예측" in fact_md
+    assert "예측=추세연장" in fact_md
+    assert "실제 값은 달라질 수" in fact_md
+    assert "합산하지" in fact_md
+    assert "### 조건부 추세연장 예측 fact" in fact_md
+    assert "데이터 없음" not in fact_md
+
+    data_md = call_data_md(call)
+    assert "### 조건부 추세연장 예측" in data_md
+    assert "UBIST" in data_md
+    assert "IQVIA NSA" in data_md
+    assert "관측 CAGR" in data_md
+    assert "예측=추세연장" in data_md
+    assert "실제 값은 달라질 수" in data_md
+    assert "합산하지 않음" in data_md
+    assert "데이터 없음" not in data_md
+
+
 def test_a3_preserves_patient_and_market_source_identity() -> None:
     call = build_bq_analysis_call(
         "A3",

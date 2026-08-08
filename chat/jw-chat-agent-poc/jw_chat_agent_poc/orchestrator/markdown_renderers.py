@@ -32,8 +32,11 @@ def call_data_md(call: dict[str, Any]) -> str:
         return portfolio_decline_md(render_data)
     if tool == "csd_activity_trend":
         return csd_activity_md(render_data)
-    if tool == "bq_analysis" and render_data.get("contract_id") == "A3":
-        return patient_sales_analysis_md(render_data)
+    if tool == "bq_analysis":
+        if render_data.get("contract_id") == "A2":
+            return trend_extension_forecast_md(render_data)
+        if render_data.get("contract_id") == "A3":
+            return patient_sales_analysis_md(render_data)
     if tool in {"get_brand_metric", "get_market_landscape", "unsupported_metric", "query_failed", "agent_calculation"}:
         return metrics_md(tool, render_data)
     if tool == "get_market_members":
@@ -76,6 +79,29 @@ def patient_sales_analysis_md(data: dict[str, Any]) -> str:
     return table(
         "### 환자수·매출 병렬 비교",
         ("매출 출처", "환자수 기간", "HIRA 환자수", "매출 기간", "브랜드 매출", "환자당 관측비", "해석 계약"),
+        rendered_rows,
+    )
+
+
+def trend_extension_forecast_md(data: dict[str, Any]) -> str:
+    source_results = data.get("source_results")
+    rows = source_results if isinstance(source_results, list) else [data]
+    rendered_rows = tuple(
+        (
+            row.get("source"),
+            row.get("period"),
+            pct_value(row.get("trend_rate_pct")),
+            eok_value(None, row.get("forecast_krw")),
+            row.get("forecast_label") or data.get("forecast_label"),
+            row.get("forecast_uncertainty_note") or data.get("forecast_uncertainty_note"),
+            "출처별로 나란히 표시하며 합산하지 않음",
+        )
+        for row in rows
+        if isinstance(row, dict)
+    )
+    return table(
+        "### 조건부 추세연장 예측",
+        ("출처", "관측 기간", "관측 CAGR", "조건부 다음 기간 값", "예측 라벨", "불확실성", "출처 계약"),
         rendered_rows,
     )
 

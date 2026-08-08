@@ -265,6 +265,40 @@ def _bq_analysis_axis_facts(data: RenderData) -> tuple[AxisFact, ...]:
                 AxisFact(RequiredAxis.MARKET_STRUCTURE, "채널 구성", f"채널 구성 {rendered}")
             )
         return tuple(facts)
+    if contract_id == "A2":
+        facts = []
+        for row in _a2_source_results(data):
+            source = str(row.get("source") or "")
+            period = str(row.get("period") or "")
+            facts.extend(
+                (
+                    AxisFact(
+                        RequiredAxis.SALES_TREND,
+                        f"{source} 추세연장 예측",
+                        f"{source} {period} 예측=추세연장 조건부 다음 기간 값 "
+                        f"{eok_value(None, row.get('forecast_krw'))}",
+                    ),
+                    AxisFact(
+                        RequiredAxis.SALES_TREND,
+                        f"{source} CAGR 근거",
+                        f"{source} {period} 관측 CAGR {pct_value(row.get('trend_rate_pct'))}",
+                    ),
+                    AxisFact(
+                        RequiredAxis.SALES_TREND,
+                        f"{source} 예측 불확실성",
+                        str(row.get("forecast_uncertainty_note") or ""),
+                    ),
+                )
+            )
+        if facts:
+            facts.append(
+                AxisFact(
+                    RequiredAxis.MARKET_STRUCTURE,
+                    "출처 분리",
+                    "UBIST와 IQVIA NSA 예측은 출처별로 나란히 비교하며 합산하지 않습니다.",
+                )
+            )
+        return tuple(facts)
     if contract_id == "A3":
         rows = _a3_source_results(data)
         if not rows:
@@ -1364,7 +1398,9 @@ def _news_facts(data: dict[str, Any]) -> str:
 
 def _bq_analysis_facts(data: dict[str, Any]) -> str:
     blocks = [
-        _a3_analysis_facts(data)
+        _a2_analysis_facts(data)
+        if data.get("contract_id") == "A2"
+        else _a3_analysis_facts(data)
         if data.get("contract_id") == "A3"
         else _generic_facts("bq_analysis", data)
     ]
@@ -1372,6 +1408,33 @@ def _bq_analysis_facts(data: dict[str, Any]) -> str:
     if isinstance(news_refs, list) and news_refs:
         blocks.append(_news_facts({"items": news_refs}))
     return "\n\n".join(block for block in blocks if block)
+
+
+def _a2_source_results(data: RenderData) -> list[RenderData]:
+    rows = data.get("source_results")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return [data] if data.get("forecast_krw") is not None else []
+
+
+def _a2_analysis_facts(data: RenderData) -> str:
+    rows = tuple(
+        (
+            row.get("source"),
+            row.get("period"),
+            pct_value(row.get("trend_rate_pct")),
+            eok_value(None, row.get("forecast_krw")),
+            row.get("forecast_label") or data.get("forecast_label"),
+            row.get("forecast_uncertainty_note") or data.get("forecast_uncertainty_note"),
+            "출처별로 나란히 표시하며 합산하지 않음",
+        )
+        for row in _a2_source_results(data)
+    )
+    return table(
+        "### 조건부 추세연장 예측 fact",
+        ("출처", "관측 기간", "관측 CAGR", "조건부 다음 기간 값", "예측 라벨", "불확실성", "출처 계약"),
+        rows,
+    )
 
 
 def _a3_source_results(data: RenderData) -> list[RenderData]:
