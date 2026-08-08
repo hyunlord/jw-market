@@ -335,6 +335,87 @@ def test_target_intent_without_structured_analysis_is_explicitly_degraded() -> N
     assert "현재 근거로 확인하지 못했습니다" in controlled.answer
 
 
+def test_c3_without_structured_analysis_uses_deterministic_source_contract() -> None:
+    controlled = apply_answer_control_layer(
+        "IQVIA랑 UBIST 수치가 다른데 왜?",
+        {"tool_calls": []},
+        "리바로 초과성장 -4.19%p, 점유율 3.72%입니다.",
+    )
+
+    assert controlled.applied is True
+    assert controlled.degraded is False
+    assert controlled.required_slot_coverage == "4/4"
+    assert "-4.19" not in controlled.answer
+    assert "유통 단계" in controlled.answer
+    assert "직접 합산" in controlled.answer
+    assert len(controlled.question_spec_sha256) == 64
+    assert len(controlled.claim_plan_sha256) == 64
+    assert len(controlled.evidence_set_sha256) == 64
+    assert controlled.selected_branch == "answer_projection"
+
+
+def test_control_layer_hashes_are_deterministic_for_the_same_projection() -> None:
+    first = apply_answer_control_layer(
+        "IQVIA랑 UBIST 수치가 다른데 왜?",
+        {"tool_calls": []},
+        "unused fallback",
+    )
+    second = apply_answer_control_layer(
+        "IQVIA랑 UBIST 수치가 다른데 왜?",
+        {"tool_calls": []},
+        "different unused fallback",
+    )
+
+    assert first.question_spec_sha256 == second.question_spec_sha256
+    assert first.claim_plan_sha256 == second.claim_plan_sha256
+    assert first.evidence_set_sha256 == second.evidence_set_sha256
+
+
+def test_competitor_activity_without_structured_analysis_is_honest_unsupported() -> None:
+    controlled = apply_answer_control_layer(
+        "경쟁사 영업활동 변화 있어?",
+        {"tool_calls": []},
+        "리바로 처방 매출 추이입니다.",
+    )
+
+    assert controlled.applied is True
+    assert controlled.degraded is True
+    assert "리바로 처방 매출" not in controlled.answer
+    assert "경쟁사별 활동 변화" in controlled.answer
+    assert "현재 근거로 확인하지 못했습니다" in controlled.answer
+
+
+def test_new_entrant_without_structured_analysis_is_honest_unsupported() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 신규 진입자/위협 브랜드 있어?",
+        {"tool_calls": []},
+        "리바로 점유율 하락이 위협입니다.",
+    )
+
+    assert controlled.applied is True
+    assert controlled.degraded is True
+    assert "리바로 점유율 하락" not in controlled.answer
+    assert "신규 관찰 시점을 판별하는 기능은 제공하지 않습니다" in controlled.answer
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        "리바로 시장 앞으로 어떻게 될 것 같아?",
+        "리바로 시장 경쟁 구도가 최근 어떻게 변하고 있어?",
+    ),
+)
+def test_nonfallback_intent_without_structured_analysis_preserves_answer(question: str) -> None:
+    controlled = apply_answer_control_layer(
+        question,
+        {"tool_calls": []},
+        "기존 근거 기반 답변",
+    )
+
+    assert controlled.applied is False
+    assert controlled.answer == "기존 근거 기반 답변"
+
+
 def test_mixed_scope_without_bq_analysis_preserves_composed_answer() -> None:
     controlled = apply_answer_control_layer(
         "문서와 리바로 시장 전망을 함께 설명해줘",

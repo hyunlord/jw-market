@@ -51,6 +51,16 @@ _EMPTY_TOOL_STATUSES = frozenset({"no_data", "unsupported", "error"})
 _ASSEMBLY_GAP_RATIO_THRESHOLD = 0.30
 _ASSEMBLY_GAP_MIN_FACT_CHARS = 500
 _FIELD_MISSING_STATUSES = frozenset({"missing_fact_set", "missing_required_fact", "insufficient_rows"})
+_ANSWER_CONTROL_TRACE_FIELDS = (
+    "applied",
+    "intent",
+    "required_slot_coverage",
+    "question_spec_sha256",
+    "claim_plan_sha256",
+    "evidence_set_sha256",
+    "selected_branch",
+    "degraded",
+)
 
 _BROKEN_RENDER_SENTINELS = (
     "|| ---",
@@ -168,6 +178,7 @@ def trace_envelope(
         "claim_policy_blocks": claim_report["forbidden_claims_remaining"],
         "surface_policy_blocks": _surface_policy_blocks(result),
         "response_format_contract": _response_format_contract(result),
+        "answer_control_layer": _answer_control_layer(result),
         "render_status": _render_status(answer),
         "ungrounded_numeric_spans": _ungrounded_numbers(
             answer,
@@ -186,6 +197,13 @@ def trace_envelope(
             version=version,
         ),
     }
+
+
+def _answer_control_layer(result: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = result.get("_answer_control_layer")
+    if not isinstance(metadata, Mapping):
+        return {}
+    return {field: metadata[field] for field in _ANSWER_CONTROL_TRACE_FIELDS if field in metadata}
 
 
 def _response_format_contract(result: Mapping[str, Any]) -> dict[str, Any]:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any, Mapping, Sequence
 
 from jw_chat_agent_poc.agent_loop.question_contracts import QuestionSpec, question_spec_for
@@ -47,6 +49,44 @@ class ControlLayerResult:
     intent: str
     required_slot_coverage: str
     claim_plan_hash_input: tuple[str, ...]
+    question_spec_sha256: str
+    claim_plan_sha256: str
+    evidence_set_sha256: str
+    selected_branch: str
+
+
+def _stable_hash(value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _spec_hash(spec: QuestionSpec) -> str:
+    return _stable_hash(
+        {
+            "anchor_provenance": spec.anchor_provenance,
+            "forbidden_claim_types": spec.forbidden_claim_types,
+            "intent": spec.intent.value,
+            "operation_mode": spec.operation_mode.value,
+            "optional_slots": spec.optional_slots,
+            "required_slots": spec.required_slots,
+        }
+    )
+
+
+def _passthrough_result(spec: QuestionSpec, answer: str) -> ControlLayerResult:
+    empty_hash = _stable_hash(())
+    return ControlLayerResult(
+        answer=answer,
+        applied=False,
+        degraded=False,
+        intent=spec.intent.value,
+        required_slot_coverage="not_applied",
+        claim_plan_hash_input=(),
+        question_spec_sha256=_spec_hash(spec),
+        claim_plan_sha256=empty_hash,
+        evidence_set_sha256=empty_hash,
+        selected_branch="passthrough",
+    )
 
 
 def _missing_limitations(spec: QuestionSpec, filled: frozenset[str]) -> tuple[AnswerLimitation, ...]:
@@ -127,6 +167,7 @@ def _controlled_result(
     answer = finalized.answer
     if limitation_text:
         answer = f"{answer}\n\n### 제한\n{limitation_text}" if answer else f"### 제한\n{limitation_text}"
+    evidence_ids = tuple(sorted({evidence_id for claim in claims for evidence_id in claim.evidence_ids}))
     return ControlLayerResult(
         answer=answer,
         applied=True,
@@ -134,6 +175,10 @@ def _controlled_result(
         intent=spec.intent.value,
         required_slot_coverage=f"{len(spec.required_slots) - len(finalized.limitations)}/{len(spec.required_slots)}",
         claim_plan_hash_input=plan.slot_ids,
+        question_spec_sha256=_spec_hash(spec),
+        claim_plan_sha256=_stable_hash(plan.slot_ids),
+        evidence_set_sha256=_stable_hash(evidence_ids),
+        selected_branch="answer_projection",
     )
 
 
@@ -144,7 +189,7 @@ def apply_answer_control_layer(
 ) -> ControlLayerResult:
     spec = question_spec_for(question)
     if result.get("context_scope") == "MIXED":
-        return ControlLayerResult(fallback_answer, False, False, spec.intent.value, "not_applied", ())
+        return _passthrough_result(spec, fallback_answer)
     contract_id = {
         "MARKET_OUTLOOK": "A2",
         "COMPETITION_CHANGE": "B1",
@@ -156,10 +201,26 @@ def apply_answer_control_layer(
     if spec.intent.value == "SALES_ACTIVITY_TREND" and "경쟁사" not in question:
         contract_id = None
     if contract_id is None:
-        return ControlLayerResult(fallback_answer, False, False, spec.intent.value, "not_applied", ())
+        return _passthrough_result(spec, fallback_answer)
     data = _analysis_data(result, contract_id)
     if data is None:
         if result.get("answer_control_required") is True:
             return _controlled_result(spec, ())
-        return ControlLayerResult(fallback_answer, False, False, spec.intent.value, "analysis_missing", ())
+        deterministic_fallbacks: dict[str, Mapping[str, Any]] = {
+            "SOURCE_DIFFERENCE": {},
+            "SALES_ACTIVITY_TREND": {
+                "status": "unsupported_axis",
+                "insights": ["현재 CSD 도구는 경쟁사별 활동 변화를 지원하지 않습니다."],
+                "evidence_refs": ["CSD.coverage"],
+            },
+            "NEW_ENTRANT_THREAT": {
+                "launch_acceleration_status": "unsupported_missing_launch_date",
+                "evidence_refs": ["market.coverage"],
+            },
+        }
+        fallback_data = deterministic_fallbacks.get(spec.intent.value)
+        if fallback_data is None:
+            return _passthrough_result(spec, fallback_answer)
+        fallback_claims = claims_for(spec.intent.value, fallback_data)
+        return _controlled_result(spec, fallback_claims)
     return _controlled_result(spec, claims_for(spec.intent.value, data))

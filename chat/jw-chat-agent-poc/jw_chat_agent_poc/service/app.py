@@ -3293,6 +3293,10 @@ def compute_final_answer(
             "intent": controlled.intent,
             "required_slot_coverage": controlled.required_slot_coverage,
             "claim_plan": controlled.claim_plan_hash_input,
+            "question_spec_sha256": controlled.question_spec_sha256,
+            "claim_plan_sha256": controlled.claim_plan_sha256,
+            "evidence_set_sha256": controlled.evidence_set_sha256,
+            "selected_branch": controlled.selected_branch,
             "degraded": controlled.degraded,
         }
         if controlled.applied:

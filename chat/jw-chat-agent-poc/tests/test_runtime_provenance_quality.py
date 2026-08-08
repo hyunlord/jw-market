@@ -193,6 +193,46 @@ def test_trace_envelope_projects_request_route_tool_claim_and_final_qa_fields(mo
     }
 
 
+def test_trace_envelope_projects_only_safe_answer_control_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("HOSTNAME", "chat-pod-fixture")
+    result = {
+        "_answer_control_layer": {
+            "applied": True,
+            "intent": "SOURCE_DIFFERENCE",
+            "required_slot_coverage": "4/4",
+            "question_spec_sha256": "a" * 64,
+            "claim_plan_sha256": "b" * 64,
+            "evidence_set_sha256": "c" * 64,
+            "selected_branch": "answer_projection",
+            "degraded": False,
+            "claim_plan": ("must_not_be_public",),
+        },
+        "tool_calls": [],
+        "markdown_response": {},
+    }
+
+    trace = trace_envelope(
+        question="IQVIA랑 UBIST 수치가 다른데 왜?",
+        result=result,
+        answer="source contract",
+        charts=(),
+        timing={"stages": []},
+        conversation_id="qa-session",
+    )
+
+    assert trace["answer_control_layer"] == {
+        "applied": True,
+        "intent": "SOURCE_DIFFERENCE",
+        "required_slot_coverage": "4/4",
+        "question_spec_sha256": "a" * 64,
+        "claim_plan_sha256": "b" * 64,
+        "evidence_set_sha256": "c" * 64,
+        "selected_branch": "answer_projection",
+        "degraded": False,
+    }
+    assert "claim_plan" not in trace["answer_control_layer"]
+
+
 def test_trace_envelope_preserves_explicit_typed_gate_decision(monkeypatch) -> None:
     monkeypatch.setenv("HOSTNAME", "chat-pod-fixture")
     monkeypatch.setenv("JW_CHAT_GIT_SHA", "candidate-sha")
