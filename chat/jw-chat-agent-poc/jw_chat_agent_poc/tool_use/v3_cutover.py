@@ -154,12 +154,31 @@ def apply_v3_cutover(
         **legacy_result,
         "answer": answer,
         "sources": list(served.sources),
-        "tool_calls": [dict(call) for call in served.tool_calls],
+        "tool_calls": [
+            *(dict(call) for call in served.tool_calls),
+            *_validated_bq_analysis_calls(legacy_result),
+        ],
         "charts": [dict(chart) for chart in served.charts],
         "v3_cutover_ready": True,
         "v3_cutover_domain": served.domain,
         "v3_cutover_trace": dict(served.trace),
     }
+
+
+def _validated_bq_analysis_calls(
+    legacy_result: Mapping[str, object],
+) -> list[dict[str, object]]:
+    metrics = legacy_result.get("agent_loop_metrics")
+    if not isinstance(metrics, Mapping) or metrics.get("bq_analysis_validation") != "passed":
+        return []
+    calls = legacy_result.get("tool_calls")
+    if not isinstance(calls, Sequence) or isinstance(calls, (str, bytes)):
+        return []
+    return [
+        dict(call)
+        for call in calls
+        if isinstance(call, Mapping) and call.get("tool") == "bq_analysis"
+    ]
 
 
 def _degraded_result(

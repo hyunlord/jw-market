@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 
+import pytest
+
 
 GENERAL_HELP = (
     "시장, 브랜드, 기간, 지표를 포함해 질문하면 확인 가능한 근거를 조회해 답합니다. "
@@ -34,8 +36,141 @@ def _legacy_bq(plan_kind: str) -> dict[str, object]:
         "tool_calls": [{"tool": "get_brand_metric", "status": "ok"}],
         "resolution": {"canonical_brand": "리바로"},
         "router_diagnostics": {"mode": "agent_loop"},
-        "agent_loop_metrics": {"deterministic_plan_kind": plan_kind},
+        "agent_loop_metrics": {
+            "deterministic_plan_kind": plan_kind,
+            "bq_analysis_validation": "passed",
+        },
     }
+
+
+@pytest.mark.parametrize(
+    ("question", "plan_kind", "contract_id", "render_data"),
+    (
+        (
+            "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+            "BQ:A1",
+            "A1",
+            {
+                "source_summaries": [{
+                    "source": "UBIST",
+                    "start_period": "2026-05",
+                    "end_period": "2026-06",
+                    "start_market_size_krw": 100.0,
+                    "end_market_size_krw": 110.0,
+                }],
+            },
+        ),
+        (
+            "리바로 최근 매출/처방 추이 어때?",
+            "BQ:C1",
+            "C1",
+            {
+                "source_results": [{
+                    "source": "UBIST",
+                    "period": "2026-05~2026-06",
+                    "brand_start_sales_krw": 10.0,
+                    "brand_end_sales_krw": 12.0,
+                    "brand_growth_pct": 20.0,
+                }],
+            },
+        ),
+    ),
+)
+def test_cutover_preserves_valid_bq_analysis_for_answer_control(
+    question: str,
+    plan_kind: str,
+    contract_id: str,
+    render_data: dict[str, object],
+) -> None:
+    from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        V3ServingResult,
+        apply_v3_cutover,
+    )
+
+    class Pipeline:
+        def run(self, value: str) -> V3ServingResult:
+            assert value == question
+            return V3ServingResult(
+                domain="market",
+                answer="V3 serving answer",
+                limitations=(),
+                sources=("market.get_brand_metric",),
+                charts=(),
+                trace={"scope_view_set_attached": True},
+                tool_calls=({"tool": "market.get_brand_metric", "status": "ok"},),
+            )
+
+    legacy = _legacy_bq(plan_kind)
+    legacy["tool_calls"] = [
+        *legacy["tool_calls"],
+        {
+            "tool": "bq_analysis",
+            "status": "ok",
+            "render_data": {"contract_id": contract_id, **render_data},
+        },
+    ]
+
+    result = apply_v3_cutover(
+        question,
+        legacy,
+        config=V3CutoverConfig(enabled=True, domains=frozenset({"market"})),
+        pipeline_factory=Pipeline,
+    )
+    controlled = apply_answer_control_layer(question, result, str(result["answer"]))
+
+    assert [call["tool"] for call in result["tool_calls"]].count("bq_analysis") == 1
+    assert controlled.required_slot_coverage == "2/2"
+
+
+@pytest.mark.parametrize("validation", (None, "MISSING_EVIDENCE", "failed"))
+def test_cutover_does_not_preserve_unvalidated_bq_analysis(
+    validation: str | None,
+) -> None:
+    from jw_chat_agent_poc.tool_use.v3_cutover import (
+        V3CutoverConfig,
+        V3ServingResult,
+        apply_v3_cutover,
+    )
+
+    class Pipeline:
+        def run(self, _question: str) -> V3ServingResult:
+            return V3ServingResult(
+                domain="market",
+                answer="V3 serving answer",
+                limitations=(),
+                sources=("market.get_brand_metric",),
+                charts=(),
+                trace={"scope_view_set_attached": True},
+                tool_calls=({"tool": "market.get_brand_metric", "status": "ok"},),
+            )
+
+    legacy = _legacy_bq("BQ:A1")
+    legacy["tool_calls"] = [
+        *legacy["tool_calls"],
+        {
+            "tool": "bq_analysis",
+            "status": "ok",
+            "render_data": {
+                "contract_id": "A1",
+                "source_summaries": [{"source": "UBIST"}],
+            },
+        },
+    ]
+    if validation is None:
+        legacy["agent_loop_metrics"].pop("bq_analysis_validation")
+    else:
+        legacy["agent_loop_metrics"]["bq_analysis_validation"] = validation
+
+    result = apply_v3_cutover(
+        "리바로 시장 규모가 지금 얼마고 어떻게 변해왔어?",
+        legacy,
+        config=V3CutoverConfig(enabled=True, domains=frozenset({"market"})),
+        pipeline_factory=Pipeline,
+    )
+
+    assert not any(call.get("tool") == "bq_analysis" for call in result["tool_calls"])
 
 
 def test_v3_cutover_module_exists() -> None:
