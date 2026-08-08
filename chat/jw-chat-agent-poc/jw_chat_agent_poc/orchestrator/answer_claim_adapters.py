@@ -1,7 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
+import re
 from typing import Any, Mapping
+
+
+@dataclass(frozen=True, slots=True)
+class ValueRef:
+    value_id: str
+    metric_id: str
+    canonical_value: str
+    canonical_unit: str
+    display_policy_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayValue:
+    value_id: str
+    display_value: str
+    display_unit: str
+    display_text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,15 +34,14 @@ class AnswerClaim:
     source: str
     period_start: str
     period_end: str
-    canonical_value: str
-    canonical_unit: str
-    display_value: str
-    display_unit: str
-    display_text: str
+    text_template: str
+    value_refs: tuple[ValueRef, ...]
     evidence_ids: tuple[str, ...]
 
 
 def claims_for(intent: str, data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    if data.get("contract_id") == "D1":
+        return _d1_claims(data)
     builders = {
         "MARKET_SIZE_TREND": _a1_claims,
         "BRAND_TREND": _c1_claims,
@@ -50,6 +68,7 @@ def _claim(
     *,
     period: str = "",
     claim_type: str = "observation",
+    values: tuple[ValueRef, ...] = (),
 ) -> AnswerClaim:
     return AnswerClaim(
         claim_id=f"answer-control:{slot_id}",
@@ -61,13 +80,44 @@ def _claim(
         source=source,
         period_start=period,
         period_end=period,
-        canonical_value="",
-        canonical_unit="",
-        display_value="",
-        display_unit="",
-        display_text=text,
+        text_template=text,
+        value_refs=values,
         evidence_ids=refs,
     )
+
+
+def value_ref(
+    value_id: str,
+    metric_id: str,
+    value: Any,
+    unit: str,
+    display_policy_id: str,
+) -> ValueRef:
+    return ValueRef(value_id, metric_id, str(value), unit, display_policy_id)
+
+
+def display_value(ref: ValueRef) -> DisplayValue:
+    value = Decimal(ref.canonical_value)
+    if ref.display_policy_id == "krw_eok_2":
+        displayed = (value / Decimal("100000000")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        text = f"{displayed:,.2f}억원"
+        return DisplayValue(ref.value_id, f"{displayed:,.2f}", "억원", text)
+    if ref.display_policy_id == "pct_2":
+        displayed = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        text = f"{displayed:,.2f}%"
+        return DisplayValue(ref.value_id, f"{displayed:,.2f}", "%", text)
+    if ref.display_policy_id == "count_0":
+        displayed = value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        text = f"{displayed:,.0f}건"
+        return DisplayValue(ref.value_id, f"{displayed:,.0f}", "건", text)
+    raise ValueError(f"unsupported_display_policy:{ref.display_policy_id}")
+
+
+def render_claim(claim: AnswerClaim) -> str:
+    rendered = claim.text_template
+    for ref in claim.value_refs:
+        rendered = rendered.replace("{" + ref.value_id + "}", display_value(ref).display_text)
+    return rendered
 
 
 def _refs(data: Mapping[str, Any], default: tuple[str, ...]) -> tuple[str, ...]:
@@ -99,10 +149,15 @@ def _a1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
         period = f"{start_period}~{end_period}" if start_period and end_period else end_period
         latest = row.get("end_market_size_krw")
         if isinstance(latest, (int, float)):
-            claims.append(_claim("latest_market_size", f"{source} {end_period} 시장 규모 {_number(latest)}원", source, refs, period=end_period))
+            values = (value_ref("latest", "KRW_MARKET_SIZE", latest, "KRW", "krw_eok_2"),)
+            claims.append(_claim("latest_market_size", f"{source} {end_period} 시장 규모 {{latest}}", source, refs, period=end_period, values=values))
         start = row.get("start_market_size_krw")
         if isinstance(start, (int, float)) and isinstance(latest, (int, float)):
-            claims.append(_claim("market_size_trend", f"{source} 시장 규모는 {start_period} {_number(start)}원에서 {end_period} {_number(latest)}원으로 변했습니다.", source, refs, period=period))
+            values = (
+                value_ref("start", "KRW_MARKET_SIZE", start, "KRW", "krw_eok_2"),
+                value_ref("end", "KRW_MARKET_SIZE", latest, "KRW", "krw_eok_2"),
+            )
+            claims.append(_claim("market_size_trend", f"{source} 시장 규모는 {start_period} {{start}}에서 {end_period} {{end}}으로 변했습니다.", source, refs, period=period, values=values))
     return tuple(claims)
 
 
@@ -115,7 +170,11 @@ def _c1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
         start = row.get("brand_start_sales_krw")
         end = row.get("brand_end_sales_krw")
         if isinstance(start, (int, float)) and isinstance(end, (int, float)):
-            claims.append(_claim("brand_sales_series", f"{source} {period} 브랜드 매출 {_number(start)}원 → {_number(end)}원", source, refs, period=period))
+            values = (
+                value_ref("start", "KRW_SALES", start, "KRW", "krw_eok_2"),
+                value_ref("end", "KRW_SALES", end, "KRW", "krw_eok_2"),
+            )
+            claims.append(_claim("brand_sales_series", f"{source} {period} 브랜드 매출 {{start}} → {{end}}", source, refs, period=period, values=values))
         growth = row.get("brand_growth_pct")
         market_growth = row.get("market_growth_pct")
         if isinstance(growth, (int, float)):
@@ -208,13 +267,65 @@ def _a2_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
     source = str(row.get("source") or "market source")
     period = str(row.get("period") or "")
     refs = _refs(data, (f"{source}.trend",))
-    uncertainty = str(row.get("forecast_uncertainty_note") or "실제 값은 달라질 수 있습니다.")
+    end_period = period.rsplit("~", 1)[-1]
+    forecast_period = _next_month(end_period)
+    trend = row.get("trend_rate_pct")
+    forecast = row.get("forecast_krw")
+    if not isinstance(trend, (int, float)) or not isinstance(forecast, (int, float)) or not forecast_period:
+        return ()
+    trend_ref = value_ref("trend", "MONTHLY_COMPOUND_GROWTH_RATE", trend, "PCT", "pct_2")
+    forecast_ref = value_ref("forecast", "KRW_BRAND_MONTHLY_SALES_FORECAST", forecast, "KRW", "krw_eok_2")
     return (
-        _claim("recent_observed_trend", f"{source} {period} 관측 추세는 {row.get('trend_rate_pct')}%입니다.", source, refs, period=period),
-        _claim("forecast_basis", f"예측=추세연장: 관측 추세를 다음 기간에 단순 연장한 조건부 값은 {row.get('forecast_krw')}원입니다.", source, refs, period=period),
+        _claim("recent_observed_trend", f"{source} 리바로 월 매출의 {period} 월 복합성장률은 {{trend}}입니다.", source, refs, period=period, values=(trend_ref,)),
+        _claim("forecast_basis", f"예측=추세연장: {end_period} 리바로 월 매출에 같은 월 복합성장률을 1개월 적용한 {forecast_period} 조건부 값은 {{forecast}}입니다.", source, refs, period=f"{end_period}~{forecast_period}", values=(forecast_ref,)),
         _claim("risk_factors", "신규 진입, 약가 변화 등 외부 위험요인은 이 조건부 값에 반영되지 않았습니다.", source, refs, period=period),
-        _claim("forecast_availability", "현재 제공 가능한 전망은 관측 추세를 연장한 조건부 전망입니다.", source, refs, period=period),
-        _claim("uncertainty", uncertainty, source, refs, period=period),
+        _claim("forecast_availability", "현재 제공 가능한 전망은 리바로 월 매출의 관측 추세를 1개월 연장한 조건부 전망입니다.", source, refs, period=period),
+        _claim("uncertainty", f"월별 관측 추세의 단순 연장이므로 실제 값은 달라질 수 있습니다({forecast_period} 전망).", source, refs, period=period),
+    )
+
+
+def _next_month(period: str) -> str:
+    match = re.fullmatch(r"(\d{4})-(\d{2})", period)
+    if match is None:
+        return ""
+    year, month = (int(part) for part in match.groups())
+    return f"{year + (month == 12):04d}-{month % 12 + 1:02d}"
+
+
+def _d1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
+    refs = _refs(data, ("CSD.render_data.series",))
+    rows = _rows(data, "activity_trend")
+    if len(rows) < 2:
+        return ()
+    start_period = str(rows[0].get("period") or "")
+    end_period = str(rows[-1].get("period") or "")
+    start = rows[0].get("product_details")
+    end = rows[-1].get("product_details")
+    rate = data.get("activity_change_rate_pct")
+    if not all(isinstance(value, (int, float)) for value in (start, end, rate)):
+        return ()
+    period = str(data.get("period") or f"{start_period}~{end_period}")
+    return (
+        _claim(
+            "activity_series",
+            f"CSD TOTAL 영업활동은 {start_period} {{start}}에서 {end_period} {{end}}으로 변했습니다.",
+            "CSD",
+            refs,
+            period=period,
+            values=(
+                value_ref("start", "CSD_ACTIVITY_COUNT", start, "COUNT", "count_0"),
+                value_ref("end", "CSD_ACTIVITY_COUNT", end, "COUNT", "count_0"),
+            ),
+        ),
+        _claim(
+            "activity_change",
+            "같은 기간 영업활동 변화율은 {rate}입니다.",
+            "CSD",
+            refs,
+            period=period,
+            values=(value_ref("rate", "CSD_ACTIVITY_CHANGE_RATE", rate, "PCT", "pct_2"),),
+        ),
+        _claim("activity_coverage", "CSD TOTAL 판매사 범위의 제품상세 활동 건수 기준입니다.", "CSD", refs, period=period),
     )
 
 
@@ -315,6 +426,7 @@ def _a3_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
                 continue
             source = str(row.get("source") or "market source")
             period = str(row.get("period") or "")
-            claims.append(_claim("sales_value", f"{source} {period} 매출 {sales:,.0f}원", source, refs or (f"{source}.render_data.brand_value_series_10pt",), period=period))
+            values = (value_ref("sales", "KRW_SALES", sales, "KRW", "krw_eok_2"),)
+            claims.append(_claim("sales_value", f"{source} {period} 매출 {{sales}}", source, refs or (f"{source}.render_data.brand_value_series_10pt",), period=period, values=values))
     claims.append(_claim("source_separation_limit", "HIRA 환자수와 시장 매출은 모집단과 정의가 같다는 근거가 없어 나란히 표시하며 합산하지 않고 환자당 매출로도 계산하지 않습니다.", "HIRA+market sources", refs or ("source.contracts",), claim_type="limitation"))
     return tuple(claims)

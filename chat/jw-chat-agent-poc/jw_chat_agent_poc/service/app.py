@@ -83,7 +83,11 @@ from jw_chat_agent_poc.orchestrator.operation_contract import (
     observe_surface_coverage,
     set_current_query_spec,
 )
-from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
+from jw_chat_agent_poc.orchestrator.answer_projection import (
+    apply_answer_control_layer,
+    entitled_charts,
+    validate_controlled_surface,
+)
 from jw_chat_agent_poc.orchestrator.shadow_gate_runtime import (
     ShadowGate,
     current_shadow_request_id,
@@ -3298,9 +3302,15 @@ def compute_final_answer(
             "evidence_set_sha256": controlled.evidence_set_sha256,
             "selected_branch": controlled.selected_branch,
             "degraded": controlled.degraded,
+            "answer_status": controlled.answer_status,
         }
         if controlled.applied:
-            final_answer = replace(final_answer, text=controlled.answer)
+            final_answer = replace(
+                final_answer,
+                text=controlled.answer,
+                charts=entitled_charts(controlled, final_answer.charts),
+                sources=controlled.source_labels,
+            )
         notice = cleanup_markdown_answer(str(result.get("conversation_interpretation") or ""))
         typed_failure = normalize_typed_failure(result)
         if typed_failure is None:
@@ -3389,6 +3399,15 @@ def compute_final_answer(
             "_response_format_contract": format_result.report.to_dict(),
             "_sec12_output_leakage_decision": output_policy_decision,
         }
+        if controlled.applied:
+            validate_controlled_surface(
+                answer=user_answer,
+                charts=final_answer.charts,
+                sources=final_answer.sources,
+                answer_status=controlled.answer_status,
+                allowed_evidence_ids=controlled.evidence_ids,
+                source_block_required=bool(controlled.evidence_ids),
+            )
         trace = trace_envelope(
             question=question,
             result=trace_result,

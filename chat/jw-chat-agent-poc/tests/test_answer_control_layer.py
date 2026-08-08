@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from jw_chat_agent_poc.orchestrator import answer_projection as projection
+
 from jw_chat_agent_poc.agent_loop.question_contracts import (
     AnswerIntent,
     OperationMode,
@@ -29,11 +31,8 @@ def _claim(slot_id: str, claim_type: str = "observation") -> AnswerClaim:
         source="UBIST",
         period_start="2025-06",
         period_end="2026-06",
-        canonical_value="3.72",
-        canonical_unit="pct",
-        display_value="3.72",
-        display_unit="%",
-        display_text=f"{slot_id}: 3.72%",
+        text_template=f"{slot_id}: 3.72%",
+        value_refs=(),
         evidence_ids=("ev:1",),
     )
 
@@ -69,13 +68,13 @@ def test_missing_required_slots_create_code_owned_limitations() -> None:
     assert all(item.code == "required_slot_unfilled" for item in result.limitations)
 
 
-def test_no_missing_slots_means_no_limitations_and_display_text_only() -> None:
+def test_no_missing_slots_means_no_limitations_and_rendered_claim_text_only() -> None:
     spec = question_spec_for("IQVIA랑 UBIST 수치가 다른데 왜?")
     claims = tuple(_claim(slot) for slot in spec.required_slots)
     result = finalize_answer(spec, ClaimPlan(tuple(item.slot_id for item in claims)), claims, ())
     assert result.limitations == ()
     assert result.degraded is False
-    assert result.answer == "\n\n".join(item.display_text for item in claims)
+    assert result.answer == "\n\n".join(item.text_template for item in claims)
     assert "canonical" not in result.answer
 
 
@@ -317,6 +316,9 @@ def test_a3_projection_keeps_sources_side_by_side_without_ratio() -> None:
     assert "HIRA 2026 환자수 1,000명" in controlled.answer
     assert "UBIST 2026-05 매출" in controlled.answer
     assert "IQVIA NSA 2026-Q2 매출" in controlled.answer
+    assert "80.00억원" in controlled.answer
+    assert "90.00억원" in controlled.answer
+    assert "8000000000" not in controlled.answer.replace(",", "")
     assert "합산하지" in controlled.answer
     assert "환자당 매출은 800만원" not in controlled.answer
 
@@ -427,15 +429,17 @@ def test_mixed_scope_without_bq_analysis_preserves_composed_answer() -> None:
     assert controlled.answer == "문서 근거와 시장 근거를 함께 설명합니다."
 
 
-def test_own_sales_activity_without_d3_analysis_preserves_d1_answer() -> None:
+def test_own_sales_activity_without_d1_analysis_fails_closed() -> None:
     controlled = apply_answer_control_layer(
         "리바로 영업활동 추이 어때?",
         {"tool_calls": []},
         "리바로 자체 영업활동 추이입니다.",
     )
 
-    assert controlled.applied is False
-    assert controlled.answer == "리바로 자체 영업활동 추이입니다."
+    assert controlled.applied is True
+    assert controlled.answer_status == "unsupported"
+    assert "리바로 자체 영업활동 추이입니다." not in controlled.answer
+    assert "영업활동 추이 데이터" in controlled.answer
 
 
 @pytest.mark.parametrize(
@@ -458,7 +462,7 @@ def test_own_sales_activity_without_d3_analysis_preserves_d1_answer() -> None:
                 "channel_shares_pct": {"의원": 70.0, "종병": 30.0},
             },
             "2/2",
-            "2026-06 시장 규모 110,000,000,000원",
+            "2026-06 시장 규모 1,100.00억원",
         ),
         (
             "리바로 최근 매출/처방 추이 어때?",
@@ -477,7 +481,7 @@ def test_own_sales_activity_without_d3_analysis_preserves_d1_answer() -> None:
                 ]
             },
             "2/2",
-            "브랜드 매출 10,000,000,000원 → 12,000,000,000원",
+            "브랜드 매출 100.00억원 → 120.00억원",
         ),
         (
             "리바로 경쟁 상대는 누구고 우리 위치는 어디야?",
@@ -568,7 +572,7 @@ def test_remaining_structured_intents_use_entitlement_projection(
     )
 
     assert controlled.applied is True
-    assert controlled.degraded is False
+    assert controlled.degraded is (contract_id == "D2")
     assert controlled.required_slot_coverage == coverage
     assert controlled.selected_branch == "answer_projection"
     assert expected_text in controlled.answer
@@ -642,3 +646,198 @@ def test_unclassified_general_question_preserves_existing_passthrough() -> None:
     assert controlled.applied is False
     assert controlled.selected_branch == "passthrough"
     assert controlled.answer == "기존 일반 답변"
+
+
+def test_claim_contract_keeps_value_refs_not_preformatted_display_text() -> None:
+    assert "display_text" not in AnswerClaim.__dataclass_fields__
+    assert "canonical_value" not in AnswerClaim.__dataclass_fields__
+    assert "value_refs" in AnswerClaim.__dataclass_fields__
+
+
+def test_c2_keeps_available_channel_when_specialty_is_missing() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 어느 채널/진료과에서 잘 팔려?",
+        {
+            "tool_calls": [{
+                "tool": "bq_analysis",
+                "render_data": {
+                    "contract_id": "C2",
+                    "distributions": {"channel": {"상급종병": 4.45, "종병": 4.15, "병원": 3.56}},
+                    "evidence_refs": ["UBIST.channel.level_segments"],
+                },
+            }]
+        },
+        "legacy answer",
+    )
+
+    assert controlled.answer_status == "partial"
+    assert controlled.required_slot_coverage == "1/2"
+    assert "채널 구성" in controlled.answer
+    assert "진료과별 분포 데이터" in controlled.answer
+    assert "specialty_distribution" not in controlled.answer
+    assert "| 항목 | 내용 |" in controlled.answer
+    assert "## 출처" in controlled.answer
+
+
+def test_c2_recovers_channel_distribution_from_query_spec_level_segments() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 어느 채널/진료과에서 잘 팔려?",
+        {
+            "tool_calls": [{
+                "tool": "query_spec",
+                "source": "UBIST",
+                "render_data": {
+                    "level_segments": [
+                        {"name": "상급종병", "value": 17_300_000_000},
+                        {"name": "종병", "value": 20_360_000_000},
+                        {"name": "병원", "value": 13_200_000_000},
+                    ]
+                },
+            }],
+            "answer_control_required": True,
+        },
+        "legacy answer",
+    )
+
+    assert controlled.answer_status == "partial"
+    assert "상급종병" in controlled.answer
+    assert "channel_distribution" not in controlled.answer
+
+
+def test_a2_names_brand_monthly_target_horizon_and_formats_krw() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 시장 앞으로 어떻게 될 것 같아?",
+        {
+            "tool_calls": [{
+                "tool": "bq_analysis",
+                "render_data": {
+                    "contract_id": "A2",
+                    "source_results": [{
+                        "source": "UBIST",
+                        "period": "2021-07~2026-06",
+                        "trend_rate_pct": 0.3656581095792125,
+                        "forecast_krw": 8_618_859_701.348597,
+                        "forecast_label": "예측=추세연장",
+                    }],
+                    "evidence_refs": ["UBIST.render_data.brand_value_series_10pt"],
+                },
+            }]
+        },
+        "legacy answer",
+    )
+
+    assert controlled.answer_status == "complete"
+    assert "리바로 월 매출" in controlled.answer
+    assert "월 복합성장률" in controlled.answer
+    assert "2026-07" in controlled.answer
+    assert "86.19억원" in controlled.answer
+    assert "8618859701" not in controlled.answer.replace(",", "")
+    assert "CAGR" not in controlled.answer
+    assert "| 항목 | 내용 |" in controlled.answer
+    assert "## 출처" in controlled.answer
+
+
+def test_d1_is_controlled_instead_of_using_passthrough_entitlement_hole() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 영업활동 추이 어때?",
+        {
+            "tool_calls": [{
+                "tool": "bq_analysis",
+                "render_data": {
+                    "contract_id": "D1",
+                    "period": "2025-06~2026-06",
+                    "activity_trend": [
+                        {"period": "2025-06", "product_details": 100},
+                        {"period": "2026-06", "product_details": 120},
+                    ],
+                    "activity_delta": 20,
+                    "activity_change_rate_pct": 20.0,
+                    "region": "TOTAL",
+                    "evidence_refs": ["CSD.render_data.series"],
+                },
+            }]
+        },
+        "legacy table and source",
+    )
+
+    assert controlled.applied is True
+    assert controlled.answer_status == "complete"
+    assert controlled.selected_branch == "answer_projection"
+    assert "legacy table" not in controlled.answer
+    assert "CSD" in controlled.answer
+    assert "## 출처" in controlled.answer
+
+
+def test_chart_entitlement_keeps_only_supported_minimal_artifact_set() -> None:
+    controlled = apply_answer_control_layer(
+        "리바로 시장 앞으로 어떻게 될 것 같아?",
+        {
+            "tool_calls": [{
+                "tool": "bq_analysis",
+                "render_data": {
+                    "contract_id": "A2",
+                    "source_results": [{
+                        "source": "UBIST",
+                        "period": "2021-07~2026-06",
+                        "trend_rate_pct": 0.37,
+                        "forecast_krw": 8_618_859_701.35,
+                    }],
+                    "evidence_refs": ["UBIST.render_data.brand_value_series_10pt"],
+                },
+            }]
+        },
+        "legacy answer",
+    )
+    charts = [
+        {"title": "리바로 매출 추이", "evidence_refs": ["UBIST.render_data.brand_value_series_10pt"]},
+        {"title": "시장 매출 추이", "evidence_refs": ["UBIST.render_data.market_size_series"]},
+        {"title": "Brand별 점유율", "evidence_refs": []},
+        {"title": "HHI 추이", "evidence_refs": ["UBIST.render_data.hhi"]},
+    ]
+
+    entitled = projection.entitled_charts(controlled, charts)
+
+    assert [chart["title"] for chart in entitled] == ["리바로 매출 추이"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "charts", "sources", "error"),
+    (
+        ("channel_distribution", (), ("UBIST",), "internal_identifier_exposed"),
+        ("예측값 8618859701.348597원", (), ("UBIST",), "raw_canonical_numeric_exposed"),
+        (
+            "근거 있는 답변\n\n## 출처\n| 출처 | 기준 기간 |\n| --- | --- |\n| UBIST | 2026-06 |",
+            ({"title": "매출 추이", "tooltip": "8618859701.348597", "evidence_refs": ["UBIST.render_data.brand_value_series_10pt"]},),
+            ("UBIST",),
+            "raw_canonical_numeric_exposed",
+        ),
+        ("근거 있는 답변", (), (), "required_source_block_missing"),
+        (
+            "설명 문장 안의 ## 출처 표시는 출처 블록이 아닙니다.",
+            (),
+            ("UBIST",),
+            "required_source_block_missing",
+        ),
+        (
+            "근거 있는 답변\n\n## 출처\n| 출처 | 기준 |\n| --- | --- |\n| UBIST | 2026-06 |",
+            ({"title": "HHI 추이", "evidence_refs": ["unentitled"]},),
+            ("UBIST",),
+            "chart_evidence_unentitled",
+        ),
+    ),
+)
+def test_surface_gate_rejects_serialized_contract_violations(
+    answer: str,
+    charts: tuple[dict[str, object], ...],
+    sources: tuple[str, ...],
+    error: str,
+) -> None:
+    with pytest.raises(AnswerGateError, match=error):
+        projection.validate_controlled_surface(
+            answer=answer,
+            charts=charts,
+            sources=sources,
+            answer_status="complete",
+            allowed_evidence_ids=("UBIST.render_data.brand_value_series_10pt",),
+            source_block_required=True,
+        )

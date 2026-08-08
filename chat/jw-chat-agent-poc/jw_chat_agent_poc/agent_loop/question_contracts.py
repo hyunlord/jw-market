@@ -29,18 +29,48 @@ class OperationMode(StrEnum):
     CAUSAL = "CAUSAL"
 
 
+class SlotKind(StrEnum):
+    FACT = "FACT"
+    SCOPE = "SCOPE"
+    POLICY = "POLICY"
+    INTERPRETATION = "INTERPRETATION"
+
+
+class MissingPolicy(StrEnum):
+    FATAL = "FATAL"
+    PARTIAL = "PARTIAL"
+    NEVER_MISSING = "NEVER_MISSING"
+
+
+@dataclass(frozen=True, slots=True)
+class SlotSpec:
+    id: str
+    kind: SlotKind
+    user_label: str
+    missing_label: str
+    missing_policy: MissingPolicy
+
+
 @dataclass(frozen=True, slots=True)
 class QuestionSpec:
     intent: AnswerIntent
-    required_slots: tuple[str, ...]
+    blocking_required_slots: tuple[str, ...]
+    partial_required_slots: tuple[str, ...]
     optional_slots: tuple[str, ...]
     forbidden_claim_types: tuple[str, ...]
     anchor_provenance: str | None = "USER_TEXT"
     operation_mode: OperationMode = OperationMode.READ
 
     @property
+    def required_slots(self) -> tuple[str, ...]:
+        return (*self.blocking_required_slots, *self.partial_required_slots)
+
+    @property
     def entitled_slots(self) -> frozenset[str]:
         return frozenset((*self.required_slots, *self.optional_slots))
+
+    def slot_spec(self, slot_id: str) -> SlotSpec:
+        return SLOT_SPECS[slot_id]
 
     def with_anchor_provenance(self, value: str | None) -> QuestionSpec:
         return replace(self, anchor_provenance=value)
@@ -51,8 +81,65 @@ def _spec(
     required: tuple[str, ...],
     optional: tuple[str, ...] = (),
     forbidden: tuple[str, ...] = (),
+    *,
+    partial: tuple[str, ...] = (),
 ) -> QuestionSpec:
-    return QuestionSpec(intent, required, optional, forbidden)
+    return QuestionSpec(intent, required, partial, optional, forbidden)
+
+
+def _slot(
+    slot_id: str,
+    kind: SlotKind,
+    user_label: str,
+    missing_label: str,
+    policy: MissingPolicy = MissingPolicy.FATAL,
+) -> SlotSpec:
+    return SlotSpec(slot_id, kind, user_label, missing_label, policy)
+
+
+_SLOT_ROWS = (
+    _slot("latest_market_size", SlotKind.FACT, "최신 시장 규모", "최신 시장 규모 데이터"),
+    _slot("market_size_trend", SlotKind.FACT, "시장 규모 변화", "시장 규모 추이 데이터"),
+    _slot("brand_sales_series", SlotKind.FACT, "브랜드 매출 추이", "브랜드 매출 추이 데이터"),
+    _slot("brand_trend_conclusion", SlotKind.INTERPRETATION, "브랜드 추이 결론", "브랜드 추이 결론 근거"),
+    _slot("recent_observed_trend", SlotKind.FACT, "최근 관측 추세", "최근 관측 추세 데이터"),
+    _slot("forecast_basis", SlotKind.FACT, "조건부 전망", "조건부 전망 계산 근거"),
+    _slot("risk_factors", SlotKind.POLICY, "전망 미반영 요인", "전망 위험요인 설명", MissingPolicy.NEVER_MISSING),
+    _slot("forecast_availability", SlotKind.POLICY, "전망 제공 범위", "전망 제공 범위 설명", MissingPolicy.NEVER_MISSING),
+    _slot("uncertainty", SlotKind.POLICY, "전망 불확실성", "전망 불확실성 설명", MissingPolicy.NEVER_MISSING),
+    _slot("comparison_period", SlotKind.SCOPE, "비교 기간", "비교 기간 정보"),
+    _slot("current_top_structure", SlotKind.FACT, "현재 경쟁 구도", "현재 경쟁 구도 데이터"),
+    _slot("share_gainers", SlotKind.FACT, "점유율 상승 브랜드", "점유율 상승 데이터"),
+    _slot("share_losers", SlotKind.FACT, "점유율 하락 브랜드", "점유율 하락 데이터"),
+    _slot("competition_change_conclusion", SlotKind.INTERPRETATION, "경쟁 구도 변화", "경쟁 구도 변화 근거"),
+    _slot("competitor_definition", SlotKind.SCOPE, "경쟁군 정의", "경쟁군 정의"),
+    _slot("own_position", SlotKind.FACT, "자사 위치", "자사 위치 데이터"),
+    _slot("competitor_comparison", SlotKind.INTERPRETATION, "경쟁사 비교", "경쟁사 비교 데이터"),
+    _slot("new_observation_basis", SlotKind.SCOPE, "신규 관찰 기준", "신규 관찰 기준"),
+    _slot("threat_evidence", SlotKind.FACT, "위협 근거", "위협 판단 데이터"),
+    _slot("threat_conclusion", SlotKind.INTERPRETATION, "위협 판단", "위협 판단 근거"),
+    _slot("channel_distribution", SlotKind.FACT, "채널별 분포", "채널별 분포 데이터", MissingPolicy.PARTIAL),
+    _slot("specialty_distribution", SlotKind.FACT, "진료과별 분포", "진료과별 분포 데이터", MissingPolicy.PARTIAL),
+    _slot("measurement_subject_difference", SlotKind.SCOPE, "측정 대상 차이", "측정 대상 정의"),
+    _slot("distribution_stage_difference", SlotKind.SCOPE, "유통 단계 차이", "유통 단계 정의"),
+    _slot("cadence_difference", SlotKind.SCOPE, "집계 주기 차이", "집계 주기 정의"),
+    _slot("direct_comparison_limit", SlotKind.POLICY, "직접 비교 제한", "직접 비교 제한 설명", MissingPolicy.NEVER_MISSING),
+    _slot("competitor_activity_change", SlotKind.FACT, "경쟁사 활동 변화", "경쟁사 활동 변화 데이터"),
+    _slot("coverage_and_missingness", SlotKind.SCOPE, "조회 범위", "조회 범위 정보"),
+    _slot("activity_series", SlotKind.FACT, "영업활동 추이", "영업활동 추이 데이터"),
+    _slot("activity_coverage", SlotKind.SCOPE, "영업활동 조회 범위", "영업활동 조회 범위"),
+    _slot("activity_change", SlotKind.FACT, "영업활동 변화", "영업활동 변화 데이터"),
+    _slot("performance_change", SlotKind.FACT, "매출 변화", "매출 변화 데이터"),
+    _slot("temporal_alignment", SlotKind.SCOPE, "비교 시점 정렬", "비교 시점 정보"),
+    _slot("noncausal_limit", SlotKind.POLICY, "영향 판단 제한", "영향 판단 제한 설명", MissingPolicy.NEVER_MISSING),
+    _slot("patient_count", SlotKind.FACT, "환자 수", "환자 수 데이터"),
+    _slot("sales_value", SlotKind.FACT, "매출", "매출 데이터"),
+    _slot("source_separation_limit", SlotKind.POLICY, "소스 분리 원칙", "소스 분리 원칙", MissingPolicy.NEVER_MISSING),
+    _slot("capability_level", SlotKind.SCOPE, "조회 범위", "조회 가능 범위"),
+    _slot("selection_basis", SlotKind.SCOPE, "선정 기준", "결과 선정 기준"),
+    _slot("result_items", SlotKind.FACT, "최근 이슈", "최근 이슈 데이터"),
+)
+SLOT_SPECS: Final = MappingProxyType({item.id: item for item in _SLOT_ROWS})
 
 
 QUESTION_CONTRACTS: Final = MappingProxyType({
@@ -91,8 +178,9 @@ QUESTION_CONTRACTS: Final = MappingProxyType({
     ),
     AnswerIntent.CHANNEL_SPECIALTY: _spec(
         AnswerIntent.CHANNEL_SPECIALTY,
-        ("channel_distribution", "specialty_distribution"),
+        (),
         ("channel_growth_difference", "leading_axis_conclusion"),
+        partial=("channel_distribution", "specialty_distribution"),
     ),
     AnswerIntent.SOURCE_DIFFERENCE: _spec(
         AnswerIntent.SOURCE_DIFFERENCE,
@@ -125,6 +213,14 @@ QUESTION_CONTRACTS: Final = MappingProxyType({
         ("sample_as_complete_analysis",),
     ),
 })
+
+
+D1_QUESTION_SPEC: Final = _spec(
+    AnswerIntent.SALES_ACTIVITY_TREND,
+    ("activity_series", "activity_change", "activity_coverage"),
+    ("topic_by_seller",),
+    ("competitor_activity_change", "own_prescription_sales_trend"),
+)
 
 
 def _operation_mode(question: str) -> OperationMode:
@@ -169,5 +265,10 @@ def intent_for_question(question: str) -> AnswerIntent:
 
 
 def question_spec_for(question: str) -> QuestionSpec:
-    base = QUESTION_CONTRACTS[intent_for_question(question)]
+    intent = intent_for_question(question)
+    base = (
+        D1_QUESTION_SPEC
+        if intent is AnswerIntent.SALES_ACTIVITY_TREND and "경쟁사" not in question
+        else QUESTION_CONTRACTS[intent]
+    )
     return replace(base, operation_mode=_operation_mode(question))
