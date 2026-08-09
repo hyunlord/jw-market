@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 import csv
 import json
@@ -59,6 +60,22 @@ TAVILY_MCP_SOURCE = "tavily_mcp"
 _PERSONAL_BLOG_HOSTS = frozenset(
     {"blog.naver.com", "m.blog.naver.com", "tistory.com", "brunch.co.kr", "medium.com"}
 )
+_PUBLICATION_DATE_QUERY_RE = re.compile(
+    r"(?:최근|최신|개정|변경|뉴스|이슈)",
+    re.IGNORECASE,
+)
+_PUBLICATION_DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?is)(?:article:published_time|datePublished|datePublishedUTC|pubdate)"
+        r"[^>\n]{0,240}?(20\d{2}-\d{2}-\d{2}(?:[T ][^\"'<\s]+)?)"
+    ),
+    re.compile(
+        r"(?is)(20\d{2}-\d{2}-\d{2}(?:[T ][^\"'<\s]+)?)"
+        r"[^>\n]{0,240}?(?:article:published_time|datePublished|datePublishedUTC|pubdate)"
+    ),
+    re.compile(r"(?is)<time\b[^>]*\bdatetime=[\"'](20\d{2}-\d{2}-\d{2}[^\"']*)[\"']"),
+)
+_PUBLICATION_METADATA_MAX_BYTES = 256 * 1024
 MCP_DIRECT_URL_ENV_BY_SOURCE = {
     OPENFDA_MCP_SOURCE: OPENFDA_MCP_URL_ENV,
     NEDRUG_MCP_SOURCE: NEDRUG_MCP_URL_ENV,
@@ -1091,15 +1108,21 @@ def _enrich_clinicaltrials_detail_from_official_api(
     started = time.monotonic()
     api_url = f"https://clinicaltrials.gov/api/v2/studies/{nct_id}"
     direct_payload: dict[str, Any] | None = None
-    direct_error = ""
-    try:
-        response = requests.get(api_url, timeout=timeout_s)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict):
-            direct_payload = payload
-    except Exception as exc:  # noqa: BLE001 - retain the MCP result and expose adapter status
-        direct_error = type(exc).__name__
+    direct_errors: list[str] = []
+    direct_attempts = 0
+    for direct_attempts in range(1, 3):
+        try:
+            response = requests.get(api_url, timeout=min(timeout_s, 5))
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                direct_payload = payload
+                break
+            direct_errors.append("NonObjectPayload")
+        except Exception as exc:  # noqa: BLE001 - retain the MCP result and expose adapter status
+            direct_errors.append(type(exc).__name__)
+        if direct_attempts == 1:
+            time.sleep(0.15)
     direct_elapsed = round((time.monotonic() - started) * 1000, 1)
 
     render_data = dict(call.render_data)
@@ -1182,7 +1205,9 @@ def _enrich_clinicaltrials_detail_from_official_api(
                 "status": "ok" if direct_payload is not None else "unavailable",
                 "url": api_url,
                 "elapsed_ms": direct_elapsed,
-                "error_type": direct_error or None,
+                "attempt_count": direct_attempts,
+                "error_types": direct_errors,
+                "error_type": direct_errors[-1] if direct_errors else None,
             },
             "field_capabilities": {
                 **(
@@ -1584,6 +1609,7 @@ def _web_error(provider: str, query: str, exc: Exception, elapsed: float) -> Ext
 
 def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: float) -> ExternalCall:
     normalized_items: list[dict[str, Any]] = []
+    publication_date_required = bool(_PUBLICATION_DATE_QUERY_RE.search(query))
     for raw_item in items:
         item = dict(raw_item)
         url = str(item.get("url") or "")
@@ -1593,6 +1619,10 @@ def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: f
         ):
             continue
         published_at = item.get("published_at") or item.get("published_date")
+        if publication_date_required and not published_at:
+            published_at = _fetch_publication_date(url)
+            if published_at:
+                item["published_at_source"] = "page_metadata"
         item["published_at"] = published_at
         item["published_date"] = published_at
         normalized_items.append(item)
@@ -1612,3 +1642,60 @@ def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: f
         },
         elapsed_ms=elapsed,
     )
+
+
+def _fetch_publication_date(url: str) -> str | None:
+    """Read only the public page head and expose an explicit publication date."""
+
+    if not _is_public_web_url(url):
+        return None
+    response: requests.Response | None = None
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; JWChatSourceDate/1.0)"},
+            timeout=(2, 3),
+            allow_redirects=True,
+            stream=True,
+        )
+        response.raise_for_status()
+        if not _is_public_web_url(response.url):
+            return None
+        content_type = str(response.headers.get("Content-Type") or "").casefold()
+        if "html" not in content_type and "text" not in content_type:
+            return None
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in response.iter_content(chunk_size=16 * 1024):
+            if not chunk:
+                continue
+            remaining = _PUBLICATION_METADATA_MAX_BYTES - size
+            if remaining <= 0:
+                break
+            chunks.append(chunk[:remaining])
+            size += min(len(chunk), remaining)
+        page = b"".join(chunks).decode(response.encoding or "utf-8", errors="ignore")
+    except requests.RequestException:
+        return None
+    finally:
+        if response is not None:
+            response.close()
+    for pattern in _PUBLICATION_DATE_PATTERNS:
+        match = pattern.search(page)
+        if match is not None:
+            return match.group(1).strip()
+    return None
+
+
+def _is_public_web_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme not in {"http", "https"} or "." not in host:
+        return False
+    if host.endswith((".svc", ".cluster.local")) or host == "localhost":
+        return False
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return True
+    return not (address.is_private or address.is_loopback or address.is_link_local)

@@ -64,9 +64,17 @@ _PERSONAL_BLOG_HOSTS: Final[frozenset[str]] = frozenset(
         "tistory.com",
     }
 )
-_RECENT_REVISION_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:최근|최신|개정|변경).{0,20}(?:급여|고시|기준|내용)|"
-    r"(?:급여|고시|기준).{0,20}(?:최근|최신|개정|변경)"
+_RECENT_WEB_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:최근|최신|개정|변경|뉴스|이슈)",
+    re.IGNORECASE,
+)
+_WEB_STAT_METRIC_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:유병률|환자\s*수|발생률|유병\s*환자|진료\s*인원|질환\s*환자)",
+    re.IGNORECASE,
+)
+_WEB_STAT_VALUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\d[\d,.]*\s*(?:%|명|건|만\s*명|억\s*명)",
+    re.IGNORECASE,
 )
 _INTERNAL_STRUCTURED_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:\bUBIST\b|\bIQVIA\b|\bCSD\b|\bHHI\b|시장\s*규모|시장\s*점유|점유율|"
@@ -150,14 +158,15 @@ def prepare_external_passthrough(
         )
     )
     usable_web_present = any(_usable_web_call(call) for call in calls)
+    core_web_present = any(_web_call_answers_question(question, call) for call in calls)
     failed_web_search = any(
         str(call.get("tool") or "").strip().casefold() == "web_search"
         for call in calls
-    ) and not usable_web_present
+    ) and not core_web_present
     web_fallback_attempted = bool(failed_official_tools) or failed_web_search
     web_fallback_used = web_fallback_attempted and usable_web_present
     fallback_queries: list[str] = []
-    if web_fallback_attempted and not usable_web_present:
+    if web_fallback_attempted and not core_web_present:
         if external is None:
             return payload
         fallback_from_tools = failed_official_tools or ("web_search",)
@@ -173,7 +182,6 @@ def prepare_external_passthrough(
             timing=timing,
             fallback_from_tools=fallback_from_tools,
             reason=fallback_reason,
-            max_attempts=1 if failed_web_search and not failed_official_tools else None,
         )
         web_fallback_used = any(_usable_web_call(call) for call in calls)
 
@@ -277,7 +285,7 @@ def append_external_web_fallback(
 ) -> dict[str, Any]:
     raw_calls = payload.get("tool_calls")
     calls = [dict(call) for call in raw_calls if isinstance(call, Mapping)] if isinstance(raw_calls, list) else []
-    if any(_usable_web_call(call) for call in calls):
+    if any(_web_call_answers_question(question, call) for call in calls):
         return payload
     official_tools = tuple(
         dict.fromkeys(str(call.get("tool") or "") for call in calls if _is_official_tool(call))
@@ -433,6 +441,36 @@ def _usable_web_call(call: Mapping[str, object]) -> bool:
     )
 
 
+def _web_call_answers_question(question: str, call: Mapping[str, object]) -> bool:
+    if not _usable_web_call(call):
+        return False
+    render_data = call.get("render_data")
+    items = render_data.get("items") if isinstance(render_data, Mapping) else None
+    if not isinstance(items, list):
+        return False
+    subject_match = _DISEASE_STAT_SUBJECT_RE.match(question) or _DISEASE_PATIENT_SUBJECT_RE.match(question)
+    if subject_match is not None:
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            blob = " ".join(
+                str(item.get(key) or "") for key in ("title", "snippet")
+            )
+            if _WEB_STAT_METRIC_RE.search(blob) and _WEB_STAT_VALUE_RE.search(blob):
+                return True
+        return False
+    if _RECENT_WEB_RE.search(question):
+        return any(
+            isinstance(item, Mapping)
+            and _parse_publication_date(
+                str(item.get("published_at") or item.get("published_date") or "")
+            )
+            is not None
+            for item in items
+        )
+    return bool(items)
+
+
 def _append_web_fallback_calls(
     question: str,
     calls: list[dict[str, Any]],
@@ -448,8 +486,9 @@ def _append_web_fallback_calls(
     if max_attempts is not None:
         query_plan = query_plan[:max_attempts]
     for index, (tier, query) in enumerate(query_plan, start=1):
+        topic = "news" if _RECENT_WEB_RE.search(question) else "general"
         with stage(timing, "tool:web_search", "external source fallback"):
-            fallback_call = asdict(external.web_search(query, topic="general"))
+            fallback_call = asdict(external.web_search(query, topic=topic))
         fallback_call["queried_at_utc"] = datetime.now(timezone.utc).isoformat()
         fallback_call["fallback_from_tools"] = list(fallback_from_tools)
         fallback_call["fallback_reason"] = reason
@@ -460,7 +499,7 @@ def _append_web_fallback_calls(
         fallback_call[RESULT_STATUS_FIELD] = external_result_status(fallback_call)
         calls.append(fallback_call)
         attempted.append(query)
-        if _usable_web_call(fallback_call):
+        if _web_call_answers_question(question, fallback_call):
             break
     return attempted
 
@@ -478,7 +517,11 @@ def _web_fallback_query_plan(question: str) -> tuple[tuple[str, str], ...]:
         subject = re.sub(r"^국내\s+|\s+국내$", "", subject).strip()
         return (
             ("official_domain", f"site:hira.or.kr OR site:nhis.or.kr {subject} 국내 유병률 환자수 통계 발생률"),
-            ("institution_academic", f"site:mohw.go.kr OR site:ac.kr {subject} 유병률 환자수 통계 발생률"),
+            (
+                "institution_academic",
+                f"site:mohw.go.kr OR site:or.kr OR site:ac.kr {subject} "
+                "국내 유병률 환자수 통계 발생률 역학 연구 prevalence Korea",
+            ),
             ("specialist_press", f"site:medicaltimes.com OR site:docdocdoc.co.kr {subject} 유병률 환자수 통계 발생률"),
         )
     if any(token in question for token in ("급여기준", "급여 기준", "급여조건", "급여 조건")):
@@ -486,6 +529,12 @@ def _web_fallback_query_plan(question: str) -> tuple[tuple[str, str], ...]:
             ("official_domain", f"site:hira.or.kr {question} 보험급여 인정기준 세부 조건 본문"),
             ("institution_academic", f"site:mohw.go.kr OR site:nhis.or.kr OR site:ac.kr {question} 개정 고시 급여 적용 조건"),
             ("specialist_press", f"site:yakup.com OR site:dailypharm.com OR site:medipana.com {question} 개정 급여 적용 조건"),
+        )
+    if _RECENT_WEB_RE.search(question):
+        return (
+            ("official_domain", f"site:jw-pharma.co.kr OR site:mfds.go.kr {question}"),
+            ("institution_academic", f"site:go.kr OR site:or.kr OR site:ac.kr {question}"),
+            ("specialist_press", f"site:dailypharm.com OR site:medicaltimes.com OR site:monews.co.kr {question}"),
         )
     return (
         ("official_domain", f"site:hira.or.kr OR site:mfds.go.kr OR site:clinicaltrials.gov {question}"),
@@ -509,7 +558,7 @@ def _apply_web_result_policy(
     items = render_data.get("items")
     if not isinstance(items, list):
         return
-    recent_revision = bool(_RECENT_REVISION_RE.search(question))
+    recent_revision = bool(_RECENT_WEB_RE.search(question))
     official_date = _official_reference_date(existing_calls)
     kept: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []

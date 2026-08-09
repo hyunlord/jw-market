@@ -509,9 +509,9 @@ def _hira_stat_call(
 ) -> ExternalCall:
     caller = getattr(external, request.tool)
     call = caller(sick_cd) if period is None else caller(sick_cd, period)
-    if period is None or (not _hira_call_unavailable(call) and not _hira_call_has_no_data(call)):
+    if not _hira_call_unavailable(call) and not _hira_call_has_no_data(call):
         return _with_hira_stat_outcome(call, sick_cd, period, attempt_count=1)
-    retried = caller(sick_cd, period)
+    retried = caller(sick_cd) if period is None else caller(sick_cd, period)
     return _with_hira_stat_outcome(
         retried,
         sick_cd,
@@ -531,15 +531,21 @@ def _with_hira_stat_outcome(
 ) -> ExternalCall:
     summary = call.summary_text
     outcome = "success"
+    request = call.render_data.get("request")
+    observed_period = (
+        period
+        or (str(request.get("year") or "").strip() if isinstance(request, dict) else "")
+        or "기본 연도"
+    )
     if _hira_call_unavailable(call):
         outcome = "query_failed_after_retry" if attempt_count > 1 else "query_failed"
         suffix = "(재시도함)" if attempt_count > 1 else ""
-        summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 조회 실패{suffix}."
+        summary = f"HIRA KCD {sick_cd}의 {observed_period} 환자수 조회 실패{suffix}."
     elif _hira_call_has_no_data(call):
         outcome = "data_absent_after_retry" if attempt_count > 1 else "data_absent"
-        summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 데이터 없음."
+        summary = f"HIRA KCD {sick_cd}의 {observed_period} 환자수 데이터 없음."
     elif attempt_count > 1:
-        summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수를 재시도 후 조회했습니다."
+        summary = f"HIRA KCD {sick_cd}의 {observed_period} 환자수를 재시도 후 조회했습니다."
     return ExternalCall(
         tool=call.tool,
         source=call.source,
