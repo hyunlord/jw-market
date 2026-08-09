@@ -1184,6 +1184,7 @@ def _general_row_from_mart(
         combos[f"{api_source}.{measure}"] = _general_metric_rows_to_combo(combo_rows, target_brand=brand_name)
     payload = {
         "degraded": True,
+        "degraded_reason": "forecast_block_unavailable",
         "brand": brand_name,
         "brand_name": brand_name,
         "brand_key": brand_key,
@@ -1193,6 +1194,8 @@ def _general_row_from_mart(
         "data": {
             "forecast": {
                 "method": "observed_general_mart",
+                "degraded": True,
+                "degraded_reason": "forecast_block_unavailable",
                 "disclaimer": "General view is assembled from mart_general_brand_metric without request-time forecast generation.",
                 "is_statistical_model": False,
                 "backtest_available": False,
@@ -1200,7 +1203,11 @@ def _general_row_from_mart(
                 "phase29_poc": None,
                 "by_combo": combos,
             },
-            "simulation": {"by_combo": {}},
+            "simulation": {
+                "available": False,
+                "reason": "forecast_block_unavailable",
+                "by_combo": {},
+            },
             "events": [],
         },
         "market_meta": {
@@ -1216,6 +1223,8 @@ def _general_row_from_mart(
             "is_jw": is_jw,
             "is_target": True,
             "cache_scope": "general_mart",
+            "degraded": True,
+            "degraded_reason": "forecast_block_unavailable",
             "tie_break": "latest_raw_value_desc_then_atc4_ascending",
         },
     }
@@ -1282,26 +1291,6 @@ def _compose_formal_context_payload(
     brand: str,
     context: DeepAnalysisContext,
 ) -> tuple[dict, dict]:
-    if context.view_kind == "general" and context.has_market_data:
-        row = _fetch_general_deep_analysis_row(brand, context.market_id)
-        if not row:
-            is_jw, _is_target = _strategic_brand_flags(brand)
-            row = _general_row_from_mart(
-                brand,
-                is_jw=is_jw,
-                atc4=context.market_id,
-                source=context.db_source,
-            )
-        if row:
-            payload = compose_cached_json(row["response_json"])
-            if not isinstance(payload, dict):
-                raise HTTPException(
-                    status_code=500,
-                    detail={"error": "invalid_cache_payload", "cache": "general_deep_analysis"},
-                )
-            _scope_formal_payload(payload, context)
-            return payload, row
-
     payload = _empty_formal_payload(context)
     row = {
         "brand": context.brand_name,
@@ -1313,16 +1302,38 @@ def _compose_formal_context_payload(
     }
     if context.has_market_data:
         forecast, simulation = _load_formal_forecast_sections(context)
-        data = payload["data"]
-        if forecast is not None:
-            data["forecast"] = forecast
-            if _section_has_payload(forecast):
-                data["forecast_meta"] = {"status": "available", "reason": None}
-            else:
-                reason = forecast.get("reason") if isinstance(forecast, dict) else "not_generated"
-                data["forecast_meta"] = {"status": reason, "reason": reason}
-        if simulation is not None:
-            data["simulation"] = simulation
+        if forecast is not None or simulation is not None:
+            data = payload["data"]
+            if forecast is not None:
+                data["forecast"] = forecast
+                if _section_has_payload(forecast):
+                    data["forecast_meta"] = {"status": "available", "reason": None}
+                else:
+                    reason = forecast.get("reason") if isinstance(forecast, dict) else "not_generated"
+                    data["forecast_meta"] = {"status": reason, "reason": reason}
+            if simulation is not None:
+                data["simulation"] = simulation
+            return payload, row
+
+        if context.view_kind == "general":
+            fallback_row = _fetch_general_deep_analysis_row(brand, context.market_id)
+            if not fallback_row:
+                is_jw, _is_target = _strategic_brand_flags(brand)
+                fallback_row = _general_row_from_mart(
+                    brand,
+                    is_jw=is_jw,
+                    atc4=context.market_id,
+                    source=context.db_source,
+                )
+            if fallback_row:
+                fallback_payload = compose_cached_json(fallback_row["response_json"])
+                if not isinstance(fallback_payload, dict):
+                    raise HTTPException(
+                        status_code=500,
+                        detail={"error": "invalid_cache_payload", "cache": "general_deep_analysis"},
+                    )
+                _scope_formal_payload(fallback_payload, context)
+                return fallback_payload, fallback_row
     return payload, row
 
 

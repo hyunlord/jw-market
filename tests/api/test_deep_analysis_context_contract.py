@@ -397,6 +397,63 @@ def test_formal_general_source_filter_marks_empty_forecast_not_generated() -> No
     assert payload["market_meta"]["market_id"] == "N02B2"
 
 
+def test_formal_general_forecast_block_precedes_cache_and_observed_mart(monkeypatch) -> None:
+    context = replace(
+        _context(),
+        view_kind="general",
+        market_id="C10C0",
+        market_name="지질조절제",
+        brand_available_sources=("ubist",),
+    )
+    calls: list[str] = []
+    canonical_forecast = {
+        "method": "forecast_block",
+        "by_combo": {
+            "UBIST.sales": {
+                "history_periods": ["2026-06"],
+                "forecast_periods": ["2026-07"],
+                "forecast_values": [123.0],
+            }
+        },
+    }
+    canonical_simulation = {
+        "by_combo": {"UBIST.sales": {"brands": [{"brand": "선택브랜드"}]}}
+    }
+
+    def load_block(_context: DeepAnalysisContext) -> tuple[dict, dict]:
+        calls.append("block")
+        return canonical_forecast, canonical_simulation
+
+    def stale_cache(*_args, **_kwargs) -> None:
+        calls.append("cache")
+        return None
+
+    def observed_mart(*_args, **_kwargs) -> dict:
+        calls.append("mart")
+        return {
+            "response_json": json.dumps(
+                {
+                    "degraded": True,
+                    "data": {
+                        "forecast": {"method": "observed_general_mart", "by_combo": {}},
+                        "simulation": {"by_combo": {}},
+                    },
+                },
+                ensure_ascii=False,
+            )
+        }
+
+    monkeypatch.setattr(deep_analysis, "_load_formal_forecast_sections", load_block)
+    monkeypatch.setattr(deep_analysis, "_fetch_general_deep_analysis_row", stale_cache)
+    monkeypatch.setattr(deep_analysis, "_general_row_from_mart", observed_mart)
+
+    payload, _row = deep_analysis._compose_formal_context_payload("선택브랜드", context)
+
+    assert payload["data"]["forecast"] == canonical_forecast
+    assert payload["data"]["simulation"] == canonical_simulation
+    assert calls == ["block"]
+
+
 def test_formal_no_market_data_response_is_200_with_source_context(monkeypatch) -> None:
     monkeypatch.setattr(deep_analysis, "resolve_deep_analysis_context", lambda **_kwargs: _context(has_market_data=False))
     monkeypatch.setattr(deep_analysis, "_load_deep_events", lambda _brand: [])

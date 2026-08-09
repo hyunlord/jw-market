@@ -613,6 +613,11 @@ def test_general_mart_fallback_emits_target_plus_top_five_and_degraded(monkeypat
     assert [item["is_target"] for item in brands] == [True, False, False, False, False, False]
     assert market_calls == [("C10C0", None)]
     assert payload["degraded"] is True
+    assert payload["degraded_reason"] == "forecast_block_unavailable"
+    assert payload["data"]["forecast"]["degraded"] is True
+    assert payload["data"]["forecast"]["degraded_reason"] == "forecast_block_unavailable"
+    assert payload["market_meta"]["degraded"] is True
+    assert payload["market_meta"]["degraded_reason"] == "forecast_block_unavailable"
 
 
 def test_general_cache_hit_does_not_add_degraded_key(monkeypatch) -> None:
