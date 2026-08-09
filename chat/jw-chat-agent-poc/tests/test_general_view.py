@@ -24,9 +24,11 @@ from jw_chat_agent_poc.service.conversation_context import (
 )
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
+    BrandMetricPoint,
     GeneralMarket,
     GeneralViewBrandMismatchError,
     GeneralViewBackendError,
+    TopBrand,
     parse_general_market_response,
 )
 from jw_chat_agent_poc.tools.general_view_membership import (
@@ -782,6 +784,111 @@ def _market(atc4: str, brand_value: float) -> GeneralMarket:
     return replace(parsed, brand_value=brand_value)
 
 
+def _iqvia_intent_service() -> GeneralViewService:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "iqvia"),
+    )
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(memberships),
+        ttl_seconds=300,
+    )
+    backend = FakeBackend()
+    backend.market_map["S01P0"] = replace(
+        _market("S01P0", 21_870_000_000.0),
+        source="IQVIA NSA",
+        period="2026-Q1",
+        market_size=91_125_000_000.0,
+        brand="아일리아",
+        brand_share_pct=24.0,
+        brand_rank=1,
+        hhi_recent=3188.04,
+        market_size_series=(
+            ("2025-Q2", 80_000_000_000.0),
+            ("2025-Q3", 83_000_000_000.0),
+            ("2025-Q4", 87_000_000_000.0),
+            ("2026-Q1", 91_125_000_000.0),
+        ),
+        brand_metric_series=(
+            BrandMetricPoint("2025-Q2", 18_000_000_000.0, 22.0, 2),
+            BrandMetricPoint("2026-Q1", 21_870_000_000.0, 24.0, 1),
+        ),
+        top_brands=(
+            TopBrand("아일리아", 1, 21_870_000_000.0, 24.0),
+            TopBrand("루센티스", 2, 16_400_000_000.0, 18.0),
+            TopBrand("비오뷰", 3, 10_025_000_000.0, 11.0),
+            TopBrand("바비스모", 4, 8_200_000_000.0, 9.0),
+            TopBrand("아바스틴", 5, 6_375_000_000.0, 7.0),
+        ),
+        selected_data_path="direct_mart",
+    )
+    return GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership(set()),
+        enabled=True,
+        general_membership=cache,
+    )
+
+
+def test_general_view_intents_render_distinct_strategic_control_surfaces() -> None:
+    service = _iqvia_intent_service()
+
+    market_size = service.answer("아일리아 시장 규모 알려줘", compact=False, dual=False)
+    brand_trend = service.answer("아일리아 매출 알려줘", compact=False, dual=False)
+    competition = service.answer("아일리아 경쟁 구도 어때", compact=False, dual=False)
+    concentration = service.answer("아일리아 시장 HHI", compact=False, dual=False)
+
+    assert market_size["general_view_contract"]["general_view_intent"] == "MARKET_SIZE_TREND"
+    assert brand_trend["general_view_contract"]["general_view_intent"] == "BRAND_TREND"
+    assert competition["general_view_contract"]["general_view_intent"] == "COMPETITION_CHANGE"
+    assert concentration["general_view_contract"]["general_view_intent"] == "MARKET_CONCENTRATION"
+
+    assert market_size["answer"].count("## 핵심 결과") == 1
+    assert "시장 규모" in market_size["answer"]
+    assert len(market_size["general_view_contract"]["chart_payloads"]) == 1
+
+    assert brand_trend["answer"].count("## 핵심 결과") == 1
+    assert "브랜드 매출" in brand_trend["answer"]
+    assert "점유율 24.00%" in brand_trend["answer"]
+    assert "순위 1위" in brand_trend["answer"]
+    assert brand_trend["general_view_contract"]["chart_payloads"] == []
+
+    assert competition["answer"].count("## 핵심 결과") == 1
+    assert "1위 아일리아 (24.00%)" in competition["answer"]
+    assert "+2.00%p" in competition["answer"]
+    assert competition["general_view_contract"]["chart_payloads"] == []
+
+    assert concentration["answer"].count("## 핵심 결과") == 1
+    assert "HHI 3,188.04" in concentration["answer"]
+    assert "CR5 69.00%" in concentration["answer"]
+    assert concentration["general_view_contract"]["chart_payloads"] == []
+
+
+def test_iqvia_general_view_warning_is_in_answer_body() -> None:
+    service = _iqvia_intent_service()
+    question = "아일리아 시장 HHI"
+    result = service.answer(question, compact=False, dual=False)
+
+    final = service_app.compute_final_answer(question, result, "general-view-warning-test")
+
+    assert (
+        "이 값은 일반뷰(IQVIA NSA, ATC4 기준)입니다. "
+        "전략뷰(UBIST) 값과 분모·기간이 달라 직접 비교할 수 없습니다."
+    ) in final.text
+    assert final.text.count("## 핵심 결과") == 1
+
+
+def test_general_view_fast_path_materializes_authorized_market_size_chart() -> None:
+    service = _iqvia_intent_service()
+    question = "아일리아 시장 규모 알려줘"
+    result = service.answer(question, compact=False, dual=False)
+
+    final = service_app.compute_final_answer(question, result, "general-view-intent-test")
+
+    assert len(final.charts) == 1
+    assert final.charts[0]["title"] == "시장 규모 추이"
+    assert final.charts[0]["labels"] == ["2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1"]
+
+
 def test_recent_one_year_market_size_uses_twelve_month_sum_and_names_window() -> None:
     backend = FakeBackend()
     backend.candidate_map[("리바로", "ubist")] = (AtcCandidate("C10A1", "지질조절제"),)
@@ -811,7 +918,8 @@ def test_unspecified_market_period_keeps_latest_single_period() -> None:
 
     result = service.answer("리바로 C10A1 시장 규모", compact=False, dual=False)
 
-    assert "시장 규모 (2026-04)" in result["answer"]
+    assert "2026-04 시장 규모 1,000.00억원" in result["answer"]
+    assert "2026-04~2026-04" not in result["answer"]
 
 
 def test_route_matrix_has_no_human_loop() -> None:
@@ -1001,7 +1109,7 @@ def test_general_only_brand_hhi_is_rendered_from_one_atc4_without_aggregation() 
     assert contract["atc4_code"] == "S01P0"
     assert "일반뷰 (ATC4)" in result["answer"]
     assert "ATC4 S01P0" in result["answer"]
-    assert "HHI (2026-04): 1,234.5678" in result["answer"]
+    assert "HHI 1,234.57" in result["answer"]
     assert "market_id" not in result["answer"]
 
 
@@ -1036,8 +1144,8 @@ def test_general_only_brand_hhi_splits_two_atc4_without_aggregation() -> None:
     assert [section["hhi_recent"] for section in contract["atc4_sections"]] == [111.0, 222.0]
     assert "ATC4 A10A1" in result["answer"]
     assert "ATC4 A10B2" in result["answer"]
-    assert "111.0000" in result["answer"]
-    assert "222.0000" in result["answer"]
+    assert "HHI 111.00" in result["answer"]
+    assert "HHI 222.00" in result["answer"]
     assert "합계" not in result["answer"]
     assert "평균" not in result["answer"]
 

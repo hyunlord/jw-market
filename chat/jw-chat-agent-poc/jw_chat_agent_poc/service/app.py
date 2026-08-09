@@ -70,7 +70,10 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
     parse_deep_research_request,
 )
 from jw_chat_agent_poc.orchestrator.final_surface_assembly import apply_final_surface_assembly
-from jw_chat_agent_poc.orchestrator.general_view_contract import enforce_general_view_contract
+from jw_chat_agent_poc.orchestrator.general_view_contract import (
+    append_general_view_warning,
+    enforce_general_view_contract,
+)
 from jw_chat_agent_poc.orchestrator.market_answer_contract import (
     enforce_market_answer_contract,
     is_actionable_upstream_guidance,
@@ -3515,7 +3518,6 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             answer_branch="general_view_ready",
             source_notice_attached=False,
         )
-        timing_payload = finish(timing)
         markdown_response = result.get("markdown_response")
         answer = replace_internal_fact_dump(
             question,
@@ -3545,22 +3547,46 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             result,
         )
         answer = _apply_evidence_binding_gate(active_question, answer, result)
+        answer = append_general_view_warning(answer, result.get("general_view_contract"))
         answer, source_notice_attached = append_source_basis_notice(answer, markdown_response)
         record_source_notice_attachment(
             result,
             attached=source_notice_attached,
         )
+        charts: list[dict[str, Any]] = []
+        try:
+            with stage(timing, "chart_generation", "bound fact-backed chart spec"):
+                authorization = issue_render_authorization(
+                    result,
+                    question=active_question,
+                    answer=answer,
+                    enforce_binding=_render_authorization_enforced(),
+                )
+                charts = filter_charts_for_binding(
+                    build_charts(
+                        result,
+                        authorization=authorization,
+                        question=active_question,
+                        answer=answer,
+                    ),
+                    result=result,
+                    question=active_question,
+                )
+        except Exception:
+            LOGGER.exception("general_view_chart_generation_failed")
+            charts = []
+        timing_payload = finish(timing)
         trace = trace_envelope(
             question=question,
             result=result,
             answer=answer,
-            charts=[],
+            charts=charts,
             timing=timing_payload,
             conversation_id=conversation_id,
         )
         return FinalAnswer(
             text=answer,
-            charts=[],
+            charts=charts,
             timing=timing_payload,
             trace=trace,
             sources=tuple(result.get("sources", ())),

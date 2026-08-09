@@ -177,9 +177,30 @@ def _c1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
             claims.append(_claim("brand_sales_series", f"{source} {period} 브랜드 매출 {{start}} → {{end}}", source, refs, period=period, values=values))
         growth = row.get("brand_growth_pct")
         market_growth = row.get("market_growth_pct")
+        conclusion_parts: list[str] = []
         if isinstance(growth, (int, float)):
-            comparison = f", 시장 {_percent_text(market_growth)}" if isinstance(market_growth, (int, float)) else ""
-            claims.append(_claim("brand_trend_conclusion", f"브랜드 성장률은 {_percent_text(growth)}{comparison}입니다.", source, refs, period=period))
+            comparison = (
+                f", 시장 {_percent_text(market_growth)}"
+                if isinstance(market_growth, (int, float))
+                else ""
+            )
+            conclusion_parts.append(f"브랜드 성장률 {_percent_text(growth)}{comparison}")
+        end_share = row.get("end_share_pct")
+        if isinstance(end_share, (int, float)):
+            conclusion_parts.append(f"점유율 {end_share:.2f}%")
+        end_rank = row.get("end_rank")
+        if isinstance(end_rank, int):
+            conclusion_parts.append(f"순위 {end_rank}위")
+        if conclusion_parts:
+            claims.append(
+                _claim(
+                    "brand_trend_conclusion",
+                    ", ".join(conclusion_parts) + "입니다.",
+                    source,
+                    refs,
+                    period=period,
+                )
+            )
     return tuple(claims)
 
 
@@ -374,6 +395,11 @@ def _format_top(rows: Any) -> str:
         return ""
     return ", ".join(
         f"{row.get('rank')}위 {row.get('brand')}"
+        + (
+            f" ({float(row['share_pct']):.2f}%)"
+            if isinstance(row.get("share_pct"), (int, float))
+            else ""
+        )
         for row in rows
         if isinstance(row, Mapping) and row.get("rank") is not None and row.get("brand")
     )

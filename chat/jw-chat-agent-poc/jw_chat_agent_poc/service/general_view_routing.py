@@ -11,13 +11,16 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
+from jw_chat_agent_poc.agent_loop.question_contracts import intent_for_question
 from jw_chat_agent_poc.agent_loop.structured_planner import structured_metric_owner
 from jw_chat_agent_poc.common.periods import requested_period
 from jw_chat_agent_poc.common.qa_trace import attach_tool_qa_trace, qa_trace_started_at
+from jw_chat_agent_poc.orchestrator.answer_projection import apply_answer_control_layer
 from jw_chat_agent_poc.orchestrator.markdown_renderers import market_members_md
 from jw_chat_agent_poc.resolver.catalog_membership import MariaDbCatalogMembershipReader
 from jw_chat_agent_poc.tools.general_view_backend import (
     AtcCandidate,
+    BrandMetricPoint,
     GeneralMarket,
     GeneralViewBackend,
     GeneralViewBrandMismatchError,
@@ -748,14 +751,57 @@ def _contract(
 ) -> dict[str, Any]:
     window = _requested_market_window(question, market)
     member_fields = _member_contract_fields(market, question) if asks_market_members(question) else {}
-    section = _render_section(
-        market,
-        other_candidates=other_candidates,
-        compact=compact,
-        window=window,
-        question=question,
-        member_fields=member_fields,
-    )
+    general_view_intent = ""
+    chart_payloads: list[dict[str, Any]] = []
+    if member_fields:
+        section = _render_section(
+            market,
+            other_candidates=other_candidates,
+            compact=compact,
+            window=window,
+            question=question,
+            member_fields=member_fields,
+        )
+    else:
+        projection = _general_view_projection(market, question)
+        if projection is None:
+            section = _render_section(
+                market,
+                other_candidates=other_candidates,
+                compact=compact,
+                window=window,
+                question=question,
+                member_fields=member_fields,
+            )
+        else:
+            general_view_intent, projection_question, projection_data, chart_payloads = projection
+            controlled = apply_answer_control_layer(
+                projection_question,
+                {
+                    "tool_calls": [
+                        {
+                            "tool": "bq_analysis",
+                            "source": market.source,
+                            "render_data": projection_data,
+                        }
+                    ]
+                },
+                "",
+            )
+            section = (
+                "## 일반뷰 (ATC4)\n\n"
+                f"{_general_view_metadata(market, window)}\n\n"
+                f"{controlled.answer}"
+                if controlled.applied
+                else _render_section(
+                    market,
+                    other_candidates=other_candidates,
+                    compact=compact,
+                    window=window,
+                    question=question,
+                    member_fields=member_fields,
+                )
+            )
     contract = {
         "mode": "dual" if dual else "general_only",
         "view_type": "general_view",
@@ -771,6 +817,9 @@ def _contract(
         "other_atc4_candidates": other_candidates,
         "section_markdown": section,
     }
+    if general_view_intent:
+        contract["general_view_intent"] = general_view_intent
+        contract["chart_payloads"] = chart_payloads
     if anchor:
         # A single-ATC4 metric answer knows which market it answered about, so it carries
         # the same anchor the member answer already carries. Without this the follow-up
@@ -797,6 +846,204 @@ def _contract(
         contract["fallback_reason"] = market.fallback_reason
     contract.update(member_fields)
     return contract
+
+
+def _general_view_metadata(
+    market: GeneralMarket,
+    window: tuple[str, float] | None,
+) -> str:
+    lines = [f"- 시장: {_public_atc4_market_label(market)}"]
+    if window is not None:
+        label, value = window
+        lines.append(f"- 시장 규모 ({label}): {_format_value(value, market.unit)}")
+    return "\n".join(lines)
+
+
+def _general_view_projection(
+    market: GeneralMarket,
+    question: str,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]] | None:
+    intent = "MARKET_CONCENTRATION" if _asks_hhi(question) else intent_for_question(question).value
+    if intent == "MARKET_SIZE_TREND":
+        return _market_size_projection(market, question)
+    if intent == "BRAND_TREND":
+        return _brand_trend_projection(market, question)
+    if intent == "MARKET_CONCENTRATION":
+        return _concentration_projection(market)
+    if intent == "COMPETITION_CHANGE" or re.search(r"경쟁\s*구도", question):
+        return _competition_projection(market)
+    return None
+
+
+def _market_size_projection(
+    market: GeneralMarket,
+    question: str,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    source = str(market.source or "일반뷰")
+    series = tuple(sorted(market.market_size_series, key=lambda point: point[0]))
+    if not series and market.market_size is not None:
+        series = ((market.period, market.market_size),)
+    summary: dict[str, Any] = {"source": source}
+    if series:
+        summary.update(end_period=series[-1][0], end_market_size_krw=series[-1][1])
+        if len(series) >= 2:
+            summary.update(start_period=series[0][0], start_market_size_krw=series[0][1])
+    evidence_ref = "general_view_dynamic_market.render_data.market_size_series"
+    charts = []
+    if len(series) >= 2:
+        charts.append(
+            {
+                "scope": "MARKET",
+                "chart_type": "line",
+                "title": "시장 규모 추이",
+                "labels": [period for period, _ in series],
+                "datasets": [
+                    {
+                        "label": f"{source} 시장 규모",
+                        "data": [value for _, value in series],
+                        "unit": market.unit,
+                    }
+                ],
+                "source": source,
+                "unit": market.unit,
+                "evidence_refs": [evidence_ref],
+            }
+        )
+    data = {
+        "contract_id": "A1",
+        "source_summaries": [summary] if series else [],
+        "evidence_refs": [evidence_ref],
+        "chart_payloads": charts,
+    }
+    return "MARKET_SIZE_TREND", question, data, charts
+
+
+def _brand_trend_projection(
+    market: GeneralMarket,
+    question: str,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    points = tuple(sorted(market.brand_metric_series, key=lambda point: point.period))
+    if not points and market.brand_value is not None:
+        points = (
+            BrandMetricPoint(
+                market.period,
+                market.brand_value,
+                market.brand_share_pct,
+                market.brand_rank,
+            ),
+        )
+    evidence_ref = "general_view_dynamic_market.render_data.brand_metric_series"
+    row: dict[str, Any] = {"source": str(market.source or "일반뷰")}
+    if points:
+        start, end = points[0], points[-1]
+        row.update(
+            period=f"{start.period}~{end.period}" if start.period != end.period else end.period,
+            brand_start_sales_krw=start.value,
+            brand_end_sales_krw=end.value,
+            brand_growth_pct=_growth_pct(start.value, end.value),
+            start_share_pct=start.share_pct,
+            end_share_pct=end.share_pct,
+            start_rank=start.rank,
+            end_rank=end.rank,
+        )
+        market_series = tuple(sorted(market.market_size_series, key=lambda point: point[0]))
+        if market_series:
+            row["market_growth_pct"] = _growth_pct(market_series[0][1], market_series[-1][1])
+    data = {
+        "contract_id": "C1",
+        "source_results": [row] if points else [],
+        "evidence_refs": [evidence_ref],
+        "chart_payloads": [],
+    }
+    return "BRAND_TREND", question, data, []
+
+
+def _concentration_projection(
+    market: GeneralMarket,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    cr5 = sum(
+        float(row.share_pct)
+        for row in market.top_brands[:5]
+        if isinstance(row.share_pct, (int, float))
+    )
+    data = {
+        "contract_id": "B1",
+        "general_view_intent": "MARKET_CONCENTRATION",
+        "source": str(market.source or "일반뷰"),
+        "period": market.hhi_period or market.period,
+        "current_top_structure": _top_brand_rows(market),
+        "hhi": market.hhi_recent,
+        "cr5_pct": cr5,
+        "competition_change_conclusion": (
+            f"ATC4 {market.atc4_code} 시장 집중도는 "
+            f"HHI {market.hhi_recent:,.2f}, CR5 {cr5:.2f}%입니다."
+            if market.hhi_recent is not None
+            else f"ATC4 {market.atc4_code} 시장의 CR5는 {cr5:.2f}%이며 HHI는 확인되지 않았습니다."
+        ),
+        "evidence_refs": [
+            "general_view_dynamic_market.render_data.hhi_recent",
+            "general_view_dynamic_market.render_data.top_brands",
+        ],
+        "chart_payloads": [],
+    }
+    return "MARKET_CONCENTRATION", "시장 경쟁 구도가 최근 어떻게 변하고 있어?", data, []
+
+
+def _competition_projection(
+    market: GeneralMarket,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    points = tuple(sorted(market.brand_metric_series, key=lambda point: point.period))
+    delta = None
+    if len(points) >= 2 and points[0].share_pct is not None and points[-1].share_pct is not None:
+        delta = float(points[-1].share_pct) - float(points[0].share_pct)
+    change_row = {"brand": market.brand or "요청 브랜드", "share_delta_pctp": delta}
+    current_share = market.brand_share_pct
+    current_rank = market.brand_rank
+    conclusion_bits = []
+    if current_rank is not None:
+        conclusion_bits.append(f"현재 {current_rank}위")
+    if current_share is not None:
+        conclusion_bits.append(f"점유율 {current_share:.2f}%")
+    if delta is not None:
+        conclusion_bits.append(f"기간 변화 {delta:+.2f}%p")
+    period = (
+        f"{points[0].period}~{points[-1].period}"
+        if len(points) >= 2
+        else market.period
+    )
+    data = {
+        "contract_id": "B1",
+        "source": str(market.source or "일반뷰"),
+        "period": period,
+        "current_top_structure": _top_brand_rows(market),
+        "share_gainers": [change_row] if delta is not None and delta >= 0 else [],
+        "share_losers": [change_row] if delta is not None and delta < 0 else [],
+        "competition_change_conclusion": ", ".join(conclusion_bits),
+        "evidence_refs": [
+            "general_view_dynamic_market.render_data.top_brands",
+            "general_view_dynamic_market.render_data.brand_metric_series",
+        ],
+        "chart_payloads": [],
+    }
+    return "COMPETITION_CHANGE", "시장 경쟁 구도가 최근 어떻게 변하고 있어?", data, []
+
+
+def _top_brand_rows(market: GeneralMarket) -> list[dict[str, Any]]:
+    return [
+        {
+            "brand": row.brand,
+            "rank": row.rank or index,
+            "share_pct": row.share_pct,
+            "value": row.value,
+        }
+        for index, row in enumerate(market.top_brands[:5], 1)
+    ]
+
+
+def _growth_pct(start: float | None, end: float | None) -> float | None:
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or start == 0:
+        return None
+    return (float(end) - float(start)) / float(start) * 100.0
 
 
 def _multi_contract(

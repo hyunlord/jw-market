@@ -6,6 +6,10 @@ from jw_chat_agent_poc.orchestrator.provenance_model import sanitize_internal_pr
 
 
 DUAL_WARNING = "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다"
+IQVIA_GENERAL_WARNING = (
+    "이 값은 일반뷰(IQVIA NSA, ATC4 기준)입니다. "
+    "전략뷰(UBIST) 값과 분모·기간이 달라 직접 비교할 수 없습니다."
+)
 
 
 def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) -> str:
@@ -25,9 +29,26 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     for label in labels:
         if label not in combined:
             combined = "\n\n".join(part for part in (combined, label) if part)
-    if contract.get("mode") in {"dual", "general_only"} and DUAL_WARNING not in combined:
-        combined = "\n\n".join((combined, f"> {DUAL_WARNING}"))
-    return combined
+    return append_general_view_warning(combined, contract)
+
+
+def append_general_view_warning(answer: str, contract: dict[str, Any] | None) -> str:
+    if not contract or contract.get("mode") not in {"dual", "general_only"}:
+        return answer
+    warning = IQVIA_GENERAL_WARNING if _uses_iqvia(contract) else DUAL_WARNING
+    if warning in answer:
+        return answer
+    return "\n\n".join((answer.rstrip(), f"> {warning}"))
+
+
+def _uses_iqvia(contract: dict[str, Any]) -> bool:
+    sections = contract.get("atc4_sections")
+    scopes = sections if isinstance(sections, list) and sections else [contract]
+    return any(
+        "IQVIA" in str(scope.get("source") or "").upper()
+        for scope in scopes
+        if isinstance(scope, dict)
+    )
 
 
 def _section_present(answer: str, section: str) -> bool:
