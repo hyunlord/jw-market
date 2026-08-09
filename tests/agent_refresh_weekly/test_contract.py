@@ -160,3 +160,14 @@ def test_deployment_and_schedule_contracts_are_additive_and_weekly() -> None:
     assert "--overlap-policy Skip" in schedule
     assert "--pause-on-failure" in schedule
     assert "--execution-timeout 10h" in schedule
+
+
+def test_worker_dockerfile_only_copies_existing_package_paths() -> None:
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (
+        root / "deploy/docker/agent-refresh-temporal.Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "COPY pipeline/__init__.py /app/pipeline/__init__.py" in dockerfile
+    assert "COPY pipeline/scripts/agent_refresh_weekly" in dockerfile
+    assert "COPY pipeline/scripts/__init__.py" not in dockerfile

@@ -21,7 +21,6 @@ RUN groupadd -g 3000 app \
 
 WORKDIR /app
 COPY pipeline/__init__.py /app/pipeline/__init__.py
-COPY pipeline/scripts/__init__.py /app/pipeline/scripts/__init__.py
 COPY pipeline/scripts/agent_refresh_weekly /app/pipeline/scripts/agent_refresh_weekly
 
 USER app
