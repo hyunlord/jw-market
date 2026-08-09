@@ -153,6 +153,9 @@ def test_deployment_and_schedule_contracts_are_additive_and_weekly() -> None:
     assert "jw-market-backend-api" not in manifest
     assert "jw-agent-refresh-weekly-v1" in manifest
     assert "@sha256:" in manifest
+    assert "@sha256:" + "0" * 64 not in manifest
+    assert "name: APP_VERSION" in manifest
+    assert "value: cc509795d3731e5be6a09dc7d3da24af8cc0d2ce" in manifest
     assert "--schedule-id jw-agent2-agent3-weekly-v1" in schedule
     assert "--address \"${TEMPORAL_ADDRESS:-temporal-frontend.temporal.svc:7233}\"" in schedule
     assert "--cron '30 12 * * Sat'" in schedule
