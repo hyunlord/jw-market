@@ -18,7 +18,9 @@ Endpoints (the site's whole contract surface):
 """
 from __future__ import annotations
 
+import os
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -136,6 +138,16 @@ class AutomaticPublishPayload(BaseModel):
     run_id: str
 
 
+class CompleteReingestPayload(BaseModel):
+    epoch: str
+    category: str
+    manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: str
+    mode: Literal["mart_from_existing_raw"]
+    requested_by: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
 class IngestService:
     def __init__(
         self,
@@ -170,6 +182,171 @@ class IngestService:
     def _category_promotion_lock(self, category: str) -> threading.Lock:
         with self._promotion_locks_guard:
             return self._promotion_locks.setdefault(category, threading.Lock())
+
+    def request_complete_reingest(self, payload: CompleteReingestPayload) -> dict:
+        if payload.category not in {"ubist", "iqvia_nsa"}:
+            raise HTTPException(
+                status_code=422,
+                detail="complete reingest supports ubist and iqvia_nsa only",
+            )
+        entry = self.ledger.status(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="unknown submission identity")
+        if entry.status != STATUS_COMPLETE:
+            raise HTTPException(
+                status_code=409,
+                detail="parent identity must be complete before mart_from_existing_raw",
+            )
+        blockers = self.ledger.blocking_entries(payload.category)
+        if blockers:
+            blocker = blockers[0]
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "category has an active ingest or publish: "
+                    f"status={blocker.status} run_id={blocker.run_id}"
+                ),
+            )
+        try:
+            canonical_request_id = str(uuid.UUID(payload.request_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="request_id must be a canonical UUID",
+            ) from exc
+        if canonical_request_id != payload.request_id:
+            raise HTTPException(
+                status_code=422,
+                detail="request_id must be a canonical UUID",
+            )
+        run_id = self.now()
+        if len(run_id) != 20 or not run_id.isdigit():
+            raise RuntimeError("complete reingest attempt run_id must be exactly 20 digits")
+        affected_scope = {
+            "dimension": "source",
+            "count": 1,
+            "values": [payload.category],
+        }
+        job_image = config.job_image()
+        image_digest = (
+            f"sha256:{job_image.rsplit('@sha256:', 1)[1]}"
+            if "@sha256:" in job_image
+            else None
+        )
+        try:
+            decision = self.ledger.record_complete_reingest_request(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+                request_id=canonical_request_id,
+                run_id=run_id,
+                mode=payload.mode,
+                requested_by=payload.requested_by,
+                reason=payload.reason,
+                affected_scope=affected_scope,
+                code_revision=os.environ.get("APP_VERSION"),
+                image_digest=image_digest,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        expected_name = job_launcher.complete_reingest_job_name(
+            payload.category,
+            payload.manifest_sha,
+            decision.run_id,
+        )
+        if not decision.created:
+            return {
+                "action": "exists",
+                "created": False,
+                "request_id": decision.request_id,
+                "run_id": decision.run_id,
+                "job_name": expected_name,
+                "affected_scope": affected_scope,
+            }
+
+        started_at = self.timestamp()
+        try:
+            submitted_name = job_launcher.submit_complete_reingest_job(
+                epoch=payload.epoch,
+                category=payload.category,
+                manifest_sha=payload.manifest_sha,
+                manifest_path=decision.manifest_path,
+                request_id=decision.request_id,
+                run_id=decision.run_id,
+                affected_scope=affected_scope,
+                transport=self.transport,
+                inspect_transport=self.inspect_transport,
+                list_transport=self.list_transport,
+            )
+            if submitted_name != expected_name:
+                raise RuntimeError(
+                    "complete reingest submission returned an unexpected name: "
+                    f"expected={expected_name} actual={submitted_name}"
+                )
+        except Exception as exc:
+            failure_reason = f"job submission failed: {type(exc).__name__}: {exc}"
+            self.ledger.record_stage(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+                run_id=decision.run_id,
+                seq=0,
+                stage="job_submit",
+                status="failed",
+                reason=failure_reason,
+                started_at=started_at,
+                finished_at=self.timestamp(),
+            )
+            self.ledger.record_complete_reingest_terminal(
+                payload.epoch,
+                payload.category,
+                payload.manifest_sha,
+                request_id=decision.request_id,
+                run_id=decision.run_id,
+                status=STATUS_FAILED,
+                reason=failure_reason,
+                actor="ingest_hook",
+                job_name=expected_name,
+                affected_scope=affected_scope,
+            )
+            raise
+        self.ledger.record_stage(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+            run_id=decision.run_id,
+            seq=0,
+            stage="job_submit",
+            status="complete",
+            started_at=started_at,
+            finished_at=self.timestamp(),
+        )
+        self.ledger.record_stage(
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+            run_id=decision.run_id,
+            seq=1,
+            stage="request_validate",
+            status="running",
+            reason="waiting for complete reingest Job",
+            started_at=self.timestamp(),
+        )
+        return {
+            "action": "submitted",
+            "created": True,
+            "request_id": decision.request_id,
+            "run_id": decision.run_id,
+            "job_name": submitted_name,
+            "affected_scope": affected_scope,
+        }
 
     def drain_idle_queues(self) -> dict[str, dict[str, str]]:
         """Make one startup pass over queued categories missed by callbacks."""
@@ -1142,6 +1319,10 @@ def create_app(service: IngestService) -> FastAPI:
     def webhook(payload: WebhookPayload) -> dict:
         return service.receive_webhook(payload.manifest_path)
 
+    @app.post("/ingest/reingest", status_code=202)
+    def complete_reingest(payload: CompleteReingestPayload) -> dict:
+        return service.request_complete_reingest(payload)
+
     @app.get("/ingest/queue")
     def queue(category: str | None = None) -> dict:
         if category is not None and category not in PORTAL_QUEUE_CATEGORIES:
@@ -1316,6 +1497,7 @@ def create_app(service: IngestService) -> FastAPI:
         items = []
         entry_cache = {}
         event_cache = {}
+        transition_cache = {}
         summary_cache: dict[tuple[str, str, str], dict[str, object]] = {}
         for identity in identities:
             identity_key = (identity.epoch, identity.category, identity.manifest_sha)
@@ -1324,12 +1506,70 @@ def create_app(service: IngestService) -> FastAPI:
             entry = entry_cache[identity_key]
             if identity_key not in event_cache:
                 event_cache[identity_key] = service.ledger.stage_events(*identity_key)
+            if identity_key not in transition_cache:
+                transition_cache[identity_key] = service.ledger.status_transitions(
+                    *identity_key
+                )
             identity_events = event_cache[identity_key]
+            identity_transitions = transition_cache[identity_key]
             events = [
                 event
                 for event in identity_events
                 if event.run_id == identity.run_id
             ]
+            run_transitions = [
+                transition
+                for transition in identity_transitions
+                if transition.evidence.get("run_id") == identity.run_id
+            ]
+            reingest_request = next(
+                (
+                    transition
+                    for transition in run_transitions
+                    if transition.source == "complete_reingest_request"
+                ),
+                None,
+            )
+            reingest_terminal = next(
+                (
+                    transition
+                    for transition in reversed(run_transitions)
+                    if transition.source == "complete_reingest_terminal"
+                ),
+                None,
+            )
+            reingest = None
+            if reingest_request is not None:
+                request_evidence = reingest_request.evidence
+                attempt_status = (
+                    reingest_terminal.status
+                    if reingest_terminal is not None
+                    else "running"
+                )
+                reingest = {
+                    "request_id": request_evidence.get("request_id"),
+                    "mode": request_evidence.get("mode"),
+                    "requested_by": reingest_request.actor,
+                    "reason": reingest_request.reason,
+                    "affected_scope": request_evidence.get("affected_scope"),
+                    "code_revision": request_evidence.get("code_revision"),
+                    "image_digest": request_evidence.get("image_digest"),
+                    "status": attempt_status,
+                    "terminal_reason": (
+                        reingest_terminal.reason
+                        if reingest_terminal is not None
+                        else None
+                    ),
+                    "job_name": (
+                        reingest_terminal.job_name
+                        if reingest_terminal is not None
+                        else job_launcher.complete_reingest_job_name(
+                            identity.category,
+                            identity.manifest_sha,
+                            identity.run_id,
+                        )
+                    ),
+                }
             run_entry = entry if entry is not None and entry.run_id == identity.run_id else None
             if identity_key not in summary_cache:
                 summary_cache[identity_key] = inventory_summary(entry)
@@ -1356,6 +1596,7 @@ def create_app(service: IngestService) -> FastAPI:
                         if run_entry is not None
                         else None
                     ),
+                    "reingest": reingest,
                     "stages": [
                         {
                             "seq": event.seq,

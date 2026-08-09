@@ -333,6 +333,14 @@ class ReceiveDecision:
 
 
 @dataclass(frozen=True)
+class CompleteReingestRequestDecision:
+    request_id: str
+    run_id: str
+    manifest_path: str
+    created: bool
+
+
+@dataclass(frozen=True)
 class StageEvent:
     run_id: str
     seq: int
@@ -1596,6 +1604,353 @@ class Ledger:
             expected_job_name=expected_job_name,
             expected_run_id=expected_run_id,
         )
+
+    def record_complete_reingest_request(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        run_id: str,
+        mode: str,
+        requested_by: str,
+        reason: str,
+        affected_scope: dict,
+        code_revision: str | None = None,
+        image_digest: str | None = None,
+    ) -> CompleteReingestRequestDecision:
+        """Append one idempotent reingest request without mutating its parent row."""
+        try:
+            canonical_request_id = str(uuid.UUID(request_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("request_id must be a canonical UUID") from exc
+        if request_id != canonical_request_id:
+            raise ValueError("request_id must be a canonical UUID")
+        if mode != "mart_from_existing_raw":
+            raise ValueError(f"unsupported complete reingest mode: {mode!r}")
+        if not run_id or len(run_id) > 64:
+            raise ValueError("run_id must contain 1 to 64 characters")
+        if not requested_by.strip():
+            raise ValueError("requested_by is required")
+        if not reason.strip():
+            raise ValueError("reason is required")
+        if not isinstance(affected_scope, dict):
+            raise ValueError("affected_scope must be an object")
+
+        created_at = _now()
+        mark = self._mark
+        category_lock_sql = (
+            "SELECT epoch, manifest_sha FROM ingest_ledger"
+            f" WHERE category={mark} ORDER BY epoch, manifest_sha LIMIT 1"
+        )
+        if self._dialect == "mysql":
+            category_lock_sql += " FOR UPDATE"
+        parent_sql = (
+            "SELECT status, manifest_path FROM ingest_ledger"
+            f" WHERE epoch={mark} AND category={mark} AND manifest_sha={mark}"
+        )
+        if self._dialect == "mysql":
+            parent_sql += " FOR UPDATE"
+        existing_sql = (
+            "SELECT epoch, category, manifest_sha, previous_status, status, actor,"
+            " source, reason, evidence_json FROM ingest_status_transition"
+            f" WHERE event_id={mark}"
+        )
+        active_attempt_sql = (
+            "SELECT event_id, source, evidence_json FROM ingest_status_transition"
+            f" WHERE category={mark}"
+            f" AND source IN ({mark}, {mark}) ORDER BY id"
+        )
+        insert_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+        )
+        if self._dialect == "sqlite":
+            insert_sql += " ON CONFLICT(event_id) DO NOTHING"
+        else:
+            insert_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
+
+        def operation(cursor):
+            cursor.execute(category_lock_sql, (category,))
+            if cursor.fetchone() is None:
+                raise RuntimeError("parent category does not exist")
+            cursor.execute(parent_sql, (epoch, category, manifest_sha))
+            parent = cursor.fetchone()
+            if parent is None:
+                raise RuntimeError("parent identity does not exist")
+            parent_values = (
+                tuple(parent.values()) if isinstance(parent, dict) else tuple(parent)
+            )
+            parent_status, manifest_path = str(parent_values[0]), str(parent_values[1])
+            if parent_status != STATUS_COMPLETE:
+                raise RuntimeError(
+                    "parent identity must be complete before mart_from_existing_raw"
+                )
+
+            cursor.execute(
+                active_attempt_sql,
+                (
+                    category,
+                    "complete_reingest_request",
+                    "complete_reingest_terminal",
+                ),
+            )
+            requests: set[str] = set()
+            terminals: set[str] = set()
+            for row in cursor.fetchall():
+                values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+                event_id, source, raw_evidence = values
+                try:
+                    prior_evidence = json.loads(raw_evidence)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "complete reingest transition evidence is malformed"
+                    ) from exc
+                prior_request_id = prior_evidence.get("request_id")
+                if source == "complete_reingest_request":
+                    requests.add(str(prior_request_id or event_id))
+                elif prior_request_id:
+                    terminals.add(str(prior_request_id))
+            active_requests = requests - terminals
+            conflicting_requests = active_requests - {canonical_request_id}
+            if conflicting_requests:
+                raise RuntimeError(
+                    "complete reingest request is already active: "
+                    + ",".join(sorted(conflicting_requests))
+                )
+
+            evidence = {
+                "request_id": canonical_request_id,
+                "run_id": run_id,
+                "mode": mode,
+                "manifest_path": manifest_path,
+                "affected_scope": affected_scope,
+            }
+            if code_revision:
+                evidence["code_revision"] = code_revision
+            if image_digest:
+                evidence["image_digest"] = image_digest
+            evidence_json = json.dumps(
+                evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+            cursor.execute(existing_sql, (canonical_request_id,))
+            existing = cursor.fetchone()
+            created = False
+            if existing is None:
+                cursor.execute(
+                    insert_sql,
+                    (
+                        canonical_request_id,
+                        epoch,
+                        category,
+                        manifest_sha,
+                        STATUS_COMPLETE,
+                        STATUS_COMPLETE,
+                        requested_by,
+                        "complete_reingest_request",
+                        reason[:4000],
+                        None,
+                        evidence_json,
+                        created_at,
+                    ),
+                )
+                created = cursor.rowcount == 1
+                cursor.execute(existing_sql, (canonical_request_id,))
+                existing = cursor.fetchone()
+            if existing is None:
+                raise RuntimeError("complete reingest request was not persisted")
+
+            existing_values = (
+                tuple(existing.values()) if isinstance(existing, dict) else tuple(existing)
+            )
+            existing_evidence = json.loads(existing_values[8])
+            same_contract = (
+                tuple(str(value) if value is not None else None for value in existing_values[:7])
+                == (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    STATUS_COMPLETE,
+                    STATUS_COMPLETE,
+                    requested_by,
+                    "complete_reingest_request",
+                )
+                and (str(existing_values[7]) if existing_values[7] is not None else None)
+                == reason[:4000]
+                and existing_evidence.get("request_id") == canonical_request_id
+                and existing_evidence.get("mode") == mode
+                and existing_evidence.get("manifest_path") == manifest_path
+                and existing_evidence.get("affected_scope") == affected_scope
+            )
+            if not same_contract:
+                raise ValueError("request UUID already belongs to a different contract")
+            return CompleteReingestRequestDecision(
+                request_id=canonical_request_id,
+                run_id=str(existing_evidence["run_id"]),
+                manifest_path=manifest_path,
+                created=created,
+            )
+
+        return self._transaction(operation)
+
+    def complete_reingest_request(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+    ) -> StatusTransition | None:
+        """Read one exact append-only complete-reingest request."""
+        try:
+            canonical_request_id = str(uuid.UUID(request_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("request_id must be a canonical UUID") from exc
+        if request_id != canonical_request_id:
+            raise ValueError("request_id must be a canonical UUID")
+        cursor = self._execute(
+            "SELECT event_id, previous_status, status, actor, source, reason,"
+            " job_name, evidence_json, created_at FROM ingest_status_transition"
+            f" WHERE event_id={self._mark} AND epoch={self._mark}"
+            f" AND category={self._mark} AND manifest_sha={self._mark}",
+            (canonical_request_id, epoch, category, manifest_sha),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+        transition = StatusTransition(
+            event_id=str(values[0]),
+            previous_status=str(values[1]) if values[1] else None,
+            status=str(values[2]),
+            actor=str(values[3]),
+            source=str(values[4]),
+            reason=str(values[5]) if values[5] else None,
+            job_name=str(values[6]) if values[6] else None,
+            evidence=json.loads(values[7]),
+            created_at=str(values[8]),
+        )
+        if transition.source != "complete_reingest_request":
+            return None
+        return transition
+
+    def record_complete_reingest_terminal(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        run_id: str,
+        status: str,
+        reason: str,
+        actor: str,
+        job_name: str | None,
+        affected_scope: dict,
+    ) -> bool:
+        """Append one terminal attempt result without updating ``ingest_ledger``."""
+        if status not in {STATUS_COMPLETE, STATUS_FAILED}:
+            raise ValueError("complete reingest terminal status must be complete or failed")
+        request = self.complete_reingest_request(
+            epoch,
+            category,
+            manifest_sha,
+            request_id=request_id,
+        )
+        if request is None:
+            raise RuntimeError("complete reingest request does not exist")
+        if request.evidence.get("run_id") != run_id:
+            raise ValueError("run_id does not match the complete reingest request")
+        if not isinstance(affected_scope, dict):
+            raise ValueError("affected_scope must be an object")
+        if request.evidence.get("affected_scope") != affected_scope:
+            raise ValueError("affected_scope does not match the complete reingest request")
+
+        event_id = str(uuid.uuid5(uuid.UUID(request_id), "complete-reingest-terminal"))
+        evidence = {
+            "request_id": request_id,
+            "run_id": run_id,
+            "attempt_status": status,
+            "affected_scope": affected_scope,
+        }
+        evidence_json = json.dumps(
+            evidence,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        mark = self._mark
+        select_sql = (
+            "SELECT epoch, category, manifest_sha, previous_status, status, actor,"
+            " source, reason, job_name, evidence_json FROM ingest_status_transition"
+            f" WHERE event_id={mark}"
+        )
+        insert_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+        )
+        if self._dialect == "sqlite":
+            insert_sql += " ON CONFLICT(event_id) DO NOTHING"
+        else:
+            insert_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
+
+        def operation(cursor):
+            cursor.execute(select_sql, (event_id,))
+            existing = cursor.fetchone()
+            created = False
+            if existing is None:
+                cursor.execute(
+                    insert_sql,
+                    (
+                        event_id,
+                        epoch,
+                        category,
+                        manifest_sha,
+                        STATUS_COMPLETE,
+                        status,
+                        actor,
+                        "complete_reingest_terminal",
+                        reason[:4000],
+                        job_name,
+                        evidence_json,
+                        _now(),
+                    ),
+                )
+                created = cursor.rowcount == 1
+                cursor.execute(select_sql, (event_id,))
+                existing = cursor.fetchone()
+            if existing is None:
+                raise RuntimeError("complete reingest terminal result was not persisted")
+            values = tuple(existing.values()) if isinstance(existing, dict) else tuple(existing)
+            same_contract = (
+                tuple(str(value) if value is not None else None for value in values[:7])
+                == (
+                    epoch,
+                    category,
+                    manifest_sha,
+                    STATUS_COMPLETE,
+                    status,
+                    actor,
+                    "complete_reingest_terminal",
+                )
+                and (str(values[7]) if values[7] is not None else None) == reason[:4000]
+                and (str(values[8]) if values[8] is not None else None) == job_name
+                and json.loads(values[9]) == evidence
+            )
+            if not same_contract:
+                raise ValueError("complete reingest terminal event conflicts with prior result")
+            return created
+
+        return bool(self._transaction(operation))
 
     # -- reads ----------------------------------------------------------------
     def status(self, epoch: str, category: str, manifest_sha: str) -> LedgerEntry | None:

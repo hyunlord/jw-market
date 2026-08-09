@@ -2,20 +2,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+import urllib.error
 
 import yaml
 import pytest
 
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.job_launcher import (
+    JobSubmissionConflict,
     render_agent_refresh_job,
+    render_complete_reingest_job,
     render_job,
     render_publish_job,
+    submit_complete_reingest_job,
     submit_job,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA = "f" * 64
+REQUEST_ID = "b6a8e00f-7717-4697-9230-e45192d5d7d2"
 EXPECTED_API_NODE_AFFINITY = {
     "nodeAffinity": {
         "requiredDuringSchedulingIgnoredDuringExecution": {
@@ -145,6 +150,73 @@ def test_agent_refresh_job_carries_canonical_affected_scope_json():
         "--affected-scope-json",
         '{"count":1,"dimension":"atc4","values":["C10A1"]}',
     ]
+
+
+def test_complete_reingest_job_uses_dedicated_runner_and_immutable_request() -> None:
+    attempt_run_id = "20260809221530123456"
+    body = render_complete_reingest_job(
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha=SHA,
+        manifest_path="_manifests/ubist/2026-06/manifest.json",
+        request_id=REQUEST_ID,
+        run_id=attempt_run_id,
+        affected_scope={"dimension": "source", "count": 1, "values": ["ubist"]},
+        namespace="llmops",
+    )
+
+    assert body["metadata"]["labels"]["app"] == "jw-complete-reingest"
+    assert body["metadata"]["labels"]["jw-ingest/request-id"] == REQUEST_ID
+    assert body["spec"]["backoffLimit"] == 0
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == config.DEFAULT_JOB_IMAGE
+    assert container["command"] == [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.complete_reingest_runner",
+        "--manifest",
+        "_manifests/ubist/2026-06/manifest.json",
+        "--epoch",
+        "2026-06",
+        "--category",
+        "ubist",
+        "--manifest-sha",
+        SHA,
+        "--request-id",
+        REQUEST_ID,
+        "--run-id",
+        attempt_run_id,
+        "--affected-scope-json",
+        '{"count":1,"dimension":"source","values":["ubist"]}',
+    ]
+
+
+def test_complete_reingest_completed_job_conflict_is_not_submission_success() -> None:
+    def conflict(_path: str, _body: dict) -> dict:
+        raise urllib.error.HTTPError("http://k8s", 409, "Conflict", {}, None)
+
+    with pytest.raises(JobSubmissionConflict, match="existing_status=Complete"):
+        submit_complete_reingest_job(
+            epoch="2026-06",
+            category="ubist",
+            manifest_sha=SHA,
+            manifest_path="_manifests/ubist/2026-06/manifest.json",
+            request_id=REQUEST_ID,
+            run_id="20260809221530123456",
+            affected_scope={"dimension": "source", "count": 1, "values": ["ubist"]},
+            namespace="llmops",
+            transport=conflict,
+            inspect_transport=lambda _namespace, name: {
+                "metadata": {
+                    "name": name,
+                    "creationTimestamp": "2026-08-09T00:00:00Z",
+                },
+                "status": {
+                    "conditions": [{"type": "Complete", "status": "True"}]
+                },
+            },
+            list_transport=lambda _namespace, _selector: {"items": []},
+        )
 
 
 def test_rendered_job_requires_api_node_pool_for_nfs_mounts():

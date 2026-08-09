@@ -244,6 +244,14 @@ def publish_job_name(category: str, manifest_sha: str, publish_run_id: str) -> s
     return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
 
 
+def complete_reingest_job_name(category: str, manifest_sha: str, run_id: str) -> str:
+    suffix = "".join(char.lower() for char in run_id if char.isalnum() or char == "-")
+    if not suffix:
+        raise ValueError("run_id must contain a Kubernetes name character")
+    base = f"jw-complete-reingest-{category.replace('_', '-')}-{manifest_sha[:8]}"
+    return f"{base[:62 - len(suffix)]}-{suffix}".rstrip("-")
+
+
 def render_job(
     *,
     category: str,
@@ -461,6 +469,66 @@ def render_agent_refresh_job(
         item
         for item in container["env"]
         if item["name"] != "INGEST_PUBLISH_APPROVAL_FILE"
+    ]
+    return body
+
+
+def render_complete_reingest_job(
+    *,
+    epoch: str,
+    category: str,
+    manifest_sha: str,
+    manifest_path: str,
+    request_id: str,
+    run_id: str,
+    affected_scope: dict[str, object],
+    namespace: str | None = None,
+) -> dict:
+    body = render_job(
+        category=category,
+        manifest_sha=manifest_sha,
+        manifest_path=manifest_path,
+        namespace=namespace,
+        run_id=run_id,
+    )
+    name = complete_reingest_job_name(category, manifest_sha, run_id)
+    body["metadata"]["name"] = name
+    body["metadata"]["labels"] = {
+        "app": "jw-complete-reingest",
+        "jw-ingest/category": category,
+        "jw-ingest/manifest-sha8": manifest_sha[:8],
+        "jw-ingest/request-id": request_id,
+    }
+    template = body["spec"]["template"]
+    template["metadata"]["labels"] = {
+        "app": "jw-complete-reingest",
+        "jw-ingest/category": category,
+    }
+    container = template["spec"]["containers"][0]
+    container["name"] = "complete-reingest"
+    container["command"] = [
+        "python",
+        "-m",
+        "pipeline.scripts.ingest_hook.complete_reingest_runner",
+        "--manifest",
+        manifest_path,
+        "--epoch",
+        epoch,
+        "--category",
+        category,
+        "--manifest-sha",
+        manifest_sha,
+        "--request-id",
+        request_id,
+        "--run-id",
+        run_id,
+        "--affected-scope-json",
+        json.dumps(
+            affected_scope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     ]
     return body
 
@@ -733,6 +801,67 @@ def submit_job(
             created_at=metadata.get("creationTimestamp"),
         ) from exc
     return body["metadata"]["name"]
+
+
+def submit_complete_reingest_job(
+    *,
+    epoch: str,
+    category: str,
+    manifest_sha: str,
+    manifest_path: str,
+    request_id: str,
+    run_id: str,
+    affected_scope: dict[str, object],
+    transport: Transport | None = None,
+    namespace: str | None = None,
+    inspect_transport: InspectTransport | None = None,
+    list_transport: ListTransport | None = None,
+) -> str:
+    body = render_complete_reingest_job(
+        epoch=epoch,
+        category=category,
+        manifest_sha=manifest_sha,
+        manifest_path=manifest_path,
+        request_id=request_id,
+        run_id=run_id,
+        affected_scope=affected_scope,
+        namespace=namespace,
+    )
+    resolved_namespace = str(body["metadata"]["namespace"])
+    list_jobs = list_transport or (_in_cluster_list if transport is None else None)
+    if list_jobs is not None:
+        listing = list_jobs(
+            resolved_namespace,
+            f"app=jw-complete-reingest,jw-ingest/category={category}",
+        )
+        active_names = {
+            str((item.get("metadata") or {}).get("name") or "")
+            for item in listing.get("items") or []
+            if _job_status(item) in {"Pending", "Running"}
+        }
+        active_names.discard(body["metadata"]["name"])
+        if active_names:
+            raise RuntimeError(
+                f"complete reingest already active for {category}: {sorted(active_names)}"
+            )
+    send = transport or _in_cluster_transport
+    try:
+        send(f"/apis/batch/v1/namespaces/{resolved_namespace}/jobs", body)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 409:
+            raise
+        inspect = inspect_transport or _in_cluster_inspect
+        existing = inspect(resolved_namespace, body["metadata"]["name"])
+        existing_status = _job_status(existing)
+        if existing_status in {"Pending", "Running"}:
+            return str(body["metadata"]["name"])
+        metadata = existing.get("metadata") or {}
+        raise JobSubmissionConflict(
+            job_name=str(body["metadata"]["name"]),
+            existing_status=existing_status,
+            created_at=metadata.get("creationTimestamp"),
+        ) from exc
+    return str(body["metadata"]["name"])
 
 
 def submit_agent_refresh_job(
