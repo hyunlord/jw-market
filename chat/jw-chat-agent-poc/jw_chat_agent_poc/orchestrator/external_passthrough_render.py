@@ -19,6 +19,14 @@ _SOURCE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
     r"\n#{2,3}\s*출처\s*\n",
     re.IGNORECASE,
 )
+_WEB_FALLBACK_PARTIAL_DISCLOSURE: Final = "공식 소스에서 확인되지 않은 부분은 웹 검색 결과로 보완합니다"
+_OFFICIAL_TOOL_PREFIXES: Final[tuple[str, ...]] = (
+    "hira_",
+    "mfds_",
+    "nedrug_",
+    "clinicaltrials_",
+    "openfda_",
+)
 _DEFAULT_SOURCE_URLS: Final[dict[str, str]] = {
     "hira": "https://opendata.hira.or.kr/",
     "mfds": "https://nedrug.mfds.go.kr/",
@@ -84,8 +92,21 @@ def finalize_external_passthrough_answer(answer: str, result: Mapping[str, objec
     body = _normalize_hira_no_data_wording(body, result)
     marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
     web_fallback_used = isinstance(marker, Mapping) and marker.get("web_fallback_used") is True
-    if web_fallback_used and WEB_FALLBACK_DISCLOSURE not in body:
-        body = f"{WEB_FALLBACK_DISCLOSURE}\n\n{body}".strip()
+    if web_fallback_used:
+        official_result_present = any(
+            str(call.get("tool") or "").strip().casefold().startswith(_OFFICIAL_TOOL_PREFIXES)
+            and external_call_has_usable_result(call)
+            for call in external_passthrough_calls(result)
+        )
+        disclosure = (
+            _WEB_FALLBACK_PARTIAL_DISCLOSURE
+            if official_result_present
+            else WEB_FALLBACK_DISCLOSURE
+        )
+        for existing in (WEB_FALLBACK_DISCLOSURE, _WEB_FALLBACK_PARTIAL_DISCLOSURE):
+            if body.startswith(existing):
+                body = body.removeprefix(existing).lstrip()
+        body = f"{disclosure}\n\n{body}".strip()
     return f"{body}\n\n{external_source_footer(result)}".strip()
 
 
