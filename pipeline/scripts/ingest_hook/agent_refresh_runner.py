@@ -126,7 +126,14 @@ def run(
         "--run-id",
         run_id.replace(":", "-"),
     ]
-    if not reuse_forecast_staging:
+    if reuse_forecast_staging and affected_scope is not None:
+        profile_index = command.index("--profile")
+        command[profile_index : profile_index + 2] = [
+            "--stages",
+            "strength,shortlong,elements",
+            "--force",
+        ]
+    elif not reuse_forecast_staging:
         command.insert(-2, "--force")
     resolved_scope = None
     try:
