@@ -205,6 +205,7 @@ def resolve_brand_set(
         ranking,
         audit_code_axis=channel_axis,
         source=resolved_source,
+        required_dimensions=applied_filter,
     )
     choices = _select_choices(
         candidates,
@@ -460,10 +461,19 @@ def _brand_candidates(
     *,
     audit_code_axis: ChannelAxisFilter | None = None,
     source: str = SOURCE,
+    required_dimensions: Mapping[str, object] | None = None,
 ) -> tuple[BrandCandidate, ...]:
     rank_by_key = {text(item.get("brand_key")): item for item in _ranking_items(ranking)}
-    general_molecules = general_molecules_by_product(metas) if view_name == "general" else {}
-    general_sidecar = _general_sidecar_dimensions(rows) if view_name == "general" and source == SOURCE else {}
+    if required_dimensions is None:
+        needs_molecules = view_name == "general"
+        needs_sidecar = view_name == "general" and source == SOURCE
+    else:
+        needs_molecules = view_name == "general" and bool(required_dimensions.get("molecule"))
+        needs_sidecar = view_name == "general" and source == SOURCE and any(
+            required_dimensions.get(dimension) for dimension in GENERAL_IQVIA_SIDE_CAR_DIMENSIONS
+        )
+    general_molecules = general_molecules_by_product(metas) if needs_molecules else {}
+    general_sidecar = _general_sidecar_dimensions(rows) if needs_sidecar else {}
     grouped: dict[str, list[JsonMap]] = {}
     order: list[str] = []
     for row in rows:

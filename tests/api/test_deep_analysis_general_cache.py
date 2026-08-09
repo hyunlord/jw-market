@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import math
 from types import SimpleNamespace
 from typing import Any
@@ -41,6 +42,7 @@ def _row(scope: str, *, atc4: str | None = None, events: list[dict] | None = Non
 
 
 def _stub_auxiliary(monkeypatch) -> None:
+    monkeypatch.setattr(deep_analysis, "_general_source_rows", lambda _brand: [])
     monkeypatch.setattr(deep_analysis, "_load_ai_analysis", lambda _brand: {"summary": "ai"})
     monkeypatch.setattr(deep_analysis, "_load_ai_analysis_variants", lambda _brand: ({"available": False}, {"available": False}))
     monkeypatch.setattr(deep_analysis, "_load_cached_brand_elements", lambda _brand_keys: {})
@@ -126,8 +128,99 @@ def test_general_metric_lookup_uses_source_native_row_for_normalized_market(monk
     assert len(seen) == 1
     sql, params = seen[0]
     assert "source = %s" in sql
+    assert "brand_key = %s" in sql
+    assert " OR " not in sql
     assert "atc4_code = %s" not in sql
-    assert params == ["리바로젯", "리바로젯", "iqvia_nsa"]
+    assert params == ["리바로젯", "iqvia_nsa"]
+
+
+def test_general_metric_lookup_falls_back_to_name_when_key_rows_miss_requested_market(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        if "brand_key = %s" in sql:
+            return [{"atc4_code": "A10B0"}]
+        return [{"atc4_code": "C10C0"}]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    rows = deep_analysis._fetch_general_metric_rows("리바로젯", atc4="C10C0")
+
+    assert rows == [{"atc4_code": "C10C0"}]
+    assert len(calls) == 2
+    assert "brand_key = %s" in calls[0][0]
+    assert "brand_name = %s" in calls[1][0]
+
+
+def test_general_source_rows_key_hit_uses_one_indexed_query(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        return [{"atc4_code": "C10C0", "source_computed_at": datetime(2026, 8, 9)}]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    rows = deep_analysis._general_source_rows("리바로젯")
+
+    assert rows == [{"atc4_code": "C10C0", "source_computed_at": datetime(2026, 8, 9)}]
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert "brand_key = %s" in sql
+    assert "brand_name = %s" not in sql
+    assert " OR " not in sql
+    assert params == ["리바로젯"]
+
+
+def test_general_source_rows_key_miss_falls_back_to_name(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
+        calls.append((sql, params))
+        if "brand_name = %s" in sql:
+            return [{"atc4_code": "C10C0", "source_computed_at": datetime(2026, 8, 9)}]
+        return []
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    assert deep_analysis._general_source_rows("표시명")
+    assert len(calls) == 2
+    assert "brand_key = %s" in calls[0][0]
+    assert "brand_name = %s" in calls[1][0]
+    assert all(" OR " not in sql for sql, _params in calls)
+
+
+def test_general_source_rows_does_not_swallow_db_failure(monkeypatch) -> None:
+    def fail_fetch_all(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise deep_analysis.pymysql.OperationalError(2006, "connection lost")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fail_fetch_all)
+
+    with pytest.raises(deep_analysis.pymysql.OperationalError, match="connection lost"):
+        deep_analysis._general_source_rows("리바로젯")
+
+
+def test_general_cache_miss_without_compact_variant_logs_reason(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: None)
+
+    with caplog.at_level(logging.WARNING, logger=deep_analysis.__name__):
+        assert deep_analysis._fetch_general_deep_analysis_row("리바로젯") is None
+
+    assert "reason=exact_cache_miss_no_compact_variant" in caplog.text
+
+
+def test_general_cache_schema_fallback_logs_error_code(monkeypatch, caplog) -> None:
+    def fail_fetch_one(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
+        raise deep_analysis.pymysql.ProgrammingError(1146, "table missing")
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", fail_fetch_one)
+
+    with caplog.at_level(logging.WARNING, logger=deep_analysis.__name__):
+        assert deep_analysis._fetch_general_deep_analysis_row("리바로젯") is None
+
+    assert "reason=cache_schema_unavailable" in caplog.text
+    assert "error_code=1146" in caplog.text
 
 
 def test_general_cache_freshness_uses_the_row_raw_code_within_normalized_market(monkeypatch) -> None:
@@ -309,6 +402,29 @@ def test_general_cache_rejects_the_normalized_group_when_any_source_row_is_stale
     assert deep_analysis._fetch_general_deep_analysis_row("리바로젯", "C10C0") is None
 
 
+def test_general_cache_stale_group_logs_fallback_reason(monkeypatch, caplog) -> None:
+    cache_rows = [
+        _source_cache_row("C10C", "UBIST.sales", brand_count=6, history_count=65, forecast_count=60),
+        _source_cache_row("C10C0", "IQVIA.sales", brand_count=6, history_count=20, forecast_count=20),
+    ]
+
+    def fake_fetch_all(sql: str, _params: list[str]) -> list[dict[str, Any]]:
+        if "cache_deep_analysis_general" in sql:
+            return cache_rows
+        return [
+            {"atc4_code": "C10C", "source_computed_at": datetime(2026, 7, 1)},
+            {"atc4_code": "C10C0", "source_computed_at": datetime(2026, 7, 2)},
+        ]
+
+    monkeypatch.setattr(deep_analysis.db, "fetch_one", lambda *_args, **_kwargs: cache_rows[1])
+    monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
+
+    with caplog.at_level(logging.WARNING, logger=deep_analysis.__name__):
+        assert deep_analysis._fetch_general_deep_analysis_row("리바로젯", "C10C0") is None
+
+    assert "reason=stale_source_group" in caplog.text
+
+
 def test_general_cache_remains_usable_for_single_raw_market_code(monkeypatch) -> None:
     monkeypatch.setattr(
         deep_analysis.db,
@@ -432,6 +548,63 @@ def test_deep_analysis_general_view_builds_lightweight_mart_payload_without_on_d
     assert combo["forecast_periods"] == []
 
 
+def test_general_mart_fallback_emits_target_plus_top_five_and_degraded(monkeypatch) -> None:
+    target = {
+        "brand_key": "target",
+        "brand_name": "선택",
+        "atc4_code": "C10C0",
+        "atc4_desc": "지질",
+        "source": "iqvia_nsa",
+        "measure": "sales",
+        "metric_history": json.dumps({"2026-Q1": {"raw_value": 10, "ms": 1.0}}, ensure_ascii=False),
+        "unit_label": "원",
+        "computed_at": datetime(2026, 8, 9),
+    }
+    competitors = [
+        {
+            **target,
+            "brand_key": f"c{index}",
+            "brand_name": f"경쟁{index}",
+            "metric_history": json.dumps(
+                {"2026-Q1": {"raw_value": value, "ms": float(index)}},
+                ensure_ascii=False,
+            ),
+        }
+        for index, value in enumerate((20, 70, 40, 60, 30, 50), start=1)
+    ]
+    market_calls: list[tuple[str, str | None]] = []
+
+    def fake_market_rows(atc4: str, *, source: str | None = None) -> list[dict[str, Any]]:
+        market_calls.append((atc4, source))
+        return [target, *competitors]
+
+    monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: [target])
+    monkeypatch.setattr(deep_analysis, "_fetch_general_market_rows", fake_market_rows)
+
+    result = deep_analysis._general_row_from_mart("선택")
+
+    assert result is not None
+    payload = json.loads(result["response_json"])
+    brands = payload["data"]["forecast"]["by_combo"]["IQVIA.sales"]["brands"]
+    assert [item["brand"] for item in brands] == ["선택", "경쟁2", "경쟁4", "경쟁6", "경쟁3", "경쟁5"]
+    assert [item["is_target"] for item in brands] == [True, False, False, False, False, False]
+    assert market_calls == [("C10C0", None)]
+    assert payload["degraded"] is True
+
+
+def test_general_cache_hit_does_not_add_degraded_key(monkeypatch) -> None:
+    row = _row("general", atc4="C10C0")
+    expected = json.loads(row["response_json"])
+    expected["market_meta"]["is_jw"] = False
+    monkeypatch.setattr(deep_analysis, "_fetch_general_deep_analysis_row", lambda _brand: row)
+    monkeypatch.setattr(deep_analysis, "_strategic_brand_flags", lambda _brand: (False, False))
+
+    payload, _resolved_row = deep_analysis._compose_general_view_payload("멀티브랜드")
+
+    assert payload == expected
+    assert "degraded" not in payload
+
+
 def test_general_mart_payload_merges_zero_pad_atc4_sources_without_changing_home_market_id(monkeypatch) -> None:
     rows = [
         {
@@ -458,6 +631,7 @@ def test_general_mart_payload_merges_zero_pad_atc4_sources_without_changing_home
         },
     ]
     monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(deep_analysis, "_fetch_general_market_rows", lambda *_args, **_kwargs: rows)
 
     result = deep_analysis._general_row_from_mart("리바로젯")
 
@@ -487,6 +661,7 @@ def test_general_mart_payload_keeps_single_code_market_behavior(monkeypatch) -> 
         for source, period, value in (("ubist", "2026-05", 100), ("iqvia_nsa", "2026-Q1", 90))
     ]
     monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(deep_analysis, "_fetch_general_market_rows", lambda *_args, **_kwargs: rows)
 
     result = deep_analysis._general_row_from_mart("가드렛")
 
@@ -513,6 +688,7 @@ def test_general_mart_payload_does_not_merge_distinct_normalized_markets(monkeyp
         for atc4, source, value in (("C10C", "ubist", 100), ("C10C0", "iqvia_nsa", 90), ("C10A1", "iqvia_nsa", 80))
     ]
     monkeypatch.setattr(deep_analysis, "_fetch_general_metric_rows", lambda *_args, **_kwargs: rows)
+    monkeypatch.setattr(deep_analysis, "_fetch_general_market_rows", lambda *_args, **_kwargs: rows)
 
     result = deep_analysis._general_row_from_mart("다중시장")
 

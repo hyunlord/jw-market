@@ -39,7 +39,7 @@ from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOver
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import CacheWriteMode, get_settings
 from pipeline.scripts.api.openapi_docs import DEEP_ANALYSIS_RESPONSES, PORTAL_CORE_TAG
-from pipeline.scripts.utils.atc4 import normalize_atc4
+from pipeline.scripts.utils.atc4 import atc4_source_aliases, normalize_atc4
 from pipeline.scripts.utils.brand_name_normalize import compact_brand_name
 
 
@@ -747,6 +747,10 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             return _resolve_general_cache_row(row, brand, atc4)
         compact = compact_brand_name(brand)
         if not compact or compact == brand:
+            logger.warning(
+                "deep_analysis_general_cache_unavailable brand=%s reason=exact_cache_miss_no_compact_variant",
+                brand,
+            )
             return None
         compact_params: list[str] = [compact, compact]
         if atc4:
@@ -765,27 +769,37 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
             compact_params,
         )
         row = _single_compact_row(rows, raise_on_ambiguous=True, brand=brand)
+        if row is None:
+            logger.warning(
+                "deep_analysis_general_cache_unavailable brand=%s reason=compact_cache_miss",
+                brand,
+            )
         return _resolve_general_cache_row(row, brand, atc4) if row else None
     except pymysql.err.ProgrammingError as exc:
         if exc.args and exc.args[0] in {1054, 1146}:
+            logger.warning(
+                "deep_analysis_general_cache_unavailable brand=%s reason=cache_schema_unavailable error_code=%s",
+                brand,
+                exc.args[0],
+            )
             return None
         raise
 
 
 def _general_source_rows(brand: str) -> list[dict]:
-    params: list[str] = [brand, brand]
-    try:
-        return db.fetch_all(
+    for column in ("brand_key", "brand_name"):
+        rows = db.fetch_all(
             f"""
             SELECT atc4_code, MAX(computed_at) AS source_computed_at
             FROM mart_general_brand_metric
-            WHERE (brand_name = %s OR brand_key = %s)
+            WHERE {column} = %s
             GROUP BY atc4_code
             """,
-            params,
+            [brand],
         )
-    except pymysql.MySQLError:
-        return []
+        if rows:
+            return rows
+    return []
 
 
 def _general_source_state(
@@ -883,7 +897,13 @@ def _resolve_general_cache_row(row: dict, brand: str, atc4: str | None) -> dict 
         source_rows=source_rows,
     )
     if len(raw_codes) <= 1:
-        return row if _general_cache_row_fresh(row, brand, atc4, source_rows=source_rows) else None
+        if _general_cache_row_fresh(row, brand, atc4, source_rows=source_rows):
+            return row
+        logger.warning(
+            "deep_analysis_general_cache_unavailable brand=%s reason=stale_source_row",
+            brand,
+        )
+        return None
 
     placeholders = ", ".join(["%s"] * len(raw_codes))
     cache_rows = db.fetch_all(
@@ -900,14 +920,30 @@ def _resolve_general_cache_row(row: dict, brand: str, atc4: str | None) -> dict 
     )
     rows_by_code = {str(cache_row.get("atc4_code") or "").strip(): cache_row for cache_row in cache_rows}
     if set(rows_by_code) != set(raw_codes):
+        logger.warning(
+            "deep_analysis_general_cache_unavailable brand=%s reason=incomplete_source_group expected=%s actual=%s",
+            brand,
+            len(raw_codes),
+            len(rows_by_code),
+        )
         return None
     ordered_rows = [rows_by_code[raw_code] for raw_code in sorted(raw_codes)]
     if not all(
         _general_cache_row_fresh(cache_row, brand, raw_code, source_rows=source_rows)
         for raw_code, cache_row in zip(sorted(raw_codes), ordered_rows, strict=True)
     ):
+        logger.warning(
+            "deep_analysis_general_cache_unavailable brand=%s reason=stale_source_group",
+            brand,
+        )
         return None
-    return _merge_general_cache_rows(ordered_rows)
+    merged = _merge_general_cache_rows(ordered_rows)
+    if merged is None:
+        logger.warning(
+            "deep_analysis_general_cache_unavailable brand=%s reason=cache_merge_failed",
+            brand,
+        )
+    return merged
 
 
 def _json_object(value: object) -> dict:
@@ -955,29 +991,33 @@ def _fetch_general_metric_rows(
     source: str | None = None,
 ) -> list[dict]:
     clauses: list[str] = []
-    params: list[str] = [brand, brand]
     if source:
         clauses.append("source = %s")
-        params.append(source)
     scope_sql = "".join(f" AND {clause}" for clause in clauses)
-    base_sql = f"""
-        SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
-               metric_history, unit_label, computed_at
-        FROM mart_general_brand_metric
-        WHERE (brand_name = %s OR brand_key = %s)
-        {scope_sql}
-        ORDER BY atc4_code, source, measure
-    """
-    rows = db.fetch_all(base_sql, params)
-    if rows:
-        if not atc4:
+    normalized_atc4 = normalize_atc4(atc4) if atc4 else None
+    for column in ("brand_key", "brand_name"):
+        params = [brand]
+        if source:
+            params.append(source)
+        rows = db.fetch_all(
+            f"""
+            SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
+                   metric_history, unit_label, computed_at
+            FROM mart_general_brand_metric
+            WHERE {column} = %s
+            {scope_sql}
+            ORDER BY atc4_code, source, measure
+            """,
+            params,
+        )
+        if normalized_atc4:
+            rows = [
+                row
+                for row in rows
+                if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
+            ]
+        if rows:
             return rows
-        normalized_atc4 = normalize_atc4(atc4)
-        return [
-            row
-            for row in rows
-            if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
-        ]
     compact = compact_brand_name(brand)
     if not compact or compact == brand:
         return []
@@ -997,12 +1037,34 @@ def _fetch_general_metric_rows(
     )
     if not atc4:
         return compact_rows
-    normalized_atc4 = normalize_atc4(atc4)
     return [
         row
         for row in compact_rows
         if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
     ]
+
+
+def _fetch_general_market_rows(atc4: str, *, source: str | None = None) -> list[dict]:
+    aliases = atc4_source_aliases(atc4)
+    if not aliases:
+        return []
+    placeholders = ", ".join(["%s"] * len(aliases))
+    params: list[str] = list(aliases)
+    source_clause = ""
+    if source:
+        source_clause = "AND source = %s"
+        params.append(source)
+    return db.fetch_all(
+        f"""
+        SELECT brand_key, brand_name, atc4_code, atc4_desc, source, measure,
+               metric_history, unit_label, computed_at
+        FROM mart_general_brand_metric
+        WHERE atc4_code IN ({placeholders})
+          {source_clause}
+        ORDER BY brand_key, atc4_code, source, measure
+        """,
+        params,
+    )
 
 
 def _choose_general_atc4(rows: list[dict]) -> str:
@@ -1017,33 +1079,46 @@ def _choose_general_atc4(rows: list[dict]) -> str:
     return sorted(totals, key=lambda value: (-totals[value], value))[0]
 
 
-def _general_metric_row_to_combo(row: dict, *, target_brand: str) -> dict:
+def _general_brand_history(row: dict, *, target_brand: str) -> dict:
     points = _history_points(row.get("metric_history"))
     periods = [period for period, _raw, _ms in points]
     values = [raw for _period, raw, _ms in points]
     ms_values = [ms for _period, _raw, ms in points]
-    source = str(row.get("source") or "")
+    brand_name = str(row.get("brand_name") or row.get("brand_key") or target_brand)
+    return {
+        "brand": brand_name,
+        "is_target": brand_name == target_brand,
+        "history_periods": periods,
+        "history_values": values,
+        "history_ms_pct": ms_values,
+        "forecast_values": [],
+        "forecast_ms_pct": [],
+        "forecast_intervals": {},
+    }
+
+
+def _general_metric_rows_to_combo(rows: list[dict], *, target_brand: str) -> dict:
+    target = next((row for row in rows if row.get("brand_name") == target_brand), None)
+    competitors = [row for row in rows if row is not target and row.get("brand_name") != target_brand]
+    competitors.sort(key=_recent_history_value, reverse=True)
+    selected = ([target] if target else []) + competitors[:5]
+    selected = [row for row in selected if row is not None]
+    base = target or (selected[0] if selected else rows[0])
+    points = _history_points(base.get("metric_history"))
+    periods = [period for period, _raw, _ms in points]
+    values = [raw for _period, raw, _ms in points]
+    ms_values = [ms for _period, _raw, ms in points]
+    source = str(base.get("source") or "")
     period_unit = "분기" if source == "iqvia_nsa" else "월"
     return {
         "period_unit": period_unit,
-        "unit_label": row.get("unit_label"),
+        "unit_label": base.get("unit_label"),
         "history_periods": periods,
         "forecast_periods": [],
         "forecast_values": [],
         "forecast_ms_pct": [],
-        "target_brand": row.get("brand_name") or target_brand,
-        "brands": [
-            {
-                "brand": row.get("brand_name") or target_brand,
-                "is_target": True,
-                "history_periods": periods,
-                "history_values": values,
-                "history_ms_pct": ms_values,
-                "forecast_values": [],
-                "forecast_ms_pct": [],
-                "forecast_intervals": {},
-            }
-        ],
+        "target_brand": target_brand,
+        "brands": [_general_brand_history(row, target_brand=target_brand) for row in selected],
         "baseline": {
             "value_recent": values[-1] if values else None,
             "ms_recent_pct": ms_values[-1] if ms_values else None,
@@ -1071,18 +1146,33 @@ def _general_row_from_mart(
     ]
     if not selected_rows:
         return None
+    market_rows = [
+        row
+        for row in _fetch_general_market_rows(selected_atc4, source=source)
+        if normalize_atc4(str(row.get("atc4_code") or "")) == normalized_atc4
+    ]
+    market_rows_by_combo: dict[tuple[str, str], list[dict]] = {}
+    for market_row in market_rows:
+        market_rows_by_combo.setdefault(
+            (str(market_row.get("source") or ""), str(market_row.get("measure") or "")),
+            [],
+        ).append(market_row)
     base = selected_rows[0]
     brand_key = str(base.get("brand_key") or brand)
     brand_name = str(base.get("brand_name") or brand)
     combos: dict[str, dict] = {}
     for row in selected_rows:
-        source = str(row.get("source") or "")
+        row_source = str(row.get("source") or "")
         measure = str(row.get("measure") or "")
-        if not source or not measure:
+        if not row_source or not measure:
             continue
-        api_source = "IQVIA" if source == "iqvia_nsa" else source.upper()
-        combos[f"{api_source}.{measure}"] = _general_metric_row_to_combo(row, target_brand=brand_name)
+        api_source = "IQVIA" if row_source == "iqvia_nsa" else row_source.upper()
+        combo_rows = market_rows_by_combo.get((row_source, measure), [row])
+        if not any(candidate.get("brand_name") == brand_name for candidate in combo_rows):
+            combo_rows = [row, *combo_rows]
+        combos[f"{api_source}.{measure}"] = _general_metric_rows_to_combo(combo_rows, target_brand=brand_name)
     payload = {
+        "degraded": True,
         "brand": brand_name,
         "brand_name": brand_name,
         "brand_key": brand_key,
@@ -1138,6 +1228,7 @@ def _strategic_brand_flags(brand: str) -> tuple[bool, bool]:
 def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:
     general_row = _fetch_general_deep_analysis_row(brand)
     if not general_row:
+        logger.warning("deep_analysis_general_fallback brand=%s reason=cache_unavailable", brand)
         is_jw, _is_target = _strategic_brand_flags(brand)
         general_row = _general_row_from_mart(brand, is_jw=is_jw)
     if not general_row:

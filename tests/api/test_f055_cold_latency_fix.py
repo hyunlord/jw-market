@@ -12,6 +12,7 @@ from pipeline.scripts.api import deep_analysis_context
 from pipeline.scripts.api import deep_analysis_runtime
 from pipeline.scripts.api.deep_analysis_serving import ForecastBlock
 from pipeline.scripts.api.deep_analysis_context import DeepAnalysisContext, DeepAnalysisSource
+from pipeline.scripts.api.brand_activity_csd_shared import BrandMeta
 
 
 def _context(
@@ -98,6 +99,69 @@ def test_brand_available_sources_key_miss_falls_back(monkeypatch) -> None:
     sources = deep_analysis_context._brand_available_sources("브랜드", "키", "이름")
     assert sources == ("iqvia_nsa",)
     assert len(calls) == 2
+
+
+def test_general_atc_only_candidates_skip_molecule_and_sidecar_bridges(monkeypatch) -> None:
+    rows = (
+        {
+            "brand_key": "선택",
+            "by_dimension": {"products": [{"product_code": "SEL"}], "atc4_code": ["C10C0"]},
+            "metric_history": {"2026-Q1": {"raw_value": 10, "rank": 1}},
+        },
+    )
+    metas = {"선택": BrandMeta("선택", "선택", ("SEL",), False)}
+    monkeypatch.setattr(
+        resolver,
+        "general_molecules_by_product",
+        lambda _metas: pytest.fail("atc-only resolution must not load the global molecule bridge"),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_general_sidecar_dimensions",
+        lambda _rows: pytest.fail("atc-only resolution must not load IQVIA sidecar dimensions"),
+    )
+
+    candidates = resolver._brand_candidates(
+        "general",
+        rows,
+        metas,
+        {"quarter": "2026-Q1", "items": []},
+        source="iqvia_nsa",
+        required_dimensions={"atc4": ["C10C0"]},
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].dimensions == {"atc4": ("C10C0",), "molecule": ()}
+
+
+def test_general_molecule_filter_still_loads_molecule_bridge(monkeypatch) -> None:
+    rows = (
+        {
+            "brand_key": "선택",
+            "by_dimension": {"products": [{"product_code": "SEL"}], "atc4_code": ["C10C0"]},
+            "metric_history": {"2026-Q1": {"raw_value": 10, "rank": 1}},
+        },
+    )
+    metas = {"선택": BrandMeta("선택", "선택", ("SEL",), False)}
+    calls: list[dict[str, BrandMeta]] = []
+    monkeypatch.setattr(resolver, "general_molecules_by_product", lambda value: calls.append(value) or {"SEL": ("성분",)})
+    monkeypatch.setattr(
+        resolver,
+        "_general_sidecar_dimensions",
+        lambda _rows: pytest.fail("molecule-only resolution must not load sidecar dimensions"),
+    )
+
+    candidates = resolver._brand_candidates(
+        "general",
+        rows,
+        metas,
+        {"quarter": "2026-Q1", "items": []},
+        source="iqvia_nsa",
+        required_dimensions={"atc4": ["C10C0"], "molecule": ["성분"]},
+    )
+
+    assert calls == [metas]
+    assert candidates[0].dimensions["molecule"] == ("성분",)
 
 
 def test_strategic_context_candidate_cache_reuses_shared_queries(monkeypatch) -> None:
