@@ -111,6 +111,21 @@ def test_agent_refresh_retry_uses_distinct_job_and_stage_run_ids():
     ]
 
 
+def test_agent_refresh_recovery_explicitly_reuses_forecast_staging():
+    body = render_agent_refresh_job(
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha=SHA,
+        ingest_run_id="run-1",
+        agent_run_id="run-1:agent-refresh-retry-3",
+        reuse_forecast_staging=True,
+        namespace="llmops",
+    )
+
+    command = body["spec"]["template"]["spec"]["containers"][0]["command"]
+    assert command[-1] == "--reuse-forecast-staging"
+
+
 def test_rendered_job_requires_api_node_pool_for_nfs_mounts():
     body = render_job(
         category="ubist",

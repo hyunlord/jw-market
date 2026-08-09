@@ -31,7 +31,7 @@ from pipeline.scripts.etl.ops_forecast_store import (
 )
 
 EXPECTED_BLOCKS: Final[int] = 43_790
-EXPECTED_HORIZONS: Final[int] = 3_000
+EXPECTED_HORIZONS: Final[int] = 3_002
 DEFAULT_BLOCK_STAGE: Final[str] = "deep_forecast_block_stage_ops_20260713"
 DEFAULT_HORIZON_STAGE: Final[str] = "deep_forecast_horizon_stage_ops_20260713"
 RUNTIME_PINS: Final[dict[str, str]] = {

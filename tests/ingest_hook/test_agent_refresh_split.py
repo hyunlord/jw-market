@@ -74,6 +74,35 @@ def test_agent_refresh_forces_manifest_identity_past_epoch_only_checkpoint(
     ]
 
 
+def test_agent_refresh_reuses_complete_forecast_staging_only_when_requested(
+    sqlite_ledger, monkeypatch
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        agent_refresh_runner.config,
+        "open_configured_ledger",
+        lambda: sqlite_ledger,
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner.subprocess,
+        "run",
+        lambda command, check: commands.append(command)
+        or type("Result", (), {"returncode": 0})(),
+    )
+
+    assert agent_refresh_runner.run(
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="a" * 64,
+        ingest_run_id="run-1",
+        agent_run_id="run-1:agent-refresh-retry-3",
+        reuse_forecast_staging=True,
+    ) == 0
+
+    assert commands[0][commands[0].index("--profile") + 1] == "agent"
+    assert "--force" not in commands[0]
+
+
 def test_failed_agent_refresh_does_not_claim_derived_stages(
     sqlite_ledger, monkeypatch
 ) -> None:

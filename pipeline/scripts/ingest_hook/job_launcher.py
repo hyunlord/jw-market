@@ -400,6 +400,7 @@ def render_agent_refresh_job(
     manifest_sha: str,
     ingest_run_id: str,
     agent_run_id: str | None = None,
+    reuse_forecast_staging: bool = False,
     namespace: str | None = None,
 ) -> dict:
     body = render_job(
@@ -441,6 +442,8 @@ def render_agent_refresh_job(
     ]
     if agent_run_id is not None:
         container["command"].extend(["--agent-run-id", agent_run_id])
+    if reuse_forecast_staging:
+        container["command"].append("--reuse-forecast-staging")
     container["env"] = [
         item
         for item in container["env"]
@@ -726,6 +729,7 @@ def submit_agent_refresh_job(
     manifest_sha: str,
     ingest_run_id: str,
     agent_run_id: str | None = None,
+    reuse_forecast_staging: bool = False,
     transport: Transport | None = None,
     namespace: str | None = None,
     inspect_transport: InspectTransport | None = None,
@@ -737,6 +741,7 @@ def submit_agent_refresh_job(
         manifest_sha=manifest_sha,
         ingest_run_id=ingest_run_id,
         agent_run_id=agent_run_id,
+        reuse_forecast_staging=reuse_forecast_staging,
         namespace=namespace,
     )
     send = transport or _in_cluster_transport

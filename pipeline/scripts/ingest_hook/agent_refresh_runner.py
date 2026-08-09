@@ -21,6 +21,7 @@ def run(
     manifest_sha: str,
     ingest_run_id: str,
     agent_run_id: str | None = None,
+    reuse_forecast_staging: bool = False,
 ) -> int:
     ledger = config.open_configured_ledger()
     run_id = agent_run_id or f"{ingest_run_id}:agent-refresh"
@@ -44,10 +45,11 @@ def run(
         "incremental",
         "--profile",
         "agent",
-        "--force",
         "--run-id",
         run_id.replace(":", "-"),
     ]
+    if not reuse_forecast_staging:
+        command.insert(-2, "--force")
     try:
         result = subprocess.run(command, check=False)
         returncode = result.returncode
@@ -94,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest-sha", required=True)
     parser.add_argument("--ingest-run-id", required=True)
     parser.add_argument("--agent-run-id")
+    parser.add_argument(
+        "--reuse-forecast-staging",
+        action="store_true",
+        help="resume a failed forecast from matching staging rows instead of forcing recomputation",
+    )
     args = parser.parse_args(argv)
     return run(
         epoch=args.epoch,
@@ -101,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_sha=args.manifest_sha,
         ingest_run_id=args.ingest_run_id,
         agent_run_id=args.agent_run_id,
+        reuse_forecast_staging=args.reuse_forecast_staging,
     )
 
 

@@ -7,6 +7,7 @@ import pytest
 
 from pipeline.scripts.etl.ops_forecast_builder import (
     EXPECTED_BLOCKS,
+    EXPECTED_HORIZONS,
     RuntimePinError,
     assert_runtime_pins,
     stride_order,
@@ -58,6 +59,13 @@ def test_forecast_block_gate_tracks_the_current_published_mart_contract() -> Non
     # When the static completion gate contract is inspected
     # Then agent refresh accepts that exact unit count without weakening the gate
     assert EXPECTED_BLOCKS == 43_790
+
+
+def test_forecast_horizon_gate_tracks_the_current_published_mart_contract() -> None:
+    # Given the current 942 source scopes produce 3,002 source/measure horizons
+    # When the static completion gate contract is inspected
+    # Then agent refresh accepts that exact horizon count without weakening the gate
+    assert EXPECTED_HORIZONS == 3_002
 
 
 def test_row_cache_id_namespaces_overlapping_ids_by_scope_kind() -> None:
