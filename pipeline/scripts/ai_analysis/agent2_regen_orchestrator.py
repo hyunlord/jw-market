@@ -36,7 +36,11 @@ from bundle_builder.zero_kpi_provider import (
     EmptyZeroKpiSnapshotProvider,
     ZeroKpiSnapshotProvider,
 )
-from agent2_density_worklist import RoutedAgent2Brand, load_density_worklist
+from agent2_density_worklist import (
+    MAX_UNKNOWN_EVENT_BRAND_RATIO,
+    RoutedAgent2Brand,
+    load_density_worklist,
+)
 from agent2_processing_modes import (
     PROCESSING_MODE_FULL,
     formatter_policy_for_mode,
@@ -880,6 +884,8 @@ def main(argv: list[str] | None = None) -> int:
                     diagnostics["density_worklist"] = {
                         "unmatched_known": list(density_worklist.evidence.unmatched_known),
                         "unmatched_unknown": list(density_worklist.evidence.unmatched_unknown),
+                        "skipped_unknown_count": len(density_worklist.evidence.unmatched_unknown),
+                        "max_unknown_ratio": MAX_UNKNOWN_EVENT_BRAND_RATIO,
                     }
                 else:
                     brands = _load_brand_list(brand_conn, bundle_config.pilot_brands)

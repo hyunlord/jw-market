@@ -15,6 +15,7 @@ from typing import Literal
 from pipeline.scripts.ingest_hook import config
 
 NumericSource = Literal["ubist", "iqvia_nsa"]
+AGENT2_OUTPUT_ROOT = Path("outputs/phase_zeta_agent2_regen_orchestrator")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +92,33 @@ def resolve_affected_scope(
     )
 
 
+def _agent2_unknown_brand_skips(run_id: str) -> tuple[str, ...]:
+    names: set[str] = set()
+    manifests_found = 0
+    for variant in ("short", "long"):
+        manifest_path = (
+            AGENT2_OUTPUT_ROOT
+            / f"orchestrated_{run_id}_{variant}"
+            / "run_manifest.json"
+        )
+        if not manifest_path.is_file():
+            continue
+        manifests_found += 1
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        density = (manifest.get("diagnostics") or {}).get("density_worklist") or {}
+        raw_names = density.get("unmatched_unknown") or []
+        if not isinstance(raw_names, list) or not all(
+            isinstance(name, str) for name in raw_names
+        ):
+            raise ValueError(f"invalid Agent2 unmatched_unknown manifest: {manifest_path}")
+        names.update(name for name in raw_names if name)
+    if manifests_found != 2:
+        raise FileNotFoundError(
+            f"expected 2 Agent2 run manifests for {run_id}, found {manifests_found}"
+        )
+    return tuple(sorted(names))
+
+
 def run(
     *,
     epoch: str,
@@ -99,8 +127,13 @@ def run(
     ingest_run_id: str,
     agent_run_id: str | None = None,
     reuse_forecast_staging: bool = False,
+    resume_from_agent2: bool = False,
     affected_scope: dict[str, object] | None = None,
 ) -> int:
+    if resume_from_agent2 and not (reuse_forecast_staging and affected_scope is not None):
+        raise ValueError(
+            "resume_from_agent2 requires reuse_forecast_staging and affected_scope"
+        )
     ledger = config.open_configured_ledger()
     run_id = agent_run_id or f"{ingest_run_id}:agent-refresh"
     started_at = _now()
@@ -126,7 +159,14 @@ def run(
         "--run-id",
         run_id.replace(":", "-"),
     ]
-    if reuse_forecast_staging and affected_scope is not None:
+    if resume_from_agent2:
+        profile_index = command.index("--profile")
+        command[profile_index : profile_index + 2] = [
+            "--stages",
+            "shortlong,elements",
+            "--force",
+        ]
+    elif reuse_forecast_staging and affected_scope is not None:
         profile_index = command.index("--profile")
         command[profile_index : profile_index + 2] = [
             "--stages",
@@ -136,6 +176,7 @@ def run(
     elif not reuse_forecast_staging:
         command.insert(-2, "--force")
     resolved_scope = None
+    skipped_unknown: tuple[str, ...] = ()
     try:
         if affected_scope is not None:
             resolved_scope = resolve_affected_scope(
@@ -158,6 +199,11 @@ def run(
         else:
             result = subprocess.run(command, check=False)
         returncode = result.returncode
+        skipped_unknown = (
+            _agent2_unknown_brand_skips(run_id.replace(":", "-"))
+            if returncode == 0 and resume_from_agent2
+            else ()
+        )
         scope_reason = (
             None
             if resolved_scope is None
@@ -167,7 +213,17 @@ def run(
                 f"brands={len(resolved_scope.brand_keys)}"
             )
         )
-        reason = scope_reason if returncode == 0 else f"orchestrator rc={returncode}"
+        skip_reason = None
+        if resume_from_agent2:
+            skip_reason = (
+                f"skipped_unknown={len(skipped_unknown)} "
+                f"names={','.join(skipped_unknown) or '[]'}"
+            )
+        reason = (
+            "; ".join(part for part in (scope_reason, skip_reason) if part) or None
+            if returncode == 0
+            else f"orchestrator rc={returncode}"
+        )
     except Exception as exc:
         returncode = 1
         reason = f"{type(exc).__name__}: {exc}"
@@ -187,6 +243,16 @@ def run(
     )
     if returncode == 0:
         for seq, stage in enumerate(("agent3", "agent2", "dashboard"), start=2):
+            if stage == "agent3" and resume_from_agent2:
+                stage_reason = "reused prior successful strength stage; substage timing unavailable"
+            elif stage == "agent2" and resume_from_agent2:
+                stage_reason = (
+                    "derived from successful aggregate agent_refresh; "
+                    f"skipped_unknown={len(skipped_unknown)} "
+                    f"names={','.join(skipped_unknown) or '[]'}; substage timing unavailable"
+                )
+            else:
+                stage_reason = "derived from successful aggregate agent_refresh; substage timing unavailable"
             ledger.record_stage(
                 epoch,
                 category,
@@ -195,7 +261,7 @@ def run(
                 seq=seq,
                 stage=stage,
                 status="complete",
-                reason="derived from successful aggregate agent_refresh; substage timing unavailable",
+                reason=stage_reason,
                 started_at=finished_at,
                 finished_at=finished_at,
                 duration_ms=0,
@@ -216,6 +282,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="resume a failed forecast from matching staging rows instead of forcing recomputation",
     )
+    parser.add_argument(
+        "--resume-from-agent2",
+        action="store_true",
+        help="reuse a completed Agent3 strength stage and resume at Agent2",
+    )
     args = parser.parse_args(argv)
     affected_scope = (
         json.loads(args.affected_scope_json)
@@ -231,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         ingest_run_id=args.ingest_run_id,
         agent_run_id=args.agent_run_id,
         reuse_forecast_staging=args.reuse_forecast_staging,
+        resume_from_agent2=args.resume_from_agent2,
         affected_scope=affected_scope,
     )
 

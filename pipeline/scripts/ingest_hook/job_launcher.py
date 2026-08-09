@@ -409,6 +409,7 @@ def render_agent_refresh_job(
     ingest_run_id: str,
     agent_run_id: str | None = None,
     reuse_forecast_staging: bool = False,
+    resume_from_agent2: bool = False,
     affected_scope: dict[str, object] | None = None,
     namespace: str | None = None,
 ) -> dict:
@@ -453,6 +454,8 @@ def render_agent_refresh_job(
         container["command"].extend(["--agent-run-id", agent_run_id])
     if reuse_forecast_staging:
         container["command"].append("--reuse-forecast-staging")
+    if resume_from_agent2:
+        container["command"].append("--resume-from-agent2")
     if affected_scope is not None:
         container["command"].extend(
             [
@@ -872,6 +875,7 @@ def submit_agent_refresh_job(
     ingest_run_id: str,
     agent_run_id: str | None = None,
     reuse_forecast_staging: bool = False,
+    resume_from_agent2: bool = False,
     affected_scope: dict[str, object] | None = None,
     transport: Transport | None = None,
     namespace: str | None = None,
@@ -890,6 +894,7 @@ def submit_agent_refresh_job(
         ingest_run_id=ingest_run_id,
         agent_run_id=agent_run_id,
         reuse_forecast_staging=reuse_forecast_staging,
+        resume_from_agent2=resume_from_agent2,
         affected_scope=affected_scope,
         namespace=namespace,
     )

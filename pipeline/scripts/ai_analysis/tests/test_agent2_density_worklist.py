@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from agent2_density_worklist import (
     KNOWN_UNMATCHED_EVENT_BRANDS,
+    UnknownEventBrandError,
     build_brand_identities,
     build_evidence_counts_from_rows,
     route_density_worklist,
@@ -144,6 +147,83 @@ def test_route_density_worklist_returns_brand_key_routes_with_display_names() ->
         ("zero-key", "제로브랜드", "zero"),
     ]
     assert worklist.evidence.unmatched_known == ()
+
+
+def test_route_density_worklist_skips_seven_unknown_brands_below_one_percent() -> None:
+    brand_rows = [
+        {
+            "brand_key": f"brand-{index:04d}",
+            "brand_name": f"brand-{index:04d}",
+            "raw_value_history": {"2026-Q1": 1},
+        }
+        for index in range(1000)
+    ]
+    score_rows = [
+        {
+            "brand_canonical": f"unknown-{index}",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        }
+        for index in range(7)
+    ]
+
+    worklist = route_density_worklist(brand_rows, score_rows)
+
+    assert len(worklist.routed) == 1000
+    assert worklist.evidence.unmatched_unknown == tuple(
+        f"unknown-{index}" for index in range(7)
+    )
+
+
+def test_route_density_worklist_allows_exactly_one_percent_unknown_brands() -> None:
+    brand_rows = [
+        {
+            "brand_key": f"brand-{index:04d}",
+            "brand_name": f"brand-{index:04d}",
+            "raw_value_history": {"2026-Q1": 1},
+        }
+        for index in range(100)
+    ]
+    score_rows = [
+        {
+            "brand_canonical": "unknown-boundary",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        }
+    ]
+
+    worklist = route_density_worklist(brand_rows, score_rows)
+
+    assert len(worklist.routed) == 100
+    assert worklist.evidence.unmatched_unknown == ("unknown-boundary",)
+
+
+def test_route_density_worklist_fails_when_unknown_brands_exceed_one_percent() -> None:
+    brand_rows = [
+        {
+            "brand_key": f"brand-{index:04d}",
+            "brand_name": f"brand-{index:04d}",
+            "raw_value_history": {"2026-Q1": 1},
+        }
+        for index in range(100)
+    ]
+    score_rows = [
+        {
+            "brand_canonical": f"unknown-{index}",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        }
+        for index in range(2)
+    ]
+
+    with pytest.raises(UnknownEventBrandError, match=r"2/100.*2\.0000%.*1\.0000%"):
+        route_density_worklist(brand_rows, score_rows)
 
 
 def test_evidence_counts_branch_cutoff_by_wf196_processor() -> None:

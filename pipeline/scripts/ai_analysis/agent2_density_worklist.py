@@ -30,6 +30,9 @@ from pipeline.etl.io.mart.brand_alias_resolver import (
 KNOWN_UNMATCHED_EVENT_BRANDS: Final = frozenset(
     {"염화칼륨", "오메가", "트레시바", "하트만"}
 )
+MAX_UNKNOWN_EVENT_BRAND_RATIO: Final = 0.01
+
+
 @dataclass(frozen=True, slots=True)
 class Agent2BrandIdentity:
     brand_key: str
@@ -66,9 +69,23 @@ class BrandNameKeyCollisionError(RuntimeError):
 
 
 class UnknownEventBrandError(RuntimeError):
-    def __init__(self, names: tuple[str, ...]) -> None:
-        super().__init__(f"event_brand_scores contains unmapped brand names: {', '.join(names)}")
+    def __init__(
+        self,
+        names: tuple[str, ...],
+        *,
+        total_brands: int,
+        max_ratio: float = MAX_UNKNOWN_EVENT_BRAND_RATIO,
+    ) -> None:
+        ratio = len(names) / total_brands if total_brands else 1.0
+        super().__init__(
+            "event_brand_scores unmapped brand threshold exceeded: "
+            f"{len(names)}/{total_brands} ({ratio:.4%}) > {max_ratio:.4%}; "
+            f"names={', '.join(names)}"
+        )
         self.names = names
+        self.total_brands = total_brands
+        self.ratio = ratio
+        self.max_ratio = max_ratio
 
 
 def build_brand_identities(rows: list[dict[str, Any]]) -> tuple[Agent2BrandIdentity, ...]:
@@ -162,8 +179,16 @@ def route_density_worklist(
 
     identities = build_brand_identities(brand_rows)
     evidence = build_evidence_counts_from_rows(brand_rows, score_rows)
-    if evidence.unmatched_unknown:
-        raise UnknownEventBrandError(evidence.unmatched_unknown)
+    unknown_ratio = (
+        len(evidence.unmatched_unknown) / len(identities)
+        if identities
+        else float(bool(evidence.unmatched_unknown))
+    )
+    if unknown_ratio > MAX_UNKNOWN_EVENT_BRAND_RATIO:
+        raise UnknownEventBrandError(
+            evidence.unmatched_unknown,
+            total_brands=len(identities),
+        )
     routes = route_worklist(tuple(identity.brand_key for identity in identities), evidence.counts)
     display_names = {identity.brand_key: identity.canonical_brand_name for identity in identities}
     return DensityWorklist(

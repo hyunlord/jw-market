@@ -131,6 +131,24 @@ def test_agent_refresh_recovery_explicitly_reuses_forecast_staging():
     assert command[-1] == "--reuse-forecast-staging"
 
 
+def test_agent_refresh_recovery_can_resume_from_agent2():
+    body = render_agent_refresh_job(
+        epoch="2026-Q1",
+        category="iqvia_nsa",
+        manifest_sha=SHA,
+        ingest_run_id="run-1",
+        agent_run_id="run-1:agent-refresh-recovery-agent2",
+        reuse_forecast_staging=True,
+        resume_from_agent2=True,
+        affected_scope={"dimension": "source", "count": 1, "values": ["iqvia_nsa"]},
+        namespace="llmops",
+    )
+
+    command = body["spec"]["template"]["spec"]["containers"][0]["command"]
+    assert "--reuse-forecast-staging" in command
+    assert "--resume-from-agent2" in command
+
+
 def test_agent_refresh_job_carries_canonical_affected_scope_json():
     # Given a non-empty immutable affected scope
     body = render_agent_refresh_job(
