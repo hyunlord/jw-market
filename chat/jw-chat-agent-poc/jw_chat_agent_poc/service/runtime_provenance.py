@@ -62,6 +62,10 @@ _ANSWER_CONTROL_TRACE_FIELDS = (
     "selected_branch",
     "degraded",
     "answer_status",
+    "block_diagnostics",
+    "external_status",
+    "failed_dimensions",
+    "failure_reason",
 )
 
 _BROKEN_RENDER_SENTINELS = (

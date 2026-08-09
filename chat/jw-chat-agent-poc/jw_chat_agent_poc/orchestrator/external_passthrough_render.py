@@ -120,8 +120,9 @@ def finalize_external_passthrough_answer(
     *,
     question: str = "",
 ) -> str:
-    if "유병률" in question and not _has_web_prevalence_value(question, result):
-        return "국내 유병률 근거를 확보하지 못했습니다"
+    gated_answer = enforce_external_content_validity(answer, result, question=question)
+    if gated_answer != answer:
+        return gated_answer
     body = _SOURCE_SECTION_RE.split(answer.strip(), maxsplit=1)[0].strip()
     body = body.replace("효과가 없은 경우", "효과가 없는 경우")
     body = _normalize_hira_no_data_wording(body, result)
@@ -147,6 +148,19 @@ def finalize_external_passthrough_answer(
                 body = body.removeprefix(existing).lstrip()
         body = f"{disclosure}\n\n{body}".strip()
     return f"{body}\n\n{external_source_footer(result)}".strip()
+
+
+def enforce_external_content_validity(
+    answer: str,
+    result: Mapping[str, object],
+    *,
+    question: str,
+) -> str:
+    """Fail closed when an external answer lacks substantive support."""
+
+    if "유병률" in question and not _has_web_prevalence_value(question, result):
+        return "국내 유병률 근거를 확보하지 못했습니다"
+    return answer
 
 
 def _latest_hira_basis_first(
@@ -213,14 +227,18 @@ def _has_web_prevalence_value(question: str, result: Mapping[str, object]) -> bo
 
 
 def _normalize_hira_no_data_wording(body: str, result: Mapping[str, object]) -> str:
-    """Keep a structured HIRA no-data result from becoming an API failure claim."""
+    """Render HIRA failures and successful empty results as distinct states."""
 
     calls = external_passthrough_calls(result)
-    failed_periods = {
-        _hira_call_period(call)
-        for call in calls
-        if str(call.get("status") or "").strip().casefold() in {"error", "timeout"}
-    }
+    failed_periods = tuple(
+        dict.fromkeys(
+            period
+            for call in calls
+            if str(call.get("status") or "").strip().casefold() in {"error", "timeout"}
+            for period in (_hira_call_period(call),)
+            if period
+        )
+    )
     no_data_periods = tuple(
         dict.fromkeys(
             period
@@ -230,17 +248,37 @@ def _normalize_hira_no_data_wording(body: str, result: Mapping[str, object]) -> 
             if period and period not in failed_periods
         )
     )
-    for period in no_data_periods:
-        false_failure_line = re.compile(
-            rf"(?m)^(?P<prefix>\s*(?:(?:[-+*])\s+)?(?:\*\*)?"
-            rf"{re.escape(period)}년?(?:\*\*)?\s*[:：]\s*)"
-            r".*?API\s*호출.*?실패.*?$"
-        )
-        body = false_failure_line.sub(
-            lambda match: f"{match.group('prefix')}조회 결과가 없습니다.",
+    for period in failed_periods:
+        body = _replace_hira_period_line(
             body,
+            period,
+            (
+                f"{period}년은 HIRA API 응답 실패로 값을 확인하지 못했습니다. "
+                "이는 환자수가 0명이라는 의미가 아닙니다."
+            ),
+        )
+    for period in no_data_periods:
+        body = _replace_hira_period_line(
+            body,
+            period,
+            f"{period}년은 조회가 정상 완료됐으나 해당 결과 행이 없습니다.",
         )
     return body
+
+
+def _replace_hira_period_line(body: str, period: str, message: str) -> str:
+    bullet_line = re.compile(
+        rf"(?m)^(?P<prefix>\s*(?:(?:[-+*])\s+)?)(?:\*\*)?"
+        rf"{re.escape(period)}년?(?:\*\*)?\s*[:：].*$"
+    )
+    replaced, count = bullet_line.subn(lambda match: f"{match.group('prefix')}{message}", body)
+    if count:
+        return replaced
+    table_line = re.compile(rf"(?m)^\s*\|\s*{re.escape(period)}년?\s*\|.*\|\s*$")
+    replaced, count = table_line.subn(f"| {period} | {message} |", body)
+    if count:
+        return replaced
+    return f"{body.rstrip()}\n{message}".strip()
 
 
 def _hira_call_period(call: Mapping[str, object]) -> str:

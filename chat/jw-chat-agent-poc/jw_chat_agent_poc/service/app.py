@@ -78,6 +78,7 @@ from jw_chat_agent_poc.orchestrator.external_passthrough import (
     prepare_existing_external_passthrough,
 )
 from jw_chat_agent_poc.orchestrator.external_passthrough_render import (
+    enforce_external_content_validity,
     external_passthrough_fallback_answer,
     finalize_external_passthrough_answer,
 )
@@ -3648,7 +3649,11 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
             source_notice_attached=False,
         )
         timing_payload = finish(timing)
-        answer = cleanup_markdown_answer(str(result.get("answer") or ""))
+        answer = enforce_external_content_validity(
+            cleanup_markdown_answer(str(result.get("answer") or "")),
+            result,
+            question=question,
+        )
         raw_charts = result.get("charts")
         charts = (
             [dict(chart) for chart in raw_charts if isinstance(chart, Mapping)]

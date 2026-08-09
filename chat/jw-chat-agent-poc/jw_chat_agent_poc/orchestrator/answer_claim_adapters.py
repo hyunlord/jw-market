@@ -330,7 +330,7 @@ def _e1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
                 ),
                 _claim(
                     "result_items",
-                    "관련 기사 0건: 뉴스 근거를 확보하지 못했습니다.",
+                    "조건을 충족한 기사 0건",
                     "NEWS",
                     refs,
                     claim_type="limitation",
