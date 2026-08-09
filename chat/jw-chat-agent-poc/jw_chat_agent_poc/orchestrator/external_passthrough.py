@@ -58,6 +58,10 @@ _DISEASE_PATIENT_SUBJECT_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?P<subject>.+?)\s*(?:상병\s*)?(?:환자\s*수|환자수)(?:\s.*)?$",
     re.IGNORECASE,
 )
+_DISEASE_STAT_SUBJECT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?P<subject>.+?)(?:\s+국내)?\s*(?:유병률|환자\s*수|발생률|통계)(?:\s.*)?$",
+    re.IGNORECASE,
+)
 
 
 def is_external_passthrough_tool(tool: object) -> bool:
@@ -117,20 +121,31 @@ def prepare_external_passthrough(
             ]
         )
     )
-    web_fallback_attempted = bool(failed_official_tools)
     usable_web_present = any(_usable_web_call(call) for call in calls)
+    failed_web_search = any(
+        str(call.get("tool") or "").strip().casefold() == "web_search"
+        for call in calls
+    ) and not usable_web_present
+    web_fallback_attempted = bool(failed_official_tools) or failed_web_search
     web_fallback_used = web_fallback_attempted and usable_web_present
     fallback_queries: list[str] = []
     if web_fallback_attempted and not usable_web_present:
         if external is None:
             return payload
+        fallback_from_tools = failed_official_tools or ("web_search",)
+        fallback_reason = (
+            "official_tool_failed_or_empty"
+            if failed_official_tools
+            else "web_search_failed_or_empty"
+        )
         fallback_queries = _append_web_fallback_calls(
             question,
             calls,
             external=external,
             timing=timing,
-            fallback_from_tools=failed_official_tools,
-            reason="official_tool_failed_or_empty",
+            fallback_from_tools=fallback_from_tools,
+            reason=fallback_reason,
+            max_attempts=1 if failed_web_search and not failed_official_tools else None,
         )
         web_fallback_used = any(_usable_web_call(call) for call in calls)
 
@@ -355,9 +370,13 @@ def _append_web_fallback_calls(
     timing: Timing | None,
     fallback_from_tools: Sequence[str],
     reason: str,
+    max_attempts: int | None = None,
 ) -> list[str]:
     attempted: list[str] = []
-    for index, query in enumerate(_web_fallback_queries(question), start=1):
+    queries = _web_fallback_queries(question)
+    if max_attempts is not None:
+        queries = queries[:max_attempts]
+    for index, query in enumerate(queries, start=1):
         with stage(timing, "tool:web_search", "external source fallback"):
             fallback_call = asdict(external.web_search(query, topic="general"))
         fallback_call["queried_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -373,9 +392,12 @@ def _append_web_fallback_calls(
 
 
 def _web_fallback_queries(question: str) -> tuple[str, ...]:
+    disease_stat_match = _DISEASE_STAT_SUBJECT_RE.match(question)
     patient_match = _DISEASE_PATIENT_SUBJECT_RE.match(question)
-    if patient_match is not None:
-        subject = patient_match.group("subject").strip()
+    subject_match = disease_stat_match or patient_match
+    if subject_match is not None:
+        subject = subject_match.group("subject").strip()
+        subject = re.sub(r"^국내\s+|\s+국내$", "", subject).strip()
         return (
             f"{subject} 국내 유병률 환자수 통계 발생률",
             f"{subject} 국내 환자 규모 질병 통계 유병 현황",
