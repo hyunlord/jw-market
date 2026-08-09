@@ -15,6 +15,7 @@ from jw_chat_agent_poc.common.timing import internal_latency_payload
 from jw_chat_agent_poc.orchestrator.agent import QueryFailureReason
 from jw_chat_agent_poc.orchestrator.answer_contract import CONTRACT_REQUIRED_TOOLS, evaluate_answer_contract
 from jw_chat_agent_poc.orchestrator.claim_policy import claim_policy_report
+from jw_chat_agent_poc.orchestrator.external_passthrough import is_external_passthrough_result
 from jw_chat_agent_poc.orchestrator.provenance import number_tokens
 from jw_chat_agent_poc.orchestrator.source_trap import requested_csd_aggregate, requested_csd_unsupported_detail, requested_unavailable_source
 from jw_chat_agent_poc.service.conversation_context import ReferenceRecogniser, ReferenceStatus
@@ -60,6 +61,7 @@ _ANSWER_CONTROL_TRACE_FIELDS = (
     "evidence_set_sha256",
     "selected_branch",
     "degraded",
+    "answer_status",
 )
 
 _BROKEN_RENDER_SENTINELS = (
@@ -135,13 +137,22 @@ def trace_envelope(
     tools_called = _tools_called(result)
     facts_returned = _facts_returned(markdown_response)
     facts_surfaced = _facts_surfaced(answer)
-    answer_contract_status = evaluate_answer_contract(
-        question,
-        answer,
-        markdown_response,
-        tool_calls=tuple(
-            call for call in (result.get("tool_calls") or ()) if isinstance(call, Mapping)
-        ),
+    answer_contract_status = (
+        {
+            "intent": "EXTERNAL_LOOKUP",
+            "structural_contract": "external_passthrough",
+            "status": "complete",
+            "required_tools": [],
+        }
+        if is_external_passthrough_result(result)
+        else evaluate_answer_contract(
+            question,
+            answer,
+            markdown_response,
+            tool_calls=tuple(
+                call for call in (result.get("tool_calls") or ()) if isinstance(call, Mapping)
+            ),
+        )
     )
     quality_taxonomy = _quality_taxonomy(
         question=question,

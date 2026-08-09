@@ -39,6 +39,7 @@ from jw_chat_agent_poc.orchestrator.external_notices import (
     external_unavailable_for_missing_molecule,
     seeded_false_positive_notice,
 )
+from jw_chat_agent_poc.orchestrator.external_passthrough import prepare_external_passthrough
 from jw_chat_agent_poc.orchestrator.hira_disease import (
     HIRA_DISEASE_MAPPINGS,
     explicit_hira_disease_code,
@@ -314,6 +315,12 @@ class ChatAgent:
                     payload,
                     deferred_prescription_metric,
                 )
+            payload = prepare_external_passthrough(
+                question,
+                payload,
+                external=self.external,
+                timing=timing,
+            )
             payload = _attach_element_ledger(question, payload)
             annotated = _annotate_external_tool_fallback(payload, external_fallback_code)
             return attach_routing_v4_legacy_observation(

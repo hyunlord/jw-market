@@ -70,6 +70,13 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
     parse_deep_research_request,
 )
 from jw_chat_agent_poc.orchestrator.final_surface_assembly import apply_final_surface_assembly
+from jw_chat_agent_poc.orchestrator.external_passthrough import (
+    is_external_passthrough_result,
+)
+from jw_chat_agent_poc.orchestrator.external_passthrough_render import (
+    external_passthrough_fallback_answer,
+    finalize_external_passthrough_answer,
+)
 from jw_chat_agent_poc.orchestrator.general_view_contract import (
     append_general_view_warning,
     enforce_general_view_contract,
@@ -1470,6 +1477,8 @@ def _apply_v3_cutover_if_enabled(
     question: str,
     result: dict[str, object],
 ) -> dict[str, object]:
+    if is_external_passthrough_result(result):
+        return result
     if os.getenv("JW_CHAT_V3_CUTOVER_ENABLED", "").strip().casefold() not in {
         "1",
         "true",
@@ -3290,6 +3299,12 @@ def compute_final_answer(
     query_spec = query_spec or current_query_spec()
     fingerprint = question_fingerprint(question)
     try:
+        if is_external_passthrough_result(result):
+            return _compute_external_passthrough_final_answer(
+                question,
+                result,
+                conversation_id,
+            )
         final_answer = replace(
             _compute_final_answer(question, result, conversation_id),
             conversation_slots=extract_conversation_slots(result),
@@ -3426,6 +3441,71 @@ def compute_final_answer(
         )
     finally:
         clear_current_query_spec()
+
+
+def _compute_external_passthrough_final_answer(
+    question: str,
+    result: dict[str, Any],
+    conversation_id: str | None,
+) -> FinalAnswer:
+    timing = ensure_timing(result)
+    client = GenosClient()
+    generated_answer = ""
+    if client.token:
+        try:
+            with stage(timing, "answer_generation_total", "GenOS external result summary"):
+                generated_answer = client.external_passthrough_answer(question, result)
+        except requests.RequestException:
+            LOGGER.exception("external_passthrough_generation_failed")
+    if not generated_answer.strip():
+        generated_answer = external_passthrough_fallback_answer(result)
+    for call in client.token_usage_calls:
+        record_token_usage(timing, call)
+    answer = finalize_external_passthrough_answer(
+        cleanup_markdown_answer(generated_answer),
+        result,
+    )
+    display_answer = finalize_display_markdown(answer)
+    output_policy_decision = evaluate_output_leakage(display_answer)
+    user_answer = enforced_answer(display_answer, output_policy_decision)
+    result["_answer_control_layer"] = {
+        "applied": False,
+        "intent": "EXTERNAL_LOOKUP",
+        "required_slot_coverage": 1.0,
+        "question_spec_sha256": "",
+        "claim_plan_sha256": "",
+        "evidence_set_sha256": "",
+        "selected_branch": "external_passthrough",
+        "degraded": False,
+        "answer_status": "complete",
+    }
+    record_answer_delivery(
+        result,
+        answer_branch="genos_external_passthrough",
+        source_notice_attached=True,
+    )
+    timing_payload = finish(timing)
+    trace_result = {
+        **result,
+        "_sec12_output_leakage_decision": output_policy_decision,
+    }
+    trace = trace_envelope(
+        question=question,
+        result=trace_result,
+        answer=user_answer,
+        charts=[],
+        timing=timing_payload,
+        conversation_id=conversation_id,
+    )
+    return FinalAnswer(
+        text=user_answer,
+        charts=[],
+        timing=timing_payload,
+        trace=trace,
+        sources=tuple(str(source) for source in result.get("sources", ()) if source),
+        conversation_id=conversation_id,
+        conversation_slots=extract_conversation_slots(result),
+    )
 
 
 def _compute_final_answer_with_query_spec(

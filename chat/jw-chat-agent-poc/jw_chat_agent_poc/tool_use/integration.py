@@ -14,6 +14,10 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     explicit_hira_disease_code,
     hira_disease_code_for_text,
 )
+from jw_chat_agent_poc.orchestrator.external_passthrough import (
+    external_passthrough_eligible,
+    prepare_external_passthrough,
+)
 from jw_chat_agent_poc.orchestrator.provenance import project_hira_nedrug_binding_evidence
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_requirements
 from jw_chat_agent_poc.orchestrator.tool_use_contract import tool_use_evidence_complete
@@ -91,11 +95,17 @@ def run_external_tool_agent(
 ) -> dict[str, Any]:
     mode = configured_routing_mode()
     if mode is RoutingMode.OFF:
-        return _run_legacy_external_tool_agent(
+        payload = _run_legacy_external_tool_agent(
             question,
             resolver=resolver,
             external=external,
             provider=provider,
+            timing=timing,
+        )
+        return prepare_external_passthrough(
+            question,
+            payload,
+            external=external,
             timing=timing,
         )
 
@@ -116,7 +126,13 @@ def run_external_tool_agent(
             timing=timing,
         )
         diagnostics = complete_shadow_route_diagnostics(shadow_task)
-        return _attach_routing_v4_diagnostics(payload, diagnostics)
+        observed = _attach_routing_v4_diagnostics(payload, diagnostics)
+        return prepare_external_passthrough(
+            question,
+            observed,
+            external=external,
+            timing=timing,
+        )
 
     selected_routing_provider = _routing_v4_provider(routing_provider, fallback=provider)
     enforced = execute_enforced_route(
@@ -128,7 +144,12 @@ def run_external_tool_agent(
     )
     payload = _agent_result_payload(question, enforced.result, timing=timing)
     payload["router_diagnostics"]["routing_v4"] = enforced.diagnostics
-    return payload
+    return prepare_external_passthrough(
+        question,
+        payload,
+        external=external,
+        timing=timing,
+    )
 
 
 def run_enforced_external_tool_agent(
@@ -150,7 +171,12 @@ def run_enforced_external_tool_agent(
     )
     payload = _agent_result_payload(question, enforced.result, timing=timing)
     payload["router_diagnostics"]["routing_v4"] = enforced.diagnostics
-    return payload
+    return prepare_external_passthrough(
+        question,
+        payload,
+        external=external,
+        timing=timing,
+    )
 
 
 def attach_routing_v4_legacy_observation(
@@ -630,6 +656,7 @@ def _agent_result_payload(
     verified_statuses = {"ok", "partial"}
     fact_md = result.answer if result.status in verified_statuses else ""
     identity_notices = reimbursement_identity_notices(result.tool_calls)
+    external_passthrough = external_passthrough_eligible(question, result.tool_calls)
     payload = {
         "question": question,
         "resolution": None,
@@ -642,15 +669,19 @@ def _agent_result_payload(
             "fact_md": fact_md,
             "data_md": "",
             "notice_md": "\n".join(identity_notices),
-            "evidence": [
-                *project_authoritative_external_evidence(result.tool_calls, fact_md),
-                *project_reimbursement_evidence(result.tool_calls, fact_md),
-                *project_hira_nedrug_binding_evidence(
-                    result.tool_calls,
-                    fact_md,
-                    canonical_hira_code=explicit_hira_disease_code(question),
-                ),
-            ],
+            "evidence": (
+                []
+                if external_passthrough
+                else [
+                    *project_authoritative_external_evidence(result.tool_calls, fact_md),
+                    *project_reimbursement_evidence(result.tool_calls, fact_md),
+                    *project_hira_nedrug_binding_evidence(
+                        result.tool_calls,
+                        fact_md,
+                        canonical_hira_code=explicit_hira_disease_code(question),
+                    ),
+                ]
+            ),
             "verification": {
                 "status": (
                     "pass"

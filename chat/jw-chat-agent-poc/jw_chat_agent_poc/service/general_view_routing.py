@@ -1537,7 +1537,8 @@ def _asks_general_brand_metric(normalized: str) -> bool:
 
 def _asks_general_market_competition(normalized: str) -> bool:
     return "경쟁" in normalized and any(
-        token in normalized for token in ("약물", "제품", "브랜드", "현황", "상황", "상대")
+        token in normalized
+        for token in ("약물", "제품", "브랜드", "현황", "상황", "상대", "구도")
     )
 
 

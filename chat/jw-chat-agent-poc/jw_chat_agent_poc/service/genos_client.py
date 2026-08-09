@@ -44,6 +44,7 @@ from jw_chat_agent_poc.orchestrator.answer_contract import (
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.market_insights import render_market_narrative
 from jw_chat_agent_poc.orchestrator.narrative_intent import wants_market_narrative
+from jw_chat_agent_poc.orchestrator.external_passthrough_render import external_passthrough_context
 from jw_chat_agent_poc.orchestrator.provenance import interpretation_has_unverified_numbers, verification_notice
 from jw_chat_agent_poc.orchestrator.source_trap import apply_requested_source_trap_gate
 from jw_chat_agent_poc.orchestrator.source_grading import is_web_search_call
@@ -1476,6 +1477,34 @@ class GenosClient:
             question,
             tool_calls or [],
         )
+
+    def external_passthrough_answer(
+        self,
+        question: str,
+        agent_result: dict[str, Any],
+    ) -> str:
+        """Summarize authoritative external tool results without market contracts."""
+
+        self._record_answer_branch("genos_external_passthrough")
+        timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
+        context = external_passthrough_context(agent_result)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "너는 공공·규제·임상 외부 조회 결과를 사용자 질문에 맞게 요약한다. "
+                    "아래에 제공된 도구 결과와 웹 검색 결과만 근거로 사용하고, 없는 수치·효능·급여 조건·임상 사실을 만들지 않는다. "
+                    "공식 조회 실패 뒤 제공된 웹 검색 결과는 요약할 수 있지만 UBIST·IQVIA·CSD의 매출, 점유율, HHI, 시장규모를 웹 값으로 대체하지 않는다. "
+                    "내부 처리 단계나 근거 계약을 설명하지 말고 자연스러운 한국어로 바로 답한다. "
+                    "출처 섹션과 URL은 시스템이 별도로 붙이므로 작성하지 않는다."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"질문: {question}\n\n외부 조회 결과:\n{context}",
+            },
+        ]
+        return self._chat_text(messages, timing=timing)
 
     def _record_answer_branch(self, answer_branch: str) -> None:
         if answer_branch not in ANSWER_BRANCHES:
