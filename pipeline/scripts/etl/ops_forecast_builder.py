@@ -144,8 +144,11 @@ def run(args: argparse.Namespace) -> None:
         prepare_staging(connection, args.block_table, args.horizon_table, epoch)
         done_blocks = existing_block_keys(connection, args.block_table)
         done_horizons = existing_horizon_keys(connection, args.horizon_table)
+        reused_blocks = len(done_blocks)
+        reused_horizons = len(done_horizons)
         generated_at = _generated_at(connection, args.block_table)
         groups = _group_units(units)
+        scope_build_calls = 0
         inserted_blocks = 0
         inserted_horizons = 0
         for index, (scope, scope_units) in enumerate(sorted(groups.items(), key=lambda item: (item[0].view_kind, item[0].market_id, item[0].source)), start=1):
@@ -153,6 +156,7 @@ def run(args: argparse.Namespace) -> None:
             missing_horizon = not all((scope.market_id, scope.source, measure) in done_horizons for measure in _measures(scope.source))
             if not pending and not missing_horizon:
                 continue
+            scope_build_calls += 1
             native_rows = load_scope(connection, scope)
             blocks, horizons = build_scope_rows(scope, pending or scope_units[:1], native_rows, workers=args.workers, source_epoch=epoch, generated_at=generated_at)
             if not pending:
@@ -174,7 +178,7 @@ def run(args: argparse.Namespace) -> None:
         contaminated = contamination_count(connection, args.block_table)
         if contaminated:
             raise RuntimeError(f"native scope contamination gate failed: {contaminated}")
-        print(json.dumps({"stage": "complete", "source_epoch": epoch, **counts, "stride_replay": replay, "contamination": contaminated, "generated_at": generated_at.isoformat(timespec="seconds")}), flush=True)
+        print(json.dumps({"stage": "complete", "source_epoch": epoch, **counts, "scope_build_calls": scope_build_calls, "inserted_blocks": inserted_blocks, "inserted_horizons": inserted_horizons, "reused_blocks": reused_blocks, "reused_horizons": reused_horizons, "stride_replay": replay, "contamination": contaminated, "generated_at": generated_at.isoformat(timespec="seconds")}), flush=True)
     finally:
         connection.close()
 
