@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any
+from typing import Any, Final
 
 
 RAW_SCHEMA = "jw_brand_activity_raw_stage"
@@ -12,6 +12,8 @@ STAGE_SCHEMA = "jw_brand_activity_stage"
 STAGE_TABLE = "km_keyword_event_stage"
 WRITER_LOCK_NAME = "jw_ingest_csd_keyword_activation"
 CONTROL_SCHEMA = "jw_csd_keyword_control"
+RAW_ROLLBACK_SCHEMA: Final[str] = "jw_csd_keyword_rollback_raw"
+STAGE_ROLLBACK_SCHEMA: Final[str] = "jw_csd_keyword_rollback_stage"
 
 _RUN_ID = re.compile(r"^[0-9]{20}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_]+$")
@@ -86,12 +88,12 @@ def plan_for_run(
         raw=TablePair(
             live=TableRef(raw_schema, RAW_TABLE),
             candidate=TableRef(f"{candidate_base}_raw", RAW_TABLE),
-            rollback=TableRef(raw_schema, f"{RAW_TABLE}__old_{run_id}"),
+            rollback=TableRef(RAW_ROLLBACK_SCHEMA, f"{RAW_TABLE}__old_{run_id}"),
         ),
         stage=TablePair(
             live=TableRef(stage_schema, STAGE_TABLE),
             candidate=TableRef(f"{candidate_base}_stage", STAGE_TABLE),
-            rollback=TableRef(stage_schema, f"{STAGE_TABLE}__old_{run_id}"),
+            rollback=TableRef(STAGE_ROLLBACK_SCHEMA, f"{STAGE_TABLE}__old_{run_id}"),
         ),
     )
 

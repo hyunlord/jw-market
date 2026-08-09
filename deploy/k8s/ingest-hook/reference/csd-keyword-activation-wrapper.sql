@@ -4,6 +4,10 @@
 
 CREATE DATABASE `jw_csd_keyword_control`
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE `jw_csd_keyword_rollback_raw`
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE `jw_csd_keyword_rollback_stage`
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 DELIMITER $$
 
@@ -71,8 +75,8 @@ BEGIN
 
   SELECT COUNT(*) INTO v_table_count
   FROM information_schema.TABLES
-  WHERE (TABLE_SCHEMA=p_raw_schema AND TABLE_NAME=v_raw_old)
-     OR (TABLE_SCHEMA=p_stage_schema AND TABLE_NAME=v_stage_old);
+  WHERE (TABLE_SCHEMA='jw_csd_keyword_rollback_raw' AND TABLE_NAME=v_raw_old)
+     OR (TABLE_SCHEMA='jw_csd_keyword_rollback_stage' AND TABLE_NAME=v_stage_old);
   IF v_table_count <> 0 THEN
     SIGNAL SQLSTATE '45000'
       SET MESSAGE_TEXT='keyword rollback table already exists';
@@ -98,11 +102,11 @@ BEGIN
 
   SET @kw_sql = CONCAT(
     'RENAME TABLE `',p_raw_schema,'`.`raw_keyword_events` TO `',
-    p_raw_schema,'`.`',v_raw_old,'`, `',
+    'jw_csd_keyword_rollback_raw`.`',v_raw_old,'`, `',
     v_raw_candidate,'`.`raw_keyword_events` TO `',
     p_raw_schema,'`.`raw_keyword_events`, `',
     p_stage_schema,'`.`km_keyword_event_stage` TO `',
-    p_stage_schema,'`.`',v_stage_old,'`, `',
+    'jw_csd_keyword_rollback_stage`.`',v_stage_old,'`, `',
     v_stage_candidate,'`.`km_keyword_event_stage` TO `',
     p_stage_schema,'`.`km_keyword_event_stage`');
   EXECUTE IMMEDIATE @kw_sql;
@@ -120,6 +124,12 @@ DELIMITER ;
 
 GRANT SELECT, INSERT, CREATE, DROP
   ON `jw\_brand\_activity\_keyword\_%`.*
+  TO 'jw_csd_channel_definer'@'localhost';
+GRANT SELECT, INSERT, CREATE, DROP
+  ON `jw_csd_keyword_rollback_raw`.*
+  TO 'jw_csd_channel_definer'@'localhost';
+GRANT SELECT, INSERT, CREATE, DROP
+  ON `jw_csd_keyword_rollback_stage`.*
   TO 'jw_csd_channel_definer'@'localhost';
 GRANT SELECT, INSERT, CREATE, DROP
   ON `jw_brand_activity_raw_stage`.`raw_keyword_events`

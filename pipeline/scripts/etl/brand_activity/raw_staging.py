@@ -52,8 +52,15 @@ def csd_dedup_key(row: CsdRow) -> str:
 
 
 def keyword_dedup_key(event: KeywordEvent) -> str:
-    """Return the Keyword event key that preserves duplicate source rows."""
-    return _hash_key(("keyword", event.source_file, str(event.source_row_no)))
+    """Return a content-stable key that preserves distinct workbook rows."""
+    return _hash_key(
+        (
+            "keyword",
+            event.source_file_sha256,
+            event.source_sheet,
+            str(event.source_row_no),
+        )
+    )
 
 
 def recent_month_window(max_period_ym: str, months: int = 36) -> tuple[str, str]:

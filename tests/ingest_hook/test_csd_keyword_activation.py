@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pipeline.scripts.ingest_hook import csd_keyword_activation as activation
 
 
@@ -45,6 +47,8 @@ def test_plan_uses_run_scoped_candidate_and_preserves_live_as_old() -> None:
     assert plan.stage.live == activation.TableRef(
         "jw_brand_activity_stage", "km_keyword_event_stage"
     )
+    assert plan.raw.rollback.schema == "jw_csd_keyword_rollback_raw"
+    assert plan.stage.rollback.schema == "jw_csd_keyword_rollback_stage"
     assert plan.raw.rollback.table.endswith("__old_20260808010203000000")
     assert plan.stage.rollback.table.endswith("__old_20260808010203000000")
     assert all(len(ref.schema) <= 64 and len(ref.table) <= 64 for ref in plan.table_refs())
@@ -88,6 +92,27 @@ def test_publish_uses_definer_wrapper_instead_of_direct_rename() -> None:
         "2023-06",
         "2026-05",
     )
+
+
+def test_wrapper_routes_dynamic_rollback_tables_to_bounded_schemas() -> None:
+    # Given: the production definer wrapper must support every future run ID.
+    sql_path = (
+        Path(__file__).resolve().parents[2]
+        / "deploy/k8s/ingest-hook/reference/csd-keyword-activation-wrapper.sql"
+    )
+
+    # When: its DDL and privilege boundary are inspected.
+    sql = " ".join(sql_path.read_text(encoding="utf-8").split())
+
+    # Then: dynamic rollback names land in dedicated, bounded schemas.
+    assert "CREATE DATABASE `jw_csd_keyword_rollback_raw`" in sql
+    assert "CREATE DATABASE `jw_csd_keyword_rollback_stage`" in sql
+    assert "'jw_csd_keyword_rollback_raw`.`',v_raw_old,'`, `'" in sql
+    assert "'jw_csd_keyword_rollback_stage`.`',v_stage_old,'`, `'" in sql
+    assert "ON `jw_csd_keyword_rollback_raw`.*" in sql
+    assert "ON `jw_csd_keyword_rollback_stage`.*" in sql
+    assert "ON `jw_brand_activity_raw_stage`.*" not in sql
+    assert "ON `jw_brand_activity_stage`.*" not in sql
 
 
 def test_evidence_payload_round_trip_keeps_actual_counts_and_periods() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -76,6 +77,22 @@ def test_keyword_key_preserves_duplicate_event_rows() -> None:
 
     # Then: row identity, not message text, controls Keyword dedup.
     assert len(keyword_keys) == 2
+
+
+def test_keyword_key_ignores_filename_for_identical_workbook_row() -> None:
+    # Given: one workbook was uploaded under a normalized filename without changing its bytes.
+    original = _keyword_event(
+        source_row_no=2,
+        source_file="Keywords for JW Oct. 25.xlsx",
+    )
+    normalized_copy = replace(original, source_file="Keywords_for_JW_Oct._25.xlsx")
+
+    # When: raw staging keys are generated for the same workbook row.
+    original_key = keyword_dedup_key(original)
+    normalized_copy_key = keyword_dedup_key(normalized_copy)
+
+    # Then: filename normalization cannot duplicate an otherwise identical source event.
+    assert original_key == normalized_copy_key
 
 
 def test_recent_month_window_is_inclusive_36_months() -> None:
