@@ -107,12 +107,10 @@ def csd_keyword_live_schemas() -> tuple[str, str]:
 
 
 def webhook_promote_exact() -> bool:
-    """Select the just-received manifest instead of the oldest queued row.
+    """Validate the just-received manifest without bypassing global FIFO.
 
-    This is an explicit commissioning override for a queue containing known
-    submissions that must remain untouched. The default preserves category
-    FIFO. Invalid values fail closed instead of silently changing promotion
-    order.
+    The legacy flag remains accepted for deployment compatibility, but global
+    upload/reingest ordering is always FIFO. Invalid values fail closed.
     """
     value = os.environ.get(ENV_WEBHOOK_PROMOTE_EXACT, "0").strip()
     if value not in {"0", "1"}:

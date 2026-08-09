@@ -94,39 +94,45 @@ def test_complete_reingest_request_is_idempotent_for_same_uuid(sqlite_ledger) ->
     assert len(sqlite_ledger.status_transitions(*IDENTITY)) == transition_count
 
 
-def test_complete_reingest_request_rejects_second_active_uuid(sqlite_ledger) -> None:
+def test_complete_reingest_request_allows_second_uuid_to_wait(sqlite_ledger) -> None:
     _complete_identity(sqlite_ledger)
     _record_request(sqlite_ledger)
 
-    with pytest.raises(RuntimeError, match="complete reingest request is already active"):
-        _record_request(
-            sqlite_ledger,
-            request_id="d985181b-e8ab-4910-9138-4203f3054d1d",
-            run_id="20260809223000000000",
-        )
+    decision = _record_request(
+        sqlite_ledger,
+        request_id="d985181b-e8ab-4910-9138-4203f3054d1d",
+        run_id="20260809223000000000",
+    )
+
+    assert decision.created is True
+    assert [attempt.status for attempt in sqlite_ledger.complete_reingest_attempts()] == [
+        "queued",
+        "queued",
+    ]
 
 
-def test_complete_reingest_request_rejects_active_attempt_for_same_category(
+def test_complete_reingest_request_allows_same_category_attempt_to_wait(
     sqlite_ledger,
 ) -> None:
     _complete_identity(sqlite_ledger)
     _complete_identity(sqlite_ledger, OTHER_IDENTITY)
     _record_request(sqlite_ledger)
 
-    with pytest.raises(RuntimeError, match="complete reingest request is already active"):
-        sqlite_ledger.record_complete_reingest_request(
-            *OTHER_IDENTITY,
-            request_id="d985181b-e8ab-4910-9138-4203f3054d1d",
-            run_id="20260809223000000000",
-            mode="mart_from_existing_raw",
-            requested_by="operator@jw.example",
-            reason="another completed period",
-            affected_scope={
-                "dimension": "atc4",
-                "count": 1,
-                "values": ["C10A"],
-            },
-        )
+    decision = sqlite_ledger.record_complete_reingest_request(
+        *OTHER_IDENTITY,
+        request_id="d985181b-e8ab-4910-9138-4203f3054d1d",
+        run_id="20260809223000000000",
+        mode="mart_from_existing_raw",
+        requested_by="operator@jw.example",
+        reason="another completed period",
+        affected_scope={
+            "dimension": "atc4",
+            "count": 1,
+            "values": ["C10A"],
+        },
+    )
+
+    assert decision.created is True
 
 
 def test_complete_reingest_request_allows_new_uuid_after_terminal(sqlite_ledger) -> None:
@@ -307,3 +313,123 @@ def test_complete_reingest_request_lookup_uses_configured_sql_marker(
             job_name=None,
             affected_scope={"dimension": "source", "count": 1, "values": ["ubist"]},
         )
+
+
+def test_running_upload_blocks_complete_reingest_start(sqlite_ledger) -> None:
+    # Given: a durable reingest request and an upload that already owns the slot.
+    _complete_identity(sqlite_ledger)
+    upload = ("2026-Q1", "iqvia_nsa", "d" * 64)
+    sqlite_ledger.receive(*upload, manifest_path="/input/nsa.json")
+    assert sqlite_ledger.claim_queued(
+        *upload,
+        job_name="jw-ingest-iqvia-nsa-dddddddd-run",
+        run_id="upload-run",
+    )
+    _record_request(sqlite_ledger)
+
+    # When: the reingest process attempts to reserve the same global slot.
+    claimed = sqlite_ledger.record_complete_reingest_started(
+        *IDENTITY,
+        request_id=REQUEST_ID,
+        run_id=ATTEMPT_RUN_ID,
+        job_name="jw-complete-reingest-ubist-aaaaaaaa-run",
+    )
+
+    # Then: it remains queued instead of overlapping the upload.
+    assert claimed is False
+    assert sqlite_ledger.complete_reingest_attempts()[0].status == "queued"
+
+
+def test_running_reingest_blocks_upload_claim(sqlite_ledger) -> None:
+    # Given: a reingest attempt that owns the global slot.
+    _complete_identity(sqlite_ledger)
+    _record_request(sqlite_ledger)
+    assert sqlite_ledger.record_complete_reingest_started(
+        *IDENTITY,
+        request_id=REQUEST_ID,
+        run_id=ATTEMPT_RUN_ID,
+        job_name="jw-complete-reingest-ubist-aaaaaaaa-run",
+    )
+    upload = ("2026-Q1", "iqvia_nsa", "d" * 64)
+    sqlite_ledger.receive(*upload, manifest_path="/input/nsa.json")
+
+    # When: the upload attempts to reserve the same slot.
+    claimed = sqlite_ledger.claim_queued(
+        *upload,
+        job_name="jw-ingest-iqvia-nsa-dddddddd-run",
+        run_id="upload-run",
+    )
+
+    # Then: the upload remains queued.
+    assert claimed is False
+    assert sqlite_ledger.status(*upload).status == "queued"
+
+
+def test_mixed_fifo_prefers_older_upload_before_reingest(sqlite_ledger) -> None:
+    # Given: an upload queued one second before a complete-reingest request.
+    _complete_identity(sqlite_ledger)
+    upload = ("2026-Q1", "iqvia_nsa", "d" * 64)
+    sqlite_ledger.receive(*upload, manifest_path="/input/nsa.json")
+    sqlite_ledger._conn.execute(
+        "UPDATE ingest_ledger SET received_at='2026-08-10 00:00:00' "
+        "WHERE epoch=? AND category=? AND manifest_sha=?",
+        upload,
+    )
+    _record_request(sqlite_ledger)
+    sqlite_ledger._conn.execute(
+        "UPDATE ingest_status_transition SET created_at='2026-08-10 00:00:01' "
+        "WHERE event_id=?",
+        (REQUEST_ID,),
+    )
+    sqlite_ledger._conn.commit()
+
+    # When: the younger reingest attempts to start first.
+    reingest_claimed = sqlite_ledger.record_complete_reingest_started(
+        *IDENTITY,
+        request_id=REQUEST_ID,
+        run_id=ATTEMPT_RUN_ID,
+        job_name="jw-complete-reingest-ubist-aaaaaaaa-run",
+    )
+
+    # Then: FIFO rejects it and lets the older upload claim the slot.
+    assert reingest_claimed is False
+    assert sqlite_ledger.claim_queued(
+        *upload,
+        job_name="jw-ingest-iqvia-nsa-dddddddd-run",
+        run_id="upload-run",
+    )
+
+
+def test_mixed_fifo_prefers_older_reingest_before_upload(sqlite_ledger) -> None:
+    # Given: a complete-reingest request queued one second before an upload.
+    _complete_identity(sqlite_ledger)
+    _record_request(sqlite_ledger)
+    sqlite_ledger._conn.execute(
+        "UPDATE ingest_status_transition SET created_at='2026-08-10 00:00:00' "
+        "WHERE event_id=?",
+        (REQUEST_ID,),
+    )
+    upload = ("2026-Q1", "iqvia_nsa", "d" * 64)
+    sqlite_ledger.receive(*upload, manifest_path="/input/nsa.json")
+    sqlite_ledger._conn.execute(
+        "UPDATE ingest_ledger SET received_at='2026-08-10 00:00:01' "
+        "WHERE epoch=? AND category=? AND manifest_sha=?",
+        upload,
+    )
+    sqlite_ledger._conn.commit()
+
+    # When: the older reingest reserves the slot.
+    reingest_claimed = sqlite_ledger.record_complete_reingest_started(
+        *IDENTITY,
+        request_id=REQUEST_ID,
+        run_id=ATTEMPT_RUN_ID,
+        job_name="jw-complete-reingest-ubist-aaaaaaaa-run",
+    )
+
+    # Then: it starts and the younger upload cannot overlap it.
+    assert reingest_claimed is True
+    assert sqlite_ledger.claim_queued(
+        *upload,
+        job_name="jw-ingest-iqvia-nsa-dddddddd-run",
+        run_id="upload-run",
+    ) is False

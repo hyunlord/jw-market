@@ -127,11 +127,11 @@ def test_expected_stages_keep_csd_out_of_numeric_mart() -> None:
         for row in job_runner.expected_stages(resolve_category("iqvia_csd_channel"))
     }
 
-    assert stages["mart_build"] is False
-    assert stages["sigma"] is False
-    assert stages["post_gate"] is True
+    assert "mart_build" not in stages
+    assert "sigma" not in stages
+    assert "post_gate" not in stages
     assert stages["mart_publish"] is True
-    assert stages["refresh"] is False
+    assert "refresh" not in stages
 
 
 def test_expected_stages_include_nsa_mart_and_keyword_publish() -> None:
@@ -147,7 +147,7 @@ def test_expected_stages_include_nsa_mart_and_keyword_publish() -> None:
     assert nsa["mart_build"] is True
     assert nsa["sigma"] is True
     assert nsa["mart_publish"] is True
-    assert keyword["mart_build"] is False
+    assert "mart_build" not in keyword
     assert keyword["mart_publish"] is True
 
 

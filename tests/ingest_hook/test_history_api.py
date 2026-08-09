@@ -159,7 +159,7 @@ def test_history_adds_identity_evidence_without_collapsing_runs(
                     state="classified",
                     category=CATEGORY,
                     rows=456,
-                    periods=("2026-06",),
+                    periods=("2023-01", "2026-05"),
                 ),
                 FileObservation(
                     relative_path="._source.xlsx",
@@ -195,6 +195,10 @@ def test_history_adds_identity_evidence_without_collapsing_runs(
         assert item["inventory_run_id"] == BUILD_RUN_ID
         assert item["file_count"] == 2
         assert item["classified_file_count"] == 1
+        assert item["manifest_file_count"] == 1
+        assert item["inventory_file_count"] == 2
+        assert item["execution_period_from"] == "2023-01"
+        assert item["execution_period_to"] == "2026-05"
         assert [
             (event["run_id"], event["stage"], event["status"])
             for event in item["identity_stages"]
@@ -224,6 +228,10 @@ def test_history_adds_identity_evidence_without_collapsing_runs(
     assert status.json()["inventory_run_id"] == BUILD_RUN_ID
     assert status.json()["file_count"] == 2
     assert status.json()["classified_file_count"] == 1
+    assert status.json()["manifest_file_count"] == 1
+    assert status.json()["inventory_file_count"] == 2
+    assert status.json()["execution_period_from"] == "2023-01"
+    assert status.json()["execution_period_to"] == "2026-05"
 
 
 def test_history_keeps_prior_run_from_transition_when_stage_record_is_absent(

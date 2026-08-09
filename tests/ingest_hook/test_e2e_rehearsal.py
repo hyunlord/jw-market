@@ -198,7 +198,7 @@ def test_same_category_serialises_distinct_submissions(client, bucket, fake_tran
     assert len(fake_transport.submitted) == 1
 
 
-def test_webhook_exact_promotion_skips_older_queue_only_when_opted_in(
+def test_webhook_exact_promotion_cannot_bypass_global_fifo(
     monkeypatch, service, bucket, fake_transport
 ):
     from pipeline.scripts.ingest_hook.contract import load_manifest
@@ -219,13 +219,13 @@ def test_webhook_exact_promotion_skips_older_queue_only_when_opted_in(
     result = service.receive_webhook(str(newer_path.relative_to(bucket)))
 
     assert result["job_name"] is not None
-    assert newer.manifest_sha[:8] in result["job_name"]
+    assert older.manifest_sha[:8] in result["job_name"]
     assert service.ledger.status(
         older.epoch, older.category, older.manifest_sha
-    ).status == "queued"
+    ).status == "running"
     assert service.ledger.status(
         newer.epoch, newer.category, newer.manifest_sha
-    ).status == "running"
+    ).status == "queued"
     assert len(fake_transport.submitted) == 1
 
 

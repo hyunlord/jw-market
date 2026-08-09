@@ -107,10 +107,23 @@ def test_status_exposes_deterministic_expected_stage_contract(client, bucket):
         },
     ).json()
 
-    assert status["expected_stages"] == [
-        {"stage": stage, "seq": seq, "applicable": True}
-        for seq, stage in enumerate(job_runner._StageTracker.STAGES, start=1)
+    assert [item["stage"] for item in status["expected_stages"]] == [
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+        "agent_refresh",
+        "agent3",
+        "agent2",
+        "dashboard",
     ]
+    assert all(item["applicable"] is True for item in status["expected_stages"])
 
 
 def test_terminal_run_ignores_stale_running_stage_from_prior_run(
@@ -149,7 +162,7 @@ def test_terminal_run_ignores_stale_running_stage_from_prior_run(
 
     assert status["status"] == "failed"
     assert status["current_stage"] is None
-    assert len(status["expected_stages"]) == 9
+    assert len(status["expected_stages"]) == 14
 
 
 def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
@@ -184,7 +197,7 @@ def test_running_run_reports_only_its_own_current_stage(sqlite_ledger, bucket):
 
     assert status["status"] == "running"
     assert status["current_stage"] == "refresh"
-    assert len(status["expected_stages"]) == 9
+    assert len(status["expected_stages"]) == 14
 
 
 def test_running_run_reports_startup_recovery_stage(sqlite_ledger, bucket):
@@ -250,7 +263,7 @@ def test_running_run_does_not_match_unrelated_prefix(sqlite_ledger, bucket):
     assert status["current_stage"] is None
 
 
-def test_expected_stage_applicability_comes_from_category_spec(client, bucket):
+def test_expected_stage_contract_contains_only_keyword_stages(client, bucket):
     manifest_path = write_submission(bucket, category="iqvia_csd_keyword")
     payload = client.post(
         "/ingest/webhook", json={"manifest_path": str(manifest_path.relative_to(bucket))}
@@ -264,18 +277,18 @@ def test_expected_stage_applicability_comes_from_category_spec(client, bucket):
             "manifest_sha": payload["manifest_sha"],
         },
     ).json()
-    applicability = {
-        item["stage"]: item["applicable"] for item in status["expected_stages"]
-    }
-
-    assert list(applicability) == list(job_runner._StageTracker.STAGES)
-    assert applicability["load"] is True
-    assert applicability["load_verify"] is True
-    assert applicability["mart_build"] is False
-    assert applicability["sigma"] is False
-    assert applicability["post_gate"] is True
-    assert applicability["mart_publish"] is True
-    assert applicability["refresh"] is False
+    assert [item["stage"] for item in status["expected_stages"]] == [
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "post_gate",
+        "mart_publish",
+        "topic_extraction",
+        "dashboard",
+        "signal",
+    ]
+    assert all(item["applicable"] is True for item in status["expected_stages"])
 
 
 def test_unknown_legacy_category_keeps_status_available(service, client):

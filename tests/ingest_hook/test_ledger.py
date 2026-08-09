@@ -39,12 +39,27 @@ def test_failed_submission_can_requeue(sqlite_ledger):
     assert sqlite_ledger.status(*IDENTITY).status == "queued"
 
 
-def test_category_serialisation_counts_only_running(sqlite_ledger):
+def test_running_counts_remain_observable_per_category(sqlite_ledger):
     sqlite_ledger.receive(*IDENTITY, manifest_path="/x/a.json")
     assert sqlite_ledger.running_in_category("ubist") == 0
     sqlite_ledger.mark_running(*IDENTITY, job_name="job-1", run_id="r1")
     assert sqlite_ledger.running_in_category("ubist") == 1
-    assert sqlite_ledger.running_in_category("iqvia") == 0  # other categories parallel
+    assert sqlite_ledger.running_in_category("iqvia") == 0
+
+
+def test_claim_queued_serialises_all_sources_globally(sqlite_ledger):
+    ubist = ("2026-07", "ubist", "a" * 64)
+    nsa = ("2026-Q1", "iqvia_nsa", "b" * 64)
+    sqlite_ledger.receive(*ubist, manifest_path="/x/ubist.json")
+    sqlite_ledger.receive(*nsa, manifest_path="/x/nsa.json")
+
+    assert sqlite_ledger.claim_queued(
+        *ubist, job_name="ubist-job", run_id="ubist-run"
+    ) is True
+    assert sqlite_ledger.claim_queued(
+        *nsa, job_name="nsa-job", run_id="nsa-run"
+    ) is False
+    assert sqlite_ledger.status(*nsa).status == "queued"
 
 
 def test_mark_running_is_a_queued_to_running_compare_and_set(sqlite_ledger):
@@ -68,6 +83,15 @@ def test_next_queued_is_fifo(sqlite_ledger):
     sqlite_ledger.receive("2026-07", "ubist", "c" * 64, manifest_path="/x/c.json")
     entry = sqlite_ledger.next_queued("ubist")
     assert entry.manifest_sha == "b" * 64
+
+
+def test_next_queued_without_category_is_global_fifo(sqlite_ledger):
+    sqlite_ledger.receive("2026-06", "ubist", "d" * 64, manifest_path="/x/u.json")
+    sqlite_ledger.receive("2026-Q1", "iqvia_nsa", "e" * 64, manifest_path="/x/n.json")
+
+    entry = sqlite_ledger.next_queued()
+
+    assert (entry.category, entry.manifest_sha) == ("ubist", "d" * 64)
 
 
 def test_previous_complete_total_baseline(sqlite_ledger):

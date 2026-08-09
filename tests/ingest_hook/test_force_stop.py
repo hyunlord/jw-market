@@ -102,14 +102,14 @@ def test_force_stop_deletes_exact_job_then_reconciles_and_promotes(
         requested_by="pl@example.test",
     )
 
-    assert result["status"] == "failed"
+    assert result["status"] == "cancelled"
     assert result["job_name"] == name
     assert result["job_status"] == "Absent"
     assert result["promoted_job_name"] == sqlite_ledger.status(*queued).job_name
-    failed = sqlite_ledger.status(EPOCH, CATEGORY, MANIFEST_SHA)
-    assert failed.status == "failed"
-    assert "PL 강제 정지" in failed.reason
-    assert "pl@example.test" in failed.reason
+    cancelled = sqlite_ledger.status(EPOCH, CATEGORY, MANIFEST_SHA)
+    assert cancelled.status == "cancelled"
+    assert "사용자 중단" in cancelled.reason
+    assert "pl@example.test" in cancelled.reason
     assert sqlite_ledger.status(*queued).status == "running"
     assert len(fake_transport.submitted) == 1
 
@@ -137,7 +137,7 @@ def test_force_stop_deletes_exact_job_then_reconciles_and_promotes(
     assert transition.evidence["run_id"] == RUN_ID
 
 
-def test_force_stop_publish_job_recovers_before_terminal_transition(
+def test_force_stop_rejects_after_publish_boundary_without_deleting_job(
     sqlite_ledger, fake_transport
 ) -> None:
     _seed_running(sqlite_ledger)
@@ -160,39 +160,137 @@ def test_force_stop_publish_job_recovers_before_terminal_transition(
         approved_by="pl@example.test",
         approved_at="2026-08-04T01:00:00+00:00",
     )
-    inspected = 0
-
-    def inspect(_namespace: str, requested_name: str) -> dict:
-        nonlocal inspected
-        assert requested_name == publish_name
-        inspected += 1
-        if inspected == 1:
-            return _running_job(publish_name)
-        raise _not_found(publish_name)
-
+    deleted = DeleteRecorder()
     service = IngestService(
         sqlite_ledger,
         None,
         transport=fake_transport,
-        inspect_transport=inspect,
-        delete_transport=DeleteRecorder(),
+        inspect_transport=lambda _namespace, _name: _running_job(publish_name),
+        delete_transport=deleted,
         sleep=lambda _seconds: None,
         timestamp=lambda: "2026-08-04T01:02:03+00:00",
     )
-    recovered: list[str] = []
-    service._recover_publish_activation = lambda entry: recovered.append(entry.job_name)
+
+    response = TestClient(create_app(service)).post(
+        "/ingest/force-stop",
+        json={
+            "epoch": EPOCH,
+            "category": CATEGORY,
+            "manifest_sha": MANIFEST_SHA,
+            "run_id": RUN_ID,
+            "requested_by": "pl@example.test",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "publish" in response.json()["detail"]
+    assert deleted.calls == []
+    assert sqlite_ledger.status(EPOCH, CATEGORY, MANIFEST_SHA).status == "publish_running"
+
+
+def test_force_stop_rejects_complete_reingest_after_publish_boundary(
+    sqlite_ledger,
+) -> None:
+    request_id = "be244068-6c0a-455b-9f70-cbc0bd437dc7"
+    run_id = "20260810020304000000"
+    name = job_launcher.complete_reingest_job_name(CATEGORY, MANIFEST_SHA, run_id)
+    sqlite_ledger.receive(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        manifest_path="/input/demo-manifest.json",
+    )
+    sqlite_ledger.mark_running(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        job_name="jw-ingest-ubist-original",
+        run_id="20260809010101000000",
+    )
+    sqlite_ledger.mark_complete(EPOCH, CATEGORY, MANIFEST_SHA, row_counts={})
+    sqlite_ledger.record_complete_reingest_request(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        request_id=request_id,
+        run_id=run_id,
+        mode="mart_from_existing_raw",
+        requested_by="operator@example.test",
+        reason="logic changed",
+        affected_scope={"dimension": "source", "count": 1, "values": [CATEGORY]},
+    )
+    assert sqlite_ledger.record_complete_reingest_started(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        request_id=request_id,
+        run_id=run_id,
+        job_name=name,
+    )
+    sqlite_ledger.record_stage(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        run_id=run_id,
+        seq=5,
+        stage="mart_publish",
+        status="running",
+    )
+    deleted = DeleteRecorder()
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        inspect_transport=lambda _namespace, _name: _running_job(name),
+        delete_transport=deleted,
+    )
+
+    response = TestClient(create_app(service)).post(
+        "/ingest/force-stop",
+        json={
+            "epoch": EPOCH,
+            "category": CATEGORY,
+            "manifest_sha": MANIFEST_SHA,
+            "run_id": run_id,
+            "requested_by": "pl@example.test",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "publish" in response.json()["detail"]
+    assert deleted.calls == []
+    attempt = sqlite_ledger.complete_reingest_attempts(category=CATEGORY)[0]
+    assert attempt.status == "running"
+
+
+def test_force_stop_cancels_pending_without_touching_kubernetes(
+    sqlite_ledger, fake_transport
+):
+    active_name = _seed_running(sqlite_ledger)
+    pending = ("2026-Q1", "iqvia_nsa", "d" * 64)
+    sqlite_ledger.receive(*pending, manifest_path="/input/nsa.json")
+    deleted = DeleteRecorder()
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        inspect_transport=lambda _namespace, _name: _running_job(active_name),
+        delete_transport=deleted,
+        timestamp=lambda: "2026-08-10T01:02:03+00:00",
+    )
 
     result = service.force_stop(
-        epoch=EPOCH,
-        category=CATEGORY,
-        manifest_sha=MANIFEST_SHA,
-        run_id=RUN_ID,
+        epoch=pending[0],
+        category=pending[1],
+        manifest_sha=pending[2],
+        run_id=None,
         requested_by="pl@example.test",
     )
 
-    assert recovered == [publish_name]
-    assert result["job_name"] == publish_name
-    assert sqlite_ledger.status(EPOCH, CATEGORY, MANIFEST_SHA).status == "failed"
+    assert result["status"] == "cancelled"
+    assert result["job_name"] is None
+    assert result["promoted_job_name"] is None
+    assert sqlite_ledger.status(*pending).status == "cancelled"
+    assert deleted.calls == []
 
 
 def test_force_stop_endpoint_rejects_run_mismatch_without_delete(sqlite_ledger):

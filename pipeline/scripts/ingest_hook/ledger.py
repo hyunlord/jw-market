@@ -1,9 +1,8 @@
 """ingest_ledger — idempotency lock + status source of truth.
 
 Identity is ``(epoch, category, manifest_sha)``. Repeated webhooks for the same
-identity are no-ops while the row is queued/running/complete; only ``failed``
-rows may be re-queued. One ``running`` row per category serialises loads inside
-a category; different categories run in parallel.
+identity are no-ops while the row is queued/running/complete; failed or
+cancelled rows may be re-queued. A single global slot serialises every source.
 
 Two dialects on purpose:
   * ``mysql``  — production ledger in the mart DB (MARIADB_* env family).
@@ -67,6 +66,7 @@ STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_COMPLETE = "complete"
 STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
 STATUS_GATE_FAILED = "gate_failed"
 STATUS_AWAITING_APPROVAL = "awaiting_approval"
 STATUS_PUBLISH_RUNNING = "publish_running"
@@ -338,6 +338,22 @@ class CompleteReingestRequestDecision:
     run_id: str
     manifest_path: str
     created: bool
+
+
+@dataclass(frozen=True)
+class CompleteReingestAttempt:
+    request_id: str
+    epoch: str
+    category: str
+    manifest_sha: str
+    run_id: str
+    manifest_path: str
+    requested_by: str
+    reason: str | None
+    affected_scope: dict
+    created_at: str
+    status: str
+    job_name: str | None
 
 
 @dataclass(frozen=True)
@@ -890,6 +906,142 @@ class Ledger:
             finished_at=str(values[12]) if values[12] else None,
         )
 
+    @staticmethod
+    def _complete_reingest_attempts_from_rows(rows) -> list[CompleteReingestAttempt]:
+        attempts: dict[str, dict] = {}
+        for row in rows:
+            values = tuple(row.values()) if isinstance(row, dict) else tuple(row)
+            (
+                event_id,
+                epoch,
+                event_category,
+                manifest_sha,
+                status,
+                actor,
+                source,
+                reason,
+                job_name,
+                raw_evidence,
+                created_at,
+            ) = values
+            evidence = json.loads(raw_evidence)
+            request_id = str(evidence.get("request_id") or event_id)
+            if source == "complete_reingest_request":
+                attempts[request_id] = {
+                    "request_id": request_id,
+                    "epoch": str(epoch),
+                    "category": str(event_category),
+                    "manifest_sha": str(manifest_sha),
+                    "run_id": str(evidence["run_id"]),
+                    "manifest_path": str(evidence["manifest_path"]),
+                    "requested_by": str(actor),
+                    "reason": str(reason) if reason is not None else None,
+                    "affected_scope": dict(evidence["affected_scope"]),
+                    "created_at": str(created_at),
+                    "status": STATUS_QUEUED,
+                    "job_name": None,
+                }
+                continue
+            attempt = attempts.get(request_id)
+            if attempt is None:
+                continue
+            attempt["status"] = str(status)
+            if job_name is not None:
+                attempt["job_name"] = str(job_name)
+        return [
+            CompleteReingestAttempt(**attempt)
+            for attempt in sorted(
+                attempts.values(),
+                key=lambda item: (item["created_at"], item["request_id"]),
+            )
+        ]
+
+    def _locked_global_queue(
+        self, cursor
+    ) -> tuple[list[LedgerEntry], list[CompleteReingestAttempt]]:
+        """Lock and return the one mixed upload/reingest queue snapshot."""
+        mark = self._mark
+        anchor_sql = "SELECT id FROM ingest_ledger ORDER BY id LIMIT 1"
+        upload_sql = (
+            "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status,"
+            " reason, job_name, run_id, row_counts, received_at, started_at, finished_at"
+            " FROM ingest_ledger"
+            f" WHERE status IN ({mark},{mark},{mark},{mark}) ORDER BY id"
+        )
+        reingest_sql = (
+            "SELECT event_id, epoch, category, manifest_sha, status, actor, source,"
+            " reason, job_name, evidence_json, created_at"
+            " FROM ingest_status_transition"
+            f" WHERE source IN ({mark},{mark},{mark}) ORDER BY id"
+        )
+        if self._dialect == "mysql":
+            anchor_sql += " FOR UPDATE"
+            upload_sql += " FOR UPDATE"
+            reingest_sql += " FOR UPDATE"
+        cursor.execute(anchor_sql)
+        if cursor.fetchone() is None:
+            return [], []
+        cursor.execute(
+            upload_sql,
+            (
+                STATUS_RUNNING,
+                STATUS_AWAITING_APPROVAL,
+                STATUS_PUBLISH_RUNNING,
+                STATUS_QUEUED,
+            ),
+        )
+        uploads = [self._entry(row) for row in cursor.fetchall()]
+        cursor.execute(
+            reingest_sql,
+            (
+                "complete_reingest_request",
+                "complete_reingest_started",
+                "complete_reingest_terminal",
+            ),
+        )
+        reingests = self._complete_reingest_attempts_from_rows(cursor.fetchall())
+        return uploads, reingests
+
+    @staticmethod
+    def _global_claim_is_allowed(
+        uploads: list[LedgerEntry],
+        reingests: list[CompleteReingestAttempt],
+        *,
+        kind: str,
+        identity: tuple[str, str, str] | None = None,
+        request_id: str | None = None,
+    ) -> bool:
+        if any(entry.status in _CATEGORY_BLOCKING_STATUSES for entry in uploads):
+            return False
+        if any(attempt.status == STATUS_RUNNING for attempt in reingests):
+            return False
+        pending = [
+            (entry.received_at, "upload", entry)
+            for entry in uploads
+            if entry.status == STATUS_QUEUED
+        ]
+        pending.extend(
+            (attempt.created_at, "reingest", attempt)
+            for attempt in reingests
+            if attempt.status == STATUS_QUEUED
+        )
+        if not pending:
+            return False
+        _created_at, first_kind, first = min(
+            pending,
+            key=lambda item: (
+                item[0],
+                item[1],
+                getattr(item[2], "request_id", ""),
+                getattr(item[2], "manifest_sha", ""),
+            ),
+        )
+        if first_kind != kind:
+            return False
+        if kind == "upload":
+            return identity == (first.epoch, first.category, first.manifest_sha)
+        return request_id == first.request_id
+
     # -- webhook receipt (idempotent) ---------------------------------------
     def receive(
         self,
@@ -941,12 +1093,18 @@ class Ledger:
         row = cursor.fetchone()
         return int(tuple(row.values())[0] if isinstance(row, dict) else row[0])
 
-    def next_queued(self, category: str) -> LedgerEntry | None:
+    def next_queued(self, category: str | None = None) -> LedgerEntry | None:
+        category_clause = ""
+        params: tuple[str, ...] = (STATUS_QUEUED,)
+        if category is not None:
+            category_clause = " AND category=?"
+            params += (category,)
         cursor = self._execute(
             "SELECT epoch, category, manifest_sha, manifest_path, uploaded_by, status, reason, job_name,"
             " run_id, row_counts, received_at, started_at, finished_at"
-            " FROM ingest_ledger WHERE category=? AND status=? ORDER BY received_at, id LIMIT 1",
-            (category, STATUS_QUEUED),
+            f" FROM ingest_ledger WHERE status=?{category_clause}"
+            " ORDER BY received_at, id LIMIT 1",
+            params,
         )
         row = cursor.fetchone()
         return self._entry(row) if row is not None else None
@@ -1051,17 +1209,10 @@ class Ledger:
         job_name: str,
         run_id: str,
     ) -> bool:
-        """Atomically reserve one queued identity when its category has no runner."""
+        """Atomically reserve the global FIFO head when no ingest is active."""
         event_id = str(uuid.uuid4())
         created_at = _now()
         mark = self._mark
-        active_sql = (
-            "SELECT epoch, category, manifest_sha, status FROM ingest_ledger"
-            f" WHERE category={mark} AND status IN ({mark},{mark},{mark},{mark})"
-            " ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, received_at, id"
-        )
-        if self._dialect == "mysql":
-            active_sql += " FOR UPDATE"
         update_sql = (
             "UPDATE ingest_ledger SET"
             f" status={mark}, job_name={mark}, run_id={mark}, started_at={mark}"
@@ -1080,37 +1231,13 @@ class Ledger:
             history_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
 
         def operation(cursor):
-            cursor.execute(
-                active_sql,
-                (
-                    category,
-                    STATUS_RUNNING,
-                    STATUS_AWAITING_APPROVAL,
-                    STATUS_PUBLISH_RUNNING,
-                    STATUS_QUEUED,
-                ),
-            )
-            rows = cursor.fetchall()
-            statuses = [
-                str(row["status"] if isinstance(row, dict) else row[3])
-                for row in rows
-            ]
-            if any(status in _CATEGORY_BLOCKING_STATUSES for status in statuses):
-                return False
-            candidate_present = any(
-                (
-                    str(row["epoch"] if isinstance(row, dict) else row[0]),
-                    str(row["category"] if isinstance(row, dict) else row[1]),
-                    str(
-                        row["manifest_sha"]
-                        if isinstance(row, dict)
-                        else row[2]
-                    ),
-                )
-                == (epoch, category, manifest_sha)
-                for row in rows
-            )
-            if not candidate_present:
+            uploads, reingests = self._locked_global_queue(cursor)
+            if not self._global_claim_is_allowed(
+                uploads,
+                reingests,
+                kind="upload",
+                identity=(epoch, category, manifest_sha),
+            ):
                 return False
             cursor.execute(
                 update_sql,
@@ -1138,7 +1265,7 @@ class Ledger:
                     STATUS_RUNNING,
                     "ingest_service",
                     "job_reservation",
-                    "category slot reserved before Kubernetes Job submission",
+                    "global ingest slot reserved before Kubernetes Job submission",
                     job_name,
                     json.dumps(
                         {"run_id": run_id, "job_name": job_name},
@@ -1587,8 +1714,11 @@ class Ledger:
         expected_run_id: str | None = None,
         expected_status: str = STATUS_RUNNING,
     ) -> bool:
-        if status not in (STATUS_COMPLETE, STATUS_FAILED):
-            raise ValueError(f"terminal reconciliation requires complete/failed, got {status!r}")
+        if status not in (STATUS_COMPLETE, STATUS_FAILED, STATUS_CANCELLED):
+            raise ValueError(
+                "terminal reconciliation requires complete/failed/cancelled, "
+                f"got {status!r}"
+            )
         return self._transition(
             epoch,
             category,
@@ -1714,13 +1844,8 @@ class Ledger:
                     requests.add(str(prior_request_id or event_id))
                 elif prior_request_id:
                     terminals.add(str(prior_request_id))
-            active_requests = requests - terminals
-            conflicting_requests = active_requests - {canonical_request_id}
-            if conflicting_requests:
-                raise RuntimeError(
-                    "complete reingest request is already active: "
-                    + ",".join(sorted(conflicting_requests))
-                )
+            # Multiple attempts may wait in the global FIFO. UUID idempotency,
+            # not per-category rejection, owns duplicate suppression.
 
             evidence = {
                 "request_id": canonical_request_id,
@@ -1800,6 +1925,124 @@ class Ledger:
 
         return self._transaction(operation)
 
+    def complete_reingest_attempts(
+        self, *, category: str | None = None
+    ) -> list[CompleteReingestAttempt]:
+        """Return durable reingest queue state derived from append-only events."""
+        category_clause = ""
+        params: tuple[str, ...] = (
+            "complete_reingest_request",
+            "complete_reingest_started",
+            "complete_reingest_terminal",
+        )
+        if category is not None:
+            category_clause = f" AND category={self._mark}"
+            params += (category,)
+        cursor = self._execute(
+            "SELECT event_id, epoch, category, manifest_sha, status, actor, source,"
+            " reason, job_name, evidence_json, created_at"
+            " FROM ingest_status_transition"
+            f" WHERE source IN ({self._mark},{self._mark},{self._mark})"
+            f"{category_clause} ORDER BY id",
+            params,
+        )
+        return self._complete_reingest_attempts_from_rows(cursor.fetchall())
+
+    def record_complete_reingest_started(
+        self,
+        epoch: str,
+        category: str,
+        manifest_sha: str,
+        *,
+        request_id: str,
+        run_id: str,
+        job_name: str,
+    ) -> bool:
+        """Append the durable queued-to-running event for one attempt."""
+        event_id = str(uuid.uuid5(uuid.UUID(request_id), "complete-reingest-started"))
+        evidence = {"request_id": request_id, "run_id": run_id}
+        mark = self._mark
+        select_sql = (
+            "SELECT status, source, job_name, evidence_json"
+            " FROM ingest_status_transition"
+            f" WHERE event_id={mark}"
+        )
+        insert_sql = (
+            "INSERT INTO ingest_status_transition"
+            " (event_id, epoch, category, manifest_sha, previous_status, status,"
+            " actor, source, reason, job_name, evidence_json, created_at)"
+            f" VALUES ({', '.join([mark] * 12)})"
+        )
+        if self._dialect == "sqlite":
+            insert_sql += " ON CONFLICT(event_id) DO NOTHING"
+        else:
+            insert_sql += " ON DUPLICATE KEY UPDATE event_id=VALUES(event_id)"
+
+        def operation(cursor):
+            uploads, reingests = self._locked_global_queue(cursor)
+            request = next(
+                (
+                    attempt
+                    for attempt in reingests
+                    if attempt.request_id == request_id
+                    and (
+                        attempt.epoch,
+                        attempt.category,
+                        attempt.manifest_sha,
+                    )
+                    == (epoch, category, manifest_sha)
+                ),
+                None,
+            )
+            if request is None:
+                raise RuntimeError("complete reingest request does not exist")
+            if request.run_id != run_id:
+                raise ValueError("run_id does not match the complete reingest request")
+            cursor.execute(select_sql, (event_id,))
+            existing = cursor.fetchone()
+            created = False
+            if existing is None and self._global_claim_is_allowed(
+                uploads,
+                reingests,
+                kind="reingest",
+                request_id=request_id,
+            ):
+                cursor.execute(
+                    insert_sql,
+                    (
+                        event_id,
+                        epoch,
+                        category,
+                        manifest_sha,
+                        STATUS_COMPLETE,
+                        STATUS_RUNNING,
+                        "ingest_service",
+                        "complete_reingest_started",
+                        "global ingest slot reserved",
+                        job_name,
+                        json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+                        _now(),
+                    ),
+                )
+                created = cursor.rowcount == 1
+                cursor.execute(select_sql, (event_id,))
+                existing = cursor.fetchone()
+            elif existing is None:
+                return False
+            if existing is None:
+                raise RuntimeError("complete reingest start was not persisted")
+            values = tuple(existing.values()) if isinstance(existing, dict) else tuple(existing)
+            if (
+                str(values[0]) != STATUS_RUNNING
+                or str(values[1]) != "complete_reingest_started"
+                or str(values[2]) != job_name
+                or json.loads(values[3]) != evidence
+            ):
+                raise ValueError("complete reingest start conflicts with prior result")
+            return created
+
+        return bool(self._transaction(operation))
+
     def complete_reingest_request(
         self,
         epoch: str,
@@ -1856,8 +2099,10 @@ class Ledger:
         affected_scope: dict,
     ) -> bool:
         """Append one terminal attempt result without updating ``ingest_ledger``."""
-        if status not in {STATUS_COMPLETE, STATUS_FAILED}:
-            raise ValueError("complete reingest terminal status must be complete or failed")
+        if status not in {STATUS_COMPLETE, STATUS_FAILED, STATUS_CANCELLED}:
+            raise ValueError(
+                "complete reingest terminal status must be complete, failed, or cancelled"
+            )
         request = self.complete_reingest_request(
             epoch,
             category,

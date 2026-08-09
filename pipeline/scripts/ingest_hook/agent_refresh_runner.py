@@ -144,6 +144,7 @@ def run(
     ledger = config.open_configured_ledger()
     run_id = agent_run_id or f"{ingest_run_id}:agent-refresh"
     started_at = _now()
+    print("[stage] agent_refresh start(1/4)", flush=True)
     ledger.record_stage(
         epoch,
         category,
@@ -262,8 +263,10 @@ def run(
         started_at=started_at,
         finished_at=finished_at,
     )
+    print(f"[stage] agent_refresh end rc={returncode}", flush=True)
     if returncode == 0:
         for seq, stage in enumerate(("agent3", "agent2", "dashboard"), start=2):
+            print(f"[stage] {stage} start({seq}/4)", flush=True)
             if stage == "agent3" and resume_from_agent2:
                 stage_reason = "reused prior successful strength stage; substage timing unavailable"
             elif stage == "agent2" and resume_from_agent2:
@@ -287,6 +290,7 @@ def run(
                 finished_at=finished_at,
                 duration_ms=0,
             )
+            print(f"[stage] {stage} end rc=0", flush=True)
     return returncode
 
 

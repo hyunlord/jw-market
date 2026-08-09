@@ -41,6 +41,7 @@ from pipeline.scripts.ingest_hook.workbook_source_validation import (
 )
 from pipeline.scripts.ingest_hook.ledger import (
     STATUS_AWAITING_APPROVAL,
+    STATUS_CANCELLED,
     STATUS_COMPLETE,
     STATUS_FAILED,
     STATUS_GATE_FAILED,
@@ -68,6 +69,7 @@ PORTAL_QUEUE_CATEGORIES = frozenset(
 CONTENT_CLASSIFIED_CATEGORIES = frozenset(
     {"ubist", "iqvia_nsa", "iqvia_csd_channel", "iqvia_csd_keyword"}
 )
+COMPLETE_REINGEST_CATEGORIES = frozenset(CONTENT_CLASSIFIED_CATEGORIES)
 
 
 def _utc_timestamp(value: str) -> datetime:
@@ -85,7 +87,7 @@ class ForceStopPayload(BaseModel):
     epoch: str
     category: str
     manifest_sha: str
-    run_id: str
+    run_id: str | None = None
     requested_by: str
 
 
@@ -148,6 +150,17 @@ class CompleteReingestPayload(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class CompleteReingestTerminalPayload(BaseModel):
+    epoch: str
+    category: str
+    manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: str
+    run_id: str
+    status: Literal["complete", "failed"]
+    reason: str = Field(min_length=1, max_length=4000)
+    job_name: str | None = None
+
+
 class IngestService:
     def __init__(
         self,
@@ -176,18 +189,59 @@ class IngestService:
         self.sleep = sleep or _sleep
         self.deletion_attempts = deletion_attempts
         self.inventory_root = inventory_root or DEFAULT_INVENTORY_ROOT
-        self._promotion_locks: dict[str, threading.Lock] = {}
-        self._promotion_locks_guard = threading.Lock()
+        self._promotion_lock = threading.RLock()
 
     def _category_promotion_lock(self, category: str) -> threading.Lock:
-        with self._promotion_locks_guard:
-            return self._promotion_locks.setdefault(category, threading.Lock())
+        """Compatibility alias for the single cross-source ingest lock."""
+        del category
+        return self._promotion_lock
+
+    def _pending_work(self) -> list[tuple[str, object]]:
+        uploads = [
+            (entry.received_at, "upload", entry)
+            for entry in self.ledger.active_entries()
+            if entry.status == STATUS_QUEUED
+        ]
+        reingests = [
+            (attempt.created_at, "reingest", attempt)
+            for attempt in self.ledger.complete_reingest_attempts()
+            if attempt.status == STATUS_QUEUED
+        ]
+        ordered = sorted(
+            [*uploads, *reingests],
+            key=lambda item: (
+                item[0],
+                item[1],
+                getattr(item[2], "request_id", ""),
+                getattr(item[2], "manifest_sha", ""),
+            ),
+        )
+        return [(kind, item) for _created_at, kind, item in ordered]
+
+    def _queue_position(self, *, request_id: str | None = None, entry=None) -> int | None:
+        for position, (kind, item) in enumerate(self._pending_work(), start=1):
+            if kind == "reingest" and request_id == item.request_id:
+                return position
+            if kind == "upload" and entry is not None and (
+                item.epoch,
+                item.category,
+                item.manifest_sha,
+            ) == (entry.epoch, entry.category, entry.manifest_sha):
+                return position
+        return None
+
+    def _active_reingests(self) -> list:
+        return [
+            attempt
+            for attempt in self.ledger.complete_reingest_attempts()
+            if attempt.status == STATUS_RUNNING
+        ]
 
     def request_complete_reingest(self, payload: CompleteReingestPayload) -> dict:
-        if payload.category not in {"ubist", "iqvia_nsa"}:
+        if payload.category not in COMPLETE_REINGEST_CATEGORIES:
             raise HTTPException(
                 status_code=422,
-                detail="complete reingest supports ubist and iqvia_nsa only",
+                detail="complete reingest category is unsupported",
             )
         entry = self.ledger.status(
             payload.epoch,
@@ -200,16 +254,6 @@ class IngestService:
             raise HTTPException(
                 status_code=409,
                 detail="parent identity must be complete before mart_from_existing_raw",
-            )
-        blockers = self.ledger.blocking_entries(payload.category)
-        if blockers:
-            blocker = blockers[0]
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "category has an active ingest or publish: "
-                    f"status={blocker.status} run_id={blocker.run_id}"
-                ),
             )
         try:
             canonical_request_id = str(uuid.UUID(payload.request_id))
@@ -262,90 +306,82 @@ class IngestService:
             decision.run_id,
         )
         if not decision.created:
+            attempt = next(
+                item
+                for item in self.ledger.complete_reingest_attempts()
+                if item.request_id == decision.request_id
+            )
             return {
                 "action": "exists",
                 "created": False,
                 "request_id": decision.request_id,
                 "run_id": decision.run_id,
-                "job_name": expected_name,
+                "job_name": attempt.job_name or expected_name,
+                "status": attempt.status,
+                "queue_position": self._queue_position(request_id=decision.request_id),
                 "affected_scope": affected_scope,
             }
-
-        started_at = self.timestamp()
-        try:
-            submitted_name = job_launcher.submit_complete_reingest_job(
-                epoch=payload.epoch,
-                category=payload.category,
-                manifest_sha=payload.manifest_sha,
-                manifest_path=decision.manifest_path,
-                request_id=decision.request_id,
-                run_id=decision.run_id,
-                affected_scope=affected_scope,
-                transport=self.transport,
-                inspect_transport=self.inspect_transport,
-                list_transport=self.list_transport,
-            )
-            if submitted_name != expected_name:
-                raise RuntimeError(
-                    "complete reingest submission returned an unexpected name: "
-                    f"expected={expected_name} actual={submitted_name}"
-                )
-        except Exception as exc:
-            failure_reason = f"job submission failed: {type(exc).__name__}: {exc}"
-            self.ledger.record_stage(
-                payload.epoch,
-                payload.category,
-                payload.manifest_sha,
-                run_id=decision.run_id,
-                seq=0,
-                stage="job_submit",
-                status="failed",
-                reason=failure_reason,
-                started_at=started_at,
-                finished_at=self.timestamp(),
-            )
-            self.ledger.record_complete_reingest_terminal(
-                payload.epoch,
-                payload.category,
-                payload.manifest_sha,
-                request_id=decision.request_id,
-                run_id=decision.run_id,
-                status=STATUS_FAILED,
-                reason=failure_reason,
-                actor="ingest_hook",
-                job_name=expected_name,
-                affected_scope=affected_scope,
-            )
-            raise
-        self.ledger.record_stage(
-            payload.epoch,
-            payload.category,
-            payload.manifest_sha,
-            run_id=decision.run_id,
-            seq=0,
-            stage="job_submit",
-            status="complete",
-            started_at=started_at,
-            finished_at=self.timestamp(),
+        self.promote()
+        attempt = next(
+            item
+            for item in self.ledger.complete_reingest_attempts()
+            if item.request_id == decision.request_id
         )
-        self.ledger.record_stage(
-            payload.epoch,
-            payload.category,
-            payload.manifest_sha,
-            run_id=decision.run_id,
-            seq=1,
-            stage="request_validate",
-            status="running",
-            reason="waiting for complete reingest Job",
-            started_at=self.timestamp(),
-        )
+        action = "submitted" if attempt.status == STATUS_RUNNING else "pending"
         return {
-            "action": "submitted",
+            "action": action,
             "created": True,
             "request_id": decision.request_id,
             "run_id": decision.run_id,
-            "job_name": submitted_name,
+            "job_name": attempt.job_name or expected_name,
+            "status": attempt.status,
+            "queue_position": self._queue_position(request_id=decision.request_id),
             "affected_scope": affected_scope,
+        }
+
+    def complete_reingest_terminal(
+        self, payload: CompleteReingestTerminalPayload
+    ) -> dict:
+        attempt = next(
+            (
+                item
+                for item in self.ledger.complete_reingest_attempts()
+                if item.request_id == payload.request_id
+            ),
+            None,
+        )
+        if attempt is None:
+            raise HTTPException(status_code=404, detail="unknown complete reingest request")
+        if (
+            attempt.epoch,
+            attempt.category,
+            attempt.manifest_sha,
+            attempt.run_id,
+        ) != (
+            payload.epoch,
+            payload.category,
+            payload.manifest_sha,
+            payload.run_id,
+        ):
+            raise HTTPException(status_code=409, detail="complete reingest identity mismatch")
+        created = self.ledger.record_complete_reingest_terminal(
+            attempt.epoch,
+            attempt.category,
+            attempt.manifest_sha,
+            request_id=attempt.request_id,
+            run_id=attempt.run_id,
+            status=payload.status,
+            reason=payload.reason,
+            actor="complete_reingest_runner",
+            job_name=payload.job_name or attempt.job_name,
+            affected_scope=attempt.affected_scope,
+        )
+        promoted = self.promote()
+        return {
+            "accepted": True,
+            "created": created,
+            "status": payload.status,
+            "promoted_job_name": promoted,
         }
 
     def drain_idle_queues(self) -> dict[str, dict[str, str]]:
@@ -370,54 +406,57 @@ class IngestService:
                 )
             except Exception as exc:  # one category must not block startup
                 errors[candidate.category] = f"{type(exc).__name__}: {exc}"
-        categories = set(self.ledger.queued_categories())
-        categories.update(
-            candidate.category for candidate in self.ledger.awaiting_publish_candidates()
-        )
-        for category in sorted(categories):
+        pending_count = len(self._pending_work())
+        while (
+            pending_count > 0
+            and not self.ledger.blocking_entries()
+            and not self._active_reingests()
+        ):
             try:
-                job_name = self.promote(category)
-            except Exception as exc:  # one category must not block service startup
-                errors[category] = f"{type(exc).__name__}: {exc}"
+                job_name = self.promote()
+            except Exception as exc:
+                errors["global"] = f"{type(exc).__name__}: {exc}"
+                remaining = len(self._pending_work())
+                if remaining >= pending_count:
+                    break
+                pending_count = remaining
                 continue
             if job_name is not None:
-                launched[category] = job_name
+                launched["global"] = job_name
+            break
         result = {"launched": launched, "errors": errors}
         if automatic_publishes:
             result["automatic_publishes"] = automatic_publishes
         return result
 
-    # -- promotion: one running Job per category, FIFO within a category ----
-    def promote(self, category: str) -> str | None:
-        with self._category_promotion_lock(category):
-            self._expire_publish_candidates(category)
+    # -- promotion: one running Job globally, FIFO across every source -------
+    def promote(self, category: str | None = None) -> str | None:
+        del category
+        with self._promotion_lock:
+            for candidate in self.ledger.awaiting_publish_candidates():
+                self._expire_publish_candidates(candidate.category)
             reconciliation = self.reconcile_terminal_jobs(
-                category=category,
+                category=None,
                 promote_after=False,
             )
             if reconciliation["inspection_failures"]:
                 raise RuntimeError(
-                    "category terminal reconciliation inspection failed; "
+                    "global terminal reconciliation inspection failed; "
                     "promotion remains blocked"
                 )
-            entry = self.ledger.next_queued(category)
-            if entry is None:
+            if self.ledger.blocking_entries() or self._active_reingests():
                 return None
-            return self._claim_and_submit(entry)
+            pending = self._pending_work()
+            if not pending:
+                return None
+            kind, item = pending[0]
+            if kind == "upload":
+                return self._claim_and_submit(item)
+            return self._claim_and_submit_reingest(item)
 
     def promote_exact(self, epoch: str, category: str, manifest_sha: str) -> str | None:
-        """Promote one exact queued identity while preserving category serialisation."""
-        with self._category_promotion_lock(category):
-            self._expire_publish_candidates(category)
-            reconciliation = self.reconcile_terminal_jobs(
-                category=category,
-                promote_after=False,
-            )
-            if reconciliation["inspection_failures"]:
-                raise RuntimeError(
-                    "category terminal reconciliation inspection failed; "
-                    "promotion remains blocked"
-                )
+        """Validate one identity, then launch the global FIFO head if idle."""
+        with self._promotion_lock:
             entry = self.ledger.status(epoch, category, manifest_sha)
             if entry is None:
                 raise RuntimeError("exact promotion identity is absent from the ledger")
@@ -425,7 +464,13 @@ class IngestService:
                 raise RuntimeError(
                     f"exact promotion requires queued status, got {entry.status!r}"
                 )
-            return self._claim_and_submit(entry)
+            return self.promote()
+
+    def _promote_after_cancellation(self) -> str | None:
+        """Advance only when cancellation actually freed the global slot."""
+        if self.ledger.blocking_entries() or self._active_reingests():
+            return None
+        return self.promote()
 
     def _expire_publish_candidates(self, category: str) -> list[tuple[str, str, str]]:
         now = _utc_timestamp(self.timestamp())
@@ -535,6 +580,80 @@ class IngestService:
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
         return name
+
+    def _claim_and_submit_reingest(self, attempt) -> str | None:
+        expected_name = job_launcher.complete_reingest_job_name(
+            attempt.category,
+            attempt.manifest_sha,
+            attempt.run_id,
+        )
+        if not self.ledger.record_complete_reingest_started(
+            attempt.epoch,
+            attempt.category,
+            attempt.manifest_sha,
+            request_id=attempt.request_id,
+            run_id=attempt.run_id,
+            job_name=expected_name,
+        ):
+            return None
+        started_at = self.timestamp()
+        try:
+            submitted_name = job_launcher.submit_complete_reingest_job(
+                epoch=attempt.epoch,
+                category=attempt.category,
+                manifest_sha=attempt.manifest_sha,
+                manifest_path=attempt.manifest_path,
+                request_id=attempt.request_id,
+                run_id=attempt.run_id,
+                affected_scope=attempt.affected_scope,
+                transport=self.transport,
+                inspect_transport=self.inspect_transport,
+                list_transport=self.list_transport,
+            )
+            if submitted_name != expected_name:
+                raise RuntimeError(
+                    "complete reingest submission returned an unexpected name: "
+                    f"expected={expected_name} actual={submitted_name}"
+                )
+        except Exception as exc:
+            failure_reason = f"job submission failed: {type(exc).__name__}: {exc}"
+            self.ledger.record_stage(
+                attempt.epoch,
+                attempt.category,
+                attempt.manifest_sha,
+                run_id=attempt.run_id,
+                seq=0,
+                stage="job_submit",
+                status="failed",
+                reason=failure_reason,
+                started_at=started_at,
+                finished_at=self.timestamp(),
+            )
+            self.ledger.record_complete_reingest_terminal(
+                attempt.epoch,
+                attempt.category,
+                attempt.manifest_sha,
+                request_id=attempt.request_id,
+                run_id=attempt.run_id,
+                status=STATUS_FAILED,
+                reason=failure_reason,
+                actor="ingest_hook",
+                job_name=expected_name,
+                affected_scope=attempt.affected_scope,
+            )
+            raise
+        self.ledger.record_stage(
+            attempt.epoch,
+            attempt.category,
+            attempt.manifest_sha,
+            run_id=attempt.run_id,
+            seq=0,
+            stage="job_submit",
+            status="complete",
+            started_at=started_at,
+            finished_at=self.timestamp(),
+        )
+        return submitted_name
 
     def reconcile_terminal_jobs(
         self,
@@ -684,7 +803,7 @@ class IngestService:
                 continue
 
             reconciled += 1
-            promoted = self.promote(entry.category) if promote_after else None
+            promoted = self.promote() if promote_after else None
             actions.append(
                 {
                     "epoch": entry.epoch,
@@ -772,25 +891,159 @@ class IngestService:
         epoch: str,
         category: str,
         manifest_sha: str,
-        run_id: str,
+        run_id: str | None,
         requested_by: str,
     ) -> dict:
         """Stop one exact active run and reconcile only that ledger identity."""
         entry = self.ledger.status(epoch, category, manifest_sha)
         if entry is None:
             raise HTTPException(status_code=404, detail="unknown submission identity")
-        if entry.status not in {STATUS_RUNNING, STATUS_PUBLISH_RUNNING}:
+        actor = requested_by.strip()
+        if not actor:
+            raise HTTPException(status_code=422, detail="requested_by is required")
+        stopped_at = self.timestamp()
+        reingest_attempt = next(
+            (
+                attempt
+                for attempt in self.ledger.complete_reingest_attempts(category=category)
+                if (
+                    attempt.epoch,
+                    attempt.manifest_sha,
+                    attempt.run_id,
+                )
+                == (epoch, manifest_sha, run_id)
+                and attempt.status in {STATUS_QUEUED, STATUS_RUNNING}
+            ),
+            None,
+        )
+        if reingest_attempt is not None:
+            publish_started = any(
+                event.run_id == reingest_attempt.run_id
+                and event.stage == "mart_publish"
+                and event.status in {"running", "complete"}
+                for event in self.ledger.stage_events(epoch, category, manifest_sha)
+            )
+            if publish_started:
+                raise HTTPException(
+                    status_code=409,
+                    detail="publish boundary has started; cancellation is disabled",
+                )
+            expected_name = job_launcher.complete_reingest_job_name(
+                category, manifest_sha, reingest_attempt.run_id
+            )
+            job_status = "NotSubmitted"
+            if reingest_attempt.status == STATUS_RUNNING:
+                observation = job_launcher.inspect_job(
+                    expected_name, transport=self.inspect_transport
+                )
+                if observation.status not in {"Pending", "Running"}:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "force stop requires an active Kubernetes Job, got "
+                            f"{observation.status}"
+                        ),
+                    )
+                job_launcher.delete_job(
+                    expected_name,
+                    observation=observation,
+                    transport=self.delete_transport,
+                )
+                terminal_observation = observation
+                for attempt_index in range(self.deletion_attempts):
+                    terminal_observation = job_launcher.inspect_job(
+                        expected_name, transport=self.inspect_transport
+                    )
+                    if terminal_observation.status == "Absent":
+                        break
+                    if attempt_index + 1 < self.deletion_attempts:
+                        self.sleep(1)
+                if terminal_observation.status != "Absent":
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Kubernetes Job deletion was not confirmed; "
+                            "reingest attempt remains running"
+                        ),
+                    )
+                job_status = terminal_observation.status
+            reason = (
+                f"사용자 중단: 요청자={actor}, 시각={stopped_at}, "
+                + (
+                    f"Kubernetes Job={expected_name} 삭제"
+                    if reingest_attempt.status == STATUS_RUNNING
+                    else "대기열에서 제거"
+                )
+            )
+            self.ledger.record_complete_reingest_terminal(
+                epoch,
+                category,
+                manifest_sha,
+                request_id=reingest_attempt.request_id,
+                run_id=reingest_attempt.run_id,
+                status=STATUS_CANCELLED,
+                reason=reason,
+                actor=actor,
+                job_name=(
+                    expected_name if reingest_attempt.status == STATUS_RUNNING else None
+                ),
+                affected_scope=reingest_attempt.affected_scope,
+            )
+            promoted = self._promote_after_cancellation()
+            return {
+                "epoch": epoch,
+                "category": category,
+                "manifest_sha": manifest_sha,
+                "run_id": reingest_attempt.run_id,
+                "request_id": reingest_attempt.request_id,
+                "job_name": (
+                    expected_name if reingest_attempt.status == STATUS_RUNNING else None
+                ),
+                "job_status": job_status,
+                "status": STATUS_CANCELLED,
+                "reason": reason,
+                "promoted_job_name": promoted,
+            }
+        if entry.status == STATUS_PUBLISH_RUNNING:
             raise HTTPException(
                 status_code=409,
-                detail=f"force stop requires an active ledger row, got {entry.status}",
+                detail="publish boundary has started; cancellation is disabled",
             )
+        if entry.status not in {STATUS_QUEUED, STATUS_RUNNING}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"force stop requires queued or running status, got {entry.status}",
+            )
+        if entry.status == STATUS_QUEUED:
+            reason = f"사용자 중단: 요청자={actor}, 시각={stopped_at}, 대기열에서 제거"
+            changed = self.ledger.reconcile_terminal(
+                epoch,
+                category,
+                manifest_sha,
+                status=STATUS_CANCELLED,
+                reason=reason,
+                actor=actor,
+                source="manual_cancel_pending",
+                evidence={"requested_by": actor, "requested_at": stopped_at},
+                expected_status=STATUS_QUEUED,
+            )
+            if not changed:
+                raise HTTPException(status_code=409, detail="queued state changed concurrently")
+            promoted = self._promote_after_cancellation()
+            return {
+                "epoch": epoch,
+                "category": category,
+                "manifest_sha": manifest_sha,
+                "run_id": None,
+                "job_name": None,
+                "job_status": "NotSubmitted",
+                "status": STATUS_CANCELLED,
+                "reason": reason,
+                "promoted_job_name": promoted,
+            }
         if entry.run_id != run_id:
             raise HTTPException(status_code=409, detail="run_id does not match the active ledger row")
-        if entry.status == STATUS_PUBLISH_RUNNING:
-            candidate = self.ledger.prepared_candidate(epoch, category, manifest_sha)
-            expected_name = candidate.publish_job_name if candidate is not None else None
-        else:
-            expected_name = job_launcher.job_name(category, manifest_sha, run_id)
+        expected_name = job_launcher.job_name(category, manifest_sha, str(run_id))
         if not expected_name:
             raise HTTPException(
                 status_code=409,
@@ -801,10 +1054,6 @@ class IngestService:
                 status_code=409,
                 detail="ledger job_name does not match the deterministic run identity",
             )
-        actor = requested_by.strip()
-        if not actor:
-            raise HTTPException(status_code=422, detail="requested_by is required")
-
         observation = job_launcher.inspect_job(
             expected_name,
             transport=self.inspect_transport,
@@ -839,18 +1088,8 @@ class IngestService:
                 detail="Kubernetes Job deletion was not confirmed; ledger remains running",
             )
 
-        if entry.status == STATUS_PUBLISH_RUNNING:
-            try:
-                self._recover_publish_activation(entry)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail="publish Job stopped but activation recovery did not complete",
-                ) from exc
-
-        stopped_at = self.timestamp()
         reason = (
-            f"PL 강제 정지: 요청자={actor}, 시각={stopped_at}, "
+            f"사용자 중단: 요청자={actor}, 시각={stopped_at}, "
             f"Kubernetes Job={expected_name} 삭제"
         )
         evidence = {
@@ -864,7 +1103,7 @@ class IngestService:
             epoch,
             category,
             manifest_sha,
-            status=STATUS_FAILED,
+            status=STATUS_CANCELLED,
             reason=reason,
             actor=actor,
             source="manual_force_stop",
@@ -878,7 +1117,7 @@ class IngestService:
                 status_code=409,
                 detail="ledger state changed concurrently; no queued submission was promoted",
             )
-        promoted = self.promote(category)
+        promoted = self._promote_after_cancellation()
         return {
             "epoch": epoch,
             "category": category,
@@ -886,7 +1125,7 @@ class IngestService:
             "run_id": run_id,
             "job_name": expected_name,
             "job_status": terminal_observation.status,
-            "status": STATUS_FAILED,
+            "status": STATUS_CANCELLED,
             "reason": reason,
             "promoted_job_name": promoted,
         }
@@ -975,15 +1214,7 @@ class IngestService:
         )
         launched = None
         if decision.action == "queued":
-            launched = (
-                self.promote_exact(
-                    manifest.epoch,
-                    manifest.category,
-                    manifest.manifest_sha,
-                )
-                if config.webhook_promote_exact()
-                else self.promote(manifest.category)
-            )
+            launched = self.promote()
         return {
             "epoch": manifest.epoch,
             "category": manifest.category,
@@ -1258,6 +1489,10 @@ def create_app(service: IngestService) -> FastAPI:
             "file_count": None,
             "classified_file_count": None,
             "inventory_file_counts": None,
+            "manifest_file_count": None,
+            "inventory_file_count": None,
+            "execution_period_from": None,
+            "execution_period_to": None,
         }
         if entry is None or not entry.run_id:
             return empty
@@ -1281,11 +1516,22 @@ def create_app(service: IngestService) -> FastAPI:
             state = file.get("state")
             if isinstance(state, str):
                 counts[state] = counts.get(state, 0) + 1
+        raw_periods = snapshot.get("periods")
+        periods = sorted(
+            {
+                period
+                for period in raw_periods if isinstance(period, str) and period
+            }
+        ) if isinstance(raw_periods, (list, tuple)) else []
         return {
             "inventory_run_id": entry.run_id,
             "file_count": len(files),
             "classified_file_count": counts.get("classified", 0),
             "inventory_file_counts": counts,
+            "manifest_file_count": 1,
+            "inventory_file_count": len(files),
+            "execution_period_from": periods[0] if periods else None,
+            "execution_period_to": periods[-1] if periods else None,
         }
 
     @asynccontextmanager
@@ -1323,22 +1569,45 @@ def create_app(service: IngestService) -> FastAPI:
     def complete_reingest(payload: CompleteReingestPayload) -> dict:
         return service.request_complete_reingest(payload)
 
+    @app.post("/ingest/reingest/terminal")
+    def complete_reingest_terminal(payload: CompleteReingestTerminalPayload) -> dict:
+        return service.complete_reingest_terminal(payload)
+
     @app.get("/ingest/queue")
     def queue(category: str | None = None) -> dict:
         if category is not None and category not in PORTAL_QUEUE_CATEGORIES:
             return {"items": []}
-        entries = service.ledger.active_entries(category)
-        entries = [
-            entry for entry in entries if entry.category in PORTAL_QUEUE_CATEGORIES
+        positions: dict[tuple, int] = {}
+        for position, (kind, item) in enumerate(service._pending_work(), start=1):
+            key = (
+                kind,
+                getattr(item, "request_id", None),
+                item.epoch,
+                item.category,
+                item.manifest_sha,
+            )
+            positions[key] = position
+        blockers = [
+            *service.ledger.blocking_entries(),
+            *service._active_reingests(),
         ]
-        blocking_categories = {
-            entry.category
-            for entry in service.ledger.blocking_entries(category)
-            if entry.category in PORTAL_QUEUE_CATEGORIES
-        }
-        return {
-            "items": [
+        has_global_blocker = bool(blockers)
+        items: list[dict] = []
+        for entry in service.ledger.active_entries():
+            if entry.category not in PORTAL_QUEUE_CATEGORIES:
+                continue
+            if category is not None and entry.category != category:
+                continue
+            position = positions.get(
+                ("upload", None, entry.epoch, entry.category, entry.manifest_sha)
+            )
+            has_category_blocker = any(
+                blocker.category == entry.category for blocker in blockers
+            )
+            items.append(
                 {
+                    "kind": "upload",
+                    "request_id": None,
                     "epoch": entry.epoch,
                     "category": entry.category,
                     "manifest_sha": entry.manifest_sha,
@@ -1350,18 +1619,68 @@ def create_app(service: IngestService) -> FastAPI:
                     "received_at": entry.received_at,
                     "started_at": entry.started_at,
                     "finished_at": entry.finished_at,
+                    "queue_position": position,
+                    "blocked_by_global": (
+                        entry.status == STATUS_QUEUED and has_global_blocker
+                    ),
                     "blocked_by_category": (
-                        entry.status == STATUS_QUEUED
-                        and entry.category in blocking_categories
+                        entry.status == STATUS_QUEUED and has_category_blocker
                     ),
                     "requires_reconcile": (
-                        entry.status == STATUS_QUEUED
-                        and entry.category not in blocking_categories
+                        entry.status == STATUS_QUEUED and not has_global_blocker
                     ),
                 }
-                for entry in entries
-            ]
-        }
+            )
+        for attempt in service.ledger.complete_reingest_attempts(category=category):
+            if attempt.status not in {STATUS_QUEUED, STATUS_RUNNING}:
+                continue
+            position = positions.get(
+                (
+                    "reingest",
+                    attempt.request_id,
+                    attempt.epoch,
+                    attempt.category,
+                    attempt.manifest_sha,
+                )
+            )
+            has_category_blocker = any(
+                blocker.category == attempt.category for blocker in blockers
+            )
+            items.append(
+                {
+                    "kind": "reingest",
+                    "request_id": attempt.request_id,
+                    "epoch": attempt.epoch,
+                    "category": attempt.category,
+                    "manifest_sha": attempt.manifest_sha,
+                    "status": attempt.status,
+                    "reason": attempt.reason,
+                    "job_name": attempt.job_name,
+                    "run_id": attempt.run_id,
+                    "uploaded_by": attempt.requested_by,
+                    "received_at": attempt.created_at,
+                    "started_at": None,
+                    "finished_at": None,
+                    "queue_position": position,
+                    "blocked_by_global": (
+                        attempt.status == STATUS_QUEUED and has_global_blocker
+                    ),
+                    "blocked_by_category": (
+                        attempt.status == STATUS_QUEUED and has_category_blocker
+                    ),
+                    "requires_reconcile": (
+                        attempt.status == STATUS_QUEUED and not has_global_blocker
+                    ),
+                }
+            )
+        items.sort(
+            key=lambda item: (
+                0 if item["status"] == STATUS_RUNNING else 1,
+                item["queue_position"] or 0,
+                item["received_at"],
+            )
+        )
+        return {"items": items, "pending_count": sum(1 for item in items if item["status"] == STATUS_QUEUED)}
 
     @app.get("/ingest/status")
     def status(epoch: str, category: str, manifest_sha: str) -> dict:
@@ -1398,12 +1717,24 @@ def create_app(service: IngestService) -> FastAPI:
                 ),
                 None,
             )
-        category_running = service.ledger.blocking_entries(entry.category)
+        blocking_work = [
+            *service.ledger.blocking_entries(),
+            *service._active_reingests(),
+        ]
+        category_blocking_work = [
+            blocker
+            for blocker in blocking_work
+            if blocker.category == entry.category
+        ]
+        blockable = entry.status in {STATUS_QUEUED, STATUS_AWAITING_APPROVAL}
         blocked_by_category = (
-            entry.status in {STATUS_QUEUED, STATUS_AWAITING_APPROVAL}
-            and bool(category_running)
+            blockable and bool(category_blocking_work)
         )
-        blocker = category_running[0] if blocked_by_category else None
+        blocked_by_global = blockable and bool(blocking_work)
+        category_blocker = (
+            category_blocking_work[0] if blocked_by_category else None
+        )
+        global_blocker = blocking_work[0] if blocked_by_global else None
         candidate = service.ledger.prepared_candidate(epoch, category, manifest_sha)
         now = service.timestamp()
         summary = inventory_summary(entry)
@@ -1421,17 +1752,30 @@ def create_app(service: IngestService) -> FastAPI:
             **summary,
             # -- new (additive) --
             "blocked_by_category": blocked_by_category,
+            "blocked_by_global": blocked_by_global,
+            "queue_position": service._queue_position(entry=entry),
             "requires_reconcile": (
-                entry.status == STATUS_QUEUED and not blocked_by_category
+                entry.status == STATUS_QUEUED and not blocked_by_global
             ),
             "category_blocker": (
                 {
-                    "epoch": blocker.epoch,
-                    "manifest_sha": blocker.manifest_sha,
-                    "run_id": blocker.run_id,
-                    "job_name": blocker.job_name,
+                    "epoch": category_blocker.epoch,
+                    "manifest_sha": category_blocker.manifest_sha,
+                    "run_id": category_blocker.run_id,
+                    "job_name": category_blocker.job_name,
                 }
-                if blocker is not None
+                if category_blocker is not None
+                else None
+            ),
+            "global_blocker": (
+                {
+                    "epoch": global_blocker.epoch,
+                    "category": global_blocker.category,
+                    "manifest_sha": global_blocker.manifest_sha,
+                    "run_id": global_blocker.run_id,
+                    "job_name": global_blocker.job_name,
+                }
+                if global_blocker is not None
                 else None
             ),
             "current_stage": current_stage,
@@ -1538,13 +1882,21 @@ def create_app(service: IngestService) -> FastAPI:
                 ),
                 None,
             )
+            reingest_started = next(
+                (
+                    transition
+                    for transition in run_transitions
+                    if transition.source == "complete_reingest_started"
+                ),
+                None,
+            )
             reingest = None
             if reingest_request is not None:
                 request_evidence = reingest_request.evidence
                 attempt_status = (
                     reingest_terminal.status
                     if reingest_terminal is not None
-                    else "running"
+                    else ("running" if reingest_started is not None else "queued")
                 )
                 reingest = {
                     "request_id": request_evidence.get("request_id"),
@@ -1563,10 +1915,10 @@ def create_app(service: IngestService) -> FastAPI:
                     "job_name": (
                         reingest_terminal.job_name
                         if reingest_terminal is not None
-                        else job_launcher.complete_reingest_job_name(
-                            identity.category,
-                            identity.manifest_sha,
-                            identity.run_id,
+                        else (
+                            reingest_started.job_name
+                            if reingest_started is not None
+                            else None
                         )
                     ),
                 }
@@ -1765,7 +2117,7 @@ def create_app(service: IngestService) -> FastAPI:
             except Exception as exc:  # agent work is a separate failure domain
                 agent_trigger_status = "failed"
                 agent_trigger_reason = type(exc).__name__
-        promoted = service.promote(category)
+        promoted = service.promote()
         return {
             "accepted": True,
             "category": category,
@@ -1800,25 +2152,61 @@ def create_app(service: IngestService) -> FastAPI:
         events = service.ledger.stage_events(epoch, category, manifest_sha)
         if run_id != entry.run_id and not any(event.run_id == run_id for event in events):
             raise HTTPException(status_code=404, detail="unknown run_id")
-        name = job_launcher.job_name(category, manifest_sha, run_id)
+        reingest_attempt = next(
+            (
+                attempt
+                for attempt in service.ledger.complete_reingest_attempts(
+                    category=category
+                )
+                if (
+                    attempt.epoch == epoch
+                    and attempt.manifest_sha == manifest_sha
+                    and (
+                        run_id == attempt.run_id
+                        or run_id.startswith(f"{attempt.run_id}:")
+                    )
+                )
+            ),
+            None,
+        )
+        if reingest_attempt is not None:
+            name = reingest_attempt.job_name or job_launcher.complete_reingest_job_name(
+                category, manifest_sha, reingest_attempt.run_id
+            )
+        else:
+            name = job_launcher.job_name(category, manifest_sha, run_id)
+        log_root = config.log_root()
         try:
             page = stage_logs.read_log_page(
-                config.log_root(),
+                log_root,
                 job_name=name,
                 stage=stage,
                 offset=offset,
                 limit=limit,
             )
         except FileNotFoundError:
+            reason = stage_logs.missing_log_reason(log_root, job_name=name)
             raise HTTPException(
-                status_code=404,
+                status_code=410 if reason == "log_expired" else 404,
                 detail={
-                    "reason": "log_not_available",
-                    "message": "The durable log is absent or has expired.",
+                    "reason": reason,
+                    "message": (
+                        "The durable log expired under an explicit retention action."
+                        if reason == "log_expired"
+                        else "The durable log was not preserved for this run."
+                    ),
                 },
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "reason": "log_lookup_failed",
+                    "message": "The durable log storage could not be read.",
+                },
+            ) from exc
         return {
             "epoch": epoch,
             "category": category,
@@ -1843,17 +2231,9 @@ def create_app(service: IngestService) -> FastAPI:
 
     @app.post("/ingest/reconcile")
     def reconcile() -> dict:
-        terminal = service.reconcile_terminal_jobs()
-        categories = set(service.ledger.queued_categories())
-        categories.update(
-            candidate.category
-            for candidate in service.ledger.awaiting_publish_candidates()
-        )
-        launched = {
-            category: name
-            for category in sorted(categories)
-            if (name := service.promote(category)) is not None
-        }
+        terminal = service.reconcile_terminal_jobs(promote_after=False)
+        name = service.promote()
+        launched = {"global": name} if name is not None else {}
         return {"terminal": terminal, "launched": launched}
 
     return app

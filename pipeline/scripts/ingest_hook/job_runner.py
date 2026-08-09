@@ -167,8 +167,72 @@ class _StageTracker:
         return int((time.monotonic() - self._t0) * 1000) if self._t0 is not None else None
 
 
+_SOURCE_STAGE_CONTRACTS: dict[str, tuple[str, ...]] = {
+    "ubist": (
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+        "agent_refresh",
+        "agent3",
+        "agent2",
+        "dashboard",
+    ),
+    "iqvia_nsa": (
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+        "agent_refresh",
+        "agent3",
+        "agent2",
+        "dashboard",
+    ),
+    "iqvia_csd_channel": (
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "mart_publish",
+        "context_bridge",
+        "dashboard",
+        "signal",
+    ),
+    "iqvia_csd_keyword": (
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "post_gate",
+        "mart_publish",
+        "topic_extraction",
+        "dashboard",
+        "signal",
+    ),
+}
+
+
 def expected_stages(spec: CategorySpec) -> list[dict[str, str | int | bool]]:
     """Return the deterministic stage skeleton for one category."""
+    source_stages = _SOURCE_STAGE_CONTRACTS.get(spec.key)
+    if source_stages is not None:
+        return [
+            {"stage": stage, "seq": seq, "applicable": True}
+            for seq, stage in enumerate(source_stages, start=1)
+        ]
+
     supports_mart = spec.activation_kind in {
         ActivationKind.UBIST_NUMERIC,
         ActivationKind.IQVIA_NSA,

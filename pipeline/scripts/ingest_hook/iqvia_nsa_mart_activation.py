@@ -134,6 +134,41 @@ def initialize_build_schema(config: NsaMartActivation) -> None:
     iqvia_loader.init_target_schema(config.build_db, config.source_db)
 
 
+def copy_existing_raw(config: NsaMartActivation) -> int:
+    """Seed the run-scoped build table from the current canonical live raw table."""
+
+    conn = iqvia_loader.connect(config.source_db)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS n FROM {quote_id(config.build_db)}."
+                f"{quote_id(iqvia_loader.NSA_TABLE)}"
+            )
+            count = cursor.fetchone()
+            existing = int(count["n"] if isinstance(count, dict) else count[0])
+            if existing:
+                raise RuntimeError(
+                    f"target table {config.build_db}.{iqvia_loader.NSA_TABLE} "
+                    f"is not empty ({existing:,} rows); refusing to copy live raw"
+                )
+            cursor.execute(
+                f"INSERT INTO {quote_id(config.build_db)}."
+                f"{quote_id(iqvia_loader.NSA_TABLE)} "
+                f"SELECT * FROM {quote_id(config.source_db)}."
+                f"{quote_id(iqvia_loader.NSA_TABLE)}"
+            )
+            copied = int(cursor.rowcount)
+        conn.commit()
+        if copied < 1:
+            raise RuntimeError("live IQVIA NSA raw table is empty; cannot recompute mart")
+        return copied
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def trim_raw_retention(conn: Any, config: NsaMartActivation) -> tuple[str, ...]:
     cursor = conn.cursor()
     try:

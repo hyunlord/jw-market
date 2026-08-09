@@ -128,7 +128,7 @@ def test_ingest_refresh_uses_only_numeric_profile() -> None:
 
 
 def test_agent_refresh_forces_manifest_identity_past_epoch_only_checkpoint(
-    sqlite_ledger, monkeypatch
+    sqlite_ledger, monkeypatch, capsys
 ) -> None:
     from pipeline.scripts.ingest_hook import agent_refresh_runner
 
@@ -159,6 +159,16 @@ def test_agent_refresh_forces_manifest_identity_past_epoch_only_checkpoint(
         (2, "agent3", "complete"),
         (3, "agent2", "complete"),
         (4, "dashboard", "complete"),
+    ]
+    assert capsys.readouterr().out.splitlines() == [
+        "[stage] agent_refresh start(1/4)",
+        "[stage] agent_refresh end rc=0",
+        "[stage] agent3 start(2/4)",
+        "[stage] agent3 end rc=0",
+        "[stage] agent2 start(3/4)",
+        "[stage] agent2 end rc=0",
+        "[stage] dashboard start(4/4)",
+        "[stage] dashboard end rc=0",
     ]
 
 

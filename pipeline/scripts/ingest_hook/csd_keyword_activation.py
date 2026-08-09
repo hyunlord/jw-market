@@ -5,6 +5,9 @@ from dataclasses import dataclass
 import re
 from typing import Any, Final
 
+from pipeline.scripts.etl.brand_activity.raw_stage_refresh import _stage_loaded_at
+from pipeline.scripts.etl.brand_activity.raw_staging import recent_month_window
+
 
 RAW_SCHEMA = "jw_brand_activity_raw_stage"
 RAW_TABLE = "raw_keyword_events"
@@ -214,6 +217,73 @@ def require_publish_scope(conn: Any, plan: ActivationPlan) -> None:
     for ref in (plan.raw.rollback, plan.stage.rollback):
         if _table_exists(conn, ref):
             raise CandidateValidationError(f"rollback table already exists: {ref.schema}.{ref.table}")
+
+
+def prepare_candidate_from_live_raw(conn: Any, plan: ActivationPlan) -> CandidateEvidence:
+    """Build a keyword raw+stage candidate from canonical live raw without live truncation."""
+
+    try:
+        with conn.cursor() as cursor:
+            _create_empty_candidate_pair(cursor, plan)
+            cursor.execute(
+                f"INSERT INTO {_qualified(plan.raw.candidate)} "
+                f"SELECT * FROM {_qualified(plan.raw.live)}"
+            )
+            raw_rows = int(cursor.rowcount)
+            if raw_rows < 1:
+                raise CandidateValidationError("keyword live raw is empty")
+            window = _candidate_keyword_window(cursor, plan)
+            loaded_at = _stage_loaded_at(window[1])
+            cursor.execute(
+                f"""
+                INSERT INTO {_qualified(plan.stage.candidate)}
+                (period_ym, visit_location, specialty, representing_company, product_name, therapeutic_class,
+                 keyword_text, interest, prescription_frequency, prescription_evolution, abstract_lit, patient_lit,
+                 promotional_lit, samples_left, other_materials_left, what_other_materials, other_comments,
+                 source_file, source_sheet, source_row_no, source_file_sha256, stage_row_sha256, loaded_at)
+                SELECT period_ym, visit_location, specialty, representing_company, product_name, therapeutic_class,
+                       keyword_text, interest, prescription_frequency, prescription_evolution, abstract_lit, patient_lit,
+                       promotional_lit, samples_left, other_materials_left, what_other_materials, other_comments,
+                       source_file, source_sheet, source_row_no, source_file_sha256, row_hash, %s
+                FROM {_qualified(plan.raw.candidate)}
+                WHERE period_ym BETWEEN %s AND %s
+                ORDER BY period_ym, source_file, source_row_no
+                """,
+                (loaded_at, window[0], window[1]),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return validate_candidate(conn, plan)
+
+
+def _create_empty_candidate_pair(cursor: Any, plan: ActivationPlan) -> None:
+    for ref in (plan.raw.candidate, plan.stage.candidate):
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{_identifier(ref.schema)}`")
+    for live, candidate in (
+        (plan.raw.live, plan.raw.candidate),
+        (plan.stage.live, plan.stage.candidate),
+    ):
+        cursor.execute(
+            f"CREATE TABLE IF NOT EXISTS {_qualified(candidate)} LIKE {_qualified(live)}"
+        )
+        cursor.execute(f"SELECT COUNT(*) AS n FROM {_qualified(candidate)}")
+        row = cursor.fetchone()
+        count = int(row["n"] if isinstance(row, dict) else row[0])
+        if count:
+            raise CandidateValidationError(
+                f"keyword candidate table is not empty: {candidate.schema}.{candidate.table}"
+            )
+
+
+def _candidate_keyword_window(cursor: Any, plan: ActivationPlan) -> tuple[str, str]:
+    cursor.execute(f"SELECT MAX(period_ym) AS period_ym FROM {_qualified(plan.raw.candidate)}")
+    row = cursor.fetchone()
+    max_period = str((row["period_ym"] if isinstance(row, dict) else row[0]) or "")
+    if not max_period:
+        raise CandidateValidationError("keyword raw candidate has no period_ym")
+    return recent_month_window(max_period)
 
 
 def publish_candidate(

@@ -13,9 +13,20 @@ from pipeline.scripts.ingest_hook import config, db_credential_preflight, stage_
 _STAGE_MARKER = re.compile(
     r"^\[stage\]\s+([a-z0-9_]+)\s+(?:start|end|skipped)\b"
 )
+_RUNNER_MODULES = {
+    "ingest": "pipeline.scripts.ingest_hook.job_runner",
+    "complete-reingest": "pipeline.scripts.ingest_hook.complete_reingest_runner",
+}
 
 
-def run(*, manifest: Path, run_id: str, job_name: str) -> int:
+def run(
+    *,
+    manifest: Path,
+    run_id: str,
+    job_name: str,
+    runner: str = "ingest",
+    runner_args: tuple[str, ...] = (),
+) -> int:
     root = config.log_root()
     full_path = stage_logs.full_log_path(root, job_name=job_name)
     stage_logs.ensure_log_file(full_path)
@@ -39,15 +50,17 @@ def run(*, manifest: Path, run_id: str, job_name: str) -> int:
             full.write(line)
             full.flush()
 
-    command = [
-        sys.executable,
-        "-m",
-        "pipeline.scripts.ingest_hook.job_runner",
+    try:
+        runner_module = _RUNNER_MODULES[runner]
+    except KeyError as exc:
+        raise ValueError(f"unsupported stage-log runner: {runner!r}") from exc
+    effective_args = runner_args or (
         "--manifest",
         str(manifest),
         "--run-id",
         run_id,
-    ]
+    )
+    command = [sys.executable, "-m", runner_module, *effective_args]
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -90,8 +103,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--job-name", required=True)
+    parser.add_argument("--runner", choices=tuple(_RUNNER_MODULES), default="ingest")
+    parser.add_argument("runner_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    return run(manifest=args.manifest, run_id=args.run_id, job_name=args.job_name)
+    runner_args = tuple(args.runner_args)
+    if runner_args[:1] == ("--",):
+        runner_args = runner_args[1:]
+    return run(
+        manifest=args.manifest,
+        run_id=args.run_id,
+        job_name=args.job_name,
+        runner=args.runner,
+        runner_args=runner_args,
+    )
 
 
 if __name__ == "__main__":

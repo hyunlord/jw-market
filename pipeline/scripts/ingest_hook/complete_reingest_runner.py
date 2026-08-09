@@ -4,45 +4,81 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
+import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from pipeline.scripts.deploy.mart_load_ops import (
     publish_table_group_atomically,
     restore_table_group_atomically,
 )
-from pipeline.scripts.deploy.mart_load_verify import table_exists
-from pipeline.scripts.etl.ops_forecast_builder import (
-    EXPECTED_BLOCKS,
-    EXPECTED_HORIZONS,
-)
-from pipeline.scripts.etl.ops_forecast_store import (
-    LIVE_BLOCK,
-    LIVE_HORIZON,
-    completion_gate,
-)
 from pipeline.scripts.ingest_hook import config
+from pipeline.scripts.ingest_hook import agent_refresh_runner
+from pipeline.scripts.ingest_hook import csd_channel_activation
+from pipeline.scripts.ingest_hook import csd_keyword_activation
 from pipeline.scripts.ingest_hook import iqvia_nsa_mart_activation as iqvia_activation
 from pipeline.scripts.ingest_hook import ubist_mart_activation
+from pipeline.scripts.ingest_hook.category_map import CategorySpec, resolve_category
+from pipeline.scripts.ingest_hook.completion_signal import PublishResult
 from pipeline.scripts.ingest_hook.contract import load_manifest, parse_manifest_bytes
 
 
 MODE = "mart_from_existing_raw"
 REQUEST_SOURCE = "complete_reingest_request"
-STAGES = {
-    "request_validate": 1,
-    "mart_build": 2,
-    "mart_publish": 3,
-    "refresh": 4,
-    "agent_refresh": 5,
-    "agent3": 6,
-    "agent2": 7,
-    "dashboard": 8,
+STAGE_SEQUENCES = {
+    "ubist": (
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+    ),
+    "iqvia_nsa": (
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+    ),
+    "iqvia_csd_channel": (
+        "g3",
+        "load",
+        "load_verify",
+        "mart_publish",
+        "context_bridge",
+        "dashboard",
+        "signal",
+    ),
+    "iqvia_csd_keyword": (
+        "g3",
+        "load",
+        "load_verify",
+        "post_gate",
+        "mart_publish",
+        "topic_extraction",
+        "dashboard",
+        "signal",
+    ),
 }
 ACTOR = "complete_reingest_runner"
+_SECRET_RE = re.compile(
+    r"(?i)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)"
+    r"(\s*[:=]\s*)([^,\s;]+)"
+)
 
 
 class CompleteReingestRejected(RuntimeError):
@@ -74,6 +110,15 @@ class PreparedMart:
     tables: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalOutcome:
+    request_id: str
+    run_id: str
+    category: str
+    status: str
+    reason: str
+
+
 def run(
     manifest_path: Path,
     *,
@@ -82,7 +127,7 @@ def run(
     ledger=None,
     expected_affected_scope: dict[str, object] | None = None,
     input_source=None,
-) -> None:
+) -> TerminalOutcome:
     manifest, _local_manifest = _load_manifest_only(manifest_path, input_source=input_source)
     active_ledger = ledger or config.open_configured_ledger()
     context = _validate_request(
@@ -95,36 +140,69 @@ def run(
         raise CompleteReingestRejected("CLI affected_scope differs from persisted request")
 
     try:
-        _record_stage(active_ledger, context, "request_validate", "running")
-        _record_stage(active_ledger, context, "request_validate")
+        spec = resolve_category(context.category)
+        _record_existing_raw_prelude(active_ledger, context)
         match context.category:
             case "ubist":
-                prepared = _reuse_ubist_parent_build(context, active_ledger)
+                prepared = _recompute_ubist_mart(context, active_ledger)
             case "iqvia_nsa":
-                prepared = _reuse_iqvia_parent_build(context, active_ledger)
+                prepared = _recompute_iqvia_mart(context, active_ledger)
+            case "iqvia_csd_channel":
+                _recompute_publish_csd_channel(context, active_ledger)
+                _record_external_stage_chain(
+                    active_ledger, context, ("context_bridge", "dashboard")
+                )
+                return _complete_terminal(
+                    active_ledger,
+                    context,
+                    "recomputed CSD channel stage candidate and atomically published",
+                )
+            case "iqvia_csd_keyword":
+                _recompute_publish_csd_keyword(context, active_ledger)
+                _record_external_stage_chain(
+                    active_ledger, context, ("topic_extraction", "dashboard")
+                )
+                return _complete_terminal(
+                    active_ledger,
+                    context,
+                    "recomputed CSD keyword stage candidate and atomically published",
+                )
             case unsupported:
                 raise CompleteReingestRejected(
                     f"complete reingest mart-only mode is unsupported for {unsupported!r}"
                 )
 
-        publication, forecast_counts = _publish_existing_mart(
-            context, active_ledger, prepared
-        )
-        _record_reused_downstream(
+        _record_stage(active_ledger, context, "sigma", "running")
+        _record_stage(active_ledger, context, "post_gate", "running")
+        try:
+            _run_numeric_gates(context, prepared, spec)
+        except Exception as exc:
+            reason = _reason(exc)
+            _record_stage(active_ledger, context, "sigma", "failed", reason)
+            _record_stage(active_ledger, context, "post_gate", "failed", reason)
+            raise
+        _record_stage(
             active_ledger,
             context,
-            publication=publication,
-            forecast_counts=forecast_counts,
+            "sigma",
+            reason=f"market sigma passed for {spec.sigma_source}",
         )
-        _record_terminal(
+        _record_stage(
             active_ledger,
             context,
-            "complete",
-            "existing mart promoted; forecast reused; recomputation=0",
+            "post_gate",
+            reason="numeric post-gates passed for recomputed mart",
+        )
+        _publish_and_refresh_numeric(context, active_ledger, prepared, spec)
+        _run_numeric_agent_refresh(context)
+        return _complete_terminal(
+            active_ledger,
+            context,
+            "recomputed mart from existing raw and atomically published",
         )
     except Exception as exc:
         try:
-            _record_terminal(active_ledger, context, "failed", _reason(exc))
+            _failed_terminal(active_ledger, context, _reason(exc))
         except Exception as terminal_exc:
             raise RuntimeError(
                 f"{_reason(exc)}; failed terminal record also failed: "
@@ -141,10 +219,31 @@ def _record_stage(
     reason: str | None = None,
 ) -> None:
     stamp = _stamp()
+    seq = _stage_seq(context, stage)
+    _emit_stage_marker(stage, status, reason)
     ledger.record_stage(
-        *context.identity, run_id=context.run_id, seq=STAGES[stage], stage=stage,
+        *context.identity, run_id=context.run_id, seq=seq, stage=stage,
         status=status, reason=reason, started_at=stamp, finished_at=stamp, duration_ms=0,
     )
+
+
+def _stage_seq(context: RequestContext, stage: str) -> int:
+    try:
+        return STAGE_SEQUENCES[context.category].index(stage) + 1
+    except (KeyError, ValueError) as exc:
+        raise CompleteReingestRejected(
+            f"stage {stage!r} is not valid for complete reingest category {context.category!r}"
+        ) from exc
+
+
+def _emit_stage_marker(stage: str, status: str, reason: str | None) -> None:
+    if status == "running":
+        print(f"[stage] {stage} start", flush=True)
+    elif status == "complete":
+        print(f"[stage] {stage} end", flush=True)
+    elif status == "failed":
+        suffix = f" reason={_redact_text(reason)}" if reason else ""
+        print(f"[stage] {stage} end rc=1{suffix}", flush=True)
 
 
 def _validate_request(
@@ -239,65 +338,90 @@ def _validate_scope(
             if dimension != "source" or clean_values != ("iqvia_nsa",):
                 raise CompleteReingestRejected("IQVIA NSA complete reingest requires source scope")
             return clean_values, ()
-        case "skeleton" | "mi_master" | "iqvia_csd_channel" | "iqvia_csd_keyword":
+        case "iqvia_csd_channel":
+            if dimension != "source" or clean_values != ("iqvia_csd_channel",):
+                raise CompleteReingestRejected("CSD channel complete reingest requires source scope")
+            return clean_values, ()
+        case "iqvia_csd_keyword":
+            if dimension != "source" or clean_values != ("iqvia_csd_keyword",):
+                raise CompleteReingestRejected("CSD keyword complete reingest requires source scope")
+            return clean_values, ()
+        case "skeleton" | "mi_master":
             raise CompleteReingestRejected(f"unsupported complete reingest category: {category}")
         case _:
             raise CompleteReingestRejected(f"unknown complete reingest category: {category}")
 
 
-def _reuse_ubist_parent_build(context: RequestContext, ledger) -> PreparedMart:
-    activation = ubist_mart_activation.from_env(run_id=context.parent_run_id)
-    build_conn = None
+def _record_existing_raw_prelude(ledger, context: RequestContext) -> None:
+    reasons = {
+        "g3": "persisted complete manifest identity reused; no raw source loading",
+        "load": "existing live raw reused for complete reingest attempt",
+        "load_verify": "parent complete load verification retained for existing raw",
+    }
+    for stage, reason in reasons.items():
+        _record_stage(ledger, context, stage, reason=reason)
+
+
+def _recompute_ubist_mart(context: RequestContext, ledger) -> PreparedMart:
+    activation = ubist_mart_activation.from_env(run_id=context.run_id)
+    catalog_conn = None
     try:
-        try:
-            _record_stage(ledger, context, "mart_build", "running")
-            build_conn = config.open_mart_connection(activation.build_db)
-            ubist_mart_activation.fingerprint_build_tables(
-                build_conn, activation.build_db
-            )
-        except Exception as exc:
-            _record_stage(ledger, context, "mart_build", "failed", _reason(exc))
-            raise
+        _record_stage(ledger, context, "mart_build", "running")
+        target_root, _staging_verify = config.load_output_root()
+        ubist_dir = target_root / "ubist"
+        catalog_root = ubist_mart_activation.production_catalog_root_from_env()
+        catalog_conn = config.open_mart_connection(activation.source_db)
+        ubist_mart_activation.prepare_catalog_for_mart(
+            catalog_root=catalog_root,
+            ubist_dir=ubist_dir,
+            source_db=activation.source_db,
+            conn=catalog_conn,
+            run_id=context.run_id,
+            output_parent=target_root,
+        )
+        ubist_mart_activation.build_shadow(
+            activation,
+            catalog_root=catalog_root,
+            ubist_dir=ubist_dir,
+            atc4_scope=context.scope_values,
+            period_scope=context.period_scope,
+        )
         _record_stage(
             ledger,
             context,
             "mart_build",
-            reason=(
-                "reused existing parent build without recomputation: "
-                f"{activation.build_db}"
-            ),
+            reason=f"recomputed UBIST mart from live corpus: {activation.build_db}",
         )
         return PreparedMart(
             target_db=activation.target_db,
             build_db=activation.build_db,
             tables=ubist_mart_activation.NUMERIC_TABLES,
         )
+    except Exception as exc:
+        _record_stage(ledger, context, "mart_build", "failed", _reason(exc))
+        raise
     finally:
-        if build_conn is not None:
-            build_conn.close()
+        if catalog_conn is not None:
+            catalog_conn.close()
 
 
-def _reuse_iqvia_parent_build(context: RequestContext, ledger) -> PreparedMart:
-    activation = iqvia_activation.from_env(run_id=context.parent_run_id)
-    build_conn = config.open_mart_connection(activation.build_db)
+def _recompute_iqvia_mart(context: RequestContext, ledger) -> PreparedMart:
+    activation = iqvia_activation.from_env(run_id=context.run_id)
+    build_conn = None
     try:
-        try:
-            _record_stage(ledger, context, "mart_build", "running")
-            _require_existing_build_tables(
-                build_conn,
-                build_db=activation.build_db,
-                tables=iqvia_activation.NSA_PUBLISH_TABLES,
-            )
-        except Exception as exc:
-            _record_stage(ledger, context, "mart_build", "failed", _reason(exc))
-            raise
+        _record_stage(ledger, context, "mart_build", "running")
+        iqvia_activation.initialize_build_schema(activation)
+        copied = iqvia_activation.copy_existing_raw(activation)
+        build_conn = config.open_mart_connection(activation.build_db)
+        retained_quarters = iqvia_activation.trim_raw_retention(build_conn, activation)
+        iqvia_activation.build_mart(activation)
         _record_stage(
             ledger,
             context,
             "mart_build",
             reason=(
-                "reused existing parent build without recomputation: "
-                f"{activation.build_db}"
+                f"recomputed IQVIA NSA mart from live raw: {activation.build_db}; "
+                f"raw_rows={copied}; retained_quarters={retained_quarters}"
             ),
         )
         return PreparedMart(
@@ -305,15 +429,80 @@ def _reuse_iqvia_parent_build(context: RequestContext, ledger) -> PreparedMart:
             build_db=activation.build_db,
             tables=iqvia_activation.NSA_PUBLISH_TABLES,
         )
+    except Exception as exc:
+        _record_stage(ledger, context, "mart_build", "failed", _reason(exc))
+        raise
     finally:
-        build_conn.close()
+        if build_conn is not None:
+            build_conn.close()
 
 
-def _publish_existing_mart(
+def _run_numeric_gates(
+    context: RequestContext,
+    prepared: PreparedMart,
+    spec: CategorySpec,
+) -> None:
+    if spec.sigma_source is None:
+        raise CompleteReingestRejected(
+            f"numeric recomputation requires a sigma source for {context.category}"
+        )
+
+    from pipeline.scripts.ingest_hook.post_gate import (
+        SigmaEvidence,
+        fingerprint_untouched_sources,
+        run_post_gates,
+        sample_existing_periods,
+    )
+    from pipeline.scripts.ingest_hook.sigma_market import check_market_sigma
+
+    conn = config.open_mart_connection(prepared.build_db)
+    try:
+        untouched_before = fingerprint_untouched_sources(
+            conn, touched_source=spec.sigma_source
+        )
+        affected_periods = context.period_scope or ()
+        sampled_periods = sample_existing_periods(
+            conn,
+            source=spec.sigma_source,
+            excluded=affected_periods,
+        )
+        periods = tuple(sorted(set(affected_periods + sampled_periods)))
+        report = check_market_sigma(
+            conn, source=spec.sigma_source, periods=tuple(periods)
+        )
+        sigma = SigmaEvidence(
+            checked=report.cells_checked,
+            population=report.cells_checked,
+            detail=(
+                f"source={report.source} markets={report.markets_checked} "
+                f"periods={','.join(report.periods)}"
+            ),
+        )
+        untouched_after = fingerprint_untouched_sources(
+            conn, touched_source=spec.sigma_source
+        )
+        run_post_gates(
+            run_id=context.run_id,
+            epoch=context.identity[0],
+            category=context.category,
+            sigma_check=lambda: sigma,
+            expected_rows=sigma.population,
+            actual_rows=sigma.checked,
+            untouched_before=untouched_before,
+            untouched_after=untouched_after,
+            report_path=Path(tempfile.mkdtemp(prefix="complete_reingest_post_gate_"))
+            / "post_gate_report.json",
+        )
+    finally:
+        conn.close()
+
+
+def _publish_and_refresh_numeric(
     context: RequestContext,
     ledger,
     prepared: PreparedMart,
-) -> tuple[Publication, dict[str, int]]:
+    spec: CategorySpec,
+) -> Publication:
     writer_conn = config.open_mart_connection(prepared.target_db)
     lock_name = ubist_mart_activation.WRITER_LOCK_NAME
     lock_acquired = False
@@ -343,14 +532,18 @@ def _publish_existing_mart(
             context,
             "mart_publish",
             reason=(
-                "promoted existing parent build without recomputation; "
+                "atomically published recomputed mart; "
                 f"rollback_anchor={_rollback_anchor(publication)}"
             ),
         )
 
         try:
             _record_stage(ledger, context, "refresh", "running")
-            forecast_counts = _verify_existing_forecast(writer_conn)
+            _run_refresh_argv(
+                spec.refresh_argv,
+                connection=writer_conn,
+                lock_name=lock_name,
+            )
         except Exception as exc:
             _record_stage(ledger, context, "refresh", "failed", _reason(exc))
             try:
@@ -369,9 +562,9 @@ def _publish_existing_mart(
             ledger,
             context,
             "refresh",
-            reason="existing downstream artifacts verified; cache_rebuild=0",
+            reason=f"executed refresh_argv: {' '.join(spec.refresh_argv)}",
         )
-        return publication, forecast_counts
+        return publication
     except Exception as exc:
         primary_failure_reason = _reason(exc)
         raise
@@ -393,25 +586,130 @@ def _publish_existing_mart(
         writer_conn.close()
 
 
-def _require_existing_build_tables(
-    conn, *, build_db: str, tables: tuple[str, ...]
+def _run_refresh_argv(
+    argv: tuple[str, ...],
+    *,
+    connection,
+    lock_name: str,
 ) -> None:
-    missing = tuple(table for table in tables if not table_exists(conn, build_db, table))
-    if missing:
-        raise CompleteReingestRejected(
-            "parent build artifacts are absent; recomputation is forbidden: "
-            + ", ".join(f"{build_db}.{table}" for table in missing)
-        )
+    from pipeline.scripts.ingest_hook.job_runner import _run_commands_with_writer_lock
 
-
-def _verify_existing_forecast(connection) -> dict[str, int]:
-    return completion_gate(
-        connection,
-        LIVE_BLOCK,
-        LIVE_HORIZON,
-        EXPECTED_BLOCKS,
-        EXPECTED_HORIZONS,
+    _run_commands_with_writer_lock(
+        "complete reingest refresh",
+        argv,
+        connection=connection,
+        lock_name=lock_name,
     )
+
+
+def _recompute_publish_csd_channel(
+    context: RequestContext, ledger
+) -> Publication:
+    raw_schema, stage_schema = config.csd_channel_live_schemas(mode="production")
+    plan = csd_channel_activation.plan_for_run(
+        context.run_id,
+        raw_schema=raw_schema,
+        stage_schema=stage_schema,
+    )
+    conn = config.open_csd_channel_connection()
+    lock_acquired = False
+    primary_failure_reason: str | None = None
+    try:
+        ubist_mart_activation.acquire_writer_lock(
+            conn,
+            timeout_seconds=0,
+            lock_name=csd_channel_activation.WRITER_LOCK_NAME,
+        )
+        lock_acquired = True
+        _record_stage(ledger, context, "mart_publish", "running")
+        evidence = csd_channel_activation.prepare_candidate(
+            conn,
+            plan,
+            source_paths=(),
+            enforce_post_gate=True,
+        )
+        verdict = csd_channel_activation.publish_candidate(conn, plan, evidence)
+        if verdict is not csd_channel_activation.SwapVerdict.APPLIED:
+            raise RuntimeError(f"CSD channel publish was not applied: {verdict}")
+        _record_stage(
+            ledger,
+            context,
+            "mart_publish",
+            reason="atomically published CSD channel raw/stage candidate",
+        )
+        return Publication(stage_schema, ())
+    except Exception as exc:
+        primary_failure_reason = _reason(exc)
+        _record_stage(ledger, context, "mart_publish", "failed", primary_failure_reason)
+        raise
+    finally:
+        if lock_acquired:
+            _release_lock_preserving_primary(
+                conn,
+                lock_name=csd_channel_activation.WRITER_LOCK_NAME,
+                primary_failure_reason=primary_failure_reason,
+            )
+        conn.close()
+
+
+def _recompute_publish_csd_keyword(
+    context: RequestContext, ledger
+) -> Publication:
+    raw_schema, stage_schema = config.csd_keyword_live_schemas()
+    plan = csd_keyword_activation.plan_for_run(
+        context.run_id,
+        raw_schema=raw_schema,
+        stage_schema=stage_schema,
+    )
+    activation_conn = config.open_csd_channel_connection()
+    writer_conn = None
+    lock_acquired = False
+    primary_failure_reason: str | None = None
+    try:
+        ubist_mart_activation.acquire_writer_lock(
+            activation_conn,
+            timeout_seconds=0,
+            lock_name=csd_keyword_activation.WRITER_LOCK_NAME,
+        )
+        lock_acquired = True
+        writer_conn = config.open_mart_connection()
+        _record_stage(ledger, context, "post_gate", "running")
+        evidence = csd_keyword_activation.prepare_candidate_from_live_raw(
+            writer_conn, plan
+        )
+        _record_stage(
+            ledger,
+            context,
+            "post_gate",
+            reason="recomputed CSD keyword candidate from live raw",
+        )
+        _record_stage(ledger, context, "mart_publish", "running")
+        csd_keyword_activation.publish_candidate(activation_conn, plan, evidence)
+        _record_stage(
+            ledger,
+            context,
+            "mart_publish",
+            reason="atomically published CSD keyword raw/stage candidate",
+        )
+        return Publication(stage_schema, ())
+    except Exception as exc:
+        primary_failure_reason = _reason(exc)
+        stage = "mart_publish" if any(
+            record.get("stage") == "post_gate" and record.get("status") == "complete"
+            for record in getattr(ledger, "stage_records", ())
+        ) else "post_gate"
+        _record_stage(ledger, context, stage, "failed", primary_failure_reason)
+        raise
+    finally:
+        if lock_acquired:
+            _release_lock_preserving_primary(
+                activation_conn,
+                lock_name=csd_keyword_activation.WRITER_LOCK_NAME,
+                primary_failure_reason=primary_failure_reason,
+            )
+        if writer_conn is not None:
+            writer_conn.close()
+        activation_conn.close()
 
 
 def _rollback_anchor(publication: Publication) -> str:
@@ -422,30 +720,34 @@ def _rollback_anchor(publication: Publication) -> str:
     return ",".join(anchors) or "none"
 
 
-def _record_reused_downstream(
+def _record_external_stage_chain(
     ledger,
     context: RequestContext,
-    *,
-    publication: Publication,
-    forecast_counts: dict[str, int],
+    stages: tuple[str, ...],
 ) -> None:
-    _record_stage(
-        ledger,
-        context,
-        "agent_refresh",
-        reason=(
-            "reused existing live forecast without recomputation; "
-            f"blocks={forecast_counts['blocks']} "
-            f"horizons={forecast_counts['horizons']} "
-            f"bad_simulation={forecast_counts['bad_simulation']}"
-        ),
+    for stage in stages:
+        _record_stage(
+            ledger,
+            context,
+            stage,
+            reason="external source-owned stage completed by normal activation helper",
+        )
+
+
+def _run_numeric_agent_refresh(context: RequestContext) -> None:
+    """Run the existing numeric Agent path before releasing the global slot."""
+
+    returncode = agent_refresh_runner.run(
+        epoch=context.identity[0],
+        category=context.category,
+        manifest_sha=context.identity[2],
+        ingest_run_id=context.run_id,
+        affected_scope=context.affected_scope,
     )
-    reason = (
-        "existing output retained; LLM=0 cache_rebuild=0; "
-        f"rollback_anchor={_rollback_anchor(publication)}"
-    )
-    for stage in ("agent3", "agent2", "dashboard"):
-        _record_stage(ledger, context, stage, reason=reason)
+    if returncode != 0:
+        raise CompleteReingestRejected(
+            f"numeric Agent refresh failed with return code {returncode}"
+        )
 
 
 def _publish_table_group(
@@ -479,27 +781,171 @@ def _restore_publication(
     )
 
 
+def _release_lock_preserving_primary(
+    connection,
+    *,
+    lock_name: str,
+    primary_failure_reason: str | None,
+) -> None:
+    try:
+        ubist_mart_activation.release_writer_lock(connection, lock_name=lock_name)
+    except Exception as cleanup_exc:
+        if primary_failure_reason is None:
+            raise
+        print(
+            "cleanup=writer_lock_release_failed "
+            f"primary_preserved={primary_failure_reason} "
+            f"cleanup_reason={_reason(cleanup_exc)}",
+            file=sys.stderr,
+        )
+
+
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _reason(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {exc}"
+    return _redact_text(f"{type(exc).__name__}: {exc}")
 
 
-def _record_terminal(ledger, context: RequestContext, status: str, reason: str) -> None:
+def _redact_text(value: object) -> str:
+    text = str(value)
+    return _SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", text)
+
+
+def _complete_terminal(
+    ledger, context: RequestContext, reason: str
+) -> TerminalOutcome:
+    outcome = TerminalOutcome(
+        request_id=context.request_id,
+        run_id=context.run_id,
+        category=context.category,
+        status="complete",
+        reason=reason,
+    )
+    _record_stage(ledger, context, "signal", "running")
+    _record_terminal(ledger, context, outcome)
+    _emit_reingest_terminal_callback(context, outcome)
+    _record_stage(ledger, context, "signal", reason="complete reingest terminal signal emitted")
+    return outcome
+
+
+def _failed_terminal(
+    ledger, context: RequestContext, reason: str
+) -> TerminalOutcome:
+    outcome = TerminalOutcome(
+        request_id=context.request_id,
+        run_id=context.run_id,
+        category=context.category,
+        status="failed",
+        reason=reason,
+    )
+    _record_terminal(ledger, context, outcome)
+    _emit_reingest_terminal_callback(context, outcome)
+    return outcome
+
+
+def _record_terminal(
+    ledger, context: RequestContext, outcome: TerminalOutcome
+) -> None:
     recorder = getattr(ledger, "record_complete_reingest_terminal", None)
     if callable(recorder):
         recorder(
             *context.identity,
-            request_id=context.request_id,
-            run_id=context.run_id,
-            status=status,
-            reason=reason,
+            request_id=outcome.request_id,
+            run_id=outcome.run_id,
+            status=outcome.status,
+            reason=outcome.reason,
             actor=ACTOR,
             job_name=os.environ.get("HOSTNAME"),
             affected_scope=context.affected_scope,
         )
+
+
+def _emit_reingest_terminal_callback(
+    context: RequestContext, outcome: TerminalOutcome
+) -> None:
+    """Best-effort callback to release the durable global queue slot."""
+
+    try:
+        endpoint, attempts = config.queue_drain_webhook()
+        if not endpoint:
+            return
+        endpoint = _reingest_terminal_endpoint(endpoint)
+        epoch, category, manifest_sha = context.identity
+        payload = {
+            "epoch": epoch,
+            "category": category,
+            "manifest_sha": manifest_sha,
+            "request_id": context.request_id,
+            "run_id": outcome.run_id,
+            "status": outcome.status,
+            "reason": outcome.reason,
+            "job_name": os.environ.get("HOSTNAME"),
+        }
+        result = _publish_reingest_terminal(
+            payload,
+            endpoint=endpoint,
+            attempts=attempts,
+        )
+        if result.status == "failed":
+            print(
+                "reingest_terminal_callback=failed "
+                f"attempts={result.attempts} reason={result.reason}",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"reingest_terminal_callback=failed reason={_reason(exc)}",
+            file=sys.stderr,
+        )
+
+
+def _reingest_terminal_endpoint(queue_endpoint: str) -> str:
+    parsed = urlsplit(queue_endpoint)
+    if parsed.path.rstrip("/") != "/ingest/terminal":
+        raise ValueError(
+            "INGEST_QUEUE_DRAIN_WEBHOOK_URL must end with /ingest/terminal"
+        )
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, "/ingest/reingest/terminal", parsed.query, parsed.fragment)
+    )
+
+
+def _publish_reingest_terminal(
+    payload: dict[str, object],
+    *,
+    endpoint: str,
+    attempts: int,
+    opener=urllib.request.urlopen,
+    sleeper=time.sleep,
+) -> PublishResult:
+    attempts = min(max(int(attempts), 3), 5)
+    body = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    last_reason = None
+    for index in range(attempts):
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with opener(request, timeout=15) as response:
+                status = int(getattr(response, "status", 0))
+            if 200 <= status < 300:
+                return PublishResult("published", index + 1)
+            last_reason = f"HTTP {status}"
+        except Exception as exc:  # queue startup reconciliation is the recovery path
+            last_reason = _reason(exc)
+        if index + 1 < attempts:
+            sleeper(float(2**index))
+    return PublishResult("failed", attempts, last_reason)
 
 
 def _parse_scope_json(raw: str) -> dict[str, object]:

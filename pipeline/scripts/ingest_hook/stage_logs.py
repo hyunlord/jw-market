@@ -51,6 +51,20 @@ def full_log_path(root: Path, *, job_name: str) -> Path:
     return job_log_dir(root, job_name=job_name) / "full.log"
 
 
+def expired_marker_path(root: Path, *, job_name: str) -> Path:
+    """Return the explicit tombstone used by any future retention worker."""
+    return job_log_dir(root, job_name=job_name) / ".expired"
+
+
+def missing_log_reason(root: Path, *, job_name: str) -> str:
+    """Classify absence without guessing that a never-written log expired."""
+    return (
+        "log_expired"
+        if expired_marker_path(root, job_name=job_name).is_file()
+        else "log_not_preserved"
+    )
+
+
 def stage_log_path(root: Path, *, job_name: str, stage: str) -> Path:
     return (
         job_log_dir(root, job_name=job_name)

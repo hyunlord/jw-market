@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+
 import pytest
 
 from pipeline.scripts.ingest_hook import complete_reingest_runner as runner
@@ -22,13 +23,11 @@ class _Ledger:
         self.affected_scope = affected_scope
         self.stage_records: list[dict[str, object]] = []
         self.terminals: list[dict[str, object]] = []
-        self.last_identity: tuple[str, str, str] | None = None
 
     def status(self, epoch: str, category: str, manifest_sha: str):
         assert epoch == "2026-Q1"
         assert category == self.category
         assert len(manifest_sha) == 64
-        self.last_identity = (epoch, category, manifest_sha)
         return SimpleNamespace(status="complete", run_id=PARENT_RUN_ID)
 
     def complete_reingest_request(
@@ -38,18 +37,17 @@ class _Ledger:
         assert category == self.category
         assert len(manifest_sha) == 64
         assert request_id == REQUEST_ID
-        evidence = {
-            "request_id": REQUEST_ID,
-            "run_id": RUN_ID,
-            "mode": "mart_from_existing_raw",
-            "affected_scope": self.affected_scope,
-        }
         return SimpleNamespace(
             event_id=REQUEST_ID,
             previous_status="complete",
             status="complete",
             source="complete_reingest_request",
-            evidence=evidence,
+            evidence={
+                "request_id": REQUEST_ID,
+                "run_id": RUN_ID,
+                "mode": "mart_from_existing_raw",
+                "affected_scope": self.affected_scope,
+            },
         )
 
     def record_stage(self, *_identity: str, **kwargs: object) -> None:
@@ -88,34 +86,89 @@ def _manifest(tmp_path: Path, category: str) -> Path:
     return path
 
 
-def _stub_iqvia_success(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, object]]) -> None:
+def _closed_connection() -> SimpleNamespace:
+    return SimpleNamespace(close=lambda: None)
+
+
+def _complete_stage_names(ledger: _Ledger) -> list[str]:
+    return [
+        str(record["stage"])
+        for record in ledger.stage_records
+        if record["status"] == "complete"
+    ]
+
+
+def _stub_terminal_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_emit_reingest_terminal_callback",
+        lambda *_args, **_kwargs: None,
+    )
+
+
+def test_reingest_terminal_callback_uses_dedicated_queue_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = runner.RequestContext(
+        identity=("2026-Q1", "ubist", "a" * 64),
+        run_id=RUN_ID,
+        category="ubist",
+        request_id=REQUEST_ID,
+        parent_run_id=PARENT_RUN_ID,
+        affected_scope={"dimension": "source", "count": 1, "values": ["ubist"]},
+        scope_values=("ubist",),
+        period_scope=("2026-01", "2026-03"),
+    )
+    outcome = runner.TerminalOutcome(
+        request_id=REQUEST_ID,
+        run_id=RUN_ID,
+        category="ubist",
+        status="complete",
+        reason="mart recomputation published",
+    )
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner.config,
+        "queue_drain_webhook",
+        lambda: ("http://jw-ingest-hook:8080/ingest/terminal", 3),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_publish_reingest_terminal",
+        lambda payload, *, endpoint, attempts: captured.append(
+            {"payload": payload, "endpoint": endpoint, "attempts": attempts}
+        )
+        or runner.PublishResult("published", 1),
+    )
+
+    runner._emit_reingest_terminal_callback(context, outcome)
+
+    assert captured == [
+        {
+            "payload": {
+                "epoch": "2026-Q1",
+                "category": "ubist",
+                "manifest_sha": "a" * 64,
+                "request_id": REQUEST_ID,
+                "run_id": RUN_ID,
+                "status": "complete",
+                "reason": "mart recomputation published",
+                "job_name": None,
+            },
+            "endpoint": "http://jw-ingest-hook:8080/ingest/reingest/terminal",
+            "attempts": 3,
+        }
+    ]
+
+
+def _stub_numeric_success(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[tuple[str, object]],
+) -> None:
     monkeypatch.setattr(
         runner.config,
         "open_mart_connection",
-        lambda _schema=None: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(
-        runner.iqvia_activation,
-        "from_env",
-        lambda *, run_id: SimpleNamespace(
-            source_db="src", target_db="dst", build_db=f"build_{run_id}"
-        ),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_require_existing_build_tables",
-        lambda *_args, **kwargs: calls.append(("reuse", kwargs)),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_publish_table_group",
-        lambda *_args, **kwargs: calls.append(("publish", kwargs)) or (),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_verify_existing_forecast",
-        lambda *_args: calls.append(("verify_forecast", {}))
-        or {"blocks": 43_790, "horizons": 3_002, "bad_simulation": 0},
+        lambda _schema=None: _closed_connection(),
     )
     monkeypatch.setattr(
         runner.ubist_mart_activation,
@@ -127,27 +180,69 @@ def _stub_iqvia_success(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, 
         "release_writer_lock",
         lambda *_args, **kwargs: calls.append(("unlock", kwargs)),
     )
+    monkeypatch.setattr(
+        runner,
+        "_publish_table_group",
+        lambda *_args, **kwargs: calls.append(("publish", kwargs))
+        or (SimpleNamespace(table="mart_general_brand_metric", backup_table="old"),),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_numeric_gates",
+        lambda context, prepared, spec: calls.append(
+            (
+                "gates",
+                {
+                    "category": context.category,
+                    "build_db": prepared.build_db,
+                    "sigma_source": spec.sigma_source,
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_refresh_argv",
+        lambda argv, **kwargs: calls.append(("refresh_argv", {"argv": argv, **kwargs})),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_numeric_agent_refresh",
+        lambda context: calls.append(
+            (
+                "agent_refresh",
+                {
+                    "category": context.category,
+                    "run_id": context.run_id,
+                    "affected_scope": context.affected_scope,
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_removed_existing_forecast_guard",
+        lambda *_args: pytest.fail("reingest must not verify/reuse existing forecast"),
+        raising=False,
+    )
 
 
-def test_ubist_reingest_reuses_parent_build_without_recomputation(
+def test_numeric_reingest_runs_core_stages_and_delegates_real_agent_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Given: a persisted complete-reingest request with an exact ATC4 scope.
+    # Given: a UBIST complete reingest request with existing raw corpus scope.
     affected_scope = {
         "dimension": "atc4",
-        "count": 2,
-        "values": ["A10A", "B20B"],
-        "periods": ["2026-01", "2026-02"],
+        "count": 1,
+        "values": ["A10A"],
+        "periods": ["2026-01"],
     }
     ledger = _Ledger(category="ubist", affected_scope=affected_scope)
     calls: list[tuple[str, object]] = []
-    manifest_path = _manifest(tmp_path, "ubist")
-    monkeypatch.setattr(
-        runner.config,
-        "open_mart_connection",
-        lambda _schema=None: SimpleNamespace(close=lambda: None),
-    )
+    _stub_terminal_callback(monkeypatch)
+    _stub_numeric_success(monkeypatch, calls)
+    monkeypatch.setattr(runner.config, "load_output_root", lambda: (tmp_path, False))
     monkeypatch.setattr(
         runner.ubist_mart_activation,
         "from_env",
@@ -157,111 +252,171 @@ def test_ubist_reingest_reuses_parent_build_without_recomputation(
     )
     monkeypatch.setattr(
         runner.ubist_mart_activation,
-        "fingerprint_build_tables",
-        lambda *_args, **_kwargs: calls.append(("reuse", _args[1])) or tuple(
-            SimpleNamespace(table=table, row_count=1, crc_sum=2, crc_xor=3)
-            for table in ubist_mart_activation.NUMERIC_TABLES
+        "production_catalog_root_from_env",
+        lambda: tmp_path / "catalog",
+    )
+    monkeypatch.setattr(
+        runner.ubist_mart_activation,
+        "prepare_catalog_for_mart",
+        lambda **kwargs: calls.append(("prepare_catalog", kwargs))
+        or SimpleNamespace(action="noop"),
+    )
+    monkeypatch.setattr(
+        runner.ubist_mart_activation,
+        "build_shadow",
+        lambda activation, **kwargs: calls.append(
+            ("build_shadow", {"activation": activation, **kwargs})
         ),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_publish_table_group",
-        lambda *_args, **kwargs: calls.append(("publish", kwargs)) or (),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_verify_existing_forecast",
-        lambda *_args: calls.append(("verify_forecast", {}))
-        or {"blocks": 43_790, "horizons": 3_002, "bad_simulation": 0},
-    )
-    monkeypatch.setattr(
-        runner.ubist_mart_activation,
-        "acquire_writer_lock",
-        lambda *_args, **kwargs: calls.append(("lock", kwargs)),
-    )
-    monkeypatch.setattr(
-        runner.ubist_mart_activation,
-        "release_writer_lock",
-        lambda *_args, **kwargs: calls.append(("unlock", kwargs)),
     )
     monkeypatch.setattr(
         runner.ubist_mart_activation,
         "prepare_candidate_corpus",
-        lambda *_args, **_kwargs: pytest.fail(
-            "corpus candidate promoter must not run"
-        ),
-    )
-    monkeypatch.setattr(
-        runner.ubist_mart_activation,
-        "promote_candidate_corpus",
-        lambda *_args, **_kwargs: pytest.fail("corpus promoter must not run"),
+        lambda *_args, **_kwargs: pytest.fail("raw corpus upload path must not run"),
     )
 
-    # When: the mart-only runner handles the attempt.
+    # When: the runner handles the recomputation attempt.
     runner.run(
-        manifest_path,
+        _manifest(tmp_path, "ubist"),
         request_id=REQUEST_ID,
         run_id=RUN_ID,
         ledger=ledger,
     )
 
-    # Then: the parent build is reused; no raw or mart computation runs.
-    assert calls == [
-        ("reuse", f"build_{PARENT_RUN_ID}"),
-        ("lock", {"timeout_seconds": 0, "lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME}),
-        (
-            "publish",
-            {
-                "build_db": f"build_{PARENT_RUN_ID}",
-                "target_db": "dst",
-                "run_id": RUN_ID,
-                "tables": ubist_mart_activation.NUMERIC_TABLES,
-            },
-        ),
-        ("verify_forecast", {}),
-        ("unlock", {"lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME}),
+    # Then: it executes the numeric core stages and delegates the existing agent path.
+    assert _complete_stage_names(ledger) == [
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
     ]
-    assert {record["run_id"] for record in ledger.stage_records} == {RUN_ID}
+    assert [stage for stage in _complete_stage_names(ledger) if stage.startswith("agent")] == []
+    assert (
+        "agent_refresh",
+        {
+            "category": "ubist",
+            "run_id": RUN_ID,
+            "affected_scope": affected_scope,
+        },
+    ) in calls
+    assert ("gates", {"category": "ubist", "build_db": f"build_{RUN_ID}", "sigma_source": "ubist"}) in calls
+    assert any(call[0] == "refresh_argv" for call in calls)
     assert ledger.terminals[-1]["status"] == "complete"
-    assert ledger.terminals[-1]["affected_scope"] == affected_scope
 
 
-def test_ubist_source_scope_still_reuses_parent_build(
+def test_iqvia_numeric_reingest_uses_attempt_raw_build_and_real_refresh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Given: control-plane fallback source scope for UBIST.
-    affected_scope = {"dimension": "source", "count": 1, "values": ["ubist"]}
-    ledger = _Ledger(category="ubist", affected_scope=affected_scope)
+    # Given: an IQVIA NSA complete request with no raw source files to materialize.
+    affected_scope = {"dimension": "source", "count": 1, "values": ["iqvia_nsa"]}
+    ledger = _Ledger(category="iqvia_nsa", affected_scope=affected_scope)
     calls: list[tuple[str, object]] = []
-    manifest_path = _manifest(tmp_path, "ubist")
+    _stub_terminal_callback(monkeypatch)
+    _stub_numeric_success(monkeypatch, calls)
     monkeypatch.setattr(
-        runner.config,
-        "open_mart_connection",
-        lambda _schema=None: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(
-        runner.ubist_mart_activation,
+        runner.iqvia_activation,
         "from_env",
         lambda *, run_id: SimpleNamespace(
             source_db="src", target_db="dst", build_db=f"build_{run_id}"
         ),
     )
     monkeypatch.setattr(
-        runner.ubist_mart_activation,
-        "fingerprint_build_tables",
-        lambda *_args, **_kwargs: calls.append(("reuse", _args[1])) or (),
+        runner.iqvia_activation,
+        "initialize_build_schema",
+        lambda activation: calls.append(("initialize_build_schema", activation)),
+    )
+    monkeypatch.setattr(
+        runner.iqvia_activation,
+        "copy_existing_raw",
+        lambda activation: calls.append(("copy_existing_raw", activation)) or 12,
+    )
+    monkeypatch.setattr(
+        runner.iqvia_activation,
+        "trim_raw_retention",
+        lambda *_args: calls.append(("trim_raw_retention", {})) or ("2025-Q4",),
+    )
+    monkeypatch.setattr(
+        runner.iqvia_activation,
+        "build_mart",
+        lambda activation: calls.append(("build_mart", activation)),
     )
     monkeypatch.setattr(
         runner,
-        "_publish_table_group",
-        lambda *_args, **kwargs: calls.append(("publish", kwargs)) or (),
+        "_removed_existing_build_table_guard",
+        lambda *_args, **_kwargs: pytest.fail("parent build must not be republished"),
+        raising=False,
+    )
+
+    # When: the runner handles the recomputation attempt.
+    runner.run(
+        _manifest(tmp_path, "iqvia_nsa"),
+        request_id=REQUEST_ID,
+        run_id=RUN_ID,
+        ledger=ledger,
+    )
+
+    # Then: live raw seeds the attempt build, gates run, and refresh uses category refresh_argv.
+    activation = SimpleNamespace(source_db="src", target_db="dst", build_db=f"build_{RUN_ID}")
+    assert calls[:4] == [
+        ("initialize_build_schema", activation),
+        ("copy_existing_raw", activation),
+        ("trim_raw_retention", {}),
+        ("build_mart", activation),
+    ]
+    assert ("gates", {"category": "iqvia_nsa", "build_db": f"build_{RUN_ID}", "sigma_source": "iqvia_nsa"}) in calls
+    refresh_calls = [payload for name, payload in calls if name == "refresh_argv"]
+    assert refresh_calls and "--profile" in refresh_calls[0]["argv"]
+    assert _complete_stage_names(ledger) == [
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+    ]
+
+
+def test_refresh_failure_restores_numeric_publication_under_writer_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Given: a numeric publication succeeds but the real refresh command fails.
+    affected_scope = {"dimension": "source", "count": 1, "values": ["iqvia_nsa"]}
+    ledger = _Ledger(category="iqvia_nsa", affected_scope=affected_scope)
+    actions = (SimpleNamespace(table="mart_general_brand_metric", backup_table="old"),)
+    calls: list[tuple[str, object]] = []
+    _stub_terminal_callback(monkeypatch)
+    monkeypatch.setattr(runner.config, "open_mart_connection", lambda _schema=None: _closed_connection())
+    monkeypatch.setattr(
+        runner.iqvia_activation,
+        "from_env",
+        lambda *, run_id: SimpleNamespace(
+            source_db="src", target_db="dst", build_db=f"build_{run_id}"
+        ),
+    )
+    monkeypatch.setattr(runner.iqvia_activation, "initialize_build_schema", lambda *_args: None)
+    monkeypatch.setattr(runner.iqvia_activation, "copy_existing_raw", lambda *_args: 1)
+    monkeypatch.setattr(runner.iqvia_activation, "trim_raw_retention", lambda *_args: ())
+    monkeypatch.setattr(runner.iqvia_activation, "build_mart", lambda *_args: None)
+    monkeypatch.setattr(runner, "_run_numeric_gates", lambda *_args: None)
+    monkeypatch.setattr(runner, "_publish_table_group", lambda *_args, **_kwargs: actions)
+    monkeypatch.setattr(
+        runner,
+        "_run_refresh_argv",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("refresh broke")),
     )
     monkeypatch.setattr(
         runner,
-        "_verify_existing_forecast",
-        lambda *_args: calls.append(("verify_forecast", {}))
-        or {"blocks": 43_790, "horizons": 3_002, "bad_simulation": 0},
+        "_restore_publication",
+        lambda *_args, **kwargs: calls.append(("restore", kwargs)),
     )
     monkeypatch.setattr(
         runner.ubist_mart_activation,
@@ -274,84 +429,128 @@ def test_ubist_source_scope_still_reuses_parent_build(
         lambda *_args, **kwargs: calls.append(("unlock", kwargs)),
     )
 
-    # When: the runner handles the fallback scope.
-    runner.run(manifest_path, request_id=REQUEST_ID, run_id=RUN_ID, ledger=ledger)
+    # When / Then: refresh failure rolls back the atomic table group.
+    with pytest.raises(RuntimeError, match="refresh broke"):
+        runner.run(
+            _manifest(tmp_path, "iqvia_nsa"),
+            request_id=REQUEST_ID,
+            run_id=RUN_ID,
+            ledger=ledger,
+        )
+    assert calls == [
+        (
+            "lock",
+            {
+                "timeout_seconds": 0,
+                "lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME,
+            },
+        ),
+        (
+            "restore",
+            {
+                "publication": runner.Publication("dst", actions),
+                "run_id": RUN_ID,
+            },
+        ),
+        ("unlock", {"lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME}),
+    ]
+    assert ledger.stage_records[-1]["stage"] == "refresh"
+    assert ledger.stage_records[-1]["status"] == "failed"
+    assert ledger.terminals[-1]["status"] == "failed"
 
-    # Then: scope does not trigger a rebuild.
-    assert calls[0] == ("reuse", f"build_{PARENT_RUN_ID}")
 
-
-def test_iqvia_reingest_reuses_parent_build_and_publishes_full_nsa_contract(
+@pytest.mark.parametrize(
+    ("category", "expected_stages"),
+    [
+        (
+            "iqvia_csd_channel",
+            ["g3", "load", "load_verify", "mart_publish", "context_bridge", "dashboard", "signal"],
+        ),
+        (
+            "iqvia_csd_keyword",
+            ["g3", "load", "load_verify", "post_gate", "mart_publish", "topic_extraction", "dashboard", "signal"],
+        ),
+    ],
+)
+def test_csd_reingest_records_only_source_core_stages(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    category: str,
+    expected_stages: list[str],
 ) -> None:
-    # Given: a persisted complete-reingest request scoped to IQVIA NSA.
-    affected_scope = {"dimension": "source", "count": 1, "values": ["iqvia_nsa"]}
-    ledger = _Ledger(category="iqvia_nsa", affected_scope=affected_scope)
+    # Given: a CSD complete request whose live raw table already contains data.
+    affected_scope = {"dimension": "source", "count": 1, "values": [category]}
+    ledger = _Ledger(category=category, affected_scope=affected_scope)
     calls: list[tuple[str, object]] = []
-    manifest_path = _manifest(tmp_path, "iqvia_nsa")
-    _stub_iqvia_success(monkeypatch, calls)
+    plan = SimpleNamespace(run_id=RUN_ID)
+    evidence = SimpleNamespace(raw_rows=10, stage_rows=8)
+    _stub_terminal_callback(monkeypatch)
+    monkeypatch.setattr(runner.config, "open_csd_channel_connection", lambda: _closed_connection())
+    monkeypatch.setattr(runner.config, "open_mart_connection", lambda _schema=None: _closed_connection())
     monkeypatch.setattr(
-        runner.iqvia_activation,
-        "initialize_build_schema",
-        lambda *_args, **_kwargs: pytest.fail(
-            "empty raw loader initializer must not run"
-        ),
+        runner.config,
+        "csd_channel_live_schemas",
+        lambda *, mode: ("raw_live", "stage_live"),
+    )
+    monkeypatch.setattr(runner.config, "csd_keyword_live_schemas", lambda: ("raw_live", "stage_live"))
+    monkeypatch.setattr(
+        runner.csd_channel_activation,
+        "plan_for_run",
+        lambda run_id, **kwargs: calls.append(("channel_plan", {"run_id": run_id, **kwargs})) or plan,
+    )
+    monkeypatch.setattr(
+        runner.csd_channel_activation,
+        "prepare_candidate",
+        lambda *_args, **kwargs: calls.append(("channel_prepare", kwargs)) or evidence,
+    )
+    monkeypatch.setattr(
+        runner.csd_channel_activation,
+        "publish_candidate",
+        lambda *_args: calls.append(("channel_publish", {})) or runner.csd_channel_activation.SwapVerdict.APPLIED,
+    )
+    monkeypatch.setattr(
+        runner.csd_keyword_activation,
+        "plan_for_run",
+        lambda run_id, **kwargs: calls.append(("keyword_plan", {"run_id": run_id, **kwargs})) or plan,
+    )
+    monkeypatch.setattr(
+        runner.csd_keyword_activation,
+        "prepare_candidate_from_live_raw",
+        lambda *_args: calls.append(("keyword_prepare", {})) or evidence,
+    )
+    monkeypatch.setattr(
+        runner.csd_keyword_activation,
+        "publish_candidate",
+        lambda *_args: calls.append(("keyword_publish", {})),
     )
     monkeypatch.setattr(
         runner.ubist_mart_activation,
-        "promote_candidate_corpus",
-        lambda *_args, **_kwargs: pytest.fail("corpus promoter must not run"),
+        "acquire_writer_lock",
+        lambda *_args, **kwargs: calls.append(("lock", kwargs)),
+    )
+    monkeypatch.setattr(
+        runner.ubist_mart_activation,
+        "release_writer_lock",
+        lambda *_args, **kwargs: calls.append(("unlock", kwargs)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_publish_table_group",
+        lambda *_args, **_kwargs: pytest.fail("CSD must publish through source activation"),
     )
 
-    # When: the mart-only runner handles the attempt.
+    # When: the runner handles the CSD attempt.
     runner.run(
-        manifest_path,
+        _manifest(tmp_path, category),
         request_id=REQUEST_ID,
         run_id=RUN_ID,
         ledger=ledger,
     )
 
-    # Then: the parent build is reused and the full NSA serving contract publishes.
-    assert calls == [
-        (
-            "reuse",
-            {
-                "build_db": f"build_{PARENT_RUN_ID}",
-                "tables": runner.iqvia_activation.NSA_PUBLISH_TABLES,
-            },
-        ),
-        ("lock", {"timeout_seconds": 0, "lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME}),
-        (
-            "publish",
-            {
-                "build_db": f"build_{PARENT_RUN_ID}",
-                "target_db": "dst",
-                "run_id": RUN_ID,
-                "tables": runner.iqvia_activation.NSA_PUBLISH_TABLES,
-            },
-        ),
-        ("verify_forecast", {}),
-        ("unlock", {"lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME}),
-    ]
+    # Then: only the source-owned CSD core stage chain is recorded.
+    assert _complete_stage_names(ledger) == expected_stages
+    assert not {"agent_refresh", "agent2", "agent3"}.intersection(_complete_stage_names(ledger))
     assert ledger.terminals[-1]["status"] == "complete"
-    assert [
-        (record["seq"], record["stage"], record["status"])
-        for record in ledger.stage_records
-    ] == [
-        (1, "request_validate", "running"),
-        (1, "request_validate", "complete"),
-        (2, "mart_build", "running"),
-        (2, "mart_build", "complete"),
-        (3, "mart_publish", "running"),
-        (3, "mart_publish", "complete"),
-        (4, "refresh", "running"),
-        (4, "refresh", "complete"),
-        (5, "agent_refresh", "complete"),
-        (6, "agent3", "complete"),
-        (7, "agent2", "complete"),
-        (8, "dashboard", "complete"),
-    ]
 
 
 def test_s3_input_source_reads_only_manifest_without_materializing_raw_files(
@@ -363,7 +562,6 @@ def test_s3_input_source_reads_only_manifest_without_materializing_raw_files(
     manifest_bytes = local_manifest.read_bytes()
     affected_scope = {"dimension": "source", "count": 1, "values": ["iqvia_nsa"]}
     ledger = _Ledger(category="iqvia_nsa", affected_scope=affected_scope)
-    calls: list[tuple[str, object]] = []
     reads: list[str] = []
 
     class Source:
@@ -374,7 +572,19 @@ def test_s3_input_source_reads_only_manifest_without_materializing_raw_files(
         def materialize(self, *_args: object, **_kwargs: object) -> None:
             pytest.fail("complete runner must not materialize raw source files")
 
-    _stub_iqvia_success(monkeypatch, calls)
+    _stub_terminal_callback(monkeypatch)
+    _stub_numeric_success(monkeypatch, [])
+    monkeypatch.setattr(
+        runner.iqvia_activation,
+        "from_env",
+        lambda *, run_id: SimpleNamespace(
+            source_db="src", target_db="dst", build_db=f"build_{run_id}"
+        ),
+    )
+    monkeypatch.setattr(runner.iqvia_activation, "initialize_build_schema", lambda *_args: None)
+    monkeypatch.setattr(runner.iqvia_activation, "copy_existing_raw", lambda *_args: 1)
+    monkeypatch.setattr(runner.iqvia_activation, "trim_raw_retention", lambda *_args: ())
+    monkeypatch.setattr(runner.iqvia_activation, "build_mart", lambda *_args: None)
 
     # When: the runner receives an immutable remote manifest path.
     runner.run(
@@ -387,10 +597,6 @@ def test_s3_input_source_reads_only_manifest_without_materializing_raw_files(
 
     # Then: only the manifest key is read; raw files remain untouched.
     assert reads == ["_manifests/iqvia_nsa/2026-Q1/manifest.json"]
-    assert calls[-1] == (
-        "unlock",
-        {"lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME},
-    )
 
 
 def test_missing_affected_scope_fails_before_mart_operations(
@@ -418,11 +624,49 @@ def test_missing_affected_scope_fails_before_mart_operations(
     assert ledger.terminals == []
 
 
+def test_record_stage_emits_status_markers_with_redacted_failure_reason(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a durable stage logger consuming stdout markers.
+    ledger = _Ledger(
+        category="iqvia_nsa",
+        affected_scope={"dimension": "source", "count": 1, "values": ["iqvia_nsa"]},
+    )
+    context = runner.RequestContext(
+        identity=("2026-Q1", "iqvia_nsa", "c" * 64),
+        run_id=RUN_ID,
+        category="iqvia_nsa",
+        request_id=REQUEST_ID,
+        parent_run_id=PARENT_RUN_ID,
+        affected_scope=ledger.affected_scope,
+        scope_values=("iqvia_nsa",),
+        period_scope=(),
+    )
+
+    # When: stages transition through running, complete, and failed.
+    runner._record_stage(ledger, context, "refresh", "running")
+    runner._record_stage(ledger, context, "refresh", "complete")
+    runner._record_stage(
+        ledger,
+        context,
+        "refresh",
+        "failed",
+        "RuntimeError: password=plain token:abc123 safe-detail",
+    )
+
+    # Then: stdout carries separable start/end markers and redacts sensitive values.
+    assert capsys.readouterr().out.splitlines() == [
+        "[stage] refresh start",
+        "[stage] refresh end",
+        "[stage] refresh end rc=1 reason=RuntimeError: password=<redacted> token:<redacted> safe-detail",
+    ]
+
+
 def test_cli_accepts_launcher_flags_and_rejects_identity_mismatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Given: launcher-style arguments with a mismatched category.
+    # Given: launcher-style arguments with a matching manifest identity.
     manifest_path = _manifest(tmp_path, "ubist")
     captured: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -484,113 +728,3 @@ def test_cli_accepts_launcher_flags_and_rejects_identity_mismatch(
             ]
         )
     assert len(captured) == 1
-
-
-def test_missing_parent_build_records_failure_without_recomputation(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    # Given: a valid IQVIA request whose parent build artifact is absent.
-    affected_scope = {"dimension": "source", "count": 1, "values": ["iqvia_nsa"]}
-    ledger = _Ledger(category="iqvia_nsa", affected_scope=affected_scope)
-    manifest_path = _manifest(tmp_path, "iqvia_nsa")
-    monkeypatch.setattr(
-        runner.config,
-        "open_mart_connection",
-        lambda _schema=None: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(
-        runner.iqvia_activation,
-        "from_env",
-        lambda *, run_id: SimpleNamespace(
-            source_db="src", target_db="dst", build_db=f"build_{run_id}"
-        ),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_require_existing_build_tables",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            runner.CompleteReingestRejected("parent build absent")
-        ),
-    )
-
-    # When / Then: failure evidence is append-only and parent mutators are unused.
-    with pytest.raises(runner.CompleteReingestRejected, match="parent build absent"):
-        runner.run(manifest_path, request_id=REQUEST_ID, run_id=RUN_ID, ledger=ledger)
-    assert ledger.stage_records[-1]["stage"] == "mart_build"
-    assert ledger.stage_records[-1]["status"] == "failed"
-    assert "parent build absent" in str(ledger.stage_records[-1]["reason"])
-    assert ledger.terminals[-1]["status"] == "failed"
-
-
-def test_existing_forecast_gate_failure_restores_under_writer_lock(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    # Given: a published IQVIA mart-only attempt whose existing forecast gate fails.
-    affected_scope = {"dimension": "source", "count": 1, "values": ["iqvia_nsa"]}
-    ledger = _Ledger(category="iqvia_nsa", affected_scope=affected_scope)
-    manifest_path = _manifest(tmp_path, "iqvia_nsa")
-    actions = (SimpleNamespace(table="mart_general_brand_metric"),)
-    calls: list[tuple[str, object]] = []
-    monkeypatch.setattr(
-        runner.config,
-        "open_mart_connection",
-        lambda _schema=None: SimpleNamespace(close=lambda: None),
-    )
-    monkeypatch.setattr(
-        runner.iqvia_activation,
-        "from_env",
-        lambda *, run_id: SimpleNamespace(
-            source_db="src", target_db="dst", build_db=f"build_{run_id}"
-        ),
-    )
-    monkeypatch.setattr(runner, "_require_existing_build_tables", lambda *_a, **_k: None)
-    monkeypatch.setattr(runner, "_publish_table_group", lambda *_a, **_k: actions)
-    monkeypatch.setattr(
-        runner.ubist_mart_activation,
-        "acquire_writer_lock",
-        lambda *_a, **kwargs: calls.append(("lock", kwargs)),
-    )
-    monkeypatch.setattr(
-        runner.ubist_mart_activation,
-        "release_writer_lock",
-        lambda *_a, **kwargs: calls.append(("unlock", kwargs)),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_restore_publication",
-        lambda *_a, **kwargs: calls.append(("restore", kwargs)),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_verify_existing_forecast",
-        lambda *_a: (_ for _ in ()).throw(RuntimeError("forecast gate broke")),
-    )
-
-    # When / Then: gate failure rolls back the table group and appends failed terminal.
-    with pytest.raises(RuntimeError, match="forecast gate broke"):
-        runner.run(manifest_path, request_id=REQUEST_ID, run_id=RUN_ID, ledger=ledger)
-    assert calls == [
-        (
-            "lock",
-            {
-                "timeout_seconds": 0,
-                "lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME,
-            },
-        ),
-        (
-            "restore",
-            {
-                "publication": runner.Publication("dst", actions),
-                "run_id": RUN_ID,
-            },
-        ),
-        (
-            "unlock",
-            {"lock_name": runner.ubist_mart_activation.WRITER_LOCK_NAME},
-        ),
-    ]
-    assert ledger.terminals[-1]["status"] == "failed"
-    assert ledger.stage_records[-1]["stage"] == "refresh"
-    assert ledger.stage_records[-1]["status"] == "failed"

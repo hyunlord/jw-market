@@ -297,6 +297,62 @@ def test_stage_runner_tees_masked_full_and_stage_logs(
     assert "password=[REDACTED]" in captured.out
 
 
+def test_stage_runner_launches_complete_reingest_without_changing_log_contract(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        stage_log_runner.db_credential_preflight,
+        "run_preflight",
+        lambda: None,
+    )
+    monkeypatch.setattr(stage_log_runner.config, "log_root", lambda: tmp_path / "logs")
+    observed: list[list[str]] = []
+
+    class FakeProcess:
+        stdout = iter(
+            [
+                "[stage] mart_build start\n",
+                "[stage] mart_build end rc=0\n",
+            ]
+        )
+
+        @staticmethod
+        def wait():
+            return 0
+
+    def popen(command, **_kwargs):
+        observed.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr(stage_log_runner.subprocess, "Popen", popen)
+
+    rc = stage_log_runner.run(
+        manifest=tmp_path / "manifest.json",
+        run_id="run1",
+        job_name="jw-complete-reingest-ubist-aaaaaaaa-run1",
+        runner="complete-reingest",
+        runner_args=("--epoch", "2026-06"),
+    )
+
+    assert rc == 0
+    assert observed == [
+        [
+            stage_log_runner.sys.executable,
+            "-m",
+            "pipeline.scripts.ingest_hook.complete_reingest_runner",
+            "--epoch",
+            "2026-06",
+        ]
+    ]
+    assert stage_logs.stage_log_path(
+        tmp_path / "logs",
+        job_name="jw-complete-reingest-ubist-aaaaaaaa-run1",
+        stage="mart_build",
+    ).read_text(encoding="utf-8") == (
+        "[stage] mart_build start\n[stage] mart_build end rc=0\n"
+    )
+
+
 def test_log_api_returns_success_and_explicit_missing_reason(
     sqlite_ledger, bucket, tmp_path: Path, monkeypatch
 ):
@@ -353,4 +409,161 @@ def test_log_api_returns_success_and_explicit_missing_reason(
         },
     )
     assert missing.status_code == 404
-    assert missing.json()["detail"]["reason"] == "log_not_available"
+    assert missing.json()["detail"]["reason"] == "log_not_preserved"
+
+
+def test_log_api_resolves_complete_reingest_job_name(
+    sqlite_ledger, tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "logs"
+    monkeypatch.setenv("INGEST_LOG_ROOT", str(root))
+    identity = ("2026-06", "ubist", "a" * 64)
+    request_id = "00cabf5f-2699-45ae-834e-8c06f948472e"
+    run_id = "20260810030405000000"
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-original",
+        run_id="20260809010101000000",
+    )
+    sqlite_ledger.mark_complete(*identity, row_counts={})
+    sqlite_ledger.record_complete_reingest_request(
+        *identity,
+        request_id=request_id,
+        run_id=run_id,
+        mode="mart_from_existing_raw",
+        requested_by="operator@example.test",
+        reason="logic changed",
+        affected_scope={"dimension": "source", "count": 1, "values": ["ubist"]},
+    )
+    name = job_launcher.complete_reingest_job_name(identity[1], identity[2], run_id)
+    sqlite_ledger.record_complete_reingest_started(
+        *identity,
+        request_id=request_id,
+        run_id=run_id,
+        job_name=name,
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id=run_id,
+        seq=2,
+        stage="mart_build",
+        status="complete",
+    )
+    target = stage_logs.stage_log_path(root, job_name=name, stage="mart_build")
+    stage_logs.ensure_log_file(target)
+    target.write_text("recompute=complete\n", encoding="utf-8")
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).get(
+        "/ingest/logs",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": run_id,
+            "stage": "mart_build",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "recompute=complete\n"
+
+
+def test_log_api_resolves_complete_reingest_job_for_companion_run(
+    sqlite_ledger, tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "logs"
+    monkeypatch.setenv("INGEST_LOG_ROOT", str(root))
+    identity = ("2026-06", "ubist", "b" * 64)
+    request_id = "3bd51130-356b-4458-8a45-d4ab8717c707"
+    run_id = "20260810040506000000"
+    companion_run_id = f"{run_id}:agent-refresh"
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(
+        *identity,
+        job_name="jw-ingest-ubist-original",
+        run_id="20260809010101000000",
+    )
+    sqlite_ledger.mark_complete(*identity, row_counts={})
+    sqlite_ledger.record_complete_reingest_request(
+        *identity,
+        request_id=request_id,
+        run_id=run_id,
+        mode="mart_from_existing_raw",
+        requested_by="operator@example.test",
+        reason="logic changed",
+        affected_scope={"dimension": "source", "count": 1, "values": ["ubist"]},
+    )
+    name = job_launcher.complete_reingest_job_name(identity[1], identity[2], run_id)
+    sqlite_ledger.record_complete_reingest_started(
+        *identity,
+        request_id=request_id,
+        run_id=run_id,
+        job_name=name,
+    )
+    sqlite_ledger.record_stage(
+        *identity,
+        run_id=companion_run_id,
+        seq=1,
+        stage="agent_refresh",
+        status="complete",
+    )
+    target = stage_logs.stage_log_path(root, job_name=name, stage="agent_refresh")
+    stage_logs.ensure_log_file(target)
+    target.write_text("agent-refresh=complete\n", encoding="utf-8")
+
+    response = TestClient(create_app(IngestService(sqlite_ledger, None))).get(
+        "/ingest/logs",
+        params={
+            "epoch": identity[0],
+            "category": identity[1],
+            "manifest_sha": identity[2],
+            "run_id": companion_run_id,
+            "stage": "agent_refresh",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "agent-refresh=complete\n"
+
+
+def test_log_api_distinguishes_expired_marker_from_lookup_failure(
+    sqlite_ledger, bucket, tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "logs"
+    monkeypatch.setenv("INGEST_LOG_ROOT", str(root))
+    manifest_path = write_submission(bucket)
+    service = IngestService(
+        sqlite_ledger,
+        bucket,
+        transport=lambda _path, _body: {},
+        now=lambda: "20260723120000123456",
+    )
+    payload = service.receive_webhook(str(manifest_path.relative_to(bucket)))
+    run_id = "20260723120000123456"
+    name = job_launcher.job_name("ubist", payload["manifest_sha"], run_id)
+    marker = stage_logs.expired_marker_path(root, job_name=name)
+    stage_logs.ensure_log_file(marker)
+    client = TestClient(create_app(service))
+    params = {
+        "epoch": payload["epoch"],
+        "category": "ubist",
+        "manifest_sha": payload["manifest_sha"],
+        "run_id": run_id,
+        "stage": "load",
+    }
+
+    expired = client.get("/ingest/logs", params=params)
+
+    assert expired.status_code == 410
+    assert expired.json()["detail"]["reason"] == "log_expired"
+
+    monkeypatch.setattr(
+        stage_logs,
+        "read_log_page",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("storage offline")),
+    )
+    failed = client.get("/ingest/logs", params=params)
+
+    assert failed.status_code == 503
+    assert failed.json()["detail"]["reason"] == "log_lookup_failed"

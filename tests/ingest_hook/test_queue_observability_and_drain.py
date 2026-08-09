@@ -65,6 +65,10 @@ def test_queue_list_exposes_exact_webhook_entries_without_portal_store(
         "started_at",
         "finished_at",
         "blocked_by_category",
+        "blocked_by_global",
+        "kind",
+        "queue_position",
+        "request_id",
         "requires_reconcile",
     }
     assert [
@@ -145,6 +149,58 @@ def test_queued_status_distinguishes_category_blocker(sqlite_ledger) -> None:
     payload = response.json()
     assert payload["blocked_by_category"] is True
     assert payload["requires_reconcile"] is False
+
+
+def test_queued_status_distinguishes_global_blocker_from_other_category(
+    sqlite_ledger,
+) -> None:
+    running = _seed(
+        sqlite_ledger,
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha="a" * 64,
+    )
+    sqlite_ledger.mark_running(
+        *running,
+        job_name="jw-ingest-ubist-aaaaaaaa-run",
+        run_id="run",
+    )
+    queued = _seed(
+        sqlite_ledger,
+        epoch="2026-Q1",
+        category="iqvia_nsa",
+        manifest_sha="b" * 64,
+    )
+    client = TestClient(create_app(IngestService(sqlite_ledger, None)))
+
+    status = client.get(
+        "/ingest/status",
+        params={
+            "epoch": queued[0],
+            "category": queued[1],
+            "manifest_sha": queued[2],
+        },
+    ).json()
+    queue_item = next(
+        item
+        for item in client.get("/ingest/queue").json()["items"]
+        if item["manifest_sha"] == queued[2]
+    )
+
+    assert status["blocked_by_global"] is True
+    assert status["blocked_by_category"] is False
+    assert status["requires_reconcile"] is False
+    assert status["category_blocker"] is None
+    assert status["global_blocker"] == {
+        "epoch": running[0],
+        "category": running[1],
+        "manifest_sha": running[2],
+        "run_id": "run",
+        "job_name": "jw-ingest-ubist-aaaaaaaa-run",
+    }
+    assert queue_item["blocked_by_global"] is True
+    assert queue_item["blocked_by_category"] is False
+    assert queue_item["requires_reconcile"] is False
 
 
 def test_unblocked_queued_status_requires_reconcile(sqlite_ledger) -> None:
@@ -238,13 +294,20 @@ def test_status_preserves_existing_keys_and_adds_only_queue_flags(
         "file_count",
         "classified_file_count",
         "inventory_file_counts",
+        "manifest_file_count",
+        "inventory_file_count",
+        "execution_period_from",
+        "execution_period_to",
         "current_stage",
         "stages",
         "signals",
         "log_ref",
         "blocked_by_category",
+        "blocked_by_global",
         "requires_reconcile",
         "category_blocker",
+        "global_blocker",
+        "queue_position",
         "expected_stages",
         "prepared",
     }
@@ -1059,10 +1122,22 @@ def test_terminal_callback_promotes_next_only_after_slot_release(
     assert status_payload["status"] == "running"
     assert status_payload["blocked_by_category"] is False
     assert status_payload["requires_reconcile"] is False
-    assert [item["stage"] for item in status_payload["expected_stages"]] == list(
-        job_runner._StageTracker.STAGES
-    )
-    assert len(status_payload["expected_stages"]) == 9
+    assert [item["stage"] for item in status_payload["expected_stages"]] == [
+        "job_submit",
+        "g3",
+        "load",
+        "load_verify",
+        "mart_build",
+        "sigma",
+        "post_gate",
+        "mart_publish",
+        "refresh",
+        "signal",
+        "agent_refresh",
+        "agent3",
+        "agent2",
+        "dashboard",
+    ]
 
 
 def test_failed_terminal_callback_promotes_next_after_failed_slot_release(
@@ -1262,7 +1337,7 @@ def test_startup_drain_recovers_queue_after_missed_terminal_callback(
     assert sqlite_ledger.status(*queued).status == "running"
     assert app.state.startup_queue_drain == {
         "launched": {
-            "ubist": sqlite_ledger.status(*queued).job_name,
+            "global": sqlite_ledger.status(*queued).job_name,
         },
         "errors": {},
     }
@@ -1326,7 +1401,6 @@ def test_concurrent_startup_drains_keep_one_running_per_category(
 
 
 def test_startup_drain_reports_one_category_failure_and_continues(
-    monkeypatch,
     sqlite_ledger,
     fake_transport,
 ) -> None:
@@ -1342,28 +1416,29 @@ def test_startup_drain_reports_one_category_failure_and_continues(
         category="iqvia_nsa",
         manifest_sha="b" * 64,
     )
+    submissions = 0
+
+    def fail_first_submission(url: str, body: dict) -> dict:
+        nonlocal submissions
+        submissions += 1
+        if submissions == 1:
+            raise RuntimeError("injected startup drain failure")
+        return fake_transport(url, body)
+
     service = IngestService(
         sqlite_ledger,
         None,
-        transport=fake_transport,
+        transport=fail_first_submission,
         now=lambda: "20260729060606000000",
     )
-    original_promote = service.promote
-
-    def failing_promote(category: str) -> str | None:
-        if category == "ubist":
-            raise RuntimeError("injected startup drain failure")
-        return original_promote(category)
-
-    monkeypatch.setattr(service, "promote", failing_promote)
     app = create_app(service)
 
     with TestClient(app) as client:
         assert client.get("/healthz").json() == {"ok": True}
 
     assert app.state.startup_queue_drain["launched"] == {
-        "iqvia_nsa": sqlite_ledger.status(*iqvia).job_name,
+        "global": sqlite_ledger.status(*iqvia).job_name,
     }
     assert app.state.startup_queue_drain["errors"] == {
-        "ubist": "RuntimeError: injected startup drain failure",
+        "global": "RuntimeError: injected startup drain failure",
     }
