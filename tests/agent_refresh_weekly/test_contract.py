@@ -115,6 +115,18 @@ def test_active_conflict_detection_excludes_the_owned_stage_job() -> None:
     assert find_active_conflicts([_job(owned)], owned_job=owned) == ()
 
 
+def test_active_conflict_detection_covers_labelled_complete_reingest_jobs() -> None:
+    reingest = _job("manual-reingest-ubist-abc")
+    reingest["metadata"]["labels"] = {
+        "app": "jw-complete-reingest",
+        "jw.ingest/category": "ubist",
+    }
+
+    assert find_active_conflicts([reingest]) == (
+        "manual-reingest-ubist-abc",
+    )
+
+
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
