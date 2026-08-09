@@ -775,33 +775,36 @@ def _contract(
             )
         else:
             general_view_intent, projection_question, projection_data, chart_payloads = projection
-            controlled = apply_answer_control_layer(
-                projection_question,
-                {
-                    "tool_calls": [
-                        {
-                            "tool": "bq_analysis",
-                            "source": market.source,
-                            "render_data": projection_data,
-                        }
-                    ]
-                },
-                "",
-            )
-            section = (
-                "## 일반뷰 (ATC4)\n\n"
-                f"{_general_view_metadata(market, window)}\n\n"
-                f"{controlled.answer}"
-                if controlled.applied
-                else _render_section(
-                    market,
-                    other_candidates=other_candidates,
-                    compact=compact,
-                    window=window,
-                    question=question,
-                    member_fields=member_fields,
+            if general_view_intent == "CAUSE_ANALYSIS":
+                section = _cause_markdown(projection_data)
+            else:
+                controlled = apply_answer_control_layer(
+                    projection_question,
+                    {
+                        "tool_calls": [
+                            {
+                                "tool": "bq_analysis",
+                                "source": market.source,
+                                "render_data": projection_data,
+                            }
+                        ]
+                    },
+                    "",
                 )
-            )
+                section = (
+                    "## 일반뷰 (ATC4)\n\n"
+                    f"{_general_view_metadata(market, window)}\n\n"
+                    f"{controlled.answer}"
+                    if controlled.applied
+                    else _render_section(
+                        market,
+                        other_candidates=other_candidates,
+                        compact=compact,
+                        window=window,
+                        question=question,
+                        member_fields=member_fields,
+                    )
+                )
     contract = {
         "mode": "dual" if dual else "general_only",
         "view_type": "general_view",
@@ -820,6 +823,9 @@ def _contract(
     if general_view_intent:
         contract["general_view_intent"] = general_view_intent
         contract["chart_payloads"] = chart_payloads
+        if general_view_intent == "CAUSE_ANALYSIS":
+            contract["dashboard_tables"] = projection_data["dashboard_tables"]
+            contract["cause_card_support"] = projection_data["cause_card_support"]
     if anchor:
         # A single-ATC4 metric answer knows which market it answered about, so it carries
         # the same anchor the member answer already carries. Without this the follow-up
@@ -863,6 +869,8 @@ def _general_view_projection(
     market: GeneralMarket,
     question: str,
 ) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]] | None:
+    if _asks_dynamic_cause_analysis(question):
+        return _cause_analysis_projection(market, question)
     intent = "MARKET_CONCENTRATION" if _asks_hhi(question) else intent_for_question(question).value
     if intent == "MARKET_SIZE_TREND":
         return _market_size_projection(market, question)
@@ -873,6 +881,139 @@ def _general_view_projection(
     if intent == "COMPETITION_CHANGE" or re.search(r"경쟁\s*구도", question):
         return _competition_projection(market)
     return None
+
+
+def _cause_analysis_projection(
+    market: GeneralMarket,
+    question: str,
+) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
+    source = str(market.source or "일반뷰")
+    tables = [*market.dashboard_tables, *_cause_series_tables(market)]
+    charts: list[dict[str, Any]] = []
+    if len(market.market_size_series) >= 2:
+        charts.append(
+            {
+                "scope": "MARKET",
+                "chart_type": "line",
+                "title": "시장 규모 추이",
+                "labels": [period for period, _ in market.market_size_series],
+                "datasets": [
+                    {
+                        "label": f"{source} 시장 규모",
+                        "data": [value for _, value in market.market_size_series],
+                        "unit": market.unit,
+                    }
+                ],
+                "source": source,
+                "unit": market.unit,
+                "evidence_refs": ["general_view_dynamic_market.render_data.market_size_series"],
+            }
+        )
+    if market.top_brands:
+        charts.append(
+            {
+                "scope": "MARKET",
+                "chart_type": "bar",
+                "title": "브랜드 점유율",
+                "labels": [row.brand for row in market.top_brands[:5]],
+                "datasets": [
+                    {
+                        "label": "점유율",
+                        "data": [row.share_pct for row in market.top_brands[:5]],
+                        "unit": "%",
+                    }
+                ],
+                "source": source,
+                "unit": "%",
+                "evidence_refs": ["general_view_dynamic_market.render_data.top_brands"],
+            }
+        )
+    data = {
+        "contract_id": "CAUSE_ANALYSIS",
+        "market": market.atc4_code,
+        "market_name": _public_atc4_market_label(market),
+        "period": market.period,
+        "source": source,
+        "dashboard_tables": tables,
+        "chart_payloads": charts,
+        "cause_card_support": _cause_card_support(market),
+        "evidence_refs": [
+            "general_view_dynamic_market.render_data.dashboard_tables",
+            "general_view_dynamic_market.render_data.chart_payloads",
+        ],
+    }
+    return "CAUSE_ANALYSIS", question, data, charts
+
+
+def _cause_series_tables(market: GeneralMarket) -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
+    if market.market_size_series:
+        tables.append(
+            {
+                "name": "시장 규모 추이",
+                "columns": ("기간", "시장 규모", "단위"),
+                "rows": tuple((period, value, market.unit) for period, value in market.market_size_series),
+            }
+        )
+    if market.hhi_series:
+        tables.append(
+            {
+                "name": "HHI 추이",
+                "columns": ("기간", "HHI"),
+                "rows": tuple((period, value) for period, value in market.hhi_series),
+            }
+        )
+    if market.top_brands:
+        tables.append(
+            {
+                "name": "브랜드 순위",
+                "columns": ("순위", "브랜드", "매출", "점유율(%)"),
+                "rows": tuple(
+                    (row.rank or index, row.brand, row.value, row.share_pct)
+                    for index, row in enumerate(market.top_brands[:5], 1)
+                ),
+            }
+        )
+    return tables
+
+
+def _cause_card_support(market: GeneralMarket) -> dict[str, bool]:
+    return {
+        "A1_market_size_growth": bool(market.market_size_series),
+        "A2_brand_ranking": bool(market.top_brands or market.market_share_trajectory),
+        "A3_hhi": market.hhi_recent is not None or bool(market.hhi_series),
+        "A4_company_ranking": bool(market.company_ranking_series),
+        "A5_company_concentration": bool(market.company_ranking_series),
+        "B1_ei_ms": bool(market.dashboard_tables),
+        "B2_growth_contribution_ms": market.growth_contribution is not None,
+        "C1_analysis_level_trend": bool(market.analysis_levels or market.analysis_level_market_status),
+        "D1_waterfall": market.growth_contribution is not None,
+        "D2_customer_competition": market.customer_competition_trend is not None,
+        "D3_level_top5": market.level_top5_trend is not None,
+    }
+
+
+def _cause_markdown(data: dict[str, Any]) -> str:
+    lines = ["## 원인분석", "", f"- 시장: {data['market_name']}", f"- 기준시점: {data['period']}"]
+    for table in data.get("dashboard_tables", []):
+        columns = tuple(str(column) for column in table.get("columns", ()))
+        rows = tuple(table.get("rows", ()))
+        if not columns or not rows:
+            continue
+        lines.extend(("", f"### {table.get('name') or '분석 결과'}", "", "| " + " | ".join(columns) + " |"))
+        lines.append("| " + " | ".join("---" for _ in columns) + " |")
+        lines.extend("| " + " | ".join(_format_cause_cell(value) for value in row) + " |" for row in rows)
+    return "\n".join(lines)
+
+
+def _format_cause_cell(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    if isinstance(value, int):
+        return f"{value:,}"
+    if value is None:
+        return "확인 불가"
+    return str(value)
 
 
 def _market_size_projection(
@@ -1525,6 +1666,11 @@ def _has_explicit_strategic_view_signal(normalized: str) -> bool:
 
 def _asks_hhi(question: str) -> bool:
     return "hhi" in _normalize(question)
+
+
+def _asks_dynamic_cause_analysis(question: str) -> bool:
+    normalized = _normalize(question)
+    return "원인분석" in normalized or "원인 분석" in question
 
 
 def _asks_market_metric(normalized: str) -> bool:

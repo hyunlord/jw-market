@@ -42,6 +42,121 @@ from jw_chat_agent_poc.tools.metrics.market_scope_helpers import (
 from jw_chat_agent_poc.tools.query_layer import StrategicQueryLayer
 
 
+def _strategic_cause_result(
+    question: str,
+    call: dict[str, Any],
+    *,
+    market_name: str,
+    brand: str = "",
+) -> dict[str, Any]:
+    data = dict(call.get("render_data") or {})
+    segments = [dict(row) for row in data.get("level_segments", ()) if isinstance(row, dict)]
+    tables: list[dict[str, Any]] = [
+        {
+            "name": "시장 핵심 지표",
+            "columns": ("기준시점", "시장 규모(억원)", "HHI"),
+            "rows": (
+                (
+                    data.get("period"),
+                    data.get("market_size_억원"),
+                    data.get("hhi_recent"),
+                ),
+            ),
+        }
+    ]
+    if segments:
+        tables.append(
+            {
+                "name": "브랜드 순위",
+                "columns": ("순위", "브랜드", "매출(억원)", "점유율(%)"),
+                "rows": tuple(
+                    (
+                        row.get("rank"),
+                        row.get("brand") or row.get("name"),
+                        row.get("value_억원"),
+                        row.get("ms_recent_pct"),
+                    )
+                    for row in segments[:10]
+                ),
+            }
+        )
+    charts = []
+    if segments:
+        charts.append(
+            {
+                "scope": "MARKET",
+                "chart_type": "bar",
+                "title": f"{market_name} 브랜드 순위",
+                "labels": [row.get("brand") or row.get("name") for row in segments[:5]],
+                "datasets": [
+                    {
+                        "label": "매출",
+                        "data": [row.get("value_억원") for row in segments[:5]],
+                        "unit": "억원",
+                    }
+                ],
+                "source": str(data.get("source_label") or call.get("source") or "전략 mart"),
+                "unit": "억원",
+                "evidence_refs": ["get_market_landscape.render_data.level_segments"],
+            }
+        )
+    data.update(
+        {
+            "dashboard_tables": tables,
+            "chart_payloads": charts,
+            "cause_card_support": {
+                "A1_market_size_growth": data.get("market_size_recent_krw") is not None,
+                "A2_brand_ranking": bool(segments),
+                "A3_hhi": data.get("hhi_recent") is not None,
+                "A4_company_ranking": False,
+                "A5_company_concentration": False,
+                "B1_ei_ms": False,
+                "B2_growth_contribution_ms": False,
+                "C1_analysis_level_trend": False,
+                "D1_waterfall": False,
+                "D2_customer_competition": False,
+                "D3_level_top5": bool(segments),
+            },
+        }
+    )
+    call = {**call, "render_data": data}
+    lines = ["## 원인분석", "", f"- 시장: {market_name}", f"- 기준시점: {data.get('period') or '확인 불가'}"]
+    for table in tables:
+        lines.extend(("", f"### {table['name']}", "", "| " + " | ".join(table["columns"]) + " |"))
+        lines.append("| " + " | ".join("---" for _ in table["columns"]) + " |")
+        for row in table["rows"]:
+            lines.append("| " + " | ".join(_cause_cell(value) for value in row) + " |")
+    resolution = {"market_id": str(data.get("market_id") or data.get("market") or ""), "market_name": market_name}
+    if brand:
+        resolution["canonical_brand"] = brand
+    return {
+        "question": question,
+        "resolution": resolution,
+        "decomposition": [{"intent": "cause_analysis", "view_type": "market_landscape"}],
+        "router_diagnostics": {
+            "deterministic": True,
+            "mode": "cause_analysis",
+            "scope": "market_landscape",
+            "reason": "strategic_market_direct_mart",
+        },
+        "tool_calls": [call],
+        "answer": "\n".join(lines),
+        "markdown_response": None,
+        "sources": [str(data.get("source_label") or call.get("source") or "전략 mart")],
+        "cause_analysis_ready": True,
+    }
+
+
+def _cause_cell(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:,.2f}"
+    if isinstance(value, int):
+        return f"{value:,}"
+    if value is None:
+        return "확인 불가"
+    return str(value)
+
+
 class MarketScopeResolver:
     def __init__(
         self,
@@ -131,6 +246,66 @@ class MarketScopeResolver:
 
     def answer_general(self, question: str, *, compact: bool, dual: bool) -> dict[str, Any]:
         return self._general_view.answer(question, compact=compact, dual=dual)
+
+    def answer_cause_analysis(self, question: str) -> dict[str, Any]:
+        """Resolve the requested market, then read its approved mart projection.
+
+        Strategic catalog membership owns strategic markets. Brands outside that
+        catalog stay on the existing dynamic ATC4 path; both branches read their
+        approved mart projection instead of a retired cache or HTTP cause route.
+        """
+
+        started_at = qa_trace_started_at()
+        if self._query_layer is not None:
+            try:
+                explicit_market = self._resolver.explicit_market(question)
+            except (LookupError, OSError, TypeError, ValueError):
+                explicit_market = None
+            if explicit_market is not None:
+                market_id, market_name = explicit_market
+                try:
+                    call = self._query_layer.market_scope_by_id(
+                        market_id,
+                        requested_period(question) or "latest",
+                        market_display_name=market_name,
+                    )
+                except (LookupError, TypeError, ValueError) as exc:
+                    return self._query_failed(
+                        exc,
+                        question,
+                        "get_market_landscape",
+                        market_name,
+                        started_at=qa_trace_started_at(),
+                    )
+                attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
+                return _strategic_cause_result(question, call, market_name=market_name)
+            try:
+                resolution = self._resolver.resolve(question, allow_default=False)
+            except (LookupError, UnsupportedBrandError, OSError, TypeError, ValueError):
+                resolution = None
+            if resolution is not None and (resolution.market_ids or resolution.market_id):
+                try:
+                    call = self._query_layer.market_scope_from_mart(resolution.canonical_brand)
+                except (LookupError, TypeError, ValueError) as exc:
+                    return self._query_failed(
+                        exc,
+                        question,
+                        "get_market_landscape",
+                        resolution.canonical_brand,
+                        started_at=qa_trace_started_at(),
+                    )
+                attach_tool_qa_trace(call, started_at=started_at, cache_hit=False)
+                return _strategic_cause_result(
+                    question,
+                    call,
+                    market_name=resolution.market_name or "해당 전략 시장",
+                    brand=resolution.canonical_brand,
+                )
+        result = self.answer_general(question, compact=False, dual=False)
+        result["cause_analysis_ready"] = not bool(
+            (result.get("general_view_contract") or {}).get("unavailable")
+        )
+        return result
 
     def answer(self, question: str, *, view_type: MarketView) -> dict[str, Any]:
         started_at = qa_trace_started_at()

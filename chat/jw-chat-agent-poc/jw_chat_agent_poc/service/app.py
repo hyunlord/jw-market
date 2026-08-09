@@ -260,7 +260,7 @@ from jw_chat_agent_poc.service.genos_client import (
     append_source_basis_notice,
     prepend_matching_requested_source_basis_from_result,
 )
-from jw_chat_agent_poc.service.general_view_routing import GeneralRoute
+from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, _asks_dynamic_cause_analysis
 from jw_chat_agent_poc.service.history_projection import (
     _env_bool,
     HistoryProjectionRuntime,
@@ -2357,6 +2357,8 @@ def _answer_without_pending(
     use_direct_agent_loop: bool = False,
     issue_context: tuple[str, ...] = (),
 ) -> dict:
+    if not documents and _asks_dynamic_cause_analysis(question):
+        return market_scope_resolver.answer_cause_analysis(question)
     route_method = getattr(market_scope_resolver, "general_route", None)
     with stage(None, "question_classification", "view selection"):
         route = route_method(question) if callable(route_method) else GeneralRoute.EXISTING
@@ -3642,6 +3644,47 @@ def _compute_final_answer(question: str, result: dict, conversation_id: str | No
     if enriched_markdown_response is not result.get("markdown_response"):
         result = {**result, "markdown_response": enriched_markdown_response}
     timing = ensure_timing(result)
+    if result.get("cause_analysis_ready"):
+        record_answer_delivery(
+            result,
+            answer_branch="dynamic_market_cause_analysis",
+            source_notice_attached=False,
+        )
+        answer = cleanup_markdown_answer(str(result.get("answer") or ""))
+        answer = _apply_evidence_binding_gate(active_question, answer, result)
+        authorization = issue_render_authorization(
+            result,
+            question=active_question,
+            answer=answer,
+            enforce_binding=_render_authorization_enforced(),
+        )
+        charts = filter_charts_for_binding(
+            build_charts(
+                result,
+                authorization=authorization,
+                question=active_question,
+                answer=answer,
+            ),
+            result=result,
+            question=active_question,
+        )
+        timing_payload = finish(timing)
+        trace = trace_envelope(
+            question=question,
+            result=result,
+            answer=answer,
+            charts=charts,
+            timing=timing_payload,
+            conversation_id=conversation_id,
+        )
+        return FinalAnswer(
+            text=answer,
+            charts=charts,
+            timing=timing_payload,
+            trace=trace,
+            sources=tuple(result.get("sources", ())),
+            conversation_id=conversation_id,
+        )
     if result.get("v3_cutover_ready"):
         record_answer_delivery(
             result,

@@ -9,6 +9,7 @@ ANSWER_BRANCHES = frozenset(
         "mixed",
         "conversation_fallback",
         "general_view_ready",
+        "dynamic_market_cause_analysis",
         "file_only",
         "typed_terminal",
         "typed_partial",
