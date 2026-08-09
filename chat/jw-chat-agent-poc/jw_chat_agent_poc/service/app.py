@@ -3510,6 +3510,7 @@ def _compute_external_passthrough_final_answer(
     answer = finalize_external_passthrough_answer(
         cleanup_markdown_answer(generated_answer),
         result,
+        question=question,
     )
     display_answer = finalize_display_markdown(answer)
     output_policy_decision = evaluate_output_leakage(display_answer)

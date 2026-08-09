@@ -69,6 +69,11 @@ _RECENT_WEB_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:최근|최신|개정|변경|뉴스|이슈)",
     re.IGNORECASE,
 )
+_FRESHNESS_REQUIRED_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:(?:최근|최신).{0,16}(?:개정|변경|고시|기준|내용)|"
+    r"(?:개정|변경|고시|기준).{0,16}(?:최근|최신))",
+    re.IGNORECASE,
+)
 _WEB_STAT_METRIC_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:유병률|환자\s*수|발생률|유병\s*환자|진료\s*인원|질환\s*환자)",
     re.IGNORECASE,
@@ -480,13 +485,11 @@ def _web_call_answers_question(question: str, call: Mapping[str, object]) -> boo
                 continue
             if _item_source_grade(item) is SourceGrade.UNVERIFIED:
                 continue
-            blob = " ".join(
-                str(item.get(key) or "") for key in ("title", "snippet")
-            )
+            blob = _web_item_body(item)
             if _WEB_STAT_METRIC_RE.search(blob) and _WEB_STAT_VALUE_RE.search(blob):
                 return True
         return False
-    if _RECENT_WEB_RE.search(question):
+    if _FRESHNESS_REQUIRED_RE.search(question):
         return any(
             isinstance(item, Mapping)
             and _parse_publication_date(
@@ -585,7 +588,10 @@ def _apply_web_result_policy(
     items = render_data.get("items")
     if not isinstance(items, list):
         return
-    recent_revision = bool(_RECENT_WEB_RE.search(question))
+    recent_revision = bool(_FRESHNESS_REQUIRED_RE.search(question))
+    disease_stat_question = bool(
+        _DISEASE_STAT_SUBJECT_RE.match(question) or _DISEASE_PATIENT_SUBJECT_RE.match(question)
+    )
     official_date = _official_reference_date(existing_calls)
     kept: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
@@ -605,6 +611,17 @@ def _apply_web_result_policy(
         if host in _PERSONAL_BLOG_HOSTS or any(host.endswith(f".{name}") for name in _PERSONAL_BLOG_HOSTS):
             rejected.append({"url": url, "reason": "personal_blog"})
             continue
+        if disease_stat_question:
+            if host in {"youtube.com", "www.youtube.com", "youtu.be"}:
+                rejected.append({"url": url, "reason": "video_not_quantitative_evidence"})
+                continue
+            body = _web_item_body(item)
+            if not _substantive_web_body(body):
+                rejected.append({"url": url, "reason": "body_extraction_failed"})
+                continue
+            if not (_WEB_STAT_METRIC_RE.search(body) and _WEB_STAT_VALUE_RE.search(body)):
+                rejected.append({"url": url, "reason": "requested_statistic_absent_from_body"})
+                continue
         published_date = _parse_publication_date(published_at)
         if recent_revision and published_date is None:
             rejected.append({"url": url, "reason": "published_at_required"})
@@ -618,6 +635,21 @@ def _apply_web_result_policy(
     render_data["official_reference_date"] = official_date.isoformat() if official_date else None
     render_data["source_precedence"] = "official_wins_web_conflict_disclosed_only"
     fallback_call["status"] = "live" if kept else "no_data"
+
+
+def _web_item_body(item: Mapping[str, object]) -> str:
+    return " ".join(
+        str(item.get(key) or "").strip()
+        for key in ("content", "snippet", "raw_content", "text")
+        if str(item.get(key) or "").strip()
+    )
+
+
+def _substantive_web_body(body: str) -> bool:
+    normalized = re.sub(r"\s+", " ", body).strip()
+    if len(normalized) < 24:
+        return False
+    return normalized.casefold() not in {"로그인", "login", "sign in"}
 
 
 def _item_source_grade(item: Mapping[str, object]) -> SourceGrade:

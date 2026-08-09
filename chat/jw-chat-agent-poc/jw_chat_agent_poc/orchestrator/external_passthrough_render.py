@@ -106,7 +106,14 @@ def external_passthrough_fallback_answer(result: Mapping[str, object]) -> str:
     return "\n".join(dict.fromkeys(lines)) or "외부 조회 결과에서 답변에 사용할 내용을 확인하지 못했습니다."
 
 
-def finalize_external_passthrough_answer(answer: str, result: Mapping[str, object]) -> str:
+def finalize_external_passthrough_answer(
+    answer: str,
+    result: Mapping[str, object],
+    *,
+    question: str = "",
+) -> str:
+    if "유병률" in question and not _has_web_prevalence_value(result):
+        return "국내 유병률 수치를 공식 통계에서 확인하지 못했습니다"
     body = _SOURCE_SECTION_RE.split(answer.strip(), maxsplit=1)[0].strip()
     body = _normalize_hira_no_data_wording(body, result)
     body = _separate_internal_and_web_blocks(body, result)
@@ -129,6 +136,29 @@ def finalize_external_passthrough_answer(answer: str, result: Mapping[str, objec
                 body = body.removeprefix(existing).lstrip()
         body = f"{disclosure}\n\n{body}".strip()
     return f"{body}\n\n{external_source_footer(result)}".strip()
+
+
+def _has_web_prevalence_value(result: Mapping[str, object]) -> bool:
+    metric = re.compile(r"(?:유병률|환자\s*수|발생률|유병\s*환자|진료\s*인원)", re.IGNORECASE)
+    value = re.compile(r"\d[\d,.]*\s*(?:%|명|건|만\s*명|억\s*명)", re.IGNORECASE)
+    for call in external_passthrough_calls(result):
+        if str(call.get("tool") or "").casefold() != "web_search":
+            continue
+        data = call.get("render_data")
+        items = data.get("items") if isinstance(data, Mapping) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            body = " ".join(
+                str(item.get(key) or "").strip()
+                for key in ("content", "snippet", "raw_content", "text")
+                if str(item.get(key) or "").strip()
+            )
+            if metric.search(body) and value.search(body):
+                return True
+    return False
 
 
 def _normalize_hira_no_data_wording(body: str, result: Mapping[str, object]) -> str:

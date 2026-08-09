@@ -268,18 +268,52 @@ def _e1_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
         key=lambda row: (str(row.get("date") or ""), str(row.get("title") or ""), str(row.get("url") or "")),
         reverse=True,
     )
-    if not rows:
-        return ()
-    source = "NEWS"
-    items = "; ".join(
-        f"{row.get('title')} ({row.get('date')}, {row.get('source')}) {row.get('url')}"
-        for row in rows
-    )
-    return (
-        _claim("capability_level", "현재 확인 가능한 외부 기사 항목을 조회했습니다.", source, refs),
-        _claim("selection_basis", "제목·날짜·매체·URL이 모두 확인된 항목만 포함했습니다.", source, refs),
-        _claim("result_items", items, source, refs),
-    )
+    claims: list[AnswerClaim] = []
+    metric = data.get("internal_brand_metric")
+    if isinstance(metric, Mapping):
+        source = str(metric.get("source") or "UBIST")
+        period = str(metric.get("period") or "")
+        sales = metric.get("sales_krw")
+        share = metric.get("share_pct")
+        rank = metric.get("rank")
+        population = metric.get("total_brands")
+        if isinstance(sales, (int, float)) and isinstance(share, (int, float)):
+            values = (
+                value_ref("sales", "KRW_SALES", sales, "KRW", "krw_eok_2"),
+                value_ref("share", "MARKET_SHARE_PCT", share, "PCT", "pct_2"),
+            )
+            position = (
+                f", {population}개 브랜드 중 {rank}위"
+                if isinstance(rank, int) and isinstance(population, int)
+                else f", {rank}위"
+                if isinstance(rank, int)
+                else ""
+            )
+            metric_refs = tuple(str(item) for item in metric.get("evidence_refs", ()) if str(item))
+            claims.append(
+                _claim(
+                    "internal_brand_metric",
+                    f"{source} {period} {metric.get('brand')} 매출 {{sales}}, 시장점유율 {{share}}{position}입니다.",
+                    source,
+                    metric_refs or (f"{source}.render_data.sales_krw",),
+                    period=period,
+                    values=values,
+                )
+            )
+    if rows:
+        source = "NEWS"
+        items = "; ".join(
+            f"{row.get('title')} ({row.get('date') or '게시일 미상'}, {row.get('source')}) {row.get('url')}"
+            for row in rows
+        )
+        claims.extend(
+            (
+                _claim("capability_level", "현재 확인 가능한 외부 기사 항목을 조회했습니다.", source, refs),
+                _claim("selection_basis", "제목·매체·URL이 확인된 항목을 포함하며, 게시일이 없으면 게시일 미상으로 표시합니다.", source, refs),
+                _claim("result_items", items, source, refs),
+            )
+        )
+    return tuple(claims)
 
 
 def _a2_claims(data: Mapping[str, Any]) -> tuple[AnswerClaim, ...]:
