@@ -1878,8 +1878,17 @@ def _hira_facts(tool: str, data: dict[str, Any]) -> str:
 def _hira_rows(data: dict[str, Any]) -> list[HiraRow]:
     rows: list[HiraRow] = []
     for item in items(data):
-        label = item.get("inpatOpat") or item.get("age") or item.get("grade") or item.get("lcName") or item.get("sickEngNm")
-        patient_count = item.get("ptntCnt") or item.get("specCnt") or "-"
+        label = (
+            item.get("patientTypeDisplay")
+            or item.get("inpatOpat")
+            or item.get("age")
+            or item.get("grade")
+            or item.get("lcName")
+            or item.get("sickEngNm")
+        )
+        patient_count = (
+            item.get("patientCountDisplay") or item.get("ptntCnt") or item.get("specCnt") or "-"
+        )
         year = surface_year(data, item)
         rows.append(
             (

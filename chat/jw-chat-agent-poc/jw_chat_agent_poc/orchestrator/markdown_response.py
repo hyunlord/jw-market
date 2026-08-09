@@ -295,11 +295,19 @@ class MarkdownResponseBuilder:
             for item in raw_items:
                 if not isinstance(item, dict):
                     continue
-                count = item.get("ptntCnt")
+                count = item.get("patientCountDisplay") or item.get("ptntCnt")
                 year = surface_year(render_data, item)
                 if not can_surface_derived_value(count, required_period=year):
                     continue
-                label = str(item.get("inpatOpat") or item.get("age") or item.get("grade") or item.get("lcName") or item.get("sickNm") or "대표")
+                label = str(
+                    item.get("patientTypeDisplay")
+                    or item.get("inpatOpat")
+                    or item.get("age")
+                    or item.get("grade")
+                    or item.get("lcName")
+                    or item.get("sickNm")
+                    or "대표"
+                )
                 return label, str(count), year
         return None
 

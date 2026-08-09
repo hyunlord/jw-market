@@ -187,13 +187,16 @@ class ExternalApiClient:
     def mfds_fda_orangebook(self, ingredient_en: str) -> ExternalCall:
         return self._fixture_or_live("mfds_fda_orangebook", {"ingr_name": ingredient_en.title()}, xml=True)
 
-    def hira_disease_name_code(self, sick_cd: str) -> ExternalCall:
+    def hira_disease_name_code(self, sick_cd: str, *, sick_type: str | None = None) -> ExternalCall:
         disease_type = "SICK_CD" if is_hira_disease_code(sick_cd) else "SICK_NM"
         if self.mode != "live":
             return _fixture_hira_disease_name_code(sick_cd, disease_type, self.fixtures["hira_disease_name_code"])
+        params = {"sickCd": sick_cd, "searchText": sick_cd, "diseaseType": disease_type}
+        if sick_type is not None:
+            params["sickType"] = sick_type
         call = self._fixture_or_live(
             "hira_disease_name_code",
-            {"sickCd": sick_cd, "searchText": sick_cd, "diseaseType": disease_type},
+            params,
             xml=True,
         )
         return self._with_source(call, HIRA_DISEASE_SOURCE)
@@ -204,7 +207,7 @@ class ExternalApiClient:
             {"sickCd": sick_cd, "year": year},
             xml=True,
         )
-        return self._with_source(call, HIRA_DISEASE_SOURCE)
+        return _aggregate_hira_patient_type_sexes(self._with_source(call, HIRA_DISEASE_SOURCE))
 
     def hira_disease_gender_age_stats(self, sick_cd: str, year: str = "2024") -> ExternalCall:
         call = self._fixture_or_live(
@@ -577,7 +580,7 @@ def _mcp_tool_spec(tool: str, params: dict[str, str]) -> dict[str, Any]:
                 {
                     "search_text": request_code or search_text,
                     "disease_type": disease_type,
-                    "sick_type": _hira_sick_type(request_code) or "1",
+                    "sick_type": params.get("sickType") or _hira_sick_type(request_code) or "1",
                     "med_tp": "1",
                     "num_of_rows": 10,
                 },
@@ -659,6 +662,103 @@ def is_hira_disease_code(text: str) -> bool:
     """Return whether text is exactly a KCD-like HIRA disease code, not a free-form query."""
 
     return re.fullmatch(r"\s*[A-Za-z]\d{2}(?:\.?\d{1,2})?\s*", text) is not None
+
+
+_HIRA_SEX_KEYS = ("sex", "sexCdNm", "sexNm", "sexName", "gender", "genderName")
+
+
+def _aggregate_hira_patient_type_sexes(call: ExternalCall) -> ExternalCall:
+    """Replace sex-split admission rows with explicit totals and breakdowns."""
+
+    raw_items = call.render_data.get("items")
+    if not isinstance(raw_items, list):
+        return call
+
+    grouped: dict[tuple[str, str, str], list[tuple[dict[str, Any], str, int]]] = {}
+    untouched: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        patient_type = str(item.get("inpatOpat") or "").strip()
+        sex = _hira_sex_label(item)
+        patient_count = _int_or_none(str(item.get("ptntCnt") or ""))
+        if not patient_type or not sex or patient_count is None:
+            untouched.append(item)
+            continue
+        key = (
+            patient_type,
+            str(item.get("sickCd") or "").strip(),
+            str(item.get("sickNm") or "").strip(),
+        )
+        grouped.setdefault(key, []).append((item, sex, patient_count))
+
+    aggregated: list[dict[str, Any]] = []
+    applied = False
+    sex_labels_exposed = False
+    for group in grouped.values():
+        distinct_sexes = {sex for _, sex, _ in group}
+        if len(group) < 2 or len(distinct_sexes) < 2:
+            aggregated.extend(_with_hira_explicit_sex(item, sex) for item, sex, _ in group)
+            sex_labels_exposed = True
+            continue
+        first = dict(group[0][0])
+        for key in _HIRA_SEX_KEYS:
+            first.pop(key, None)
+        breakdown = [
+            {"sex": sex, "ptntCnt": count}
+            for _, sex, count in sorted(group, key=lambda value: _hira_sex_sort_key(value[1]))
+        ]
+        total = sum(entry["ptntCnt"] for entry in breakdown)
+        breakdown_text = " + ".join(f"{entry['sex']} {entry['ptntCnt']:,}" for entry in breakdown)
+        first.update(
+            {
+                "ptntCnt": str(total),
+                "patientCountDisplay": f"{total:,} ({breakdown_text})",
+                "sexBreakdown": breakdown,
+                "sexAggregation": "sum",
+            }
+        )
+        aggregated.append(first)
+        applied = True
+
+    if not applied and not sex_labels_exposed:
+        return call
+    return ExternalCall(
+        tool=call.tool,
+        source=call.source,
+        status=call.status,
+        summary_text=call.summary_text,
+        render_data={
+            **call.render_data,
+            "items": [*aggregated, *untouched],
+            "totalCount": len(aggregated) + len(untouched),
+            "sex_aggregation_applied": applied,
+            "sex_labels_exposed": sex_labels_exposed,
+        },
+        safe_url=call.safe_url,
+        elapsed_ms=call.elapsed_ms,
+    )
+
+
+def _with_hira_explicit_sex(item: dict[str, Any], sex: str) -> dict[str, Any]:
+    return {**item, "patientTypeDisplay": f"{item.get('inpatOpat')}({sex})"}
+
+
+def _hira_sex_label(item: dict[str, Any]) -> str:
+    raw = next(
+        (item.get(key) for key in _HIRA_SEX_KEYS if item.get(key) not in (None, "")),
+        "",
+    )
+    normalized = str(raw).strip().casefold()
+    if normalized in {"1", "m", "male", "남", "남성", "남자"}:
+        return "남"
+    if normalized in {"2", "f", "female", "여", "여성", "여자"}:
+        return "여"
+    return str(raw).strip()
+
+
+def _hira_sex_sort_key(sex: str) -> tuple[int, str]:
+    return ({"남": 0, "여": 1}.get(sex, 2), sex)
 
 
 def _fixture_hira_disease_name_code(search_text: str, disease_type: str, data: dict[str, Any]) -> ExternalCall:

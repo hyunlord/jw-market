@@ -490,8 +490,17 @@ def _hira_stat_rows(data: dict[str, Any]) -> list[tuple[Any, Any, Any, Any, Any]
 
 def _hira_item_row(item: dict[str, Any], data: dict[str, Any] | None = None) -> tuple[Any, Any, Any, Any, Any] | None:
     source = data or {}
-    label = item.get("inpatOpat") or item.get("age") or item.get("grade") or item.get("lcName") or item.get("sickEngNm")
-    patient_count = item.get("ptntCnt") or item.get("specCnt") or "-"
+    label = (
+        item.get("patientTypeDisplay")
+        or item.get("inpatOpat")
+        or item.get("age")
+        or item.get("grade")
+        or item.get("lcName")
+        or item.get("sickEngNm")
+    )
+    patient_count = (
+        item.get("patientCountDisplay") or item.get("ptntCnt") or item.get("specCnt") or "-"
+    )
     year = surface_year(source, item)
     if not can_surface_derived_value(patient_count, required_period=year):
         return None

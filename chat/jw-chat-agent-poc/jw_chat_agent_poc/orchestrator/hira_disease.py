@@ -172,6 +172,9 @@ _HIRA_EXACT_DISEASE_ALIASES: dict[str, str] = {
     "A형 혈우병": "혈우",
     "혈청검사양성 류마티스관절염": "류마티스",
 }
+_HIRA_SIMILAR_DISEASE_QUERIES: dict[str, tuple[str, str]] = {
+    "당뇨망막병증": ("당뇨병성 망막병증", "2"),
+}
 _HIRA_ALIAS_POSTPOSITION = "의|은|는|이|가|을|를|에서|에|으로|로|와|과|도|만"
 
 
@@ -413,31 +416,56 @@ def hira_direct_disease_calls(question: str, disease_query: str, external: Exter
     """Resolve a user disease name/code through HIRA search_disease_code before stats."""
 
     resolution = resolve_hira_disease_code(disease_query, external)
+    similar_query: str | None = None
+    if isinstance(resolution, HiraDiseaseCodeAbsent):
+        retry = _similar_hira_disease_query(disease_query)
+        if retry is not None:
+            similar_query, sick_type = retry
+            resolution = resolve_hira_disease_code(similar_query, external, sick_type=sick_type)
     match resolution:
         case HiraDiseaseCodeResolved(search_call=search_call, candidate=candidate):
+            basis = f"HIRA search_disease_code 단일 후보({disease_query})"
+            if similar_query is not None:
+                basis = f"HIRA 유사 질환명 재조회({disease_query} → {similar_query})"
             mapping = _hira_mapping(
                 candidate.sick_cd,
                 candidate.disease_name,
-                f"HIRA search_disease_code 단일 후보({disease_query})",
+                basis,
             )
-            calls = [_with_hira_direct_search_context(search_call, candidate)]
+            calls = [
+                _with_hira_direct_search_context(
+                    search_call,
+                    candidate,
+                    original_query=disease_query,
+                    similar_query=similar_query,
+                )
+            ]
             calls.extend(
                 _with_hira_mapping_context(call, disease_query, mapping, 1, 1)
                 for call in _hira_stat_external_calls(question, external, candidate.sick_cd)
             )
             return calls
         case HiraDiseaseCodeAmbiguous(search_call=search_call, candidates=candidates):
-            return [_hira_code_ambiguous_call(disease_query, search_call, candidates)]
+            return [_hira_code_ambiguous_call(similar_query or disease_query, search_call, candidates)]
         case HiraDiseaseCodeAbsent(search_call=search_call, query=query):
-            return [_hira_code_absent_call(query, search_call)]
+            return [_hira_code_absent_call(disease_query if similar_query else query, search_call)]
         case HiraDiseaseCodeUnavailable(search_call=search_call):
             return [search_call]
         case unreachable:
             assert_never(unreachable)
 
 
-def resolve_hira_disease_code(disease_query: str, external: ExternalApiClient) -> HiraDiseaseCodeResolution:
-    search_call = external.hira_disease_name_code(disease_query)
+def resolve_hira_disease_code(
+    disease_query: str,
+    external: ExternalApiClient,
+    *,
+    sick_type: str | None = None,
+) -> HiraDiseaseCodeResolution:
+    search_call = (
+        external.hira_disease_name_code(disease_query)
+        if sick_type is None
+        else external.hira_disease_name_code(disease_query, sick_type=sick_type)
+    )
     candidates = _hira_candidates(search_call)
     if _hira_code_lookup_unavailable(search_call):
         return HiraDiseaseCodeUnavailable(search_call=search_call, query=disease_query)
@@ -446,6 +474,11 @@ def resolve_hira_disease_code(disease_query: str, external: ExternalApiClient) -
     if len(candidates) == 1:
         return HiraDiseaseCodeResolved(search_call=search_call, candidate=candidates[0])
     return HiraDiseaseCodeAmbiguous(search_call=search_call, candidates=candidates)
+
+
+def _similar_hira_disease_query(disease_query: str) -> tuple[str, str] | None:
+    normalized = re.sub(r"\s+", "", disease_query).casefold()
+    return _HIRA_SIMILAR_DISEASE_QUERIES.get(normalized)
 
 
 def _hira_external_calls(question: str, external: ExternalApiClient, sick_cd: str) -> tuple[ExternalCall, ...]:
@@ -475,7 +508,53 @@ def _hira_stat_call(
     period: str | None,
 ) -> ExternalCall:
     caller = getattr(external, request.tool)
-    return caller(sick_cd) if period is None else caller(sick_cd, period)
+    call = caller(sick_cd) if period is None else caller(sick_cd, period)
+    if period is None or (not _hira_call_unavailable(call) and not _hira_call_has_no_data(call)):
+        return _with_hira_stat_outcome(call, sick_cd, period, attempt_count=1)
+    retried = caller(sick_cd, period)
+    return _with_hira_stat_outcome(
+        retried,
+        sick_cd,
+        period,
+        attempt_count=2,
+        first_attempt_status=call.status,
+    )
+
+
+def _with_hira_stat_outcome(
+    call: ExternalCall,
+    sick_cd: str,
+    period: str | None,
+    *,
+    attempt_count: int,
+    first_attempt_status: str | None = None,
+) -> ExternalCall:
+    summary = call.summary_text
+    outcome = "success"
+    if _hira_call_unavailable(call):
+        outcome = "query_failed_after_retry" if attempt_count > 1 else "query_failed"
+        suffix = "(재시도함)" if attempt_count > 1 else ""
+        summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 조회 실패{suffix}."
+    elif _hira_call_has_no_data(call):
+        outcome = "data_absent_after_retry" if attempt_count > 1 else "data_absent"
+        summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 데이터 없음."
+    elif attempt_count > 1:
+        summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수를 재시도 후 조회했습니다."
+    return ExternalCall(
+        tool=call.tool,
+        source=call.source,
+        status=call.status,
+        summary_text=summary,
+        render_data={
+            **call.render_data,
+            "lookup_outcome": outcome,
+            "attempt_count": attempt_count,
+            "retry_attempted": attempt_count > 1,
+            "first_attempt_status": first_attempt_status,
+        },
+        safe_url=call.safe_url,
+        elapsed_ms=call.elapsed_ms,
+    )
 
 
 def _with_hira_direct_code_context(
@@ -487,8 +566,11 @@ def _with_hira_direct_code_context(
     period = str(request.get("year") or "") if isinstance(request, dict) else ""
     summary = call.summary_text
     if call.tool == _HIRA_STATISTICS:
-        if call.status.strip().casefold() == "no_data":
-            summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 조회 결과가 없습니다."
+        if _hira_call_unavailable(call):
+            suffix = "(재시도함)" if call.render_data.get("retry_attempted") is True else ""
+            summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 조회 실패{suffix}."
+        elif _hira_call_has_no_data(call):
+            summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 데이터 없음."
         else:
             summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 입원·외래 환자수를 조회했습니다."
     return ExternalCall(
@@ -621,9 +703,9 @@ def _hira_candidates(search_call: ExternalCall) -> tuple[HiraDiseaseCandidate, .
     return tuple(candidates)
 
 
-def _hira_code_lookup_unavailable(search_call: ExternalCall) -> bool:
-    status = search_call.status.strip().casefold()
-    error_code = str(search_call.render_data.get("error_code") or "").strip()
+def _hira_call_unavailable(call: ExternalCall) -> bool:
+    status = call.status.strip().casefold()
+    error_code = str(call.render_data.get("error_code") or "").strip()
     return status in {
         "error",
         "failed",
@@ -632,6 +714,14 @@ def _hira_code_lookup_unavailable(search_call: ExternalCall) -> bool:
         "tool_timeout",
         "deadline_exceeded",
     } or bool(error_code)
+
+
+def _hira_call_has_no_data(call: ExternalCall) -> bool:
+    return call.status.strip().casefold() == "no_data" and not _hira_call_unavailable(call)
+
+
+def _hira_code_lookup_unavailable(search_call: ExternalCall) -> bool:
+    return _hira_call_unavailable(search_call)
 
 
 def _candidate_dict(candidate: HiraDiseaseCandidate) -> dict[str, str]:
@@ -694,16 +784,31 @@ def _hira_code_absent_call(query: str, search_call: ExternalCall) -> ExternalCal
     )
 
 
-def _with_hira_direct_search_context(call: ExternalCall, candidate: HiraDiseaseCandidate) -> ExternalCall:
+def _with_hira_direct_search_context(
+    call: ExternalCall,
+    candidate: HiraDiseaseCandidate,
+    *,
+    original_query: str,
+    similar_query: str | None,
+) -> ExternalCall:
+    summary = f"HIRA search_disease_code에서 {candidate.sick_cd}({candidate.disease_name}) 단일 후보를 확인했습니다."
+    if similar_query is not None:
+        summary = (
+            f"HIRA search_disease_code에서 {original_query}의 유사 질환명 "
+            f"{similar_query}을 재조회해 {candidate.sick_cd}({candidate.disease_name})를 확인했습니다."
+        )
     return ExternalCall(
         tool=call.tool,
         source=call.source,
         status=call.status,
-        summary_text=f"HIRA search_disease_code에서 {candidate.sick_cd}({candidate.disease_name}) 단일 후보를 확인했습니다.",
+        summary_text=summary,
         render_data={
             **call.render_data,
             "resolved_sickCd": candidate.sick_cd,
             "resolved_disease_name": candidate.disease_name,
+            "original_query": original_query,
+            "similar_query": similar_query,
+            "similar_query_retry": similar_query is not None,
         },
         safe_url=call.safe_url,
         elapsed_ms=call.elapsed_ms,
@@ -717,11 +822,16 @@ def _with_hira_mapping_context(
     index: int,
     total: int,
 ) -> ExternalCall:
+    summary = (
+        call.summary_text
+        if _hira_call_unavailable(call) or _hira_call_has_no_data(call)
+        else _hira_call_summary(call.tool, mapping)
+    )
     return ExternalCall(
         tool=call.tool,
         source=call.source,
         status=call.status,
-        summary_text=_hira_call_summary(call.tool, mapping),
+        summary_text=summary,
         render_data={
             **call.render_data,
             "mapping_brand": brand,
