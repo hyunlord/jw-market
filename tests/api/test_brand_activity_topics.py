@@ -404,7 +404,7 @@ def test_sliced_topic_rows_require_classified_matching_stage_hash(monkeypatch) -
     assert "LEFT JOIN topic_totals" in sql
 
 
-def test_sliced_topic_identity_mismatch_is_explicit_and_warned(monkeypatch, caplog) -> None:
+def test_sliced_topic_identity_mismatch_reports_filter_unavailable(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
         topic_matrix,
         "_fetch_sliced_topic_rows",
@@ -437,7 +437,7 @@ def test_sliced_topic_identity_mismatch_is_explicit_and_warned(monkeypatch, capl
     assert item["topic_shares"] == []
     assert item["data_status"] == {
         "code": "identity_mismatch",
-        "label": "재분류 필요",
+        "label": "필터 적용 불가",
         "source_row_count": 686,
         "classified_row_count": 686,
         "guard_valid_row_count": 0,
@@ -448,31 +448,19 @@ def test_sliced_topic_identity_mismatch_is_explicit_and_warned(monkeypatch, capl
     assert "guard_valid_rows=0" in caplog.text
 
 
-def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeypatch) -> None:
+def test_post_topic_service_uses_stored_payload_without_keyword_filters(monkeypatch) -> None:
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
 
+    topic_row = _post_topic_row()
+    stored_payload = json.loads(topic_row["payload"])
+    stored_brand = stored_payload["brands"][0]
+    stored_brand["topic_shares"] = stored_brand.pop("top5_topic_shares")
+    topic_row["payload"] = json.dumps(stored_payload, ensure_ascii=False)
+
     def fake_fetch_all(sql: str, params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
-        if "row_topic_assignment" not in sql:
-            return [_post_topic_row()]
-        if params and "LIPITOR" in params:
-            return []
-        assert "k.visit_location IN" not in sql
-        assert "k.specialty IN" not in sql
-        assert "k.period_ym >=" not in sql
-        assert params == (
-            "atc4:C10A1",
-            "LIVALO",
-            "brand_activity_replay_20260703_125045",
-            "atc4:C10A1",
-            "atc4:C10A1",
-            "brand_activity_replay_20260703_125045",
-        )
-        return [
-            {"topic_id": "T02", "affected_row_count": 616, "brand_total_rows": 1307, "share_pct": "47.13"},
-            {"topic_id": "T01", "affected_row_count": 283, "brand_total_rows": 1307, "share_pct": "21.65"},
-            {"topic_id": "B1", "affected_row_count": 94, "brand_total_rows": 1307, "share_pct": "7.19"},
-        ]
+        assert "row_topic_assignment" not in sql
+        return [topic_row]
 
     monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
 
@@ -481,16 +469,17 @@ def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeyp
     assert payload is not None
     assert payload["scope"]["applied_filter"] == {"atc4": ["C10A1"]}
     assert payload["scope"]["sliced"] is False
-    assert payload["scope"]["filter_effect"]["payload"] == "row_topic_assignment_unfiltered"
+    assert payload["scope"]["filter_effect"]["payload"] == "mart_brand_activity_topics_unfiltered"
     assert payload["brands"][0]["brand_key"] == "리바로"
-    assert payload["brands"][0]["event_count"] == 1307
-    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T02", "label": "LDL 조절", "share_pct": 47.13, "row_count": 616}]
+    assert payload["brands"][0]["event_count"] == 473
+    assert payload["brands"][0]["topics"] == [{"rank": 1, "topic_id": "T01", "label": "당뇨 안전성", "share_pct": 62.5, "row_count": 616}]
     assert payload["brands"][0]["topic_shares"] == payload["brands"][0]["topics"]
     assert payload["brands"][0]["brand_specific_topics"] == [
-        {"topic_id": "B1", "label": "리바로 고유", "share_pct": 7.19, "row_count": 94, "definition": "리바로 특화"}
+        {"topic_id": "B1", "label": "리바로 고유", "share_pct": 12.5, "row_count": 123, "definition": "리바로 특화"}
     ]
     assert payload["brands"][1]["brand_key"] == "리피토"
     assert payload["brands"][1]["topics"] == []
+    assert payload["brands"][1]["data_status"] == {"code": "source_absent", "label": "데이터 없음"}
 
 
 def test_post_topic_service_slices_topics_from_row_assignments(monkeypatch) -> None:
