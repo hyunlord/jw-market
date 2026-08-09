@@ -939,8 +939,11 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
     primary_calls = tuple(call for call in calls if call.get("tool") != "agent_calculation")
     result_calls = tuple(call for call in primary_calls if not _is_query_plan_call(call))
     selected_calls = result_calls or primary_calls or calls
-    concentration_calls = tuple(call for call in selected_calls if _is_concentration_call(call))
-    if concentration_calls and _find_hhi(concentration_calls) is not None:
+    explicit_concentration_calls = tuple(
+        call for call in selected_calls if _is_concentration_call(call)
+    )
+    concentration_calls = _concentration_evidence_calls(selected_calls)
+    if explicit_concentration_calls and _find_hhi(concentration_calls) is not None:
         rows = provenance_rows_from_calls(concentration_calls, ())
         return _bind_concentration_scope(rows, concentration_calls)
     return provenance_rows_from_calls(selected_calls, ())
@@ -952,15 +955,29 @@ def _is_concentration_call(call: Mapping[str, Any]) -> bool:
     return metric in {"hhi", "cr5", "market_top_brands"}
 
 
+def _concentration_evidence_calls(
+    calls: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Collect every call that supplied the HHI or Top-5 calculation surface."""
+
+    return tuple(
+        call
+        for call in calls
+        if _is_concentration_call(call)
+        or _find_hhi((call,)) is not None
+        or len(_top_shares((call,), 5)) >= 5
+    )
+
+
 def _concentration_scope_values(
     calls: Sequence[Mapping[str, Any]],
 ) -> tuple[frozenset[str], frozenset[str], frozenset[int]]:
     market_ids: set[str] = set()
     market_names: set[str] = set()
-    denominators: set[int] = set()
-    for call in calls:
-        if not _is_concentration_call(call):
-            continue
+    full_denominators: set[int] = set()
+    fallback_denominators: set[int] = set()
+    evidence_calls = _concentration_evidence_calls(calls) or tuple(calls)
+    for call in evidence_calls:
         data = _render_data(call)
         query_spec_value = data.get("query_spec")
         query_spec = query_spec_value if isinstance(query_spec_value, Mapping) else {}
@@ -982,15 +999,24 @@ def _concentration_scope_values(
         )
         if market_name != MISSING_LABEL:
             market_names.add(market_name)
-        raw_denominator = data.get("total_brands_in_market")
-        if raw_denominator in (None, ""):
-            raw_denominator = query_spec.get("total_brands_in_market")
-        try:
-            denominator = int(raw_denominator)
-        except (TypeError, ValueError):
-            continue
-        if denominator > 0:
-            denominators.add(denominator)
+        for raw_denominator, target in (
+            (
+                data.get("total_brands_in_market") or data.get("market_brand_count"),
+                full_denominators,
+            ),
+            (
+                query_spec.get("total_brands_in_market")
+                or query_spec.get("market_brand_count"),
+                fallback_denominators,
+            ),
+        ):
+            try:
+                denominator = int(raw_denominator)
+            except (TypeError, ValueError):
+                continue
+            if denominator > 0:
+                target.add(denominator)
+    denominators = full_denominators or fallback_denominators
     return frozenset(market_ids), frozenset(market_names), frozenset(denominators)
 
 

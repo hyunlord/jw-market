@@ -134,7 +134,9 @@ def _strategic_concentration_calls(
             "source": "UBIST",
             "render_data": {
                 **common,
-                "metric": "hhi",
+                # The final assembler receives the HHI on a regular metric call.
+                # A separate explicit concentration call contributes the Top-5 rows.
+                "metric": "sales",
                 "unit_label": "index",
                 "hhi_recent": hhi,
                 "total_brands_in_market": denominator,
@@ -156,6 +158,11 @@ def _strategic_concentration_calls(
                 "level_segments": ranked,
                 # The deployed producer omits this field on the top-N call.
                 # The concentration contract must bind both calls to the HHI scope.
+                "query_spec": (
+                    {"total_brands_in_market": class_split_denominator}
+                    if class_split_denominator is not None
+                    else {}
+                ),
             },
         },
     ]

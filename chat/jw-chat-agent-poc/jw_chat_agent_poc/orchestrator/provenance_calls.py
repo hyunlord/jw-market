@@ -159,8 +159,8 @@ def _brand_label(
 def _denominator_label(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -> Any:
     if _is_concentration_scope(data, query_spec):
         full_market_denominator = _first_value(
-            query_spec,
             data,
+            query_spec,
             keys=("total_brands_in_market", "market_brand_count"),
         )
         if full_market_denominator not in (None, ""):
