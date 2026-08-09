@@ -138,6 +138,7 @@ _SLOT_ROWS = (
     _slot("capability_level", SlotKind.SCOPE, "조회 범위", "조회 가능 범위"),
     _slot("selection_basis", SlotKind.SCOPE, "선정 기준", "결과 선정 기준"),
     _slot("result_items", SlotKind.FACT, "최근 이슈", "최근 이슈 데이터"),
+    _slot("internal_brand_metric", SlotKind.FACT, "내부 정형 지표", "내부 정형 지표"),
 )
 SLOT_SPECS: Final = MappingProxyType({item.id: item for item in _SLOT_ROWS})
 
@@ -209,7 +210,7 @@ QUESTION_CONTRACTS: Final = MappingProxyType({
     AnswerIntent.EXTERNAL_LOOKUP: _spec(
         AnswerIntent.EXTERNAL_LOOKUP,
         ("capability_level", "selection_basis", "result_items"),
-        ("total_count", "shown_count", "filters", "missingness"),
+        ("total_count", "shown_count", "filters", "missingness", "internal_brand_metric"),
         ("sample_as_complete_analysis",),
     ),
 })

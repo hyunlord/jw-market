@@ -69,6 +69,11 @@ _RECENT_WEB_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:최근|최신|개정|변경|뉴스|이슈)",
     re.IGNORECASE,
 )
+_FRESHNESS_REQUIRED_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:(?:최근|최신).{0,16}(?:개정|변경|고시|기준|내용)|"
+    r"(?:개정|변경|고시|기준).{0,16}(?:최근|최신))",
+    re.IGNORECASE,
+)
 _WEB_STAT_METRIC_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:유병률|환자\s*수|발생률|유병\s*환자|진료\s*인원|질환\s*환자)",
     re.IGNORECASE,
@@ -188,7 +193,9 @@ def prepare_external_passthrough(
         str(call.get("tool") or "").strip().casefold() == "web_search"
         for call in calls
     ) and not core_web_present
-    web_fallback_attempted = bool(failed_official_tools) or failed_web_search
+    web_fallback_attempted = (
+        bool(failed_official_tools) or failed_web_search
+    ) and not _exact_hira_patient_count_question(question)
     web_fallback_used = web_fallback_attempted and usable_web_present
     fallback_queries: list[str] = []
     if web_fallback_attempted and not core_web_present:
@@ -240,6 +247,7 @@ def prepare_external_passthrough(
             [*prior_sources, *_source_names(calls)]
         )
     )
+    status_diagnostics = _external_status_diagnostics(calls)
     diagnostics = dict(payload.get("router_diagnostics") or {})
     diagnostics["external_passthrough"] = {
         "enabled": True,
@@ -247,6 +255,7 @@ def prepare_external_passthrough(
         "web_fallback_used": web_fallback_used,
         "failed_official_tools": list(failed_official_tools),
         "fallback_queries": fallback_queries,
+        **status_diagnostics,
     }
     return {
         **payload,
@@ -261,6 +270,7 @@ def prepare_external_passthrough(
             "web_fallback_used": web_fallback_used,
             "failed_official_tools": list(failed_official_tools),
             "fallback_queries": fallback_queries,
+            **status_diagnostics,
         },
     }
 
@@ -294,6 +304,13 @@ def external_passthrough_needs_core_assessment(result: Mapping[str, object]) -> 
     if not isinstance(marker, Mapping) or marker.get("web_fallback_used") is True:
         return False
     calls = external_passthrough_calls(result)
+    if any(
+        str(call.get("tool") or "").startswith("hira_disease_")
+        and isinstance(call.get("render_data"), Mapping)
+        and call["render_data"].get("direct_code_lookup") is True
+        for call in calls
+    ):
+        return False
     return not any(_usable_web_call(call) for call in calls) and any(
         _is_official_tool(call) and external_call_has_usable_result(call)
         for call in calls
@@ -325,6 +342,7 @@ def append_external_web_fallback(
     )
     web_fallback_used = any(_usable_web_call(call) for call in calls)
     marker = dict(payload.get(EXTERNAL_PASSTHROUGH_FIELD) or {})
+    status_diagnostics = _external_status_diagnostics(calls)
     marker.update(
         {
             "enabled": True,
@@ -332,6 +350,7 @@ def append_external_web_fallback(
             "web_fallback_used": web_fallback_used,
             "fallback_reason": reason,
             "fallback_queries": fallback_queries,
+            **status_diagnostics,
         }
     )
     diagnostics = dict(payload.get("router_diagnostics") or {})
@@ -343,6 +362,7 @@ def append_external_web_fallback(
             "web_fallback_used": web_fallback_used,
             "fallback_reason": reason,
             "fallback_queries": fallback_queries,
+            **status_diagnostics,
         }
     )
     diagnostics["external_passthrough"] = passthrough_diagnostics
@@ -364,6 +384,43 @@ def append_external_web_fallback(
 def _is_official_tool(call: Mapping[str, object]) -> bool:
     tool = str(call.get("tool") or "").strip().casefold()
     return tool.startswith(_OFFICIAL_TOOL_PREFIXES)
+
+
+def _exact_hira_patient_count_question(question: str) -> bool:
+    return bool(re.search(r"환자\s*수|입원|외래", question)) and "유병률" not in question
+
+
+def _external_status_diagnostics(
+    calls: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    statuses = tuple(external_result_status(call) for call in calls)
+    failed = tuple(
+        str(call.get("tool") or "unknown")
+        for call, status in zip(calls, statuses, strict=True)
+        if status in {"HARD_FAIL", "EMPTY", "SEMANTIC_EMPTY"}
+    )
+    usable = sum(status == "PARTIAL" for status in statuses)
+    if not calls:
+        external_status = "EMPTY"
+    elif not failed:
+        external_status = "VERIFIED"
+    elif usable:
+        external_status = "PARTIAL"
+    else:
+        external_status = statuses[0] if len(set(statuses)) == 1 else "HARD_FAIL"
+    reasons = tuple(
+        dict.fromkeys(
+            str(call.get("render_data", {}).get("error") or call.get("summary_text") or status)
+            for call, status in zip(calls, statuses, strict=True)
+            if status in {"HARD_FAIL", "EMPTY", "SEMANTIC_EMPTY"}
+            and isinstance(call.get("render_data"), Mapping)
+        )
+    )
+    return {
+        "external_status": external_status,
+        "failed_dimensions": list(dict.fromkeys(failed)),
+        "failure_reason": "; ".join(reasons),
+    }
 
 
 def _diagnostic_external_tools(payload: Mapping[str, object]) -> tuple[str, ...]:
@@ -475,18 +532,21 @@ def _web_call_answers_question(question: str, call: Mapping[str, object]) -> boo
         return False
     subject_match = _DISEASE_STAT_SUBJECT_RE.match(question) or _DISEASE_PATIENT_SUBJECT_RE.match(question)
     if subject_match is not None:
+        subject = subject_match.group("subject").strip()
         for item in items:
             if not isinstance(item, Mapping):
                 continue
             if _item_source_grade(item) is SourceGrade.UNVERIFIED:
                 continue
-            blob = " ".join(
-                str(item.get(key) or "") for key in ("title", "snippet")
-            )
-            if _WEB_STAT_METRIC_RE.search(blob) and _WEB_STAT_VALUE_RE.search(blob):
+            blob = _web_item_body(item)
+            if (
+                _disease_subject_relevant(subject, blob)
+                and _WEB_STAT_METRIC_RE.search(blob)
+                and _WEB_STAT_VALUE_RE.search(blob)
+            ):
                 return True
         return False
-    if _RECENT_WEB_RE.search(question):
+    if _FRESHNESS_REQUIRED_RE.search(question):
         return any(
             isinstance(item, Mapping)
             and _parse_publication_date(
@@ -585,7 +645,12 @@ def _apply_web_result_policy(
     items = render_data.get("items")
     if not isinstance(items, list):
         return
-    recent_revision = bool(_RECENT_WEB_RE.search(question))
+    recent_revision = bool(_FRESHNESS_REQUIRED_RE.search(question))
+    disease_stat_question = bool(
+        _DISEASE_STAT_SUBJECT_RE.match(question) or _DISEASE_PATIENT_SUBJECT_RE.match(question)
+    )
+    subject_match = _DISEASE_STAT_SUBJECT_RE.match(question) or _DISEASE_PATIENT_SUBJECT_RE.match(question)
+    disease_subject = subject_match.group("subject").strip() if subject_match else ""
     official_date = _official_reference_date(existing_calls)
     kept: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
@@ -605,6 +670,23 @@ def _apply_web_result_policy(
         if host in _PERSONAL_BLOG_HOSTS or any(host.endswith(f".{name}") for name in _PERSONAL_BLOG_HOSTS):
             rejected.append({"url": url, "reason": "personal_blog"})
             continue
+        if disease_stat_question:
+            if grade is SourceGrade.UNVERIFIED:
+                rejected.append({"url": url, "reason": "authority_required"})
+                continue
+            if host in {"youtube.com", "www.youtube.com", "youtu.be"}:
+                rejected.append({"url": url, "reason": "video_not_quantitative_evidence"})
+                continue
+            body = _web_item_body(item)
+            if not _substantive_web_body(body):
+                rejected.append({"url": url, "reason": "body_extraction_failed"})
+                continue
+            if not (_WEB_STAT_METRIC_RE.search(body) and _WEB_STAT_VALUE_RE.search(body)):
+                rejected.append({"url": url, "reason": "requested_statistic_absent_from_body"})
+                continue
+            if not _disease_subject_relevant(disease_subject, body):
+                rejected.append({"url": url, "reason": "disease_relevance_mismatch"})
+                continue
         published_date = _parse_publication_date(published_at)
         if recent_revision and published_date is None:
             rejected.append({"url": url, "reason": "published_at_required"})
@@ -618,6 +700,35 @@ def _apply_web_result_policy(
     render_data["official_reference_date"] = official_date.isoformat() if official_date else None
     render_data["source_precedence"] = "official_wins_web_conflict_disclosed_only"
     fallback_call["status"] = "live" if kept else "no_data"
+
+
+def _web_item_body(item: Mapping[str, object]) -> str:
+    return " ".join(
+        str(item.get(key) or "").strip()
+        for key in ("content", "snippet", "raw_content", "text")
+        if str(item.get(key) or "").strip()
+    )
+
+
+def _substantive_web_body(body: str) -> bool:
+    normalized = re.sub(r"\s+", " ", body).strip()
+    if len(normalized) < 24:
+        return False
+    return normalized.casefold() not in {"로그인", "login", "sign in"}
+
+
+def _disease_subject_relevant(subject: str, body: str) -> bool:
+    normalize = lambda value: re.sub(r"[^0-9a-z가-힣]", "", value.casefold()).replace("성", "")
+    normalized_subject = normalize(subject)
+    normalized_body = normalize(body)
+    if normalized_subject and normalized_subject in normalized_body:
+        return True
+    medical_tokens = tuple(
+        token
+        for token in ("당뇨", "망막", "황반", "혈소판", "자반", "뇌경색", "유병")
+        if token in normalized_subject
+    )
+    return len(medical_tokens) >= 2 and all(token in normalized_body for token in medical_tokens)
 
 
 def _item_source_grade(item: Mapping[str, object]) -> SourceGrade:

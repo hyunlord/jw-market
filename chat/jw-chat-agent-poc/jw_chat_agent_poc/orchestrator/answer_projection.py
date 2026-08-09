@@ -279,7 +279,19 @@ def _controlled_result(
     finalized = finalize_answer(spec, plan, claims, ())
     rendered_claims = tuple((spec.slot_spec(claim.slot_id).user_label, render_claim(claim)) for claim in claims)
     table = ""
-    if rendered_claims:
+    answer_body = finalized.answer
+    if spec.intent.value == "EXTERNAL_LOOKUP":
+        internal = [text for slot, text in rendered_claims if slot == "내부 정형 지표"]
+        news = [text for slot, text in rendered_claims if slot != "내부 정형 지표"]
+        answer_body = "\n\n".join(
+            block
+            for block in (
+                "\n\n".join(("## 내부 정형 지표", *internal)) if internal else "",
+                "\n\n".join(("## 뉴스·외부 이슈", *news)) if news else "",
+            )
+            if block
+        )
+    elif rendered_claims:
         table = "\n".join((
             "## 핵심 결과",
             "| 항목 | 내용 |",
@@ -297,7 +309,7 @@ def _controlled_result(
             "| --- | --- |",
             *(f"| {_escape_cell(source)} | {_escape_cell(period or '해당 조회')} |" for source, period in source_rows),
         ))
-    answer = "\n\n".join(block for block in (finalized.answer, table, limitation_block, source_block) if block)
+    answer = "\n\n".join(block for block in (answer_body, table, limitation_block, source_block) if block)
     evidence_ids = tuple(sorted({evidence_id for claim in claims for evidence_id in claim.evidence_ids}))
     source_labels = tuple(sorted({claim.source for claim in claims if claim.source}))
     return ControlLayerResult(
@@ -472,7 +484,15 @@ def validate_controlled_surface(
         chart_refs = frozenset(str(item) for item in refs if str(item)) if isinstance(refs, list) else frozenset()
         if not chart_refs or not chart_refs.issubset(allowed):
             raise AnswerGateError("chart_evidence_unentitled")
-    if answer_status != "unsupported" and "| 항목 | 내용 |" not in answer:
+    has_external_blocks = any(
+        heading in answer
+        for heading in ("## 내부 정형 지표", "## 뉴스·외부 이슈")
+    )
+    if (
+        answer_status != "unsupported"
+        and "| 항목 | 내용 |" not in answer
+        and not has_external_blocks
+    ):
         raise AnswerGateError("required_artifact_missing")
 
 

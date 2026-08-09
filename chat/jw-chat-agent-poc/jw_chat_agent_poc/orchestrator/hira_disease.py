@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
+import random
 import re
+import time
 from typing import Final, Protocol, TypeAlias, TypedDict, assert_never
 
 from jw_chat_agent_poc.common.periods import requested_period
@@ -27,6 +30,7 @@ class HiraUnsuitable(TypedDict):
 
 HiraMappingEntry: TypeAlias = HiraMapping | tuple[HiraMapping, ...]
 HIRA_TREND_YEARS = tuple(str(year) for year in range(2020, 2025))
+HIRA_MULTIYEAR_DEADLINE_S: Final = 35.0
 DISEASE_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(?P<code>[A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
 
 
@@ -494,11 +498,45 @@ def _hira_stat_external_calls(question: str, external: ExternalApiClient, sick_c
     This used to decide for itself on one keyword and otherwise call all four,
     including three banded tables the verification contract never required.
     """
-    return tuple(
-        _hira_stat_call(request, external, sick_cd, period)
+    tasks = tuple(
+        (request, period)
         for request in hira_stat_requests(question)
         for period in (request.periods or (None,))
     )
+    if len(tasks) <= 1:
+        return tuple(_hira_stat_call(request, external, sick_cd, period) for request, period in tasks)
+
+    executor = ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="hira-year")
+    started = time.monotonic()
+    futures = [
+        executor.submit(_hira_stat_call, request, external, sick_cd, period)
+        for request, period in tasks
+    ]
+    done, pending = wait(futures, timeout=HIRA_MULTIYEAR_DEADLINE_S)
+    calls: list[ExternalCall] = []
+    for (request, period), future in zip(tasks, futures, strict=True):
+        if future in done:
+            calls.append(future.result())
+            continue
+        future.cancel()
+        calls.append(
+            ExternalCall(
+                tool=request.tool,
+                source="hira_disease",
+                status="deadline_exceeded",
+                summary_text=f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 조회 실패(35초 기한 초과).",
+                render_data={
+                    "request": {"sick_cd": sick_cd, "year": period},
+                    "lookup_outcome": "query_failed_deadline",
+                    "attempt_count": 1,
+                    "retry_attempted": False,
+                    "deadline_s": HIRA_MULTIYEAR_DEADLINE_S,
+                    "batch_elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                },
+            )
+        )
+    executor.shutdown(wait=False, cancel_futures=True)
+    return tuple(calls)
 
 
 def _hira_stat_call(
@@ -509,8 +547,9 @@ def _hira_stat_call(
 ) -> ExternalCall:
     caller = getattr(external, request.tool)
     call = caller(sick_cd) if period is None else caller(sick_cd, period)
-    if not _hira_call_unavailable(call) and not _hira_call_has_no_data(call):
+    if not _hira_retryable_failure(call):
         return _with_hira_stat_outcome(call, sick_cd, period, attempt_count=1)
+    time.sleep(random.uniform(0.3, 0.8))
     retried = caller(sick_cd) if period is None else caller(sick_cd, period)
     return _with_hira_stat_outcome(
         retried,
@@ -518,6 +557,28 @@ def _hira_stat_call(
         period,
         attempt_count=2,
         first_attempt_status=call.status,
+    )
+
+
+def _hira_retryable_failure(call: ExternalCall) -> bool:
+    status = call.status.strip().casefold()
+    detail = " ".join(
+        str(call.render_data.get(key) or "")
+        for key in ("error", "error_code", "error_message", "message")
+    ).casefold()
+    return status in {"timeout", "tool_timeout", "deadline_exceeded"} or any(
+        token in detail
+        for token in (
+            "429",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "connection interrupted",
+        )
     )
 
 

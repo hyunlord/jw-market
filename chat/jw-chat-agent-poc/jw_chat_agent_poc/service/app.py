@@ -71,6 +71,7 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
 )
 from jw_chat_agent_poc.orchestrator.final_surface_assembly import apply_final_surface_assembly
 from jw_chat_agent_poc.orchestrator.external_passthrough import (
+    EXTERNAL_PASSTHROUGH_FIELD,
     append_external_web_fallback,
     external_passthrough_needs_core_assessment,
     is_external_passthrough_result,
@@ -3294,6 +3295,44 @@ def _run_legacy_answer_stages(answer: str, stages: Iterable[Any]) -> str:
     return answer
 
 
+def _controlled_block_diagnostics(
+    result: Mapping[str, Any],
+    controlled: ControlLayerResult,
+) -> dict[str, int]:
+    """Expose stable block counters without allowing missing values to fail delivery."""
+
+    analysis: Mapping[str, Any] = {}
+    raw_calls = result.get("tool_calls")
+    if isinstance(raw_calls, list):
+        analysis = next(
+            (
+                data
+                for call in raw_calls
+                if isinstance(call, Mapping) and call.get("tool") == "bq_analysis"
+                for data in (call.get("render_data"),)
+                if isinstance(data, Mapping) and data.get("contract_id") == "E1"
+            ),
+            {},
+        )
+
+    def counter(name: str) -> int:
+        value = analysis.get(name, 0)
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    filled = frozenset(controlled.filled_slots)
+    internal_count = counter("internal_metric_claim_count")
+    rendered_blocks = int(internal_count > 0) + int("result_items" in filled)
+    return {
+        "news_raw_count": counter("news_raw_count"),
+        "news_after_filter_count": counter("news_after_filter_count"),
+        "internal_metric_claim_count": internal_count,
+        "rendered_block_count": rendered_blocks,
+    }
+
+
 def compute_final_answer(
     question: str,
     result: dict,
@@ -3340,6 +3379,7 @@ def compute_final_answer(
             "degraded": controlled.degraded,
             "answer_status": controlled.answer_status,
             "slot_status": slot_status,
+            "block_diagnostics": _controlled_block_diagnostics(result, controlled),
             "derived_payload": (
                 {
                     "answer_numeric_tokens": list(allowed_numbers(controlled.answer)),
@@ -3510,6 +3550,7 @@ def _compute_external_passthrough_final_answer(
     answer = finalize_external_passthrough_answer(
         cleanup_markdown_answer(generated_answer),
         result,
+        question=question,
     )
     display_answer = finalize_display_markdown(answer)
     output_policy_decision = evaluate_output_leakage(display_answer)
@@ -3526,6 +3567,15 @@ def _compute_external_passthrough_final_answer(
         "answer_status": "complete",
         "slot_status": {},
         "derived_payload": {},
+        "external_status": (
+            dict(result.get(EXTERNAL_PASSTHROUGH_FIELD) or {}).get("external_status")
+        ),
+        "failed_dimensions": (
+            dict(result.get(EXTERNAL_PASSTHROUGH_FIELD) or {}).get("failed_dimensions", [])
+        ),
+        "failure_reason": (
+            dict(result.get(EXTERNAL_PASSTHROUGH_FIELD) or {}).get("failure_reason", "")
+        ),
     }
     user_answer, numeric_copy_report = enforce_numeric_copy_contract(
         question,

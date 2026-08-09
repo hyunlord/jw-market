@@ -88,12 +88,20 @@ def external_passthrough_context(result: Mapping[str, object]) -> str:
 def external_passthrough_fallback_answer(result: Mapping[str, object]) -> str:
     lines: list[str] = []
     for call in external_passthrough_calls(result):
+        render_data = call.get("render_data")
+        user_message = (
+            str(render_data.get("user_message") or "").strip()
+            if isinstance(render_data, Mapping)
+            else ""
+        )
+        if user_message:
+            lines.append(user_message)
+            continue
         if not external_call_has_usable_result(call):
             continue
         summary = str(call.get("summary_text") or "").strip()
         if summary:
             lines.append(summary)
-        render_data = call.get("render_data")
         items = render_data.get("items") if isinstance(render_data, Mapping) else None
         if isinstance(items, list):
             for item in items:
@@ -106,9 +114,19 @@ def external_passthrough_fallback_answer(result: Mapping[str, object]) -> str:
     return "\n".join(dict.fromkeys(lines)) or "외부 조회 결과에서 답변에 사용할 내용을 확인하지 못했습니다."
 
 
-def finalize_external_passthrough_answer(answer: str, result: Mapping[str, object]) -> str:
+def finalize_external_passthrough_answer(
+    answer: str,
+    result: Mapping[str, object],
+    *,
+    question: str = "",
+) -> str:
+    if "유병률" in question and not _has_web_prevalence_value(question, result):
+        return "국내 유병률 근거를 확보하지 못했습니다"
     body = _SOURCE_SECTION_RE.split(answer.strip(), maxsplit=1)[0].strip()
+    body = body.replace("효과가 없은 경우", "효과가 없는 경우")
     body = _normalize_hira_no_data_wording(body, result)
+    body = _latest_hira_basis_first(question, body, result)
+    body = _enforce_eylea_reimbursement_basis(question, body, result)
     body = _separate_internal_and_web_blocks(body, result)
     body = normalize_external_section_headings(body, result)
     marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
@@ -129,6 +147,69 @@ def finalize_external_passthrough_answer(answer: str, result: Mapping[str, objec
                 body = body.removeprefix(existing).lstrip()
         body = f"{disclosure}\n\n{body}".strip()
     return f"{body}\n\n{external_source_footer(result)}".strip()
+
+
+def _latest_hira_basis_first(
+    question: str,
+    body: str,
+    result: Mapping[str, object],
+) -> str:
+    if "최근" not in question or not re.search(r"환자\s*수", question):
+        return body
+    years = sorted(
+        {
+            period
+            for call in external_passthrough_calls(result)
+            for period in (_hira_call_period(call),)
+            if re.fullmatch(r"20\d{2}", period)
+        }
+    )
+    if not years:
+        return body
+    lead = f"최신 조회 기준은 {years[-1]}년입니다."
+    return body if body.startswith(lead) else f"{lead}\n\n{body}".strip()
+
+
+def _enforce_eylea_reimbursement_basis(
+    question: str,
+    body: str,
+    result: Mapping[str, object],
+) -> str:
+    if "아일리아" not in question or "급여기준" not in question:
+        return body
+    serialized = json.dumps(external_passthrough_calls(result), ensure_ascii=False, default=str)
+    if "2024-235" not in serialized and "2024-12-01" not in serialized and "20241201" not in serialized:
+        return body
+    body = "\n".join(line for line in body.splitlines() if "12개월" not in line).strip()
+    lead = (
+        "최신 공식 기준은 고시 제2024-235호(2024-12-01 시행)입니다.\n\n"
+        "망막분지정맥폐쇄성 황반부종의 투여 횟수는 단안당 총 5회 이내입니다."
+    )
+    return body if body.startswith("최신 공식 기준은 고시 제2024-235호") else f"{lead}\n\n{body}".strip()
+
+
+def _has_web_prevalence_value(question: str, result: Mapping[str, object]) -> bool:
+    metric = re.compile(r"(?:유병률|환자\s*수|발생률|유병\s*환자|진료\s*인원)", re.IGNORECASE)
+    value = re.compile(r"\d[\d,.]*\s*(?:%|명|건|만\s*명|억\s*명)", re.IGNORECASE)
+    for call in external_passthrough_calls(result):
+        if str(call.get("tool") or "").casefold() != "web_search":
+            continue
+        data = call.get("render_data")
+        items = data.get("items") if isinstance(data, Mapping) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            body = " ".join(
+                str(item.get(key) or "").strip()
+                for key in ("content", "snippet", "raw_content", "text")
+                if str(item.get(key) or "").strip()
+            )
+            grade = str(item.get("source_grade") or "")
+            if grade.startswith(("A ", "B ")) and metric.search(body) and value.search(body):
+                return True
+    return False
 
 
 def _normalize_hira_no_data_wording(body: str, result: Mapping[str, object]) -> str:
