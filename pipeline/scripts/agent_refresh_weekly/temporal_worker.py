@@ -41,6 +41,8 @@ class WeeklyAgentRefreshWorkflow:
             start_to_close_timeout=timedelta(minutes=5),
             retry_policy=retry,
         )
+        if preflight["status"] == "skipped":
+            return {"status": "skipped", "preflight": preflight, "stages": []}
         stages = []
         for stage in STAGE_ORDER:
             stages.append(

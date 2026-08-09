@@ -9,6 +9,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     STAGE_ORDER,
     classify_job_status,
     find_active_conflicts,
+    make_preflight_result,
     make_job_name,
     render_stage_job,
 )
@@ -179,6 +180,30 @@ def test_deployment_and_schedule_contracts_are_additive_and_weekly() -> None:
     assert "--execution-timeout 10h" in schedule
 
 
+def test_preflight_conflict_is_a_skip() -> None:
+    assert make_preflight_result(
+        workflow_id="weekly-test",
+        conflicts=("jw-ingest-ubist-active",),
+        galera=[],
+    ) == {
+        "workflow_id": "weekly-test",
+        "status": "skipped",
+        "reason": "active_job_conflict",
+        "galera": [],
+        "active_conflicts": ["jw-ingest-ubist-active"],
+    }
+
+
+def test_workflow_returns_before_stages_when_preflight_is_skipped() -> None:
+    root = Path(__file__).resolve().parents[2]
+    worker = (
+        root / "pipeline/scripts/agent_refresh_weekly/temporal_worker.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'if preflight["status"] == "skipped":' in worker
+    assert 'return {"status": "skipped", "preflight": preflight, "stages": []}' in worker
+
+
 def test_worker_dockerfile_only_copies_existing_package_paths() -> None:
     root = Path(__file__).resolve().parents[2]
     dockerfile = (
@@ -188,6 +213,9 @@ def test_worker_dockerfile_only_copies_existing_package_paths() -> None:
     assert "COPY pipeline/__init__.py /app/pipeline/__init__.py" in dockerfile
     assert "COPY pipeline/scripts/agent_refresh_weekly" in dockerfile
     assert "COPY pipeline/scripts/__init__.py" not in dockerfile
+    assert "FROM python:3.11-slim@sha256:" in dockerfile
+    assert "KUBECTL_SHA256=" in dockerfile
+    assert "sha256sum -c -" in dockerfile
 
 
 def test_temporal_workflow_module_uses_sandbox_safe_absolute_imports() -> None:
