@@ -109,6 +109,40 @@ _GENERAL_TABLES = (
     "mart_general_market_metric",
 )
 _BASELINE_COPY_BATCH_SIZE = 500
+_GENERAL_BRAND_SEARCH_INDEX = "idx_general_brand_name"
+_GENERAL_BRAND_SEARCH_INDEX_COLUMNS = ("brand_name", "measure")
+
+
+def _ensure_general_brand_search_index(cur: Any, target_db: str) -> None:
+    cur.execute(
+        """
+        SELECT NON_UNIQUE AS non_unique,
+               GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') AS index_columns
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = %s
+          AND TABLE_NAME = 'mart_general_brand_metric'
+          AND INDEX_NAME = %s
+        GROUP BY NON_UNIQUE
+        """,
+        (target_db, _GENERAL_BRAND_SEARCH_INDEX),
+    )
+    row = cur.fetchone()
+    expected_columns = ",".join(_GENERAL_BRAND_SEARCH_INDEX_COLUMNS)
+    if row is None:
+        column_sql = ", ".join(
+            f"`{column}`" for column in _GENERAL_BRAND_SEARCH_INDEX_COLUMNS
+        )
+        cur.execute(
+            f"ALTER TABLE `{target_db}`.`mart_general_brand_metric` "
+            f"ADD INDEX `{_GENERAL_BRAND_SEARCH_INDEX}` ({column_sql})"
+        )
+        return
+    if int(row["non_unique"]) != 1 or str(row["index_columns"]) != expected_columns:
+        raise RuntimeError(
+            "brand search index contract drift: "
+            f"expected {_GENERAL_BRAND_SEARCH_INDEX}({expected_columns}), "
+            f"got non_unique={row['non_unique']} columns={row['index_columns']}"
+        )
 
 
 def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
@@ -125,6 +159,8 @@ def _ensure_isolated_schema(target_db: str, source_db: str) -> None:
                     f"CREATE TABLE `{target_db}`.`{table}` "
                     f"LIKE `{source_db}`.`{table}`"
                 )
+                if table == "mart_general_brand_metric":
+                    _ensure_general_brand_search_index(cur, target_db)
                 cur.execute(
                     f"SELECT COALESCE(MAX(`id`), 0) AS max_id "
                     f"FROM `{source_db}`.`{table}`"

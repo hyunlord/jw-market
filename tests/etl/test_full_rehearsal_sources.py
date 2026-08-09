@@ -137,6 +137,7 @@ def test_s4_isolated_schema_seeds_untouched_sources_in_bounded_batches(
     statements: list[tuple[str, object]] = []
     fetches = iter(
         (
+            None,
             {"max_id": 2},
             {"max_id": 2},
             {"max_id": 0},
@@ -182,6 +183,10 @@ def test_s4_isolated_schema_seeds_untouched_sources_in_bounded_batches(
     assert (
         "CREATE TABLE `build_db`.`mart_general_brand_metric` "
         "LIKE `source_db`.`mart_general_brand_metric`"
+    ) in sql
+    assert (
+        "ALTER TABLE `build_db`.`mart_general_brand_metric` "
+        "ADD INDEX `idx_general_brand_name` (`brand_name`, `measure`)"
     ) in sql
     assert (
         "INSERT INTO `build_db`.`mart_general_brand_metric` "
