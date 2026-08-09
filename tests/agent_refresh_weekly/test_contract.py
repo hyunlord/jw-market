@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -187,3 +188,18 @@ def test_worker_dockerfile_only_copies_existing_package_paths() -> None:
     assert "COPY pipeline/__init__.py /app/pipeline/__init__.py" in dockerfile
     assert "COPY pipeline/scripts/agent_refresh_weekly" in dockerfile
     assert "COPY pipeline/scripts/__init__.py" not in dockerfile
+
+
+def test_temporal_workflow_module_uses_sandbox_safe_absolute_imports() -> None:
+    root = Path(__file__).resolve().parents[2]
+    worker_path = (
+        root / "pipeline/scripts/agent_refresh_weekly/temporal_worker.py"
+    )
+    tree = ast.parse(worker_path.read_text(encoding="utf-8"))
+    relative_imports = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level
+    ]
+
+    assert relative_imports == []

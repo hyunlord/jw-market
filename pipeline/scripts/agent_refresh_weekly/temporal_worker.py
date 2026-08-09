@@ -20,7 +20,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 from temporalio.worker import Worker
 
-from .contract import (
+from pipeline.scripts.agent_refresh_weekly.contract import (
     STAGE_ORDER,
     TASK_QUEUE,
     WORKFLOW_TYPE,
