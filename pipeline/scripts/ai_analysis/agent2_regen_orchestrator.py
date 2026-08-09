@@ -155,6 +155,47 @@ class JsonRunStore:
             payload.setdefault("success_by_key", {})[idempotency_key] = record
         self.save(payload)
 
+    def seed_successes(
+        self,
+        rows: Iterable[dict[str, Any]],
+        *,
+        workflow_revision_id: int,
+        formatter_version: str,
+        analysis_variant: str,
+    ) -> int:
+        """Restore durable successful rows into the ephemeral retry ledger."""
+        payload = self.load()
+        records = payload.setdefault("records", [])
+        successes = payload.setdefault("success_by_key", {})
+        seeded = 0
+        for row in rows:
+            brand = str(row["brand"])
+            bundle_hash = str(row["bundle_hash"])
+            key = compute_idempotency_key(
+                brand,
+                bundle_hash,
+                workflow_revision_id,
+                formatter_version,
+                analysis_variant,
+            )
+            if key in successes:
+                continue
+            record = {
+                "run_id": int(row["run_id"]),
+                "brand": brand,
+                "bundle_hash": bundle_hash,
+                "snapshot_at": str(row["snapshot_at"]),
+                "analysis_variant": analysis_variant,
+                "status": "validated",
+                "restored_from": "zeta_analysis_runs",
+            }
+            successes[key] = record
+            records.append(record)
+            seeded += 1
+        if seeded:
+            self.save(payload)
+        return seeded
+
 
 @dataclass
 class DependencyPorts:
@@ -605,6 +646,38 @@ def _connect_runner_db(config: RunnerConfig):
     )
 
 
+def _seed_idempotency_from_run_db(
+    *,
+    config: RunnerConfig,
+    run_store: JsonRunStore,
+    snapshot_at: datetime,
+    workflow_revision_id: int,
+    formatter_version: str,
+    analysis_variant: str,
+) -> int:
+    connection = _connect_runner_db(config)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT run_id, brand, snapshot_at, bundle_hash
+            FROM zeta_analysis_runs
+            WHERE snapshot_at=%s AND analysis_variant=%s AND status='ok'
+            ORDER BY run_id
+            """,
+            (snapshot_at.replace(tzinfo=None, microsecond=0), analysis_variant),
+        )
+        rows = cursor.fetchall()
+    finally:
+        connection.close()
+    return run_store.seed_successes(
+        rows,
+        workflow_revision_id=workflow_revision_id,
+        formatter_version=formatter_version,
+        analysis_variant=analysis_variant,
+    )
+
+
 def check_upstream_freshness(db_conn: Any) -> dict[str, Any]:
     required_tables = (
         "cache_cause",
@@ -822,6 +895,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--catalog", default="docs/crawl/_catalog.json")
     parser.add_argument("--work-dir", default="outputs/phase_zeta_agent2_regen_orchestrator/manual_run")
     parser.add_argument("--snapshot-at", default=None, help="ISO datetime. Defaults to now.")
+    parser.add_argument(
+        "--seed-idempotency-from-run-db",
+        action="store_true",
+        help="Restore successful rows for --snapshot-at before resuming a failed Pod.",
+    )
     parser.add_argument("--workflow-revision-id", type=int, default=DEFAULT_WORKFLOW_REVISION_ID)
     parser.add_argument("--formatter-version", default=DEFAULT_FORMATTER_VERSION)
     parser.add_argument("--analysis-variant", choices=("legacy", "short", "long"), default="legacy")
@@ -832,7 +910,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Use strategic MI bundles (default) or ATC4 general-view bundles.",
     )
     parser.add_argument("--fail-threshold", type=int, default=5)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.seed_idempotency_from_run_db and args.snapshot_at is None:
+        parser.error("--seed-idempotency-from-run-db requires --snapshot-at")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -898,10 +979,28 @@ def main(argv: list[str] | None = None) -> int:
             _write_json(work_dir / "run_manifest.json", manifest)
             print(_json_dumps(manifest))
             return 0
+        run_store = JsonRunStore(work_dir / "idempotency_manifest.json")
+        seeded_successes = (
+            _seed_idempotency_from_run_db(
+                config=runner_config,
+                run_store=run_store,
+                snapshot_at=snapshot_at,
+                workflow_revision_id=args.workflow_revision_id,
+                formatter_version=args.formatter_version,
+                analysis_variant=args.analysis_variant,
+            )
+            if args.seed_idempotency_from_run_db
+            else 0
+        )
+        diagnostics["idempotency_seed"] = {
+            "enabled": args.seed_idempotency_from_run_db,
+            "snapshot_at": snapshot_at.isoformat() if args.seed_idempotency_from_run_db else None,
+            "successful_rows": seeded_successes,
+        }
         orchestrator = Agent2RegenOrchestrator(
             workflow_revision_id=args.workflow_revision_id,
             formatter_version=args.formatter_version,
-            run_store=JsonRunStore(work_dir / "idempotency_manifest.json"),
+            run_store=run_store,
             ports=ports,
             zero_kpi_provider=zero_kpi_provider,
             dry_run=dry_run,

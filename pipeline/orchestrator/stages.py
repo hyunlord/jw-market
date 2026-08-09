@@ -158,6 +158,8 @@ def _shortlong_commands(
     brands_file: str | None = None,
 ) -> list[Command]:
     commands = []
+    recovery_snapshot = os.environ.get("AGENT2_RECOVERY_SNAPSHOT_AT")
+    recovery_fail_threshold = os.environ.get("AGENT2_RECOVERY_FAIL_THRESHOLD")
     for variant in ("short", "long"):
         argv = list(
             _module_cmd(
@@ -178,6 +180,16 @@ def _shortlong_commands(
         elif brands:
             argv.append("--brands")
             argv.extend(brands)
+        if recovery_snapshot:
+            argv.extend(
+                [
+                    "--snapshot-at",
+                    recovery_snapshot,
+                    "--seed-idempotency-from-run-db",
+                ]
+            )
+        if recovery_fail_threshold:
+            argv.extend(["--fail-threshold", recovery_fail_threshold])
         commands.append(
             Command(
                 tuple(argv),

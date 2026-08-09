@@ -124,3 +124,60 @@ def test_agent2_recovery_reuses_agent3_and_records_unknown_brand_skips(
     assert "reused prior successful strength stage" in rows[1].reason
     assert "skipped_unknown=7" in rows[2].reason
     assert "레미닐피알서방" in rows[2].reason
+
+
+def test_agent2_recovery_passes_explicit_snapshot_and_failure_bound(
+    sqlite_ledger, monkeypatch, tmp_path
+) -> None:
+    # Given a failed Agent2 Pod whose successful rows remain at one exact snapshot
+    captured_env: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        agent_refresh_runner.config,
+        "open_configured_ledger",
+        lambda: sqlite_ledger,
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner,
+        "resolve_affected_scope",
+        lambda **_kwargs: agent_refresh_runner.ResolvedAgentScope(
+            source="iqvia_nsa",
+            market_ids=(),
+            brand_keys=("nsa-brand",),
+        ),
+    )
+    monkeypatch.setattr(agent_refresh_runner, "AGENT2_OUTPUT_ROOT", tmp_path)
+
+    def capture_command(command: list[str], *, check: bool, env: dict[str, str]):
+        captured_env.append(env)
+        run_id = command[command.index("--run-id") + 1]
+        for variant in ("short", "long"):
+            output_dir = tmp_path / f"orchestrated_{run_id}_{variant}"
+            output_dir.mkdir(parents=True)
+            (output_dir / "run_manifest.json").write_text(
+                json.dumps({"diagnostics": {"density_worklist": {"unmatched_unknown": []}}}),
+                encoding="utf-8",
+            )
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(agent_refresh_runner.subprocess, "run", capture_command)
+
+    # When recovery is launched with the retained snapshot identity
+    result = agent_refresh_runner.run(
+        epoch="2026-Q1",
+        category="iqvia_nsa",
+        manifest_sha="a" * 64,
+        ingest_run_id="run-1",
+        agent_run_id="run-1:agent-refresh-recovery-agent2",
+        reuse_forecast_staging=True,
+        resume_from_agent2=True,
+        affected_scope={"dimension": "source", "count": 1, "values": ["iqvia_nsa"]},
+        agent2_resume_snapshot_at="2026-08-09T17:16:02.793024",
+        agent2_fail_threshold=18,
+    )
+
+    # Then the child process receives the exact reuse identity and bounded gate
+    assert result == 0
+    assert captured_env[0]["AGENT2_RECOVERY_SNAPSHOT_AT"] == (
+        "2026-08-09T17:16:02.793024"
+    )
+    assert captured_env[0]["AGENT2_RECOVERY_FAIL_THRESHOLD"] == "18"

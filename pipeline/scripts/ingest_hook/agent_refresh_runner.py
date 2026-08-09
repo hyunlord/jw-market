@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -129,11 +130,17 @@ def run(
     reuse_forecast_staging: bool = False,
     resume_from_agent2: bool = False,
     affected_scope: dict[str, object] | None = None,
+    agent2_resume_snapshot_at: str | None = None,
+    agent2_fail_threshold: int | None = None,
 ) -> int:
     if resume_from_agent2 and not (reuse_forecast_staging and affected_scope is not None):
         raise ValueError(
             "resume_from_agent2 requires reuse_forecast_staging and affected_scope"
         )
+    if (agent2_resume_snapshot_at is not None or agent2_fail_threshold is not None) and not resume_from_agent2:
+        raise ValueError("Agent2 retry controls require resume_from_agent2")
+    if agent2_fail_threshold is not None and agent2_fail_threshold < 0:
+        raise ValueError("agent2_fail_threshold must be non-negative")
     ledger = config.open_configured_ledger()
     run_id = agent_run_id or f"{ingest_run_id}:agent-refresh"
     started_at = _now()
@@ -177,6 +184,12 @@ def run(
         command.insert(-2, "--force")
     resolved_scope = None
     skipped_unknown: tuple[str, ...] = ()
+    child_env = None
+    if agent2_resume_snapshot_at is not None:
+        child_env = os.environ.copy()
+        child_env["AGENT2_RECOVERY_SNAPSHOT_AT"] = agent2_resume_snapshot_at
+        if agent2_fail_threshold is not None:
+            child_env["AGENT2_RECOVERY_FAIL_THRESHOLD"] = str(agent2_fail_threshold)
     try:
         if affected_scope is not None:
             resolved_scope = resolve_affected_scope(
@@ -195,9 +208,17 @@ def run(
                     encoding="utf-8",
                 )
                 command.extend(["--brands-file", str(brands_file)])
-                result = subprocess.run(command, check=False)
+                result = (
+                    subprocess.run(command, check=False, env=child_env)
+                    if child_env is not None
+                    else subprocess.run(command, check=False)
+                )
         else:
-            result = subprocess.run(command, check=False)
+            result = (
+                subprocess.run(command, check=False, env=child_env)
+                if child_env is not None
+                else subprocess.run(command, check=False)
+            )
         returncode = result.returncode
         skipped_unknown = (
             _agent2_unknown_brand_skips(run_id.replace(":", "-"))
@@ -287,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="reuse a completed Agent3 strength stage and resume at Agent2",
     )
+    parser.add_argument("--agent2-resume-snapshot-at")
+    parser.add_argument("--agent2-fail-threshold", type=int)
     args = parser.parse_args(argv)
     affected_scope = (
         json.loads(args.affected_scope_json)
@@ -304,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
         reuse_forecast_staging=args.reuse_forecast_staging,
         resume_from_agent2=args.resume_from_agent2,
         affected_scope=affected_scope,
+        agent2_resume_snapshot_at=args.agent2_resume_snapshot_at,
+        agent2_fail_threshold=args.agent2_fail_threshold,
     )
 
 

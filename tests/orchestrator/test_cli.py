@@ -166,6 +166,25 @@ def test_shortlong_commands_use_general_density_general_bundle() -> None:
         assert command.argv[bundle_kind_index + 1] == "general"
 
 
+def test_shortlong_recovery_reuses_snapshot_rows_with_bounded_failures(monkeypatch) -> None:
+    # Given an explicit recovery snapshot and a bounded validation-failure budget
+    monkeypatch.setenv("AGENT2_RECOVERY_SNAPSHOT_AT", "2026-08-09T17:16:02.793024")
+    monkeypatch.setenv("AGENT2_RECOVERY_FAIL_THRESHOLD", "18")
+
+    # When short and long recovery commands are planned
+    commands = STAGE_BY_KEY["shortlong"].commands(
+        "incremental", (), False, "agent2-recovery"
+    )
+
+    # Then both variants seed only matching successful DB rows and keep the bound
+    for command in commands:
+        assert command.argv[command.argv.index("--snapshot-at") + 1] == (
+            "2026-08-09T17:16:02.793024"
+        )
+        assert "--seed-idempotency-from-run-db" in command.argv
+        assert command.argv[command.argv.index("--fail-threshold") + 1] == "18"
+
+
 @pytest.mark.parametrize("stage_key", list(STAGE_ORDER))
 def test_every_stage_declares_honest_incremental_contract(stage_key):
     spec = STAGE_BY_KEY[stage_key]

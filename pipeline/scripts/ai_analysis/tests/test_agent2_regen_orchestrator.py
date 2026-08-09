@@ -304,6 +304,48 @@ def test_orchestrator_dry_run_second_run_skips_successful_idempotency_key(tmp_pa
     assert second["swap_plan"]["mode"] == "dry-run"
 
 
+def test_run_store_seeds_successful_db_rows_without_repeating_llm(tmp_path) -> None:
+    # Given one successful output retained in the run database after a Pod failure
+    store = JsonRunStore(tmp_path / "manifest.json")
+    seeded = store.seed_successes(
+        [
+            {
+                "run_id": 84550,
+                "brand": "가다실",
+                "bundle_hash": "sha256:existing",
+                "snapshot_at": "2026-08-09 17:16:02",
+            }
+        ],
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        analysis_variant="short",
+    )
+    ports = DependencyPorts(
+        build_bundle=lambda brand: {
+            "bundle_meta": {"bundle_hash": "sha256:existing", "brand": brand},
+            "brand_context": {"brand_name": brand},
+            "market_views": [],
+        },
+        call_llm=lambda _bundle: pytest.fail("seeded success must not call the LLM"),
+        validate=lambda _parsed, _bundle: pytest.fail("seeded success must not validate"),
+        compose=lambda *_args: pytest.fail("seeded success must not compose"),
+    )
+
+    # When the failed snapshot is resumed with the same bundle identity
+    manifest = Agent2RegenOrchestrator(
+        workflow_revision_id=3727,
+        formatter_version="wf217-order2-v10.3",
+        run_store=store,
+        ports=ports,
+        dry_run=True,
+    ).run(["가다실"], analysis_variant="short")
+
+    # Then the retained row is reused without another model call
+    assert seeded == 1
+    assert manifest["brands"]["가다실"]["status"] == "skipped"
+    assert manifest["brands"]["가다실"]["previous"]["run_id"] == 84550
+
+
 def test_orchestrator_passes_analysis_variant_to_llm_and_compose(tmp_path):
     calls = {"llm_variant": "", "compose_variant": ""}
 
