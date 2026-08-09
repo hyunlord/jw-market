@@ -134,16 +134,56 @@ def test_from_stage_selects_suffix_and_uses_state_for_upstream(tmp_path):
     assert by_key["events"].action == "run"  # strength satisfied within the run set
 
 
-def test_brand_scope_skips_stages_without_brand_granularity(tmp_path):
-    plan = build_plan(mode="incremental", run_id="t", probe=FakeProbe(), state=_state(tmp_path), brands=("리바로",))
+def test_affected_scope_filters_forecast_and_agent3_but_skips_atomic_events(tmp_path):
+    # Given one UBIST ATC4 and its affected brand set
+    plan = build_plan(
+        mode="incremental",
+        run_id="t",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        brands=("리바로",),
+        scope_source="ubist",
+        scope_market_ids=("C10A1",),
+    )
 
     by_key = {stage.key: stage for stage in plan.stages}
-    assert by_key["forecast"].action == "skip_no_brand_scope"
+    # When the agent profile is planned, the forecast and Agent3 commands share
+    # the source boundary while the atomic events swap stays excluded.
+    assert by_key["forecast"].action == "run"
     assert by_key["events"].action == "skip_no_brand_scope"
     assert by_key["cache"].action == "run"
     assert by_key["cache"].scope_brands == ("리바로",)
     assert by_key["strength"].action == "run"
-    assert any("리바로" in part for command in by_key["strength"].commands for part in command.argv)
+    forecast_argv = by_key["forecast"].commands[0].argv
+    strength_argv = by_key["strength"].commands[0].argv
+    assert forecast_argv[forecast_argv.index("--scope-source") + 1] == "ubist"
+    assert forecast_argv[forecast_argv.index("--scope-market-id") + 1] == "C10A1"
+    assert strength_argv[strength_argv.index("--source") + 1] == "ubist"
+    assert strength_argv[strength_argv.index("--brands") + 1] == "리바로"
+
+
+def test_legacy_brand_scope_still_skips_global_forecast(tmp_path):
+    plan = build_plan(
+        mode="incremental",
+        run_id="t",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        brands=("리바로",),
+    )
+
+    by_key = {stage.key: stage for stage in plan.stages}
+    assert by_key["forecast"].action == "skip_no_brand_scope"
+
+
+def test_scope_source_requires_resolved_brands(tmp_path):
+    with pytest.raises(ValueError, match="resolved brand keys"):
+        build_plan(
+            mode="incremental",
+            run_id="t",
+            probe=FakeProbe(),
+            state=_state(tmp_path),
+            scope_source="iqvia_nsa",
+        )
 
 
 def test_probe_unavailable_dry_run_plans_with_warning(tmp_path):

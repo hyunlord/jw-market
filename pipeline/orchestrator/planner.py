@@ -96,11 +96,19 @@ def build_plan(
     force: bool = False,
     dry_run: bool = False,
     profile: str = "all",
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
 ) -> Plan:
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; valid: {list(MODES)}")
     if profile not in PROFILE_STAGES:
         raise ValueError(f"unknown profile {profile!r}; valid: {sorted(PROFILE_STAGES)}")
+    if scope_source not in {None, "ubist", "iqvia_nsa"}:
+        raise ValueError(f"unsupported scope source: {scope_source!r}")
+    if scope_market_ids and scope_source is None:
+        raise ValueError("scope market IDs require --scope-source")
+    if scope_source is not None and not brands:
+        raise ValueError("scoped agent runs require resolved brand keys")
     if profile != "all" and (stages_csv or from_stage):
         raise ValueError("--profile cannot be combined with --stages or --from-stage")
     selected = (
@@ -120,7 +128,16 @@ def build_plan(
         else:
             plan_warning = message + " - execution will fail closed"
         plan = Plan(mode=mode, run_id=run_id, epoch=None, warnings=[plan_warning])
-        _fill_without_epoch(plan, selected, brands, force, dry_run, run_id)
+        _fill_without_epoch(
+            plan,
+            selected,
+            brands,
+            force,
+            dry_run,
+            run_id,
+            scope_source,
+            scope_market_ids,
+        )
         return plan
 
     plan = Plan(mode=mode, run_id=run_id, epoch=epoch)
@@ -129,7 +146,21 @@ def build_plan(
         if key not in selected:
             plan.stages.append(StagePlan(key=key, action="skip_unselected", reason="not selected"))
             continue
-        plan.stages.append(_plan_stage(spec, mode, epoch, probe, state, brands, force, run_id, plan))
+        plan.stages.append(
+            _plan_stage(
+                spec,
+                mode,
+                epoch,
+                probe,
+                state,
+                brands,
+                force,
+                run_id,
+                plan,
+                scope_source,
+                scope_market_ids,
+            )
+        )
 
     _validate_dependencies(plan, state, force)
     return plan
@@ -145,8 +176,13 @@ def _plan_stage(
     force: bool,
     run_id: str,
     plan: Plan,
+    scope_source: str | None,
+    scope_market_ids: tuple[str, ...],
 ) -> StagePlan:
-    if brands and not spec.supports_brands:
+    supports_requested_scope = spec.supports_brands or (
+        spec.key == "forecast" and scope_source is not None
+    )
+    if brands and not supports_requested_scope:
         return StagePlan(
             key=spec.key,
             action="skip_no_brand_scope",
@@ -191,14 +227,28 @@ def _plan_stage(
         key=spec.key,
         action="run",
         reason=reason,
-        commands=spec.commands(mode, scope, force, run_id),
+        commands=spec.commands(
+            mode,
+            scope,
+            force,
+            run_id,
+            scope_source,
+            scope_market_ids,
+        ),
         scope_brands=scope,
         forced=force,
     )
 
 
 def _fill_without_epoch(
-    plan: Plan, selected: tuple[str, ...], brands: tuple[str, ...], force: bool, dry_run: bool, run_id: str
+    plan: Plan,
+    selected: tuple[str, ...],
+    brands: tuple[str, ...],
+    force: bool,
+    dry_run: bool,
+    run_id: str,
+    scope_source: str | None,
+    scope_market_ids: tuple[str, ...],
 ) -> None:
     for key in STAGE_ORDER:
         spec = STAGE_BY_KEY[key]
@@ -216,7 +266,14 @@ def _fill_without_epoch(
                     key=key,
                     action="run",
                     reason="dry-run plan with unknown freshness (probe unavailable)",
-                    commands=spec.commands(plan.mode, brands, force, run_id),
+                    commands=spec.commands(
+                        plan.mode,
+                        brands,
+                        force,
+                        run_id,
+                        scope_source,
+                        scope_market_ids,
+                    ),
                     scope_brands=brands,
                 )
             )

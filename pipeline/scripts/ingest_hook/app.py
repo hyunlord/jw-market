@@ -24,10 +24,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import sleep as _sleep
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from pipeline.scripts.ingest_hook import config, job_launcher, job_runner, stage_logs
 from pipeline.scripts.ingest_hook.category_map import UnknownCategoryError, resolve_category
@@ -86,6 +87,22 @@ class ForceStopPayload(BaseModel):
     requested_by: str
 
 
+class AffectedScopePayload(BaseModel):
+    dimension: Literal["atc4", "source"]
+    count: int = Field(ge=0)
+    values: list[str]
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> AffectedScopePayload:
+        if self.count != len(self.values):
+            raise ValueError("affected_scope count must match values")
+        if any(not value.strip() for value in self.values):
+            raise ValueError("affected_scope values must be non-empty")
+        if len(set(self.values)) != len(self.values):
+            raise ValueError("affected_scope values must be unique")
+        return self
+
+
 class TerminalPayload(BaseModel):
     event: str
     source: str | None = None
@@ -101,6 +118,7 @@ class TerminalPayload(BaseModel):
     occurred_at: str | None = None
     period: str | dict | None = None
     rows_loaded: int | None = None
+    affected_scope: AffectedScopePayload | None = None
 
 
 class PublishApprovalPayload(BaseModel):
@@ -1477,8 +1495,29 @@ def create_app(service: IngestService) -> FastAPI:
                     transport=service.transport,
                     inspect_transport=service.inspect_transport,
                     list_transport=service.list_transport,
+                    affected_scope=(
+                        payload.affected_scope.model_dump()
+                        if payload.affected_scope is not None
+                        else None
+                    ),
                 )
-                agent_trigger_status = "submitted"
+                if agent_job_name is None:
+                    timestamp = service.timestamp()
+                    service.ledger.record_stage(
+                        payload.epoch,
+                        category,
+                        payload.manifest_sha,
+                        run_id=f"{entry.run_id}:agent-refresh",
+                        seq=1,
+                        stage="agent_refresh",
+                        status="skipped",
+                        reason="not_applicable",
+                        started_at=timestamp,
+                        finished_at=timestamp,
+                        duration_ms=0,
+                    )
+                else:
+                    agent_trigger_status = "submitted"
             except job_launcher.AgentRefreshCapacityError as exc:
                 agent_trigger_status = "deferred_capacity"
                 agent_trigger_reason = str(exc)

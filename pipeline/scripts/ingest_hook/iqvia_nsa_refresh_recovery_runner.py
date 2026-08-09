@@ -214,6 +214,7 @@ def recover(
             failure_reason=None,
             target_schema=activation_config.target_db,
             published_at=now,
+            affected_scope=job_runner._completion_affected_scope(identity[1]),
         )
     except BaseException as exc:
         primary = exc

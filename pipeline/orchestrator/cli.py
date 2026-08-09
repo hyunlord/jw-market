@@ -30,6 +30,15 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--stages", help=f"comma-separated subset of {list(STAGE_ORDER)}")
     run.add_argument("--from-stage", help="start at this stage (upstream must be completed at the current epoch)")
     run.add_argument("--brands", help="comma-separated brand scope (incremental special form)")
+    run.add_argument(
+        "--scope-source",
+        choices=("ubist", "iqvia_nsa"),
+        help="numeric source boundary supplied by an ingest completion event",
+    )
+    run.add_argument(
+        "--scope-market-ids",
+        help="comma-separated general-market IDs supplied by an ingest completion event",
+    )
     run.add_argument("--dry-run", action="store_true", help="print the plan only; execute nothing, write nothing")
     run.add_argument(
         "--force-plan",
@@ -276,6 +285,11 @@ def main(argv: list[str] | None = None) -> int:
 
     probe = MartProbe()
     brands = tuple(brand.strip() for brand in (args.brands or "").split(",") if brand.strip())
+    scope_market_ids = tuple(
+        market_id.strip()
+        for market_id in (args.scope_market_ids or "").split(",")
+        if market_id.strip()
+    )
 
     try:
         plan = build_plan(
@@ -289,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             force=args.force or (args.dry_run and args.force_plan),
             dry_run=args.dry_run,
             profile=args.profile,
+            scope_source=args.scope_source,
+            scope_market_ids=scope_market_ids,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

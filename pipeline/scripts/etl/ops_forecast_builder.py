@@ -28,6 +28,9 @@ from pipeline.scripts.etl.ops_forecast_store import (
     insert_horizons,
     mart_source_epoch,
     prepare_staging,
+    prepare_scoped_staging,
+    upsert_blocks,
+    upsert_horizons,
 )
 
 EXPECTED_BLOCKS: Final[int] = 43_790
@@ -92,9 +95,41 @@ def _group_units(units: list[Unit]) -> dict[Scope, list[Unit]]:
     return grouped
 
 
+def filter_units(
+    units: list[Unit],
+    *,
+    source: str,
+    market_ids: tuple[str, ...],
+    brand_keys: tuple[str, ...],
+) -> list[Unit]:
+    """Select complete forecast scopes touched by one source publication."""
+    source_units = [unit for unit in units if unit.scope.source == source]
+    markets = set(market_ids)
+    brands = set(brand_keys)
+    selected_scopes = {
+        unit.scope
+        for unit in source_units
+        if (
+            unit.scope.view_kind == "general"
+            and (not markets or unit.scope.market_id in markets)
+        )
+        or (
+            unit.scope.view_kind != "general"
+            and (not brands or unit.brand_key in brands)
+        )
+    }
+    return [unit for unit in source_units if unit.scope in selected_scopes]
+
+
 def verify_stride_replay(connection: Any, table: str, units: list[Unit], *, workers: int, sample_size: int) -> dict[str, int]:
     sample = units[:: max(1, len(units) // sample_size)][:sample_size]
-    stride = next(value for value in range(max(2, len(sample) // 3), len(sample)) if math.gcd(value, len(sample)) == 1)
+    if not sample:
+        raise RuntimeError("stride replay requires at least one forecast unit")
+    stride = 1 if len(sample) == 1 else next(
+        value
+        for value in range(max(2, len(sample) // 3), len(sample))
+        if math.gcd(value, len(sample)) == 1
+    )
     replay = stride_order(sample, stride)
     stored: dict[tuple[str, str, str], dict[str, Any]] = {}
     with connection.cursor() as cursor:
@@ -135,25 +170,76 @@ def run(args: argparse.Namespace) -> None:
     try:
         general_builder.assert_d2_database(connection)
         epoch = mart_source_epoch(connection)
-        units = load_units(connection)
-        if len(units) != args.expected_blocks:
-            raise RuntimeError(f"unit count changed: expected={args.expected_blocks} actual={len(units)}")
-        if not args.force and epoch_is_current(connection, LIVE_BLOCK, epoch, args.expected_blocks) and epoch_is_current(connection, LIVE_HORIZON, epoch, args.expected_horizons):
-            print(json.dumps({"stage": "no_op", "source_epoch": epoch, "blocks": len(units)}), flush=True)
+        all_units = load_units(connection)
+        if len(all_units) != args.expected_blocks:
+            raise RuntimeError(f"unit count changed: expected={args.expected_blocks} actual={len(all_units)}")
+        scope_source = getattr(args, "scope_source", None)
+        scope_market_ids = tuple(getattr(args, "scope_market_id", ()) or ())
+        scope_brand_keys = tuple(getattr(args, "brand", ()) or ())
+        if (scope_market_ids or scope_brand_keys) and scope_source is None:
+            raise RuntimeError("scope markets/brands require --scope-source")
+        scoped = scope_source is not None
+        units = (
+            filter_units(
+                all_units,
+                source=scope_source,
+                market_ids=scope_market_ids,
+                brand_keys=scope_brand_keys,
+            )
+            if scoped
+            else all_units
+        )
+        if not units:
+            raise RuntimeError("affected scope resolved to zero forecast units")
+        if not scoped and not args.force and epoch_is_current(connection, LIVE_BLOCK, epoch, args.expected_blocks) and epoch_is_current(connection, LIVE_HORIZON, epoch, args.expected_horizons):
+            print(json.dumps({"stage": "no_op", "source_epoch": epoch, "blocks": len(all_units)}), flush=True)
             return
-        prepare_staging(connection, args.block_table, args.horizon_table, epoch)
-        done_blocks = existing_block_keys(connection, args.block_table)
-        done_horizons = existing_horizon_keys(connection, args.horizon_table)
-        reused_blocks = len(done_blocks)
-        reused_horizons = len(done_horizons)
-        generated_at = _generated_at(connection, args.block_table)
+        if scoped:
+            prepare_scoped_staging(
+                connection,
+                args.block_table,
+                args.horizon_table,
+                args.expected_blocks,
+                args.expected_horizons,
+            )
+            done_blocks: set[tuple[str, str, str]] = set()
+            done_horizons: set[tuple[str, str, str]] = set()
+            reused_blocks = args.expected_blocks - len(units)
+            reused_horizons = args.expected_horizons
+            generated_at = datetime.now().replace(microsecond=0)
+        else:
+            prepare_staging(connection, args.block_table, args.horizon_table, epoch)
+            done_blocks = existing_block_keys(connection, args.block_table)
+            done_horizons = existing_horizon_keys(connection, args.horizon_table)
+            reused_blocks = len(done_blocks)
+            reused_horizons = len(done_horizons)
+            generated_at = _generated_at(connection, args.block_table)
         groups = _group_units(units)
+        source_scope_count = (
+            len(_group_units([unit for unit in all_units if unit.scope.source == scope_source]))
+            if scoped
+            else len(groups)
+        )
+        if scoped:
+            print(
+                json.dumps(
+                    {
+                        "stage": "scope_selected",
+                        "source": scope_source,
+                        "scope_count": len(groups),
+                        "source_scope_upper_bound": source_scope_count,
+                        "block_count": len(units),
+                        "global_block_count": len(all_units),
+                    }
+                ),
+                flush=True,
+            )
         scope_build_calls = 0
         inserted_blocks = 0
         inserted_horizons = 0
         for index, (scope, scope_units) in enumerate(sorted(groups.items(), key=lambda item: (item[0].view_kind, item[0].market_id, item[0].source)), start=1):
-            pending = [unit for unit in scope_units if unit.key not in done_blocks]
-            missing_horizon = not all((scope.market_id, scope.source, measure) in done_horizons for measure in _measures(scope.source))
+            pending = scope_units if scoped else [unit for unit in scope_units if unit.key not in done_blocks]
+            missing_horizon = scoped or not all((scope.market_id, scope.source, measure) in done_horizons for measure in _measures(scope.source))
             if not pending and not missing_horizon:
                 continue
             scope_build_calls += 1
@@ -162,8 +248,13 @@ def run(args: argparse.Namespace) -> None:
             if not pending:
                 blocks = []
             horizons = [row for row in horizons if (row.market_id, row.source, row.measure) not in done_horizons]
-            inserted_blocks += insert_blocks(connection, args.block_table, blocks)
-            inserted_horizons += insert_horizons(connection, args.horizon_table, horizons)
+            if scoped:
+                inserted_blocks += upsert_blocks(connection, args.block_table, blocks)
+                inserted_horizons += upsert_horizons(connection, args.horizon_table, horizons)
+                reused_horizons -= len(horizons)
+            else:
+                inserted_blocks += insert_blocks(connection, args.block_table, blocks)
+                inserted_horizons += insert_horizons(connection, args.horizon_table, horizons)
             done_blocks.update((row.brand_key, row.source, row.market_id) for row in blocks)
             done_horizons.update((row.market_id, row.source, row.measure) for row in horizons)
             print(json.dumps({"stage": "scope_done", "index": index, "scopes": len(groups), "scope": [scope.view_kind, scope.market_id, scope.source], "blocks_total": inserted_blocks, "horizons_total": inserted_horizons}), flush=True)
@@ -196,6 +287,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-horizons", type=int, default=EXPECTED_HORIZONS)
     parser.add_argument("--verify-sample", type=int, default=100)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--scope-source", choices=("ubist", "iqvia_nsa"))
+    parser.add_argument("--scope-market-id", action="append", default=[])
+    parser.add_argument("--brand", action="append", default=[])
     return parser.parse_args()
 
 

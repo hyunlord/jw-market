@@ -3,15 +3,90 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+import json
 import subprocess
 import sys
 from datetime import datetime, timezone
+from typing import Literal
 
 from pipeline.scripts.ingest_hook import config
+
+NumericSource = Literal["ubist", "iqvia_nsa"]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedAgentScope:
+    source: NumericSource
+    market_ids: tuple[str, ...]
+    brand_keys: tuple[str, ...]
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _scope_source(category: str) -> NumericSource:
+    match category:
+        case "ubist":
+            return "ubist"
+        case "iqvia_nsa":
+            return "iqvia_nsa"
+        case _:
+            raise ValueError(f"category has no numeric Agent scope: {category}")
+
+
+def resolve_affected_scope(
+    *,
+    category: str,
+    affected_scope: dict[str, object],
+) -> ResolvedAgentScope:
+    source = _scope_source(category)
+    dimension = affected_scope.get("dimension")
+    raw_values = affected_scope.get("values")
+    count = affected_scope.get("count")
+    if not isinstance(raw_values, list) or not all(
+        isinstance(value, str) and value.strip() for value in raw_values
+    ):
+        raise ValueError("affected_scope values must be non-empty strings")
+    if count != len(raw_values):
+        raise ValueError("affected_scope count must match values")
+
+    match dimension:
+        case "atc4":
+            market_ids = tuple(sorted({value.strip().upper() for value in raw_values}))
+        case "source":
+            if set(raw_values) != {category}:
+                raise ValueError("source scope must contain the terminal category")
+            market_ids = ()
+        case _:
+            raise ValueError(f"unsupported affected_scope dimension: {dimension!r}")
+
+    connection = config.open_mart_connection()
+    try:
+        with connection.cursor() as cursor:
+            sql = (
+                "SELECT DISTINCT brand_key FROM mart_general_brand_metric "
+                "WHERE source=%s AND measure='sales' "
+                "AND brand_key IS NOT NULL AND brand_key<>''"
+            )
+            params: tuple[str, ...] = (source,)
+            if market_ids:
+                placeholders = ", ".join(["%s"] * len(market_ids))
+                sql += f" AND UPPER(atc4_code) IN ({placeholders})"
+                params += market_ids
+            sql += " ORDER BY brand_key"
+            cursor.execute(sql, params)
+            brand_keys = tuple(str(row["brand_key"]) for row in cursor.fetchall())
+    finally:
+        connection.close()
+    if not brand_keys:
+        raise ValueError("affected_scope resolved to zero numeric brands")
+    return ResolvedAgentScope(
+        source=source,
+        market_ids=market_ids,
+        brand_keys=brand_keys,
+    )
 
 
 def run(
@@ -22,6 +97,7 @@ def run(
     ingest_run_id: str,
     agent_run_id: str | None = None,
     reuse_forecast_staging: bool = False,
+    affected_scope: dict[str, object] | None = None,
 ) -> int:
     ledger = config.open_configured_ledger()
     run_id = agent_run_id or f"{ingest_run_id}:agent-refresh"
@@ -50,10 +126,31 @@ def run(
     ]
     if not reuse_forecast_staging:
         command.insert(-2, "--force")
+    resolved_scope = None
     try:
+        if affected_scope is not None:
+            resolved_scope = resolve_affected_scope(
+                category=category,
+                affected_scope=affected_scope,
+            )
+            command.extend(["--scope-source", resolved_scope.source])
+            if resolved_scope.market_ids:
+                command.extend(
+                    ["--scope-market-ids", ",".join(resolved_scope.market_ids)]
+                )
+            command.extend(["--brands", ",".join(resolved_scope.brand_keys)])
         result = subprocess.run(command, check=False)
         returncode = result.returncode
-        reason = None if returncode == 0 else f"orchestrator rc={returncode}"
+        scope_reason = (
+            None
+            if resolved_scope is None
+            else (
+                f"scope source={resolved_scope.source} "
+                f"markets={len(resolved_scope.market_ids)} "
+                f"brands={len(resolved_scope.brand_keys)}"
+            )
+        )
+        reason = scope_reason if returncode == 0 else f"orchestrator rc={returncode}"
     except Exception as exc:
         returncode = 1
         reason = f"{type(exc).__name__}: {exc}"
@@ -96,12 +193,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest-sha", required=True)
     parser.add_argument("--ingest-run-id", required=True)
     parser.add_argument("--agent-run-id")
+    parser.add_argument("--affected-scope-json")
     parser.add_argument(
         "--reuse-forecast-staging",
         action="store_true",
         help="resume a failed forecast from matching staging rows instead of forcing recomputation",
     )
     args = parser.parse_args(argv)
+    affected_scope = (
+        json.loads(args.affected_scope_json)
+        if args.affected_scope_json is not None
+        else None
+    )
+    if affected_scope is not None and not isinstance(affected_scope, dict):
+        parser.error("--affected-scope-json must be a JSON object")
     return run(
         epoch=args.epoch,
         category=args.category,
@@ -109,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         ingest_run_id=args.ingest_run_id,
         agent_run_id=args.agent_run_id,
         reuse_forecast_staging=args.reuse_forecast_staging,
+        affected_scope=affected_scope,
     )
 
 

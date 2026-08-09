@@ -133,6 +133,7 @@ def run(
             failure_reason=None,
             target_schema=stage_schema,
             published_at=published_at,
+            affected_scope={"dimension": "atc4", "count": 0, "values": []},
         )
         return 0
     except Exception as exc:

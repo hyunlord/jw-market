@@ -401,6 +401,7 @@ def render_agent_refresh_job(
     ingest_run_id: str,
     agent_run_id: str | None = None,
     reuse_forecast_staging: bool = False,
+    affected_scope: dict[str, object] | None = None,
     namespace: str | None = None,
 ) -> dict:
     body = render_job(
@@ -444,6 +445,18 @@ def render_agent_refresh_job(
         container["command"].extend(["--agent-run-id", agent_run_id])
     if reuse_forecast_staging:
         container["command"].append("--reuse-forecast-staging")
+    if affected_scope is not None:
+        container["command"].extend(
+            [
+                "--affected-scope-json",
+                json.dumps(
+                    affected_scope,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ]
+        )
     container["env"] = [
         item
         for item in container["env"]
@@ -730,11 +743,17 @@ def submit_agent_refresh_job(
     ingest_run_id: str,
     agent_run_id: str | None = None,
     reuse_forecast_staging: bool = False,
+    affected_scope: dict[str, object] | None = None,
     transport: Transport | None = None,
     namespace: str | None = None,
     inspect_transport: InspectTransport | None = None,
     list_transport: ListTransport | None = None,
-) -> str:
+) -> str | None:
+    if affected_scope is not None:
+        values = affected_scope.get("values")
+        explicit_empty = affected_scope.get("count") == 0 and values == []
+        if explicit_empty:
+            return None
     body = render_agent_refresh_job(
         epoch=epoch,
         category=category,
@@ -742,6 +761,7 @@ def submit_agent_refresh_job(
         ingest_run_id=ingest_run_id,
         agent_run_id=agent_run_id,
         reuse_forecast_staging=reuse_forecast_staging,
+        affected_scope=affected_scope,
         namespace=namespace,
     )
     send = transport or _in_cluster_transport

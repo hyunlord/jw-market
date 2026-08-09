@@ -63,6 +63,35 @@ def prepare_staging(connection: Any, block_table: str, horizon_table: str, sourc
     connection.commit()
 
 
+def prepare_scoped_staging(
+    connection: Any,
+    block_table: str,
+    horizon_table: str,
+    expected_blocks: int,
+    expected_horizons: int,
+) -> None:
+    """Require a complete baseline before replacing only affected scopes."""
+    if block_table == LIVE_BLOCK or horizon_table == LIVE_HORIZON:
+        raise RuntimeError("live forecast tables are forbidden in staging mode")
+    expected = ((block_table, LIVE_BLOCK, expected_blocks), (horizon_table, LIVE_HORIZON, expected_horizons))
+    with connection.cursor() as cursor:
+        for staging, live, expected_count in expected:
+            cursor.execute(
+                f"CREATE TABLE IF NOT EXISTS {general_builder.quote_ident(staging)} "
+                f"LIKE {general_builder.quote_ident(live)}"
+            )
+            cursor.execute(
+                f"SELECT COUNT(*) AS row_count FROM {general_builder.quote_ident(staging)}"
+            )
+            actual = int(cursor.fetchone()["row_count"])
+            if actual != expected_count:
+                raise RuntimeError(
+                    "scoped forecast requires a complete staging baseline: "
+                    f"table={staging} expected={expected_count} actual={actual}"
+                )
+    connection.commit()
+
+
 def existing_block_keys(connection: Any, table: str) -> set[tuple[str, str, str]]:
     with connection.cursor() as cursor:
         cursor.execute(f"SELECT brand_key, source, market_id FROM {general_builder.quote_ident(table)}")
@@ -110,6 +139,74 @@ def insert_horizons(connection: Any, table: str, rows: list[HorizonRow]) -> int:
         inserted = cursor.executemany(sql, values)
     connection.commit()
     return int(inserted or 0)
+
+
+def upsert_blocks(connection: Any, table: str, rows: list[BlockRow]) -> int:
+    if not rows:
+        return 0
+    sql = (
+        f"INSERT INTO {general_builder.quote_ident(table)} (brand_key, source, market_id, view_kind, "
+        "forecast_json, simulation_json, generation_status, no_history_fallback, simulation_available, "
+        "source_epoch, source_computed_at, generated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON DUPLICATE KEY UPDATE view_kind=VALUES(view_kind), forecast_json=VALUES(forecast_json), "
+        "simulation_json=VALUES(simulation_json), generation_status=VALUES(generation_status), "
+        "no_history_fallback=VALUES(no_history_fallback), simulation_available=VALUES(simulation_available), "
+        "source_epoch=VALUES(source_epoch), source_computed_at=VALUES(source_computed_at), "
+        "generated_at=VALUES(generated_at)"
+    )
+    values = [
+        (
+            row.brand_key,
+            row.source,
+            row.market_id,
+            row.view_kind,
+            row.forecast_json,
+            row.simulation_json,
+            row.generation_status,
+            row.no_history_fallback,
+            row.simulation_available,
+            row.source_epoch,
+            row.source_computed_at,
+            row.generated_at,
+        )
+        for row in rows
+    ]
+    with connection.cursor() as cursor:
+        cursor.executemany(sql, values)
+    connection.commit()
+    return len(rows)
+
+
+def upsert_horizons(connection: Any, table: str, rows: list[HorizonRow]) -> int:
+    if not rows:
+        return 0
+    sql = (
+        f"INSERT INTO {general_builder.quote_ident(table)} (market_id, source, measure, view_kind, "
+        "forecast_horizon_json, source_row_count, source_epoch, source_computed_at, generated_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON DUPLICATE KEY UPDATE view_kind=VALUES(view_kind), "
+        "forecast_horizon_json=VALUES(forecast_horizon_json), source_row_count=VALUES(source_row_count), "
+        "source_epoch=VALUES(source_epoch), source_computed_at=VALUES(source_computed_at), "
+        "generated_at=VALUES(generated_at)"
+    )
+    values = [
+        (
+            row.market_id,
+            row.source,
+            row.measure,
+            row.view_kind,
+            row.forecast_horizon_json,
+            row.source_row_count,
+            row.source_epoch,
+            row.source_computed_at,
+            row.generated_at,
+        )
+        for row in rows
+    ]
+    with connection.cursor() as cursor:
+        cursor.executemany(sql, values)
+    connection.commit()
+    return len(rows)
 
 
 def completion_gate(connection: Any, block_table: str, horizon_table: str, expected_blocks: int, expected_horizons: int) -> dict[str, int]:

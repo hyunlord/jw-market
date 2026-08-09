@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import pytest
 
-from pipeline.scripts.ingest_hook.app import IngestService, create_app
+from pipeline.scripts.ingest_hook.app import IngestService, TerminalPayload, create_app
 from pipeline.scripts.ingest_hook.category_map import resolve_category
-from pipeline.scripts.ingest_hook import agent_refresh_runner
+from pipeline.scripts.ingest_hook import agent_refresh_runner, job_runner
 
 
 def _terminal_payload(*, event: str = "complete", mode: str = "production") -> dict:
@@ -30,6 +31,91 @@ def _terminal_payload(*, event: str = "complete", mode: str = "production") -> d
         "published_at": "2026-07-30 00:01:00",
         "occurred_at": "2026-07-30 00:01:00",
     }
+
+
+def test_terminal_payload_preserves_affected_scope_in_model_dump() -> None:
+    # Given a completion payload carrying the producer's immutable ATC4 scope
+    payload = _terminal_payload()
+    payload["affected_scope"] = {
+        "dimension": "atc4",
+        "count": 1,
+        "values": ["C10A1"],
+    }
+
+    # When Pydantic parses and serializes the receiver contract
+    dumped = TerminalPayload.model_validate(payload).model_dump()
+
+    # Then the scope survives the boundary instead of being silently dropped
+    assert dumped["affected_scope"] == payload["affected_scope"]
+
+
+def test_nsa_completion_declares_a_source_only_upper_bound() -> None:
+    assert job_runner._completion_affected_scope("iqvia_nsa") == {
+        "dimension": "source",
+        "count": 1,
+        "values": ["iqvia_nsa"],
+    }
+    assert job_runner._completion_affected_scope("ubist") is None
+
+
+@pytest.mark.parametrize("category", ["iqvia_csd_keyword", "iqvia_csd_channel"])
+def test_csd_terminal_with_explicit_empty_scope_skips_agent_job(
+    category: str,
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    # Given a completed CSD publication with no applicable numeric Agent scope
+    identity = ("2025-10", category, "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
+    sqlite_ledger.mark_complete(*identity, row_counts={"input.xlsx": 1})
+    payload = _terminal_payload()
+    payload.update(
+        {
+            "category": category,
+            "source": category,
+            "epoch": identity[0],
+            "affected_scope": {"dimension": "atc4", "count": 0, "values": []},
+        }
+    )
+
+    # When the terminal callback reaches the source-applicability gate
+    response = TestClient(
+        create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
+    ).post("/ingest/terminal", json=payload)
+
+    # Then no Kubernetes Agent Job is created and the no-op remains auditable
+    assert response.status_code == 200
+    assert response.json()["agent_trigger_status"] == "not_applicable"
+    assert response.json()["agent_job_name"] is None
+    assert fake_transport.submitted == []
+    events = sqlite_ledger.stage_events(*identity)
+    assert [(event.stage, event.status, event.reason) for event in events] == [
+        ("agent_refresh", "skipped", "not_applicable"),
+    ]
+
+
+def test_terminal_without_affected_scope_keeps_legacy_global_agent_job(
+    sqlite_ledger,
+    fake_transport,
+) -> None:
+    # Given a legacy completion callback that predates affected_scope
+    identity = ("2025-10", "iqvia_csd_keyword", "a" * 64)
+    sqlite_ledger.receive(*identity, manifest_path="/input/manifest.json")
+    sqlite_ledger.mark_running(*identity, job_name="jw-ingest-parent", run_id="run-1")
+    sqlite_ledger.mark_complete(*identity, row_counts={"input.xlsx": 1})
+    payload = _terminal_payload()
+    payload.update({"category": identity[1], "source": identity[1], "epoch": identity[0]})
+
+    # When the old payload reaches the additive receiver contract
+    response = TestClient(
+        create_app(IngestService(sqlite_ledger, None, transport=fake_transport))
+    ).post("/ingest/terminal", json=payload)
+
+    # Then missing scope retains the former global submission behavior
+    assert response.status_code == 200
+    assert response.json()["agent_trigger_status"] == "submitted"
+    assert len(fake_transport.submitted) == 1
 
 
 def test_ingest_refresh_uses_only_numeric_profile() -> None:
@@ -72,6 +158,49 @@ def test_agent_refresh_forces_manifest_identity_past_epoch_only_checkpoint(
         (3, "agent2", "complete"),
         (4, "dashboard", "complete"),
     ]
+
+
+def test_agent_refresh_passes_resolved_scope_to_orchestrator(
+    sqlite_ledger, monkeypatch
+) -> None:
+    # Given a UBIST terminal scope that resolves to one affected brand
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        agent_refresh_runner.config,
+        "open_configured_ledger",
+        lambda: sqlite_ledger,
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner,
+        "resolve_affected_scope",
+        lambda **_kwargs: agent_refresh_runner.ResolvedAgentScope(
+            source="ubist",
+            market_ids=("C10A1",),
+            brand_keys=("livaro",),
+        ),
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner.subprocess,
+        "run",
+        lambda command, check: commands.append(command)
+        or type("Result", (), {"returncode": 0})(),
+    )
+
+    # When the scoped companion runner starts
+    result = agent_refresh_runner.run(
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha="a" * 64,
+        ingest_run_id="run-1",
+        affected_scope={"dimension": "atc4", "count": 1, "values": ["C10A1"]},
+    )
+
+    # Then the orchestrator receives the same source, market and brand boundary
+    assert result == 0
+    command = commands[0]
+    assert command[command.index("--scope-source") + 1] == "ubist"
+    assert command[command.index("--scope-market-ids") + 1] == "C10A1"
+    assert command[command.index("--brands") + 1] == "livaro"
 
 
 def test_agent_refresh_reuses_complete_forecast_staging_only_when_requested(

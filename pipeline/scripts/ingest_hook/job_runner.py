@@ -797,6 +797,16 @@ def _emit_completion_signal(
     )
 
 
+def _completion_affected_scope(category: str) -> dict[str, object] | None:
+    if category == "iqvia_nsa":
+        return {
+            "dimension": "source",
+            "count": 1,
+            "values": [category],
+        }
+    return None
+
+
 def run(
     manifest_path: Path,
     *,
@@ -1663,6 +1673,7 @@ def run(
                         event="complete", mode=mode, rows_before=rows_before,
                         rows_after=rows_after, rows_loaded=rows_loaded,
                         periods=periods, started_at=started_at, failure_reason=None,
+                        affected_scope=_completion_affected_scope(manifest.category),
                     )
                     completion_signal_emitted = True
                     ubist_mart_activation.update_activation_journal(
@@ -1686,6 +1697,7 @@ def run(
                 event="complete", mode=mode, rows_before=rows_before, rows_after=rows_after,
                 rows_loaded=rows_loaded,
                 periods=periods, started_at=started_at, failure_reason=None,
+                affected_scope=_completion_affected_scope(manifest.category),
             )
         print(f"result=complete epoch={manifest.epoch} category={manifest.category} run_id={run_id}")
         return 0

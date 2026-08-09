@@ -126,6 +126,27 @@ def test_agent_refresh_recovery_explicitly_reuses_forecast_staging():
     assert command[-1] == "--reuse-forecast-staging"
 
 
+def test_agent_refresh_job_carries_canonical_affected_scope_json():
+    # Given a non-empty immutable affected scope
+    body = render_agent_refresh_job(
+        epoch="2026-06",
+        category="ubist",
+        manifest_sha=SHA,
+        ingest_run_id="run-1",
+        affected_scope={"dimension": "atc4", "count": 1, "values": ["C10A1"]},
+        namespace="llmops",
+    )
+
+    # When the Kubernetes command is rendered
+    command = body["spec"]["template"]["spec"]["containers"][0]["command"]
+
+    # Then the runner receives a stable JSON value rather than a moving lookup
+    assert command[-2:] == [
+        "--affected-scope-json",
+        '{"count":1,"dimension":"atc4","values":["C10A1"]}',
+    ]
+
+
 def test_rendered_job_requires_api_node_pool_for_nfs_mounts():
     body = render_job(
         category="ubist",

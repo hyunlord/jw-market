@@ -72,6 +72,55 @@ def test_forecast_horizon_gate_tracks_the_current_published_mart_contract() -> N
     assert EXPECTED_HORIZONS == 3_002
 
 
+def test_filter_units_applies_source_and_exact_scope_across_general_and_strategic() -> None:
+    # Given two source universes and one brand crossing general/strategic views
+    units = [
+        Unit("brand-a", Scope.general("C10A1", "ubist")),
+        Unit("brand-b", Scope.general("C10A2", "ubist")),
+        Unit("brand-a", Scope.market_landscape("ML-1", "ubist")),
+        Unit("brand-b", Scope.market_landscape("ML-1", "ubist")),
+        Unit("brand-a", Scope.general("C10A1", "iqvia_nsa")),
+    ]
+
+    # When a UBIST ATC4 scope is resolved to brand-a
+    selected = ops_forecast_builder.filter_units(
+        units,
+        source="ubist",
+        market_ids=("C10A1",),
+        brand_keys=("brand-a",),
+    )
+
+    # Then general uses the market boundary and strategic uses the same brand boundary
+    assert [unit.key for unit in selected] == [
+        ("brand-a", "ubist", "C10A1"),
+        ("brand-a", "ubist", "ML-1"),
+        ("brand-b", "ubist", "ML-1"),
+    ]
+
+
+def test_filter_units_source_only_keeps_one_complete_source_universe() -> None:
+    # Given forecast scopes from both numeric sources
+    units = [
+        Unit("ubist-a", Scope.general("C10A1", "ubist")),
+        Unit("nsa-a", Scope.general("N10A1", "iqvia_nsa")),
+        Unit("nsa-b", Scope.market_landscape("ML-1", "iqvia_nsa")),
+    ]
+
+    # When NSA supplies its source-wide upper bound
+    selected = ops_forecast_builder.filter_units(
+        units,
+        source="iqvia_nsa",
+        market_ids=(),
+        brand_keys=("nsa-a", "nsa-b"),
+    )
+
+    # Then every NSA scope remains and no UBIST unit leaks into the run
+    assert [unit.key for unit in selected] == [
+        ("nsa-a", "iqvia_nsa", "N10A1"),
+        ("nsa-b", "iqvia_nsa", "ML-1"),
+    ]
+
+
 def test_row_cache_id_namespaces_overlapping_ids_by_scope_kind() -> None:
     # Given the same auto-increment id from three mart families
     raw_id = 17

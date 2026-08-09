@@ -94,6 +94,11 @@ def test_channel_complete_signal_identifies_published_schema_and_time(monkeypatc
     ) == 0
     assert signal["target_schema"] == "jw_brand_activity_stage"
     assert signal["published_at"] == "2026-08-09 00:30:01"
+    assert signal["affected_scope"] == {
+        "dimension": "atc4",
+        "count": 0,
+        "values": [],
+    }
 
 
 def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatch) -> None:
@@ -164,5 +169,10 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
     ) == 0
     assert signal["target_schema"] == "jw_brand_activity_stage"
     assert signal["published_at"] == "2026-08-09 00:31:01"
+    assert signal["affected_scope"] == {
+        "dimension": "atc4",
+        "count": 0,
+        "values": [],
+    }
     recorded_stages = [call.kwargs["stage"] for call in ledger.record_stage.call_args_list]
     assert recorded_stages[-2:] == ["topic_extraction", "dashboard"]

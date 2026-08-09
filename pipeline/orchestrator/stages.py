@@ -46,8 +46,8 @@ class StageSpec:
     # SQL pair for new_brands detection (universe minus covered), else None.
     universe_sql: str | None
     covered_sql: str | None
-    # (mode, brands, force, run_id) -> commands
-    commands: Callable[[str, tuple[str, ...], bool, str], list[Command]]
+    # (mode, brands, force, run_id, scope_source, scope_market_ids) -> commands
+    commands: Callable[..., list[Command]]
     required_env: tuple[str, ...] = field(default=())
 
 
@@ -63,7 +63,12 @@ def _brand_args(flag: str, brands: tuple[str, ...]) -> list[str]:
 
 
 def _market_status_commands(
-    mode: str, brands: tuple[str, ...], force: bool, run_id: str
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
 ) -> list[Command]:
     return [
         Command(
@@ -74,20 +79,46 @@ def _market_status_commands(
     ]
 
 
-def _cache_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
+def _cache_commands(
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
+) -> list[Command]:
     argv = list(_module_cmd("pipeline.scripts.etl.build_cache_deep_analysis_general"))
     argv.extend(_brand_args("--brand", brands))
     return [Command(tuple(argv), "general deep-analysis cache build (staging writer + gates in builder)", True)]
 
 
-def _forecast_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
+def _forecast_commands(
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
+) -> list[Command]:
     argv = list(_module_cmd("pipeline.scripts.etl.ops_forecast_builder"))
     if force:
         argv.append("--force")
+    if scope_source is not None:
+        argv.extend(["--scope-source", scope_source])
+        for market_id in scope_market_ids:
+            argv.extend(["--scope-market-id", market_id])
+        argv.extend(_brand_args("--brand", brands))
     return [Command(tuple(argv), "forecast staging build (epoch gate + expected-count gates in builder)", False)]
 
 
-def _strength_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
+def _strength_commands(
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
+) -> list[Command]:
     expected_rev = os.environ.get(AGENT3_EXPECTED_REV_ENV, "")
     argv = list(
         _module_cmd(
@@ -102,12 +133,22 @@ def _strength_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: 
             f"/tmp/agent3_source_{run_id}.json",
         )
     )
+    source = {"ubist": "ubist", "iqvia_nsa": "iqvia"}.get(scope_source or "")
+    if source is not None:
+        argv.extend(["--source", source])
     if brands:
         argv.extend(["--brands", ",".join(brands)])
     return [Command(tuple(argv), "Agent3 strength refresh (input_hash-incremental, rev pin fail-closed)", True)]
 
 
-def _shortlong_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
+def _shortlong_commands(
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
+) -> list[Command]:
     commands = []
     for variant in ("short", "long"):
         argv = list(
@@ -138,7 +179,14 @@ def _shortlong_commands(mode: str, brands: tuple[str, ...], force: bool, run_id:
     return commands
 
 
-def _events_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
+def _events_commands(
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
+) -> list[Command]:
     module = "pipeline.scripts.etl.cache_refresh.cache_deep_analysis_events_update"
     validate = "pipeline.scripts.etl.cache_refresh.cache_deep_analysis_refresh_validate"
     live = os.environ.get("LIVE_TABLE", "cache_deep_analysis")
@@ -155,7 +203,14 @@ def _events_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: st
     ]
 
 
-def _elements_commands(mode: str, brands: tuple[str, ...], force: bool, run_id: str) -> list[Command]:
+def _elements_commands(
+    mode: str,
+    brands: tuple[str, ...],
+    force: bool,
+    run_id: str,
+    scope_source: str | None = None,
+    scope_market_ids: tuple[str, ...] = (),
+) -> list[Command]:
     agent3_schema = os.environ.get("AGENT3_DB_NAME", "")
     argv = list(
         _module_cmd(
