@@ -15,6 +15,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     classify_job_status,
     find_active_conflicts,
     make_job_name,
+    make_preflight_result,
     render_stage_job,
 )
 from pipeline.scripts.agent_refresh_weekly.kubernetes_api import KubernetesApi
@@ -130,9 +131,17 @@ def _preflight_sync(workflow_id: str) -> dict[str, Any]:
     api = KubernetesApi(_NAMESPACE)
     conflicts = find_active_conflicts(api.list_jobs())
     if conflicts:
-        raise RuntimeError(f"active ingest/agent Job guard: {','.join(conflicts)}")
+        return make_preflight_result(
+            workflow_id=workflow_id,
+            conflicts=conflicts,
+            galera=[],
+        )
     probes = _assert_cluster_guard()
-    return {"workflow_id": workflow_id, "galera": probes, "active_conflicts": []}
+    return make_preflight_result(
+        workflow_id=workflow_id,
+        conflicts=(),
+        galera=probes,
+    )
 
 
 async def _run_stage(stage: str, workflow_id: str) -> dict[str, Any]:

@@ -70,6 +70,29 @@ def find_active_conflicts(
     return tuple(sorted(conflicts))
 
 
+def make_preflight_result(
+    *,
+    workflow_id: str,
+    conflicts: tuple[str, ...],
+    galera: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if conflicts:
+        return {
+            "workflow_id": workflow_id,
+            "status": "skipped",
+            "reason": "active_job_conflict",
+            "galera": [],
+            "active_conflicts": list(conflicts),
+        }
+    return {
+        "workflow_id": workflow_id,
+        "status": "ready",
+        "reason": None,
+        "galera": galera,
+        "active_conflicts": [],
+    }
+
+
 def _secret_env(name: str, key: str) -> dict[str, Any]:
     return {
         "name": name,
