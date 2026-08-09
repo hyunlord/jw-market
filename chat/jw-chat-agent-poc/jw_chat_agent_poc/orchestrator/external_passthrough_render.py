@@ -109,7 +109,8 @@ def _normalize_hira_no_data_wording(body: str, result: Mapping[str, object]) -> 
     )
     for period in no_data_periods:
         false_failure_line = re.compile(
-            rf"(?m)^(?P<prefix>\s*(?:[-*]\s*)?{re.escape(period)}년?\s*[:：]\s*)"
+            rf"(?m)^(?P<prefix>\s*(?:(?:[-+*])\s+)?(?:\*\*)?"
+            rf"{re.escape(period)}년?(?:\*\*)?\s*[:：]\s*)"
             r".*?API\s*호출.*?실패.*?$"
         )
         body = false_failure_line.sub(
