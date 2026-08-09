@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from pipeline.scripts.api.main import app
+from pipeline.scripts.api.deep_analysis_serving import ForecastBlock
 from pipeline.scripts.api.routes import deep_analysis
 from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError
 from pipeline.scripts.utils.atc4 import atc4_source_aliases, normalize_atc4
@@ -631,6 +632,59 @@ def test_general_cache_hit_does_not_add_degraded_key(monkeypatch) -> None:
 
     assert payload == expected
     assert "degraded" not in payload
+
+
+def test_general_mart_fallback_uses_existing_forecast_blocks(monkeypatch) -> None:
+    mart_row = {
+        "brand": "리바로",
+        "brand_key": "리바로",
+        "atc4_code": "C10A1",
+        "updated_at": datetime(2026, 8, 10),
+        "response_json": json.dumps(
+            {
+                "degraded": True,
+                "degraded_reason": "forecast_block_unavailable",
+                "data": {
+                    "forecast": {"degraded": True, "by_combo": {}},
+                    "simulation": {"by_combo": {}},
+                },
+                "market_meta": {
+                    "sources": ["UBIST", "IQVIA"],
+                    "degraded": True,
+                    "degraded_reason": "forecast_block_unavailable",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    }
+    ubist = ForecastBlock(
+        forecast={"by_combo": {"UBIST.sales": {"forecast_periods": ["2026-06"]}}},
+        simulation={"by_combo": {"UBIST.sales": {"available": True}}},
+        generation_status="generated",
+        no_history_fallback=None,
+    )
+    iqvia = ForecastBlock(
+        forecast={"by_combo": {"IQVIA.sales": {"forecast_periods": ["2026-Q1"]}}},
+        simulation={"by_combo": {"IQVIA.sales": {"available": True}}},
+        generation_status="generated",
+        no_history_fallback=None,
+    )
+    monkeypatch.setattr(deep_analysis, "_fetch_general_deep_analysis_row", lambda _brand: None)
+    monkeypatch.setattr(deep_analysis, "_general_row_from_mart", lambda *_args, **_kwargs: mart_row)
+    monkeypatch.setattr(
+        deep_analysis,
+        "load_forecast_block_by_key",
+        lambda **kwargs: ubist if kwargs["source"] == "ubist" else iqvia,
+    )
+
+    payload, _ = deep_analysis._compose_general_view_payload("리바로")
+
+    assert set(payload["data"]["forecast"]["by_combo"]) == {
+        "UBIST.sales",
+        "IQVIA.sales",
+    }
+    assert payload.get("degraded") is not True
+    assert payload["market_meta"].get("degraded") is not True
 
 
 def test_general_mart_payload_merges_zero_pad_atc4_sources_without_changing_home_market_id(monkeypatch) -> None:

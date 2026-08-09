@@ -31,10 +31,16 @@ from pipeline.scripts.api.deep_analysis_context import (
     resolve_deep_analysis_context,
 )
 from pipeline.scripts.api.deep_analysis_serving import (
+    ForecastBlock,
     load_forecast_block,
+    load_forecast_block_by_key,
     load_market_strength_records,
 )
-from pipeline.scripts.api.deep_analysis_runtime import build_strategic_row, load_events
+from pipeline.scripts.api.deep_analysis_runtime import (
+    _merge_block_payloads,
+    build_strategic_row,
+    load_events,
+)
 from pipeline.scripts.api.dynamic_market.response_cache import DynamicMarketOverloadedError, normalize_json_value
 from pipeline.scripts.api.composers.cache_to_response import compose_cached_json
 from pipeline.scripts.api.config import CacheWriteMode, get_settings
@@ -1263,7 +1269,51 @@ def _compose_general_view_payload(brand: str) -> tuple[dict, dict]:
     if isinstance(market_meta, dict):
         market_meta["is_jw"] = is_jw
 
+    _attach_general_forecast_blocks(general_payload, general_row)
+
     return general_payload, general_row
+
+
+def _attach_general_forecast_blocks(payload: dict, row: dict) -> None:
+    brand_key = str(row.get("brand_key") or row.get("brand") or "").strip()
+    market_id = str(row.get("atc4_code") or "").strip()
+    market_meta = payload.get("market_meta")
+    sources = market_meta.get("sources") if isinstance(market_meta, dict) else None
+    if not brand_key or not market_id or not isinstance(sources, list):
+        return
+
+    source_keys = {
+        "UBIST": "ubist",
+        "IQVIA": "iqvia_nsa",
+        "IQVIA_NSA": "iqvia_nsa",
+    }
+    blocks: list[ForecastBlock] = []
+    for source in dict.fromkeys(str(item).strip().upper() for item in sources):
+        source_key = source_keys.get(source)
+        if source_key is None:
+            continue
+        block = load_forecast_block_by_key(
+            brand_key=brand_key,
+            source=source_key,
+            market_id=market_id,
+        )
+        if block is not None:
+            blocks.append(block)
+    if not blocks:
+        return
+
+    forecast, simulation = _merge_block_payloads(blocks)
+    data = payload.setdefault("data", {})
+    if not isinstance(data, dict):
+        return
+    data["forecast"] = forecast
+    data["simulation"] = simulation
+    payload.pop("degraded", None)
+    payload.pop("degraded_reason", None)
+    for section in (data, data.get("forecast"), market_meta):
+        if isinstance(section, dict):
+            section.pop("degraded", None)
+            section.pop("degraded_reason", None)
 
 
 def _strategic_row_from_mart(brand: str) -> dict | None:
