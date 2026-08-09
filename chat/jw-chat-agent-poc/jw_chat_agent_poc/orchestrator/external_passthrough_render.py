@@ -81,11 +81,55 @@ def external_passthrough_fallback_answer(result: Mapping[str, object]) -> str:
 
 def finalize_external_passthrough_answer(answer: str, result: Mapping[str, object]) -> str:
     body = _SOURCE_SECTION_RE.split(answer.strip(), maxsplit=1)[0].strip()
+    body = _normalize_hira_no_data_wording(body, result)
     marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
     web_fallback_used = isinstance(marker, Mapping) and marker.get("web_fallback_used") is True
     if web_fallback_used and WEB_FALLBACK_DISCLOSURE not in body:
         body = f"{WEB_FALLBACK_DISCLOSURE}\n\n{body}".strip()
     return f"{body}\n\n{external_source_footer(result)}".strip()
+
+
+def _normalize_hira_no_data_wording(body: str, result: Mapping[str, object]) -> str:
+    """Keep a structured HIRA no-data result from becoming an API failure claim."""
+
+    calls = external_passthrough_calls(result)
+    failed_periods = {
+        _hira_call_period(call)
+        for call in calls
+        if str(call.get("status") or "").strip().casefold() in {"error", "timeout"}
+    }
+    no_data_periods = tuple(
+        dict.fromkeys(
+            period
+            for call in calls
+            if str(call.get("status") or "").strip().casefold() == "no_data"
+            for period in (_hira_call_period(call),)
+            if period and period not in failed_periods
+        )
+    )
+    for period in no_data_periods:
+        false_failure_line = re.compile(
+            rf"(?m)^(?P<prefix>\s*(?:[-*]\s*)?{re.escape(period)}년?\s*[:：]\s*)"
+            r".*?API\s*호출.*?실패.*?$"
+        )
+        body = false_failure_line.sub(
+            lambda match: f"{match.group('prefix')}조회 결과가 없습니다.",
+            body,
+        )
+    return body
+
+
+def _hira_call_period(call: Mapping[str, object]) -> str:
+    if not str(call.get("tool") or "").startswith("hira_disease_"):
+        return ""
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return ""
+    explicit = str(render_data.get("requested_period") or "").strip()
+    if explicit:
+        return explicit
+    request = render_data.get("request")
+    return str(request.get("year") or "").strip() if isinstance(request, Mapping) else ""
 
 
 def external_source_footer(result: Mapping[str, object]) -> str:
