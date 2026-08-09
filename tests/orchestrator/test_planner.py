@@ -169,7 +169,7 @@ def test_selection_validation():
     assert resolve_selection("elements,cache", None) == ("cache", "elements")
 
 
-def test_profiles_cover_the_full_chain_without_sharing_general_cache(tmp_path):
+def test_refresh_profiles_exclude_the_separate_general_cache_track(tmp_path):
     numeric = build_plan(
         mode="incremental",
         run_id="numeric",
@@ -190,6 +190,6 @@ def test_profiles_cover_the_full_chain_without_sharing_general_cache(tmp_path):
     numeric_keys = {stage.key for stage in numeric.runnable}
     agent_keys = {stage.key for stage in agent.runnable}
     assert numeric_keys == {"market_status"}
-    assert agent_keys == {"cache", "forecast", "strength", "shortlong", "events", "elements"}
+    assert agent_keys == {"forecast", "strength", "shortlong", "events", "elements"}
     assert not numeric_keys & agent_keys
-    assert numeric_keys | agent_keys == set(STAGE_ORDER)
+    assert numeric_keys | agent_keys == set(STAGE_ORDER) - {"cache"}

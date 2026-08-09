@@ -266,8 +266,8 @@ STAGE_ORDER: tuple[str, ...] = tuple(spec.key for spec in STAGES)
 STAGE_BY_KEY: dict[str, StageSpec] = {spec.key: spec for spec in STAGES}
 
 PROFILE_STAGES: dict[str, tuple[str, ...]] = {
-    # Cache regeneration is a separate track, not part of refresh.
+    # Cache regeneration is a separate track, not part of refresh profiles.
     "numeric": ("market_status",),
-    "agent": ("cache", "forecast", "strength", "shortlong", "events", "elements"),
+    "agent": ("forecast", "strength", "shortlong", "events", "elements"),
     "all": STAGE_ORDER,
 }

@@ -128,7 +128,7 @@ def test_agent_profile_excludes_numeric_market_status(tmp_path, monkeypatch, cap
     assert exit_code == 0
     plan = json.loads(capsys.readouterr().out.splitlines()[0])
     selected = [row["stage"] for row in plan["stages"] if row["action"] == "run"]
-    assert selected == ["cache", "forecast", "strength", "shortlong", "events", "elements"]
+    assert selected == ["forecast", "strength", "shortlong", "events", "elements"]
 
 
 def test_run_rejects_conflicting_selection(tmp_path, monkeypatch, capsys):
