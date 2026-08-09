@@ -145,10 +145,10 @@ def brand_activity_topic(scope_id: str = Path(description="내부 토픽 scope �
                 "specialty": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 진료과 행 필터."},
                 "interest": {"type": ["string", "array"], "items": {"type": "string"}, "description": "키워드 관심도 행 필터."},
                 "prescription_evolution": {"type": ["string", "array"], "items": {"type": "string"}, "description": "처방 변화 행 필터."},
-                "start_date": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])$", "description": "행 필터 시작월 YYYY-MM."},
-                "end_date": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])$", "description": "행 필터 종료월 YYYY-MM."},
-                "period_start": {"type": "string", "description": "Legacy 행 필터 시작월 YYYY-MM."},
-                "period_end": {"type": "string", "description": "Legacy 행 필터 종료월 YYYY-MM."},
+                "start_date": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])$", "description": "표시 기간 시작월 YYYY-MM. 차원 필터가 활성화된 경우에만 행 집계에도 적용됩니다."},
+                "end_date": {"type": "string", "pattern": "^\\d{4}-(0[1-9]|1[0-2])$", "description": "표시 기간 종료월 YYYY-MM. 차원 필터가 활성화된 경우에만 행 집계에도 적용됩니다."},
+                "period_start": {"type": "string", "description": "Legacy 표시 기간 시작월 YYYY-MM."},
+                "period_end": {"type": "string", "description": "Legacy 표시 기간 종료월 YYYY-MM."},
                 "top_n": {"type": "integer", "description": "브랜드 카드별 상위 토픽 개수. 1~10으로 clamp됩니다."},
             },
             BRAND_ACTIVITY_TOPICS_REQUEST_EXAMPLE,
@@ -171,7 +171,9 @@ def brand_activity_topic_matrix(payload: BrandActivityTopicsRequest) -> dict[str
         _raise_market_not_found(payload)
     period_meta = _topic_period_metadata(payload, get_topic_period_bounds())
     response_meta: dict[str, JsonValue] = {"period": period_meta}
-    if _period_filter_active(payload) and not _topic_result_has_data(result):
+    scope = result.get("scope")
+    is_sliced = isinstance(scope, dict) and scope.get("sliced") is True
+    if is_sliced and _period_filter_active(payload) and not _topic_result_has_data(result):
         response_meta["reason"] = "no_data_in_period"
     return _success_response(result, request_normalized=request_normalized, metadata=response_meta)
 

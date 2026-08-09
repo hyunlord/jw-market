@@ -117,6 +117,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             "filter_effect": {
                 "brand_set": "channel_axis_applied" if brand_set.channel_axis else "base",
                 "payload": payload_source,
+                "period": "applied_to_row_filter" if is_sliced else "not_applied_to_unfiltered_payload",
             },
         },
         "brands": [
@@ -468,8 +469,6 @@ def _is_sliced_request(request: dict[str, JsonValue]) -> bool:
             bool(_filter_tuple(request.get("specialty"))),
             bool(_filter_tuple(request.get("interest"))),
             bool(_filter_tuple(request.get("prescription_evolution"))),
-            bool(_text(request.get("period_start"))),
-            bool(_text(request.get("period_end"))),
         )
     )
 
@@ -840,12 +839,13 @@ def _applied_topic_filters(request: dict[str, JsonValue]) -> dict[str, JsonValue
         values = _filter_tuple(request.get(key))
         if values:
             applied[key] = list(values)
-    period_start = _text(request.get("period_start"))
-    period_end = _text(request.get("period_end"))
-    if period_start:
-        applied["period_start"] = period_start
-    if period_end:
-        applied["period_end"] = period_end
+    if applied:
+        period_start = _text(request.get("period_start"))
+        period_end = _text(request.get("period_end"))
+        if period_start:
+            applied["period_start"] = period_start
+        if period_end:
+            applied["period_end"] = period_end
     return applied
 
 

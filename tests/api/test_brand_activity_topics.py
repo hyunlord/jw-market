@@ -348,6 +348,36 @@ def test_post_topics_route_preserves_brand_skeleton_for_period_without_data(monk
     assert response.json()["meta"]["reason"] == "no_data_in_period"
 
 
+def test_post_topics_route_does_not_report_period_filter_failure_for_unsliced_payload(monkeypatch) -> None:
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_brand_payload",
+        lambda _payload: {
+            "scope": {"sliced": False},
+            "brands": [{"brand_name": "크레스토", "event_count": 0}],
+        },
+    )
+    monkeypatch.setattr(
+        brand_activity,
+        "get_topic_period_bounds",
+        lambda: {"available_start": "2024-06", "available_end": "2026-05"},
+    )
+
+    response = TestClient(app).post(
+        "/api/brand-activity/topics",
+        json={
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "start_date": "2025-04",
+            "end_date": "2026-03",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "reason" not in response.json()["meta"]
+
+
 def test_topic_period_bounds_reads_indexable_month_extrema(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -480,6 +510,40 @@ def test_post_topic_service_uses_stored_payload_without_keyword_filters(monkeypa
     assert payload["brands"][1]["brand_key"] == "리피토"
     assert payload["brands"][1]["topics"] == []
     assert payload["brands"][1]["data_status"] == {"code": "source_absent", "label": "데이터 없음"}
+
+
+def test_post_topic_service_treats_default_period_as_unsliced(monkeypatch) -> None:
+    monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: _brand_set())
+    monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+
+    def fake_fetch_all(sql: str, _params: tuple[object, ...] | None = None) -> list[dict[str, Any]]:
+        assert "row_topic_assignment" not in sql
+        return [_post_topic_row()]
+
+    monkeypatch.setattr("pipeline.scripts.api.db.fetch_all", fake_fetch_all)
+
+    payload = topic_matrix.get_topic_brand_payload(
+        {
+            "view": "general",
+            "selected_brand": "리바로",
+            "filters": {"atc4": ["C10A1"]},
+            "visit_location": "전체",
+            "specialty": "전체",
+            "interest": "전체",
+            "prescription_evolution": "전체",
+            "period_start": "2025-04",
+            "period_end": "2026-03",
+        }
+    )
+
+    assert payload is not None
+    assert payload["scope"]["sliced"] is False
+    assert payload["scope"]["applied_topic_filters"] == {}
+    assert payload["scope"]["filter_effect"] == {
+        "brand_set": "base",
+        "payload": "mart_brand_activity_topics_unfiltered",
+        "period": "not_applied_to_unfiltered_payload",
+    }
 
 
 def test_post_topic_service_slices_topics_from_row_assignments(monkeypatch) -> None:
@@ -988,6 +1052,7 @@ def test_general_and_strategic_views_return_identical_topic_sets_and_ranks(monke
     )
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
     monkeypatch.setattr(topic_matrix, "iqvia_product_codes_by_brand", lambda _brands: {})
+    monkeypatch.setattr(topic_matrix, "_keyword_filter_domain", lambda _column: frozenset({"내과"}))
     monkeypatch.setattr(
         topic_matrix,
         "_fetch_sliced_topic_rows",
@@ -1008,10 +1073,20 @@ def test_general_and_strategic_views_return_identical_topic_sets_and_ranks(monke
     )
 
     general_result = topic_matrix.get_topic_brand_payload(
-        {"view": "general", "selected_brand": "리바로젯", "filter": {"atc4": ["C10C0"]}}
+        {
+            "view": "general",
+            "selected_brand": "리바로젯",
+            "filter": {"atc4": ["C10C0"]},
+            "specialty": "내과",
+        }
     )
     strategic_result = topic_matrix.get_topic_brand_payload(
-        {"view": "strategic_ml", "market_id": "ml_006", "selected_brand": "리바로젯"}
+        {
+            "view": "strategic_ml",
+            "market_id": "ml_006",
+            "selected_brand": "리바로젯",
+            "specialty": "내과",
+        }
     )
 
     assert general_result is not None
@@ -1031,6 +1106,7 @@ def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_n
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: strategic)
     monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(topic_matrix, "_keyword_filter_domain", lambda _column: frozenset({"내과"}))
     monkeypatch.setattr(
         topic_matrix,
         "iqvia_product_codes_by_brand",
@@ -1047,6 +1123,7 @@ def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_n
         assert params == (
             "group:livalo_family",
             "LIVALO",
+            "내과",
             "2025-04",
             "2026-03",
             "brand_activity_group_replay",
@@ -1066,6 +1143,7 @@ def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_n
             "view": "strategic_ml",
             "market_id": "ml_006",
             "selected_brand": "리바로",
+            "specialty": "내과",
             "period_start": "2025-04",
             "period_end": "2026-03",
         }
@@ -1105,6 +1183,7 @@ def test_post_topic_service_uses_brand_labels_from_resolved_scope_only(monkeypat
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: strategic)
     monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(topic_matrix, "_keyword_filter_domain", lambda _column: frozenset({"내과"}))
     monkeypatch.setattr(
         topic_matrix,
         "iqvia_product_codes_by_brand",
@@ -1141,6 +1220,7 @@ def test_post_topic_service_uses_brand_labels_from_resolved_scope_only(monkeypat
             "view": "strategic_ml",
             "market_id": "ml_006",
             "selected_brand": "리바로",
+            "specialty": "내과",
             "period_start": "2025-04",
             "period_end": "2026-03",
         }
@@ -1155,6 +1235,7 @@ def test_post_topic_service_reads_assignments_for_brand_omitted_from_stored_payl
     monkeypatch.setattr(topic_matrix, "resolve_brand_set", lambda **_kwargs: brand_set)
     monkeypatch.setattr(topic_matrix, "_catalog_atc4_values", lambda _brand_set: ("C10A1", "C10C0"))
     monkeypatch.setattr(topic_matrix, "_alias_lookup", lambda: {})
+    monkeypatch.setattr(topic_matrix, "_keyword_filter_domain", lambda _column: frozenset({"내과"}))
     monkeypatch.setattr(
         topic_matrix,
         "iqvia_product_codes_by_brand",
@@ -1183,6 +1264,7 @@ def test_post_topic_service_reads_assignments_for_brand_omitted_from_stored_payl
             "view": "strategic_ml",
             "market_id": "ml_006",
             "selected_brand": "리바로",
+            "specialty": "내과",
             "period_start": "2025-04",
             "period_end": "2026-03",
         }

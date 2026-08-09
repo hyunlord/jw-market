@@ -592,7 +592,7 @@ Brand-Activity 3종은 Dynamic-Market과 같은 시장 필터 개념을 쓰지�
 
 - **IQVIA audit code는 채널축 값 슬라이스입니다.** `filters.analysis_level.iqvia.audit_code`로 보내며, 옛 호환 입력 `filters.channel.audit_code`도 같은 값으로 정규화됩니다. 이 값은 경쟁 브랜드 선정 시 선택된 window의 audit code 매출 합계에 반영됩니다.
 
-- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution`, `start_date`, `end_date`는 토픽 행을 자르는 필터입니다. `period_start`, `period_end`와 `filters.channel.visit_location`, `filters.channel.specialty`는 호환 입력으로 flat 필드에 정규화됩니다.
+- **키워드 행 필터는 별도 입력입니다.** `visit_location`, `specialty`, `interest`, `prescription_evolution` 중 하나 이상이 `전체`가 아닐 때만 토픽 행을 자릅니다. `start_date`/`end_date`는 표시 기간이며, 행 필터가 활성화된 경우에만 그 행 집계에도 적용됩니다. 저장된 무필터 토픽 payload는 기간 계열이 없어 표시 기간으로 자르지 않습니다. `period_start`, `period_end`와 `filters.channel.visit_location`, `filters.channel.specialty`는 호환 입력으로 flat 필드에 정규화됩니다.
 
 - **missing/null 처리:** `filters`와 `filter`를 생략하면 빈 필터 객체입니다. `filters:null` 또는 `filter:null`은 validation error입니다. `filters`와 legacy `filter`를 둘 다 보내면 비어 있지 않은 `filters`가 우선합니다.
 
@@ -693,8 +693,8 @@ BRAND_ACTIVITY_FILTER_SCHEMA: Final = {
         "specialty": {"type": "array", "items": {"type": "string"}, "description": "키워드 진료과 행 필터."},
         "interest": {"type": "array", "items": {"type": "string"}, "description": "키워드 관심도 행 필터."},
         "prescription_evolution": {"type": "array", "items": {"type": "string"}, "description": "처방 변화 행 필터."},
-        "period_start": {"type": "string", "description": "행 필터 시작월 YYYY-MM."},
-        "period_end": {"type": "string", "description": "행 필터 종료월 YYYY-MM."},
+        "period_start": {"type": "string", "description": "표시 기간 시작월 YYYY-MM. 차원 필터가 활성화된 경우에만 행 집계에 적용됩니다."},
+        "period_end": {"type": "string", "description": "표시 기간 종료월 YYYY-MM. 차원 필터가 활성화된 경우에만 행 집계에 적용됩니다."},
     },
 }
 
@@ -797,18 +797,18 @@ BRAND_ACTIVITY_SCOPE_SCHEMA: Final = {
             "items": {"type": "string"},
             "description": "토픽 행 필터의 처방 변화 표시값. 단일 선택은 문자열, 다중 선택은 문자열 배열, 미선택은 `전체`.",
         },
-        "period_start": {"type": "string", "description": "토픽 행 필터 시작월 YYYY-MM. 미지정 시 빈 문자열."},
-        "period_end": {"type": "string", "description": "토픽 행 필터 종료월 YYYY-MM. 미지정 시 빈 문자열."},
+        "period_start": {"type": "string", "description": "표시 기간 시작월 YYYY-MM. 미지정 시 빈 문자열."},
+        "period_end": {"type": "string", "description": "표시 기간 종료월 YYYY-MM. 미지정 시 빈 문자열."},
         "top_n": {"type": "integer", "description": "브랜드 카드에 산출한 상위 토픽 개수. 요청값은 1~10으로 clamp됩니다."},
         "sliced": {"type": "boolean", "description": "토픽 행 필터가 적용되어 row-topic assignment를 slicing했는지 여부."},
         "applied_topic_filters": {
             "type": "object",
-            "description": "실제로 적용된 토픽 행 필터. visit_location/specialty/interest/prescription_evolution은 배열, 기간은 문자열입니다.",
+            "description": "실제로 적용된 토픽 행 필터. 차원 필터가 없으면 기간도 이 객체에 포함되지 않습니다.",
         },
         "topic_set_version": {"type": ["string", "null"], "description": "선택된 topic scope의 버전. scope가 없으면 null."},
         "filter_effect": {
             "type": "object",
-            "description": "`brand_set`(base 또는 channel_axis_applied)과 `payload`(filtered/unfiltered assignment 경로)를 담은 필터 효과 echo.",
+            "description": "`brand_set`, `payload` 경로와 기간의 실제 적용 여부를 담은 필터 효과 echo.",
         },
     },
 }
