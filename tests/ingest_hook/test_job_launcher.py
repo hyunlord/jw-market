@@ -183,7 +183,7 @@ def test_agent_refresh_job_carries_canonical_affected_scope_json():
     ]
 
 
-def test_complete_reingest_job_uses_dedicated_runner_and_immutable_request() -> None:
+def test_complete_reingest_job_uses_normal_ingest_runner() -> None:
     attempt_run_id = "20260809221530123456"
     body = render_complete_reingest_job(
         epoch="2026-06",
@@ -211,23 +211,6 @@ def test_complete_reingest_job_uses_dedicated_runner_and_immutable_request() -> 
         attempt_run_id,
         "--job-name",
         body["metadata"]["name"],
-        "--runner",
-        "complete-reingest",
-        "--",
-        "--manifest",
-        "_manifests/ubist/2026-06/manifest.json",
-        "--epoch",
-        "2026-06",
-        "--category",
-        "ubist",
-        "--manifest-sha",
-        SHA,
-        "--request-id",
-        REQUEST_ID,
-        "--run-id",
-        attempt_run_id,
-        "--affected-scope-json",
-        '{"count":1,"dimension":"source","values":["ubist"]}',
     ]
 
 

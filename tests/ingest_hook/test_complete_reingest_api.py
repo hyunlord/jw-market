@@ -5,7 +5,7 @@ from dataclasses import asdict
 from fastapi.testclient import TestClient
 import pytest
 
-from pipeline.scripts.ingest_hook import config
+from pipeline.scripts.ingest_hook import config, job_runner
 from pipeline.scripts.ingest_hook.app import IngestService, create_app
 
 
@@ -78,9 +78,8 @@ def test_complete_reingest_api_submits_append_only_attempt(
         "-m",
         "pipeline.scripts.ingest_hook.stage_log_runner",
     ]
-    assert container["command"][container["command"].index("--runner") + 1] == "complete-reingest"
-    assert "--request-id" in container["command"]
-    assert "--affected-scope-json" in container["command"]
+    assert "--runner" not in container["command"]
+    assert container["name"] == "ingest"
 
     attempt_events = [
         event
@@ -110,6 +109,31 @@ def test_complete_reingest_api_submits_append_only_attempt(
         "terminal_reason": None,
         "job_name": body["job_name"],
     }
+
+
+def test_normal_runner_adapter_preserves_completed_parent(sqlite_ledger, fake_transport) -> None:
+    _complete_identity(sqlite_ledger)
+    parent_before = asdict(sqlite_ledger.status(*IDENTITY))
+    service = IngestService(
+        sqlite_ledger,
+        None,
+        transport=fake_transport,
+        now=lambda: "20260809221530123456",
+    )
+    response = TestClient(create_app(service)).post("/ingest/reingest", json=_payload())
+    assert response.status_code == 202
+
+    attempt_ledger = job_runner._ledger_for_run(
+        sqlite_ledger,
+        IDENTITY,
+        response.json()["run_id"],
+    )
+    assert attempt_ledger.status(*IDENTITY).status == "running"
+    attempt_ledger.mark_complete(*IDENTITY, row_counts={"epoch:2026-06": 137_836})
+
+    assert asdict(sqlite_ledger.status(*IDENTITY)) == parent_before
+    attempt = sqlite_ledger.complete_reingest_attempts()[0]
+    assert attempt.status == "complete"
 
 
 def test_complete_reingest_api_same_uuid_is_idempotent(

@@ -516,40 +516,9 @@ def render_complete_reingest_job(
         "jw-ingest/category": category,
     }
     container = template["spec"]["containers"][0]
-    container["name"] = "complete-reingest"
-    container["command"] = [
-        "python",
-        "-m",
-        "pipeline.scripts.ingest_hook.stage_log_runner",
-        "--manifest",
-        manifest_path,
-        "--run-id",
-        run_id,
-        "--job-name",
-        name,
-        "--runner",
-        "complete-reingest",
-        "--",
-        "--manifest",
-        manifest_path,
-        "--epoch",
-        epoch,
-        "--category",
-        category,
-        "--manifest-sha",
-        manifest_sha,
-        "--request-id",
-        request_id,
-        "--run-id",
-        run_id,
-        "--affected-scope-json",
-        json.dumps(
-            affected_scope,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-    ]
+    # Reingest is an append-only scheduling identity, not a separate pipeline.
+    # Keep its labels for queue observability while running the canonical Job.
+    container["command"][container["command"].index("--job-name") + 1] = name
     return body
 
 

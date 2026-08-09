@@ -26,8 +26,10 @@ import sqlite3
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from pipeline.scripts.ingest_hook import config
 from pipeline.scripts.ingest_hook.category_map import (
@@ -41,10 +43,77 @@ from pipeline.scripts.ingest_hook.g3 import G3Error, validate
 from pipeline.scripts.ingest_hook.ledger import (
     STATUS_AWAITING_APPROVAL,
     STATUS_COMPLETE,
+    STATUS_FAILED,
     STATUS_PUBLISH_RUNNING,
     STATUS_QUEUED,
+    STATUS_RUNNING,
     Ledger,
 )
+
+
+class _ReingestAttemptLedger:
+    """Keep a rerun append-only while exposing the normal runner contract."""
+
+    def __init__(self, ledger: Ledger, attempt: object) -> None:
+        self._ledger = ledger
+        self._attempt = attempt
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ledger, name)
+
+    def status(self, epoch: str, category: str, manifest_sha: str):
+        entry = self._ledger.status(epoch, category, manifest_sha)
+        if entry is not None and entry.status == STATUS_COMPLETE:
+            return replace(
+                entry,
+                status=STATUS_RUNNING,
+                run_id=self._attempt.run_id,
+                job_name=self._attempt.job_name,
+            )
+        return entry
+
+    def _terminal(self, status: str, reason: str) -> None:
+        self._ledger.record_complete_reingest_terminal(
+            self._attempt.epoch,
+            self._attempt.category,
+            self._attempt.manifest_sha,
+            request_id=self._attempt.request_id,
+            run_id=self._attempt.run_id,
+            status=status,
+            reason=reason,
+            actor="job_runner",
+            job_name=self._attempt.job_name,
+            affected_scope=self._attempt.affected_scope,
+        )
+
+    def mark_complete(self, *_identity: str, row_counts: dict[str, int]) -> None:
+        del row_counts
+        self._terminal(STATUS_COMPLETE, "normal ingest pipeline complete")
+
+    def mark_failed(self, *_identity: str, reason: str) -> None:
+        self._terminal(STATUS_FAILED, reason)
+
+    def mark_gate_failed(self, *_identity: str, reason: str) -> None:
+        self._terminal(STATUS_FAILED, reason)
+
+
+def _ledger_for_run(
+    ledger: Ledger,
+    identity: tuple[str, str, str],
+    run_id: str,
+) -> Ledger | _ReingestAttemptLedger:
+    attempts = ledger.complete_reingest_attempts(category=identity[1])
+    attempt = next(
+        (
+            item
+            for item in attempts
+            if (item.epoch, item.category, item.manifest_sha, item.run_id)
+            == (*identity, run_id)
+            and item.status == STATUS_RUNNING
+        ),
+        None,
+    )
+    return _ReingestAttemptLedger(ledger, attempt) if attempt is not None else ledger
 from pipeline.scripts.ingest_hook.post_gate import (
     PostGateError,
     SigmaEvidence,
@@ -888,6 +957,7 @@ def run(
         return 2
 
     identity = (manifest.epoch, manifest.category, manifest.manifest_sha)
+    ledger = _ledger_for_run(ledger, identity, run_id)
     entry = ledger.status(*identity)
     if entry is None:
         # Standalone/sweep execution: register the identity before running.
