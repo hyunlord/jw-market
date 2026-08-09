@@ -1494,6 +1494,8 @@ class GenosClient:
                 "content": (
                     "너는 공공·규제·임상 외부 조회 결과를 사용자 질문에 맞게 요약한다. "
                     "아래에 제공된 도구 결과와 웹 검색 결과만 근거로 사용하고, 없는 수치·효능·급여 조건·임상 사실을 만들지 않는다. "
+                    "HIRA 요청 기간이 여러 해이면 requested_periods의 모든 연도를 빠짐없이 언급하고, 결과가 없는 연도는 조회 결과 없음이라고 명시한다. "
+                    "no_data나 상병코드 매핑 결과 없음은 API 호출 실패라고 표현하지 말고, error·timeout 상태일 때만 호출 실패라고 표현한다. "
                     "공식 조회 실패 뒤 제공된 웹 검색 결과는 요약할 수 있지만 UBIST·IQVIA·CSD의 매출, 점유율, HHI, 시장규모를 웹 값으로 대체하지 않는다. "
                     "내부 처리 단계나 근거 계약을 설명하지 말고 자연스러운 한국어로 바로 답한다. "
                     "출처 섹션과 URL은 시스템이 별도로 붙이므로 작성하지 않는다."
@@ -1505,6 +1507,37 @@ class GenosClient:
             },
         ]
         return self._chat_text(messages, timing=timing)
+
+    def external_passthrough_has_core_answer(
+        self,
+        question: str,
+        agent_result: dict[str, Any],
+    ) -> bool | None:
+        """Let the final model judge whether a successful official call answered the request."""
+
+        timing = agent_result.get("timing") if isinstance(agent_result.get("timing"), dict) else None
+        context = external_passthrough_context(agent_result)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "공식 외부 조회 결과가 사용자 질문의 핵심 정보를 실제로 포함하는지 판정한다. "
+                    "HTTP 성공이나 고시 번호·날짜·제목만 있다는 이유로 충분하다고 판정하지 않는다. "
+                    "예를 들어 급여기준의 최근 개정 내용을 물었는데 급여 조건 본문이 없으면 INSUFFICIENT다. "
+                    "결과에 요청한 핵심 내용이 있으면 SUFFICIENT, 없으면 INSUFFICIENT 한 단어만 출력한다."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"질문: {question}\n\n공식 외부 조회 결과:\n{context}",
+            },
+        ]
+        decision = self._chat_text(messages, timing=timing).strip().upper()
+        if decision == "SUFFICIENT":
+            return True
+        if decision == "INSUFFICIENT":
+            return False
+        return None
 
     def _record_answer_branch(self, answer_branch: str) -> None:
         if answer_branch not in ANSWER_BRANCHES:

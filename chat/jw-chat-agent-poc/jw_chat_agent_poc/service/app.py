@@ -71,6 +71,8 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
 )
 from jw_chat_agent_poc.orchestrator.final_surface_assembly import apply_final_surface_assembly
 from jw_chat_agent_poc.orchestrator.external_passthrough import (
+    append_external_web_fallback,
+    external_passthrough_needs_core_assessment,
     is_external_passthrough_result,
     prepare_existing_external_passthrough,
 )
@@ -311,7 +313,7 @@ from jw_chat_agent_poc.tool_use.routing_v4_rules import (
 )
 from jw_chat_agent_poc.tool_use.routing_v4_runtime import configured_routing_mode
 from jw_chat_agent_poc.tool_use.routing_v4_types import RoutingMode
-from jw_chat_agent_poc.tools.external import resolve_patent_ingredient_query
+from jw_chat_agent_poc.tools.external import ExternalApiClient, resolve_patent_ingredient_query
 from jw_chat_agent_poc.tools.metrics.market_scope import (
     MarketScopeResolver,
     asks_market_members,
@@ -3455,6 +3457,19 @@ def _compute_external_passthrough_final_answer(
     generated_answer = ""
     if client.token:
         try:
+            if external_passthrough_needs_core_assessment(result):
+                with stage(timing, "external_core_assessment", "official result content assessment"):
+                    has_core_answer = client.external_passthrough_has_core_answer(question, result)
+                if has_core_answer is False:
+                    result.update(
+                        append_external_web_fallback(
+                            question,
+                            result,
+                            external=ExternalApiClient(mode="live"),
+                            timing=timing,
+                            reason="llm_core_content_missing",
+                        )
+                    )
             with stage(timing, "answer_generation_total", "GenOS external result summary"):
                 generated_answer = client.external_passthrough_answer(question, result)
         except requests.RequestException:

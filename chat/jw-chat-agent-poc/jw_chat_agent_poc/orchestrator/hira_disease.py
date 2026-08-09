@@ -402,7 +402,11 @@ def hira_disease_calls(question: str, resolution: HiraResolution, external: Exte
 
 def hira_disease_code_calls(question: str, sick_cd: str, external: ExternalApiClient) -> list[ExternalCall]:
     code = normalize_hira_disease_code(sick_cd)
-    return hira_direct_disease_calls(question, code, external)
+    requested_years = hira_requested_years(question) or ()
+    return [
+        _with_hira_direct_code_context(call, code, requested_years)
+        for call in _hira_stat_external_calls(question, external, code)
+    ]
 
 
 def hira_direct_disease_calls(question: str, disease_query: str, external: ExternalApiClient) -> list[ExternalCall]:
@@ -472,6 +476,36 @@ def _hira_stat_call(
 ) -> ExternalCall:
     caller = getattr(external, request.tool)
     return caller(sick_cd) if period is None else caller(sick_cd, period)
+
+
+def _with_hira_direct_code_context(
+    call: ExternalCall,
+    sick_cd: str,
+    requested_years: tuple[str, ...],
+) -> ExternalCall:
+    request = call.render_data.get("request")
+    period = str(request.get("year") or "") if isinstance(request, dict) else ""
+    summary = call.summary_text
+    if call.tool == _HIRA_STATISTICS:
+        if call.status.strip().casefold() == "no_data":
+            summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 환자수 조회 결과가 없습니다."
+        else:
+            summary = f"HIRA KCD {sick_cd}의 {period or '기본 연도'} 입원·외래 환자수를 조회했습니다."
+    return ExternalCall(
+        tool=call.tool,
+        source=call.source,
+        status=call.status,
+        summary_text=summary,
+        render_data={
+            **call.render_data,
+            "direct_sickCd": sick_cd,
+            "direct_code_lookup": True,
+            "requested_period": period,
+            "requested_periods": list(requested_years),
+        },
+        safe_url=call.safe_url,
+        elapsed_ms=call.elapsed_ms,
+    )
 
 
 def _hira_disease_mappings(question: str, canonical_brand: str) -> tuple[HiraMapping, ...] | None:

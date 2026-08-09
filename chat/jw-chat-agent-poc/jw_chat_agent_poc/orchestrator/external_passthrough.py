@@ -54,6 +54,10 @@ _INTERNAL_STRUCTURED_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
     r"market\s*share|sales)",
     re.IGNORECASE,
 )
+_DISEASE_PATIENT_SUBJECT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?P<subject>.+?)\s*(?:상병\s*)?(?:환자\s*수|환자수)(?:\s.*)?$",
+    re.IGNORECASE,
+)
 
 
 def is_external_passthrough_tool(tool: object) -> bool:
@@ -116,15 +120,19 @@ def prepare_external_passthrough(
     web_fallback_attempted = bool(failed_official_tools)
     usable_web_present = any(_usable_web_call(call) for call in calls)
     web_fallback_used = web_fallback_attempted and usable_web_present
+    fallback_queries: list[str] = []
     if web_fallback_attempted and not usable_web_present:
         if external is None:
             return payload
-        with stage(timing, "tool:web_search", "external source fallback"):
-            fallback_call = asdict(external.web_search(question, topic="general"))
-        fallback_call["queried_at_utc"] = datetime.now(timezone.utc).isoformat()
-        fallback_call["fallback_from_tools"] = list(failed_official_tools)
-        calls.append(fallback_call)
-        web_fallback_used = _usable_web_call(fallback_call)
+        fallback_queries = _append_web_fallback_calls(
+            question,
+            calls,
+            external=external,
+            timing=timing,
+            fallback_from_tools=failed_official_tools,
+            reason="official_tool_failed_or_empty",
+        )
+        web_fallback_used = any(_usable_web_call(call) for call in calls)
 
     markdown_response = payload.get("markdown_response")
     projected_markdown = (
@@ -152,6 +160,7 @@ def prepare_external_passthrough(
         "web_fallback_attempted": web_fallback_attempted,
         "web_fallback_used": web_fallback_used,
         "failed_official_tools": list(failed_official_tools),
+        "fallback_queries": fallback_queries,
     }
     return {
         **payload,
@@ -165,6 +174,7 @@ def prepare_external_passthrough(
             "web_fallback_attempted": web_fallback_attempted,
             "web_fallback_used": web_fallback_used,
             "failed_official_tools": list(failed_official_tools),
+            "fallback_queries": fallback_queries,
         },
     }
 
@@ -191,6 +201,72 @@ def external_passthrough_calls(result: Mapping[str, object]) -> tuple[dict[str, 
         for call in raw_calls
         if isinstance(call, Mapping) and is_external_passthrough_tool(call.get("tool"))
     )
+
+
+def external_passthrough_needs_core_assessment(result: Mapping[str, object]) -> bool:
+    marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
+    if not isinstance(marker, Mapping) or marker.get("web_fallback_used") is True:
+        return False
+    calls = external_passthrough_calls(result)
+    return not any(_usable_web_call(call) for call in calls) and any(
+        _is_official_tool(call) and external_call_has_usable_result(call)
+        for call in calls
+    )
+
+
+def append_external_web_fallback(
+    question: str,
+    payload: dict[str, Any],
+    *,
+    external: ExternalApiClient,
+    timing: Timing | None = None,
+    reason: str,
+) -> dict[str, Any]:
+    raw_calls = payload.get("tool_calls")
+    calls = [dict(call) for call in raw_calls if isinstance(call, Mapping)] if isinstance(raw_calls, list) else []
+    if any(_usable_web_call(call) for call in calls):
+        return payload
+    official_tools = tuple(
+        dict.fromkeys(str(call.get("tool") or "") for call in calls if _is_official_tool(call))
+    )
+    fallback_queries = _append_web_fallback_calls(
+        question,
+        calls,
+        external=external,
+        timing=timing,
+        fallback_from_tools=official_tools,
+        reason=reason,
+    )
+    web_fallback_used = any(_usable_web_call(call) for call in calls)
+    marker = dict(payload.get(EXTERNAL_PASSTHROUGH_FIELD) or {})
+    marker.update(
+        {
+            "enabled": True,
+            "web_fallback_attempted": True,
+            "web_fallback_used": web_fallback_used,
+            "fallback_reason": reason,
+            "fallback_queries": fallback_queries,
+        }
+    )
+    diagnostics = dict(payload.get("router_diagnostics") or {})
+    passthrough_diagnostics = dict(diagnostics.get("external_passthrough") or {})
+    passthrough_diagnostics.update(
+        {
+            "enabled": True,
+            "web_fallback_attempted": True,
+            "web_fallback_used": web_fallback_used,
+            "fallback_reason": reason,
+            "fallback_queries": fallback_queries,
+        }
+    )
+    diagnostics["external_passthrough"] = passthrough_diagnostics
+    return {
+        **payload,
+        "tool_calls": calls,
+        "sources": _source_names(calls),
+        "router_diagnostics": diagnostics,
+        EXTERNAL_PASSTHROUGH_FIELD: marker,
+    }
 
 
 def _is_official_tool(call: Mapping[str, object]) -> bool:
@@ -269,6 +345,47 @@ def _usable_web_call(call: Mapping[str, object]) -> bool:
         str(call.get("tool") or "").casefold() == "web_search"
         and external_call_has_usable_result(call)
     )
+
+
+def _append_web_fallback_calls(
+    question: str,
+    calls: list[dict[str, Any]],
+    *,
+    external: ExternalApiClient,
+    timing: Timing | None,
+    fallback_from_tools: Sequence[str],
+    reason: str,
+) -> list[str]:
+    attempted: list[str] = []
+    for index, query in enumerate(_web_fallback_queries(question), start=1):
+        with stage(timing, "tool:web_search", "external source fallback"):
+            fallback_call = asdict(external.web_search(query, topic="general"))
+        fallback_call["queried_at_utc"] = datetime.now(timezone.utc).isoformat()
+        fallback_call["fallback_from_tools"] = list(fallback_from_tools)
+        fallback_call["fallback_reason"] = reason
+        fallback_call["fallback_query"] = query
+        fallback_call["fallback_attempt"] = index
+        calls.append(fallback_call)
+        attempted.append(query)
+        if _usable_web_call(fallback_call):
+            break
+    return attempted
+
+
+def _web_fallback_queries(question: str) -> tuple[str, ...]:
+    patient_match = _DISEASE_PATIENT_SUBJECT_RE.match(question)
+    if patient_match is not None:
+        subject = patient_match.group("subject").strip()
+        return (
+            f"{subject} 국내 유병률 환자수 통계 발생률",
+            f"{subject} 국내 환자 규모 질병 통계 유병 현황",
+        )
+    if any(token in question for token in ("급여기준", "급여 기준", "급여조건", "급여 조건")):
+        return (
+            f"{question} 보험급여 인정기준 세부 조건 본문",
+            f"{question} 개정 고시 급여 적용 조건",
+        )
+    return (question,)
 
 
 def _source_names(calls: Sequence[Mapping[str, object]]) -> list[str]:
