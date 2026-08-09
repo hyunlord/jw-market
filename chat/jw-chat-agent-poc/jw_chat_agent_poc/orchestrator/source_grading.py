@@ -21,6 +21,20 @@ OFFICIAL_WEB_DOMAINS_BY_SOURCE: Final[dict[str, tuple[str, ...]]] = {
     "academic": ("ac.kr",),
 }
 
+_GRADE_A_DOMAINS: Final[tuple[str, ...]] = (
+    "hira.or.kr",
+    "mfds.go.kr",
+    "clinicaltrials.gov",
+)
+_GRADE_B_DOMAINS: Final[tuple[str, ...]] = (
+    "ac.kr",
+    "or.kr",
+    "go.kr",
+    "snuh.org",
+    "snubh.org",
+    "amc.seoul.kr",
+)
+
 _EXPLICIT_AUTHORITY_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
     "hira": re.compile(
         r"(?:(?<![A-Za-z0-9_])HIRA(?![A-Za-z0-9_])|심평원|건강보험심사평가원)",
@@ -73,9 +87,10 @@ def grade_web_url(url: str) -> SourceGrade:
     hostname = (parsed.hostname or "").lower().rstrip(".")
     if parsed.scheme != "https" or not hostname:
         return SourceGrade.UNVERIFIED
-    for domains in OFFICIAL_WEB_DOMAINS_BY_SOURCE.values():
-        if any(_hostname_matches(hostname, domain) for domain in domains):
-            return SourceGrade.SUPPLEMENTARY
+    if any(_hostname_matches(hostname, domain) for domain in _GRADE_A_DOMAINS):
+        return SourceGrade.AUTHORITATIVE
+    if any(_hostname_matches(hostname, domain) for domain in _GRADE_B_DOMAINS):
+        return SourceGrade.SUPPLEMENTARY
     return SourceGrade.UNVERIFIED
 
 

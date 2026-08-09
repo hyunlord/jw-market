@@ -28,6 +28,7 @@ _INTERNAL_SECTION_RE: Final[re.Pattern[str]] = re.compile(
 _WEB_SECTION_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^#{1,6}\s*뉴스[·/]?외부\s*이슈\s*$"
 )
+_BLOCK_HEADING_RE: Final[re.Pattern[str]] = re.compile(r"^#{1,2}\s+\S")
 _PROTECTED_METRIC_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:\bsales\b|\bmarket[_ ]?share\b|\brank\b|\bHHI\b|\bCR5\b|"
     r"\bgrowth[_ ]?rate\b|\bchannel[_ ]?share\b|매출|시장\s*점유율?|점유율?|"
@@ -109,6 +110,7 @@ def finalize_external_passthrough_answer(answer: str, result: Mapping[str, objec
     body = _SOURCE_SECTION_RE.split(answer.strip(), maxsplit=1)[0].strip()
     body = _normalize_hira_no_data_wording(body, result)
     body = _separate_internal_and_web_blocks(body, result)
+    body = normalize_external_section_headings(body, result)
     marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
     web_fallback_used = isinstance(marker, Mapping) and marker.get("web_fallback_used") is True
     if web_fallback_used:
@@ -201,7 +203,7 @@ def external_source_footer(result: Mapping[str, object]) -> str:
         publication = (
             f" · 게시일 {published_at}"
             if published_at
-            else " · 게시일 확인 불가"
+            else " · 게시일 미상"
             if label == "Tavily 웹 검색"
             else ""
         )
@@ -242,6 +244,53 @@ def _separate_internal_and_web_blocks(
             "\n\n".join(web),
         )
     )
+
+
+def normalize_external_section_headings(
+    body: str,
+    result: Mapping[str, object],
+) -> str:
+    """Keep evidence block headings only when their block has renderable content."""
+
+    lines = body.splitlines()
+    internal_source_present = bool(_internal_source_labels(result))
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        internal_heading = _INTERNAL_SECTION_RE.fullmatch(stripped) is not None
+        web_heading = _WEB_SECTION_RE.fullmatch(stripped) is not None
+        if not (internal_heading or web_heading):
+            kept.append(line)
+            continue
+
+        section_lines = _following_section_lines(lines, index)
+        if internal_heading:
+            section_blob = "\n".join(section_lines)
+            has_internal_value = (
+                internal_source_present
+                and bool(_PROTECTED_METRIC_RE.search(section_blob))
+                and bool(re.search(r"\d", section_blob))
+            )
+            if has_internal_value:
+                kept.append(_INTERNAL_SECTION_HEADING)
+            continue
+        if _has_substantive_section_content(section_lines):
+            kept.append(_WEB_SECTION_HEADING)
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _following_section_lines(lines: list[str], heading_index: int) -> tuple[str, ...]:
+    section: list[str] = []
+    for line in lines[heading_index + 1 :]:
+        if _BLOCK_HEADING_RE.match(line.strip()):
+            break
+        section.append(line)
+    return tuple(section)
+
+
+def _has_substantive_section_content(lines: tuple[str, ...]) -> bool:
+    return any(line.strip() and not line.lstrip().startswith("#") for line in lines)
 
 
 def _has_web_source(result: Mapping[str, object]) -> bool:

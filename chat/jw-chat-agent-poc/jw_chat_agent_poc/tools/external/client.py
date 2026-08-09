@@ -74,6 +74,10 @@ _PUBLICATION_DATE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"[^>\n]{0,240}?(?:article:published_time|datePublished|datePublishedUTC|pubdate)"
     ),
     re.compile(r"(?is)<time\b[^>]*\bdatetime=[\"'](20\d{2}-\d{2}-\d{2}[^\"']*)[\"']"),
+    re.compile(
+        r"(?is)(?:게시일|등록일|작성일|발행일|입력일|최종\s*수정일)"
+        r"[^0-9]{0,24}(20\d{2}[./-]\d{1,2}[./-]\d{1,2})"
+    ),
 )
 _PUBLICATION_METADATA_MAX_BYTES = 256 * 1024
 MCP_DIRECT_URL_ENV_BY_SOURCE = {
@@ -1625,6 +1629,7 @@ def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: f
                 item["published_at_source"] = "page_metadata"
         item["published_at"] = published_at
         item["published_date"] = published_at
+        item["published_at_label"] = published_at or "게시일 미상"
         normalized_items.append(item)
     status = "live" if normalized_items else "no_data"
     summary = f"{provider} 웹검색 결과 {len(normalized_items)}건을 확인했습니다." if normalized_items else f"{provider} 웹검색 결과가 없습니다."

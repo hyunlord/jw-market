@@ -9,6 +9,7 @@ from typing import Any, Final
 from urllib.parse import urlparse
 
 from jw_chat_agent_poc.common.timing import Timing, stage
+from jw_chat_agent_poc.orchestrator.source_grading import SourceGrade, grade_web_url
 from jw_chat_agent_poc.tools.external import ExternalApiClient
 
 
@@ -88,6 +89,30 @@ _DISEASE_PATIENT_SUBJECT_RE: Final[re.Pattern[str]] = re.compile(
 )
 _DISEASE_STAT_SUBJECT_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?P<subject>.+?)(?:\s+국내)?\s*(?:유병률|환자\s*수|발생률|통계)(?:\s.*)?$",
+    re.IGNORECASE,
+)
+_SOURCE_GRADE_LABELS: Final[dict[SourceGrade, str]] = {
+    SourceGrade.AUTHORITATIVE: "A 공식",
+    SourceGrade.SUPPLEMENTARY: "B 기관·학술",
+    SourceGrade.UNVERIFIED: "C 기타·개인",
+}
+_INSTITUTION_BY_HOST: Final[dict[str, str]] = {
+    "hira.or.kr": "건강보험심사평가원",
+    "mfds.go.kr": "식품의약품안전처",
+    "clinicaltrials.gov": "ClinicalTrials.gov",
+    "snuh.org": "서울대학교병원",
+    "snubh.org": "분당서울대학교병원",
+    "amc.seoul.kr": "서울아산병원",
+    "stcarollo.or.kr": "성가롤로병원",
+}
+_POPULATION_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:(?:조사|연구|분석|등록)\s*(?:대상|표본|참여자)?[^\d]{0,16}"
+    r"\d[\d,]*(?:\.\d+)?\s*명|\d[\d,]*(?:\.\d+)?\s*명을\s*대상)",
+    re.IGNORECASE,
+)
+_SURVEY_YEAR_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:(20\d{2})년?[^\n]{0,24}(?:조사|연구|자료|분석)|"
+    r"(?:조사|연구|자료|분석)[^\n]{0,24}(20\d{2})년?)",
     re.IGNORECASE,
 )
 
@@ -453,6 +478,8 @@ def _web_call_answers_question(question: str, call: Mapping[str, object]) -> boo
         for item in items:
             if not isinstance(item, Mapping):
                 continue
+            if _item_source_grade(item) is SourceGrade.UNVERIFIED:
+                continue
             blob = " ".join(
                 str(item.get(key) or "") for key in ("title", "snippet")
             )
@@ -570,6 +597,11 @@ def _apply_web_result_policy(
         item["published_at"] = published_at or None
         url = str(item.get("url") or "")
         host = (urlparse(url).hostname or "").casefold()
+        grade = grade_web_url(url)
+        item["source_grade"] = _SOURCE_GRADE_LABELS[grade]
+        item["institution_name"] = _institution_name(host, item)
+        item["population_text"] = _population_text(item)
+        item["survey_year"] = _survey_year(item)
         if host in _PERSONAL_BLOG_HOSTS or any(host.endswith(f".{name}") for name in _PERSONAL_BLOG_HOSTS):
             rejected.append({"url": url, "reason": "personal_blog"})
             continue
@@ -586,6 +618,43 @@ def _apply_web_result_policy(
     render_data["official_reference_date"] = official_date.isoformat() if official_date else None
     render_data["source_precedence"] = "official_wins_web_conflict_disclosed_only"
     fallback_call["status"] = "live" if kept else "no_data"
+
+
+def _item_source_grade(item: Mapping[str, object]) -> SourceGrade:
+    label = str(item.get("source_grade") or "").strip()
+    if label.startswith("A "):
+        return SourceGrade.AUTHORITATIVE
+    if label.startswith("B "):
+        return SourceGrade.SUPPLEMENTARY
+    return grade_web_url(str(item.get("url") or ""))
+
+
+def _institution_name(host: str, item: Mapping[str, object]) -> str:
+    for domain, name in _INSTITUTION_BY_HOST.items():
+        if host == domain or host.endswith(f".{domain}"):
+            return name
+    supplied = str(item.get("institution") or item.get("source_name") or "").strip()
+    return supplied or host or "확인 불가"
+
+
+def _population_text(item: Mapping[str, object]) -> str:
+    supplied = str(item.get("population") or item.get("population_text") or "").strip()
+    if supplied:
+        return supplied
+    blob = " ".join(str(item.get(key) or "") for key in ("title", "snippet", "content"))
+    match = _POPULATION_CONTEXT_RE.search(blob)
+    return match.group(0).strip() if match is not None else "확인 불가"
+
+
+def _survey_year(item: Mapping[str, object]) -> str:
+    supplied = str(item.get("survey_year") or item.get("survey_years") or "").strip()
+    if supplied:
+        return supplied
+    blob = " ".join(str(item.get(key) or "") for key in ("title", "snippet", "content"))
+    match = _SURVEY_YEAR_CONTEXT_RE.search(blob)
+    if match is None:
+        return "확인 불가"
+    return next(group for group in match.groups() if group)
 
 
 def _official_reference_date(calls: Sequence[Mapping[str, object]]) -> date | None:

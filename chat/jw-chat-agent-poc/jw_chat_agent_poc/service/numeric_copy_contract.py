@@ -6,6 +6,9 @@ import re
 from typing import Any, Final
 
 from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, normalize_number
+from jw_chat_agent_poc.orchestrator.external_passthrough_render import (
+    normalize_external_section_headings,
+)
 from jw_chat_agent_poc.service.answer_safety import fact_token_allowed, strict_allowed_numbers
 
 
@@ -97,9 +100,10 @@ def enforce_numeric_copy_contract(
 
     cleaned = "\n".join(kept).strip()
     if blocked_line_count:
-        cleaned = f"{cleaned}\n\n{_BLOCK_NOTICE}".strip()
+        cleaned = _insert_before_sources(cleaned, _blocked_numeric_notice(result))
     if not cleaned:
-        cleaned = _BLOCK_NOTICE
+        cleaned = _blocked_numeric_notice(result)
+    cleaned = normalize_external_section_headings(cleaned, result)
     report = {
         "contract": "numeric_copy_only_v1",
         "disposition": "blocked" if blocked_line_count else "pass",
@@ -110,6 +114,64 @@ def enforce_numeric_copy_contract(
         "question_has_numeric_token": bool(allowed_numbers(question)),
     }
     return cleaned, report
+
+
+def _blocked_numeric_notice(result: Mapping[str, Any]) -> str:
+    if _verification_failed(result):
+        return "근거 검증에 실패해 수치를 제시하지 않습니다."
+    calls = result.get("tool_calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, Mapping):
+                continue
+            if not str(call.get("tool") or "").startswith("hira_disease_"):
+                continue
+            period = _hira_period(call)
+            prefix = f"{period}년 " if period else ""
+            if _call_failed(call):
+                status = _call_status(call)
+                if status == "no_data":
+                    return f"{prefix}HIRA 조회 결과가 없어 환자수를 제시하지 않습니다."
+                return f"{prefix}HIRA 조회에 실패해 환자수를 제시하지 않습니다."
+    return _BLOCK_NOTICE
+
+
+def _insert_before_sources(answer: str, notice: str) -> str:
+    source_match = re.search(r"(?m)^##\s*출처\s*$", answer)
+    if source_match is None:
+        return f"{answer}\n\n{notice}".strip()
+    before = answer[: source_match.start()].rstrip()
+    after = answer[source_match.start() :].lstrip()
+    return "\n\n".join(part for part in (before, notice, after) if part)
+
+
+def _hira_period(call: Mapping[str, Any]) -> str:
+    render_data = call.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return ""
+    period = str(render_data.get("requested_period") or "").strip()
+    if period:
+        return period.removesuffix("년")
+    request = render_data.get("request")
+    if not isinstance(request, Mapping):
+        return ""
+    return str(request.get("year") or "").strip().removesuffix("년")
+
+
+def _call_status(call: Mapping[str, Any]) -> str:
+    render_data = call.get("render_data")
+    candidates = [
+        call.get("status"),
+        call.get("result_status"),
+        call.get("semantic_status"),
+    ]
+    if isinstance(render_data, Mapping):
+        candidates.append(render_data.get("status"))
+    normalized = {
+        str(candidate or "").strip().casefold()
+        for candidate in candidates
+    }
+    return "no_data" if "no_data" in normalized else "failed"
 
 
 def _copy_token_allowed(raw_token: str, payload_numbers: tuple[str, ...]) -> bool:

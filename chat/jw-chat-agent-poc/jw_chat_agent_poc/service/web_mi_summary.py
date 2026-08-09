@@ -28,6 +28,9 @@ class WebSearchItem:
     direction: str
     source_count: int
     internal_check: bool
+    institution_name: str
+    population_text: str
+    survey_year: str
 
 
 def web_search_mi_section(raw_items: Sequence[Mapping[str, object]]) -> str:
@@ -39,10 +42,10 @@ def web_search_mi_section(raw_items: Sequence[Mapping[str, object]]) -> str:
     if not visible_current and not visible_stale:
         return ""
     parts = [
-        "### 웹 검색 결과(미검증)",
+        "### 웹 검색 결과(출처 등급)",
         (
-            "웹 검색 결과는 공식 통계가 아닙니다. 공식 기관 웹은 SUPPLEMENTARY(보조), "
-            "그 밖의 웹은 UNVERIFIED(수치 근거로 사용 불가)로 구분합니다."
+            "A 공식은 공식 원문, B 기관·학술은 기관명·모집단·조사연도를 함께 표시해 사용할 수 있습니다. "
+            "C 기타·개인은 정량값의 단독 근거로 사용하지 않습니다."
         ),
     ]
     summary_rows = _summary_rows(visible_current)
@@ -166,6 +169,9 @@ def _parse_item(raw: Mapping[str, object]) -> WebSearchItem:
         direction=_direction(basis),
         source_count=1,
         internal_check=_has_internal_metric_claim(basis),
+        institution_name=_text(raw, "institution_name") or _institution_name(url),
+        population_text=_text(raw, "population_text") or "확인 불가",
+        survey_year=_text(raw, "survey_year") or "확인 불가",
     )
 
 
@@ -180,6 +186,9 @@ def _merge_item(left: WebSearchItem, right: WebSearchItem) -> WebSearchItem:
         direction=left.direction if left.direction != "중립" else right.direction,
         source_count=left.source_count + right.source_count,
         internal_check=left.internal_check or right.internal_check,
+        institution_name=_prefer_known(left.institution_name, right.institution_name),
+        population_text=_prefer_known(left.population_text, right.population_text),
+        survey_year=_prefer_known(left.survey_year, right.survey_year),
     )
 
 
@@ -329,13 +338,14 @@ def _summary_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, 
         if item.relevance not in {"직접", "패밀리", "시장"}:
             continue
         tag = " → 내부 지표 확인 가능" if item.internal_check else ""
+        metadata = _institution_metadata(item)
         rows.append(
             (
-                item.source_grade.value,
+                _grade_label(item.source_grade),
                 item.relevance,
                 item.direction,
                 item.event_date,
-                f"{item.snippet}{tag}",
+                f"{item.snippet}{tag}{metadata}",
             )
         )
     return tuple(rows[:5])
@@ -349,10 +359,13 @@ def _detail_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, s
             note.append(f"매체 병합: {item.source_count}건")
         if item.internal_check:
             note.append("→ 내부 지표 확인 가능")
+        metadata = _institution_metadata(item).strip()
+        if metadata:
+            note.append(metadata)
         rows.append(
             (
                 item.event_date,
-                item.source_grade.value,
+                _grade_label(item.source_grade),
                 item.relevance,
                 item.title,
                 item.url,
@@ -361,3 +374,41 @@ def _detail_rows(items: Sequence[WebSearchItem]) -> tuple[tuple[str, str, str, s
             )
         )
     return tuple(rows[:8])
+
+
+def _grade_label(grade: SourceGrade) -> str:
+    return {
+        SourceGrade.AUTHORITATIVE: "A 공식",
+        SourceGrade.SUPPLEMENTARY: "B 기관·학술",
+        SourceGrade.UNVERIFIED: "C 기타·개인",
+    }[grade]
+
+
+def _institution_name(url: str) -> str:
+    hostname = (urlsplit(url).hostname or "").casefold()
+    labels = {
+        "hira.or.kr": "건강보험심사평가원",
+        "mfds.go.kr": "식품의약품안전처",
+        "clinicaltrials.gov": "ClinicalTrials.gov",
+        "snuh.org": "서울대학교병원",
+        "snubh.org": "분당서울대학교병원",
+        "amc.seoul.kr": "서울아산병원",
+        "stcarollo.or.kr": "성가롤로병원",
+    }
+    for domain, label in labels.items():
+        if hostname == domain or hostname.endswith(f".{domain}"):
+            return label
+    return hostname or "확인 불가"
+
+
+def _prefer_known(left: str, right: str) -> str:
+    return right if left == "확인 불가" and right != "확인 불가" else left
+
+
+def _institution_metadata(item: WebSearchItem) -> str:
+    if item.source_grade is not SourceGrade.SUPPLEMENTARY:
+        return ""
+    return (
+        f" · 기관 {item.institution_name} · 모집단 {item.population_text}"
+        f" · 조사연도 {item.survey_year}"
+    )
