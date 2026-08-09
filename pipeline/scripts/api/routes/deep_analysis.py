@@ -787,6 +787,7 @@ def _fetch_general_deep_analysis_row(brand: str, atc4: str | None = None) -> dic
 
 
 def _general_source_rows(brand: str) -> list[dict]:
+    rows_by_atc4: dict[str, dict] = {}
     for column in ("brand_key", "brand_name"):
         rows = db.fetch_all(
             f"""
@@ -797,9 +798,19 @@ def _general_source_rows(brand: str) -> list[dict]:
             """,
             [brand],
         )
-        if rows:
-            return rows
-    return []
+        for row in rows:
+            atc4_code = str(row.get("atc4_code") or "").strip()
+            current = rows_by_atc4.get(atc4_code)
+            current_time = (
+                _coerce_datetime(current.get("source_computed_at")) if current else None
+            )
+            candidate_time = _coerce_datetime(row.get("source_computed_at"))
+            if current is None or (
+                candidate_time is not None
+                and (current_time is None or candidate_time > current_time)
+            ):
+                rows_by_atc4[atc4_code] = row
+    return list(rows_by_atc4.values())
 
 
 def _general_source_state(

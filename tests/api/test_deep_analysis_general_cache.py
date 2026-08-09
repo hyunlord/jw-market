@@ -153,27 +153,50 @@ def test_general_metric_lookup_falls_back_to_name_when_key_rows_miss_requested_m
     assert "brand_name = %s" in calls[1][0]
 
 
-def test_general_source_rows_key_hit_uses_one_indexed_query(monkeypatch) -> None:
+def test_general_source_rows_unions_key_and_name_rows_by_atc4_max(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
 
     def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
         calls.append((sql, params))
-        return [{"atc4_code": "C10C0", "source_computed_at": datetime(2026, 8, 9)}]
+        if "brand_key = %s" in sql:
+            return [
+                {
+                    "atc4_code": "C10C0",
+                    "source_computed_at": datetime(2026, 8, 8, tzinfo=deep_analysis.KST),
+                },
+                {
+                    "atc4_code": "A10B0",
+                    "source_computed_at": datetime(2026, 8, 9, tzinfo=deep_analysis.KST),
+                },
+            ]
+        return [
+            {
+                "atc4_code": "C10C0",
+                "source_computed_at": datetime(2026, 8, 10, tzinfo=deep_analysis.KST),
+            },
+            {
+                "atc4_code": "D10A0",
+                "source_computed_at": datetime(2026, 8, 7, tzinfo=deep_analysis.KST),
+            },
+        ]
 
     monkeypatch.setattr(deep_analysis.db, "fetch_all", fake_fetch_all)
 
     rows = deep_analysis._general_source_rows("리바로젯")
 
-    assert rows == [{"atc4_code": "C10C0", "source_computed_at": datetime(2026, 8, 9)}]
-    assert len(calls) == 1
-    sql, params = calls[0]
-    assert "brand_key = %s" in sql
-    assert "brand_name = %s" not in sql
-    assert " OR " not in sql
-    assert params == ["리바로젯"]
+    assert {row["atc4_code"]: row["source_computed_at"] for row in rows} == {
+        "A10B0": datetime(2026, 8, 9, tzinfo=deep_analysis.KST),
+        "C10C0": datetime(2026, 8, 10, tzinfo=deep_analysis.KST),
+        "D10A0": datetime(2026, 8, 7, tzinfo=deep_analysis.KST),
+    }
+    assert len(calls) == 2
+    assert "brand_key = %s" in calls[0][0]
+    assert "brand_name = %s" in calls[1][0]
+    assert all(" OR " not in sql for sql, _params in calls)
+    assert all(params == ["리바로젯"] for _sql, params in calls)
 
 
-def test_general_source_rows_key_miss_falls_back_to_name(monkeypatch) -> None:
+def test_general_source_rows_empty_key_result_still_uses_name_rows(monkeypatch) -> None:
     calls: list[tuple[str, list[str]]] = []
 
     def fake_fetch_all(sql: str, params: list[str]) -> list[dict[str, Any]]:
