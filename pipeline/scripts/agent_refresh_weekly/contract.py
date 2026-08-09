@@ -18,6 +18,7 @@ _CONFLICT_PREFIXES: Final = (
     "jw-agent3-refresh-daily-",
     "jw-ingest-",
 )
+_CONFLICT_APPS: Final = {"jw-complete-reingest"}
 
 
 def _run_token(workflow_id: str) -> str:
@@ -52,10 +53,17 @@ def find_active_conflicts(
 ) -> tuple[str, ...]:
     conflicts: set[str] = set()
     for job in jobs:
-        name = str((job.get("metadata") or {}).get("name") or "")
+        metadata = job.get("metadata") or {}
+        name = str(metadata.get("name") or "")
         if not name or name == owned_job:
             continue
-        if not name.startswith(_CONFLICT_PREFIXES):
+        labels = metadata.get("labels") or {}
+        is_ingest_or_agent = (
+            name.startswith(_CONFLICT_PREFIXES)
+            or str(labels.get("app") or "") in _CONFLICT_APPS
+            or any(str(key).startswith("jw.ingest/") for key in labels)
+        )
+        if not is_ingest_or_agent:
             continue
         if classify_job_status(job) in {"Pending", "Running"}:
             conflicts.add(name)
