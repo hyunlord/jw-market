@@ -200,28 +200,10 @@ def official_web_fallback_eligible(
     )
 
 
-_WEB_FALLBACK_FACET_TERMS = {
-    "allocation": "배정 방식 allocation",
-    "masking": "눈가림 masking",
-    "intervention_model": "중재 모형 intervention model",
-}
-
-
-def official_web_fallback_query(
-    question: str,
-    *,
-    source_domain: str,
-    missing_requested_facets: tuple[str, ...] = (),
-) -> str:
+def official_web_fallback_query(question: str, *, source_domain: str) -> str:
     domains = official_web_domains(source_domain)
     domain_clause = " OR ".join(f"site:{domain}" for domain in domains)
-    facet_clause = " ".join(
-        _WEB_FALLBACK_FACET_TERMS[facet]
-        for facet in missing_requested_facets
-        if facet in _WEB_FALLBACK_FACET_TERMS
-    )
-    query = " ".join(part for part in (question, facet_clause) if part)
-    return f"{query} ({domain_clause})" if domain_clause else query
+    return f"{question} ({domain_clause})" if domain_clause else question
 
 
 def official_web_fallback_policy(
