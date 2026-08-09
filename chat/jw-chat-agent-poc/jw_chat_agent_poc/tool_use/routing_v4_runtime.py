@@ -426,6 +426,7 @@ def _apply_official_web_fallback(
                     "query": official_web_fallback_query(
                         question,
                         source_domain=source_domain,
+                        missing_requested_facets=missing_requested_facets,
                     ),
                     "brand": None,
                     "topic": "general",
