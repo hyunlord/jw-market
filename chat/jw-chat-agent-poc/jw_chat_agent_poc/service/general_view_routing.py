@@ -285,9 +285,12 @@ class GeneralViewService:
         if "뉴스" in normalized:
             return GeneralRoute.EXISTING
         membership_state = self._strategic_membership_state(question)
+        general_metric_intent = _asks_general_brand_metric(
+            normalized
+        ) or _asks_general_market_competition(normalized)
         if (
             membership_state is None
-            and _asks_general_brand_metric(normalized)
+            and general_metric_intent
             and self._has_general_membership(question)
         ):
             return GeneralRoute.GENERAL_ONLY
@@ -295,7 +298,7 @@ class GeneralViewService:
         if membership_state is False and (
             market_intent is not None
             or asks_market_members(question)
-            or _asks_general_brand_metric(normalized)
+            or general_metric_intent
         ):
             return GeneralRoute.GENERAL_ONLY
         if market_intent is not None and membership_state is not True:
@@ -1283,6 +1286,12 @@ def _asks_market_metric(normalized: str) -> bool:
 
 def _asks_general_brand_metric(normalized: str) -> bool:
     return any(token in normalized for token in ("매출", "실적", "점유율", "추이", "순위", "시장"))
+
+
+def _asks_general_market_competition(normalized: str) -> bool:
+    return "경쟁" in normalized and any(
+        token in normalized for token in ("약물", "제품", "브랜드", "현황", "상황", "상대")
+    )
 
 
 def _has_existing_analytic_signal(normalized: str) -> bool:

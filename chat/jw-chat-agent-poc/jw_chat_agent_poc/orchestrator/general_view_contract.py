@@ -25,7 +25,7 @@ def enforce_general_view_contract(answer: str, contract: dict[str, Any] | None) 
     for label in labels:
         if label not in combined:
             combined = "\n\n".join(part for part in (combined, label) if part)
-    if contract.get("mode") == "dual" and DUAL_WARNING not in combined:
+    if contract.get("mode") in {"dual", "general_only"} and DUAL_WARNING not in combined:
         combined = "\n\n".join((combined, f"> {DUAL_WARNING}"))
     return combined
 

@@ -905,6 +905,55 @@ def test_general_only_resolved_brand_routes_to_general_view(question: str) -> No
     assert service.route(question) is GeneralRoute.GENERAL_ONLY
 
 
+def test_general_only_competition_routes_to_direct_atc4_general_view() -> None:
+    memberships = (
+        GeneralBrandMembership("아일리아", "아일리아", "S01P0", "안과용제", "ubist"),
+    )
+    cache = TtlGeneralMembershipCache(
+        StaticGeneralMembershipReader(memberships), ttl_seconds=300
+    )
+    backend = FakeBackend()
+    backend.market_map["S01P0"] = replace(
+        _market("S01P0", 8_000_000_000.0),
+        brand="아일리아",
+        selected_data_path="direct_mart",
+    )
+    service = GeneralViewService(
+        backend,
+        GeneralOnlyResolvingMembership({"리바로"}),
+        enabled=True,
+        general_membership=cache,
+    )
+
+    question = "아일리아 경쟁 약물 현황"
+    assert service.route(question) is GeneralRoute.GENERAL_ONLY
+
+    result = service.answer(question, compact=False, dual=False)
+    contract = result["general_view_contract"]
+    assert contract["atc4_code"] == "S01P0"
+    assert contract["market_basis"] == "ATC4"
+    assert contract["selected_data_path"] == "direct_mart"
+    assert contract["share_denominator"] == "ATC4 S01P0 시장 전체 sales"
+    assert result["tool_calls"][0]["tool"] == "general_view_dynamic_market"
+    assert result["tool_calls"][0]["source"] == "jw-market-direct-mart"
+    assert "일반뷰 (ATC4)" in result["answer"]
+    assert "전략시장 정의에 포함되지 않아" not in result["answer"]
+
+    rendered = enforce_general_view_contract("", contract)
+    assert "기준: 일반뷰 (ATC4 S01P0)" in rendered
+    assert "전략뷰와 일반뷰는 시장 구성과 분모가 달라 수치를 직접 비교할 수 없습니다" in rendered
+
+
+def test_strategic_brand_competition_does_not_leak_to_general_view() -> None:
+    service = GeneralViewService(
+        FakeBackend(),
+        StrategicMembership({"리바로"}),
+        enabled=True,
+    )
+
+    assert service.route("리바로 경쟁 약물 현황") is GeneralRoute.EXISTING
+
+
 def test_general_only_brand_hhi_routes_to_general_view() -> None:
     service = GeneralViewService(
         FakeBackend(),
