@@ -143,6 +143,17 @@ def filter_charts_for_binding(
     ):
         return []
 
+    if result.get("cause_analysis_ready"):
+        fact_paths = {fact.path for fact in evidence_facts_from_result(result)}
+        charts = [
+            chart
+            for chart in charts
+            if isinstance(chart.get("evidence_refs"), Sequence)
+            and not isinstance(chart.get("evidence_refs"), (str, bytes))
+            and bool(chart.get("evidence_refs"))
+            and all(str(reference) in fact_paths for reference in chart["evidence_refs"])
+        ]
+
     calls = [call for call in result.get("tool_calls", []) if isinstance(call, Mapping)]
     target_brand = _target_brand(result, calls)
     if not target_brand or "시장" in question or "market_vs_brand" in _chart_intent(question, ""):

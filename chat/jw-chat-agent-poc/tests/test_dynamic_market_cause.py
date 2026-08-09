@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from jw_chat_agent_poc.service import app as service_app
+from jw_chat_agent_poc.service.charts import filter_charts_for_binding
+from jw_chat_agent_poc.service.evidence_binding import evidence_facts_from_result
 from jw_chat_agent_poc.service.general_view_routing import (
     _asks_dynamic_cause_analysis,
     _general_view_projection,
@@ -52,6 +54,46 @@ def test_general_cause_projection_contains_table_and_chart_payload() -> None:
     assert data["dashboard_tables"]
     assert charts
     assert charts == data["chart_payloads"]
+
+
+def test_general_cause_chart_references_resolve_to_numeric_evidence() -> None:
+    market = replace(
+        _general_market(),
+        dashboard_tables=(
+            {
+                "name": "성장 기여",
+                "columns": ("브랜드", "성장 기여", "기여율(%)"),
+                "rows": (("아일리아", 12_345.0, 67.89),),
+            },
+        ),
+    )
+    projection = _general_view_projection(market, "아일리아 원인분석")
+    assert projection is not None
+    _intent, _question, data, charts = projection
+    result = {
+        "cause_analysis_ready": True,
+        "tool_calls": [
+            {
+                "tool": "general_view_dynamic_market",
+                "source": "UBIST",
+                "render_data": data,
+            }
+        ],
+    }
+    paths = {fact.path for fact in evidence_facts_from_result(result)}
+    refs = {reference for chart in charts for reference in chart["evidence_refs"]}
+
+    assert refs
+    assert refs <= paths
+    for table_index, table in enumerate(data["dashboard_tables"]):
+        for row_index, row in enumerate(table["rows"]):
+            for column_index, value in enumerate(row):
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    assert (
+                        f"render_data.dashboard_tables[{table_index}]"
+                        f".rows[{row_index}][{column_index}]"
+                    ) in paths
+    assert filter_charts_for_binding(charts, result=result, question="아일리아 원인분석") == charts
 
 
 @dataclass
@@ -142,6 +184,37 @@ def test_strategic_cause_survives_binding_and_renders_chart() -> None:
 
     assert "| 순위 | 브랜드 |" in final.text
     assert final.charts
+
+
+def test_strategic_cause_exposes_every_rendered_segment_number_as_evidence() -> None:
+    resolver = MarketScopeResolver.__new__(MarketScopeResolver)
+    resolver._resolver = _StrategicResolver()
+    resolver._query_layer = _StrategicQueryLayer()
+    resolver._general_view = _GeneralView()
+
+    result = resolver.answer_cause_analysis("리바로 원인분석 좀 뽑아줘")
+    paths = {fact.path for fact in evidence_facts_from_result(result)}
+
+    assert "render_data.level_segments[0].rank" in paths
+    assert "render_data.level_segments[0].value_억원" in paths
+    assert "render_data.level_segments[0].ms_recent_pct" in paths
+    assert "render_data.level_segments[1].value_억원" in paths
+    assert "render_data.level_segments[1].ms_recent_pct" in paths
+
+
+def test_cause_chart_fails_closed_when_an_evidence_reference_is_missing() -> None:
+    chart = {
+        "type": "bar",
+        "labels": ["리피토"],
+        "datasets": [{"label": "매출", "data": [400.0]}],
+        "evidence_refs": ["render_data.level_segments[0].missing_value"],
+    }
+    result = {
+        "cause_analysis_ready": True,
+        "tool_calls": [_StrategicQueryLayer().market_scope_from_mart("리바로")],
+    }
+
+    assert filter_charts_for_binding([chart], result=result, question="리바로 원인분석") == []
 
 
 class _CauseResolver:

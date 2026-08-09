@@ -305,6 +305,14 @@ def _structured_facts(call: dict[str, Any], offset: int) -> list[EvidenceFact]:
             tool=tool,
         )
     )
+    facts.extend(
+        _cause_analysis_facts(
+            data,
+            offset=offset + len(facts),
+            source=source,
+            tool=tool,
+        )
+    )
     facts = _bind_derived_operands(facts)
     facts.extend(
         _hira_facts(
@@ -384,7 +392,7 @@ def _level_segment_rank_facts(
     tool: str,
 ) -> list[EvidenceFact]:
     segments = data.get("level_segments")
-    if not isinstance(segments, list):
+    if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
         return []
 
     entity = _metric_entity(data, "render_data.level_segments")
@@ -396,28 +404,142 @@ def _level_segment_rank_facts(
     for index, segment in enumerate(segments):
         if not isinstance(segment, dict):
             continue
-        value = rank_value(segment.get("rank"), None)
-        if not value:
-            continue
-        facts.append(
-            _fact(
-                offset + len(facts),
-                label="순위",
-                value=value,
-                source=source,
-                tool=tool,
-                path=f"render_data.level_segments[{index}].rank",
-                period=period,
-                visible=True,
-                entity=entity,
-                metric="순위",
-                unit="위",
-                source_grade=source_grade,
-                view=view,
-                market_id=market_id,
-                market_scope_capable=True,
-            )
+        values = (
+            ("순위", rank_value(segment.get("rank"), None), "rank", "순위", "위"),
+            ("매출", eok_value(segment.get("value_억원"), None), "value_억원", "매출", "억원"),
+            ("시장점유율", pct_value(segment.get("ms_recent_pct")), "ms_recent_pct", "시장점유율", "%"),
         )
+        for label, value, field, metric, unit in values:
+            if not value:
+                continue
+            facts.append(
+                _fact(
+                    offset + len(facts),
+                    label=label,
+                    value=value,
+                    source=source,
+                    tool=tool,
+                    path=f"render_data.level_segments[{index}].{field}",
+                    period=period,
+                    visible=True,
+                    entity=entity,
+                    metric=metric,
+                    unit=unit,
+                    source_grade=source_grade,
+                    view=view,
+                    market_id=market_id,
+                    market_scope_capable=True,
+                )
+            )
+    return facts
+
+
+def _cause_analysis_facts(
+    data: dict[str, Any],
+    *,
+    offset: int,
+    source: str,
+    tool: str,
+) -> list[EvidenceFact]:
+    if data.get("contract_id") != "CAUSE_ANALYSIS":
+        return []
+
+    period = str(data.get("period") or "")
+    entity = str(data.get("market_name") or data.get("market") or "")
+    view = str(data.get("view_type") or data.get("view") or "general_view")
+    market_id = str(data.get("market_id") or data.get("market") or "")
+    source_grade = grade_evidence_source(tool=tool, source=source).value
+    specs = (
+        ("cause_market_size_series", "value", "시장규모", "시장규모"),
+        ("cause_hhi_series", "value", "HHI", "HHI"),
+        ("cause_top_brands", "rank", "순위", "순위"),
+        ("cause_top_brands", "value", "매출", "매출"),
+        ("cause_top_brands", "share_pct", "시장점유율", "시장점유율"),
+    )
+    facts: list[EvidenceFact] = []
+    for collection, field, label, metric in specs:
+        rows = data.get(collection)
+        if not isinstance(rows, list):
+            continue
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            raw_value = row.get(field)
+            if field == "share_pct":
+                value, unit = pct_value(raw_value), "%"
+            elif field == "rank":
+                value, unit = rank_value(raw_value, None), "위"
+            else:
+                value, unit = number_value(raw_value), str(row.get("unit") or "")
+            if not value:
+                continue
+            facts.append(
+                _fact(
+                    offset + len(facts),
+                    label=label,
+                    value=value,
+                    source=source,
+                    tool=tool,
+                    path=f"render_data.{collection}[{index}].{field}",
+                    period=str(row.get("period") or period),
+                    visible=True,
+                    entity=str(row.get("brand") or entity),
+                    metric=metric,
+                    unit=unit,
+                    source_grade=source_grade,
+                    view=view,
+                    market_id=market_id,
+                    market_scope_capable=True,
+                )
+            )
+    tables = data.get("dashboard_tables")
+    if isinstance(tables, Sequence) and not isinstance(tables, (str, bytes)):
+        for table_index, table_row in enumerate(tables):
+            if not isinstance(table_row, Mapping):
+                continue
+            columns = table_row.get("columns")
+            rows = table_row.get("rows")
+            if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+                continue
+            for row_index, row in enumerate(rows):
+                if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
+                    continue
+                row_entity = str(row[0]) if row and isinstance(row[0], str) else entity
+                for column_index, raw_value in enumerate(row):
+                    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float, Decimal)):
+                        continue
+                    value = number_value(raw_value)
+                    if not value:
+                        continue
+                    column = (
+                        str(columns[column_index])
+                        if isinstance(columns, Sequence)
+                        and not isinstance(columns, (str, bytes))
+                        and column_index < len(columns)
+                        else f"column_{column_index}"
+                    )
+                    facts.append(
+                        _fact(
+                            offset + len(facts),
+                            label=column,
+                            value=value,
+                            source=source,
+                            tool=tool,
+                            path=(
+                                f"render_data.dashboard_tables[{table_index}]"
+                                f".rows[{row_index}][{column_index}]"
+                            ),
+                            period=period,
+                            visible=True,
+                            entity=row_entity,
+                            metric=column,
+                            unit="",
+                            source_grade=source_grade,
+                            view=view,
+                            market_id=market_id,
+                            market_scope_capable=True,
+                        )
+                    )
     return facts
 
 

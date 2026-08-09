@@ -824,8 +824,12 @@ def _contract(
         contract["general_view_intent"] = general_view_intent
         contract["chart_payloads"] = chart_payloads
         if general_view_intent == "CAUSE_ANALYSIS":
+            contract["contract_id"] = "CAUSE_ANALYSIS"
             contract["dashboard_tables"] = projection_data["dashboard_tables"]
             contract["cause_card_support"] = projection_data["cause_card_support"]
+            contract["cause_market_size_series"] = projection_data["cause_market_size_series"]
+            contract["cause_hhi_series"] = projection_data["cause_hhi_series"]
+            contract["cause_top_brands"] = projection_data["cause_top_brands"]
     if anchor:
         # A single-ATC4 metric answer knows which market it answered about, so it carries
         # the same anchor the member answer already carries. Without this the follow-up
@@ -889,6 +893,21 @@ def _cause_analysis_projection(
 ) -> tuple[str, str, dict[str, Any], list[dict[str, Any]]]:
     source = str(market.source or "일반뷰")
     tables = [*market.dashboard_tables, *_cause_series_tables(market)]
+    market_size_series = [
+        {"period": period, "value": value, "unit": market.unit}
+        for period, value in market.market_size_series
+    ]
+    hhi_series = [{"period": period, "value": value} for period, value in market.hhi_series]
+    top_brands = [
+        {
+            "rank": row.rank,
+            "brand": row.brand,
+            "value": row.value,
+            "share_pct": row.share_pct,
+            "unit": market.unit,
+        }
+        for row in market.top_brands
+    ]
     charts: list[dict[str, Any]] = []
     if len(market.market_size_series) >= 2:
         charts.append(
@@ -906,7 +925,10 @@ def _cause_analysis_projection(
                 ],
                 "source": source,
                 "unit": market.unit,
-                "evidence_refs": ["general_view_dynamic_market.render_data.market_size_series"],
+                "evidence_refs": [
+                    f"render_data.cause_market_size_series[{index}].value"
+                    for index in range(len(market_size_series))
+                ],
             }
         )
     if market.top_brands:
@@ -925,7 +947,10 @@ def _cause_analysis_projection(
                 ],
                 "source": source,
                 "unit": "%",
-                "evidence_refs": ["general_view_dynamic_market.render_data.top_brands"],
+                "evidence_refs": [
+                    f"render_data.cause_top_brands[{index}].share_pct"
+                    for index in range(min(5, len(top_brands)))
+                ],
             }
         )
     data = {
@@ -937,6 +962,9 @@ def _cause_analysis_projection(
         "dashboard_tables": tables,
         "chart_payloads": charts,
         "cause_card_support": _cause_card_support(market),
+        "cause_market_size_series": market_size_series,
+        "cause_hhi_series": hhi_series,
+        "cause_top_brands": top_brands,
         "evidence_refs": [
             "general_view_dynamic_market.render_data.dashboard_tables",
             "general_view_dynamic_market.render_data.chart_payloads",

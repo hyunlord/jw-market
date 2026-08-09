@@ -97,7 +97,10 @@ def _strategic_cause_result(
                 ],
                 "source": str(data.get("source_label") or call.get("source") or "전략 mart"),
                 "unit": "억원",
-                "evidence_refs": ["get_market_landscape.render_data.level_segments"],
+                "evidence_refs": [
+                    f"render_data.level_segments[{index}].value_억원"
+                    for index in range(min(5, len(segments)))
+                ],
             }
         )
     data.update(
