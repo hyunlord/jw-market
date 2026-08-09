@@ -72,6 +72,7 @@ from jw_chat_agent_poc.orchestrator.deep_research import (
 from jw_chat_agent_poc.orchestrator.final_surface_assembly import apply_final_surface_assembly
 from jw_chat_agent_poc.orchestrator.external_passthrough import (
     is_external_passthrough_result,
+    prepare_existing_external_passthrough,
 )
 from jw_chat_agent_poc.orchestrator.external_passthrough_render import (
     external_passthrough_fallback_answer,
@@ -1450,6 +1451,7 @@ def _answer_question(
                 "conversation_interpretation": routing_resolution.interpretation_notice,
             }
         result = _apply_v3_cutover_if_enabled(routing_question, result)
+        result = prepare_existing_external_passthrough(routing_question, result)
         if uses_synthetic_market_anchor:
             # extract_conversation_slots reads this, so the stored turn records that its
             # anchor brand came from the rewrite rather than from the user.

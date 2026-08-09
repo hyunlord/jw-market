@@ -74,9 +74,11 @@ def prepare_external_passthrough(
     question: str,
     payload: dict[str, Any],
     *,
-    external: ExternalApiClient,
+    external: ExternalApiClient | None,
     timing: Timing | None = None,
 ) -> dict[str, Any]:
+    if is_external_passthrough_result(payload):
+        return payload
     raw_calls = payload.get("tool_calls")
     if not isinstance(raw_calls, list):
         return payload
@@ -115,6 +117,8 @@ def prepare_external_passthrough(
     usable_web_present = any(_usable_web_call(call) for call in calls)
     web_fallback_used = web_fallback_attempted and usable_web_present
     if web_fallback_attempted and not usable_web_present:
+        if external is None:
+            return payload
         with stage(timing, "tool:web_search", "external source fallback"):
             fallback_call = asdict(external.web_search(question, topic="general"))
         fallback_call["queried_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -163,6 +167,14 @@ def prepare_external_passthrough(
             "failed_official_tools": list(failed_official_tools),
         },
     }
+
+
+def prepare_existing_external_passthrough(
+    question: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Mark external calls added after agent execution without issuing new I/O."""
+    return prepare_external_passthrough(question, payload, external=None)
 
 
 def is_external_passthrough_result(result: Mapping[str, object]) -> bool:
