@@ -68,12 +68,12 @@ spec:
         genos: "enabled"
       containers:
         - name: worker
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:e42d085f5b9f172a50a7527505a8b2c8026520cf84335094fcca67705a8309c2
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:e6aad266361e192eb78dbd61421e8ca2f722f8f23c46d16a105d586933524579
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "pipeline.scripts.agent_refresh_weekly.temporal_worker"]
           env:
             - name: APP_VERSION
-              value: cc509795d3731e5be6a09dc7d3da24af8cc0d2ce
+              value: 786aedb27c72fa2cb3f67d3deb1e4258cf566dec
             - name: TEMPORAL_ADDRESS
               value: temporal-frontend.temporal.svc:7233
             - name: TEMPORAL_NAMESPACE
