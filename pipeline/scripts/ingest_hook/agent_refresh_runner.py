@@ -93,8 +93,9 @@ def resolve_affected_scope(
     )
 
 
-def _agent2_unknown_brand_skips(run_id: str) -> tuple[str, ...]:
-    names: set[str] = set()
+def _agent2_brand_skips(run_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    unknown_names: set[str] = set()
+    failed_names: set[str] = set()
     manifests_found = 0
     for variant in ("short", "long"):
         manifest_path = (
@@ -112,12 +113,20 @@ def _agent2_unknown_brand_skips(run_id: str) -> tuple[str, ...]:
             isinstance(name, str) for name in raw_names
         ):
             raise ValueError(f"invalid Agent2 unmatched_unknown manifest: {manifest_path}")
-        names.update(name for name in raw_names if name)
+        unknown_names.update(name for name in raw_names if name)
+        brands = manifest.get("brands") or {}
+        if not isinstance(brands, dict):
+            raise ValueError(f"invalid Agent2 brands manifest: {manifest_path}")
+        failed_names.update(
+            str(name)
+            for name, record in brands.items()
+            if isinstance(record, dict) and record.get("status") == "failed"
+        )
     if manifests_found != 2:
         raise FileNotFoundError(
             f"expected 2 Agent2 run manifests for {run_id}, found {manifests_found}"
         )
-    return tuple(sorted(names))
+    return tuple(sorted(unknown_names)), tuple(sorted(failed_names))
 
 
 def run(
@@ -185,6 +194,7 @@ def run(
         command.insert(-2, "--force")
     resolved_scope = None
     skipped_unknown: tuple[str, ...] = ()
+    skipped_failed: tuple[str, ...] = ()
     child_env = None
     if agent2_resume_snapshot_at is not None:
         child_env = os.environ.copy()
@@ -221,11 +231,10 @@ def run(
                 else subprocess.run(command, check=False)
             )
         returncode = result.returncode
-        skipped_unknown = (
-            _agent2_unknown_brand_skips(run_id.replace(":", "-"))
-            if returncode == 0 and resume_from_agent2
-            else ()
-        )
+        if returncode == 0 and resume_from_agent2:
+            skipped_unknown, skipped_failed = _agent2_brand_skips(
+                run_id.replace(":", "-")
+            )
         scope_reason = (
             None
             if resolved_scope is None
@@ -239,7 +248,9 @@ def run(
         if resume_from_agent2:
             skip_reason = (
                 f"skipped_unknown={len(skipped_unknown)} "
-                f"names={','.join(skipped_unknown) or '[]'}"
+                f"names={','.join(skipped_unknown) or '[]'}; "
+                f"failed_brands={len(skipped_failed)} "
+                f"failed_names={','.join(skipped_failed) or '[]'}"
             )
         reason = (
             "; ".join(part for part in (scope_reason, skip_reason) if part) or None
@@ -273,7 +284,10 @@ def run(
                 stage_reason = (
                     "derived from successful aggregate agent_refresh; "
                     f"skipped_unknown={len(skipped_unknown)} "
-                    f"names={','.join(skipped_unknown) or '[]'}; substage timing unavailable"
+                    f"names={','.join(skipped_unknown) or '[]'}; "
+                    f"failed_brands={len(skipped_failed)} "
+                    f"failed_names={','.join(skipped_failed) or '[]'}; "
+                    "substage timing unavailable"
                 )
             else:
                 stage_reason = "derived from successful aggregate agent_refresh; substage timing unavailable"

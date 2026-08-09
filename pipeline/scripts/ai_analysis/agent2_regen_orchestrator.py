@@ -170,7 +170,17 @@ class JsonRunStore:
         seeded = 0
         for row in rows:
             brand = str(row["brand"])
-            bundle_hash = str(row["bundle_hash"])
+            stored_bundle_hash = str(row["bundle_hash"])
+            input_bundle = row.get("input_bundle")
+            if input_bundle:
+                parsed_bundle = json.loads(str(input_bundle))
+                if not isinstance(parsed_bundle, dict):
+                    raise ValueError(
+                        f"restored input_bundle must be an object: run_id={row['run_id']}"
+                    )
+                bundle_hash = compute_bundle_hash(parsed_bundle)
+            else:
+                bundle_hash = stored_bundle_hash
             key = compute_idempotency_key(
                 brand,
                 bundle_hash,
@@ -184,6 +194,7 @@ class JsonRunStore:
                 "run_id": int(row["run_id"]),
                 "brand": brand,
                 "bundle_hash": bundle_hash,
+                "stored_bundle_hash": stored_bundle_hash,
                 "snapshot_at": str(row["snapshot_at"]),
                 "analysis_variant": analysis_variant,
                 "status": "validated",
@@ -660,12 +671,22 @@ def _seed_idempotency_from_run_db(
         cursor = connection.cursor()
         cursor.execute(
             """
-            SELECT run_id, brand, snapshot_at, bundle_hash
-            FROM zeta_analysis_runs
-            WHERE snapshot_at=%s AND analysis_variant=%s AND status='ok'
-            ORDER BY run_id
+            SELECT run_id, brand, snapshot_at, bundle_hash, input_bundle
+            FROM (
+                SELECT run_id, brand, snapshot_at, bundle_hash, input_bundle,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY brand
+                           ORDER BY snapshot_at DESC, run_id DESC
+                       ) AS recency_rank
+                FROM zeta_analysis_runs
+                WHERE analysis_variant=%s
+                  AND status='ok'
+                  AND input_bundle IS NOT NULL
+            ) AS latest_success
+            WHERE recency_rank=1
+            ORDER BY brand
             """,
-            (snapshot_at.replace(tzinfo=None, microsecond=0), analysis_variant),
+            (analysis_variant,),
         )
         rows = cursor.fetchall()
     finally:

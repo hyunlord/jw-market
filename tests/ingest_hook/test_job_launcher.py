@@ -149,6 +149,19 @@ def test_agent_refresh_recovery_can_resume_from_agent2():
     assert "--resume-from-agent2" in command
 
 
+def test_agent_refresh_job_has_fifteen_hour_deadline(monkeypatch) -> None:
+    monkeypatch.delenv("INGEST_AGENT_REFRESH_ACTIVE_DEADLINE_SECONDS", raising=False)
+
+    body = render_agent_refresh_job(
+        epoch="2026-Q1",
+        category="iqvia_nsa",
+        manifest_sha="a" * 64,
+        ingest_run_id="run-1",
+    )
+
+    assert body["spec"]["activeDeadlineSeconds"] == 15 * 60 * 60
+
+
 def test_agent_refresh_job_carries_canonical_affected_scope_json():
     # Given a non-empty immutable affected scope
     body = render_agent_refresh_job(

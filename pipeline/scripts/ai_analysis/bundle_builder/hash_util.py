@@ -15,9 +15,23 @@ def deterministic_json_dumps(obj: Any) -> str:
     )
 
 
+def _without_snapshot_at(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            key: _without_snapshot_at(value)
+            for key, value in obj.items()
+            if key != "snapshot_at"
+        }
+    if isinstance(obj, list):
+        return [_without_snapshot_at(value) for value in obj]
+    return obj
+
+
 def compute_bundle_hash(bundle: dict) -> str:
     payload = {k: v for k, v in bundle.items() if k != "bundle_meta"}
     meta = {k: v for k, v in bundle.get("bundle_meta", {}).items() if k != "bundle_hash"}
-    full = {"bundle_meta_excluding_hash": meta, "payload": payload}
+    full = _without_snapshot_at(
+        {"bundle_meta_excluding_hash": meta, "payload": payload}
+    )
     serialized = deterministic_json_dumps(full)
     return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()

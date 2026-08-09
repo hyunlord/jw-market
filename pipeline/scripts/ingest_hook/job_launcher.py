@@ -83,8 +83,12 @@ _LOCAL_INPUT_SUB_PATH = "autoIngestion"
 _MARKET_OUTPUT_VOLUME = "market-output"
 _ENV_BUILD_ACTIVE_DEADLINE_SECONDS = "INGEST_BUILD_ACTIVE_DEADLINE_SECONDS"
 _ENV_PUBLISH_ACTIVE_DEADLINE_SECONDS = "INGEST_PUBLISH_ACTIVE_DEADLINE_SECONDS"
+_ENV_AGENT_REFRESH_ACTIVE_DEADLINE_SECONDS = (
+    "INGEST_AGENT_REFRESH_ACTIVE_DEADLINE_SECONDS"
+)
 _DEFAULT_BUILD_ACTIVE_DEADLINE_SECONDS = 28800
 _DEFAULT_PUBLISH_ACTIVE_DEADLINE_SECONDS = 7200
+_DEFAULT_AGENT_REFRESH_ACTIVE_DEADLINE_SECONDS = 54000
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -419,6 +423,10 @@ def render_agent_refresh_job(
         manifest_path="/dev/null",
         namespace=namespace,
         run_id=ingest_run_id,
+    )
+    body["spec"]["activeDeadlineSeconds"] = _positive_int_env(
+        _ENV_AGENT_REFRESH_ACTIVE_DEADLINE_SECONDS,
+        _DEFAULT_AGENT_REFRESH_ACTIVE_DEADLINE_SECONDS,
     )
     name = agent_refresh_job_name(
         category, manifest_sha, agent_run_id or ingest_run_id

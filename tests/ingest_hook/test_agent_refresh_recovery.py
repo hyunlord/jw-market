@@ -49,7 +49,7 @@ def test_scoped_agent_refresh_recovery_does_not_recompute_forecast(
     assert "--force" in commands[0]
 
 
-def test_agent2_recovery_reuses_agent3_and_records_unknown_brand_skips(
+def test_agent2_recovery_reuses_agent3_and_records_all_brand_skips(
     sqlite_ledger, monkeypatch, tmp_path
 ) -> None:
     commands: list[list[str]] = []
@@ -78,6 +78,12 @@ def test_agent2_recovery_reuses_agent3_and_records_unknown_brand_skips(
             (output_dir / "run_manifest.json").write_text(
                 json.dumps(
                     {
+                        "brands": {
+                            "검증실패브랜드": {
+                                "status": "failed",
+                                "reason": "validation_failed",
+                            }
+                        },
                         "diagnostics": {
                             "density_worklist": {
                                 "unmatched_unknown": [
@@ -124,6 +130,8 @@ def test_agent2_recovery_reuses_agent3_and_records_unknown_brand_skips(
     assert "reused prior successful strength stage" in rows[1].reason
     assert "skipped_unknown=7" in rows[2].reason
     assert "레미닐피알서방" in rows[2].reason
+    assert "failed_brands=1" in rows[2].reason
+    assert "검증실패브랜드" in rows[2].reason
 
 
 def test_agent2_recovery_passes_explicit_snapshot_and_failure_bound(
