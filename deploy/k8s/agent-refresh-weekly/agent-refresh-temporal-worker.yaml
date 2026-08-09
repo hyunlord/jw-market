@@ -47,7 +47,7 @@ metadata:
   name: jw-agent-refresh-temporal-worker
   namespace: llmops
   annotations:
-    kubernetes.io/change-cause: "weekly global Agent2 and Agent3 Temporal schedule 786aedb2"
+    kubernetes.io/change-cause: "weekly global Agent2 and Agent3 Temporal schedule 00dfbc8b"
   labels:
     app: jw-agent-refresh-temporal-worker
 spec:
@@ -70,12 +70,12 @@ spec:
         genos: "enabled"
       containers:
         - name: worker
-          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:e6aad266361e192eb78dbd61421e8ca2f722f8f23c46d16a105d586933524579
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:62234ca50dd227c6023eed55840d51a021a458589a62e9c5583b74ef182e360e
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "pipeline.scripts.agent_refresh_weekly.temporal_worker"]
           env:
             - name: APP_VERSION
-              value: 786aedb27c72fa2cb3f67d3deb1e4258cf566dec
+              value: 00dfbc8b77b40615953e1cb83ecd5988be08bb43
             - name: TEMPORAL_ADDRESS
               value: temporal-frontend.temporal.svc:7233
             - name: TEMPORAL_NAMESPACE
