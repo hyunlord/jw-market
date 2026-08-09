@@ -16,7 +16,7 @@ from pipeline.scripts.ingest_hook.ubist_mart_activation import acquire_writer_lo
 
 
 def _record_downstream(ledger: Ledger, identity: tuple[str, str, str], run_id: str) -> None:
-    for seq, stage in ((4, "context_bridge"), (5, "dashboard")):
+    for seq, stage in ((4, "topic_extraction"), (5, "dashboard")):
         stamp = _stamp()
         ledger.record_stage(
             *identity,
@@ -24,7 +24,7 @@ def _record_downstream(ledger: Ledger, identity: tuple[str, str, str], run_id: s
             seq=seq,
             stage=stage,
             status="complete",
-            reason="live stage table is queryable after atomic keyword publish",
+            reason="live keyword stage is queryable after atomic publish",
             started_at=stamp,
             finished_at=stamp,
             duration_ms=0,

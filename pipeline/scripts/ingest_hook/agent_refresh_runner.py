@@ -69,6 +69,21 @@ def run(
         started_at=started_at,
         finished_at=finished_at,
     )
+    if returncode == 0:
+        for seq, stage in enumerate(("agent3", "agent2", "dashboard"), start=2):
+            ledger.record_stage(
+                epoch,
+                category,
+                manifest_sha,
+                run_id=run_id,
+                seq=seq,
+                stage=stage,
+                status="complete",
+                reason="derived from successful aggregate agent_refresh; substage timing unavailable",
+                started_at=finished_at,
+                finished_at=finished_at,
+                duration_ms=0,
+            )
     return returncode
 
 

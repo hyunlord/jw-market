@@ -65,6 +65,41 @@ def test_agent_refresh_forces_manifest_identity_past_epoch_only_checkpoint(
     ) == 0
     assert "--force" in commands[0]
 
+    rows = sqlite_ledger.stage_events("2026-05", "ubist", "a" * 64)
+    assert [(row.seq, row.stage, row.status) for row in rows] == [
+        (1, "agent_refresh", "complete"),
+        (2, "agent3", "complete"),
+        (3, "agent2", "complete"),
+        (4, "dashboard", "complete"),
+    ]
+
+
+def test_failed_agent_refresh_does_not_claim_derived_stages(
+    sqlite_ledger, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        agent_refresh_runner.config,
+        "open_configured_ledger",
+        lambda: sqlite_ledger,
+    )
+    monkeypatch.setattr(
+        agent_refresh_runner.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 1})(),
+    )
+
+    assert agent_refresh_runner.run(
+        epoch="2026-05",
+        category="ubist",
+        manifest_sha="a" * 64,
+        ingest_run_id="run-1",
+    ) == 1
+
+    rows = sqlite_ledger.stage_events("2026-05", "ubist", "a" * 64)
+    assert [(row.seq, row.stage, row.status) for row in rows] == [
+        (1, "agent_refresh", "failed"),
+    ]
+
 
 def test_complete_terminal_launches_agent_job_after_ingest_is_complete(
     sqlite_ledger, fake_transport
@@ -125,9 +160,12 @@ def test_agent_refresh_retry_preserves_failed_attempt(sqlite_ledger, monkeypatch
     ) == 0
 
     rows = sqlite_ledger.stage_events(*identity)
-    assert [(row.run_id, row.status) for row in rows] == [
-        ("run-1:agent-refresh", "failed"),
-        ("run-1:agent-refresh-retry-2", "complete"),
+    assert [(row.run_id, row.stage, row.status) for row in rows] == [
+        ("run-1:agent-refresh", "agent_refresh", "failed"),
+        ("run-1:agent-refresh-retry-2", "agent_refresh", "complete"),
+        ("run-1:agent-refresh-retry-2", "agent3", "complete"),
+        ("run-1:agent-refresh-retry-2", "agent2", "complete"),
+        ("run-1:agent-refresh-retry-2", "dashboard", "complete"),
     ]
 
 

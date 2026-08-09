@@ -1057,6 +1057,42 @@ class IngestService:
 
 
 def create_app(service: IngestService) -> FastAPI:
+    def inventory_summary(entry) -> dict[str, object]:
+        empty = {
+            "inventory_run_id": None,
+            "file_count": None,
+            "classified_file_count": None,
+            "inventory_file_counts": None,
+        }
+        if entry is None or not entry.run_id:
+            return empty
+        try:
+            snapshot = read_inventory_snapshot(
+                service.inventory_root,
+                category=entry.category,
+                epoch=entry.epoch,
+                manifest_sha=entry.manifest_sha,
+                run_id=entry.run_id,
+            )
+        except (FileNotFoundError, SourceInventoryError):
+            return empty
+        files = snapshot.get("files")
+        if not isinstance(files, list):
+            return empty
+        counts: dict[str, int] = {}
+        for file in files:
+            if not isinstance(file, dict):
+                continue
+            state = file.get("state")
+            if isinstance(state, str):
+                counts[state] = counts.get(state, 0) + 1
+        return {
+            "inventory_run_id": entry.run_id,
+            "file_count": len(files),
+            "classified_file_count": counts.get("classified", 0),
+            "inventory_file_counts": counts,
+        }
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.startup_queue_drain = service.drain_idle_queues()
@@ -1171,6 +1207,7 @@ def create_app(service: IngestService) -> FastAPI:
         blocker = category_running[0] if blocked_by_category else None
         candidate = service.ledger.prepared_candidate(epoch, category, manifest_sha)
         now = service.timestamp()
+        summary = inventory_summary(entry)
         return {
             "epoch": entry.epoch,
             "category": entry.category,
@@ -1181,6 +1218,8 @@ def create_app(service: IngestService) -> FastAPI:
             "uploaded_by": entry.uploaded_by,
             "received_at": entry.received_at,
             "finished_at": entry.finished_at,
+            "row_counts": entry.row_counts,
+            **summary,
             # -- new (additive) --
             "blocked_by_category": blocked_by_category,
             "requires_reconcile": (
@@ -1257,18 +1296,26 @@ def create_app(service: IngestService) -> FastAPI:
             limit=limit, offset=offset
         )
         items = []
+        entry_cache = {}
+        event_cache = {}
+        summary_cache: dict[tuple[str, str, str], dict[str, object]] = {}
         for identity in identities:
-            entry = service.ledger.status(
-                identity.epoch, identity.category, identity.manifest_sha
-            )
+            identity_key = (identity.epoch, identity.category, identity.manifest_sha)
+            if identity_key not in entry_cache:
+                entry_cache[identity_key] = service.ledger.status(*identity_key)
+            entry = entry_cache[identity_key]
+            if identity_key not in event_cache:
+                event_cache[identity_key] = service.ledger.stage_events(*identity_key)
+            identity_events = event_cache[identity_key]
             events = [
                 event
-                for event in service.ledger.stage_events(
-                    identity.epoch, identity.category, identity.manifest_sha
-                )
+                for event in identity_events
                 if event.run_id == identity.run_id
             ]
             run_entry = entry if entry is not None and entry.run_id == identity.run_id else None
+            if identity_key not in summary_cache:
+                summary_cache[identity_key] = inventory_summary(entry)
+            summary = summary_cache[identity_key]
             items.append(
                 {
                     "epoch": identity.epoch,
@@ -1276,6 +1323,8 @@ def create_app(service: IngestService) -> FastAPI:
                     "manifest_sha": identity.manifest_sha,
                     "run_id": identity.run_id,
                     "observed_at": identity.observed_at,
+                    "row_counts": entry.row_counts if entry is not None else None,
+                    **summary,
                     "ledger": (
                         {
                             "status": run_entry.status,
@@ -1300,6 +1349,19 @@ def create_app(service: IngestService) -> FastAPI:
                             "duration_ms": event.duration_ms,
                         }
                         for event in events
+                    ],
+                    "identity_stages": [
+                        {
+                            "run_id": event.run_id,
+                            "seq": event.seq,
+                            "stage": event.stage,
+                            "status": event.status,
+                            "reason": event.reason,
+                            "started_at": event.started_at,
+                            "finished_at": event.finished_at,
+                            "duration_ms": event.duration_ms,
+                        }
+                        for event in identity_events
                     ],
                 }
             )

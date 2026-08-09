@@ -98,6 +98,134 @@ def test_history_includes_ledger_run_and_stage_only_publish_run(
     assert by_run[PUBLISH_RUN_ID]["stages"][0]["status"] == "failed"
 
 
+def test_history_adds_identity_evidence_without_collapsing_runs(
+    sqlite_ledger, bucket, fake_transport, tmp_path
+):
+    inventory_root = tmp_path / "inventory"
+    sqlite_ledger.receive(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        manifest_path="_manifests/ubist/2026-06/manifest.json",
+    )
+    sqlite_ledger.mark_running(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        job_name="jw-ingest-ubist-build",
+        run_id=BUILD_RUN_ID,
+    )
+    sqlite_ledger.record_stage(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        run_id=BUILD_RUN_ID,
+        seq=1,
+        stage="load",
+        status="complete",
+        started_at="2026-08-06T16:00:00Z",
+        finished_at="2026-08-06T16:01:00Z",
+    )
+    sqlite_ledger.record_stage(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        run_id=PUBLISH_RUN_ID,
+        seq=1,
+        stage="mart_publish",
+        status="complete",
+        started_at="2026-08-06T22:00:35Z",
+        finished_at="2026-08-06T22:10:21Z",
+    )
+    sqlite_ledger.mark_complete(
+        EPOCH,
+        CATEGORY,
+        MANIFEST_SHA,
+        row_counts={"epoch:2026-06": 2_043_451, "source:a.xlsx": 808_635},
+    )
+    write_inventory_snapshot(
+        ScanSnapshot(
+            schema_version="1",
+            category=CATEGORY,
+            epoch=EPOCH,
+            manifest_sha=MANIFEST_SHA,
+            run_id=BUILD_RUN_ID,
+            observed_at="2026-08-06T16:00:00Z",
+            files=(
+                FileObservation(
+                    relative_path="production/source.xlsx",
+                    sha256="b" * 64,
+                    size=123,
+                    state="classified",
+                    category=CATEGORY,
+                    rows=456,
+                    periods=("2026-06",),
+                ),
+                FileObservation(
+                    relative_path="._source.xlsx",
+                    sha256="c" * 64,
+                    size=82,
+                    state="excluded",
+                    reason="AppleDouble metadata",
+                ),
+            ),
+        ),
+        inventory_root,
+    )
+
+    response = _client(
+        sqlite_ledger,
+        bucket,
+        fake_transport,
+        inventory_root=inventory_root,
+    ).get("/ingest/history", params={"limit": 100})
+
+    assert response.status_code == 200
+    by_run = {item["run_id"]: item for item in response.json()["items"]}
+    assert set(by_run) == {BUILD_RUN_ID, PUBLISH_RUN_ID}
+    assert [event["stage"] for event in by_run[BUILD_RUN_ID]["stages"]] == ["load"]
+    assert [event["stage"] for event in by_run[PUBLISH_RUN_ID]["stages"]] == [
+        "mart_publish"
+    ]
+    for item in by_run.values():
+        assert item["row_counts"] == {
+            "epoch:2026-06": 2_043_451,
+            "source:a.xlsx": 808_635,
+        }
+        assert item["inventory_run_id"] == BUILD_RUN_ID
+        assert item["file_count"] == 2
+        assert item["classified_file_count"] == 1
+        assert [
+            (event["run_id"], event["stage"], event["status"])
+            for event in item["identity_stages"]
+        ] == [
+            (BUILD_RUN_ID, "load", "complete"),
+            (PUBLISH_RUN_ID, "mart_publish", "complete"),
+        ]
+
+    status = _client(
+        sqlite_ledger,
+        bucket,
+        fake_transport,
+        inventory_root=inventory_root,
+    ).get(
+        "/ingest/status",
+        params={
+            "epoch": EPOCH,
+            "category": CATEGORY,
+            "manifest_sha": MANIFEST_SHA,
+        },
+    )
+    assert status.status_code == 200
+    assert status.json()["row_counts"] == {
+        "epoch:2026-06": 2_043_451,
+        "source:a.xlsx": 808_635,
+    }
+    assert status.json()["inventory_run_id"] == BUILD_RUN_ID
+    assert status.json()["file_count"] == 2
+    assert status.json()["classified_file_count"] == 1
+
+
 def test_history_keeps_prior_run_from_transition_when_stage_record_is_absent(
     sqlite_ledger, bucket, fake_transport
 ):

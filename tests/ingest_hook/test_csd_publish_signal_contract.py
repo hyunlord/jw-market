@@ -164,3 +164,5 @@ def test_keyword_complete_signal_identifies_published_schema_and_time(monkeypatc
     ) == 0
     assert signal["target_schema"] == "jw_brand_activity_stage"
     assert signal["published_at"] == "2026-08-09 00:31:01"
+    recorded_stages = [call.kwargs["stage"] for call in ledger.record_stage.call_args_list]
+    assert recorded_stages[-2:] == ["topic_extraction", "dashboard"]
