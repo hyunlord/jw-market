@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import json
 import re
 from typing import Any, Final
+from urllib.parse import urlparse
 
 from jw_chat_agent_poc.common.timing import Timing, stage
 from jw_chat_agent_poc.tools.external import ExternalApiClient
@@ -12,6 +14,7 @@ from jw_chat_agent_poc.tools.external import ExternalApiClient
 
 EXTERNAL_PASSTHROUGH_FIELD: Final = "_external_passthrough"
 WEB_FALLBACK_DISCLOSURE: Final = "공식 소스에서 확인하지 못해 웹 검색 결과로 답합니다"
+RESULT_STATUS_FIELD: Final = "result_status"
 
 _EXTERNAL_TOOL_PREFIXES: Final[tuple[str, ...]] = (
     "hira_",
@@ -44,9 +47,26 @@ _FAILED_STATUSES: Final[frozenset[str]] = frozenset(
         "missing_key",
         "no_data",
         "query_failed",
+        "timeout",
         "unavailable",
         "unsupported",
     }
+)
+_EMPTY_STATUSES: Final[frozenset[str]] = frozenset(
+    {"empty", "inapplicable", "missing_key", "no_data", "unavailable", "unsupported"}
+)
+_PERSONAL_BLOG_HOSTS: Final[frozenset[str]] = frozenset(
+    {
+        "blog.naver.com",
+        "m.blog.naver.com",
+        "brunch.co.kr",
+        "medium.com",
+        "tistory.com",
+    }
+)
+_RECENT_REVISION_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:최근|최신|개정|변경).{0,20}(?:급여|고시|기준|내용)|"
+    r"(?:급여|고시|기준).{0,20}(?:최근|최신|개정|변경)"
 )
 _INTERNAL_STRUCTURED_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:\bUBIST\b|\bIQVIA\b|\bCSD\b|\bHHI\b|시장\s*규모|시장\s*점유|점유율|"
@@ -100,9 +120,17 @@ def prepare_external_passthrough(
 
     observed_at = datetime.now(timezone.utc).isoformat()
     calls = [
-        {**call, "queried_at_utc": call.get("queried_at_utc") or observed_at}
+        {
+            **call,
+            "queried_at_utc": call.get("queried_at_utc") or observed_at,
+            RESULT_STATUS_FIELD: external_result_status(call),
+        }
         for call in calls
     ]
+    for call in calls:
+        if str(call.get("tool") or "").strip().casefold() == "web_search":
+            _apply_web_result_policy(question, calls, call)
+            call[RESULT_STATUS_FIELD] = external_result_status(call)
     called_tools = {
         str(call.get("tool") or "").strip().casefold()
         for call in calls
@@ -168,7 +196,17 @@ def prepare_external_passthrough(
             else "partial"
         )
     }
-    sources = _source_names(calls)
+    existing_sources = payload.get("sources")
+    prior_sources = (
+        [str(source) for source in existing_sources if source]
+        if isinstance(existing_sources, list | tuple)
+        else []
+    )
+    sources = list(
+        dict.fromkeys(
+            [*prior_sources, *_source_names(calls)]
+        )
+    )
     diagnostics = dict(payload.get("router_diagnostics") or {})
     diagnostics["external_passthrough"] = {
         "enabled": True,
@@ -275,10 +313,16 @@ def append_external_web_fallback(
         }
     )
     diagnostics["external_passthrough"] = passthrough_diagnostics
+    existing_sources = payload.get("sources")
+    prior_sources = (
+        [str(source) for source in existing_sources if source]
+        if isinstance(existing_sources, (list, tuple))
+        else []
+    )
     return {
         **payload,
         "tool_calls": calls,
-        "sources": _source_names(calls),
+        "sources": list(dict.fromkeys([*prior_sources, *_source_names(calls)])),
         "router_diagnostics": diagnostics,
         EXTERNAL_PASSTHROUGH_FIELD: marker,
     }
@@ -332,17 +376,44 @@ def _payload_failed(payload: Mapping[str, object]) -> bool:
 
 
 def _call_needs_web_fallback(call: Mapping[str, object]) -> bool:
+    return external_result_status(call) in {"HARD_FAIL", "EMPTY", "SEMANTIC_EMPTY"}
+
+
+def external_result_status(call: Mapping[str, object]) -> str:
+    """Classify the result content, separately from HTTP/tool transport success."""
+
+    explicit = str(call.get(RESULT_STATUS_FIELD) or "").strip().upper()
+    if explicit in {"HARD_FAIL", "EMPTY", "PARTIAL", "SEMANTIC_EMPTY"}:
+        return explicit
     status = str(call.get("status") or "").strip().casefold()
-    if status in _FAILED_STATUSES:
-        return True
     render_data = call.get("render_data")
-    if not isinstance(render_data, Mapping):
-        return status not in {"fixture", "live", "ok", "partial"}
-    error_code = str(render_data.get("error_code") or "").strip()
-    return bool(error_code)
+    error_code = (
+        str(render_data.get("error_code") or "").strip()
+        if isinstance(render_data, Mapping)
+        else ""
+    )
+    if status in _EMPTY_STATUSES:
+        return "EMPTY"
+    if status in _FAILED_STATUSES or error_code:
+        return "HARD_FAIL"
+    if _is_reimbursement_call(call):
+        blob = json.dumps(render_data or {}, ensure_ascii=False, sort_keys=True, default=str)
+        body_tokens = ("요양급여", "투여대상", "투여횟수", "제외기준", "인정기준 이외")
+        shell_tokens = ("첨부파일", "파일명", "고시 제", "게시일", "notice_number")
+        if any(token in blob for token in body_tokens):
+            return "PARTIAL"
+        if any(token in blob for token in shell_tokens):
+            return "SEMANTIC_EMPTY"
+    return "PARTIAL" if _raw_call_has_usable_result(call) else "EMPTY"
 
 
 def external_call_has_usable_result(call: Mapping[str, object]) -> bool:
+    if external_result_status(call) in {"HARD_FAIL", "EMPTY", "SEMANTIC_EMPTY"}:
+        return False
+    return _raw_call_has_usable_result(call)
+
+
+def _raw_call_has_usable_result(call: Mapping[str, object]) -> bool:
     status = str(call.get("status") or "").strip().casefold()
     if status in _FAILED_STATUSES:
         return False
@@ -373,10 +444,10 @@ def _append_web_fallback_calls(
     max_attempts: int | None = None,
 ) -> list[str]:
     attempted: list[str] = []
-    queries = _web_fallback_queries(question)
+    query_plan = _web_fallback_query_plan(question)
     if max_attempts is not None:
-        queries = queries[:max_attempts]
-    for index, query in enumerate(queries, start=1):
+        query_plan = query_plan[:max_attempts]
+    for index, (tier, query) in enumerate(query_plan, start=1):
         with stage(timing, "tool:web_search", "external source fallback"):
             fallback_call = asdict(external.web_search(query, topic="general"))
         fallback_call["queried_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -384,6 +455,9 @@ def _append_web_fallback_calls(
         fallback_call["fallback_reason"] = reason
         fallback_call["fallback_query"] = query
         fallback_call["fallback_attempt"] = index
+        fallback_call["fallback_tier"] = tier
+        _apply_web_result_policy(question, calls, fallback_call)
+        fallback_call[RESULT_STATUS_FIELD] = external_result_status(fallback_call)
         calls.append(fallback_call)
         attempted.append(query)
         if _usable_web_call(fallback_call):
@@ -392,6 +466,10 @@ def _append_web_fallback_calls(
 
 
 def _web_fallback_queries(question: str) -> tuple[str, ...]:
+    return tuple(query for _, query in _web_fallback_query_plan(question))
+
+
+def _web_fallback_query_plan(question: str) -> tuple[tuple[str, str], ...]:
     disease_stat_match = _DISEASE_STAT_SUBJECT_RE.match(question)
     patient_match = _DISEASE_PATIENT_SUBJECT_RE.match(question)
     subject_match = disease_stat_match or patient_match
@@ -399,15 +477,106 @@ def _web_fallback_queries(question: str) -> tuple[str, ...]:
         subject = subject_match.group("subject").strip()
         subject = re.sub(r"^국내\s+|\s+국내$", "", subject).strip()
         return (
-            f"{subject} 국내 유병률 환자수 통계 발생률",
-            f"{subject} 국내 환자 규모 질병 통계 유병 현황",
+            ("official_domain", f"site:hira.or.kr OR site:nhis.or.kr {subject} 국내 유병률 환자수 통계 발생률"),
+            ("institution_academic", f"site:mohw.go.kr OR site:ac.kr {subject} 유병률 환자수 통계 발생률"),
+            ("specialist_press", f"site:medicaltimes.com OR site:docdocdoc.co.kr {subject} 유병률 환자수 통계 발생률"),
         )
     if any(token in question for token in ("급여기준", "급여 기준", "급여조건", "급여 조건")):
         return (
-            f"{question} 보험급여 인정기준 세부 조건 본문",
-            f"{question} 개정 고시 급여 적용 조건",
+            ("official_domain", f"site:hira.or.kr {question} 보험급여 인정기준 세부 조건 본문"),
+            ("institution_academic", f"site:mohw.go.kr OR site:nhis.or.kr OR site:ac.kr {question} 개정 고시 급여 적용 조건"),
+            ("specialist_press", f"site:yakup.com OR site:dailypharm.com OR site:medipana.com {question} 개정 급여 적용 조건"),
         )
-    return (question,)
+    return (
+        ("official_domain", f"site:hira.or.kr OR site:mfds.go.kr OR site:clinicaltrials.gov {question}"),
+        ("institution_academic", f"site:go.kr OR site:or.kr OR site:ac.kr {question}"),
+        ("specialist_press", question),
+    )
+
+
+def _is_reimbursement_call(call: Mapping[str, object]) -> bool:
+    return "reimbursement" in str(call.get("tool") or "").casefold()
+
+
+def _apply_web_result_policy(
+    question: str,
+    existing_calls: Sequence[Mapping[str, object]],
+    fallback_call: dict[str, Any],
+) -> None:
+    render_data = fallback_call.get("render_data")
+    if not isinstance(render_data, dict):
+        return
+    items = render_data.get("items")
+    if not isinstance(items, list):
+        return
+    recent_revision = bool(_RECENT_REVISION_RE.search(question))
+    official_date = _official_reference_date(existing_calls)
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
+    for raw_item in items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        item = dict(raw_item)
+        published_at = str(item.get("published_at") or item.get("published_date") or "").strip()
+        item["published_at"] = published_at or None
+        url = str(item.get("url") or "")
+        host = (urlparse(url).hostname or "").casefold()
+        if host in _PERSONAL_BLOG_HOSTS or any(host.endswith(f".{name}") for name in _PERSONAL_BLOG_HOSTS):
+            rejected.append({"url": url, "reason": "personal_blog"})
+            continue
+        published_date = _parse_publication_date(published_at)
+        if recent_revision and published_date is None:
+            rejected.append({"url": url, "reason": "published_at_required"})
+            continue
+        if recent_revision and official_date is not None and published_date is not None and published_date < official_date:
+            rejected.append({"url": url, "reason": "published_before_official_effective_date"})
+            continue
+        kept.append(item)
+    render_data["items"] = kept
+    render_data["rejected_items"] = rejected
+    render_data["official_reference_date"] = official_date.isoformat() if official_date else None
+    render_data["source_precedence"] = "official_wins_web_conflict_disclosed_only"
+    fallback_call["status"] = "live" if kept else "no_data"
+
+
+def _official_reference_date(calls: Sequence[Mapping[str, object]]) -> date | None:
+    found: list[date] = []
+
+    def visit(value: object, key: str = "") -> None:
+        if isinstance(value, Mapping):
+            for child_key, child in value.items():
+                visit(child, str(child_key).casefold())
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child, key)
+            return
+        if key not in {
+            "effective_date",
+            "notice_date",
+            "published_at",
+            "published_date",
+            "source_date",
+        }:
+            return
+        parsed = _parse_publication_date(str(value or ""))
+        if parsed is not None:
+            found.append(parsed)
+
+    for call in calls:
+        if _is_official_tool(call):
+            visit(call)
+    return max(found) if found else None
+
+
+def _parse_publication_date(value: str) -> date | None:
+    match = re.search(r"(?P<year>20\d{2})[-./](?P<month>\d{1,2})[-./](?P<day>\d{1,2})", value)
+    if match is None:
+        return None
+    try:
+        return date(int(match.group("year")), int(match.group("month")), int(match.group("day")))
+    except ValueError:
+        return None
 
 
 def _source_names(calls: Sequence[Mapping[str, object]]) -> list[str]:

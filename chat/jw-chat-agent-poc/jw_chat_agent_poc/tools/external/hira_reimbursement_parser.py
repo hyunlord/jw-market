@@ -92,6 +92,11 @@ class _CriterionTextParser(HTMLParser):
             self._skip_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        # HTMLParser reports ``<br />`` as a start/end pair. Void elements never
+        # increase the container depth, so decrementing here would close the
+        # HIRA detail container at its first line break.
+        if tag in self._VOID:
+            return
         if self._container_depth and tag in self._SKIP and self._skip_depth:
             self._skip_depth -= 1
         if self._container_depth:

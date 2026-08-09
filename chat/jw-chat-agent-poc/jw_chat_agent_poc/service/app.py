@@ -119,7 +119,7 @@ from jw_chat_agent_poc.orchestrator.hira_disease import (
     hira_binding_question,
     is_hira_disease_question,
 )
-from jw_chat_agent_poc.orchestrator.markdown_formatting import source_labels
+from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, source_labels
 from jw_chat_agent_poc.contracts.shadow import (
     evidence_bundle_shadow_observation,
     resolved_query_shadow_observation,
@@ -276,6 +276,7 @@ from jw_chat_agent_poc.service.models import (
     ChatRequest,
     HealthResponse,
 )
+from jw_chat_agent_poc.service.numeric_copy_contract import enforce_numeric_copy_contract
 from jw_chat_agent_poc.service.runtime_provenance import trace_envelope, version_payload
 from jw_chat_agent_poc.service.security_policy import (
     SEC12_BLOCKED_ANSWER,
@@ -3314,6 +3315,19 @@ def compute_final_answer(
             conversation_slots=extract_conversation_slots(result),
         )
         controlled = apply_answer_control_layer(question, result, final_answer.text)
+        filled_slots = frozenset(controlled.filled_slots)
+        slot_status = (
+            {
+                "channel_breakdown": (
+                    "verified" if "channel_distribution" in filled_slots else "no_rows"
+                ),
+                "specialty_breakdown": (
+                    "verified" if "specialty_distribution" in filled_slots else "no_rows"
+                ),
+            }
+            if controlled.intent == "CHANNEL_SPECIALTY"
+            else {}
+        )
         result["_answer_control_layer"] = {
             "applied": controlled.applied,
             "intent": controlled.intent,
@@ -3325,6 +3339,15 @@ def compute_final_answer(
             "selected_branch": controlled.selected_branch,
             "degraded": controlled.degraded,
             "answer_status": controlled.answer_status,
+            "slot_status": slot_status,
+            "derived_payload": (
+                {
+                    "answer_numeric_tokens": list(allowed_numbers(controlled.answer)),
+                    "source_names": list(controlled.source_labels),
+                }
+                if controlled.applied
+                else {}
+            ),
         }
         if controlled.applied:
             final_answer = replace(
@@ -3383,6 +3406,12 @@ def compute_final_answer(
         output_policy_decision = evaluate_output_leakage(display_answer)
         user_answer = enforced_answer(display_answer, output_policy_decision)
         user_answer = _prepend_matching_source_basis(user_answer, question, result)
+        user_answer, numeric_copy_report = enforce_numeric_copy_contract(
+            question,
+            user_answer,
+            result,
+        )
+        result["_numeric_copy_contract"] = numeric_copy_report
         if query_spec is not None:
             try:
                 observe_surface_coverage(
@@ -3495,7 +3524,15 @@ def _compute_external_passthrough_final_answer(
         "selected_branch": "external_passthrough",
         "degraded": False,
         "answer_status": "complete",
+        "slot_status": {},
+        "derived_payload": {},
     }
+    user_answer, numeric_copy_report = enforce_numeric_copy_contract(
+        question,
+        user_answer,
+        result,
+    )
+    result["_numeric_copy_contract"] = numeric_copy_report
     record_answer_delivery(
         result,
         answer_branch="genos_external_passthrough",

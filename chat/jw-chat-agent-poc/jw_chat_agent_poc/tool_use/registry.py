@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 import re
 from dataclasses import asdict
@@ -70,21 +71,70 @@ _INTERNAL_METRIC_WEB_EXCLUSION_TOKENS = (
 _CLINICAL_DETAIL_DESIGN_FIELDS = frozenset(
     {
         "allocation",
+        "arms",
         "enrollment",
         "intervention_model",
         "masking",
         "outcomes",
+        "phase",
+        "primary_purpose",
         "start_date",
         "primary_completion_date",
     }
 )
 _CLINICAL_DETAIL_EXPLICIT_ONLY_FIELDS = frozenset(
-    {"allocation", "intervention_model", "masking"}
+    {"allocation", "arms", "intervention_model", "masking", "primary_purpose"}
 )
 
 
 def _clinical_detail_value_present(value: Any) -> bool:
     return value is not None and value != "" and value != () and value != []
+
+
+def _clinical_detail_display_value(key: str, value: Any, detail: dict[str, Any]) -> Any:
+    if not _clinical_detail_value_present(value):
+        return value
+    if key == "phase" and isinstance(value, list):
+        labels = [
+            f"{match.group(1)}상 (원문: {item})"
+            if (match := re.fullmatch(r"PHASE(\d+)", str(item).upper()))
+            else str(item)
+            for item in value
+        ]
+        return ", ".join(labels)
+    if key == "masking":
+        source_wording = str(detail.get("masking_source_wording") or "").strip()
+        roles = detail.get("masking_roles")
+        role_text = ", ".join(str(role) for role in roles) if isinstance(roles, list) else ""
+        components = [f"구조화 필드: {value}"]
+        if source_wording:
+            components.append(f"공식 제목 표현: {source_wording}")
+        if role_text:
+            components.append(f"눈가림 대상: {role_text}")
+        return " · ".join(components)
+    if key == "arms" and isinstance(value, list):
+        labels = [
+            f"{item.get('label')} ({item.get('type')})"
+            for item in value
+            if isinstance(item, dict) and item.get("label")
+        ]
+        if detail.get("active_comparator_present") is True:
+            labels.append("활성대조군 있음")
+        return "; ".join(labels)
+    return value
+
+
+def _clinical_detail_missing_reason(
+    key: str,
+    default_reason: str,
+    field_status: Mapping[str, Any],
+) -> str:
+    status = str(field_status.get(key) or "").strip().casefold()
+    if status == "adapter_not_exposed":
+        return f"ClinicalTrials 어댑터가 {key} 필드를 노출하지 않았습니다."
+    if status == "field_missing":
+        return f"ClinicalTrials 공식 원문에 {key} 필드가 없습니다."
+    return default_reason
 
 
 def _clinical_detail_requested_fields(user_text: str) -> frozenset[str] | None:
@@ -376,7 +426,10 @@ class ExternalToolRegistry:
         if call.status in _FAILED_STATUSES or not isinstance(detail, dict):
             return _external_call_envelope(call, request.nct_id, "임상시험 상세")
         url = str(call.safe_url or "")
+        raw_field_status = call.render_data.get("field_status")
+        field_status = raw_field_status if isinstance(raw_field_status, Mapping) else {}
         missing_reasons = {
+            "phase": "ClinicalTrials 상세 응답에서 임상 단계를 확인할 수 없습니다.",
             "enrollment": "ClinicalTrials 상세 응답에서 등록 인원을 확인할 수 없습니다.",
             "start_date": "ClinicalTrials 상세 응답에서 시험 시작일을 확인할 수 없습니다.",
             "primary_completion_date": (
@@ -388,6 +441,10 @@ class ExternalToolRegistry:
             "intervention_model": (
                 "ClinicalTrials 상세 응답에서 중재 모형을 확인할 수 없습니다."
             ),
+            "primary_purpose": (
+                "ClinicalTrials 상세 응답에서 일차 목적을 확인할 수 없습니다."
+            ),
+            "arms": "ClinicalTrials 상세 응답에서 시험군 구성을 확인할 수 없습니다.",
             "eligibility": "ClinicalTrials 상세 응답에서 선정·제외 기준을 확인할 수 없습니다.",
         }
         legacy_missing_fields = frozenset(
@@ -407,7 +464,11 @@ class ExternalToolRegistry:
                     if _clinical_detail_value_present(value) and url
                     else str(value)
                     if _clinical_detail_value_present(value)
-                    else missing_reasons[key]
+                    else _clinical_detail_missing_reason(
+                        key,
+                        missing_reasons[key],
+                        field_status,
+                    )
                 ),
                 raw_ref=f"{call.tool}:{key}",
             )
@@ -415,7 +476,11 @@ class ExternalToolRegistry:
                 (
                     ("title", "연구 제목", detail.get("title")),
                     ("status", "연구 상태", detail.get("status")),
-                    ("phase", "임상 단계", detail.get("phase")),
+                    (
+                        "phase",
+                        "임상 단계",
+                        _clinical_detail_display_value("phase", detail.get("phase"), detail),
+                    ),
                     ("enrollment", "등록 인원", detail.get("enrollment")),
                     ("interventions", "중재", detail.get("interventions")),
                     ("outcomes", "결과지표", detail.get("outcomes")),
@@ -435,12 +500,38 @@ class ExternalToolRegistry:
                             else None
                         ),
                     ),
-                    ("allocation", "배정 방식", detail.get("allocation")),
-                    ("masking", "눈가림", detail.get("masking")),
+                    (
+                        "allocation",
+                        "배정 방식",
+                        _clinical_detail_display_value(
+                            "allocation", detail.get("allocation"), detail
+                        ),
+                    ),
+                    (
+                        "masking",
+                        "눈가림",
+                        _clinical_detail_display_value("masking", detail.get("masking"), detail),
+                    ),
                     (
                         "intervention_model",
                         "중재 모형",
-                        detail.get("intervention_model"),
+                        _clinical_detail_display_value(
+                            "intervention_model",
+                            detail.get("intervention_model"),
+                            detail,
+                        ),
+                    ),
+                    (
+                        "primary_purpose",
+                        "일차 목적",
+                        _clinical_detail_display_value(
+                            "primary_purpose", detail.get("primary_purpose"), detail
+                        ),
+                    ),
+                    (
+                        "arms",
+                        "시험군",
+                        _clinical_detail_display_value("arms", detail.get("arms"), detail),
                     ),
                 ),
                 start=1,

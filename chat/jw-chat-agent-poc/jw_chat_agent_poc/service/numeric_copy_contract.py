@@ -1,0 +1,237 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+import json
+import re
+from typing import Any, Final
+
+from jw_chat_agent_poc.orchestrator.markdown_formatting import allowed_numbers, normalize_number
+from jw_chat_agent_poc.service.answer_safety import fact_token_allowed, strict_allowed_numbers
+
+
+_FAILED_STATUSES: Final[frozenset[str]] = frozenset(
+    {
+        "empty",
+        "error",
+        "failed",
+        "failure",
+        "hard_fail",
+        "inapplicable",
+        "missing",
+        "no_data",
+        "not_found",
+        "query_failed",
+        "semantic_empty",
+        "timeout",
+        "unavailable",
+        "unsupported",
+        "verification_failed",
+    }
+)
+_TRUSTED_INTERNAL_SOURCES: Final[tuple[str, ...]] = (
+    "UBIST",
+    "IQVIA_NSA",
+    "IQVIA NSA",
+    "IQVIA_CSD",
+    "IQVIA CSD",
+)
+_PROTECTED_METRIC_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:\bsales\b|\bmarket[_ ]?share\b|\brank\b|\bHHI\b|\bCR5\b|"
+    r"\bgrowth[_ ]?rate\b|\bchannel[_ ]?share\b|매출|시장\s*점유율?|점유율?|"
+    r"순위|성장률|채널\s*점유율?)",
+    re.IGNORECASE,
+)
+_INTERNAL_SECTION_RE: Final[re.Pattern[str]] = re.compile(r"^#{1,6}\s*내부\s*정형\s*지표\s*$")
+_WEB_SECTION_RE: Final[re.Pattern[str]] = re.compile(r"^#{1,6}\s*뉴스[·/]?외부\s*이슈\s*$")
+_BLOCK_NOTICE: Final[str] = "근거 payload에 없는 수치는 출력에서 제외했습니다."
+_DISPLAY_UNIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:억\s*원|억원|원|명|건|개|위|년|월|%p|%)$",
+    re.IGNORECASE,
+)
+
+
+def enforce_numeric_copy_contract(
+    question: str,
+    answer: str,
+    result: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Fail closed when final numeric tokens are absent from verified payload fields."""
+
+    verification_failed = _verification_failed(result)
+    allowed_payload = _allowed_payload(result, derived_only=verification_failed)
+    allowed = strict_allowed_numbers(allowed_payload, allowed_numbers(allowed_payload))
+    trusted_payload = _trusted_internal_payload(result)
+    trusted = strict_allowed_numbers(trusted_payload, allowed_numbers(trusted_payload))
+
+    kept: list[str] = []
+    blocked_tokens: set[str] = set()
+    blocked_line_count = 0
+    trusted_metric_blocked_count = 0
+    section = ""
+    for line in answer.splitlines():
+        stripped = line.strip()
+        if _INTERNAL_SECTION_RE.fullmatch(stripped):
+            section = "internal"
+            kept.append(line)
+            continue
+        if _WEB_SECTION_RE.fullmatch(stripped):
+            section = "web"
+            kept.append(line)
+            continue
+
+        tokens = allowed_numbers(line)
+        unsupported = tuple(token for token in tokens if not _copy_token_allowed(token, allowed))
+        metric_line = bool(tokens and _PROTECTED_METRIC_RE.search(line))
+        trusted_unsupported = tuple(
+            token for token in tokens if not _copy_token_allowed(token, trusted)
+        )
+        web_metric_violation = section == "web" and metric_line
+        trusted_metric_violation = metric_line and bool(trusted_unsupported)
+        if unsupported or web_metric_violation or trusted_metric_violation:
+            blocked_line_count += 1
+            blocked_tokens.update(unsupported or trusted_unsupported or tokens)
+            if web_metric_violation or trusted_metric_violation:
+                trusted_metric_blocked_count += 1
+            continue
+        kept.append(line)
+
+    cleaned = "\n".join(kept).strip()
+    if blocked_line_count:
+        cleaned = f"{cleaned}\n\n{_BLOCK_NOTICE}".strip()
+    if not cleaned:
+        cleaned = _BLOCK_NOTICE
+    report = {
+        "contract": "numeric_copy_only_v1",
+        "disposition": "blocked" if blocked_line_count else "pass",
+        "blocked_line_count": blocked_line_count,
+        "blocked_tokens": sorted(blocked_tokens),
+        "trusted_metric_blocked_count": trusted_metric_blocked_count,
+        "verification_failed_fail_close": verification_failed,
+        "question_has_numeric_token": bool(allowed_numbers(question)),
+    }
+    return cleaned, report
+
+
+def _copy_token_allowed(raw_token: str, payload_numbers: tuple[str, ...]) -> bool:
+    if fact_token_allowed(raw_token, payload_numbers):
+        return True
+    token = _DISPLAY_UNIT_RE.sub("", normalize_number(str(raw_token))).strip().upper()
+    if not token:
+        return False
+    return any(
+        _DISPLAY_UNIT_RE.sub("", normalize_number(str(candidate))).strip().upper()
+        == token
+        for candidate in payload_numbers
+    )
+
+
+def _allowed_payload(result: Mapping[str, Any], *, derived_only: bool) -> str:
+    payload: dict[str, Any] = {}
+    control = result.get("_answer_control_layer")
+    if isinstance(control, Mapping):
+        derived = control.get("derived_payload")
+        slot_status = control.get("slot_status")
+        has_verified_slot = isinstance(slot_status, Mapping) and any(
+            str(status).strip().casefold() == "verified"
+            for status in slot_status.values()
+        )
+        if isinstance(derived, Mapping) and (not derived_only or has_verified_slot):
+            payload["derived_payload"] = derived
+    if derived_only:
+        return _stable_text(payload)
+
+    calls = result.get("tool_calls")
+    if isinstance(calls, list):
+        payload["tool_calls"] = [
+            _numeric_call_payload(call)
+            for call in calls
+            if isinstance(call, Mapping) and not _call_failed(call)
+        ]
+    markdown = result.get("markdown_response")
+    if isinstance(markdown, Mapping):
+        payload["markdown_response"] = {
+            key: markdown.get(key)
+            for key in ("fact_md", "data_md", "evidence_md", "sources_md")
+            if markdown.get(key) not in (None, "", [], {})
+        }
+    charts = result.get("charts")
+    if isinstance(charts, list):
+        payload["charts"] = charts
+    marker = result.get("_external_passthrough")
+    if isinstance(marker, Mapping):
+        payload["external_passthrough"] = marker
+    return _stable_text(payload)
+
+
+def _trusted_internal_payload(result: Mapping[str, Any]) -> str:
+    calls = result.get("tool_calls")
+    trusted_calls: list[dict[str, Any]] = []
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, Mapping) or _call_failed(call):
+                continue
+            source_text = " ".join(
+                str(call.get(key) or "")
+                for key in ("source", "source_name", "tool", "data_source")
+            ).upper()
+            if any(source in source_text for source in _TRUSTED_INTERNAL_SOURCES):
+                trusted_calls.append(_numeric_call_payload(call))
+    control = result.get("_answer_control_layer")
+    derived: Mapping[str, Any] | None = None
+    if isinstance(control, Mapping) and isinstance(control.get("derived_payload"), Mapping):
+        candidate = control["derived_payload"]
+        source_names = candidate.get("source_names")
+        source_text = _stable_text(source_names).upper()
+        if any(source in source_text for source in _TRUSTED_INTERNAL_SOURCES):
+            derived = candidate
+    return _stable_text({"tool_calls": trusted_calls, "derived_payload": derived or {}})
+
+
+def _numeric_call_payload(call: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: call.get(key)
+        for key in (
+            "tool",
+            "source",
+            "status",
+            "summary_text",
+            "render_data",
+            "safe_url",
+            "queried_at_utc",
+            "result_status",
+            "semantic_status",
+        )
+        if call.get(key) not in (None, "", [], {})
+    }
+
+
+def _call_failed(call: Mapping[str, Any]) -> bool:
+    statuses = {
+        str(call.get("status") or "").strip().casefold(),
+        str(call.get("result_status") or call.get("semantic_status") or "").strip().casefold(),
+    }
+    render_data = call.get("render_data")
+    if isinstance(render_data, Mapping):
+        statuses.add(str(render_data.get("status") or "").strip().casefold())
+        if str(render_data.get("error_code") or "").strip():
+            return True
+    return bool(statuses & _FAILED_STATUSES)
+
+
+def _verification_failed(result: Mapping[str, Any]) -> bool:
+    metrics = result.get("agent_loop_metrics")
+    if isinstance(metrics, Mapping):
+        if str(metrics.get("status") or "").strip().casefold() == "verification_failed":
+            return True
+    decomposition = result.get("decomposition")
+    if isinstance(decomposition, Sequence) and not isinstance(decomposition, (str, bytes)):
+        return any(
+            isinstance(item, Mapping)
+            and str(item.get("status") or "").strip().casefold() == "verification_failed"
+            for item in decomposition
+        )
+    return False
+
+
+def _stable_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)

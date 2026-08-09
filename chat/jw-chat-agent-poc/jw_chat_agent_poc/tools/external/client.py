@@ -8,6 +8,7 @@ import os
 import re
 import time
 from typing import Any, Literal
+from urllib.parse import urlparse
 import requests
 
 from jw_chat_agent_poc.tools.external.mcp_client import McpClientError, McpJsonClient, McpToolResult
@@ -55,6 +56,9 @@ NEDRUG_MCP_SOURCE = "nedrug_mcp"
 HIRA_MCP_SOURCE = "hira_mcp"
 CLINICAL_TRIALS_MCP_SOURCE = "clinicaltrials_mcp"
 TAVILY_MCP_SOURCE = "tavily_mcp"
+_PERSONAL_BLOG_HOSTS = frozenset(
+    {"blog.naver.com", "m.blog.naver.com", "tistory.com", "brunch.co.kr", "medium.com"}
+)
 MCP_DIRECT_URL_ENV_BY_SOURCE = {
     OPENFDA_MCP_SOURCE: OPENFDA_MCP_URL_ENV,
     NEDRUG_MCP_SOURCE: NEDRUG_MCP_URL_ENV,
@@ -145,9 +149,17 @@ class ExternalApiClient:
         return self._fixture_or_live("clinicaltrials_v2_search", {key: query_intr})
 
     def clinicaltrials_study_details(self, nct_id: str) -> ExternalCall:
-        return self._fixture_or_live(
+        normalized = nct_id.upper()
+        call = self._fixture_or_live(
             "clinicaltrials_study_details",
-            {"nct_id": nct_id.upper()},
+            {"nct_id": normalized},
+        )
+        if self.mode != "live":
+            return call
+        return _enrich_clinicaltrials_detail_from_official_api(
+            call,
+            normalized,
+            timeout_s=min(self.timeout_s, 8),
         )
 
     def openfda_label_search(
@@ -427,6 +439,7 @@ class ExternalApiClient:
                 "title": item.get("title"),
                 "url": item.get("url"),
                 "snippet": item.get("content") or item.get("snippet"),
+                "published_at": item.get("published_date") or item.get("date"),
                 "published_date": item.get("published_date") or item.get("date"),
             }
             for item in payload.get("results", [])[:max_results]
@@ -453,7 +466,13 @@ class ExternalApiClient:
             elapsed = round((time.monotonic() - start) * 1000, 1)
             return _web_error("serper", query, exc, elapsed)
         items = [
-            {"title": item.get("title"), "url": item.get("link"), "snippet": item.get("snippet")}
+            {
+                "title": item.get("title"),
+                "url": item.get("link"),
+                "snippet": item.get("snippet"),
+                "published_at": item.get("date"),
+                "published_date": item.get("date"),
+            }
             for item in payload.get("organic", [])[:max_results]
             if isinstance(item, dict)
         ]
@@ -479,7 +498,13 @@ class ExternalApiClient:
             return _web_error("brave", query, exc, elapsed)
         web = payload.get("web") if isinstance(payload.get("web"), dict) else {}
         items = [
-            {"title": item.get("title"), "url": item.get("url"), "snippet": item.get("description")}
+            {
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "snippet": item.get("description"),
+                "published_at": item.get("page_age") or item.get("age"),
+                "published_date": item.get("page_age") or item.get("age"),
+            }
             for item in web.get("results", [])[:max_results]
             if isinstance(item, dict)
         ]
@@ -902,6 +927,7 @@ def _tavily_mcp_web_call(
             "title": item.get("title"),
             "url": item.get("url"),
             "snippet": item.get("content") or item.get("snippet"),
+            "published_at": item.get("published_date") or item.get("date"),
             "published_date": item.get("published_date") or item.get("date"),
         }
         for item in raw_items[:limit]
@@ -930,6 +956,10 @@ def _tavily_text_results(text: str) -> list[dict[str, Any]]:
         if title_match is None or url_match is None:
             continue
         content_match = re.search(r"(?m)^Content:\s*(.+?)\s*$", block)
+        published_match = re.search(
+            r"(?m)^(?:Published Date|Published At|Date):\s*(.+?)\s*$",
+            block,
+        )
         raw_match = re.search(
             r"(?ms)^Raw Content:\s*(.+?)(?=\n(?:Score|Title):|\Z)",
             block,
@@ -942,6 +972,8 @@ def _tavily_text_results(text: str) -> list[dict[str, Any]]:
                 "title": title_match.group(1).strip(),
                 "url": url_match.group(1).strip(),
                 "content": content,
+                "published_at": published_match.group(1).strip() if published_match else None,
+                "published_date": published_match.group(1).strip() if published_match else None,
             }
         )
     return items
@@ -1045,6 +1077,137 @@ def _clinicaltrials_detail_call_from_mcp(
         render_data=render_data,
         safe_url=study_url,
         elapsed_ms=elapsed,
+    )
+
+
+def _enrich_clinicaltrials_detail_from_official_api(
+    call: ExternalCall,
+    nct_id: str,
+    *,
+    timeout_s: int,
+) -> ExternalCall:
+    """Expose design fields omitted by the MCP adapter without inferring values."""
+
+    started = time.monotonic()
+    api_url = f"https://clinicaltrials.gov/api/v2/studies/{nct_id}"
+    direct_payload: dict[str, Any] | None = None
+    direct_error = ""
+    try:
+        response = requests.get(api_url, timeout=timeout_s)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict):
+            direct_payload = payload
+    except Exception as exc:  # noqa: BLE001 - retain the MCP result and expose adapter status
+        direct_error = type(exc).__name__
+    direct_elapsed = round((time.monotonic() - started) * 1000, 1)
+
+    render_data = dict(call.render_data)
+    current_detail = render_data.get("detail")
+    detail = dict(current_detail) if isinstance(current_detail, dict) else {}
+    mapped: dict[str, Any] = {}
+    if direct_payload is not None:
+        protocol = direct_payload.get("protocolSection")
+        protocol = protocol if isinstance(protocol, dict) else {}
+        identification = protocol.get("identificationModule")
+        design = protocol.get("designModule")
+        arms_module = protocol.get("armsInterventionsModule")
+        identification = identification if isinstance(identification, dict) else {}
+        design = design if isinstance(design, dict) else {}
+        arms_module = arms_module if isinstance(arms_module, dict) else {}
+        design_info = design.get("designInfo")
+        enrollment_info = design.get("enrollmentInfo")
+        masking_info = design_info.get("maskingInfo") if isinstance(design_info, dict) else {}
+        design_info = design_info if isinstance(design_info, dict) else {}
+        enrollment_info = enrollment_info if isinstance(enrollment_info, dict) else {}
+        masking_info = masking_info if isinstance(masking_info, dict) else {}
+        arms = arms_module.get("armGroups")
+        arms = [dict(item) for item in arms if isinstance(item, dict)] if isinstance(arms, list) else []
+        phases = design.get("phases")
+        phase_value: Any = phases if isinstance(phases, list) else None
+        title_parts = tuple(
+            str(identification.get(key) or "")
+            for key in ("briefTitle", "officialTitle")
+        )
+        masking_wording = next(
+            (
+                match.group(0)
+                for title in title_parts
+                for match in (re.search(r"\b(?:Single|Double|Triple|Quadruple)\s+Mask(?:ed|ing)\b", title, re.IGNORECASE),)
+                if match is not None
+            ),
+            None,
+        )
+        mapped = {
+            "phase": phase_value,
+            "allocation": design_info.get("allocation"),
+            "intervention_model": design_info.get("interventionModel"),
+            "masking": masking_info.get("masking"),
+            "masking_roles": masking_info.get("whoMasked"),
+            "masking_source_wording": masking_wording,
+            "primary_purpose": design_info.get("primaryPurpose"),
+            "enrollment": enrollment_info.get("count"),
+            "arms": arms,
+            "active_comparator_present": any(
+                str(arm.get("type") or "").upper() == "ACTIVE_COMPARATOR"
+                for arm in arms
+            ),
+        }
+        for key, value in mapped.items():
+            if value not in (None, "", [], {}):
+                detail[key] = value
+
+    requested_fields = (
+        "phase",
+        "allocation",
+        "intervention_model",
+        "masking",
+        "primary_purpose",
+        "enrollment",
+        "arms",
+    )
+    field_status: dict[str, str] = {}
+    for key in requested_fields:
+        if detail.get(key) not in (None, "", [], {}):
+            field_status[key] = "present"
+        elif direct_payload is not None:
+            field_status[key] = "field_missing"
+        else:
+            field_status[key] = "adapter_not_exposed"
+    render_data.update(
+        {
+            "detail": detail,
+            "field_status": field_status,
+            "direct_official_api": {
+                "status": "ok" if direct_payload is not None else "unavailable",
+                "url": api_url,
+                "elapsed_ms": direct_elapsed,
+                "error_type": direct_error or None,
+            },
+            "field_capabilities": {
+                **(
+                    dict(render_data.get("field_capabilities"))
+                    if isinstance(render_data.get("field_capabilities"), dict)
+                    else {}
+                ),
+                **{key: field_status[key].upper() for key in requested_fields},
+            },
+        }
+    )
+    status = "live" if direct_payload is not None or call.status not in {"error", "no_data", "unsupported"} else call.status
+    summary = (
+        f"ClinicalTrials.gov 공식 API에서 {nct_id} 디자인 필드를 직접 매핑했습니다."
+        if direct_payload is not None
+        else call.summary_text
+    )
+    return ExternalCall(
+        tool=call.tool,
+        source=call.source,
+        status=status,
+        summary_text=summary,
+        render_data=render_data,
+        safe_url=f"https://clinicaltrials.gov/study/{nct_id}",
+        elapsed_ms=round(float(call.elapsed_ms or 0.0) + direct_elapsed, 1),
     )
 
 
@@ -1420,8 +1583,21 @@ def _web_error(provider: str, query: str, exc: Exception, elapsed: float) -> Ext
 
 
 def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: float) -> ExternalCall:
-    status = "live" if items else "no_data"
-    summary = f"{provider} 웹검색 결과 {len(items)}건을 확인했습니다." if items else f"{provider} 웹검색 결과가 없습니다."
+    normalized_items: list[dict[str, Any]] = []
+    for raw_item in items:
+        item = dict(raw_item)
+        url = str(item.get("url") or "")
+        host = (urlparse(url).hostname or "").casefold()
+        if host in _PERSONAL_BLOG_HOSTS or any(
+            host.endswith(f".{blocked}") for blocked in _PERSONAL_BLOG_HOSTS
+        ):
+            continue
+        published_at = item.get("published_at") or item.get("published_date")
+        item["published_at"] = published_at
+        item["published_date"] = published_at
+        normalized_items.append(item)
+    status = "live" if normalized_items else "no_data"
+    summary = f"{provider} 웹검색 결과 {len(normalized_items)}건을 확인했습니다." if normalized_items else f"{provider} 웹검색 결과가 없습니다."
     return ExternalCall(
         tool="web_search",
         source=WEB_SEARCH_SOURCE,
@@ -1430,7 +1606,7 @@ def _web_call(provider: str, query: str, items: list[dict[str, Any]], elapsed: f
         render_data={
             "provider": provider,
             "query": query,
-            "items": items,
+            "items": normalized_items,
             "external_claim_policy": "web_results_unverified",
             "verification_notice": "웹 검색 결과(미검증): URL과 snippet을 출처로 분리 표시하고 내부 fact로 승격하지 않습니다.",
         },

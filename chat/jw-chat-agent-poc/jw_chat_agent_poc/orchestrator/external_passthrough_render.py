@@ -20,6 +20,24 @@ _SOURCE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 _WEB_FALLBACK_PARTIAL_DISCLOSURE: Final = "공식 소스에서 확인되지 않은 부분은 웹 검색 결과로 보완합니다"
+_INTERNAL_SECTION_HEADING: Final = "## 내부 정형 지표"
+_WEB_SECTION_HEADING: Final = "## 뉴스·외부 이슈"
+_INTERNAL_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?m)^#{1,6}\s*내부\s*정형\s*지표\s*$"
+)
+_WEB_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?m)^#{1,6}\s*뉴스[·/]?외부\s*이슈\s*$"
+)
+_PROTECTED_METRIC_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:\bsales\b|\bmarket[_ ]?share\b|\brank\b|\bHHI\b|\bCR5\b|"
+    r"\bgrowth[_ ]?rate\b|\bchannel[_ ]?share\b|매출|시장\s*점유율?|점유율?|"
+    r"순위|성장률|채널\s*점유율?)",
+    re.IGNORECASE,
+)
+_NEWS_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:뉴스|기사|보도|이슈|안전성|임상|허가|학술|발표|언론)",
+    re.IGNORECASE,
+)
 _OFFICIAL_TOOL_PREFIXES: Final[tuple[str, ...]] = (
     "hira_",
     "mfds_",
@@ -90,6 +108,7 @@ def external_passthrough_fallback_answer(result: Mapping[str, object]) -> str:
 def finalize_external_passthrough_answer(answer: str, result: Mapping[str, object]) -> str:
     body = _SOURCE_SECTION_RE.split(answer.strip(), maxsplit=1)[0].strip()
     body = _normalize_hira_no_data_wording(body, result)
+    body = _separate_internal_and_web_blocks(body, result)
     marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
     web_fallback_used = isinstance(marker, Mapping) and marker.get("web_fallback_used") is True
     if web_fallback_used:
@@ -157,25 +176,107 @@ def _hira_call_period(call: Mapping[str, object]) -> str:
 def external_source_footer(result: Mapping[str, object]) -> str:
     marker = result.get(EXTERNAL_PASSTHROUGH_FIELD)
     queried_at = str(marker.get("queried_at_utc") or "") if isinstance(marker, Mapping) else ""
-    entries: list[tuple[str, str, str]] = []
+    entries: list[tuple[str, str, str, str]] = []
     for call in external_passthrough_calls(result):
         call_time = str(call.get("queried_at_utc") or queried_at or "확인 불가")
-        urls = _public_urls(call)
-        if not urls:
+        url_entries = _public_url_entries(call)
+        if not url_entries:
             default_url = _default_source_url(call)
             if default_url:
-                urls = (default_url,)
-        entries.extend((_source_label(call), call_time, url) for url in urls)
+                url_entries = ((default_url, ""),)
+        entries.extend(
+            (_source_label(call), call_time, url, published_at)
+            for url, published_at in url_entries
+        )
     deduped = tuple(dict.fromkeys(entries))
-    if not deduped:
+    internal_entries = _internal_source_labels(result)
+    if not deduped and not internal_entries:
         return "## 출처\n- 외부 조회 · 조회시점 확인 불가 · URL 확인 불가"
-    return "\n".join(
-        ["## 출처"]
-        + [
-            f"- {label} · 조회시점 {call_time} · [{url}]({url})"
-            for label, call_time, url in deduped
-        ]
+    lines = ["## 출처"]
+    lines.extend(
+        f"- {label} · 내부 정형 지표 · 조회시점 {queried_at or '확인 불가'}"
+        for label in internal_entries
     )
+    for label, call_time, url, published_at in deduped:
+        publication = (
+            f" · 게시일 {published_at}"
+            if published_at
+            else " · 게시일 확인 불가"
+            if label == "Tavily 웹 검색"
+            else ""
+        )
+        lines.append(
+            f"- {label} · 조회시점 {call_time}{publication} · [{url}]({url})"
+        )
+    return "\n".join(lines)
+
+
+def _separate_internal_and_web_blocks(
+    body: str,
+    result: Mapping[str, object],
+) -> str:
+    if not (_internal_source_labels(result) and _has_web_source(result)):
+        return body
+    if _INTERNAL_SECTION_RE.search(body) and _WEB_SECTION_RE.search(body):
+        return body
+
+    internal: list[str] = []
+    web: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", body):
+        stripped = paragraph.strip()
+        if not stripped:
+            continue
+        if _NEWS_CONTEXT_RE.search(stripped):
+            web.append(stripped)
+        elif _PROTECTED_METRIC_RE.search(stripped):
+            internal.append(stripped)
+        else:
+            web.append(stripped)
+    if not internal or not web:
+        return body
+    return "\n\n".join(
+        (
+            _INTERNAL_SECTION_HEADING,
+            "\n\n".join(internal),
+            _WEB_SECTION_HEADING,
+            "\n\n".join(web),
+        )
+    )
+
+
+def _has_web_source(result: Mapping[str, object]) -> bool:
+    return any(
+        str(call.get("tool") or "").strip().casefold() == "web_search"
+        for call in external_passthrough_calls(result)
+    )
+
+
+def _internal_source_labels(result: Mapping[str, object]) -> tuple[str, ...]:
+    candidates: list[str] = []
+    sources = result.get("sources")
+    if isinstance(sources, (list, tuple)):
+        candidates.extend(str(source) for source in sources)
+    calls = result.get("tool_calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, Mapping):
+                continue
+            candidates.extend(
+                str(call.get(key) or "") for key in ("source", "tool")
+            )
+    blob = "\n".join(candidates).upper()
+    labels = [
+        label
+        for token, label in (
+            ("UBIST", "UBIST"),
+            ("IQVIA_NSA", "IQVIA NSA"),
+            ("IQVIA NSA", "IQVIA NSA"),
+            ("IQVIA_CSD", "IQVIA CSD"),
+            ("IQVIA CSD", "IQVIA CSD"),
+        )
+        if token in blob
+    ]
+    return tuple(dict.fromkeys(labels))
 
 
 def _source_label(call: Mapping[str, object]) -> str:
@@ -198,25 +299,34 @@ def _source_label(call: Mapping[str, object]) -> str:
     return str(call.get("source") or call.get("tool") or "외부 소스")
 
 
-def _public_urls(call: Mapping[str, object]) -> tuple[str, ...]:
-    candidates: list[str] = []
+def _public_url_entries(call: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    candidates: list[tuple[str, str]] = []
     safe_url = call.get("safe_url")
     if isinstance(safe_url, str):
-        candidates.append(safe_url)
-    _collect_urls(call.get("render_data"), candidates)
-    return tuple(dict.fromkeys(url for url in candidates if _is_public_url(url)))
+        candidates.append((safe_url, ""))
+    _collect_url_entries(call.get("render_data"), candidates)
+    return tuple(
+        dict.fromkeys(
+            (url, published_at)
+            for url, published_at in candidates
+            if _is_public_url(url)
+        )
+    )
 
 
-def _collect_urls(value: object, output: list[str]) -> None:
+def _collect_url_entries(value: object, output: list[tuple[str, str]]) -> None:
     if isinstance(value, Mapping):
+        published_at = str(
+            value.get("published_at") or value.get("published_date") or ""
+        ).strip()
         for key, item in value.items():
             if str(key).casefold() in {"url", "link", "source_url"} and isinstance(item, str):
-                output.append(item)
+                output.append((item, published_at))
             else:
-                _collect_urls(item, output)
+                _collect_url_entries(item, output)
     elif isinstance(value, list):
         for item in value:
-            _collect_urls(item, output)
+            _collect_url_entries(item, output)
 
 
 def _is_public_url(url: str) -> bool:
