@@ -192,14 +192,14 @@ def test_worker_dockerfile_only_copies_existing_package_paths() -> None:
 
 def test_temporal_workflow_module_uses_sandbox_safe_absolute_imports() -> None:
     root = Path(__file__).resolve().parents[2]
-    worker_path = (
-        root / "pipeline/scripts/agent_refresh_weekly/temporal_worker.py"
-    )
-    tree = ast.parse(worker_path.read_text(encoding="utf-8"))
-    relative_imports = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.level
-    ]
+    package = root / "pipeline/scripts/agent_refresh_weekly"
+    relative_imports = {
+        path.name: [
+            node
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.ImportFrom) and node.level
+        ]
+        for path in sorted(package.glob("*.py"))
+    }
 
-    assert relative_imports == []
+    assert relative_imports and all(not imports for imports in relative_imports.values())
