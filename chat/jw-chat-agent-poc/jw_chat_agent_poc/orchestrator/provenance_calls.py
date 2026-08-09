@@ -41,14 +41,7 @@ def provenance_rows_from_calls(
                     _first_value(query_spec, render_data, keys=("view", "view_type")),
                     _first_value(query_spec, render_data, keys=("market", "market_id", "atc4")),
                 ),
-                market=public_market(
-                    _first_value(
-                        query_spec,
-                        render_data,
-                        keys=("market_display_name", "market_name", "market_definition"),
-                    ),
-                    _first_value(query_spec, render_data, keys=("market", "market_id", "atc4")),
-                ),
+                market=_market_label(render_data, query_spec),
                 denominator=_denominator_label(render_data, query_spec),
                 channel=_channel_label(call, render_data, query_spec),
                 unit=_unit_label(call, render_data),
@@ -164,6 +157,14 @@ def _brand_label(
 
 
 def _denominator_label(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -> Any:
+    if _is_concentration_scope(data, query_spec):
+        full_market_denominator = _first_value(
+            query_spec,
+            data,
+            keys=("total_brands_in_market", "market_brand_count"),
+        )
+        if full_market_denominator not in (None, ""):
+            return full_market_denominator
     structure = data.get("market_structure")
     if isinstance(structure, Mapping) and str(structure.get("type") or "") == "class_split":
         display_denominator = structure.get("display_denominator")
@@ -180,6 +181,36 @@ def _denominator_label(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -
             "inherited_denominator",
         ),
     )
+
+
+def _market_label(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -> str:
+    label = public_market(
+        _first_value(
+            query_spec,
+            data,
+            keys=("market_display_name", "market_name", "market_definition"),
+        ),
+        _first_value(query_spec, data, keys=("market", "market_id", "atc4")),
+    )
+    if (
+        _is_concentration_scope(data, query_spec)
+        and label != MISSING_LABEL
+        and not label.endswith("(전략시장 전체)")
+    ):
+        return f"{label} (전략시장 전체)"
+    return label
+
+
+def _is_concentration_scope(data: Mapping[str, Any], query_spec: Mapping[str, Any]) -> bool:
+    metrics: list[str] = []
+    for container in (data, query_spec):
+        direct = container.get("metric")
+        if direct not in (None, ""):
+            metrics.append(str(direct).strip().casefold())
+        raw_metrics = container.get("metrics")
+        if isinstance(raw_metrics, Sequence) and not isinstance(raw_metrics, str | bytes):
+            metrics.extend(str(metric).strip().casefold() for metric in raw_metrics)
+    return any(metric in {"hhi", "cr5", "market_top_brands"} for metric in metrics)
 
 
 def _unit_label(call: Mapping[str, Any], data: Mapping[str, Any]) -> str:

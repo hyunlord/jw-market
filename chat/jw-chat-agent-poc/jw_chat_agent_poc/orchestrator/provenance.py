@@ -772,6 +772,8 @@ def _brand_entity(data: dict[str, Any]) -> str:
 
 
 def _metric_unit(metric: str) -> str:
+    if metric in {"시장 구성 브랜드 수", "표시 브랜드 수", "분모"}:
+        return "개"
     if metric in {"점유율 변화", "초과성장"}:
         return "%p"
     if metric == "CR5":

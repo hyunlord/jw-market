@@ -18,6 +18,7 @@ from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from
 from jw_chat_agent_poc.orchestrator.provenance_model import (
     MISSING_LABEL,
     ProvenanceRow,
+    public_market,
     public_value,
     render_provenance_table,
 )
@@ -411,6 +412,8 @@ def _concentration_answer(question: str, calls: Sequence[Mapping[str, Any]]) -> 
     shares = _top_shares(calls, 5)
     if hhi is None or len(shares) < 5:
         return ""
+    if _concentration_scope_conflicts(calls):
+        return "HHI와 CR5의 시장 범위 또는 분모가 일치하지 않아 집중도를 확정할 수 없습니다."
     cr5 = sum(shares, Decimal("0"))
     lines = [
         "## 시장 집중도\n"
@@ -935,7 +938,91 @@ def _provenance_rows(calls: Sequence[Mapping[str, Any]]) -> tuple[ProvenanceRow,
         )
     primary_calls = tuple(call for call in calls if call.get("tool") != "agent_calculation")
     result_calls = tuple(call for call in primary_calls if not _is_query_plan_call(call))
-    return provenance_rows_from_calls(result_calls or primary_calls or calls, ())
+    selected_calls = result_calls or primary_calls or calls
+    concentration_calls = tuple(call for call in selected_calls if _is_concentration_call(call))
+    if concentration_calls and _find_hhi(concentration_calls) is not None:
+        rows = provenance_rows_from_calls(concentration_calls, ())
+        return _bind_concentration_scope(rows, concentration_calls)
+    return provenance_rows_from_calls(selected_calls, ())
+
+
+def _is_concentration_call(call: Mapping[str, Any]) -> bool:
+    data = _render_data(call)
+    metric = str(data.get("metric") or "").strip().casefold()
+    return metric in {"hhi", "cr5", "market_top_brands"}
+
+
+def _concentration_scope_values(
+    calls: Sequence[Mapping[str, Any]],
+) -> tuple[frozenset[str], frozenset[str], frozenset[int]]:
+    market_ids: set[str] = set()
+    market_names: set[str] = set()
+    denominators: set[int] = set()
+    for call in calls:
+        if not _is_concentration_call(call):
+            continue
+        data = _render_data(call)
+        query_spec_value = data.get("query_spec")
+        query_spec = query_spec_value if isinstance(query_spec_value, Mapping) else {}
+        market_id = str(
+            data.get("market_id")
+            or data.get("market")
+            or query_spec.get("market_id")
+            or query_spec.get("market")
+            or ""
+        ).strip()
+        if market_id:
+            market_ids.add(market_id.casefold())
+        market_name = public_market(
+            data.get("market_display_name")
+            or data.get("market_name")
+            or query_spec.get("market_display_name")
+            or query_spec.get("market_name"),
+            market_id,
+        )
+        if market_name != MISSING_LABEL:
+            market_names.add(market_name)
+        raw_denominator = data.get("total_brands_in_market")
+        if raw_denominator in (None, ""):
+            raw_denominator = query_spec.get("total_brands_in_market")
+        try:
+            denominator = int(raw_denominator)
+        except (TypeError, ValueError):
+            continue
+        if denominator > 0:
+            denominators.add(denominator)
+    return frozenset(market_ids), frozenset(market_names), frozenset(denominators)
+
+
+def _concentration_scope_conflicts(calls: Sequence[Mapping[str, Any]]) -> bool:
+    market_ids, market_names, denominators = _concentration_scope_values(calls)
+    return len(market_ids) > 1 or len(market_names) > 1 or len(denominators) > 1
+
+
+def _bind_concentration_scope(
+    rows: Sequence[ProvenanceRow],
+    calls: Sequence[Mapping[str, Any]],
+) -> tuple[ProvenanceRow, ...]:
+    if _concentration_scope_conflicts(calls):
+        return tuple(rows)
+    _market_ids, market_names, denominators = _concentration_scope_values(calls)
+    market = next(iter(market_names), "")
+    denominator = next(iter(denominators), None)
+    if market and not market.endswith("(전략시장 전체)"):
+        market = f"{market} (전략시장 전체)"
+    return tuple(
+        ProvenanceRow(
+            source=row.source,
+            period=row.period,
+            view=row.view,
+            market=market or row.market,
+            denominator=str(denominator) if denominator is not None else row.denominator,
+            channel=row.channel,
+            unit=row.unit,
+            brand=row.brand,
+        )
+        for row in rows
+    )
 
 
 def _is_query_plan_call(call: Mapping[str, Any]) -> bool:

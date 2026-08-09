@@ -6,6 +6,9 @@ from jw_chat_agent_poc.orchestrator.agent import _query_failed_metric_call
 from jw_chat_agent_poc.orchestrator.answer_completeness import deterministic_top_n_share_answer
 from jw_chat_agent_poc.orchestrator.market_answer_contract import enforce_market_answer_contract
 from jw_chat_agent_poc.orchestrator.markdown_response import MarkdownResponseBuilder
+from jw_chat_agent_poc.orchestrator.provenance import evidence_from_calls
+from jw_chat_agent_poc.orchestrator.provenance_calls import provenance_rows_from_calls
+from jw_chat_agent_poc.service.app import _apply_evidence_binding_gate
 from jw_chat_agent_poc.service.runtime_provenance import _ungrounded_numbers
 
 
@@ -94,6 +97,192 @@ def test_supported_disease_market_uses_grounded_top_five_instead_of_status_rejec
     assert "CR5 29.52%" in answer
     assert "| 1위 | 로수젯 | 9.13% |" in answer
     assert "| 5위 | 로수바미브 | 4.20% |" in answer
+
+
+def _strategic_concentration_calls(
+    *,
+    brand: str,
+    market_id: str,
+    market_name: str,
+    denominator: int,
+    hhi: float,
+    shares: tuple[float, float, float, float, float],
+    class_split_denominator: int | None = None,
+) -> list[dict]:
+    common = {
+        "status": "ok",
+        "brand": brand,
+        "period": "2026-06",
+        "market_id": market_id,
+        "market_name": market_name,
+        "source_label": "UBIST",
+        "measure": "sales",
+    }
+    if class_split_denominator is not None:
+        common["market_structure"] = {
+            "type": "class_split",
+            "display_axis": "class_2",
+            "display_denominator": class_split_denominator,
+        }
+    ranked = [
+        {"rank": rank, "brand": f"경쟁{rank}", "ms_recent_pct": share}
+        for rank, share in enumerate(shares, start=1)
+    ]
+    return [
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                **common,
+                "metric": "hhi",
+                "unit_label": "index",
+                "hhi_recent": hhi,
+                "total_brands_in_market": denominator,
+                "level_segments": ranked,
+                "series_insight": {
+                    "hhi_end": hhi,
+                    "cr5_end_pct": sum(shares),
+                    "denominator_end": denominator,
+                },
+            },
+        },
+        {
+            "tool": "get_brand_metric",
+            "source": "UBIST",
+            "render_data": {
+                **common,
+                "metric": "market_top_brands",
+                "unit_label": "KRW",
+                "level_segments": ranked,
+                # The deployed producer omits this field on the top-N call.
+                # The concentration contract must bind both calls to the HHI scope.
+            },
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("brand", "market_id", "market_name", "denominator", "hhi", "shares", "split"),
+    (
+        ("카나브", "ml_008", "리바로하이 리바로브이", 1370, 117.47, (4.25, 3.81, 3.23, 3.22, 3.08), 85),
+        ("리바로", "ml_006", "리바로 리바로젯", 555, 262.62, (9.13, 6.13, 5.12, 4.95, 4.20), None),
+        ("케이캡", "ml_001", "라베칸 라베칸듀오", 391, 627.23, (17.71, 9.20, 7.50, 6.20, 5.81), None),
+    ),
+)
+def test_concentration_provenance_binds_catalog_anchor_to_full_calculation_scope(
+    brand: str,
+    market_id: str,
+    market_name: str,
+    denominator: int,
+    hhi: float,
+    shares: tuple[float, float, float, float, float],
+    split: int | None,
+) -> None:
+    calls = _strategic_concentration_calls(
+        brand=brand,
+        market_id=market_id,
+        market_name=market_name,
+        denominator=denominator,
+        hhi=hhi,
+        shares=shares,
+        class_split_denominator=split,
+    )
+
+    answer = enforce_market_answer_contract(f"{brand} 시장 HHI와 CR5", "", calls)
+
+    assert f"| {market_name} (전략시장 전체) | {denominator} |" in answer
+    assert answer.count("| UBIST | 2026-06 | 전략뷰 |") == 1
+    if split is not None:
+        assert f"| {split} |" not in answer
+
+
+def test_concentration_provenance_does_not_emit_stale_partial_metadata_notice() -> None:
+    calls = _strategic_concentration_calls(
+        brand="리바로",
+        market_id="ml_006",
+        market_name="리바로 리바로젯",
+        denominator=555,
+        hhi=262.62,
+        shares=(9.13, 6.13, 5.12, 4.95, 4.20),
+    )
+    answer = enforce_market_answer_contract("리바로 시장 HHI와 CR5", "", calls)
+    result = {"tool_calls": calls}
+
+    gated = _apply_evidence_binding_gate(
+        "리바로 시장 HHI와 CR5",
+        answer,
+        result,
+    )
+
+    assert "근거의 기준 기간 또는 단위가 완전히 식별되지 않아" not in gated
+    assert "INCOMPLETE_BINDING_METADATA" not in result["_qa_claim_gate"]["blocked_reasons"]
+    assert result["_qa_claim_gate"]["disposition"] == "answered"
+
+
+def test_concentration_scope_conflict_is_typed_and_does_not_claim_same_scope() -> None:
+    calls = _strategic_concentration_calls(
+        brand="리바로",
+        market_id="ml_006",
+        market_name="리바로 리바로젯",
+        denominator=555,
+        hhi=262.62,
+        shares=(9.13, 6.13, 5.12, 4.95, 4.20),
+    )
+    calls[1]["render_data"]["total_brands_in_market"] = 554
+
+    answer = enforce_market_answer_contract("리바로 시장 HHI와 CR5", "", calls)
+
+    assert "HHI와 CR5의 시장 범위 또는 분모가 일치하지 않아" in answer
+    assert "동일한 최신 시장 범위" not in answer
+
+
+def test_concentration_denominator_fact_declares_count_unit() -> None:
+    calls = _strategic_concentration_calls(
+        brand="리바로",
+        market_id="ml_006",
+        market_name="리바로 리바로젯",
+        denominator=555,
+        hhi=262.62,
+        shares=(9.13, 6.13, 5.12, 4.95, 4.20),
+    )
+
+    denominator_fact = next(
+        fact
+        for fact in evidence_from_calls(calls, "")
+        if fact.path == "render_data.total_brands_in_market"
+    )
+
+    assert denominator_fact.metric == "시장 구성 브랜드 수"
+    assert denominator_fact.unit == "개"
+
+
+def test_non_concentration_class_split_keeps_display_denominator() -> None:
+    rows = provenance_rows_from_calls(
+        [
+            {
+                "tool": "get_brand_metric",
+                "source": "IQVIA NSA",
+                "render_data": {
+                    "source_label": "IQVIA NSA",
+                    "brand": "악템라",
+                    "metric": "sales",
+                    "period": "2025-Q4",
+                    "market_id": "ml_011",
+                    "market_name": "악템라",
+                    "total_brands_in_market": 26,
+                    "market_structure": {
+                        "type": "class_split",
+                        "display_axis": "class_2",
+                        "display_denominator": 12,
+                    },
+                },
+            }
+        ],
+        (),
+    )
+
+    assert rows[0].denominator == "12"
+    assert rows[0].market == "악템라"
 
 
 def test_strategy_identifier_keeps_strategy_view_and_public_name() -> None:
