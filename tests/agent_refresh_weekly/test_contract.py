@@ -168,6 +168,7 @@ def test_deployment_and_schedule_contracts_are_additive_and_weekly() -> None:
     assert "@sha256:" + "0" * 64 not in manifest
     assert "name: APP_VERSION" in manifest
     assert "value: 786aedb27c72fa2cb3f67d3deb1e4258cf566dec" in manifest
+    assert "kubernetes.io/change-cause:" in manifest
     assert "--schedule-id jw-agent2-agent3-weekly-v1" in schedule
     assert "--address \"${TEMPORAL_ADDRESS:-temporal-frontend.temporal.svc:7233}\"" in schedule
     assert "--cron '30 12 * * Sat'" in schedule

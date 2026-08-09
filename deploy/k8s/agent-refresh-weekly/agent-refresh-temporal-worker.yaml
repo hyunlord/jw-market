@@ -46,6 +46,8 @@ kind: Deployment
 metadata:
   name: jw-agent-refresh-temporal-worker
   namespace: llmops
+  annotations:
+    kubernetes.io/change-cause: "weekly global Agent2 and Agent3 Temporal schedule 786aedb2"
   labels:
     app: jw-agent-refresh-temporal-worker
 spec:
