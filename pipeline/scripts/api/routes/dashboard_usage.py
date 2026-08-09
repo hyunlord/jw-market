@@ -104,34 +104,6 @@ def create_usage_dashboard_router(service: UsageStatsService) -> APIRouter:
 
         try:
             return _with_actor_segmentation_metadata(fetch(resolved_from, resolved_to))
-        except ChatMaterializationUnavailable as error:
-            if (
-                error.reason == "coverage"
-                and error.available_from is not None
-                and error.available_to is not None
-                and (date_from is None or date_to is None)
-            ):
-                clamped_from = (
-                    max(resolved_from, error.available_from)
-                    if date_from is None
-                    else resolved_from
-                )
-                clamped_to = (
-                    min(resolved_to, error.available_to) if date_to is None else resolved_to
-                )
-                if clamped_from <= clamped_to and (
-                    clamped_from != resolved_from or clamped_to != resolved_to
-                ):
-                    try:
-                        return _with_actor_segmentation_metadata(
-                            fetch(clamped_from, clamped_to)
-                        )
-                    except ChatMaterializationUnavailable as retry_error:
-                        error = retry_error
-            raise HTTPException(
-                status_code=503,
-                detail=_materialization_error_detail(error),
-            ) from error
         except DashboardQueryError as error:
             LOGGER.exception(
                 "usage dashboard query failed",

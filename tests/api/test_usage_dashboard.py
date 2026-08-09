@@ -22,6 +22,7 @@ from pipeline.scripts.api.dashboard_usage import (
     UsageFilters,
     UsageLogFilters,
     UsageStatsService,
+    _chat_window_is_covered,
     build_usage_comparison,
     comparison_window,
     _usage_log_query_parts,
@@ -64,14 +65,32 @@ class CoverageRepository(FakeRepository):
         self.state = state
 
     def fetch(self, filters: UsageFilters) -> dict:
-        self.calls.append(filters)
-        validate_materialization_state(
-            self.state,
-            filters,
-            now=datetime(2026, 8, 4, 0, 5, tzinfo=UTC),
-        )
         result = super().fetch(filters)
-        self.calls.pop()
+        try:
+            validate_materialization_state(
+                self.state,
+                filters,
+                now=datetime(2026, 8, 4, 0, 5, tzinfo=UTC),
+            )
+        except ChatMaterializationUnavailable as error:
+            result["chat"]["availability"] = {
+                "available": False,
+                "reason": error.reason,
+                "available_from": (
+                    error.available_from.isoformat() if error.available_from else None
+                ),
+                "available_to": error.available_to.isoformat() if error.available_to else None,
+            }
+        else:
+            assert self.state is not None
+            result["chat"]["availability"] = {
+                "available": True,
+                "reason": None,
+                "available_from": self.state.coverage_start.isoformat(),
+                "available_to": (
+                    self.state.coverage_end_exclusive - timedelta(days=1)
+                ).isoformat(),
+            }
         return result
 
 
@@ -124,6 +143,21 @@ class DeterministicUsageRepository(MariaDBUsageRepository):
         )
 
 
+class UnavailableChatUsageRepository(DeterministicUsageRepository):
+    def _fetch_chat_materialization_state(self) -> ChatMaterializationState:
+        return ChatMaterializationState(
+            coverage_start=date(2026, 7, 9),
+            coverage_end_exclusive=date(2026, 8, 4),
+            last_success_at=datetime.now(UTC),
+            status="complete",
+        )
+
+
+class BrokenChatStateUsageRepository(DeterministicUsageRepository):
+    def _fetch_chat_materialization_state(self) -> ChatMaterializationState:
+        raise pymysql.OperationalError(1142, "SELECT denied for chat refresh state")
+
+
 def _client(repository: FakeRepository) -> TestClient:
     app = FastAPI()
     service = UsageStatsService(repository, cache=DashboardCache(ttl_seconds=60))
@@ -144,7 +178,7 @@ def test_usage_dashboard_defaults_to_thirty_days_and_daily_grain(monkeypatch) ->
     assert response.json()["limits"] == {"max_days": 366, "cache_ttl_seconds": 60}
 
 
-def test_usage_dashboard_clamps_omitted_defaults_to_fresh_coverage(monkeypatch) -> None:
+def test_usage_dashboard_preserves_omitted_defaults_outside_chat_coverage(monkeypatch) -> None:
     repository = CoverageRepository(
         ChatMaterializationState(
             coverage_start=date(2026, 7, 9),
@@ -161,26 +195,31 @@ def test_usage_dashboard_clamps_omitted_defaults_to_fresh_coverage(monkeypatch) 
 
     assert response.status_code == 200
     assert response.json()["filters"] == {
-        "date_from": "2026-07-09",
-        "date_to": "2026-08-03",
+        "date_from": "2026-07-06",
+        "date_to": "2026-08-04",
         "grain": "day",
         "user_id": None,
         "department": None,
     }
+    assert response.json()["chat"]["availability"] == {
+        "available": False,
+        "reason": "coverage",
+        "available_from": "2026-07-09",
+        "available_to": "2026-08-03",
+    }
     assert repository.calls == [
         UsageFilters(date(2026, 7, 6), date(2026, 8, 4), "day"),
-        UsageFilters(date(2026, 7, 9), date(2026, 8, 3), "day"),
     ]
 
 
 @pytest.mark.parametrize(
     ("query", "expected_from", "expected_to"),
     [
-        ("date_from=2026-07-09", "2026-07-09", "2026-08-03"),
-        ("date_to=2026-08-03", "2026-07-09", "2026-08-03"),
+        ("date_from=2026-07-09", "2026-07-09", "2026-08-04"),
+        ("date_to=2026-08-03", "2026-07-05", "2026-08-03"),
     ],
 )
-def test_usage_dashboard_clamps_only_omitted_coverage_bound(
+def test_usage_dashboard_does_not_clamp_an_omitted_bound_to_chat_coverage(
     monkeypatch,
     query: str,
     expected_from: str,
@@ -203,20 +242,21 @@ def test_usage_dashboard_clamps_only_omitted_coverage_bound(
     assert response.status_code == 200
     assert response.json()["filters"]["date_from"] == expected_from
     assert response.json()["filters"]["date_to"] == expected_to
+    assert response.json()["chat"]["availability"]["available"] is False
 
 
 @pytest.mark.parametrize(
-    ("date_from", "date_to", "expected_status"),
+    ("date_from", "date_to", "chat_available"),
     [
-        ("2026-07-08", "2026-08-03", 503),
-        ("2026-07-09", "2026-08-03", 200),
-        ("2026-07-09", "2026-08-04", 503),
+        ("2026-07-08", "2026-08-03", False),
+        ("2026-07-09", "2026-08-03", True),
+        ("2026-07-09", "2026-08-04", False),
     ],
 )
-def test_usage_dashboard_preserves_explicit_coverage_boundaries(
+def test_usage_dashboard_preserves_explicit_dates_and_scopes_chat_availability(
     date_from: str,
     date_to: str,
-    expected_status: int,
+    chat_available: bool,
 ) -> None:
     repository = CoverageRepository(
         ChatMaterializationState(
@@ -231,17 +271,10 @@ def test_usage_dashboard_preserves_explicit_coverage_boundaries(
         f"/api/dashboard/usage-stats?date_from={date_from}&date_to={date_to}"
     )
 
-    assert response.status_code == expected_status
-    if expected_status == 503:
-        assert response.json() == {
-            "detail": {
-                "error": "chat_materialization_unavailable",
-                "reason": "coverage",
-                "message": "요청한 기간의 채팅 통계가 아직 준비되지 않았습니다.",
-                "available_from": "2026-07-09",
-                "available_to": "2026-08-03",
-            }
-        }
+    assert response.status_code == 200
+    assert response.json()["filters"]["date_from"] == date_from
+    assert response.json()["filters"]["date_to"] == date_to
+    assert response.json()["chat"]["availability"]["available"] is chat_available
 
 
 @pytest.mark.parametrize(
@@ -259,7 +292,7 @@ def test_usage_dashboard_preserves_explicit_coverage_boundaries(
         ),
     ],
 )
-def test_usage_dashboard_maps_unavailable_materialization_to_json_503(
+def test_usage_dashboard_scopes_unavailable_materialization_to_chat_axis(
     state: ChatMaterializationState | None,
     reason: str,
 ) -> None:
@@ -267,11 +300,11 @@ def test_usage_dashboard_maps_unavailable_materialization_to_json_503(
         "/api/dashboard/usage-stats?date_from=2026-07-09&date_to=2026-08-03"
     )
 
-    assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert detail["error"] == "chat_materialization_unavailable"
-    assert detail["reason"] == reason
-    assert isinstance(detail["message"], str)
+    assert response.status_code == 200
+    availability = response.json()["chat"]["availability"]
+    assert availability["available"] is False
+    assert availability["reason"] == reason
+    assert response.json()["api"]["trend"] == []
 
 
 def test_usage_dashboard_maps_query_failure_to_json_503() -> None:
@@ -290,6 +323,77 @@ def test_usage_dashboard_maps_query_failure_to_json_503() -> None:
             "message": "사용 통계 데이터 소스를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.",
         }
     }
+
+
+def test_combined_dashboard_keeps_non_chat_axes_when_chat_coverage_is_unavailable() -> None:
+    repository = UnavailableChatUsageRepository(max_workers=4)
+    filters = UsageFilters(date(2026, 7, 1), date(2026, 8, 9), "day")
+
+    result = repository.fetch(filters)
+
+    assert result["api"]["trend"]
+    assert result["auth"]["trend"]
+    assert result["credit"]["trend"]
+    assert result["reports"]["trend"]
+    assert result["chat"] == {
+        "trend": [],
+        "by_user": [],
+        "by_user_service": [],
+        "availability": {
+            "available": False,
+            "reason": "coverage",
+            "available_from": "2026-07-09",
+            "available_to": "2026-08-03",
+        },
+    }
+    assert not any(name.startswith("chat_") for name in repository.completed_queries)
+    assert "comparison_chat_sessions" not in repository.completed_queries
+    assert result["comparison"]["available"] is True
+    assert "chat_sessions" not in result["comparison"]["metrics"]
+
+
+def test_combined_dashboard_keeps_non_chat_axes_when_chat_state_query_fails() -> None:
+    repository = BrokenChatStateUsageRepository(max_workers=4)
+
+    result = repository.fetch(UsageFilters(date(2026, 8, 1), date(2026, 8, 9), "day"))
+
+    assert result["api"]["trend"]
+    assert result["chat"]["availability"] == {
+        "available": False,
+        "reason": "state_query_unavailable",
+        "available_from": None,
+        "available_to": None,
+    }
+    assert not any(name.startswith("chat_") for name in repository.completed_queries)
+
+
+def test_combined_dashboard_keeps_non_chat_axes_when_one_chat_query_fails() -> None:
+    repository = DeterministicUsageRepository(max_workers=4, failing_query="chat_user")
+
+    result = repository.fetch(UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day"))
+
+    assert result["api"]["trend"]
+    assert result["chat"]["trend"] == []
+    assert result["chat"]["by_user"] == []
+    assert result["chat"]["by_user_service"] == []
+    assert result["chat"]["availability"]["available"] is False
+    assert result["chat"]["availability"]["reason"] == "query_unavailable"
+    assert result["comparison"]["available"] is True
+    assert "chat_sessions" not in result["comparison"]["metrics"]
+
+
+def test_combined_dashboard_does_not_clamp_non_chat_dates_to_chat_coverage(monkeypatch) -> None:
+    repository = UnavailableChatUsageRepository(max_workers=4)
+    monkeypatch.setattr(
+        "pipeline.scripts.api.routes.dashboard_usage._today", lambda: date(2026, 8, 4)
+    )
+
+    response = _client(repository).get("/api/dashboard/usage-stats")
+
+    assert response.status_code == 200
+    assert response.json()["filters"]["date_from"] == "2026-07-06"
+    assert response.json()["filters"]["date_to"] == "2026-08-04"
+    assert response.json()["chat"]["availability"]["available"] is False
 
 
 def test_usage_dashboard_rejects_an_inverted_or_oversized_range() -> None:
@@ -358,7 +462,7 @@ def test_usage_dashboard_rejects_invalid_or_oversized_exclusions() -> None:
     assert oversized.status_code == 422
 
 
-def test_comparison_window_requires_previous_period_inside_chat_coverage() -> None:
+def test_comparison_window_is_independent_from_chat_coverage() -> None:
     filters = UsageFilters(date(2026, 7, 20), date(2026, 7, 26), "day")
     covered = ChatMaterializationState(
         date(2026, 7, 9),
@@ -368,8 +472,11 @@ def test_comparison_window_requires_previous_period_inside_chat_coverage() -> No
     )
     uncovered = replace(covered, coverage_start=date(2026, 7, 15))
 
-    assert comparison_window(filters, covered) == (date(2026, 7, 13), date(2026, 7, 19))
-    assert comparison_window(filters, uncovered) is None
+    previous = (date(2026, 7, 13), date(2026, 7, 19))
+
+    assert comparison_window(filters) == previous
+    assert _chat_window_is_covered(covered, previous) is True
+    assert _chat_window_is_covered(uncovered, previous) is False
 
 
 def test_usage_comparison_is_additive_and_excludes_unlinked_chat_sessions() -> None:
@@ -774,16 +881,18 @@ def test_optional_comparison_failure_preserves_required_dashboard_rows() -> None
     }
 
 
-def test_service_does_not_cache_a_partial_result_when_one_query_fails() -> None:
+def test_service_caches_axis_scoped_chat_unavailability() -> None:
     repository = DeterministicUsageRepository(max_workers=4, failing_query="chat_user")
     cache = DashboardCache(ttl_seconds=60)
     service = UsageStatsService(repository, cache=cache)
     filters = UsageFilters(date(2026, 7, 1), date(2026, 7, 31), "day")
 
-    with pytest.raises(DashboardQueryError, match="chat_user"):
-        service.get(filters)
+    payload = service.get(filters)
 
-    assert cache.get(filters.cache_key()) is None
+    assert payload["chat"]["availability"]["available"] is False
+    assert payload["chat"]["availability"]["reason"] == "query_unavailable"
+    assert payload["api"]["trend"]
+    assert cache.get(filters.cache_key()) == payload
 
 
 def test_period_sql_survives_pymysql_parameter_interpolation() -> None:

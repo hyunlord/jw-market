@@ -4,6 +4,7 @@ import base64
 import binascii
 import copy
 import json
+import logging
 import time
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
@@ -19,6 +20,7 @@ from pipeline.scripts.api.chat_usage_materialization import (
     CHAT_MATERIALIZATION_STATE_SQL,
     CHAT_USAGE_SQL,
     ChatMaterializationState,
+    ChatMaterializationUnavailable,
     validate_materialization_state,
 )
 from pipeline.scripts.api.config import APIConfig
@@ -33,6 +35,8 @@ DASHBOARD_DB_READ_TIMEOUT_SECONDS: Final = 15
 DEFAULT_DASHBOARD_QUERY_WORKERS: Final = 4
 MAX_DASHBOARD_QUERY_WORKERS: Final = 8
 KST: Final = timezone(timedelta(hours=9), name="KST")
+LOGGER = logging.getLogger(__name__)
+CHAT_QUERY_NAMES: Final = frozenset(CHAT_USAGE_SQL)
 
 _PERIOD_SQL: Final = {
     "day": "DATE_FORMAT({column}, '%%Y-%%m-%%d')",
@@ -736,28 +740,64 @@ class MariaDBUsageRepository:
         )
 
     def fetch(self, filters: UsageFilters) -> dict[str, Any]:
+        state: ChatMaterializationState | None = None
         try:
             state = self._fetch_chat_materialization_state()
-        except Exception as exc:
-            raise DashboardQueryError("chat_materialization_state") from exc
-        validate_materialization_state(state, filters)
-        previous_window = comparison_window(filters, state)
-        queries = self._build_queries(filters)
-        comparison_queries = (
-            self._build_comparison_queries(
-                filters,
-                previous_window,
-                ordinal_offset=len(queries),
+        except pymysql.MySQLError as exc:
+            LOGGER.warning(
+                "chat materialization state query unavailable",
+                extra={"error_type": type(exc).__name__},
             )
-            if previous_window is not None
+            chat_availability = _chat_unavailable("state_query_unavailable")
+        else:
+            try:
+                validate_materialization_state(state, filters)
+            except ChatMaterializationUnavailable as exc:
+                chat_availability = _chat_unavailable(exc.reason, state)
+            else:
+                chat_availability = _chat_available(state)
+
+        previous_window = comparison_window(filters)
+        all_current_queries = self._build_queries(filters)
+        required_queries = tuple(
+            query for query in all_current_queries if query.name not in CHAT_QUERY_NAMES
+        )
+        chat_queries = (
+            tuple(query for query in all_current_queries if query.name in CHAT_QUERY_NAMES)
+            if chat_availability["available"]
             else ()
         )
-        rows, failed_optional = self._fetch_rows_with_optional(queries, comparison_queries)
+        chat_comparison_available = bool(
+            chat_availability["available"]
+            and state is not None
+            and _chat_window_is_covered(state, previous_window)
+        )
+        comparison_queries = self._build_comparison_queries(
+            filters,
+            previous_window,
+            ordinal_offset=len(all_current_queries),
+            include_chat=chat_comparison_available,
+        )
+        rows, failed_optional = self._fetch_rows_with_optional(
+            required_queries,
+            chat_queries + comparison_queries,
+        )
+        failed_optional_names = set(failed_optional)
+        if failed_optional_names.intersection(CHAT_QUERY_NAMES):
+            chat_availability = _chat_unavailable("query_unavailable", state)
+            chat_comparison_available = False
+        if "comparison_chat_sessions" in failed_optional_names:
+            chat_comparison_available = False
         previous_rows = {
             name: value for name, value in rows.items() if name.startswith("comparison_")
         }
         comparison_failure_reason: str | None = None
-        if failed_optional:
+        failed_non_chat_comparisons = {
+            name
+            for name in failed_optional_names
+            if name.startswith("comparison_") and name != "comparison_chat_sessions"
+        }
+        if failed_non_chat_comparisons:
             comparison_failure_reason = "comparison_query_unavailable"
 
         options = rows["filter_options"]
@@ -771,9 +811,12 @@ class MariaDBUsageRepository:
                 "by_weekday_hour": rows["api_weekday_hour"],
             },
             "chat": {
-                "trend": rows["chat_trend"],
-                "by_user": rows["chat_user"],
-                "by_user_service": rows["chat_user_service"],
+                "trend": rows.get("chat_trend", []) if chat_availability["available"] else [],
+                "by_user": rows.get("chat_user", []) if chat_availability["available"] else [],
+                "by_user_service": (
+                    rows.get("chat_user_service", []) if chat_availability["available"] else []
+                ),
+                "availability": chat_availability,
             },
             "auth": {
                 "trend": rows["auth_trend"],
@@ -807,6 +850,7 @@ class MariaDBUsageRepository:
             previous_window=previous_window,
             previous_rows=previous_rows,
             unavailable_reason=comparison_failure_reason,
+            include_chat_sessions=chat_comparison_available,
         )
         return result
 
@@ -1010,11 +1054,14 @@ class MariaDBUsageRepository:
         window: tuple[date, date],
         *,
         ordinal_offset: int = 0,
+        include_chat: bool = True,
     ) -> tuple[DashboardQuery, ...]:
         user_filter, user_params = _user_filter(filters)
         api_filter, api_params = _api_filter(filters)
         queries: list[DashboardQuery] = []
         for ordinal, (name, template) in enumerate(COMPARISON_SQL.items()):
+            if name == "chat_sessions" and not include_chat:
+                continue
             start, end_exclusive = _storage_bounds(name, window[0], window[1])
             sql = template.format(user_filter=user_filter, api_filter=api_filter)
             params = (
@@ -1169,14 +1216,44 @@ class UsageStatsService:
 
 def comparison_window(
     filters: UsageFilters,
-    state: ChatMaterializationState,
-) -> tuple[date, date] | None:
+) -> tuple[date, date]:
     days = (filters.date_to - filters.date_from).days + 1
     previous_to = filters.date_from - timedelta(days=1)
     previous_from = previous_to - timedelta(days=days - 1)
-    if previous_from < state.coverage_start:
-        return None
     return previous_from, previous_to
+
+
+def _chat_window_is_covered(
+    state: ChatMaterializationState,
+    window: tuple[date, date],
+) -> bool:
+    return (
+        state.coverage_start <= window[0]
+        and state.coverage_end_exclusive >= window[1] + timedelta(days=1)
+    )
+
+
+def _chat_available(state: ChatMaterializationState) -> dict[str, Any]:
+    return {
+        "available": True,
+        "reason": None,
+        "available_from": state.coverage_start.isoformat(),
+        "available_to": (state.coverage_end_exclusive - timedelta(days=1)).isoformat(),
+    }
+
+
+def _chat_unavailable(
+    reason: str,
+    state: ChatMaterializationState | None = None,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "reason": reason,
+        "available_from": state.coverage_start.isoformat() if state else None,
+        "available_to": (
+            (state.coverage_end_exclusive - timedelta(days=1)).isoformat() if state else None
+        ),
+    }
 
 
 def build_usage_comparison(
@@ -1186,6 +1263,7 @@ def build_usage_comparison(
     previous_window: tuple[date, date] | None,
     previous_rows: dict[str, list[dict[str, Any]]] | None,
     unavailable_reason: str | None = None,
+    include_chat_sessions: bool = True,
 ) -> dict[str, Any]:
     current_period = {
         "date_from": filters.date_from.isoformat(),
@@ -1218,6 +1296,8 @@ def build_usage_comparison(
             for row in result["reports"]["trend"]
         ),
     }
+    if not include_chat_sessions:
+        current_values.pop("chat_sessions")
     row_names = {
         "api_calls": "comparison_api",
         "chat_sessions": "comparison_chat_sessions",
