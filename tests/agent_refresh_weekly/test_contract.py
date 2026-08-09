@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import ast
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     find_active_conflicts,
     make_preflight_result,
     make_job_name,
+    make_stage_skip_result,
     render_stage_job,
 )
 
@@ -26,6 +30,29 @@ def _job(name: str, *, active: int = 1, succeeded: int = 0, failed: int = 0) -> 
         "metadata": {"name": name},
         "status": {"active": active, "succeeded": succeeded, "failed": failed},
     }
+
+
+def _import_activities(monkeypatch: pytest.MonkeyPatch):
+    temporalio = types.ModuleType("temporalio")
+    activity = types.SimpleNamespace(
+        defn=lambda name: lambda function: function,
+        heartbeat=lambda details: None,
+        info=lambda: types.SimpleNamespace(attempt=1),
+        logger=types.SimpleNamespace(error=lambda *args: None),
+    )
+    temporalio.activity = activity
+    exceptions = types.ModuleType("temporalio.exceptions")
+
+    class ApplicationError(Exception):
+        pass
+
+    exceptions.ApplicationError = ApplicationError
+    monkeypatch.setitem(sys.modules, "temporalio", temporalio)
+    monkeypatch.setitem(sys.modules, "temporalio.exceptions", exceptions)
+
+    from pipeline.scripts.agent_refresh_weekly import activities
+
+    return activities
 
 
 def test_stage_order_runs_agent2_then_agent3() -> None:
@@ -194,6 +221,88 @@ def test_preflight_conflict_is_a_skip() -> None:
     }
 
 
+def test_stage_conflict_result_distinguishes_cleanup() -> None:
+    assert make_stage_skip_result(
+        stage="agent2",
+        job="jw-agent-refresh-weekly-agent2-token",
+        conflicts=("jw-ingest-ubist-active",),
+        owned_job_deleted=False,
+    ) == {
+        "stage": "agent2",
+        "job": "jw-agent-refresh-weekly-agent2-token",
+        "status": "skipped",
+        "reason": "active_job_conflict",
+        "active_conflicts": ["jw-ingest-ubist-active"],
+        "owned_job_deleted": False,
+    }
+
+
+def test_stage_start_conflict_skips_without_creating_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    activities = _import_activities(monkeypatch)
+
+    class FakeApi:
+        def __init__(self, namespace: str) -> None:
+            assert namespace == "llmops"
+
+        def list_jobs(self) -> list[dict]:
+            return [_job("jw-ingest-ubist-active")]
+
+        def create_job(self, body: dict) -> dict:
+            raise AssertionError("a conflicting stage must not create a Job")
+
+    monkeypatch.setattr(activities, "KubernetesApi", FakeApi)
+    result = asyncio.run(activities._run_stage("agent2", "weekly-test"))
+
+    assert result["status"] == "skipped"
+    assert result["owned_job_deleted"] is False
+    assert result["active_conflicts"] == ["jw-ingest-ubist-active"]
+
+
+def test_running_stage_conflict_deletes_owned_job_then_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activities = _import_activities(monkeypatch)
+
+    owned_name = make_job_name("weekly-test", "agent2")
+    owned = _job(owned_name)
+    owned["metadata"].update({"uid": "owned-uid", "resourceVersion": "17"})
+
+    class FakeApi:
+        def __init__(self, namespace: str) -> None:
+            self.list_calls = 0
+            self.deleted: list[dict] = []
+
+        def list_jobs(self) -> list[dict]:
+            self.list_calls += 1
+            if self.list_calls == 1:
+                return []
+            return [owned, _job("jw-agent-refresh-iqvia-nsa-active")]
+
+        def create_job(self, body: dict) -> dict:
+            assert body["metadata"]["name"] == owned_name
+            return owned
+
+        def get_job(self, name: str) -> dict:
+            assert name == owned_name
+            return owned
+
+        def delete_job(self, job: dict) -> dict:
+            self.deleted.append(job)
+            return {"status": "Success"}
+
+    fake_api = FakeApi("llmops")
+    monkeypatch.setattr(activities, "KubernetesApi", lambda namespace: fake_api)
+    monkeypatch.setattr(activities, "_AGENT_JOB_IMAGE", IMAGE)
+    monkeypatch.setattr(activities.activity, "heartbeat", lambda details: None)
+
+    result = asyncio.run(activities._run_stage("agent2", "weekly-test"))
+
+    assert result["status"] == "skipped"
+    assert result["owned_job_deleted"] is True
+    assert result["active_conflicts"] == ["jw-agent-refresh-iqvia-nsa-active"]
+    assert fake_api.deleted == [owned]
+
+
 def test_workflow_returns_before_stages_when_preflight_is_skipped() -> None:
     root = Path(__file__).resolve().parents[2]
     worker = (
@@ -202,6 +311,8 @@ def test_workflow_returns_before_stages_when_preflight_is_skipped() -> None:
 
     assert 'if preflight["status"] == "skipped":' in worker
     assert 'return {"status": "skipped", "preflight": preflight, "stages": []}' in worker
+    assert 'if result["status"] == "skipped":' in worker
+    assert 'return {"status": "skipped", "preflight": preflight, "stages": stages}' in worker
 
 
 def test_worker_dockerfile_only_copies_existing_package_paths() -> None:
