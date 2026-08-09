@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jw-agent-refresh-temporal
+  namespace: llmops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jw-agent-refresh-temporal
+  namespace: llmops
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    resourceNames:
+      - galera-mariadb-galera-0
+      - galera-mariadb-galera-1
+      - galera-mariadb-galera-2
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jw-agent-refresh-temporal
+  namespace: llmops
+subjects:
+  - kind: ServiceAccount
+    name: jw-agent-refresh-temporal
+    namespace: llmops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jw-agent-refresh-temporal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jw-agent-refresh-temporal-worker
+  namespace: llmops
+  labels:
+    app: jw-agent-refresh-temporal-worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jw-agent-refresh-temporal-worker
+  template:
+    metadata:
+      labels:
+        app: jw-agent-refresh-temporal-worker
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: jw-agent-refresh-temporal
+      restartPolicy: Always
+      nodeSelector:
+        genos: "enabled"
+      containers:
+        - name: worker
+          image: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-agent-refresh-temporal@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "pipeline.scripts.agent_refresh_weekly.temporal_worker"]
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: temporal-frontend.temporal.svc:7233
+            - name: TEMPORAL_NAMESPACE
+              value: default
+            - name: TEMPORAL_TASK_QUEUE
+              value: jw-agent-refresh-weekly-v1
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MARKET_OUTPUT_PVC
+              value: llmops-market-output
+            - name: AGENT_JOB_IMAGE
+              value: asia-northeast3-docker.pkg.dev/prj-jw-agn-stg-ai/ar-jw-agn-stg-genos-dev-01/jw-pipeline-orchestrator@sha256:762b10bc0d3d7745b4660a0af602e754d1aed53a00f2c7b41777ca4874e75d51
+            - name: AGENT_REFRESH_POLL_SECONDS
+              value: "30"
+            - name: AGENT_REFRESH_CLUSTER_GUARD_INTERVAL_SECONDS
+              value: "600"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 3000
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
