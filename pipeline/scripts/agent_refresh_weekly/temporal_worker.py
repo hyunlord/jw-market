@@ -45,19 +45,18 @@ class WeeklyAgentRefreshWorkflow:
             return {"status": "skipped", "preflight": preflight, "stages": []}
         stages = []
         for stage in STAGE_ORDER:
-            stages.append(
-                await workflow.execute_activity(
-                    run_stage_activity,
-                    {"stage": stage, "workflow_id": workflow_id},
-                    start_to_close_timeout=(
-                        timedelta(hours=7)
-                        if stage == "agent2"
-                        else timedelta(hours=3)
-                    ),
-                    heartbeat_timeout=timedelta(minutes=2),
-                    retry_policy=retry,
-                )
+            result = await workflow.execute_activity(
+                run_stage_activity,
+                {"stage": stage, "workflow_id": workflow_id},
+                start_to_close_timeout=(
+                    timedelta(hours=7) if stage == "agent2" else timedelta(hours=3)
+                ),
+                heartbeat_timeout=timedelta(minutes=2),
+                retry_policy=retry,
             )
+            stages.append(result)
+            if result["status"] == "skipped":
+                return {"status": "skipped", "preflight": preflight, "stages": stages}
         return {"status": "complete", "preflight": preflight, "stages": stages}
 
 

@@ -93,6 +93,23 @@ def make_preflight_result(
     }
 
 
+def make_stage_skip_result(
+    *,
+    stage: str,
+    job: str,
+    conflicts: tuple[str, ...],
+    owned_job_deleted: bool,
+) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "job": job,
+        "status": "skipped",
+        "reason": "active_job_conflict",
+        "active_conflicts": list(conflicts),
+        "owned_job_deleted": owned_job_deleted,
+    }
+
+
 def _secret_env(name: str, key: str) -> dict[str, Any]:
     return {
         "name": name,

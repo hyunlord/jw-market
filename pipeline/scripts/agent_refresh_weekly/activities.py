@@ -16,6 +16,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     find_active_conflicts,
     make_job_name,
     make_preflight_result,
+    make_stage_skip_result,
     render_stage_job,
 )
 from pipeline.scripts.agent_refresh_weekly.kubernetes_api import KubernetesApi
@@ -152,7 +153,12 @@ async def _run_stage(stage: str, workflow_id: str) -> dict[str, Any]:
         await asyncio.to_thread(api.list_jobs), owned_job=name
     )
     if conflicts:
-        raise RuntimeError(f"active ingest/agent Job guard: {','.join(conflicts)}")
+        return make_stage_skip_result(
+            stage=stage,
+            job=name,
+            conflicts=conflicts,
+            owned_job_deleted=False,
+        )
     body = render_stage_job(
         stage=stage,
         workflow_id=workflow_id,
@@ -198,9 +204,11 @@ async def _run_stage(stage: str, workflow_id: str) -> dict[str, Any]:
             if conflicts:
                 latest = await asyncio.to_thread(api.get_job, name)
                 await asyncio.to_thread(api.delete_job, latest)
-                raise RuntimeError(
-                    "concurrent ingest/agent Job appeared; deleted owned stage Job "
-                    f"{name}: {','.join(conflicts)}"
+                return make_stage_skip_result(
+                    stage=stage,
+                    job=name,
+                    conflicts=conflicts,
+                    owned_job_deleted=True,
                 )
             if asyncio.get_running_loop().time() >= next_cluster_guard:
                 try:
