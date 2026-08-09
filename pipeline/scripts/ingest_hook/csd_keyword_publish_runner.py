@@ -111,6 +111,7 @@ def run(
         csd_keyword_activation.publish_candidate(
             activation_connection, plan, current
         )
+        published_at = _stamp()
         tracker.done()
         _record_downstream(ledger, identity, publish_run_id)
         ledger.mark_complete(
@@ -133,6 +134,8 @@ def run(
             periods={current.min_period, current.max_period},
             started_at=candidate.prepared_at,
             failure_reason=None,
+            target_schema=stage_schema,
+            published_at=published_at,
         )
         return 0
     except Exception as exc:

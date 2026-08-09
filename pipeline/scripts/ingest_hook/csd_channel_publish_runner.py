@@ -109,6 +109,7 @@ def run(
         verdict = csd_channel_activation.publish_candidate(connection, plan, current)
         if verdict is not csd_channel_activation.SwapVerdict.APPLIED:
             raise RuntimeError(f"CSD publish was not applied: {verdict}")
+        published_at = _stamp()
         tracker.done()
         tracker.skip("refresh", "CSD channel API reads the activated stage table directly")
         _record_downstream(ledger, identity, publish_run_id)
@@ -130,6 +131,8 @@ def run(
             periods=set(current.periods.complete_quarters),
             started_at=candidate.prepared_at,
             failure_reason=None,
+            target_schema=stage_schema,
+            published_at=published_at,
         )
         return 0
     except Exception as exc:
