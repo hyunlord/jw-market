@@ -228,7 +228,10 @@ rollback_changed() {
 trap rollback_changed ERR
 
 apply_one() {
-  local deployment=$1 before=$2 patch=$3 post="$EVIDENCE_DIR/${deployment}.post.json"
+  local deployment=$1
+  local before=$2
+  local patch=$3
+  local post="$EVIDENCE_DIR/${deployment}.post.json"
   kube patch deployment "$deployment" --type=json -p "$patch"
   changed+=("$deployment")
   kube rollout status "deployment/$deployment" --timeout=420s
