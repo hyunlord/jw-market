@@ -398,6 +398,54 @@ def test_sliced_topic_rows_require_classified_matching_stage_hash(monkeypatch) -
     assert "status.row_id = a.row_id" in sql
     assert "status.status = 'classified'" in sql
     assert "status.stage_row_sha256 = scoped_rows.stage_row_sha256" in sql
+    assert "source_row_count" in sql
+    assert "classified_row_count" in sql
+    assert "guard_valid_row_count" in sql
+    assert "LEFT JOIN topic_totals" in sql
+
+
+def test_sliced_topic_identity_mismatch_is_explicit_and_warned(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        topic_matrix,
+        "_fetch_sliced_topic_rows",
+        lambda **_kwargs: [
+            {
+                "topic_id": None,
+                "affected_row_count": 0,
+                "brand_total_rows": 686,
+                "share_pct": None,
+                "source_row_count": 686,
+                "classified_row_count": 686,
+                "guard_valid_row_count": 0,
+            }
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        item = topic_matrix._sliced_topic_brand_item(
+            _brand_set(),
+            choice_key="리바로",
+            topic_scope=_group_topic_row(),
+            topic_index={},
+            request={},
+            aliases={},
+            product_codes=("LIVALO",),
+            top_n=5,
+        )
+
+    assert item["event_count"] == 0
+    assert item["topic_shares"] == []
+    assert item["data_status"] == {
+        "code": "identity_mismatch",
+        "label": "재분류 필요",
+        "source_row_count": 686,
+        "classified_row_count": 686,
+        "guard_valid_row_count": 0,
+    }
+    assert "brand=리바로" in caplog.text
+    assert "source_rows=686" in caplog.text
+    assert "classified_rows=686" in caplog.text
+    assert "guard_valid_rows=0" in caplog.text
 
 
 def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeypatch) -> None:
@@ -412,7 +460,14 @@ def test_post_topic_service_uses_assignment_rows_without_keyword_filters(monkeyp
         assert "k.visit_location IN" not in sql
         assert "k.specialty IN" not in sql
         assert "k.period_ym >=" not in sql
-        assert params == ("atc4:C10A1", "LIVALO", "atc4:C10A1", "brand_activity_replay_20260703_125045")
+        assert params == (
+            "atc4:C10A1",
+            "LIVALO",
+            "brand_activity_replay_20260703_125045",
+            "atc4:C10A1",
+            "atc4:C10A1",
+            "brand_activity_replay_20260703_125045",
+        )
         return [
             {"topic_id": "T02", "affected_row_count": 616, "brand_total_rows": 1307, "share_pct": "47.13"},
             {"topic_id": "T01", "affected_row_count": 283, "brand_total_rows": 1307, "share_pct": "21.65"},
@@ -452,7 +507,18 @@ def test_post_topic_service_slices_topics_from_row_assignments(monkeypatch) -> N
         assert "k.specialty IN (%s)" in sql
         assert "k.period_ym >= %s" in sql
         assert "k.period_ym <= %s" in sql
-        assert params == ("atc4:C10A1", "LIVALO", "의원", "내과", "2026-01", "2026-06", "atc4:C10A1", "brand_activity_replay_20260703_125045")
+        assert params == (
+            "atc4:C10A1",
+            "LIVALO",
+            "의원",
+            "내과",
+            "2026-01",
+            "2026-06",
+            "brand_activity_replay_20260703_125045",
+            "atc4:C10A1",
+            "atc4:C10A1",
+            "brand_activity_replay_20260703_125045",
+        )
         return [
             {"topic_id": "T02", "affected_row_count": 3, "brand_total_rows": 4, "share_pct": "75.00"},
             {"topic_id": "B1", "affected_row_count": 2, "brand_total_rows": 4, "share_pct": "50.00"},
@@ -514,6 +580,8 @@ def test_post_topic_service_accepts_list_filters_as_or_with_axis_and(monkeypatch
             "increase",
             "2026-01",
             "2026-06",
+            "brand_activity_replay_20260703_125045",
+            "atc4:C10A1",
             "atc4:C10A1",
             "brand_activity_replay_20260703_125045",
         )
@@ -992,6 +1060,8 @@ def test_post_topic_service_uses_iqvia_product_codes_when_strategic_source_has_n
             "LIVALO",
             "2025-04",
             "2026-03",
+            "brand_activity_group_replay",
+            "group:livalo_family",
             "group:livalo_family",
             "brand_activity_group_replay",
         )

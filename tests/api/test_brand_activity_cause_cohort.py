@@ -74,27 +74,51 @@ def test_brand_activity_requests_preserve_cause_source(raw: str, expected: str) 
 
 
 @pytest.mark.parametrize(
-    ("event_count", "has_mapping", "source_present", "query_failed", "code", "label"),
     (
-        (3, True, True, False, "available", None),
-        (3, True, False, False, "available", None),
-        (0, True, True, False, "zero", "0"),
-        (0, True, False, False, "source_absent", "데이터 없음"),
-        (0, False, False, False, "mapping_failure", "매핑 실패"),
-        (0, True, True, True, "unknown", "모름"),
+        "event_count",
+        "has_mapping",
+        "source_row_count",
+        "classified_row_count",
+        "guard_valid_row_count",
+        "query_failed",
+        "code",
+        "label",
+    ),
+    (
+        (3, True, 3, 3, 3, False, "available", None),
+        (0, True, 686, 686, 0, False, "identity_mismatch", "재분류 필요"),
+        (0, True, 3, 0, 0, False, "zero", "0"),
+        (0, True, 0, 0, 0, False, "source_absent", "데이터 없음"),
+        (0, False, 0, 0, 0, False, "mapping_failure", "매핑 실패"),
+        (0, True, 3, 3, 0, True, "unknown", "모름"),
     ),
 )
 def test_topic_data_statuses_are_distinct(
     event_count: int,
     has_mapping: bool,
-    source_present: bool,
+    source_row_count: int,
+    classified_row_count: int,
+    guard_valid_row_count: int,
     query_failed: bool,
     code: str,
     label: str | None,
 ) -> None:
-    assert topic_data_status(
+    status = topic_data_status(
         event_count=event_count,
         has_mapping=has_mapping,
-        source_present=source_present,
+        source_row_count=source_row_count,
+        classified_row_count=classified_row_count,
+        guard_valid_row_count=guard_valid_row_count,
         query_failed=query_failed,
-    ) == {"code": code, "label": label}
+    )
+
+    assert status["code"] == code
+    assert status["label"] == label
+    if code == "identity_mismatch":
+        assert status == {
+            "code": "identity_mismatch",
+            "label": "재분류 필요",
+            "source_row_count": 686,
+            "classified_row_count": 686,
+            "guard_valid_row_count": 0,
+        }

@@ -214,7 +214,9 @@ def _empty_topic_brand_item(
         "data_status": topic_data_status(
             event_count=0,
             has_mapping=True,
-            source_present=False,
+            source_row_count=0,
+            classified_row_count=0,
+            guard_valid_row_count=0,
             query_failed=query_failed,
         ),
         "topic_shares": [],
@@ -262,9 +264,20 @@ def _sliced_topic_brand_item(
     axis_topics: list[dict[str, JsonValue]] = []
     brand_topics: list[dict[str, JsonValue]] = []
     event_count = 0
+    source_row_count = 0
+    classified_row_count = 0
+    guard_valid_row_count = 0
     for row in rows:
-        event_count = max(event_count, _integer(row.get("brand_total_rows")))
+        source_row_count = max(
+            source_row_count,
+            _integer(row.get("source_row_count") or row.get("brand_total_rows")),
+        )
+        classified_row_count = max(classified_row_count, _integer(row.get("classified_row_count")))
+        guard_valid_row_count = max(guard_valid_row_count, _integer(row.get("guard_valid_row_count")))
         topic_id = _text(row.get("topic_id"))
+        if not topic_id:
+            continue
+        event_count = max(event_count, _integer(row.get("brand_total_rows")))
         labels = brand_labels if topic_id.startswith("B") else axis_labels
         topic = {
             "topic_id": topic_id,
@@ -292,6 +305,22 @@ def _sliced_topic_brand_item(
         for index, topic in enumerate(axis_topics[:top_n], start=1)
     ]
     brand_topics.sort(key=lambda topic: _number(topic.get("share_pct")), reverse=True)
+    data_status = topic_data_status(
+        event_count=event_count,
+        has_mapping=bool(product_codes),
+        source_row_count=source_row_count,
+        classified_row_count=classified_row_count,
+        guard_valid_row_count=guard_valid_row_count,
+        query_failed=query_failed,
+    )
+    if data_status["code"] == "identity_mismatch":
+        LOGGER.warning(
+            "brand activity topic identity mismatch: brand=%s source_rows=%d classified_rows=%d guard_valid_rows=%d",
+            choice.brand_name,
+            source_row_count,
+            classified_row_count,
+            guard_valid_row_count,
+        )
     return {
         "brand_key": choice.brand_key,
         "brand_name": choice.brand_name,
@@ -300,12 +329,7 @@ def _sliced_topic_brand_item(
         "is_selected": choice.is_selected,
         "sales_rank": choice.sales_rank,
         "event_count": event_count,
-        "data_status": topic_data_status(
-            event_count=event_count,
-            has_mapping=bool(product_codes),
-            source_present=stored is not None,
-            query_failed=query_failed,
-        ),
+        "data_status": data_status,
         "topic_shares": ranked_topics,
         "topics": ranked_topics,
         "etc_pct": max(0.0, 100.0 - sum(_number(topic.get("share_pct")) for topic in ranked_topics)),
@@ -317,7 +341,9 @@ def topic_data_status(
     *,
     event_count: int,
     has_mapping: bool,
-    source_present: bool,
+    source_row_count: int,
+    classified_row_count: int,
+    guard_valid_row_count: int,
     query_failed: bool,
 ) -> dict[str, JsonValue]:
     """Describe keyword availability without collapsing distinct failures."""
@@ -328,7 +354,15 @@ def topic_data_status(
         return {"code": "mapping_failure", "label": "매핑 실패"}
     if event_count > 0:
         return {"code": "available", "label": None}
-    if not source_present:
+    if source_row_count > 0 and classified_row_count > 0 and guard_valid_row_count == 0:
+        return {
+            "code": "identity_mismatch",
+            "label": "재분류 필요",
+            "source_row_count": source_row_count,
+            "classified_row_count": classified_row_count,
+            "guard_valid_row_count": guard_valid_row_count,
+        }
+    if source_row_count == 0:
         return {"code": "source_absent", "label": "데이터 없음"}
     return {"code": "zero", "label": "0"}
 
@@ -627,27 +661,57 @@ def _fetch_sliced_topic_rows(
         denominator AS (
             SELECT COUNT(DISTINCT row_id) AS brand_total_rows
             FROM scoped_rows
+        ),
+        status_summary AS (
+            SELECT COUNT(DISTINCT CASE WHEN status.status = 'classified' THEN scoped_rows.row_id END)
+                       AS classified_row_count,
+                   COUNT(DISTINCT CASE
+                       WHEN status.status = 'classified'
+                        AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
+                       THEN scoped_rows.row_id
+                   END) AS guard_valid_row_count
+            FROM scoped_rows
+            LEFT JOIN {schema}.`row_topic_assignment_status` status
+              ON status.topic_set_version = %s
+             AND status.scope_id = %s
+             AND status.row_id = scoped_rows.row_id
+        ),
+        topic_totals AS (
+            SELECT a.topic_id AS topic_id,
+                   COUNT(DISTINCT a.row_id) AS affected_row_count,
+                   denominator.brand_total_rows AS brand_total_rows,
+                   ROUND(COUNT(DISTINCT a.row_id) * 100.0 / NULLIF(denominator.brand_total_rows, 0), 2)
+                       AS share_pct
+            FROM {schema}.`row_topic_assignment` a
+            JOIN scoped_rows ON scoped_rows.row_id = a.row_id
+            JOIN {schema}.`row_topic_assignment_status` status
+              ON status.topic_set_version = a.topic_set_version
+             AND status.scope_id = a.scope_id
+             AND status.row_id = a.row_id
+            JOIN denominator
+            WHERE a.scope_id = %s
+              AND a.topic_set_version = %s
+              AND status.status = 'classified'
+              AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
+            GROUP BY a.topic_id, denominator.brand_total_rows
         )
-        SELECT a.topic_id AS topic_id,
-               COUNT(DISTINCT a.row_id) AS affected_row_count,
+        SELECT topic_totals.topic_id AS topic_id,
+               COALESCE(topic_totals.affected_row_count, 0) AS affected_row_count,
                denominator.brand_total_rows AS brand_total_rows,
-               ROUND(COUNT(DISTINCT a.row_id) * 100.0 / NULLIF(denominator.brand_total_rows, 0), 2) AS share_pct
-        FROM {schema}.`row_topic_assignment` a
-        JOIN scoped_rows ON scoped_rows.row_id = a.row_id
-        JOIN {schema}.`row_topic_assignment_status` status
-          ON status.topic_set_version = a.topic_set_version
-         AND status.scope_id = a.scope_id
-         AND status.row_id = a.row_id
-        JOIN denominator
-        WHERE a.scope_id = %s
-          AND a.topic_set_version = %s
-          AND status.status = 'classified'
-          AND status.stage_row_sha256 = scoped_rows.stage_row_sha256
-        GROUP BY a.topic_id, denominator.brand_total_rows
-        HAVING denominator.brand_total_rows > 0
-        ORDER BY share_pct DESC, topic_id
+               topic_totals.share_pct AS share_pct,
+               denominator.brand_total_rows AS source_row_count,
+               status_summary.classified_row_count AS classified_row_count,
+               status_summary.guard_valid_row_count AS guard_valid_row_count
+        FROM denominator
+        CROSS JOIN status_summary
+        LEFT JOIN topic_totals ON TRUE
+        WHERE denominator.brand_total_rows > 0
+        ORDER BY topic_totals.share_pct DESC, topic_totals.topic_id
     """
-    return db.fetch_all(sql, (*params, scope_id, topic_set_version))
+    return db.fetch_all(
+        sql,
+        (*params, topic_set_version, scope_id, scope_id, topic_set_version),
+    )
 
 
 def _append_in_filter(filters: list[str], params: list[object], column: str, values: Sequence[str]) -> None:
