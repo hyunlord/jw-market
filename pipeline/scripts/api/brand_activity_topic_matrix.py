@@ -94,7 +94,7 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
         else {}
     )
     company_names = _company_names_by_brand(brand_set, aliases)
-    payload_source = "row_topic_assignment_filtered" if is_sliced else "row_topic_assignment_unfiltered"
+    payload_source = "row_topic_assignment_filtered" if is_sliced else "mart_brand_activity_topics_unfiltered"
     result: dict[str, JsonValue] = {
         "scope": {
             "view": request["view"],
@@ -133,6 +133,16 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
                     company_name=company_names.get(choice.brand_key),
                     query_failed=topic_query_failed,
                 )
+                if topic_scope and is_sliced
+                else _stored_topic_brand_item(
+                    brand_set,
+                    choice_key=choice.brand_key,
+                    topic_index=topic_index,
+                    aliases=aliases,
+                    product_codes=product_codes_by_brand.get(choice.brand_key, ()),
+                    top_n=int(request["top_n"]),
+                    company_name=company_names.get(choice.brand_key),
+                )
                 if topic_scope
                 else _empty_topic_brand_item(
                     brand_set,
@@ -154,6 +164,74 @@ def get_topic_brand_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
             brand_set.market_id,
         )
     return result
+
+
+def _stored_topic_brand_item(
+    brand_set: BrandSetResolution,
+    *,
+    choice_key: str,
+    topic_index: dict[str, dict[str, JsonValue]],
+    aliases: dict[str, str],
+    product_codes: Sequence[str],
+    top_n: int,
+    company_name: str | None = None,
+) -> dict[str, JsonValue]:
+    """Project one unfiltered brand directly from the stored mart payload."""
+    meta = brand_set.brand_meta[choice_key]
+    choice = next(choice for choice in brand_set.choices if choice.brand_key == choice_key)
+    stored = _stored_brand_topics(product_codes, topic_index, aliases)
+    raw_topics = _json_list(
+        stored.get("topic_shares") or stored.get("top5_topic_shares")
+        if stored
+        else []
+    )
+    topics = [_json_object(value) for value in raw_topics]
+    topics.sort(key=lambda topic: _numeric(topic.get("share_pct")), reverse=True)
+    ranked_topics = [
+        {
+            "rank": rank,
+            "topic_id": _text(topic.get("topic_id")),
+            "label": _text(topic.get("label")),
+            "share_pct": _numeric(topic.get("share_pct")),
+            "row_count": _integer(topic.get("row_count") or topic.get("affected_row_count")),
+        }
+        for rank, topic in enumerate(topics[:top_n], start=1)
+        if _text(topic.get("topic_id"))
+    ]
+    brand_topics = [
+        {
+            "topic_id": _text(topic.get("topic_id")),
+            "label": _text(topic.get("label")),
+            "share_pct": _numeric(topic.get("share_pct")),
+            "row_count": _integer(topic.get("row_count") or topic.get("affected_row_count")),
+            "definition": _text(topic.get("definition")),
+        }
+        for topic in (
+            _json_object(value)
+            for value in _json_list(stored.get("brand_specific_topics") if stored else [])
+        )
+        if _text(topic.get("topic_id"))
+    ]
+    brand_topics.sort(key=lambda topic: _numeric(topic.get("share_pct")), reverse=True)
+    event_count = _integer(stored.get("row_count") or stored.get("source_row_count")) if stored else 0
+    return {
+        "brand_key": choice.brand_key,
+        "brand_name": choice.brand_name,
+        "company_name": company_name,
+        "is_jw": meta.is_jw,
+        "is_selected": choice.is_selected,
+        "sales_rank": choice.sales_rank,
+        "event_count": event_count,
+        "data_status": (
+            {"code": "available", "label": None}
+            if stored
+            else {"code": "source_absent", "label": "데이터 없음"}
+        ),
+        "topic_shares": ranked_topics,
+        "topics": ranked_topics,
+        "etc_pct": _numeric(stored.get("etc_pct")) if stored else 100.0,
+        "brand_specific_topics": brand_topics,
+    }
 
 
 def _parse_topic_request(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -314,6 +392,7 @@ def _sliced_topic_brand_item(
         query_failed=query_failed,
     )
     if data_status["code"] == "identity_mismatch":
+        data_status = {**data_status, "label": "필터 적용 불가"}
         LOGGER.warning(
             "brand activity topic identity mismatch: brand=%s source_rows=%d classified_rows=%d guard_valid_rows=%d",
             choice.brand_name,
