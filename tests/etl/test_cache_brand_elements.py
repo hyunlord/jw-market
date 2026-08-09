@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from pipeline.scripts.etl.cache_brand_elements import (
+    _resolve_brands,
     build_brand_element_payloads,
     ensure_cache_brand_elements_table,
     parse_strength_row,
@@ -79,6 +80,13 @@ class FakeConnection:
 
     def commit(self) -> None:
         self.commits += 1
+
+
+def test_file_backed_brand_scope_is_deduplicated_without_argv_expansion(tmp_path) -> None:
+    brands_file = tmp_path / "brands.json"
+    brands_file.write_text('["brand-a", "brand-b", "brand-a"]\n', encoding="utf-8")
+
+    assert _resolve_brands([], brands_file) == ["brand-a", "brand-b"]
 
 
 def test_parse_strength_row_projects_agent3_contract() -> None:

@@ -366,6 +366,17 @@ def connect_db() -> Any:
     return mariadb_connect()
 
 
+def _resolve_brands(direct: list[str], brands_file: Path | None) -> list[str]:
+    if brands_file is not None:
+        payload = json.loads(brands_file.read_text(encoding="utf-8"))
+        if not isinstance(payload, list) or not payload or not all(
+            isinstance(item, str) and item.strip() for item in payload
+        ):
+            raise CacheBrandElementsError("--brands-file must contain a non-empty JSON string array")
+        direct = [item.strip() for item in payload]
+    return list(dict.fromkeys(direct))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build cache_brand_elements from mart factors and Agent3 strength rows.")
     parser.add_argument("--table", default=CACHE_TABLE)
@@ -375,6 +386,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--brand", action="append", default=[])
+    parser.add_argument("--brands-file", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -397,7 +409,7 @@ def main() -> None:
             ensure_cache_brand_elements_table(conn, args.table)
             conn.commit()
             result["ensure_table"] = {"ok": True}
-        brands = list(dict.fromkeys(args.brand)) if args.brand else []
+        brands = _resolve_brands(args.brand, args.brands_file)
         if not brands and (args.pilot_fill or args.dry_run):
             brands = source_brands(conn, limit=args.limit)
         if args.dry_run:

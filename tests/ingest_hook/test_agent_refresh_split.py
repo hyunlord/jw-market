@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import json
+from pathlib import Path
 import pytest
 
 from pipeline.scripts.ingest_hook.app import IngestService, TerminalPayload, create_app
@@ -165,6 +167,7 @@ def test_agent_refresh_passes_resolved_scope_to_orchestrator(
 ) -> None:
     # Given a UBIST terminal scope that resolves to one affected brand
     commands: list[list[str]] = []
+    serialized_scopes: list[list[str]] = []
     monkeypatch.setattr(
         agent_refresh_runner.config,
         "open_configured_ledger",
@@ -179,12 +182,13 @@ def test_agent_refresh_passes_resolved_scope_to_orchestrator(
             brand_keys=("livaro",),
         ),
     )
-    monkeypatch.setattr(
-        agent_refresh_runner.subprocess,
-        "run",
-        lambda command, check: commands.append(command)
-        or type("Result", (), {"returncode": 0})(),
-    )
+    def capture_command(command: list[str], *, check: bool):
+        commands.append(command)
+        scope_path = Path(command[command.index("--brands-file") + 1])
+        serialized_scopes.append(json.loads(scope_path.read_text(encoding="utf-8")))
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(agent_refresh_runner.subprocess, "run", capture_command)
 
     # When the scoped companion runner starts
     result = agent_refresh_runner.run(
@@ -200,7 +204,9 @@ def test_agent_refresh_passes_resolved_scope_to_orchestrator(
     command = commands[0]
     assert command[command.index("--scope-source") + 1] == "ubist"
     assert command[command.index("--scope-market-ids") + 1] == "C10A1"
-    assert command[command.index("--brands") + 1] == "livaro"
+    assert "--brands" not in command
+    assert serialized_scopes == [["livaro"]]
+    assert not Path(command[command.index("--brands-file") + 1]).exists()
 
 
 def test_agent_refresh_reuses_complete_forecast_staging_only_when_requested(

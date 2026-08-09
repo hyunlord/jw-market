@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -138,8 +140,16 @@ def run(
                 command.extend(
                     ["--scope-market-ids", ",".join(resolved_scope.market_ids)]
                 )
-            command.extend(["--brands", ",".join(resolved_scope.brand_keys)])
-        result = subprocess.run(command, check=False)
+            with TemporaryDirectory(prefix="agent-affected-scope-") as temp_dir:
+                brands_file = Path(temp_dir) / "brand-keys.json"
+                brands_file.write_text(
+                    json.dumps(resolved_scope.brand_keys, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                command.extend(["--brands-file", str(brands_file)])
+                result = subprocess.run(command, check=False)
+        else:
+            result = subprocess.run(command, check=False)
         returncode = result.returncode
         scope_reason = (
             None

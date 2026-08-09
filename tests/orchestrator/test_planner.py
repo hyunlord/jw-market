@@ -162,6 +162,49 @@ def test_affected_scope_filters_forecast_and_agent3_but_skips_atomic_events(tmp_
     assert strength_argv[strength_argv.index("--brands") + 1] == "리바로"
 
 
+def test_file_backed_affected_scope_never_expands_brand_keys_into_child_argv(tmp_path):
+    # Given a source-wide scope too large for Linux ARG_MAX
+    brands = tuple(f"brand-{index:05d}" for index in range(21_475))
+    brands_file = tmp_path / "affected-brands.json"
+    brands_file.write_text("[]\n", encoding="utf-8")
+
+    # When the Agent profile is planned with the file-backed scope
+    plan = build_plan(
+        mode="incremental",
+        run_id="t",
+        probe=FakeProbe(),
+        state=_state(tmp_path),
+        brands=brands,
+        brands_file=str(brands_file),
+        profile="agent",
+        scope_source="iqvia_nsa",
+        force=True,
+    )
+
+    # Then no child command serializes the 21,475 values into argv
+    by_key = {stage.key: stage for stage in plan.stages}
+    assert by_key["events"].action == "skip_no_brand_scope"
+    commands = [command.argv for stage in plan.stages for command in stage.commands]
+    assert commands
+    assert all(len("\0".join(command)) < 8_192 for command in commands)
+
+    forecast = by_key["forecast"].commands[0].argv
+    assert "--brand" not in forecast
+    assert forecast[forecast.index("--scope-source") + 1] == "iqvia_nsa"
+
+    strength = by_key["strength"].commands[0].argv
+    assert "--brands" not in strength
+    assert strength[strength.index("--brands-file") + 1] == str(brands_file)
+
+    for command in by_key["shortlong"].commands:
+        assert "--brands" not in command.argv
+        assert command.argv[command.argv.index("--brand-keys-file") + 1] == str(brands_file)
+
+    elements = by_key["elements"].commands[0].argv
+    assert "--brand" not in elements
+    assert elements[elements.index("--brands-file") + 1] == str(brands_file)
+
+
 def test_legacy_brand_scope_still_skips_global_forecast(tmp_path):
     plan = build_plan(
         mode="incremental",

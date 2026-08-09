@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.scripts.agent3 import brand_factors
+from pipeline.scripts.agent3.run_source import _parse_brands
 from pipeline.scripts.agent3.source_loader import compute_source_input_hash
 from pipeline.scripts.agent3.source_processing import (
     available_sources_from_general_rows,
@@ -29,6 +30,13 @@ def test_source_input_hash_includes_source() -> None:
     ubist_hash = compute_source_input_hash(profile, candidates, 5365, "ubist")
 
     assert iqvia_hash != ubist_hash
+
+
+def test_file_backed_brand_scope_preserves_every_brand(tmp_path) -> None:
+    brands_file = tmp_path / "brands.json"
+    brands_file.write_text('["brand-a", "brand-b"]\n', encoding="utf-8")
+
+    assert _parse_brands(None, brands_file) == ["brand-a", "brand-b"]
 
 
 def test_source_filter_keeps_only_requested_source() -> None:

@@ -29,7 +29,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--stages", help=f"comma-separated subset of {list(STAGE_ORDER)}")
     run.add_argument("--from-stage", help="start at this stage (upstream must be completed at the current epoch)")
-    run.add_argument("--brands", help="comma-separated brand scope (incremental special form)")
+    brand_scope = run.add_mutually_exclusive_group()
+    brand_scope.add_argument("--brands", help="comma-separated brand scope (incremental special form)")
+    brand_scope.add_argument(
+        "--brands-file",
+        type=Path,
+        help="JSON string array for scopes too large to serialize in argv",
+    )
     run.add_argument(
         "--scope-source",
         choices=("ubist", "iqvia_nsa"),
@@ -284,7 +290,16 @@ def main(argv: list[str] | None = None) -> int:
     from pipeline.orchestrator.probe import MartProbe
 
     probe = MartProbe()
-    brands = tuple(brand.strip() for brand in (args.brands or "").split(",") if brand.strip())
+    if args.brands_file is not None:
+        raw_brands = json.loads(args.brands_file.read_text(encoding="utf-8"))
+        if not isinstance(raw_brands, list) or not raw_brands or not all(
+            isinstance(brand, str) and brand.strip() for brand in raw_brands
+        ):
+            print("error: --brands-file must contain a non-empty JSON string array", file=sys.stderr)
+            return 2
+        brands = tuple(brand.strip() for brand in raw_brands)
+    else:
+        brands = tuple(brand.strip() for brand in (args.brands or "").split(",") if brand.strip())
     scope_market_ids = tuple(
         market_id.strip()
         for market_id in (args.scope_market_ids or "").split(",")
@@ -305,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
             profile=args.profile,
             scope_source=args.scope_source,
             scope_market_ids=scope_market_ids,
+            brands_file=str(args.brands_file) if args.brands_file is not None else None,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

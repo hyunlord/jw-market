@@ -98,6 +98,7 @@ def build_plan(
     profile: str = "all",
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> Plan:
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; valid: {list(MODES)}")
@@ -137,6 +138,7 @@ def build_plan(
             run_id,
             scope_source,
             scope_market_ids,
+            brands_file,
         )
         return plan
 
@@ -159,6 +161,7 @@ def build_plan(
                 plan,
                 scope_source,
                 scope_market_ids,
+                brands_file,
             )
         )
 
@@ -178,6 +181,7 @@ def _plan_stage(
     plan: Plan,
     scope_source: str | None,
     scope_market_ids: tuple[str, ...],
+    brands_file: str | None,
 ) -> StagePlan:
     supports_requested_scope = spec.supports_brands or (
         spec.key == "forecast" and scope_source is not None
@@ -234,6 +238,7 @@ def _plan_stage(
             run_id,
             scope_source,
             scope_market_ids,
+            brands_file,
         ),
         scope_brands=scope,
         forced=force,
@@ -249,6 +254,7 @@ def _fill_without_epoch(
     run_id: str,
     scope_source: str | None,
     scope_market_ids: tuple[str, ...],
+    brands_file: str | None,
 ) -> None:
     for key in STAGE_ORDER:
         spec = STAGE_BY_KEY[key]
@@ -273,6 +279,7 @@ def _fill_without_epoch(
                         run_id,
                         scope_source,
                         scope_market_ids,
+                        brands_file,
                     ),
                     scope_brands=brands,
                 )

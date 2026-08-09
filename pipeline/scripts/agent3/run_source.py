@@ -529,7 +529,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--brand-source", choices=["jw25", "strategic_ml", "general_all"], required=True)
     parser.add_argument("--mode", choices=["dry-run", "full", "verify-existing"], required=True)
     parser.add_argument("--source", choices=["all", "iqvia", "ubist"], default="all")
-    parser.add_argument("--brands", help="Comma-separated brand keys/names for bounded source-level runs.")
+    brand_scope = parser.add_mutually_exclusive_group()
+    brand_scope.add_argument("--brands", help="Comma-separated brand keys/names for bounded source-level runs.")
+    brand_scope.add_argument("--brands-file", type=Path, help="JSON string array for large bounded runs.")
     parser.add_argument("--output", type=Path, default=Path("/tmp/agent3_source.json"))
     parser.add_argument("--top-n", type=int, default=5)
     parser.add_argument("--workflow-rev", type=int, help="wf316 revision id to record in source input_hash/idempotency.")
@@ -547,7 +549,14 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _parse_brands(value: str | None) -> list[str] | None:
+def _parse_brands(value: str | None, brands_file: Path | None = None) -> list[str] | None:
+    if brands_file is not None:
+        payload = json.loads(brands_file.read_text(encoding="utf-8"))
+        if not isinstance(payload, list) or not payload or not all(
+            isinstance(item, str) and item.strip() for item in payload
+        ):
+            raise SystemExit("--brands-file must contain a non-empty JSON string array")
+        return [item.strip() for item in payload]
     if value is None:
         return None
     brands = [item.strip() for item in value.split(",") if item.strip()]
@@ -562,7 +571,7 @@ def main() -> int:
         brand_source=args.brand_source,
         mode=args.mode,
         source_selection=args.source,
-        explicit_brands=_parse_brands(args.brands),
+        explicit_brands=_parse_brands(args.brands, args.brands_file),
         output=args.output,
         top_n=args.top_n,
         workflow_rev=resolve_workflow_rev(args.workflow_rev),

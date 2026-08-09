@@ -46,7 +46,7 @@ class StageSpec:
     # SQL pair for new_brands detection (universe minus covered), else None.
     universe_sql: str | None
     covered_sql: str | None
-    # (mode, brands, force, run_id, scope_source, scope_market_ids) -> commands
+    # (mode, brands, force, run_id, scope_source, scope_market_ids, brands_file) -> commands
     commands: Callable[..., list[Command]]
     required_env: tuple[str, ...] = field(default=())
 
@@ -69,6 +69,7 @@ def _market_status_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     return [
         Command(
@@ -86,6 +87,7 @@ def _cache_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     argv = list(_module_cmd("pipeline.scripts.etl.build_cache_deep_analysis_general"))
     argv.extend(_brand_args("--brand", brands))
@@ -99,6 +101,7 @@ def _forecast_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     argv = list(_module_cmd("pipeline.scripts.etl.ops_forecast_builder"))
     if force:
@@ -107,7 +110,8 @@ def _forecast_commands(
         argv.extend(["--scope-source", scope_source])
         for market_id in scope_market_ids:
             argv.extend(["--scope-market-id", market_id])
-        argv.extend(_brand_args("--brand", brands))
+        if brands_file is None:
+            argv.extend(_brand_args("--brand", brands))
     return [Command(tuple(argv), "forecast staging build (epoch gate + expected-count gates in builder)", False)]
 
 
@@ -118,6 +122,7 @@ def _strength_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     expected_rev = os.environ.get(AGENT3_EXPECTED_REV_ENV, "")
     argv = list(
@@ -136,7 +141,9 @@ def _strength_commands(
     source = {"ubist": "ubist", "iqvia_nsa": "iqvia"}.get(scope_source or "")
     if source is not None:
         argv.extend(["--source", source])
-    if brands:
+    if brands_file is not None:
+        argv.extend(["--brands-file", brands_file])
+    elif brands:
         argv.extend(["--brands", ",".join(brands)])
     return [Command(tuple(argv), "Agent3 strength refresh (input_hash-incremental, rev pin fail-closed)", True)]
 
@@ -148,6 +155,7 @@ def _shortlong_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     commands = []
     for variant in ("short", "long"):
@@ -165,7 +173,9 @@ def _shortlong_commands(
                 f"outputs/phase_zeta_agent2_regen_orchestrator/orchestrated_{run_id}_{variant}",
             )
         )
-        if brands:
+        if brands_file is not None:
+            argv.extend(["--brand-keys-file", brands_file])
+        elif brands:
             argv.append("--brands")
             argv.extend(brands)
         commands.append(
@@ -186,6 +196,7 @@ def _events_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     module = "pipeline.scripts.etl.cache_refresh.cache_deep_analysis_events_update"
     validate = "pipeline.scripts.etl.cache_refresh.cache_deep_analysis_refresh_validate"
@@ -210,6 +221,7 @@ def _elements_commands(
     run_id: str,
     scope_source: str | None = None,
     scope_market_ids: tuple[str, ...] = (),
+    brands_file: str | None = None,
 ) -> list[Command]:
     agent3_schema = os.environ.get("AGENT3_DB_NAME", "")
     argv = list(
@@ -222,7 +234,10 @@ def _elements_commands(
             agent3_schema or "<missing:AGENT3_DB_NAME>",
         )
     )
-    argv.extend(_brand_args("--brand", brands))
+    if brands_file is not None:
+        argv.extend(["--brands-file", brands_file])
+    else:
+        argv.extend(_brand_args("--brand", brands))
     return [Command(tuple(argv), "brand elements cache fill + verify", True)]
 
 
