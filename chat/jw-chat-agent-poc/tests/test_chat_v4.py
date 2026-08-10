@@ -1665,6 +1665,43 @@ def test_v4_gate_replaces_raw_won_paragraph_with_display_summary() -> None:
     assert gated.trace["surface_raw_won"]["blocked"] is True
 
 
+def test_v4_gate_replaces_unsupported_raw_mart_percentages_with_display_summary() -> None:
+    results = (
+        SourceResult(
+            source="mart",
+            query="리바로 매출",
+            status="ok",
+            payload={
+                "calls": [
+                    {
+                        "summary_text": "리바로 2026-06 UBIST 전략 mart 지표: 매출 85.87억원, MS 3.72%, 순위 6위.",
+                        "render_data": {
+                            "sales_억원": 85.87,
+                            "ms_pct": 3.7201985208381596,
+                            "share_delta_pct": 0.5774,
+                        },
+                    }
+                ]
+            },
+        ),
+    )
+
+    gated = apply_v4_gates(
+        "리바로 매출 알려줘",
+        (
+            "리바로 매출은 85.87억원이고 점유율은 3.7201985208381596%입니다.\n\n"
+            "전월 대비 0.5774%p 상승한 것으로 해석됩니다."
+        ),
+        results,
+    )
+
+    assert "85.87억원" in gated.text
+    assert "3.72%" in gated.text
+    assert "3.7201985208381596%" not in gated.text
+    assert "0.5774%p" not in gated.text
+    assert gated.trace["surface_mart_percentage"]["blocked"] is True
+
+
 def test_v4_gates_do_not_treat_unrelated_payload_numbers_as_rank_evidence() -> None:
     results = (
         SourceResult(

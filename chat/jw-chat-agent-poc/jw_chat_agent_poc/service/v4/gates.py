@@ -9,6 +9,7 @@ from jw_chat_agent_poc.service.v4.contracts import GatedAnswer, SourceResult
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?")
 _RAW_WON_RE = re.compile(r"\b\d{7,}(?:\.\d+)?\s*원(?:은|는|이|가|을|를|으로|에서|의)?")
+_PERCENT_RE = re.compile(r"(?P<value>-?\d[\d,]*(?:\.\d+)?)\s*%(?:p\b)?", re.IGNORECASE)
 _VALUE = r"-?\d[\d,]*(?:\.\d+)?"
 _MART_VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "매출": re.compile(
@@ -112,6 +113,30 @@ def apply_v4_gates(
         verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
         text = "\n\n".join(dict.fromkeys((verified_summary, *retained)))
     trace["surface_raw_won"] = {"blocked": raw_won_blocked}
+
+    display_percentages = _mart_display_percentages(mart_results)
+    raw_percentages = _mart_raw_percentages(mart_results) - display_percentages
+    exposed_raw_percentages = {
+        _normalize_number(match.group("value"))
+        for match in _PERCENT_RE.finditer(text)
+        if _normalize_number(match.group("value")) in raw_percentages
+    }
+    if exposed_raw_percentages:
+        retained = [
+            block.strip()
+            for block in re.split(r"\n\s*\n", text)
+            if block.strip()
+            and not any(
+                _normalize_number(match.group("value")) in exposed_raw_percentages
+                for match in _PERCENT_RE.finditer(block)
+            )
+        ]
+        verified_summary = _render_mart_facts(mart_results, allowed_fields=metric_fields)
+        text = "\n\n".join(dict.fromkeys((verified_summary, *retained)))
+    trace["surface_mart_percentage"] = {
+        "blocked": bool(exposed_raw_percentages),
+        "tokens": sorted(exposed_raw_percentages),
+    }
 
     text = _append_sources(text, results)
     trace["sources_block"] = {"present": "## 출처" in text}
@@ -227,6 +252,36 @@ def _requested_display_numbers(
                 continue
             numbers.add(_normalize_number(str(value)))
     return numbers
+
+
+def _mart_display_percentages(results: tuple[SourceResult, ...]) -> set[str]:
+    percentages: set[str] = set()
+    for result in results:
+        calls = result.payload.get("calls") if isinstance(result.payload, dict) else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            summary = str(call.get("summary_text") or "")
+            percentages.update(
+                _normalize_number(match.group("value"))
+                for match in _PERCENT_RE.finditer(summary)
+            )
+    return percentages
+
+
+def _mart_raw_percentages(results: tuple[SourceResult, ...]) -> set[str]:
+    percentages: set[str] = set()
+    percentage_fields = _METRIC_FIELDS["점유율"] + _METRIC_FIELDS["성장률"]
+    for result in results:
+        for path, value in _walk_scalars(result.payload):
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                continue
+            leaf = path.rsplit(".", 1)[-1].casefold()
+            if any(field in leaf for field in percentage_fields):
+                percentages.add(_normalize_number(str(value)))
+    return percentages
 
 
 def _without_numbers(text: str) -> str:
