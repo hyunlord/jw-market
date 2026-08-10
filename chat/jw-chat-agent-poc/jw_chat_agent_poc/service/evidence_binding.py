@@ -169,7 +169,10 @@ def verify_claim_bindings(
             decision_site="no_expected_no_metrics_pass",
         )
     facts_by_id = {fact.fact_id: fact for fact in facts}
-    claim_text = without_bound_identifiers(answer, expected)
+    claim_text = without_bound_identifiers(
+        answer,
+        expected.union(expected_market_ids),
+    )
 
     blocked: list[str] = []
     blocked_numbers: list[str] = []
@@ -559,9 +562,20 @@ def expected_market_ids_from_result(result: Mapping[str, Any]) -> frozenset[str]
     """Return internal market identifiers pinned by resolution or routing."""
     resolution = result.get("resolution")
     if isinstance(resolution, Mapping):
-        resolved = _normalized_market_id(resolution.get("market_id"))
-        if resolved:
-            return frozenset({resolved})
+        resolved_ids = {
+            normalized
+            for key in ("market_id", "atc4_code")
+            if (normalized := _normalized_market_id(resolution.get(key)))
+        }
+        atc4_codes = resolution.get("atc4_codes")
+        if isinstance(atc4_codes, (list, tuple)):
+            resolved_ids.update(
+                normalized
+                for value in atc4_codes
+                if (normalized := _normalized_market_id(value))
+            )
+        if resolved_ids:
+            return frozenset(resolved_ids)
 
     market_ids: set[str] = set()
     diagnostics = result.get("router_diagnostics")

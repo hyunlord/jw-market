@@ -200,6 +200,40 @@ def test_market_id_never_renders_in_public_evidence_table() -> None:
     assert "ml_566" not in public_evidence
 
 
+def test_general_view_atc4_identifier_does_not_block_bound_brand_sales() -> None:
+    result = {
+        "tool_calls": [
+            {
+                "source": "jw-market-direct-mart",
+                "tool": "general_view_dynamic_market",
+                "render_data": {
+                    "competitor_rows": [
+                        {
+                            "rank": 1,
+                            "brand": "아일리아",
+                            "share_pct": 12.34,
+                            "sales_krw": 21_867_000_000,
+                            "period": "2026-Q1",
+                            "view_type": "general_view",
+                            "market_id": "S01P0",
+                        },
+                    ],
+                },
+            },
+        ],
+        "resolution": {"canonical_brand": "아일리아", "atc4_code": "S01P0"},
+    }
+
+    answer = _apply_evidence_binding_gate(
+        "아일리아 매출 알려줘",
+        "## 일반뷰 (ATC4)\n\n- 시장: ATC4 S01P0\n\n아일리아 매출은 218.67억원입니다.",
+        result,
+    )
+
+    assert "218.67억원" in answer
+    assert result["_qa_claim_gate"]["blocked_claim_count"] == 0
+
+
 def test_legacy_view_suffix_remains_compatible_with_market_matching() -> None:
     legacy = EvidenceFact(
         fact_id="legacy",

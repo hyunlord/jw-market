@@ -62,7 +62,10 @@ def binding_pipeline_observability(
     expected = expected_entity_set(question, expected_entities)
     requested_periods = explicit_periods(question)
     expected_scopes = question_view_scopes(question)
-    claim_text = without_bound_identifiers(answer, expected)
+    claim_text = without_bound_identifiers(
+        answer,
+        expected.union(expected_market_ids),
+    )
     occurrences = _claim_occurrences(claim_text)
     if not occurrences:
         return {}
