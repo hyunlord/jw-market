@@ -911,6 +911,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="For --brand-source general-density, build the routed worklist only and do not call wf217.",
     )
+    parser.add_argument(
+        "--accept-canonical-brand-keys",
+        action="store_true",
+        help=(
+            "For an explicitly scheduled general-density run, accept event brand values "
+            "that exactly match a mart brand_key. The default remains fail-closed."
+        ),
+    )
     parser.add_argument("--runner-config", default=str(PHASE_ZETA_ROOT / "configs" / "genos_runner_v1.yaml"))
     parser.add_argument("--bundle-config", default=str(PHASE_ZETA_ROOT / "configs" / "phase_zeta_v1_1.yaml"))
     parser.add_argument("--catalog", default="docs/crawl/_catalog.json")
@@ -971,7 +979,10 @@ def main(argv: list[str] | None = None) -> int:
                     brands = _load_mart_brand_universe(brand_conn)
                     routed_worklist = None
                 elif args.brand_source == "general-density":
-                    density_worklist = load_density_worklist(brand_conn)
+                    density_worklist = load_density_worklist(
+                        brand_conn,
+                        accept_canonical_brand_keys=args.accept_canonical_brand_keys,
+                    )
                     routed_worklist = list(density_worklist.routed)
                     if args.brand_keys_file:
                         requested = json.loads(Path(args.brand_keys_file).read_text(encoding="utf-8"))

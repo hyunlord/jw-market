@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.orchestrator.stages import STAGE_BY_KEY
 from pipeline.scripts.agent_refresh_weekly.contract import (
     STAGE_ORDER,
     classify_job_status,
@@ -16,6 +17,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     make_job_name,
     make_stage_skip_result,
     render_stage_job,
+    unknown_brand_skip_reason,
 )
 
 
@@ -87,9 +89,40 @@ def test_agent2_job_is_global_staging_only_and_visible_to_ingest_cap() -> None:
     assert script.count("--dry-run") == 2
     assert "--analysis-variant short" in script
     assert "--analysis-variant long" in script
+    assert script.count("--accept-canonical-brand-keys") == 2
     assert "--brands" not in script
     assert "affected_scope" not in script
     assert "/market-output/agent-refresh-weekly/${WEEKLY_RUN_ID}" in script
+
+
+def test_weekly_stage_reason_keeps_all_unknown_brand_names() -> None:
+    logs = "\n".join(
+        (
+            "ordinary warning",
+            '{"diagnostics":{"density_worklist":{"unmatched_unknown":["노보믹스","애피드라"]}}}',
+            '{"diagnostics":{"density_worklist":{"unmatched_unknown":["애피드라","유트로핀"]}}}',
+        )
+    )
+
+    assert unknown_brand_skip_reason(logs) == (
+        "skipped_unknown=3 names=노보믹스,애피드라,유트로핀"
+    )
+
+
+def test_ingest_agent2_commands_keep_fail_closed_default() -> None:
+    commands = STAGE_BY_KEY["shortlong"].commands(
+        "incremental",
+        ("레미닐피알서방",),
+        False,
+        "ingest-run",
+        "iqvia_nsa",
+        (),
+    )
+
+    assert all(
+        "--accept-canonical-brand-keys" not in command.argv
+        for command in commands
+    )
 
 
 def test_agent3_job_is_global_and_keeps_revision_pin() -> None:

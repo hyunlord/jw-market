@@ -226,6 +226,36 @@ def test_route_density_worklist_fails_when_unknown_brands_exceed_one_percent() -
         route_density_worklist(brand_rows, score_rows)
 
 
+def test_exact_brand_key_event_is_routed_with_explicit_opt_in() -> None:
+    brand_rows = [
+        {
+            "brand_key": "레미닐피알서방",
+            "brand_name": "레미닐 피알 서방",
+            "raw_value_history": {"2026-Q1": 10},
+        }
+    ]
+    score_rows = [
+        {
+            "brand_canonical": "레미닐피알서방",
+            "source_processor": "tier2_llm_v1",
+            "derivation": "llm_direct",
+            "tag": "신약/R&D",
+            "score": 99,
+        }
+    ]
+
+    worklist = route_density_worklist(
+        brand_rows,
+        score_rows,
+        accept_canonical_brand_keys=True,
+    )
+
+    assert worklist.evidence.unmatched_unknown == ()
+    assert [(item.brand_key, item.canonical_brand_name) for item in worklist.routed] == [
+        ("레미닐피알서방", "레미닐 피알 서방")
+    ]
+
+
 def test_evidence_counts_branch_cutoff_by_wf196_processor() -> None:
     brand_rows = [
         {"brand_key": "capital-key", "brand_name": "자본브랜드", "raw_value_history": {"2026-04": 10}},
