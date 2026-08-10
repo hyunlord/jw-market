@@ -50,6 +50,8 @@ class ParallelSourceExecutor:
         total_timeout_s: float | None = None,
         answer_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
+        source_filter: tuple[SourceName, ...] | None = None,
+        progress_callback: Callable[[SourceName], None] | None = None,
     ) -> tuple[SourceResult, ...]:
         return self.execute_with_trace(
             plan,
@@ -57,6 +59,8 @@ class ParallelSourceExecutor:
             total_timeout_s=total_timeout_s,
             answer_sources=answer_sources,
             soft_deadline_s=soft_deadline_s,
+            source_filter=source_filter,
+            progress_callback=progress_callback,
         ).results
 
     def execute_with_trace(
@@ -67,6 +71,8 @@ class ParallelSourceExecutor:
         total_timeout_s: float | None = None,
         answer_sources: tuple[SourceName, ...] | None = None,
         soft_deadline_s: float | None = None,
+        source_filter: tuple[SourceName, ...] | None = None,
+        progress_callback: Callable[[SourceName], None] | None = None,
     ) -> ExecutionOutcome:
         started = time.monotonic()
         output: list[SourceResult | None] = []
@@ -74,10 +80,14 @@ class ParallelSourceExecutor:
         tool_trace: dict[int, dict[str, Any]] = {}
         quorum_fired = False
         quorum_fire_ms: float | None = None
-        query_items = dict(plan.tool_queries.items())
-        max_queries = max(len(queries) for queries in query_items.values())
+        query_items = {
+            source: queries
+            for source, queries in plan.tool_queries.items()
+            if source_filter is None or source in source_filter
+        }
+        max_queries = max((len(queries) for queries in query_items.values()), default=0)
         for query_index in range(max_queries):
-            for source in SOURCE_NAMES:
+            for source in query_items:
                 queries = query_items[source]
                 if query_index >= len(queries):
                     continue
@@ -97,6 +107,8 @@ class ParallelSourceExecutor:
                         "status": cached.status,
                         "cache_hit": True,
                     }
+                    if progress_callback is not None:
+                        progress_callback(source)
                 else:
                     index = len(output)
                     output.append(None)
@@ -228,6 +240,8 @@ class ParallelSourceExecutor:
                         ended_ms=(time.monotonic() - started) * 1000,
                         status=result.status,
                     )
+                    if progress_callback is not None:
+                        progress_callback(source)
                     with self._cache_lock:
                         key = (session_id, source, query)
                         self._cache[key] = result

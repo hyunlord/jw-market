@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+import logging
 import threading
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from jw_chat_agent_poc.service.conversation import ConversationTurn
@@ -27,6 +29,13 @@ _PUBLIC_SOURCE = {
     "web": "웹 자료",
     "patent": "특허 자료",
 }
+_PUBLIC_PROGRESS_SOURCE = {
+    **_PUBLIC_SOURCE,
+    "hira": "건강보험심사평가원",
+    "nedrug": "식품의약품안전처",
+}
+LOGGER = logging.getLogger(__name__)
+ProgressCallback = Callable[[dict[str, str]], None]
 
 
 class V4Runtime:
@@ -51,6 +60,7 @@ class V4Runtime:
         *,
         conversation_id: str | None,
         turns: Sequence[ConversationTurn],
+        progress_callback: ProgressCallback | None = None,
     ) -> V4Answer:
         started = time.monotonic()
         deadline = started + self._total_timeout_s
@@ -78,6 +88,29 @@ class V4Runtime:
                 },
             )
         plan = planner_outcome.plan
+        _emit_progress(
+            progress_callback,
+            "질문 해석",
+            _one_line(plan.resolved_question),
+        )
+        _emit_progress(
+            progress_callback,
+            "조회 계획",
+            f"확장 각도 {len(plan.expanded_intents)}개 · 조회 경로 7개",
+        )
+        completed_sources: list[str] = []
+
+        def source_completed(source: str) -> None:
+            public = _PUBLIC_PROGRESS_SOURCE.get(source, "조회 자료")
+            if public in completed_sources:
+                return
+            completed_sources.append(public)
+            _emit_progress(
+                progress_callback,
+                "자료 수집 중",
+                " · ".join(f"{name} 완료" for name in completed_sources),
+            )
+
         prior_results = self._get_session_results(session_id)
         can_reuse_prior = (
             prior_results
@@ -106,6 +139,7 @@ class V4Runtime:
                 total_timeout_s=min(20.0, _remaining(deadline)),
                 answer_sources=plan.answer_sources,
                 soft_deadline_s=6.0,
+                progress_callback=source_completed,
             )
             first_execution.trace.setdefault("session_result_reused", False)
         first_results = first_execution.results
@@ -123,6 +157,12 @@ class V4Runtime:
             )
             else None
         )
+        if linked_plan is not None:
+            _emit_progress(
+                progress_callback,
+                "연결 조회",
+                "첫 조회에서 확인한 대상을 바탕으로 관련 자료를 한 번 더 조회합니다",
+            )
         linked_execution = (
             _execute_with_trace(
                 self._executor,
@@ -131,12 +171,36 @@ class V4Runtime:
                 total_timeout_s=min(10.0, _remaining(deadline)),
                 answer_sources=linked_plan.answer_sources,
                 soft_deadline_s=6.0,
+                progress_callback=source_completed,
             )
             if linked_plan is not None and _remaining(deadline) > 0.1
             else SimpleNamespace(results=(), trace=None)
         )
         linked_results = linked_execution.results
-        current_results = (*first_results, *linked_results)
+        gap_request = _gap_fill_request(plan, first_results)
+        gap_execution = SimpleNamespace(results=(), trace=None)
+        if gap_request is not None and linked_plan is None and _remaining(deadline) > 0.1:
+            _emit_progress(
+                progress_callback,
+                "연결 조회",
+                "공식 자료의 누락 기간을 보완할 발표 자료를 별도로 조회합니다",
+            )
+            gap_plan = _gap_fill_plan(plan, gap_request)
+            gap_execution = _execute_with_trace(
+                self._executor,
+                gap_plan,
+                session_id=session_id,
+                total_timeout_s=min(6.0, _remaining(deadline)),
+                answer_sources=("web",),
+                soft_deadline_s=4.0,
+                source_filter=("web",),
+                progress_callback=source_completed,
+            )
+            gap_execution = SimpleNamespace(
+                results=tuple(_tag_gap_result(result, gap_request) for result in gap_execution.results),
+                trace=gap_execution.trace,
+            )
+        current_results = (*first_results, *linked_results, *gap_execution.results)
         if prior_results and (
             _is_causal_followup(question)
             or (_is_prior_result_reference(question) and not can_reuse_prior)
@@ -144,6 +208,11 @@ class V4Runtime:
             current_results = _merge_results(prior_results, current_results)
         results = tuple(_mark_citations_used(result) for result in current_results)
         self._remember_session_results(session_id, results)
+        _emit_progress(
+            progress_callback,
+            "답변 작성 중",
+            "확인된 근거를 종합해 답변을 작성합니다",
+        )
         synthesize_with_trace = getattr(self._synthesizer, "synthesize_with_trace", None)
         if callable(synthesize_with_trace):
             synthesis = synthesize_with_trace(
@@ -165,7 +234,7 @@ class V4Runtime:
         gated = apply_v4_gates(plan.resolved_question, synthesis.text, results)
         elapsed_ms = (time.monotonic() - started) * 1000
         synth_usage = _normalized_synth_usage(synthesis.trace)
-        planner_usage = planner_outcome.trace.get("usage") or _empty_usage()
+        planner_usage = _normalized_planner_usage(planner_outcome.trace.get("usage"))
         stage_timing = {
             "planner_elapsed_ms": planner_outcome.trace.get("elapsed_ms"),
             "wave_elapsed_ms": first_execution.trace.get("elapsed_ms"),
@@ -175,6 +244,11 @@ class V4Runtime:
                 else None
             ),
             "synth_elapsed_ms": synthesis.trace.get("elapsed_ms"),
+            "gap_fill_elapsed_ms": (
+                gap_execution.trace.get("elapsed_ms")
+                if isinstance(gap_execution.trace, dict)
+                else "not_applicable"
+            ),
             "total_elapsed_ms": elapsed_ms,
         }
         trace = {
@@ -202,6 +276,7 @@ class V4Runtime:
             ],
             "synthesizer": synthesis.trace,
             "synth_usage": synth_usage,
+            "gap_fill": _gap_fill_trace(gap_request, gap_execution),
             "execution": {
                 **first_execution.trace,
                 "link_wave": linked_execution.trace,
@@ -328,22 +403,167 @@ def _execute_with_trace(executor: Any, plan: Any, **kwargs: Any) -> Any:
     )
 
 
-def _empty_usage() -> dict[str, int | None]:
-    return {"input_tokens": None, "output_tokens": None, "thinking_tokens": None}
-
-
-def _normalized_synth_usage(trace: dict[str, Any]) -> dict[str, int | str | None]:
-    usage = trace.get("usage")
-    usage = usage if isinstance(usage, dict) else {}
-    details = usage.get("completion_tokens_details")
-    details = details if isinstance(details, dict) else {}
+def _empty_usage() -> dict[str, str]:
     return {
-        "input_tokens": _optional_int(usage.get("prompt_tokens")),
-        "output_tokens": _optional_int(usage.get("completion_tokens")),
-        "thinking_tokens": _optional_int(details.get("reasoning_tokens")),
-        "finish_reason": str(trace["finish_reason"]) if trace.get("finish_reason") else None,
+        "input_tokens": "not_applicable",
+        "output_tokens": "not_applicable",
+        "thinking_tokens": "not_applicable",
+        "measurement": "not_applicable",
     }
 
 
-def _optional_int(value: object) -> int | None:
-    return int(value) if isinstance(value, int | float) else None
+def _normalized_synth_usage(trace: dict[str, Any]) -> dict[str, int | str]:
+    usage = trace.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    if not usage:
+        return {
+            **_empty_usage(),
+            "finish_reason": "not_applicable",
+        }
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    return {
+        "input_tokens": _int_or_zero(usage.get("prompt_tokens")),
+        "output_tokens": _int_or_zero(usage.get("completion_tokens")),
+        "thinking_tokens": _int_or_zero(details.get("reasoning_tokens")),
+        "finish_reason": str(trace.get("finish_reason") or "not_reported"),
+        "measurement": "reported",
+    }
+
+
+def _int_or_zero(value: object) -> int:
+    return int(value) if isinstance(value, int | float) else 0
+
+
+def _normalized_planner_usage(value: object) -> dict[str, int | str]:
+    if not isinstance(value, Mapping) or not value:
+        return _empty_usage()
+    return {
+        "input_tokens": _int_or_zero(value.get("input_tokens")),
+        "output_tokens": _int_or_zero(value.get("output_tokens")),
+        "thinking_tokens": _int_or_zero(value.get("thinking_tokens")),
+        "measurement": "reported",
+    }
+
+
+def _emit_progress(callback: ProgressCallback | None, name: str, detail: str) -> None:
+    if callback is None:
+        return
+    try:
+        callback({"name": name, "detail": detail})
+    except Exception:  # Progress is observational and must not become an answer gate.
+        LOGGER.exception("V4 progress event emission failed")
+
+
+def _one_line(value: str, limit: int = 120) -> str:
+    text = " ".join(value.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _gap_fill_request(
+    plan: Any,
+    results: Sequence[SourceResult],
+) -> dict[str, Any] | None:
+    for result in results:
+        if result.source not in {"hira", "nedrug"} or result.source not in plan.answer_sources:
+            continue
+        if not isinstance(result.payload, Mapping):
+            continue
+        coverage = result.payload.get("period_coverage")
+        if not isinstance(coverage, Mapping):
+            continue
+        periods = coverage.get("periods")
+        if not isinstance(periods, list):
+            continue
+        missing = [
+            str(item.get("period"))
+            for item in periods
+            if isinstance(item, Mapping)
+            and str(item.get("status") or "").casefold() in {"error", "no_data"}
+        ]
+        if missing:
+            return {
+                "source": result.source,
+                "missing_periods": missing,
+                "query": result.query,
+            }
+    return None
+
+
+def _gap_fill_plan(plan: Any, request: Mapping[str, Any]) -> Any:
+    periods = " ".join(str(period) for period in request["missing_periods"])
+    query = f"{request['query']} {periods} 공식 통계 발표 보도자료"
+    queries = plan.tool_queries.model_copy(update={"web": (query,)})
+    return plan.model_copy(
+        update={
+            "tool_queries": queries,
+            "answer_sources": ("web",),
+            "needs_second_hop": False,
+            "linking_plan": "typed period gap fill via one web query",
+        }
+    )
+
+
+def _tag_gap_result(result: SourceResult, request: Mapping[str, Any]) -> SourceResult:
+    payload = result.payload if isinstance(result.payload, Mapping) else {"value": result.payload}
+    filtered_payload, usable = _official_gap_payload(payload)
+    return result.model_copy(
+        update={
+            "status": result.status if usable else "empty",
+            "payload": {
+                **filtered_payload,
+                "gap_fill": {
+                    "source": request["source"],
+                    "missing_periods": list(request["missing_periods"]),
+                    "separate_from_official_series": True,
+                    "quantitative_tiers_allowed": ["TIER1", "TIER2"],
+                },
+            }
+        }
+    )
+
+
+def _official_gap_payload(payload: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    calls = payload.get("calls")
+    if not isinstance(calls, list):
+        return dict(payload), False
+    kept_calls: list[Any] = []
+    usable = False
+    for call in calls:
+        if not isinstance(call, Mapping):
+            continue
+        copied_call = dict(call)
+        render_data = call.get("render_data")
+        if isinstance(render_data, Mapping) and isinstance(render_data.get("items"), list):
+            kept_items: list[dict[str, Any]] = []
+            for raw_item in render_data["items"]:
+                if not isinstance(raw_item, Mapping):
+                    continue
+                tier = _official_web_tier(str(raw_item.get("url") or ""))
+                if tier is None:
+                    continue
+                kept_items.append({**raw_item, "trust_tier": tier})
+            copied_call["render_data"] = {**render_data, "items": kept_items}
+            usable = usable or bool(kept_items)
+        kept_calls.append(copied_call)
+    return {**payload, "calls": kept_calls}, usable
+
+
+def _official_web_tier(url: str) -> str | None:
+    host = (urlparse(url).hostname or "").casefold()
+    if host.endswith(".go.kr") or host in {"korea.kr", "hira.or.kr", "www.hira.or.kr"}:
+        return "TIER1"
+    if host.endswith(".ac.kr") or host.endswith(".or.kr"):
+        return "TIER2"
+    return None
+
+
+def _gap_fill_trace(request: Mapping[str, Any] | None, execution: Any) -> dict[str, Any]:
+    if request is None:
+        return {"attempted": False, "reason": "no_period_gap"}
+    return {
+        "source": request["source"],
+        "missing_periods": list(request["missing_periods"]),
+        "attempted": bool(getattr(execution, "results", ())),
+        "result_statuses": [result.status for result in getattr(execution, "results", ())],
+    }

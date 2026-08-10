@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,6 +12,8 @@ from jw_chat_agent_poc.service.v4.contracts import Citation, SourceName, SourceR
 
 _NCT_RE = re.compile(r"\bNCT\d{8}\b", re.IGNORECASE)
 _HIRA_CODE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]\d{2}(?:\.?\d)?)(?![A-Za-z0-9])")
+_RECENT_YEAR_RE = re.compile(r"최근\s*(\d{1,2})\s*년")
+_YEAR_RE = re.compile(r"20\d{2}")
 _MART_TERMS = (
     "매출",
     "점유율",
@@ -37,6 +39,17 @@ _INGREDIENT_ALIASES = {
     "피타바스타틴": "Pitavastatin",
     "리바로": "Pitavastatin",
 }
+
+
+@dataclass(frozen=True)
+class _FailedHiraYearCall:
+    tool: str
+    source: str
+    status: str
+    summary_text: str
+    render_data: dict[str, Any]
+    safe_url: str | None = None
+    elapsed_ms: float | None = None
 
 
 def _parallel_hira_year_calls(
@@ -67,7 +80,21 @@ def _parallel_hira_year_calls(
             )
             for index, result in zip(failed, retries, strict=True):
                 first[index] = result
-        return [result for result in first if not isinstance(result, Exception)]
+        output: list[Any] = []
+        for year, result in zip(years, first, strict=True):
+            if isinstance(result, Exception):
+                output.append(
+                    _FailedHiraYearCall(
+                        tool="hira_year_query",
+                        source="hira",
+                        status="error",
+                        summary_text=f"{year}년 HIRA 조회 실패",
+                        render_data={"request": {"sickCd": code, "year": year}, "items": []},
+                    )
+                )
+            else:
+                output.append(result)
+        return output
 
     return asyncio.run(gather())
 
@@ -85,6 +112,28 @@ def _hira_code(query: str) -> str | None:
     for alias, (code, _condition) in _DISEASE_ALIASES.items():
         if alias.replace(" ", "") in normalized:
             return code
+    return None
+
+
+def _requested_hira_years(
+    query: str,
+    *,
+    current_year: int | None = None,
+) -> tuple[str, ...] | None:
+    """Return the complete calendar range requested by the V4 HIRA query."""
+    year_now = current_year or datetime.now(UTC).year
+    named = tuple(dict.fromkeys(_YEAR_RE.findall(query)))
+    if len(named) >= 2:
+        first, last = sorted((int(min(named)), int(max(named))))
+        return tuple(str(year) for year in range(first, last + 1))
+    if named:
+        return named
+    recent = _RECENT_YEAR_RE.search(query)
+    if recent:
+        count = max(1, min(10, int(recent.group(1))))
+        return tuple(str(year) for year in range(year_now - count + 1, year_now + 1))
+    if "추이" in query or "시계열" in query or re.search(r"(?:연도|년도|해)\s*(?:별|마다)", query):
+        return tuple(str(year) for year in range(year_now - 4, year_now + 1))
     return None
 
 
@@ -132,7 +181,6 @@ def _base_query(query: str) -> str:
 
 def build_source_adapters() -> dict[SourceName, Any]:
     from jw_chat_agent_poc.agent_loop.factory import build_chat_agent_dependencies
-    from jw_chat_agent_poc.orchestrator.hira_disease import hira_requested_years
     from jw_chat_agent_poc.service.general_view_routing import GeneralRoute, GeneralViewService
     from jw_chat_agent_poc.tools.external.client import ExternalCall
     from jw_chat_agent_poc.tools.external.hira_reimbursement import HiraReimbursementHttpClient
@@ -240,7 +288,21 @@ def build_source_adapters() -> dict[SourceName, Any]:
         if "특허" in query and resolution is not None:
             for molecule in resolution.molecule_en:
                 calls.extend((external.mfds_patent(molecule), external.mfds_fda_orangebook(molecule)))
-        return external_calls("nedrug", query, calls)
+        result = external_calls("nedrug", query, calls)
+        requested_periods = _requested_hira_years(base)
+        if requested_periods:
+            result = result.model_copy(
+                update={
+                    "payload": {
+                        **result.payload,
+                        "period_coverage": _period_coverage_from_calls(
+                            requested_periods,
+                            calls,
+                        ),
+                    }
+                }
+            )
+        return result
 
     def hira(query: str) -> SourceResult:
         base = _base_query(query)
@@ -264,7 +326,7 @@ def build_source_adapters() -> dict[SourceName, Any]:
         code = _hira_code(base)
         if code:
             calls = [external.hira_disease_name_code(code)]
-            years = hira_requested_years(base) or ("2024",)
+            years = _requested_hira_years(base) or ("2024",)
             calls.extend(
                 _parallel_hira_year_calls(
                     external.hira_disease_hospitalization_outpatient_stats,
@@ -272,7 +334,17 @@ def build_source_adapters() -> dict[SourceName, Any]:
                     years,
                 )
             )
-            return external_calls("hira", query, calls)
+            result = external_calls("hira", query, calls)
+            coverage = {
+                "requested_periods": list(years),
+                "periods": [
+                    {"period": year, "status": _hira_period_status(call)}
+                    for year, call in zip(years, calls[1:], strict=True)
+                ],
+            }
+            return result.model_copy(
+                update={"payload": {**result.payload, "period_coverage": coverage}}
+            )
         return external_calls("hira", query, [external.hira_disease_name_code(base)])
 
     def openfda(query: str) -> SourceResult:
@@ -353,6 +425,44 @@ def _has_payload(payload: dict[str, Any]) -> bool:
     if isinstance(render_data, dict):
         return bool(render_data)
     return bool(payload.get("summary_text"))
+
+
+def _hira_period_status(call: Any) -> str:
+    status = str(getattr(call, "status", "") or "").casefold()
+    if status in {"error", "timeout", "missing_key", "unsupported"}:
+        return "error"
+    render_data = getattr(call, "render_data", None)
+    items = render_data.get("items") if isinstance(render_data, dict) else None
+    if status == "no_data" or items == []:
+        return "no_data"
+    return "ok"
+
+
+def _period_coverage_from_calls(
+    requested_periods: Sequence[str],
+    calls: Sequence[Any],
+) -> dict[str, Any]:
+    serialized = " ".join(str(asdict(call)) for call in calls)
+    call_statuses = {
+        str(getattr(call, "status", "") or "").casefold()
+        for call in calls
+    }
+    failed = bool(call_statuses) and call_statuses <= {
+        "error",
+        "timeout",
+        "missing_key",
+        "unsupported",
+    }
+    return {
+        "requested_periods": list(requested_periods),
+        "periods": [
+            {
+                "period": period,
+                "status": "ok" if period in serialized else "error" if failed else "no_data",
+            }
+            for period in requested_periods
+        ],
+    }
 
 
 def _first_notice(calls: list[Any]) -> str:

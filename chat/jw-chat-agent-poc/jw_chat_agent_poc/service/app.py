@@ -432,11 +432,13 @@ def _run_v4_final_answer(
     history_store: ConversationHistoryStore | None,
     question: str,
     conversation_id: str | None,
+    progress_callback: Callable[[dict[str, str]], None] | None = None,
 ) -> FinalAnswer:
     answer = _get_v4_runtime().answer(
         question,
         conversation_id=conversation_id,
         turns=_v4_recent_turns(store, history_store, conversation_id),
+        progress_callback=progress_callback,
     )
     if answer.conversation_id:
         store.conversations.record_exchange(
@@ -3303,22 +3305,49 @@ def _v4_sse_events(
     if not limiter.try_acquire():
         yield from _sse_busy_events()
         return
-    yield _sse_json_event(
-        "step",
-        {
-            "name": "V4 플래닝",
-            "detail": "질문 확장과 7개 조회 경로를 준비합니다.",
-            "status": "in_progress",
-        },
-    )
+    events: queue.Queue[dict[str, Any]] = queue.Queue()
+    completed = threading.Event()
+    result_box: dict[str, Any] = {}
+
+    def emit_progress(event: dict[str, str]) -> None:
+        # Progress is observational. Queueing failure is logged and never gates the answer.
+        try:
+            events.put_nowait({**event, "status": "in_progress"})
+        except Exception:
+            LOGGER.exception("V4 SSE progress queue failed")
+
+    def run_answer() -> None:
+        try:
+            with actor_user_scope(projection_context.portal_user_id):
+                result_box["answer"] = _run_v4_final_answer(
+                    store,
+                    history_store,
+                    question,
+                    conversation_id,
+                    progress_callback=emit_progress,
+                )
+        except Exception as exc:  # noqa: BLE001 - preserve the existing SSE error contract
+            result_box["error"] = exc
+        finally:
+            completed.set()
+
+    worker = threading.Thread(target=run_answer, name="chat-v4-sse-worker", daemon=True)
     try:
-        with actor_user_scope(projection_context.portal_user_id):
-            final_answer = _run_v4_final_answer(
-                store,
-                history_store,
-                question,
-                conversation_id,
-            )
+        worker.start()
+        while not completed.is_set() or not events.empty():
+            try:
+                event = events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                yield _sse_json_event("step", event)
+            except (TypeError, ValueError):
+                LOGGER.exception("V4 SSE progress serialization failed")
+        worker.join(timeout=0.1)
+        error = result_box.get("error")
+        if isinstance(error, Exception):
+            raise error
+        final_answer = result_box["answer"]
         _record_conversation_history(
             history_store,
             session_id=None,

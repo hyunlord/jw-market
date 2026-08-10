@@ -462,6 +462,37 @@ def test_parallel_executor_calls_every_source_concurrently_and_reuses_session_ca
     assert len(calls) == 7
 
 
+def test_parallel_executor_source_filter_runs_only_selected_source() -> None:
+    calls: list[str] = []
+
+    def adapter(source: str, query: str) -> SourceResult:
+        calls.append(source)
+        return SourceResult(
+            source=source,
+            query=query,
+            status="ok",
+            payload={"source": source},
+        )
+
+    executor = ParallelSourceExecutor(
+        adapters={
+            name: (lambda query, source=name: adapter(source, query))
+            for name in SOURCE_NAMES
+        },
+        per_tool_timeout_s=1.0,
+        total_timeout_s=2.0,
+    )
+
+    outcome = executor.execute_with_trace(
+        _plan(),
+        session_id="session-web-only",
+        source_filter=("web",),
+    )
+
+    assert calls == ["web"]
+    assert [result.source for result in outcome.results] == ["web"]
+
+
 def test_parallel_executor_starts_each_source_before_extra_queries() -> None:
     calls: list[str] = []
 
@@ -655,6 +686,65 @@ def test_hira_year_calls_are_parallel_and_retry_only_failures() -> None:
         "2020", "2021", "2022", "2023", "2024"
     ]
     assert attempts == {"2020": 1, "2021": 1, "2022": 2, "2023": 1, "2024": 1}
+
+
+def test_v4_hira_recent_range_uses_every_calendar_year() -> None:
+    assert v4_adapters._requested_hira_years(
+        "D693 상병 환자수 최근 5년", current_year=2026
+    ) == ("2022", "2023", "2024", "2025", "2026")
+    assert v4_adapters._requested_hira_years(
+        "D693 2023년 환자수", current_year=2026
+    ) == ("2023",)
+
+
+def test_hira_synthesis_input_keeps_all_requested_year_calls() -> None:
+    calls = [
+        {
+            "status": "live",
+            "render_data": {
+                "request": {"sickCd": "D693", "year": str(year)},
+                "items": [{"inpatOpat": "외래", "patientCountDisplay": f"{year:,}"}],
+            },
+        }
+        for year in range(2022, 2027)
+    ]
+    result = SourceResult(
+        source="hira",
+        query="D693 상병 환자수 최근 5년",
+        status="ok",
+        payload={"calls": calls},
+    )
+
+    messages = v4_synthesizer._synthesis_messages(_plan(), (result,), ())
+
+    for year in range(2022, 2027):
+        assert f'"year": "{year}"' in messages[-1]["content"]
+
+
+def test_hira_coverage_notices_distinguish_failure_from_no_data() -> None:
+    result = SourceResult(
+        source="hira",
+        query="D693 상병 환자수 최근 5년",
+        status="ok",
+        payload={
+            "calls": [],
+            "period_coverage": {
+                "requested_periods": ["2022", "2023", "2024", "2025", "2026"],
+                "periods": [
+                    {"period": "2022", "status": "ok"},
+                    {"period": "2023", "status": "ok"},
+                    {"period": "2024", "status": "ok"},
+                    {"period": "2025", "status": "error"},
+                    {"period": "2026", "status": "no_data"},
+                ],
+            },
+        },
+    )
+
+    answer = v4_synthesizer._append_coverage_notices("확인된 3개년 값입니다.", (result,))
+
+    assert "2025년은 조회 실패로 값을 확인하지 못했습니다(환자수 0 이 아님)" in answer
+    assert "2026년은 조회 완료됐으나 해당 데이터가 없습니다" in answer
 
 
 def test_parallel_executor_soft_deadline_stops_after_answer_source_arrives() -> None:
@@ -951,11 +1041,195 @@ def test_runtime_exposes_normalized_usage_and_stage_breakdown() -> None:
         "output_tokens": 20,
         "thinking_tokens": 7,
         "finish_reason": "stop",
+        "measurement": "reported",
     }
     assert answer.timing["planner_elapsed_ms"] == 12.0
     assert answer.timing["wave_elapsed_ms"] == 25.0
     assert answer.timing["synth_elapsed_ms"] == 30.0
     assert answer.trace["execution"]["quorum_fired"] is True
+
+
+def test_runtime_usage_is_explicit_when_synthesizer_does_not_run() -> None:
+    usage = v4_synthesizer.SynthesisOutcome(
+        text="결정론 답변",
+        trace={"status": "fallback", "fallback_reason": "no_evidence"},
+    )
+
+    normalized = __import__(
+        "jw_chat_agent_poc.service.v4.runtime", fromlist=["_normalized_synth_usage"]
+    )._normalized_synth_usage(usage.trace)
+
+    assert normalized == {
+        "input_tokens": "not_applicable",
+        "output_tokens": "not_applicable",
+        "thinking_tokens": "not_applicable",
+        "finish_reason": "not_applicable",
+        "measurement": "not_applicable",
+    }
+
+
+def test_runtime_emits_public_five_stage_progress_for_linked_answer() -> None:
+    first_plan = _plan().model_copy(update={"needs_second_hop": True})
+    linked_plan = _plan(web=("연결 검색",))
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, _question, _turns, *, budget_s):
+            return SimpleNamespace(
+                plan=first_plan,
+                trace={"elapsed_ms": 1.0, "usage": {}},
+            )
+
+        def link(self, *_args, **_kwargs):
+            return linked_plan
+
+    class Executor:
+        def execute_with_trace(self, plan, *, progress_callback=None, **_kwargs):
+            if progress_callback is not None:
+                progress_callback("hira")
+                progress_callback("web")
+            return SimpleNamespace(
+                results=(
+                    SourceResult(
+                        source="hira",
+                        query=plan.tool_queries.hira[0],
+                        status="ok",
+                        payload={"calls": []},
+                    ),
+                ),
+                trace={"elapsed_ms": 2.0, "tools": []},
+            )
+
+    class Synthesizer:
+        def synthesize_with_trace(self, *_args, **_kwargs):
+            return v4_synthesizer.SynthesisOutcome(
+                text="근거 기반 답변",
+                trace={"elapsed_ms": 3.0, "usage": {}},
+            )
+
+    progress: list[dict[str, str]] = []
+    V4Runtime(
+        planner=Planner(), executor=Executor(), synthesizer=Synthesizer()
+    ).answer(
+        "D693 최근 환자수",
+        conversation_id="progress",
+        turns=(),
+        progress_callback=progress.append,
+    )
+
+    assert [event["name"] for event in progress] == [
+        "질문 해석",
+        "조회 계획",
+        "자료 수집 중",
+        "자료 수집 중",
+        "연결 조회",
+        "답변 작성 중",
+    ]
+    assert progress[2]["detail"] == "건강보험심사평가원 완료"
+    assert progress[3]["detail"] == "건강보험심사평가원 완료 · 웹 자료 완료"
+    assert all("MCP" not in event["detail"] for event in progress)
+
+
+def test_runtime_runs_one_web_gap_fill_for_missing_hira_periods() -> None:
+    plan = _plan(hira=("D693 환자수 최근 3년",)).model_copy(
+        update={"answer_sources": ("hira",)}
+    )
+
+    class Planner:
+        serving_id = "190"
+
+        def plan_with_trace(self, *_args, **_kwargs):
+            return SimpleNamespace(plan=plan, trace={"elapsed_ms": 1.0, "usage": {}})
+
+        def link(self, *_args, **_kwargs):
+            return None
+
+    class Executor:
+        def __init__(self) -> None:
+            self.filters: list[tuple[str, ...] | None] = []
+
+        def execute_with_trace(self, current_plan, *, source_filter=None, **_kwargs):
+            self.filters.append(source_filter)
+            if source_filter == ("web",):
+                results = (
+                    SourceResult(
+                        source="web",
+                        query=current_plan.tool_queries.web[0],
+                        status="ok",
+                        payload={"calls": []},
+                    ),
+                )
+            else:
+                results = (
+                    SourceResult(
+                        source="hira",
+                        query=current_plan.tool_queries.hira[0],
+                        status="ok",
+                        payload={
+                            "calls": [],
+                            "period_coverage": {
+                                "requested_periods": ["2024", "2025", "2026"],
+                                "periods": [
+                                    {"period": "2024", "status": "ok"},
+                                    {"period": "2025", "status": "no_data"},
+                                    {"period": "2026", "status": "no_data"},
+                                ],
+                            },
+                        },
+                    ),
+                )
+            return SimpleNamespace(results=results, trace={"elapsed_ms": 2.0, "tools": []})
+
+    class Synthesizer:
+        def synthesize_with_trace(self, _plan, results, *_args, **_kwargs):
+            assert any(result.source == "web" for result in results)
+            return v4_synthesizer.SynthesisOutcome(
+                text="확인된 공식 통계와 별도 보완 근거입니다.",
+                trace={"elapsed_ms": 3.0, "usage": {}},
+            )
+
+    executor = Executor()
+    answer = V4Runtime(
+        planner=Planner(), executor=executor, synthesizer=Synthesizer()
+    ).answer("D693 환자수 최근 3년", conversation_id="gap", turns=())
+
+    assert executor.filters == [None, ("web",)]
+    assert answer.trace["gap_fill"]["source"] == "hira"
+    assert answer.trace["gap_fill"]["missing_periods"] == ["2025", "2026"]
+    assert answer.trace["gap_fill"]["attempted"] is True
+
+
+def test_gap_fill_keeps_only_tier_one_or_two_web_evidence() -> None:
+    source = SourceResult(
+        source="web",
+        query="D693 2025 공식 통계 발표",
+        status="ok",
+        payload={
+            "calls": [
+                {
+                    "render_data": {
+                        "items": [
+                            {"url": "https://www.hira.or.kr/report", "content": "공식 " * 80},
+                            {"url": "https://news.example.com/story", "content": "언론 " * 80},
+                            {"url": "https://university.ac.kr/paper", "content": "학술 " * 80},
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    tagged = __import__(
+        "jw_chat_agent_poc.service.v4.runtime", fromlist=["_tag_gap_result"]
+    )._tag_gap_result(
+        source,
+        {"source": "hira", "missing_periods": ["2025"], "query": "D693"},
+    )
+
+    items = tagged.payload["calls"][0]["render_data"]["items"]
+    assert [item["trust_tier"] for item in items] == ["TIER1", "TIER2"]
+    assert all("news.example.com" not in item["url"] for item in items)
 
 
 def test_runtime_reuses_prior_table_results_for_reference_followup() -> None:
@@ -1376,8 +1650,23 @@ class _FakeV4Runtime:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None, int]] = []
 
-    def answer(self, question: str, *, conversation_id: str | None, turns) -> V4Answer:
+    def answer(
+        self,
+        question: str,
+        *,
+        conversation_id: str | None,
+        turns,
+        progress_callback=None,
+    ) -> V4Answer:
         self.calls.append((question, conversation_id, len(turns)))
+        if progress_callback is not None:
+            for name, detail in (
+                ("질문 해석", "질문을 해석했습니다"),
+                ("조회 계획", "확장 각도 3개 · 조회 경로 7개"),
+                ("자료 수집 중", "건강보험심사평가원 완료"),
+                ("답변 작성 중", "확인된 근거를 종합합니다"),
+            ):
+                progress_callback({"name": name, "detail": detail})
         return V4Answer(
             text="V4 자유 답변\n\n## 출처\n- mart",
             charts=(),
@@ -1479,4 +1768,7 @@ def test_flag_on_live_stream_emits_progress_before_running_v4(monkeypatch) -> No
 
     assert response.status_code == 200
     assert body.index("event: step") < body.index("V4 자유 답변")
+    assert body.index("질문 해석") < body.index("조회 계획")
+    assert body.index("조회 계획") < body.index("자료 수집 중")
+    assert body.index("자료 수집 중") < body.index("답변 작성 중")
     assert runtime.calls == [("리바로 요즘 어때", None, 0)]

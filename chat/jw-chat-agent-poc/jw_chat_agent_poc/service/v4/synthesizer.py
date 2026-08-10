@@ -161,8 +161,10 @@ class V4Synthesizer:
             answer = _evidence_fallback(usable)
         elif _INTERNAL_SURFACE_RE.search(answer):
             answer = _replace_internal_blocks(answer, usable)
+        answer = _append_automatic_footnotes(answer, usable)
+        answer = _append_coverage_notices(answer, usable)
         return SynthesisOutcome(
-            text=_append_automatic_footnotes(answer, usable),
+            text=answer,
             trace={
                 "status": "fallback" if fallback_reason else "synthesized",
                 "finish_reason": completion.finish_reason if completion else None,
@@ -243,6 +245,8 @@ def _synthesis_messages(
                 "`## 종합 인사이트`, `## 미확인 요소`, `## 출처`의 마크다운 소제목으로 구성한다. 한 문단은 최대 4문장으로 "
                 "쓰고, 고시·허가사항은 투여대상·제외기준·투여방법·투여횟수처럼 의미 단위 불릿으로 요약한다. "
                 "웹페이지 안내문이나 원문 레코드를 통째로 복사하지 않는다."
+                " gap_fill로 표시된 웹 근거는 공식 통계 표나 시계열에 섞지 말고 별도 문단에서 "
+                "'공식 통계 아님'을 밝혀 서술한다. TIER1 또는 TIER2가 아닌 웹 정량값은 쓰지 않는다."
             ),
         },
         {
@@ -311,6 +315,13 @@ def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
             for key, item in tuple(value.items())[:16]
         }
     if isinstance(value, list):
+        period_records = [item for item in value if _period_record(item)]
+        if period_records:
+            context_records = [item for item in value if not _period_record(item)][:1]
+            return [
+                _bounded_value(item, query=query, depth=depth + 1)
+                for item in (*context_records, *period_records)
+            ]
         matching = [item for item in value if _matches_requested_anchor(item, query)]
         selected = matching + [item for item in value if item not in matching]
         return [_bounded_value(item, query=query, depth=depth + 1) for item in selected[:4]]
@@ -319,6 +330,16 @@ def _bounded_value(value: Any, *, query: str, depth: int = 0) -> Any:
     if isinstance(value, str) and len(value) > 1200:
         return value[:1200] + " [excerpt]"
     return value
+
+
+def _period_record(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    render_data = value.get("render_data")
+    if not isinstance(render_data, Mapping):
+        return False
+    request = render_data.get("request")
+    return isinstance(request, Mapping) and bool(request.get("year"))
 
 
 def _public_key(key: str) -> bool:
@@ -459,6 +480,34 @@ def _append_automatic_footnotes(answer: str, results: Sequence[SourceResult]) ->
         return answer
     missing = tuple(note for note in notes if note not in answer)
     return answer if not missing else f"{answer.rstrip()}\n\n" + "\n".join(f"- {note}" for note in missing)
+
+
+def _append_coverage_notices(answer: str, results: Sequence[SourceResult]) -> str:
+    notices: list[str] = []
+    for result in results:
+        if result.source not in {"hira", "nedrug"} or not isinstance(result.payload, Mapping):
+            continue
+        coverage = result.payload.get("period_coverage")
+        if not isinstance(coverage, Mapping):
+            continue
+        periods = coverage.get("periods")
+        if not isinstance(periods, list):
+            continue
+        for item in periods:
+            if not isinstance(item, Mapping):
+                continue
+            period = str(item.get("period") or "").strip()
+            status = str(item.get("status") or "").casefold()
+            if not period:
+                continue
+            if status == "error":
+                notices.append(f"{period}년은 조회 실패로 값을 확인하지 못했습니다(환자수 0 이 아님).")
+            elif status == "no_data":
+                notices.append(f"{period}년은 조회 완료됐으나 해당 데이터가 없습니다.")
+    missing = tuple(dict.fromkeys(notice for notice in notices if notice not in answer))
+    if not missing:
+        return answer
+    return f"{answer.rstrip()}\n\n" + "\n".join(f"- {notice}" for notice in missing)
 
 
 def _evidence_fallback(results: Sequence[SourceResult]) -> str:
