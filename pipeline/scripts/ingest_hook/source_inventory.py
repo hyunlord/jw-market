@@ -485,6 +485,7 @@ def enforce_scan_gates(
     *,
     period_unit: PeriodUnit | None = None,
     permissive: bool = False,
+    row_floor_ratio: float | None = None,
 ) -> PeriodGateResult:
     """Apply approved fail-closed deletion and period gates before any load."""
     if current.rejected_count and not permissive:
@@ -497,6 +498,23 @@ def enforce_scan_gates(
         raise ValueError("previous snapshot and diff must be provided together")
     if previous is not None and previous.category != current.category:
         raise SourceInventoryError("cannot gate snapshots from different categories")
+    previous_rows = (
+        sum(item.rows or 0 for item in previous.files if item.state == "classified")
+        if previous is not None
+        else None
+    )
+    current_rows = sum(item.rows or 0 for item in current.files if item.state == "classified")
+    if row_floor_ratio is not None:
+        if not 0 < row_floor_ratio <= 1:
+            raise ValueError("row_floor_ratio must be in (0, 1]")
+        if previous_rows:
+            floor = int(previous_rows * row_floor_ratio)
+            if current_rows < floor and not permissive:
+                raise SourceInventoryError(
+                    f"{current.category}: complete source population rows {current_rows} "
+                    f"below crash floor {floor} ({row_floor_ratio:.0%} of previous "
+                    f"{previous_rows})"
+                )
     threshold = mass_deletion_threshold(previous.classified_count) if previous else None
     if (
         diff is not None
@@ -535,14 +553,8 @@ def enforce_scan_gates(
         previous_periods=previous_periods,
         removed_files=diff.removed_files if diff is not None else (),
         surviving_file_periods=surviving,
-        previous_rows=(
-            sum(item.rows or 0 for item in previous.files if item.state == "classified")
-            if previous is not None
-            else None
-        ),
-        current_rows=sum(
-            item.rows or 0 for item in current.files if item.state == "classified"
-        ),
+        previous_rows=previous_rows,
+        current_rows=current_rows,
     )
     failures = [gate for gate in (result.pg4, result.pg5) if gate.status == "fail"]
     if failures and not permissive:
@@ -741,6 +753,7 @@ def run_full_scan(
     permissive: bool = False,
     bootstrap_files: tuple[Path, ...] | None = None,
     rebuild_all_current: bool = False,
+    row_floor_ratio: float | None = None,
 ) -> ScanOutcome:
     """Scan, gate, rebuild, then publish one immutable successful inventory.
 
@@ -774,6 +787,7 @@ def run_full_scan(
             diff,
             period_unit=policy.period_unit,
             permissive=permissive,
+            row_floor_ratio=row_floor_ratio,
         )
         materialized = dict(archive_candidates)
         if rebuild_all_current:

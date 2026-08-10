@@ -7,6 +7,7 @@ import zipfile
 
 import pytest
 
+from pipeline.scripts.ingest_hook import job_runner
 from pipeline.scripts.ingest_hook.source_inventory import (
     FileObservation,
     ScanSnapshot,
@@ -623,6 +624,109 @@ def test_full_scan_does_not_rebuild_or_publish_when_pg4_fails(tmp_path: Path) ->
 
     assert rebuilt is False
     assert not (tmp_path / "inventory").exists()
+
+
+def test_full_scan_applies_crash_floor_to_complete_source_population(tmp_path: Path) -> None:
+    source = _write(tmp_path, "current.xlsx")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_channel",
+        "2025-10",
+        "e" * 64,
+        "previous-run",
+        "2026-08-09T00:00:00Z",
+        (
+            FileObservation(
+                "previous.xlsx",
+                "1" * 64,
+                100,
+                "classified",
+                "iqvia_csd_channel",
+                100,
+                ("2025-10",),
+            ),
+        ),
+    )
+    rebuilt = False
+
+    def rebuild(_paths: tuple[Path, ...]) -> dict[str, int]:
+        nonlocal rebuilt
+        rebuilt = True
+        return {}
+
+    with pytest.raises(SourceInventoryError, match="crash floor 50"):
+        run_full_scan(
+            SourceScanPolicy("iqvia_csd_channel", tmp_path, "month"),
+            epoch="2026-05",
+            manifest_sha="f" * 64,
+            run_id="blocked-run",
+            output_root=tmp_path / "inventory",
+            previous=previous,
+            classify=lambda _path: "iqvia_csd_channel",
+            summarize=lambda *_args: WorkbookSummary(
+                rows=40,
+                periods=frozenset({"2025-10", "2026-05"}),
+                detail="fixture",
+            ),
+            rebuild=rebuild,
+            rebuild_all_current=True,
+            row_floor_ratio=0.5,
+        )
+
+    assert rebuilt is False
+
+
+def test_full_scan_accepts_growth_in_complete_source_population(tmp_path: Path) -> None:
+    source = _write(tmp_path, "current.xlsx")
+    previous = ScanSnapshot(
+        "1",
+        "iqvia_csd_channel",
+        "2025-10",
+        "e" * 64,
+        "previous-run",
+        "2026-08-09T00:00:00Z",
+        (
+            FileObservation(
+                "current.xlsx",
+                "1" * 64,
+                100,
+                "classified",
+                "iqvia_csd_channel",
+                107_257,
+                ("2025-10",),
+            ),
+        ),
+    )
+    rebuilt: list[tuple[Path, ...]] = []
+
+    outcome = run_full_scan(
+        SourceScanPolicy("iqvia_csd_channel", tmp_path, "month"),
+        epoch="2026-05",
+        manifest_sha="f" * 64,
+        run_id="growth-run",
+        output_root=tmp_path / "inventory",
+        previous=previous,
+        classify=lambda _path: "iqvia_csd_channel",
+        summarize=lambda *_args: WorkbookSummary(
+            rows=123_267,
+            periods=frozenset({"2025-10", "2026-05"}),
+            detail="fixture",
+        ),
+        rebuild=lambda paths: rebuilt.append(paths) or {"files": len(paths)},
+        rebuild_all_current=True,
+        row_floor_ratio=0.5,
+        permissive=True,
+    )
+
+    assert rebuilt == [(source.resolve(),)]
+    assert outcome.rebuild_result == {"files": 1}
+
+
+def test_g3_defers_crash_floor_when_full_source_scan_is_configured(tmp_path: Path) -> None:
+    policy = SourceScanPolicy("iqvia_csd_channel", tmp_path, "month")
+
+    assert job_runner._g3_crash_floor_baseline(447_057, policy) is None
+    assert job_runner._g3_crash_floor_baseline(447_057, None) == 447_057
 
 
 def test_full_scan_does_not_publish_snapshot_when_rebuild_fails(tmp_path: Path) -> None:

@@ -200,6 +200,7 @@ from pipeline.scripts.ingest_hook.sigma_gate import SigmaGateError, check_stagin
 from pipeline.scripts.ingest_hook.source_inventory import (
     DEFAULT_INVENTORY_ROOT,
     ScanOutcome,
+    SourceScanPolicy,
     run_full_scan,
 )
 from pipeline.scripts.ingest_hook.source_inventory_runtime import (
@@ -210,6 +211,14 @@ from pipeline.scripts.ingest_hook.source_inventory_runtime import (
 
 def _run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+
+
+def _g3_crash_floor_baseline(
+    previous_total: int | None,
+    source_scan_policy: SourceScanPolicy | None,
+) -> int | None:
+    """Defer the row floor to the complete source scan when one is configured."""
+    return previous_total if source_scan_policy is None else None
 
 
 def _stamp() -> str:
@@ -802,6 +811,7 @@ def _load_with_source_inventory(
         # Run-scoped databases start empty. Reuse classification metadata, but
         # feed every current source file to the loader that populates the new DB.
         rebuild_all_current=(target_db_override is not None or rebuild_all_current),
+        row_floor_ratio=spec.row_floor_ratio,
         permissive=config.e2e_commissioning(),
         rebuild=lambda source_files: _real_load(
             manifest,
@@ -1090,10 +1100,22 @@ def run(
     try:
         spec = resolve_category(manifest.category)
         previous_total = ledger.previous_complete_total(manifest.category, before_epoch=manifest.epoch)
+        source_scan_policy = load_scan_policy(
+            manifest.category,
+            required=config.full_scan_enabled(),
+        )
 
         # 1) G3 — always first; a failure here has zero DB effect.
         tracker.enter("g3")
-        report = validate(manifest, spec, input_root, previous_total_rows=previous_total)
+        report = validate(
+            manifest,
+            spec,
+            input_root,
+            previous_total_rows=_g3_crash_floor_baseline(
+                previous_total,
+                source_scan_policy,
+            ),
+        )
         periods = set(report.observed_periods)
         print(f"gate=g3 status=pass files={len(report.file_rows)} rows={report.total_rows}")
         tracker.done()
