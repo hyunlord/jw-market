@@ -1150,6 +1150,21 @@ def _brand_trend_projection(
     data = {
         "contract_id": "C1",
         "source_results": [row] if points else [],
+        # Use the same fact-bearing row contract as the competitor projection so
+        # evidence binding can authorize single-brand values without parsing prose.
+        "competitor_rows": [
+            {
+                "rank": point.rank,
+                "brand": market.brand,
+                "share_pct": point.share_pct,
+                "sales_krw": point.value,
+                "period": point.period,
+                "view_type": "general_view",
+                "market_id": market.atc4_code,
+            }
+            for point in points
+            if market.brand
+        ],
         "evidence_refs": [evidence_ref],
         "chart_payloads": [],
     }

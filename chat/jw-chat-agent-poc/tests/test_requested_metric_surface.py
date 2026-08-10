@@ -44,6 +44,18 @@ def test_removed_numeric_line_marks_its_metric_dropped_and_forces_notice() -> No
     assert "numeric_copy_blocked" in report["reason_codes"]
 
 
+def test_missing_sales_notice_uses_correct_korean_topic_particle() -> None:
+    answer, report = enforce_numeric_copy_contract(
+        "아일리아 매출 알려줘",
+        "아일리아 매출은 218.70억원입니다.",
+        {"tool_calls": []},
+    )
+
+    assert "요청하신 매출은 현재 근거에서 확인하지 못했습니다." in answer
+    assert "매출는" not in answer
+    assert report["dropped_metrics"] == ["sales"]
+
+
 def test_blocked_duplicate_metric_line_does_not_report_block_when_metric_is_rendered() -> None:
     answer, report = enforce_numeric_copy_contract(
         "리바로 성장률 알려줘",

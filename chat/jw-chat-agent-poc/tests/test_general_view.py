@@ -910,6 +910,41 @@ def test_general_view_competitor_growth_survives_final_binding(monkeypatch) -> N
     }
 
 
+def test_general_view_brand_sales_survives_final_binding(monkeypatch) -> None:
+    service = _iqvia_intent_service()
+    question = "아일리아 매출 알려줘"
+    result = service.answer(question, compact=False, dual=False)
+    original_gate = service_app._apply_evidence_binding_gate
+
+    def drop_brand_sales(
+        bound_question: str,
+        answer: str,
+        bound_result: dict,
+    ) -> str:
+        bound = original_gate(bound_question, answer, bound_result)
+        return "\n".join(
+            line
+            for line in bound.splitlines()
+            if "브랜드 매출" not in line and "브랜드 성장률" not in line
+        )
+
+    monkeypatch.setattr(service_app, "_apply_evidence_binding_gate", drop_brand_sales)
+
+    final = service_app.compute_final_answer(question, result, "general-brand-sales-binding")
+
+    assert "브랜드 매출" in final.text
+    assert "218.70억원" in final.text
+    market_lines = [line for line in final.text.splitlines() if line.startswith("- 시장:")]
+    assert market_lines == ["- 시장: 동적 시장: ATC4 S01P0"]
+    assert "매출는" not in final.text
+    assert final.trace["numeric_copy_contract"] == {
+        "requested_metrics": ["sales"],
+        "rendered_metrics": ["sales"],
+        "dropped_metrics": [],
+        "reason_codes": [],
+    }
+
+
 def test_general_view_competitor_growth_reports_missing_source_exactly() -> None:
     service = _iqvia_intent_service()
     market = service._backend.market_map["S01P0"]  # type: ignore[attr-defined]

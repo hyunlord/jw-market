@@ -229,8 +229,15 @@ def _requested_metric_missing_notice(metrics: tuple[CanonicalMetric, ...]) -> st
         reason = "요청 기간의 비교 기준 데이터가 부족해 순위 변화를 계산할 수 없습니다."
     else:
         labels = ", ".join(_metric_surface_labels(metric)[0] for metric in metrics)
-        reason = f"요청하신 {labels}는 현재 근거에서 확인하지 못했습니다."
+        particle = "은" if _has_final_consonant(labels) else "는"
+        reason = f"요청하신 {labels}{particle} 현재 근거에서 확인하지 못했습니다."
     return f"## 요청 지표 미제공\n\n{reason}"
+
+
+def _has_final_consonant(value: str) -> bool:
+    last = next((char for char in reversed(value.strip()) if char.isalpha()), "")
+    codepoint = ord(last) if last else 0
+    return 0xAC00 <= codepoint <= 0xD7A3 and (codepoint - 0xAC00) % 28 != 0
 
 
 def _blocked_numeric_notice(result: Mapping[str, Any]) -> str:
