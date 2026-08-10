@@ -18,6 +18,7 @@ from pipeline.scripts.agent_refresh_weekly.contract import (
     make_preflight_result,
     make_stage_skip_result,
     render_stage_job,
+    unknown_brand_skip_reason,
 )
 from pipeline.scripts.agent_refresh_weekly.kubernetes_api import KubernetesApi
 
@@ -183,7 +184,7 @@ async def _run_stage(stage: str, workflow_id: str) -> dict[str, Any]:
             activity.heartbeat({"stage": stage, "job": name, "status": status})
             if status == "Complete":
                 await asyncio.to_thread(_assert_cluster_guard)
-                return {
+                result = {
                     "stage": stage,
                     "job": name,
                     "status": status,
@@ -194,6 +195,12 @@ async def _run_stage(stage: str, workflow_id: str) -> dict[str, Any]:
                     "started_at": (job.get("status") or {}).get("startTime"),
                     "completed_at": (job.get("status") or {}).get("completionTime"),
                 }
+                if stage == "agent2":
+                    logs = await asyncio.to_thread(_job_logs, name)
+                    reason = unknown_brand_skip_reason(logs)
+                    if reason is not None:
+                        result["reason"] = reason
+                return result
             if status == "Failed":
                 logs = await asyncio.to_thread(_job_logs, name)
                 raise RuntimeError(f"stage Job failed: {name}\n{logs}")

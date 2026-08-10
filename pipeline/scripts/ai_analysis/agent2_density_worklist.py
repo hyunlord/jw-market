@@ -122,10 +122,17 @@ def build_name_to_key_map(rows: list[dict[str, Any]]) -> dict[str, str]:
 def build_evidence_counts_from_rows(
     brand_rows: list[dict[str, Any]],
     score_rows: list[dict[str, Any]],
+    *,
+    accept_canonical_brand_keys: bool = False,
 ) -> DensityEvidenceBuildResult:
     """Convert event score rows into brand_key evidence counts for density routing."""
 
     name_to_key = build_name_to_key_map(brand_rows)
+    canonical_keys = frozenset(
+        brand_key
+        for row in brand_rows
+        if (brand_key := _text(row.get("brand_key")))
+    )
     alias_resolver = BrandAliasResolver.from_static(
         MANUAL_BRAND_ALIASES.items(),
         canonical_keys=name_to_key,
@@ -142,6 +149,13 @@ def build_evidence_counts_from_rows(
         event_brand_name = _text(row.get("brand_canonical"))
         brand_name = alias_resolver.resolve_alias(event_brand_name)
         brand_key = name_to_key.get(brand_name)
+        if (
+            brand_key is None
+            and accept_canonical_brand_keys
+            and event_brand_name not in KNOWN_UNMATCHED_EVENT_BRANDS
+            and event_brand_name in canonical_keys
+        ):
+            brand_key = event_brand_name
         if brand_key is None:
             if brand_name in KNOWN_UNMATCHED_EVENT_BRANDS:
                 unmatched_known.add(brand_name)
@@ -174,11 +188,17 @@ def build_evidence_counts_from_rows(
 def route_density_worklist(
     brand_rows: list[dict[str, Any]],
     score_rows: list[dict[str, Any]],
+    *,
+    accept_canonical_brand_keys: bool = False,
 ) -> DensityWorklist:
     """Build a brand_key-routed Agent2 worklist from mart and score rows."""
 
     identities = build_brand_identities(brand_rows)
-    evidence = build_evidence_counts_from_rows(brand_rows, score_rows)
+    evidence = build_evidence_counts_from_rows(
+        brand_rows,
+        score_rows,
+        accept_canonical_brand_keys=accept_canonical_brand_keys,
+    )
     unknown_ratio = (
         len(evidence.unmatched_unknown) / len(identities)
         if identities
@@ -204,7 +224,11 @@ def route_density_worklist(
     )
 
 
-def load_density_worklist(db_conn: Any) -> DensityWorklist:
+def load_density_worklist(
+    db_conn: Any,
+    *,
+    accept_canonical_brand_keys: bool = False,
+) -> DensityWorklist:
     """Load the d2 mart universe and score rows, then route by brand_key."""
 
     brand_rows = _fetch_all(
@@ -224,7 +248,11 @@ def load_density_worklist(db_conn: Any) -> DensityWorklist:
         WHERE brand_canonical IS NOT NULL AND brand_canonical <> ''
         """,
     )
-    return route_density_worklist(brand_rows, score_rows)
+    return route_density_worklist(
+        brand_rows,
+        score_rows,
+        accept_canonical_brand_keys=accept_canonical_brand_keys,
+    )
 
 
 def _fetch_all(db_conn: Any, sql: str) -> list[dict[str, Any]]:

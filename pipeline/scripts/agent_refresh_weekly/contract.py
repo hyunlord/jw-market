@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any, Final, Iterable
 
@@ -110,6 +111,26 @@ def make_stage_skip_result(
     }
 
 
+def unknown_brand_skip_reason(logs: str) -> str | None:
+    names: set[str] = set()
+    for line in logs.splitlines():
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        worklist = ((payload.get("diagnostics") or {}).get("density_worklist") or {})
+        for name in worklist.get("unmatched_unknown") or ():
+            if value := str(name).strip():
+                names.add(value)
+    if not names:
+        return None
+    ordered = sorted(names)
+    return f"skipped_unknown={len(ordered)} names={','.join(ordered)}"
+
+
 def _secret_env(name: str, key: str) -> dict[str, Any]:
     return {
         "name": name,
@@ -154,12 +175,14 @@ mkdir -p \"{root}/short\" \"{root}/long\"
 python -m pipeline.scripts.ai_analysis.agent2_regen_orchestrator \\
   --brand-source general-density \\
   --bundle-kind general \\
+  --accept-canonical-brand-keys \\
   --dry-run \\
   --analysis-variant short \\
   --work-dir \"{root}/short\"
 python -m pipeline.scripts.ai_analysis.agent2_regen_orchestrator \\
   --brand-source general-density \\
   --bundle-kind general \\
+  --accept-canonical-brand-keys \\
   --dry-run \\
   --analysis-variant long \\
   --work-dir \"{root}/long\"
